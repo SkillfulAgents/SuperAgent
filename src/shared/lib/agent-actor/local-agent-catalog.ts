@@ -14,6 +14,8 @@ import {
   removeDirectory,
   resolveAgentId,
 } from '@shared/lib/utils/file-storage'
+import { ModalVolumeFiles } from '@shared/lib/container/modal/modal-volume'
+import { forgetAgentPlacement, readAgentPlacement } from './placement'
 import type { AgentCatalog } from './types'
 
 export function createLocalAgentCatalog(): AgentCatalog {
@@ -26,7 +28,13 @@ export function createLocalAgentCatalog(): AgentCatalog {
     exists: (slug) => directoryExists(getAgentDir(slug)),
     mint: () => generateAgentId(),
     resolve: (input) => resolveAgentId(input),
-    remove: (slug) => removeDirectory(getAgentDir(slug)),
+    remove: async (slug) => {
+      // An agent on Modal owns a volume too; it goes with the host directory.
+      const placement = readAgentPlacement(slug)
+      await removeDirectory(getAgentDir(slug))
+      forgetAgentPlacement(slug)
+      if (placement.runtime === 'modal') await ModalVolumeFiles.remove(placement.volumeName)
+    },
   }
 }
 

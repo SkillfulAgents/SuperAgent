@@ -1,6 +1,6 @@
 import type { ServerType } from '@hono/node-server'
 import pLimit from 'p-limit'
-import { containerHost } from './agent-actor'
+import { agentCatalog, agentRegistry, containerHost, loadAgentPlacements } from './agent-actor'
 import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
 import { accountReauthManager } from './proxy/account-reauth-manager'
@@ -131,6 +131,14 @@ async function initializeServicesInner() {
     reconcileSkillsetConfigsForCurrentAuth()
   } catch (error) {
     captureException(error, { tags: { component: 'startup', operation: 'skillset-reconcile' } })
+  }
+
+  // Where each agent lives decides which actor its handle is, so the
+  // placements are in before anything asks the registry for an agent. A
+  // request that raced this bind got a local handle; the agents on Modal are
+  // evicted so their next handle is the right one.
+  for (const slug of await loadAgentPlacements(await agentCatalog.list())) {
+    if (agentRegistry.peek(slug)) agentRegistry.evict(slug)
   }
 
   // Auth validation and agent discovery are independent reads. Run them

@@ -180,6 +180,7 @@ import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { workflowRoutes } from './workflows'
+import { agentPlacementRoutes } from './agent-placement'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
 import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
 import { resolveTargetApp } from '@shared/lib/computer-use/types'
@@ -7903,5 +7904,8 @@ agents.delete('/:id/hooks', AgentAdmin(), async (c) => {
 // Dynamic-workflow (`Workflow` tool) per-agent drawer routes, kept in their own
 // module for isolation/testability; mounted at the same `/api/agents` root.
 agents.route('/', workflowRoutes)
+
+// Where an agent runs (this machine or a Modal sandbox), and moving it there.
+agents.route('/', agentPlacementRoutes)
 
 export default agents

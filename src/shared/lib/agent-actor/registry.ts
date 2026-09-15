@@ -16,20 +16,36 @@ import {
 } from '@shared/lib/container/connection-runtime-sync'
 import { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
+import { ModalAgentActor } from './modal-agent-actor'
+import { readAgentPlacement, type AgentPlacement } from './placement'
 import type { AgentActor, AgentRegistry, AgentSlug } from './types'
+
+export interface AgentRegistryOptions {
+  /** Where an agent lives; decides which actor its handle is. Defaults to the placement document. */
+  readPlacement?: (slug: AgentSlug) => AgentPlacement
+}
 
 /**
  * Build a registry whose handles delegate to `deps`. A handle is cheap and is
  * created on first `get`; the container state behind it is the agent's
  * `ContainerRuntime`, held by the container host and created on first use.
+ *
+ * Which actor a handle is follows the agent's placement: a local actor for
+ * an agent on this machine, a Modal actor for one whose sandbox and volume
+ * are on Modal. Placements are loaded at boot (`loadAgentPlacements`), so a
+ * `get` still does no I/O; a handle built for an agent whose placement was
+ * not loaded yet is a local one, which is why startup evicts the handles of
+ * the agents it finds on Modal once the documents are in.
  */
-export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
+export function createAgentRegistry(deps: LocalActorDeps, options: AgentRegistryOptions = {}): AgentRegistry {
   const handles = new Map<AgentSlug, AgentActor>()
+  const readPlacement = options.readPlacement ?? readAgentPlacement
 
   const get = (slug: AgentSlug): AgentActor => {
     let actor = handles.get(slug)
     if (!actor) {
-      actor = new LocalAgentActor(slug, deps)
+      const placement = readPlacement(slug)
+      actor = placement.runtime === 'modal' ? new ModalAgentActor(slug, deps, placement) : new LocalAgentActor(slug, deps)
       handles.set(slug, actor)
     }
     return actor

@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { WebSocket } from 'ws'
 import type { PendingUserInputRequest, UserInputRequestOutcome } from '@shared/lib/user-input/request-schema'
 import { createAgentRegistry } from './registry'
-import type { LocalActorDeps } from './local-agent-actor'
+import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
+import { ModalAgentActor } from './modal-agent-actor'
 
 // The singleton registry wires the real manager, persister, and input
 // registries. These tests build their own registry from fakes, so the real
@@ -191,6 +192,18 @@ describe('createAgentRegistry', () => {
     expect(registry.peek('a')).toBe(a)
     expect(registry.get('b')).not.toBe(a)
     // A handle does not touch the container host until an op runs.
+    expect(fake.containerHost.runtime).not.toHaveBeenCalled()
+  })
+
+  it('builds a Modal actor for an agent placed on Modal, and a local one otherwise', () => {
+    const registry = createAgentRegistry(fake.deps, {
+      readPlacement: (slug) => (slug === 'remote' ? { runtime: 'modal', volumeName: 'superagent-remote' } : { runtime: 'local' }),
+    })
+    const remote = registry.get('remote')
+    expect(remote).toBeInstanceOf(ModalAgentActor)
+    expect((remote as ModalAgentActor).placement).toEqual({ runtime: 'modal', volumeName: 'superagent-remote' })
+    expect(registry.get('local')).toBeInstanceOf(LocalAgentActor)
+    // Building the handle asks nothing of Modal or the container host.
     expect(fake.containerHost.runtime).not.toHaveBeenCalled()
   })
 

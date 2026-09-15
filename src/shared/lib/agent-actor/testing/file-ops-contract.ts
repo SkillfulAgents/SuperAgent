@@ -13,6 +13,15 @@ export interface FileOpsHarness {
   dispose?: () => Promise<void> | void
 }
 
+export interface FileOpsContractOptions {
+  /**
+   * Whether the store reports permission bits (`FileStat.mode`) and keeps
+   * them across a rewrite. A directory does; a store that keeps no modes
+   * (a Modal volume reports none) skips that case.
+   */
+  keepsModes?: boolean
+}
+
 const text = (s: string) => new TextEncoder().encode(s)
 const decode = (bytes: Uint8Array | null) => (bytes ? new TextDecoder().decode(bytes) : null)
 
@@ -26,7 +35,12 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
   throw new Error('expected a WorkspaceFileError')
 }
 
-export function describeFileOpsContract(name: string, make: () => Promise<FileOpsHarness> | FileOpsHarness): void {
+export function describeFileOpsContract(
+  name: string,
+  make: () => Promise<FileOpsHarness> | FileOpsHarness,
+  options: FileOpsContractOptions = {},
+): void {
+  const { keepsModes = true } = options
   describe(`${name} — FileOps contract`, () => {
     let harness: FileOpsHarness
     let files: FileOps
@@ -73,7 +87,7 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
       expect((await files.list('uploads')).map((entry) => entry.name)).toEqual([long])
     })
 
-    it('a mode asked for on a write is what stat reports, and a rewrite without one keeps it', async () => {
+    it.skipIf(!keepsModes)('a mode asked for on a write is what stat reports, and a rewrite without one keeps it', async () => {
       await files.putDoc('bin/tool', '#!/bin/sh\n', { mode: 0o755 })
       expect((await files.stat('bin/tool'))?.mode).toBe(0o755)
       await files.putDoc('bin/tool', '#!/bin/sh\necho hi\n')
