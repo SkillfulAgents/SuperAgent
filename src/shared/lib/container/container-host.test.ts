@@ -166,8 +166,9 @@ vi.mock('./health-monitor', () => ({
   },
 }))
 
-const mockCopyChromeProfileData = vi.fn().mockReturnValue(false)
+const mockCopyChromeProfileData = vi.fn().mockResolvedValue(false)
 vi.mock('@shared/lib/browser/chrome-profile', () => ({
+  PROFILE_SYNC_MANIFEST: '.superagent-profile-sync.json',
   copyChromeProfileData: (...args: unknown[]) => mockCopyChromeProfileData(...args),
 }))
 
@@ -296,35 +297,75 @@ describe('ContainerRuntime.ensureRunning — env var construction', () => {
     expect(mockGetOrCreateHostToken).toHaveBeenCalledWith('test-agent')
   })
 
-  it('waits for an asynchronous Chrome profile sync before starting the container', async () => {
-    setupAccountMocks([])
-    mockSettingsState.chromeProfileId = 'Default'
-    let finishProfileSync!: (copied: boolean) => void
-    mockCopyChromeProfileData.mockReturnValueOnce(new Promise<boolean>((resolve) => {
-      finishProfileSync = resolve
-    }))
+  describe('what a start takes from the agent workspace, through the attached access', () => {
+    const files = { stat: vi.fn(), getDoc: vi.fn(), putDoc: vi.fn(), mkdir: vi.fn() }
+    const instructions = vi.fn<(slug: string) => Promise<string | null>>()
 
-    const startPromise = containerHost.runtime('test-agent').ensureRunning()
-    await vi.waitFor(() => expect(mockCopyChromeProfileData).toHaveBeenCalledWith(
-      'Default',
-      '/workspace/test-agent/.browser-profile',
-    ))
+    beforeEach(() => {
+      mockCopyChromeProfileData.mockReset().mockResolvedValue(false)
+      instructions.mockReset().mockResolvedValue(null)
+      containerHost.attachAgentWorkspaces({ files: () => files as never, instructions })
+    })
 
-    expect(mockStart).not.toHaveBeenCalled()
-    finishProfileSync(true)
-    await startPromise
-    expect(mockStart).toHaveBeenCalledOnce()
-  })
+    afterEach(() => {
+      containerHost.attachAgentWorkspaces(null)
+    })
 
-  it('does not copy a local profile into a workspace that uses the host browser', async () => {
-    setupAccountMocks([])
-    mockSettingsState.chromeProfileId = 'Default'
-    mockSettingsState.hostBrowserProvider = 'chrome'
+    it('seeds the browser profile through the agent files and waits for it before starting', async () => {
+      setupAccountMocks([])
+      mockSettingsState.chromeProfileId = 'Default'
+      let finishProfileSync!: (copied: boolean) => void
+      mockCopyChromeProfileData.mockReturnValueOnce(new Promise<boolean>((resolve) => { finishProfileSync = resolve }))
 
-    await containerHost.runtime('test-agent').ensureRunning()
+      const startPromise = containerHost.runtime('test-agent').ensureRunning()
+      await vi.waitFor(() => expect(mockCopyChromeProfileData).toHaveBeenCalledTimes(1))
+      const [profileId, destination] = mockCopyChromeProfileData.mock.calls[0] as [string, { hasFile(path: string): Promise<boolean> }]
+      expect(profileId).toBe('Default')
+      // The destination is the agent's workspace, not a host path.
+      files.stat.mockResolvedValueOnce({ kind: 'file' })
+      expect(await destination.hasFile('Cookies')).toBe(true)
+      expect(files.stat).toHaveBeenCalledWith('.browser-profile/Cookies')
 
-    expect(mockCopyChromeProfileData).not.toHaveBeenCalled()
-    expect(mockStart.mock.calls[0][0].envVars.AGENT_BROWSER_USE_HOST).toBe('1')
+      expect(mockStart).not.toHaveBeenCalled()
+      finishProfileSync(true)
+      await startPromise
+      expect(mockStart).toHaveBeenCalledOnce()
+    })
+
+    it('does not copy a local profile into a workspace that uses the host browser', async () => {
+      setupAccountMocks([])
+      mockSettingsState.chromeProfileId = 'Default'
+      mockSettingsState.hostBrowserProvider = 'chrome'
+
+      await containerHost.runtime('test-agent').ensureRunning()
+
+      expect(mockCopyChromeProfileData).not.toHaveBeenCalled()
+      expect(mockStart.mock.calls[0][0].envVars.AGENT_BROWSER_USE_HOST).toBe('1')
+    })
+
+    it('hands the display name from the instructions to the start, and starts without one when reading fails', async () => {
+      setupAccountMocks([])
+      instructions.mockResolvedValue('---\nname: My Agent\n---\nBody')
+      await containerHost.runtime('test-agent').ensureRunning()
+      expect(instructions).toHaveBeenCalledWith('test-agent')
+      expect(mockStart.mock.calls[0][0].agentName).toBe('My Agent')
+
+      containerHost.dropRuntime('test-agent')
+      mockStart.mockClear()
+      instructions.mockRejectedValue(new Error('workspace unreachable'))
+      await containerHost.runtime('test-agent').ensureRunning()
+      expect(mockStart).toHaveBeenCalledOnce()
+      expect(mockStart.mock.calls[0][0].agentName).toBeUndefined()
+    })
+
+    it('starts bare when no registry has attached the agent workspaces', async () => {
+      setupAccountMocks([])
+      mockSettingsState.chromeProfileId = 'Default'
+      containerHost.attachAgentWorkspaces(null)
+      await containerHost.runtime('test-agent').ensureRunning()
+      expect(mockCopyChromeProfileData).not.toHaveBeenCalled()
+      expect(mockStart.mock.calls[0][0].agentName).toBeUndefined()
+    })
   })
 
   it('CONNECTED_ACCOUNTS includes active and reconnectable assigned accounts, grouped by toolkitSlug', async () => {

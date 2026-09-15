@@ -758,29 +758,6 @@ export function getAgentClaudeMdPath(slug: string): string {
 }
 
 /**
- * Read an agent's display name straight from its CLAUDE.md frontmatter,
- * synchronously. Lives here (not agent-service) so the container layer can
- * resolve the name at env-build time without importing agent-service, which
- * would close an import cycle back through container-manager.
- */
-export function readAgentDisplayNameSync(slug: string): string | undefined {
-  try {
-    const content = fs.readFileSync(getAgentClaudeMdPath(slug), 'utf-8')
-    const { frontmatter } = parseMarkdownWithFrontmatter<{ name?: unknown }>(content)
-    // The frontmatter parser coerces YAML-ambiguous scalars ("123", "true") to
-    // number/boolean; those are still legitimate display names, so coerce back.
-    const raw = frontmatter.name
-    const name =
-      typeof raw === 'string' ? raw
-      : typeof raw === 'number' || typeof raw === 'boolean' ? String(raw)
-      : undefined
-    return name?.trim() ? name : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/**
  * Get .env path for agent secrets
  * ~/.superagent/agents/{slug}/workspace/.env
  */

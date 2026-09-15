@@ -10,6 +10,7 @@
  * `containerHost` from `@shared/lib/agent-actor` for the host-level calls.
  */
 import { ContainerRuntime, type RuntimeHost } from './container-runtime'
+import type { AgentWorkspaceAccess } from './agent-workspace-access'
 import {
   checkAllRunnersAvailability,
   checkImageExists,
@@ -53,6 +54,18 @@ export class ContainerHost {
   private isSyncing = false
   private healthCheckIntervalId: NodeJS.Timeout | null = null
 
+  /** The agents' workspaces, attached by the agent registry when it is created. */
+  private agentWorkspaces: AgentWorkspaceAccess | null = null
+
+  /**
+   * Give runtimes access to the agents' workspaces. Called once by the agent
+   * registry; a start before that (only possible in a test without a
+   * registry) runs without the workspace-dependent steps.
+   */
+  attachAgentWorkspaces(access: AgentWorkspaceAccess | null): void {
+    this.agentWorkspaces = access
+  }
+
   /** Optional callback invoked before a container is stopped (e.g. to close host browser) */
   onBeforeContainerStop: ((agentId: string) => Promise<void>) | null = null
 
@@ -65,7 +78,10 @@ export class ContainerHost {
   private readonly hooks: RuntimeHost = (() => {
     const self = this
     return {
-      // A getter, so a hook assigned after the first runtime exists still applies.
+      // Getters, so what is attached after the first runtime exists still applies.
+      get agentWorkspaces() {
+        return self.agentWorkspaces
+      },
       get onBeforeContainerStop() {
         return self.onBeforeContainerStop
       },

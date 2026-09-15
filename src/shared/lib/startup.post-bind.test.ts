@@ -190,6 +190,7 @@ describe('initializeServices post-bind critical path', () => {
     expect(clearPendingApprovalBans).toHaveBeenCalledTimes(1)
   })
 
+
   it('bounds heavy startup I/O to three concurrent tasks', async () => {
     getPlatformAccessToken.mockReturnValue('profile-token')
     let active = 0

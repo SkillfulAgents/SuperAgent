@@ -7,7 +7,7 @@ import type { LocalActorDeps } from './local-agent-actor'
 // The singleton registry wires the real manager, persister, and input
 // registries. These tests build their own registry from fakes, so the real
 // modules are stubbed to keep the import side-effect free.
-vi.mock('@shared/lib/container/container-host', () => ({ containerHost: {} }))
+vi.mock('@shared/lib/container/container-host', () => ({ containerHost: { attachAgentWorkspaces: () => {} } }))
 vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: {} }))
 vi.mock('@shared/lib/user-input/request-manager', () => ({ userInputRequestManager: {} }))
 vi.mock('@shared/lib/proxy/review-manager', () => ({ reviewManager: {} }))
@@ -116,6 +116,7 @@ function fakeDeps() {
     getRunningAgentIds: vi.fn().mockReturnValue([]),
     dropRuntime: vi.fn(),
     clearRuntimes: vi.fn(),
+    attachAgentWorkspaces: vi.fn(),
   }
   const reviewManager = {
     requestReview: vi.fn().mockResolvedValue('allow'),
@@ -192,6 +193,22 @@ describe('createAgentRegistry', () => {
     expect(registry.get('b')).not.toBe(a)
     // A handle does not touch the container host until an op runs.
     expect(fake.containerHost.runtime).not.toHaveBeenCalled()
+  })
+
+  it('gives the container host a way into each agent workspace through the actors', async () => {
+    const registry = createAgentRegistry(fake.deps)
+    expect(fake.containerHost.attachAgentWorkspaces).toHaveBeenCalledTimes(1)
+    const access = fake.containerHost.attachAgentWorkspaces.mock.calls[0][0] as {
+      files: (slug: string) => unknown
+      instructions: (slug: string) => Promise<string | null>
+    }
+    // The same file operations the actor hands out, for the same agent.
+    expect(access.files('a')).toBe(registry.get('a').files)
+    expect(access.files('b')).not.toBe(registry.get('a').files)
+    // Instructions are the actor's config document.
+    const getDoc = vi.spyOn(registry.get('a').config, 'get').mockResolvedValue('---\nname: A\n---\n')
+    expect(await access.instructions('a')).toBe('---\nname: A\n---\n')
+    expect(getDoc).toHaveBeenCalledWith('instructions')
   })
 
   it('evict drops the handle and forgets the runtime for that slug only', () => {

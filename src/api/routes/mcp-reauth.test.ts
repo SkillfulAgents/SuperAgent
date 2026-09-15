@@ -25,6 +25,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
 }))
 vi.mock('@shared/lib/container/container-host', () => ({
   containerHost: {
+    attachAgentWorkspaces: () => {},
     runtime: () => ({
       slug: 'shared-agent',
       getCachedInfo: () => ({ status: 'running' }),

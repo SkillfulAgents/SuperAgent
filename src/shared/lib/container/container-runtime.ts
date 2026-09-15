@@ -8,7 +8,6 @@
  * and health loops, force-stop fallout) is the host's, reached through
  * `RuntimeHost`.
  */
-import path from 'path'
 import { createContainerClient } from './client-factory'
 import type {
   ContainerClient,
@@ -24,8 +23,9 @@ import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
 import { getSettings } from '@shared/lib/config/settings'
-import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
-import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
+import { seedBrowserProfileFromChrome } from '@shared/lib/browser/seed-browser-profile'
+import { displayNameFromInstructions } from '@shared/lib/utils/agent-display-name'
+import type { AgentWorkspaceAccess } from './agent-workspace-access'
 import { messagePersister } from './message-persister'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
@@ -62,6 +62,12 @@ interface CachedContainerStatus {
 
 /** What a runtime needs from the host it belongs to. */
 export interface RuntimeHost {
+  /**
+   * The agents' workspaces, for what a start needs from them: the browser
+   * profile seeding and the display name. Null only before the agent
+   * registry attached it, which in the app is never.
+   */
+  readonly agentWorkspaces: AgentWorkspaceAccess | null
   /** Runs before a container is stopped (e.g. to close the host browser). */
   readonly onBeforeContainerStop: ((slug: string) => Promise<void>) | null
   /**
@@ -528,15 +534,20 @@ export class ContainerRuntime {
       envVars['AGENT_ID'] = slug
     }
 
-    // Seed the built-in container browser from the selected Chrome profile.
-    // A host-browser provider uses its own dedicated profile, so copying the
-    // same data into the mounted workspace would only delay container start.
-    const chromeProfileId = settings.app?.chromeProfileId
-    if (chromeProfileId && !settings.app?.hostBrowserProvider) {
-      const workspaceDir = getAgentWorkspaceDir(slug)
-      const browserProfileDir = path.join(workspaceDir, '.browser-profile')
-      if (await copyChromeProfileData(chromeProfileId, browserProfileDir)) {
-        console.log(`[ContainerRuntime] Synchronized Chrome profile "${chromeProfileId}" to workspace`)
+    // What the start needs from the agent's workspace goes through the
+    // agent's file operations, never a host path: the workspace is wherever
+    // the agent's actor says it is.
+    let agentName: string | undefined
+    const workspaces = this.host.agentWorkspaces
+    if (workspaces) {
+      // Seed the built-in container browser from the selected Chrome profile.
+      // A failure fails the start, as a failed copy always did.
+      await seedBrowserProfileFromChrome(slug, workspaces.files(slug))
+      // The display name is attribution only; a start without it is still a start.
+      try {
+        agentName = displayNameFromInstructions(await workspaces.instructions(slug))
+      } catch (error) {
+        console.warn(`[ContainerRuntime] Could not read the display name for ${slug}; starting without it:`, error)
       }
     }
 
@@ -601,6 +612,7 @@ export class ContainerRuntime {
     // failing the whole agent.
     const startedInfo = await client.start({
       envVars,
+      agentName,
       additionalVolumes,
       onMountDropped: (hostPath) => {
         const dropped = healthyMounts.find((m) => m.hostPath === hostPath)
