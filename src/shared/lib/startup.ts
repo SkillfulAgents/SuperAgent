@@ -101,6 +101,14 @@ export async function afterBindInitialize(options: AfterBindInitOptions = {}): P
 }
 
 async function initializeServicesInner() {
+  // What a container start needs from the agent's workspace goes through the
+  // agent's actor: the container runtime has no view of the files. Assigned
+  // before the first await, because the API is already bound and a request
+  // may start a container while the rest of this function is still running.
+  containerHost.onBeforeContainerStart = (agentId) => seedBrowserProfileFromChrome(agentRegistry.get(agentId))
+  containerHost.resolveAgentName = async (agentId) =>
+    displayNameFromInstructions(await agentRegistry.get(agentId).config.get('instructions'))
+
   // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
   // initErrorReporting is a no-op if already initialized, so this is safe.
   // Skip in dev mode — dev errors are too noisy and pollute Sentry.
@@ -173,12 +181,6 @@ async function initializeServicesInner() {
   // not a snapshot — an agent created during the delay must not be treated as
   // an orphan. Profiles claimed by a browser launch are skipped internally.
   startBrowserProfileCleanup(async () => (await listAgents()).map((a) => a.slug))
-
-  // What a container start needs from the agent's workspace goes through the
-  // agent's actor: the container runtime has no view of the files.
-  containerHost.onBeforeContainerStart = (agentId) => seedBrowserProfileFromChrome(agentRegistry.get(agentId))
-  containerHost.resolveAgentName = async (agentId) =>
-    displayNameFromInstructions(await agentRegistry.get(agentId).config.get('instructions'))
 
   // Stop the host browser for an agent before its container is torn down,
   // so the browser closes gracefully instead of getting a "socket hang up".

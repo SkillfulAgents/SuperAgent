@@ -2,6 +2,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
 import { InMemoryFileOps } from '@shared/lib/agent-actor/testing/in-memory-file-ops'
 import { copyChromeProfileData } from './chrome-profile'
 import { workspaceProfileDestination } from './seed-browser-profile'
@@ -75,6 +76,18 @@ describe('copyChromeProfileData', () => {
     fs.writeFileSync(path.join(profileDir, 'Cookies'), 'new-and-longer-source-cookie')
     await copyChromeProfileData('Default', workspaceProfileDestination(files, '.browser-profile'))
     expect(await decode('.browser-profile/Cookies')).toBe('new-and-longer-source-cookie')
+  })
+
+  it('a source file that vanished after fingerprinting does not fail a workspace sync, local or not', async () => {
+    // A workspace that is not a directory on this machine streams the source
+    // and meets the stat's own ENOENT; a local one meets the contract's not-found.
+    const remote = workspaceProfileDestination(new InMemoryFileOps(), '.browser-profile')
+    await expect(remote.copyFile(path.join(testHome, 'gone', 'Cookies-journal'), 'Cookies-journal')).resolves.toBeUndefined()
+
+    const localRoot = path.join(testHome, 'local-workspace')
+    const local = workspaceProfileDestination(new LocalFileOps(() => localRoot), '.browser-profile')
+    await expect(local.copyFile(path.join(testHome, 'gone', 'Cookies-journal'), 'Cookies-journal')).resolves.toBeUndefined()
+    expect(fs.existsSync(path.join(localRoot, '.browser-profile', 'Cookies-journal'))).toBe(false)
   })
 
   it('returns false when the selected source profile does not exist', async () => {

@@ -18,6 +18,11 @@ import { PROFILE_SYNC_MANIFEST, copyChromeProfileData, type ProfileSyncDestinati
 /** Where the container browser keeps its profile, relative to the workspace root. */
 export const BROWSER_PROFILE_DIR = '.browser-profile'
 
+function isSourceGone(error: unknown): boolean {
+  if (error instanceof WorkspaceFileError) return error.code === 'not-found'
+  return (error as NodeJS.ErrnoException)?.code === 'ENOENT'
+}
+
 /** A profile sync destination inside an agent's workspace. */
 export function workspaceProfileDestination(files: FileOps, workspaceDir: string): ProfileSyncDestination {
   const at = (relativePath: string) => joinWorkspacePath(workspaceDir, relativePath)
@@ -37,8 +42,10 @@ export function workspaceProfileDestination(files: FileOps, workspaceDir: string
         await copyHostFileIntoWorkspace(files, sourcePath, destination)
       } catch (error) {
         // The parent exists, so an absent path is the source: a transient
-        // Chrome file that vanished after it was fingerprinted.
-        if (!(error instanceof WorkspaceFileError && error.code === 'not-found')) throw error
+        // Chrome file that vanished after it was fingerprinted. A workspace on
+        // this machine reports that as the contract's not-found; any other
+        // workspace streams the source and reports the stat's own ENOENT.
+        if (!isSourceGone(error)) throw error
       }
     },
   }

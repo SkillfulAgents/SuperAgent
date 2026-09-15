@@ -190,6 +190,24 @@ describe('initializeServices post-bind critical path', () => {
     expect(clearPendingApprovalBans).toHaveBeenCalledTimes(1)
   })
 
+  it('assigns the container start hooks before agent discovery, so a start during boot gets them', async () => {
+    let finishAgentList: ((agents: never[]) => void) | undefined
+    listAgents.mockImplementation(() => new Promise<never[]>((resolve) => { finishAgentList = resolve }))
+
+    const { initializeServices } = await import('./startup')
+    const { containerHost } = await import('./container/container-host')
+    const initializing = initializeServices()
+
+    // The API is bound already; a request in this window may start a container.
+    await vi.waitFor(() => expect(listAgents).toHaveBeenCalledTimes(1))
+    expect(initializeAgents).not.toHaveBeenCalled()
+    expect(typeof containerHost.onBeforeContainerStart).toBe('function')
+    expect(typeof containerHost.resolveAgentName).toBe('function')
+
+    finishAgentList?.([])
+    await initializing
+  })
+
   it('bounds heavy startup I/O to three concurrent tasks', async () => {
     getPlatformAccessToken.mockReturnValue('profile-token')
     let active = 0
