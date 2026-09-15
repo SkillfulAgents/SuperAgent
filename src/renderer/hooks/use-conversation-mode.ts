@@ -4,6 +4,7 @@ import { useInterruptSession } from './use-messages'
 import { createVoiceConversation } from '@renderer/lib/voice/registry/conversation'
 import { VoiceAgentCoordinator } from '@renderer/lib/voice/conversation/coordinator'
 import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
+import { userMusic } from '@renderer/lib/voice/shared/speech/user-music'
 import type { VoiceHistory } from '@shared/lib/voice/conversation-types'
 import type { VoiceAgentSnapshot, VoiceAgentState, VoiceConversationAdapter, VoiceConversationEngine, VoiceConversationSnapshot } from '@renderer/lib/voice/contracts/conversation'
 
@@ -90,6 +91,8 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
         if (talking && !speechActive) {
           if (next.userSpeaking) holdSound.stopImmediately()
           else holdSound.stop()
+          // The person's own music has no fade to offer: paused either way.
+          userMusic.stopImmediately()
         }
         speechActive = talking
         setSnapshot(previous => previous.phase === next.phase && previous.ready === next.ready

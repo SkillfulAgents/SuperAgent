@@ -16,6 +16,9 @@ import { useAgent } from '@renderer/hooks/use-agents'
 import { VoiceModeControls, useHoldSoundPreference } from './voice-mode-controls'
 import { useVoiceMode } from '@renderer/hooks/use-voice-mode'
 import { useHoldSound } from '@renderer/hooks/use-hold-sound'
+import { useUserMusicPreference, useUserMusicSession, userMusicSupported } from '@renderer/hooks/use-user-music'
+import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
+import { userMusic } from '@renderer/lib/voice/shared/speech/user-music'
 import { readAloud } from '@renderer/lib/voice/services/read-aloud'
 import { clearVoiceModeRequest, isVoiceModeRequested, registerVoiceModeExit, setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
@@ -427,14 +430,20 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [voiceModeOn, isViewOnly])
-  // Something to hear while the agent works, unless the person muted it.
+  // Something to hear while the agent works, unless the person muted it:
+  // their own music if it was playing when voice mode came on, else the loop.
+  // The takeover lasts the whole voice session: a muted hold sound or a
+  // request card keeps the music paused, and leaving voice mode gives it back.
   const holdSoundWanted = useHoldSoundPreference()
+  const userMusicWanted = useUserMusicPreference()
+  const music = useUserMusicSession(voiceModeOn && !isViewOnly && userMusicWanted && userMusicSupported())
   useHoldSound({
     enabled: voiceModeOn && !isViewOnly && !suspended && holdSoundWanted,
     agentTurn: voice.hold.allowed,
     delayMs: voice.hold.delayMs,
     speaking: voice.speechActive ?? voice.phase === 'speaking',
     working: voice.working,
+    source: music.active ? userMusic : holdSound,
   })
 
 
