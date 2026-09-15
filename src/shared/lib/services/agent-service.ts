@@ -82,10 +82,67 @@ function projectedFrontmatter(record: AgentRecord, carried: Record<string, unkno
   return frontmatter
 }
 
-async function readInstructionsDocument(slug: string): Promise<{ frontmatter: Record<string, unknown>; body: string } | null> {
+interface InstructionsDocument {
+  frontmatter: Record<string, unknown>
+  body: string
+  /** The text as read, for putting back when a later step fails. */
+  raw: string
+}
+
+async function readInstructionsDocument(slug: string): Promise<InstructionsDocument | null> {
   const content = await agentRegistry.get(slug).config.get('instructions')
   if (content === null) return null
-  return parseMarkdownWithFrontmatter<Record<string, unknown>>(content)
+  return { ...parseMarkdownWithFrontmatter<Record<string, unknown>>(content), raw: content }
+}
+
+/**
+ * Per-slug promise chains: every change to an agent's identity, which spans
+ * the catalog row and the `CLAUDE.md` projection, runs to completion before
+ * the next one starts, so two overlapping renames cannot leave the row with
+ * one name and the document with the other. The same in-process
+ * serialization the config documents use for their read-modify-write.
+ */
+const identityChains = new Map<string, Promise<unknown>>()
+function withIdentityLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
+  const previous = identityChains.get(slug) ?? Promise.resolve()
+  const run = previous.then(fn, fn)
+  const settled = run.catch(() => undefined)
+  identityChains.set(slug, settled)
+  void settled.then(() => {
+    if (identityChains.get(slug) === settled) identityChains.delete(slug)
+  })
+  return run
+}
+
+/**
+ * Change an agent's identity in both places, the projection first: a
+ * document write that fails leaves the old identity everywhere, and a row
+ * update that fails afterwards puts the old document back. The caller has
+ * read the document and holds the identity lock.
+ */
+async function commitIdentity(
+  record: AgentRecord,
+  changes: AgentIdentityChanges,
+  document: InstructionsDocument | null,
+  body: string,
+): Promise<AgentRecord | null> {
+  const next: AgentRecord = { ...record }
+  if (changes.name !== undefined) next.name = changes.name
+  if (changes.description !== undefined) {
+    if (changes.description === null) delete next.description
+    else next.description = changes.description
+  }
+  const actor = agentRegistry.get(record.slug)
+  await actor.config.put(
+    'instructions',
+    serializeMarkdownWithFrontmatter(projectedFrontmatter(next, document?.frontmatter ?? {}), body),
+  )
+  try {
+    return await agentCatalog.update(record.slug, changes)
+  } catch (error) {
+    if (document) await actor.config.put('instructions', document.raw).catch(() => undefined)
+    throw error
+  }
 }
 
 // ============================================================================
@@ -246,34 +303,32 @@ export async function updateAgent(
   slug: string,
   updates: UpdateAgentInput
 ): Promise<ApiAgent | null> {
-  const record = await agentCatalog.get(slug)
-  if (!record) {
-    return null
-  }
+  return withIdentityLock(slug, async () => {
+    const record = await agentCatalog.get(slug)
+    if (!record) {
+      return null
+    }
 
-  const changes: AgentIdentityChanges = {}
-  if (updates.name !== undefined) {
-    changes.name = String(updates.name)
-  }
-  if (updates.description !== undefined) {
-    changes.description = updates.description || null
-  }
-  const updated = (await agentCatalog.update(slug, changes)) ?? record
+    const changes: AgentIdentityChanges = {}
+    if (updates.name !== undefined) {
+      changes.name = String(updates.name)
+    }
+    if (updates.description !== undefined) {
+      changes.description = updates.description || null
+    }
 
-  // Rewrite the document: the new body if given, and the identity projection
-  // either way, so the agent sees its new name.
-  const actor = agentRegistry.get(slug)
-  const document = await readInstructionsDocument(slug)
-  const body = updates.instructions !== undefined ? updates.instructions : document?.body ?? ''
-  await actor.config.put(
-    'instructions',
-    serializeMarkdownWithFrontmatter(projectedFrontmatter(updated, document?.frontmatter ?? {}), body),
-  )
+    // Rewrite the document: the new body if given, and the identity
+    // projection either way, so the agent sees its new name; then the row.
+    const document = await readInstructionsDocument(slug)
+    const body = updates.instructions !== undefined ? updates.instructions : document?.body ?? ''
+    const updated = await commitIdentity(record, changes, document, body)
+    if (!updated) return null
 
-  // Get container status
-  const info = await actor.container.info()
+    // Get container status
+    const info = await agentRegistry.get(slug).container.info()
 
-  return toApiAgent(updated, info.status, info.port, body)
+    return toApiAgent(updated, info.status, info.port, body)
+  })
 }
 
 /**
@@ -282,11 +337,13 @@ export async function updateAgent(
  * something else has replaced the document, such as a template update.
  */
 export async function writeAgentIdentityProjection(slug: string): Promise<void> {
-  const record = await agentCatalog.get(slug)
-  if (!record) return
-  const document = await readInstructionsDocument(slug)
-  if (!document) return
-  await writeProjection(record, document)
+  await withIdentityLock(slug, async () => {
+    const record = await agentCatalog.get(slug)
+    if (!record) return
+    const document = await readInstructionsDocument(slug)
+    if (!document) return
+    await writeProjection(record, document)
+  })
 }
 
 async function writeProjection(
@@ -309,18 +366,20 @@ export async function adoptAgentIdentityFromWorkspace(
   slug: string,
   overrides: { name?: string } = {},
 ): Promise<AgentRecord | null> {
-  const record = await agentCatalog.get(slug)
-  if (!record) return null
-  const content = await agentRegistry.get(slug).config.get('instructions')
-  const carried = content === null ? {} : identityFromInstructions(content)
-  const name = overrides.name?.trim() || carried.name || record.name
-  const description = carried.description ?? record.description ?? null
-  const updated = (await agentCatalog.update(slug, { name, description })) ?? record
-  // One read of the document serves both the adoption and the projection.
-  if (content !== null) {
-    await writeProjection(updated, parseMarkdownWithFrontmatter<Record<string, unknown>>(content))
-  }
-  return updated
+  return withIdentityLock(slug, async () => {
+    const record = await agentCatalog.get(slug)
+    if (!record) return null
+    // One read of the document serves both the adoption and the projection.
+    const document = await readInstructionsDocument(slug)
+    const carried = document === null ? {} : identityFromInstructions(document.raw)
+    const name = overrides.name?.trim() || carried.name || record.name
+    const description = carried.description ?? record.description ?? null
+    if (document === null) {
+      // Nothing to project into: the row alone.
+      return (await agentCatalog.update(slug, { name, description })) ?? record
+    }
+    return commitIdentity(record, { name, description }, document, document.body)
+  })
 }
 
 /**

@@ -67,6 +67,7 @@ import {
   adoptAgentIdentityFromWorkspace,
   writeAgentIdentityProjection,
 } from './agent-service'
+import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 import { importAgentDirectories } from '@shared/lib/db/data-migrations/0001-import-agents-from-directories'
 
 describe('agent-service', () => {
@@ -541,6 +542,74 @@ Instructions`
         'An agent that helps with GitHub tasks'
       )
       expect(agent?.instructions).toContain('You are a helpful AI assistant')
+    })
+  })
+
+  describe('rename atomicity', () => {
+    const frontmatterName = async (slug: string) =>
+      (await getAgentClaudeMdContent(slug))?.match(/^name: (.*)$/m)?.[1]
+
+    it('leaves the old identity in the row and the document when the projection write fails', async () => {
+      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      const before = await getAgentClaudeMdContent('test-agent')
+      vi.spyOn(agentRegistry.get('test-agent').config, 'put').mockRejectedValueOnce(new Error('disk full'))
+
+      await expect(updateAgent('test-agent', { name: 'Half Renamed', description: 'Half described' })).rejects.toThrow('disk full')
+
+      expect(await getAgentRecord('test-agent')).toMatchObject({
+        name: 'Github Agent',
+        description: 'An agent that helps with GitHub tasks',
+      })
+      expect(await getAgentClaudeMdContent('test-agent')).toBe(before)
+    })
+
+    it('puts the old document back when the row update fails after the projection was written', async () => {
+      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      const before = await getAgentClaudeMdContent('test-agent')
+      vi.spyOn(agentCatalog, 'update').mockRejectedValueOnce(new Error('row update failed'))
+
+      await expect(updateAgent('test-agent', { name: 'Half Renamed' })).rejects.toThrow('row update failed')
+
+      expect((await getAgentRecord('test-agent'))?.name).toBe('Github Agent')
+      expect(await getAgentClaudeMdContent('test-agent')).toBe(before)
+    })
+
+    it('serializes overlapping renames so the last one completed wins in the row and the document', async () => {
+      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      const config = agentRegistry.get('test-agent').config
+      const realPut = config.put.bind(config)
+      let release!: () => void
+      const held = new Promise<void>((resolve) => { release = resolve })
+      vi.spyOn(config, 'put').mockImplementationOnce(async (id, doc) => {
+        await held
+        return realPut(id, doc)
+      })
+
+      const first = updateAgent('test-agent', { name: 'First' })
+      const second = updateAgent('test-agent', { name: 'Second' })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      // Nothing has landed while the first projection write is held.
+      expect((await getAgentRecord('test-agent'))?.name).toBe('Github Agent')
+      expect(await frontmatterName('test-agent')).toBe('Github Agent')
+
+      release()
+      const results = await Promise.all([first, second])
+
+      expect(results.map((agent) => agent?.name)).toEqual(['First', 'Second'])
+      expect((await getAgentRecord('test-agent'))?.name).toBe('Second')
+      expect(await frontmatterName('test-agent')).toBe('Second')
+    })
+
+    it('leaves the created identity alone when the projection write fails during adoption', async () => {
+      const created = await createAgent({ name: 'Placeholder', description: 'Placeholder description' })
+      await setAgentClaudeMdContent(created.slug, '---\nname: Template Name\ndescription: From the template\n---\nBody\n')
+      const before = await getAgentClaudeMdContent(created.slug)
+      vi.spyOn(agentRegistry.get(created.slug).config, 'put').mockRejectedValueOnce(new Error('disk full'))
+
+      await expect(adoptAgentIdentityFromWorkspace(created.slug)).rejects.toThrow('disk full')
+
+      expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Placeholder', description: 'Placeholder description' })
+      expect(await getAgentClaudeMdContent(created.slug)).toBe(before)
     })
   })
 
