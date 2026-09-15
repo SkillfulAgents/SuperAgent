@@ -139,10 +139,7 @@ function fakeConnector(opts?: {
     disconnect: vi.fn(opts?.disconnectImpl ?? (async () => {})),
     isConnected: vi.fn(() => c.connectedState),
     onEvent: vi.fn().mockReturnValue(() => {}),
-    onMessage: vi.fn().mockReturnValue(() => {}),
-    onInteractiveResponse: vi.fn().mockReturnValue(() => {}),
     onError: vi.fn().mockReturnValue(() => {}),
-    onTypingHint: vi.fn().mockReturnValue(() => {}),
   }
   return c as unknown as FakeConnector
 }

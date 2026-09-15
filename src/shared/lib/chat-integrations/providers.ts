@@ -4,6 +4,7 @@ import type { ChatAgentIntegration, ChatConnectorClass } from './chat-agent-inte
 import { telegramConfigSchema, slackConfigSchema, imessageConfigSchema, type ChatProvider } from './config-schema'
 import { resolveAppLinkContext, type AppLinkContext } from './utils'
 import { chatDefinitions } from './definitions'
+import { chatIntegrationPolicy } from './chat-policy'
 
 type ConnectorConstructor<Config> = ChatConnectorClass & {
   new (config: Config, appLink?: AppLinkContext): ChatAgentIntegration
@@ -17,6 +18,7 @@ function chatProvider<Config>(
 ): IntegrationProvider {
   return {
     definition: chatDefinitions[provider],
+    policy: chatIntegrationPolicy,
     async create(record) {
       let config: Config
       try {

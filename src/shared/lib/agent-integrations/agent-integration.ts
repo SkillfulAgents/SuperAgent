@@ -26,7 +26,6 @@ export abstract class AgentIntegration {
   async consumeInput(_event: IntegrationInputEvent, _context: IntegrationInputContext, _input: PreparedIntegrationInput): Promise<boolean> { return false }
   getTools(_context: IntegrationSessionContext): readonly IntegrationTool[] { return [] }
   shouldUpdateDisplayName(current: string | null | undefined): boolean { return !current }
-  describeTarget(_externalId: string): { type?: string } { return {} }
   observeSession(_context: IntegrationSessionContext): void {}
   releaseSession(_context: IntegrationSessionContext): void {}
   async onCreated(_integration: AgentIntegrationRecord): Promise<void> {}
@@ -36,7 +35,7 @@ export abstract class AgentIntegration {
     return () => { this.eventHandlers.delete(handler) }
   }
 
-  /** Await acceptance into the host queue, not completion of the agent run. */
+  /** Await all event handlers. The host queues inputs but may process responses inline. */
   protected async emitEvent(event: IntegrationEvent): Promise<void> {
     await Promise.all([...this.eventHandlers].map(handler => Promise.resolve().then(() => handler(event))))
   }

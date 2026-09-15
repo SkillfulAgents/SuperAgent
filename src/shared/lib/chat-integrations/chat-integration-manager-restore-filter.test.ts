@@ -82,10 +82,7 @@ function fakeConnector(): ChatClientConnector {
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn(),
-    onMessage: vi.fn().mockReturnValue(() => {}),
-    onInteractiveResponse: vi.fn().mockReturnValue(() => {}),
     onError: vi.fn().mockReturnValue(() => {}),
-    onTypingHint: vi.fn().mockReturnValue(() => {}),
   }) as unknown as ChatClientConnector
 }
 

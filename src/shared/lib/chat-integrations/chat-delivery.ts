@@ -6,8 +6,8 @@ import { agentRegistry, WorkspaceFileError, workspaceBasename } from '../agent-a
 import { getToolDefinition } from '../tool-definitions/registry'
 import { formatToolName } from '../tool-definitions/types'
 import { requestCardFromRegistry } from './request-card'
-import { formatSessionTimestamp } from './utils'
 import { captureException } from '../error-reporting'
+export { buildSessionName } from './chat-policy'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
 
@@ -15,10 +15,6 @@ export interface ManagedConnector {
   connector: ChatClientConnector
   integration: ChatIntegration
   chatId: string
-  sseUnsubscribe: (() => void) | null
-  messageUnsubscribe: (() => void) | null
-  interactiveUnsubscribe: (() => void) | null
-  errorUnsubscribe: (() => void) | null
   streamingState: {
     currentMessageId: string | null
     accumulatedText: string
@@ -526,22 +522,4 @@ export function shouldRotateSession(
   const lastActivity = session.updatedAt?.getTime?.() ?? session.createdAt.getTime()
   const timeoutMs = timeoutHours * 60 * 60 * 1000
   return now.getTime() - lastActivity > timeoutMs
-}
-
-/** Build the session name, appending a timestamp when session rotation is enabled. */
-export function buildSessionName(
-  integrationName: string | null,
-  provider: string,
-  displayName: string | undefined,
-  timeoutHours: number | null | undefined,
-  now: Date = new Date(),
-): string {
-  const baseName = displayName
-    ? `${integrationName || provider} — ${displayName}`
-    : integrationName || `${provider} chat`
-
-  if (timeoutHours && timeoutHours > 0) {
-    return `${baseName} — ${formatSessionTimestamp(now)}`
-  }
-  return baseName
 }

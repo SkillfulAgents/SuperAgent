@@ -340,10 +340,14 @@ export class AgentIntegrationManager {
   async ensureSession(integrationId: string, chatId: string): Promise<string> {
     const integration = getIntegration(integrationId)
     if (!integration) throw new Error(`Chat integration ${integrationId} not found`)
-    if (!this.isAllowed(integrationId, chatId)) throw new Error(`Chat ${chatId} is not allowed for integration ${integrationId}`)
+    // An outbound send may finish while its connection is being rebuilt. Access
+    // and session policy still come from the current persisted installation.
+    if (!this.registry.isAllowed({ integration, externalId: chatId })) throw new Error(`Chat ${chatId} is not allowed for integration ${integrationId}`)
 
+    const displayName = getLastDisplayName(integrationId, chatId)
+    const policy = this.registry.sessionPolicy(integration, { externalId: chatId, displayName: displayName ?? undefined })
     const existing = resolveActiveSession(
-      integrationId, chatId, this.connections.get(integrationId)!.connector.sessionPolicy(integration, { externalId: chatId }).timeoutHours,
+      integrationId, chatId, policy.timeoutHours,
       (archivedId) => {
         this.teardownManagedSession(integrationId, chatId)
         this.lastSessionTouch.delete(archivedId)
@@ -353,9 +357,7 @@ export class AgentIntegrationManager {
 
     const actor = agentRegistry.get(integration.agentSlug)
 
-    const displayName = getLastDisplayName(integrationId, chatId)
     const sessionId = crypto.randomUUID()
-    const policy = this.connections.get(integrationId)!.connector.sessionPolicy(integration, { displayName: displayName ?? undefined })
     await actor.sessions.register(sessionId, policy.name)
     await actor.sessions.updateMetadata(sessionId, {
       ...policy.metadata,
@@ -449,10 +451,16 @@ export class AgentIntegrationManager {
       errorUnsubscribe: null,
     }
 
-    conn.eventUnsubscribe = connector.onEvent(event => {
-      if (event.type === 'input') this.enqueueMessage(integration.id, event)
-      else if (event.type === 'response') return this.handleInteractiveResponse(integration.id, event)
-      else if (this.isAllowed(integration.id, event.externalId)) this.preWarmContainer(integration.agentSlug)
+    conn.eventUnsubscribe = connector.onEvent(async event => {
+      try {
+        if (event.type === 'input') this.enqueueMessage(integration.id, event)
+        else if (event.type === 'response') await this.handleInteractiveResponse(integration.id, event)
+        else if (this.isAllowed(integration.id, event.externalId)) this.preWarmContainer(integration.agentSlug)
+      } catch (error) {
+        // Processing failures concern this event, not the health of the transport.
+        console.error(`[AgentIntegrationManager] Failed to handle ${event.type} event for ${integration.id}:`, error)
+        reportError(error, 'event-handler', { integrationId: integration.id, provider: integration.provider, eventType: event.type, externalId: event.externalId })
+      }
     })
 
     conn.errorUnsubscribe = connector.onError((error) => {

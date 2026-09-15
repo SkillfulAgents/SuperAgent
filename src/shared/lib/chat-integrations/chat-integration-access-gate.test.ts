@@ -135,10 +135,8 @@ function injectConn(): void {
   mgr.connections.set(INT, {
     connector: mockChatIntegration({ sendMessage }),
     integration,
-    messageUnsubscribe: null,
-    interactiveUnsubscribe: null,
     errorUnsubscribe: null,
-    typingHintUnsubscribe: null,
+    eventUnsubscribe: null,
   })
 }
 
@@ -261,10 +259,8 @@ describe('chat-integration inbound access gate', () => {
     mgr.connections.set(SLACK, {
       connector: mockChatIntegration({ provider: 'slack', sendMessage: slackSend }),
       integration: slackIntegration,
-      messageUnsubscribe: null,
-      interactiveUnsubscribe: null,
       errorUnsubscribe: null,
-      typingHintUnsubscribe: null,
+      eventUnsubscribe: null,
     })
 
     await mgr.handleIncomingMessageInner(SLACK, inputEvent(msg({ chatId: 'sc1', chatType: 'private', text: '/start' })), slackIntegration)

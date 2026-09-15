@@ -1,9 +1,11 @@
 import type { AgentIntegration } from './agent-integration'
-import type { AgentIntegrationDefinition, AgentIntegrationRecord } from './types'
+import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy } from './types'
 import { chatProviders } from '../chat-integrations/providers'
 
 export interface IntegrationProvider {
   definition: AgentIntegrationDefinition
+  /** Access and session policy must be available independently of a live connection. */
+  policy: Pick<AgentIntegration, 'isAllowed' | 'sessionPolicy'>
   create(record: AgentIntegrationRecord): Promise<AgentIntegration>
   describeTarget?(externalId: string): Promise<{ type?: string }>
 }
@@ -27,6 +29,16 @@ export class AgentIntegrationRegistry {
 
   listDefinitions(): AgentIntegrationDefinition[] {
     return [...this.providers.values()].map(provider => provider.definition)
+  }
+
+  isAllowed(context: IntegrationSessionContext): boolean {
+    return this.providers.get(context.integration.provider)?.policy.isAllowed(context) ?? false
+  }
+
+  sessionPolicy(record: AgentIntegrationRecord, route: Partial<IntegrationRoute>): IntegrationSessionPolicy {
+    const provider = this.providers.get(record.provider)
+    if (!provider) throw new Error(`Unknown integration provider: ${record.provider}`)
+    return provider.policy.sessionPolicy(record, route)
   }
 
   async describeTarget(provider: string, externalId: string): Promise<{ type?: string }> {

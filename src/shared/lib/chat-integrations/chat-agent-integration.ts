@@ -8,12 +8,13 @@
 import { AgentIntegration } from '../agent-integrations/agent-integration'
 import type { AgentIntegrationRecord, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
 import { ChatInputBuilder } from './chat-input'
-import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, buildSessionName, deriveDisplayName, isDisplayNameFallback, type ManagedConnector } from './chat-delivery'
+import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, type ManagedConnector } from './chat-delivery'
 import { agentRegistry } from '../agent-actor'
-import { decideInboundAccess, isChatAllowed, getChatAccess, markNoticeSent } from '../services/chat-integration-access-service'
+import { decideInboundAccess, getChatAccess, markNoticeSent } from '../services/chat-integration-access-service'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
 import { reviewCardFromRegistry } from './request-card'
 import { chatDefinitions } from './definitions'
+import { chatIntegrationPolicy, chatSettings } from './chat-policy'
 import { z } from 'zod'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
@@ -41,11 +42,6 @@ export interface OutgoingMessage {
   parseMode?: 'html' | 'markdown'
   replyToExternalId?: string
 }
-
-export type MessageHandler = (message: IncomingMessage) => void
-export type InteractiveResponseHandler = (toolUseId: string, response: unknown, chatId?: string) => void
-export type ErrorHandler = (error: Error) => void
-export type TypingHintHandler = (chatId: string) => void
 
 /** Context available at chat-session creation, passed to generateSystemPrompt. */
 export type SystemPromptContext = Pick<IncomingMessage, 'chatId' | 'chatName' | 'userName'>
@@ -104,12 +100,6 @@ export type ChatConnectorClass = Pick<
   'generateSystemPrompt' | 'discoveryCapabilities' | 'classifyChatId'
 >
 
-// Read both the existing database columns and an explicit family settings envelope.
-const chatSettingsSchema = z.object({ showToolCalls: z.boolean().default(false), sessionTimeout: z.number().nullable().default(null) })
-function chatSettings(integration: AgentIntegrationRecord) {
-  return chatSettingsSchema.parse(integration.settings ?? integration)
-}
-
 // ── Abstract class ──────────────────────────────────────────────────────
 
 export abstract class ChatAgentIntegration extends AgentIntegration {
@@ -161,10 +151,6 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
    * left the workspace).
    */
   resolveDirectChat?(userId: string): Promise<string>
-
-  protected messageHandlers: MessageHandler[] = []
-  protected interactiveResponseHandlers: InteractiveResponseHandler[] = []
-  protected typingHintHandlers: TypingHintHandler[] = []
 
   /** Establish connection (long-poll loop / WebSocket). Resolves once healthy. */
   abstract connect(): Promise<void>
@@ -247,10 +233,6 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     return chatDefinitions[this.provider]
   }
 
-  describeTarget(externalId: string): { type?: ChatConversationType } {
-    return { type: (this.constructor as ChatConnectorClass).classifyChatId?.({ chatId: externalId }) }
-  }
-
   resolveRoute(event: IntegrationInputEvent): IntegrationRoute {
     const message = event.payload as IncomingMessage
     let displayName = deriveDisplayName(message)
@@ -290,16 +272,11 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   }
 
   isAllowed(context: IntegrationSessionContext): boolean {
-    return isChatAllowed(context.integration.id, context.externalId)
+    return chatIntegrationPolicy.isAllowed(context)
   }
 
   sessionPolicy(integration: AgentIntegrationRecord, route: Partial<IntegrationRoute>): IntegrationSessionPolicy {
-    const { sessionTimeout } = chatSettings(integration)
-    return {
-      timeoutHours: sessionTimeout,
-      name: buildSessionName(integration.name, integration.provider, route.displayName, sessionTimeout),
-      metadata: { isChatIntegrationSession: true, chatIntegrationId: integration.id },
-    }
+    return chatIntegrationPolicy.sessionPolicy(integration, route)
   }
 
   shouldUpdateDisplayName(current: string | null | undefined): boolean {
@@ -337,7 +314,6 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     }
     if (!state) {
       state = { connector: this, integration: context.integration, chatId: key, sessionId: context.sessionId,
-        sseUnsubscribe: null, messageUnsubscribe: null, interactiveUnsubscribe: null, errorUnsubscribe: null,
         streamingState: { currentMessageId: null, accumulatedText: '', lastUpdateTime: 0 }, currentToolInput: '', pendingToolMessages: [] }
       this.deliverySessions.set(key, state)
     }
@@ -398,42 +374,10 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     return tools
   }
 
-  // ── Event subscription ──────────────────────────────────────────────
-
-  onMessage(handler: MessageHandler): () => void {
-    this.messageHandlers.push(handler)
-    return () => {
-      this.messageHandlers = this.messageHandlers.filter((h) => h !== handler)
-    }
-  }
-
-  onInteractiveResponse(handler: InteractiveResponseHandler): () => void {
-    this.interactiveResponseHandlers.push(handler)
-    return () => {
-      this.interactiveResponseHandlers = this.interactiveResponseHandlers.filter((h) => h !== handler)
-    }
-  }
-
-  /** Subscribe to typing hints (e.g. external user started typing). Useful for pre-warming containers. */
-  onTypingHint(handler: TypingHintHandler): () => void {
-    this.typingHintHandlers.push(handler)
-    return () => {
-      this.typingHintHandlers = this.typingHintHandlers.filter((h) => h !== handler)
-    }
-  }
-
   // ── Protected helpers for subclasses ────────────────────────────────
 
   protected emitMessage(message: IncomingMessage): void {
     void this.emitEvent({ type: 'input', id: message.externalMessageId, externalId: message.chatId, timestamp: message.timestamp, payload: message }).catch(error => this.emitError(error instanceof Error ? error : new Error(String(error))))
-    for (const handler of this.messageHandlers) {
-      try {
-        handler(message)
-      } catch (err) {
-        console.error('[ChatConnector] Error in message handler:', err)
-        captureException(err, { tags: { component: 'chat-integration', operation: 'emit-message' }, extra: { provider: this.provider, chatId: message.chatId } })
-      }
-    }
   }
 
   protected emitInteractiveResponse(toolUseId: string, response: unknown, chatId?: string): void {
@@ -446,24 +390,9 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
       value: review ? (value?.answer?.toLowerCase().includes('allow') ? 'allow' : 'deny')
         : value?.question && value.answer !== undefined ? value.answers ?? { [value.question]: value.answer } : response,
     }).catch(error => this.emitError(error instanceof Error ? error : new Error(String(error))))
-    for (const handler of this.interactiveResponseHandlers) {
-      try {
-        handler(toolUseId, response, chatId)
-      } catch (err) {
-        console.error('[ChatConnector] Error in interactive response handler:', err)
-        captureException(err, { tags: { component: 'chat-integration', operation: 'emit-interactive-response' }, extra: { provider: this.provider, toolUseId } })
-      }
-    }
   }
 
   protected emitTypingHint(chatId: string): void {
     void this.emitEvent({ type: 'hint', externalId: chatId }).catch(() => {})
-    for (const handler of this.typingHintHandlers) {
-      try {
-        handler(chatId)
-      } catch {
-        // Non-critical — best-effort pre-warm
-      }
-    }
   }
 }

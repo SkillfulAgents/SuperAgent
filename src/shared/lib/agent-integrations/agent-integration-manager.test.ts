@@ -2,12 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentIntegration } from './agent-integration'
 import { AgentIntegrationManager } from './agent-integration-manager'
 import { AgentIntegrationRegistry } from './registry'
+import { captureException } from '../error-reporting'
+import { updateChatIntegrationStatus } from '../services/chat-integration-service'
 import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationOutput, IntegrationSessionContext } from './types'
 
 const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
   mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
   streams: new Map<string, (event: unknown) => void>(),
+  claim: vi.fn(), notify: vi.fn().mockResolvedValue(undefined),
   create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), register: vi.fn(), metadata: vi.fn(),
 }))
 vi.mock('@shared/lib/services/chat-integration-service', () => ({
@@ -30,6 +33,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
   agentCatalog: { exists: async () => true },
   agentRegistry: { get: () => ({
     container: { start: state.start },
+    inputs: { claim: state.claim },
     sessions: {
       create: state.create, register: state.register, updateMetadata: state.metadata,
       markActive: vi.fn(), subscribeStream: state.subscribeStream, isStreamSubscribed: () => false,
@@ -49,7 +53,7 @@ vi.mock('@shared/lib/config/settings', () => ({ getEffectiveModels: () => ({ age
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('@shared/lib/services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
 vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: { addGlobalNotificationClient: () => () => {} } }))
-vi.mock('@shared/lib/notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: async () => {} } }))
+vi.mock('@shared/lib/notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: state.notify } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 
 /** Deliberately has no messaging, typing, streaming, or other chat methods. */
@@ -72,6 +76,11 @@ class ObjectIntegration extends AgentIntegration {
   sessionPolicy() { return { name: 'Object session', timeoutHours: null, metadata: {} } }
   async deliver(context: IntegrationSessionContext, output: IntegrationOutput) { this.outputs.push({ context, output }) }
   releaseSession(context: IntegrationSessionContext) { this.released.push(context) }
+  response() {
+    return this.emitEvent({ type: 'response', externalId: 'object-7', requestId: 'input-1', requestKind: 'input', value: 'yes' })
+      .catch(error => this.emitError(error))
+  }
+  fail(error: Error) { this.emitError(error) }
   input(comment: string, text = 'hello') {
     return this.emitEvent({ type: 'input', externalId: comment, id: comment, timestamp: new Date(), payload: { objectId: 'object-7', text } })
   }
@@ -95,7 +104,7 @@ beforeEach(() => {
   state.start.mockResolvedValue(undefined)
   state.send.mockResolvedValue(undefined)
   adapter = new ObjectIntegration()
-  registry = new AgentIntegrationRegistry([{ definition: adapter.definition, create: async () => adapter }])
+  registry = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create: async () => adapter }])
   manager = new AgentIntegrationManager(registry)
 })
 afterEach(() => manager.stop())
@@ -148,7 +157,7 @@ describe('AgentIntegration host contract', () => {
   it('keeps installations isolated and releases subscriptions and sessions on stop', async () => {
     const second = new ObjectIntegration()
     state.rows.push(record('installation-b'))
-    const isolated = new AgentIntegrationRegistry([{ definition: adapter.definition, create: async row => row.id === 'installation-a' ? adapter : second }])
+    const isolated = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create: async row => row.id === 'installation-a' ? adapter : second }])
     manager = new AgentIntegrationManager(isolated)
     await manager.start()
     await Promise.all([adapter.input('first'), second.input('second')])
@@ -164,12 +173,81 @@ describe('AgentIntegration host contract', () => {
     expect(state.create).toHaveBeenCalledTimes(2)
   })
 
+  it('reports a rejected response handler without marking the connection unhealthy', async () => {
+    await manager.start()
+    await vi.dynamicImportSettled()
+    state.notify.mockClear()
+    const failure = new Error('Input claim failed')
+    state.claim.mockImplementationOnce(() => { throw failure })
+
+    await adapter.response()
+    await vi.dynamicImportSettled()
+
+    expect(captureException).toHaveBeenCalledWith(failure, expect.objectContaining({
+      tags: { component: 'agent-integration', operation: 'event-handler' },
+      extra: expect.objectContaining({ eventType: 'response' }),
+    }))
+    expect(updateChatIntegrationStatus).not.toHaveBeenCalled()
+    expect(state.notify).not.toHaveBeenCalled()
+    expect(adapter.isConnected()).toBe(true)
+  })
+
+  it('reports a synchronous routing failure and continues accepting subsequent input', async () => {
+    await manager.start()
+    await vi.dynamicImportSettled()
+    state.notify.mockClear()
+    const failure = new Error('Invalid route')
+    vi.spyOn(adapter, 'resolveRoute').mockImplementationOnce(() => { throw failure })
+
+    await expect(adapter.input('bad-comment')).resolves.toBeUndefined()
+    await vi.dynamicImportSettled()
+
+    expect(captureException).toHaveBeenCalledWith(failure, expect.objectContaining({
+      tags: { component: 'agent-integration', operation: 'event-handler' },
+      extra: expect.objectContaining({ eventType: 'input' }),
+    }))
+    expect(updateChatIntegrationStatus).not.toHaveBeenCalled()
+    expect(state.notify).not.toHaveBeenCalled()
+    expect(state.create).not.toHaveBeenCalled()
+    await adapter.input('good-comment')
+    await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+  })
+
+  it('still marks genuine connector failures as errors and notifies the user', async () => {
+    await manager.start()
+    await vi.dynamicImportSettled()
+    adapter.fail(new Error('Connection lost'))
+    await vi.dynamicImportSettled()
+
+    expect(updateChatIntegrationStatus).toHaveBeenCalledWith('installation-a', 'error', 'Connection lost')
+    await vi.waitFor(() => expect(state.notify).toHaveBeenCalledWith(
+      'installation-a', 'installation-a', 'test-objects bot', 'error', 'Connection lost',
+    ))
+  })
+
+  it('creates and reuses an outbound object session without constructing a connector', async () => {
+    const create = vi.fn()
+    const offline = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create }])
+    manager = new AgentIntegrationManager(offline)
+
+    const sessionId = await manager.ensureSession('installation-a', 'object-7')
+    expect(state.register).toHaveBeenCalledWith(sessionId, 'Object session')
+    expect(state.metadata).toHaveBeenCalledWith(sessionId, {})
+    expect(await manager.ensureSession('installation-a', 'object-7')).toBe(sessionId)
+    expect(state.register).toHaveBeenCalledOnce()
+    expect(create).not.toHaveBeenCalled()
+    expect(state.start).not.toHaveBeenCalled()
+
+    adapter.allowed = false
+    await expect(manager.ensureSession('installation-a', 'object-7')).rejects.toThrow('not allowed')
+  })
+
   it('exposes provider metadata without creating a connection and rejects duplicate registration', () => {
     const create = vi.fn()
-    const metadataOnly = new AgentIntegrationRegistry([{ definition: adapter.definition, create }])
+    const metadataOnly = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create }])
     expect(metadataOnly.getDefinition('test-objects')?.family).toBe('objects')
     expect(metadataOnly.listDefinitions()).toEqual([adapter.definition])
     expect(create).not.toHaveBeenCalled()
-    expect(() => metadataOnly.register({ definition: adapter.definition, create })).toThrow('Duplicate integration provider')
+    expect(() => metadataOnly.register({ definition: adapter.definition, policy: adapter, create })).toThrow('Duplicate integration provider')
   })
 })
