@@ -45,9 +45,25 @@ export interface VoiceConversationContext {
   history: VoiceHistory
 }
 
+/** Turn-taking bounds and leniency an engine asks of the coordinator. */
+export interface VoiceTurnPolicy {
+  /** How long to wait for the agent to confirm an interrupt. */
+  interruptTimeoutMs: number
+  /** How long a request may go without agent activity before the floor returns. */
+  turnStartTimeoutMs: number
+  /**
+   * Chained speech keeps the original contract: an interrupt that cannot be
+   * confirmed in time is not a reason to drop the words the person just said,
+   * and a failed cancel is not reported. Live keeps strict ordering instead.
+   */
+  sendAfterFailedInterrupt: boolean
+}
+
 /** No agent API calls or stream subscriptions belong in implementations. */
 export interface VoiceConversationAdapter {
   readonly capabilities: { speechSpeed: boolean; spokenTranscript: boolean }
+  /** Omitted: the coordinator's strict defaults apply. */
+  readonly turnPolicy?: Partial<VoiceTurnPolicy>
   readonly analyser: AnalyserNode | null
   start(): Promise<void>
   acceptAgentEvent(event: VoiceAgentEvent): void

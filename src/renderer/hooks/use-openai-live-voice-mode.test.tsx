@@ -14,11 +14,12 @@ interface Callbacks {
 }
 const mocks = vi.hoisted(() => ({
   stopMusic: vi.fn(),
+  fadeMusic: vi.fn(),
   stream: { activeStartTime: null as number | null, isActive: false, streamingMessage: null as string | null, error: null as string | null },
   interrupt: vi.fn(async () => ({})),
   instances: [] as Array<{ callbacks: Callbacks; close: ReturnType<typeof vi.fn>; updateReply: ReturnType<typeof vi.fn>; setPaused: ReturnType<typeof vi.fn>; pressMic: ReturnType<typeof vi.fn> }>,
 }))
-vi.mock('@renderer/lib/speech/hold-sound', () => ({ holdSound: { stopImmediately: mocks.stopMusic } }))
+vi.mock('@renderer/lib/speech/hold-sound', () => ({ holdSound: { stopImmediately: mocks.stopMusic, stop: mocks.fadeMusic } }))
 vi.mock('./use-message-stream', () => ({ useMessageStream: () => mocks.stream }))
 vi.mock('./use-messages', () => ({ useInterruptSession: () => ({ mutateAsync: mocks.interrupt }) }))
 vi.mock('@renderer/lib/voice-conversation-openai', () => ({
@@ -141,7 +142,9 @@ describe('Live session hook', () => {
     rerender({ active: true, paused: false })
     expect(result.current.working).toBe(true)
     act(() => adapter.callbacks.onSpeaking(true))
-    expect(mocks.stopMusic).toHaveBeenCalledOnce()
+    // The reply becoming audible fades the loop; only the person's voice cuts it.
+    expect(mocks.fadeMusic).toHaveBeenCalledOnce()
+    expect(mocks.stopMusic).not.toHaveBeenCalled()
     expect(result.current.phase).toBe('speaking')
     expect(mocks.interrupt).not.toHaveBeenCalled()
     rerender({ active: true, paused: true })

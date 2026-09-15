@@ -1,7 +1,13 @@
-import type { VoiceAgentCommand, VoiceAgentEvent, VoiceAgentSnapshot, VoiceAgentState, VoiceCommandResult } from './voice-conversation'
+import type { VoiceAgentCommand, VoiceAgentEvent, VoiceAgentSnapshot, VoiceAgentState, VoiceCommandResult, VoiceTurnPolicy } from './voice-conversation'
 
 export const VOICE_TURN_START_TIMEOUT_MS = 15_000
 export const VOICE_INTERRUPT_TIMEOUT_MS = 10_000
+/** Strict ordering: a request never passes an unconfirmed interrupt. */
+export const DEFAULT_TURN_POLICY: VoiceTurnPolicy = {
+  interruptTimeoutMs: VOICE_INTERRUPT_TIMEOUT_MS,
+  turnStartTimeoutMs: VOICE_TURN_START_TIMEOUT_MS,
+  sendAfterFailedInterrupt: false,
+}
 
 interface CoordinatorDependencies {
   snapshot(): VoiceAgentSnapshot
@@ -36,8 +42,14 @@ export class VoiceAgentCoordinator {
   private interruptAbort: AbortController | null = null
   private waitTimer: ReturnType<typeof setTimeout> | undefined
   private latest: VoiceAgentSnapshot
+  private readonly policy: VoiceTurnPolicy
+  // The agent had the floor when a request card went up. Back from the card
+  // with the turn not yet resumed, it keeps the floor for a bounded, silent wait.
+  private floorAtPause = false
+  private resumeWait = false
 
-  constructor(private dependencies: CoordinatorDependencies) {
+  constructor(private dependencies: CoordinatorDependencies, policy: Partial<VoiceTurnPolicy> = {}) {
+    this.policy = { ...DEFAULT_TURN_POLICY, ...policy }
     this.latest = dependencies.snapshot()
     this.followingTurn = this.latest.active
     this.previousStart = this.latest.startedAt
@@ -63,6 +75,7 @@ export class VoiceAgentCoordinator {
     this.segment++
     this.staleText = this.dependencies.snapshot().text
     this.clearWait()
+    this.resumeWait = false
     this.awaiting = command.type === 'submit'
     if (command.type === 'submit') this.followingTurn = true
     if (command.type === 'cancel') this.cancelled = true
@@ -92,17 +105,27 @@ export class VoiceAgentCoordinator {
         this.cancelledStart = this.dependencies.snapshot().startedAt
         return { accepted: true }
       }
-      // An already-queued replacement must not pass a failed cancellation.
+      // An already-queued replacement must not pass a failed cancellation,
+      // unless the engine keeps chained speech's send-anyway contract.
       if (this.cancellationError) {
-        const message = this.cancellationError
-        throw new Error(message)
+        if (!this.policy.sendAfterFailedInterrupt) throw new Error(this.cancellationError)
+        this.cancellationError = null
       }
       this.awaiting = true
       const before = this.dependencies.snapshot()
       this.previousStart = before.startedAt
       this.sawIdle = !before.active
       const alreadyCancelled = this.cancelled && before.startedAt === this.cancelledStart
-      if ((before.active || this.pendingAccepted) && !alreadyCancelled) await this.interruptWork()
+      if ((before.active || this.pendingAccepted) && !alreadyCancelled) {
+        try {
+          await this.interruptWork()
+        } catch (error) {
+          // A bounded wait, then the words go out: losing them is worse than
+          // the server discarding a message queued into a turn it is ending.
+          if (!this.policy.sendAfterFailedInterrupt) throw error
+          this.cancellationError = null
+        }
+      }
       if (this.closed || this.paused) {
         this.awaiting = this.pendingAccepted
         return { accepted: false }
@@ -119,12 +142,15 @@ export class VoiceAgentCoordinator {
     } catch (reason) {
       if (this.closed) return { accepted: false }
       const message = reason instanceof Error ? reason.message : 'Could not send the voice request.'
+      // Chained speech: the reader already stopped and the next utterance
+      // retries the interrupt, so a failed cancel is not the person's problem.
+      const quietCancel = command.type === 'cancel' && this.policy.sendAfterFailedInterrupt
       if (command.type === 'cancel') {
         this.cancellationError = message
-        this.cancelled = false
+        if (!quietCancel) this.cancelled = false
       }
       this.awaiting = false
-      if (!this.closed) this.dependencies.onIssue(message)
+      if (!this.closed && !quietCancel) this.dependencies.onIssue(message)
       return { accepted: false, error: message }
     } finally {
       this.commands--
@@ -138,7 +164,7 @@ export class VoiceAgentCoordinator {
   private async interruptWork() {
     const controller = new AbortController()
     this.interruptAbort = controller
-    const timeout = setTimeout(() => controller.abort(), VOICE_INTERRUPT_TIMEOUT_MS)
+    const timeout = setTimeout(() => controller.abort(), this.policy.interruptTimeoutMs)
     const aborted = new Promise<never>((_, reject) => {
       controller.signal.addEventListener('abort', () => reject(new Error('Could not confirm the agent stopped. Please try again.')), { once: true })
     })
@@ -150,7 +176,9 @@ export class VoiceAgentCoordinator {
       this.cancelledStart = this.dependencies.snapshot().startedAt
     } catch (error) {
       this.cancellationError = error instanceof Error ? error.message : 'Could not stop the agent.'
-      this.cancelled = false
+      // Strict engines re-expose the still-running turn; chained speech keeps
+      // suppressing it, as the person asked, and retries on the next utterance.
+      if (!this.policy.sendAfterFailedInterrupt) this.cancelled = false
       throw error
     } finally {
       clearTimeout(timeout)
@@ -227,6 +255,7 @@ export class VoiceAgentCoordinator {
     if (snapshot.error || freshText || (snapshot.active && (this.sawIdle || newTurn))) {
       this.awaiting = false
       this.pendingAccepted = false
+      this.resumeWait = false
       this.clearWait()
     }
   }
@@ -247,10 +276,26 @@ export class VoiceAgentCoordinator {
     if (this.closed || this.paused === paused) return
     this.paused = paused
     this.clearWait()
-    if (paused) return
+    if (paused) {
+      const now = this.dependencies.snapshot()
+      this.floorAtPause = !this.cancelled && (now.active || this.awaiting)
+      return
+    }
     const snapshot = this.dependencies.snapshot()
     // Observe acknowledgment before marking paused output as already seen.
     this.acknowledge(snapshot)
+    // A card answered mid-turn: the turn resumes shortly. Between steps the
+    // stream can read idle with nothing new said, so keep the agent's floor
+    // for a bounded, silent wait rather than handing it to the person at once.
+    // A reply that arrived during the pause means the turn is over.
+    const replyArrived = !!snapshot.text && snapshot.text !== this.staleText && snapshot.text !== this.fedText
+    if (this.floorAtPause && !snapshot.active && !this.awaiting && !replyArrived && !snapshot.error) {
+      this.awaiting = true
+      this.resumeWait = true
+      this.sawIdle = true
+      this.previousStart = snapshot.startedAt
+    }
+    this.floorAtPause = false
     this.staleText = snapshot.text
     this.fedText = ''
     this.fedComplete = false
@@ -265,13 +310,17 @@ export class VoiceAgentCoordinator {
     this.waitTimer = setTimeout(() => {
       if (this.closed) return
       this.awaiting = false
+      // Waiting on a turn to resume after a card is not a sent request: give
+      // the floor back without a warning.
+      const silent = this.resumeWait
+      this.resumeWait = false
       this.latest = this.dependencies.snapshot()
-      if (!this.latest.active) {
+      if (!this.latest.active && !silent) {
         this.warning = true
         this.dependencies.onIssue('Your request was sent, but no agent activity has arrived yet.')
       }
       this.publishState()
-    }, VOICE_TURN_START_TIMEOUT_MS)
+    }, this.policy.turnStartTimeoutMs)
   }
 
   private clearWait() { clearTimeout(this.waitTimer) }

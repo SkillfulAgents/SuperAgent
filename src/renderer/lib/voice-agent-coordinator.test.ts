@@ -328,4 +328,79 @@ describe('shared voice agent coordinator', () => {
     coordinator.close()
   })
 
+  describe('chained speech policy', () => {
+    const chained = { interruptTimeoutMs: 5_000, turnStartTimeoutMs: 8_000, sendAfterFailedInterrupt: true }
+    function chainedSetup(initial: Partial<VoiceAgentSnapshot> = {}) {
+      let snapshot: VoiceAgentSnapshot = { active: false, text: '', startedAt: null, toolsRunning: false, error: null, ...initial }
+      const dependencies = {
+        snapshot: () => snapshot,
+        send: vi.fn(async (_text: string) => true), interrupt: vi.fn(async (_signal?: AbortSignal) => {}),
+        onEvent: vi.fn(), onState: vi.fn(), onIssue: vi.fn(),
+      }
+      const coordinator = new VoiceAgentCoordinator(dependencies, chained)
+      coordinator.start(false)
+      const update = (next: Partial<VoiceAgentSnapshot>) => { snapshot = { ...snapshot, ...next }; coordinator.update(snapshot) }
+      return { coordinator, dependencies, update }
+    }
+
+    it('sends the words after a bounded wait when the interrupt stalls', async () => {
+      const { coordinator, dependencies } = chainedSetup({ active: true, startedAt: 1 })
+      dependencies.interrupt.mockImplementationOnce(() => new Promise(() => {}))
+      const pending = coordinator.command({ type: 'submit', text: 'Actually, Thursday.' })
+      await vi.advanceTimersByTimeAsync(chained.interruptTimeoutMs)
+      expect(await pending).toEqual({ accepted: true })
+      expect(dependencies.send).toHaveBeenCalledExactlyOnceWith('Actually, Thursday.')
+      expect(dependencies.onIssue).not.toHaveBeenCalledWith(expect.any(String))
+      coordinator.close()
+    })
+
+    it('sends a replacement queued behind a failed cancel, and stays quiet about the failure', async () => {
+      const { coordinator, dependencies } = chainedSetup({ active: true, startedAt: 1 })
+      const stop = deferred<void>()
+      dependencies.interrupt.mockReturnValueOnce(stop.promise)
+      const cancel = coordinator.command({ type: 'cancel' })
+      const replace = coordinator.command({ type: 'submit', text: 'Replacement' })
+      stop.reject(new Error('Cannot stop'))
+      expect(await cancel).toMatchObject({ accepted: false })
+      expect(await replace).toEqual({ accepted: true })
+      expect(dependencies.send).toHaveBeenCalledExactlyOnceWith('Replacement')
+      expect(dependencies.onIssue).not.toHaveBeenCalledWith(expect.any(String))
+      // The interrupted turn stays suppressed and the interrupt was retried before sending.
+      expect(dependencies.interrupt).toHaveBeenCalledTimes(2)
+      coordinator.close()
+    })
+
+    it('keeps the agent floor after a card until its turn resumes, then reads it', async () => {
+      const { coordinator, dependencies, update } = chainedSetup({ active: true, startedAt: 1, text: 'Which account? ' })
+      coordinator.setPaused(true)
+      update({ active: false, text: '' })
+      coordinator.setPaused(false)
+      expect(dependencies.onState).toHaveBeenLastCalledWith(expect.objectContaining({ awaiting: true }))
+      update({ active: true, startedAt: 2, text: 'Connected. ' })
+      expect(dependencies.onState).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, awaiting: false }))
+      expect(dependencies.onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'reply', text: 'Connected. ' }))
+      coordinator.close()
+    })
+
+    it('gives the floor back silently when the turn never resumes after a card', async () => {
+      const { coordinator, dependencies, update } = chainedSetup({ active: true, startedAt: 1, text: 'Which account? ' })
+      coordinator.setPaused(true)
+      update({ active: false, text: '' })
+      coordinator.setPaused(false)
+      await vi.advanceTimersByTimeAsync(chained.turnStartTimeoutMs)
+      expect(dependencies.onState).toHaveBeenLastCalledWith(expect.objectContaining({ awaiting: false }))
+      expect(dependencies.onIssue).not.toHaveBeenCalledWith(expect.any(String))
+      coordinator.close()
+    })
+
+    it('does not hold the floor when the reply finished during the card', async () => {
+      const { coordinator, dependencies, update } = chainedSetup({ active: true, startedAt: 1, text: 'Working' })
+      coordinator.setPaused(true)
+      update({ active: false, text: 'All done.' })
+      coordinator.setPaused(false)
+      expect(dependencies.onState).toHaveBeenLastCalledWith(expect.objectContaining({ awaiting: false }))
+      coordinator.close()
+    })
+  })
+
 })

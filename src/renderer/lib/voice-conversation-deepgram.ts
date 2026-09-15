@@ -1,16 +1,31 @@
 import { readAloud, voiceStreamId } from '@renderer/hooks/use-read-aloud'
 import { VoiceListener } from './voice-listener'
-import type { VoiceAgentEvent, VoiceAgentState, VoiceConversationAdapter, VoiceConversationContext, VoiceConversationEvents } from './voice-conversation'
+import type { VoiceAgentEvent, VoiceAgentState, VoiceConversationAdapter, VoiceConversationContext, VoiceConversationEvents, VoiceTurnPolicy } from './voice-conversation'
 
 export const INTERRUPT_WORD_THRESHOLD = 4
 export const DUCK_MAX_MS = 4_000
 export const LISTENER_RESTART_MS = 1_000
 const LISTENER_RESTART_MAX_MS = 15_000
 const KEEP_RECENT_WORDS_MS = 2_500
+/**
+ * Read-aloud plays decoded PCM with its own level hold, so it reports
+ * silence only at real gaps. A short release keeps hold music prompt
+ * between sentences; Live needs a longer one for a remote voice's breaths.
+ */
+export const PLAYBACK_RELEASE_MS = 300
+/** The bounds chained speech has always used, plus its send-anyway contract. */
+export const CHAINED_TURN_POLICY: VoiceTurnPolicy = {
+  interruptTimeoutMs: 5_000,
+  turnStartTimeoutMs: 8_000,
+  sendAfterFailedInterrupt: true,
+}
 
 /** Chained STT + read-aloud. Agent execution is supplied through onCommand. */
 export class DeepgramConversationAdapter implements VoiceConversationAdapter {
   readonly capabilities = { speechSpeed: true, spokenTranscript: false }
+  readonly turnPolicy = CHAINED_TURN_POLICY
+  // Words taken from the mic as a request card went up: sent once it is answered.
+  private held: string | null = null
   private readonly streamId: string
   private listener: VoiceListener | null = null
   private unsubscribe: (() => void) | null = null
@@ -134,13 +149,21 @@ export class DeepgramConversationAdapter implements VoiceConversationAdapter {
     this.sending = true
     try {
       const text = await listener.take()
-      if (!text || this.closed || this.paused || this.listener !== listener) return
-      this.userTurn = false
-      const result = await this.events.onCommand({ type: 'submit', text })
-      if (this.closed) return
-      if (!result.accepted) this.userTurn = true
-      this.publish()
+      if (!text || this.closed) return
+      // A card went up while the mic was finalizing: the words are kept for
+      // when it is answered, not thrown away. A mic that was merely reopened
+      // meanwhile changes nothing about what was said.
+      if (this.paused) { this.held = text; return }
+      await this.submit(text)
     } finally { this.sending = false }
+  }
+
+  private async submit(text: string) {
+    this.userTurn = false
+    const result = await this.events.onCommand({ type: 'submit', text })
+    if (this.closed) return
+    if (!result.accepted) this.userTurn = true
+    this.publish()
   }
 
   acceptAgentEvent(event: VoiceAgentEvent) {
@@ -191,7 +214,7 @@ export class DeepgramConversationAdapter implements VoiceConversationAdapter {
 
   private samplePlayback(): boolean {
     if (readAloud.isAudible()) this.lastAudioAt = Date.now()
-    const next = Date.now() - this.lastAudioAt < 1200
+    const next = Date.now() - this.lastAudioAt < PLAYBACK_RELEASE_MS
     const changed = next !== this.assistantSpeaking
     this.assistantSpeaking = next
     return changed
@@ -215,7 +238,13 @@ export class DeepgramConversationAdapter implements VoiceConversationAdapter {
     if (paused) {
       this.stopListener()
       this.finishReader()
-    } else { this.segment = null; void this.openListener() }
+    } else {
+      this.segment = null
+      void this.openListener()
+      const held = this.held
+      this.held = null
+      if (held) void this.submit(held)
+    }
     this.publish()
   }
 
@@ -239,6 +268,7 @@ export class DeepgramConversationAdapter implements VoiceConversationAdapter {
   close() {
     if (this.closed) return
     this.closed = true
+    this.held = null
     this.unsubscribe?.()
     clearInterval(this.audioMeter)
     this.stopListener()

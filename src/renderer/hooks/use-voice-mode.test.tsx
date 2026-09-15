@@ -99,7 +99,7 @@ vi.mock('./use-messages', () => ({ useInterruptSession: () => ({
 
 vi.mock('./use-voice-input', () => ({ useVoiceConversationEngine: () => 'chained' }))
 import { useVoiceMode } from './use-voice-mode'
-import { INTERRUPT_WORD_THRESHOLD, LISTENER_RESTART_MS, DUCK_MAX_MS } from '@renderer/lib/voice-conversation-deepgram'
+import { INTERRUPT_WORD_THRESHOLD, LISTENER_RESTART_MS, DUCK_MAX_MS, CHAINED_TURN_POLICY } from '@renderer/lib/voice-conversation-deepgram'
 
 const STREAM_ID = 'voice:s1'
 
@@ -540,7 +540,7 @@ describe('useVoiceMode', () => {
     expect(result.current.phase).toBe('listening')
   })
 
-  it('resumes listening after a card when idle, then reads any subsequent turn', async () => {
+  it('resumed after the card with the agent gone quiet, it waits for the turn to show up again, bounded', async () => {
     vi.useFakeTimers()
     try {
       const { result, rerender, listener, setStream } = setup()
@@ -553,15 +553,48 @@ describe('useVoiceMode', () => {
       setStream({ isActive: false, streamingMessage: null })
       act(() => reader.set({ activeId: null, status: 'idle' }))
       rerender({ paused: false })
-      expect(result.current.phase).toBe('listening')
-      act(() => vi.advanceTimersByTime(16_000))
-      expect(result.current.error).toBeNull()
+      expect(result.current.phase).toBe('thinking')
       // It comes back: read as the agent's reply.
       setStream({ isActive: true, streamingMessage: 'Connected. ' })
       expect(reader.pushStream).toHaveBeenLastCalledWith(STREAM_ID, 'Connected. ')
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('gives the floor back without a warning when the turn never resumes after a card', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result, rerender, listener, setStream } = setup()
+      act(() => listener.hear('connect my calendar'))
+      act(() => listener.events.onSpeechEnded())
+      await flush()
+      setStream({ isActive: true, streamingMessage: 'Which account? ' })
+      rerender({ paused: true })
+      setStream({ isActive: false, streamingMessage: null })
+      act(() => reader.set({ activeId: null, status: 'idle' }))
+      rerender({ paused: false })
+      expect(result.current.phase).toBe('thinking')
+      act(() => vi.advanceTimersByTime(CHAINED_TURN_POLICY.turnStartTimeoutMs + 100))
+      expect(result.current.phase).toBe('listening')
+      expect(result.current.error).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps words finalized as a card went up and sends them once it is answered', async () => {
+    let finish: (text: string) => void = () => {}
+    const { rerender, listener, send } = setup()
+    listener.take.mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve }))
+    act(() => listener.hear('use the work account'))
+    act(() => listener.events.onSpeechEnded())
+    rerender({ paused: true })
+    await act(async () => { finish('use the work account'); await Promise.resolve() })
+    expect(send).not.toHaveBeenCalled()
+    rerender({ paused: false })
+    await flush()
+    expect(send).toHaveBeenCalledExactlyOnceWith('use the work account')
   })
 
   it('entered while the agent is already replying, it reads what follows', () => {

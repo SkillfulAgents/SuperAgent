@@ -74,7 +74,12 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
       onSnapshot: (next) => {
         if (disposed) return
         const talking = next.userSpeaking || next.assistantSpeaking
-        if (talking && !speechActive) holdSound.stopImmediately()
+        // The person's voice cuts the loop at once; the reply becoming
+        // audible fades it out under the first words, as it always has.
+        if (talking && !speechActive) {
+          if (next.userSpeaking) holdSound.stopImmediately()
+          else holdSound.stop()
+        }
         speechActive = talking
         setSnapshot(previous => previous.phase === next.phase && previous.ready === next.ready
           && previous.userSpeaking === next.userSpeaking && previous.assistantSpeaking === next.assistantSpeaking
@@ -96,7 +101,7 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
           && previous.toolsUsed === state.toolsUsed ? previous : state)
       },
       onIssue: (message) => { if (!disposed) setAgentIssue(message) },
-    })
+    }, conversation.turnPolicy)
     adapter.current = conversation
     coordinator.current = turns
     setCapabilities(conversation.capabilities)
@@ -116,8 +121,15 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
   }, [active, engine, sessionId, agentSlug])
 
   useEffect(() => {
-    adapter.current?.setPaused(paused)
-    coordinator.current?.setPaused(paused)
+    // Pause the adapter first so nothing new reaches a paused coordinator;
+    // resume the coordinator first so words held through the card can go out.
+    if (paused) {
+      adapter.current?.setPaused(true)
+      coordinator.current?.setPaused(true)
+    } else {
+      coordinator.current?.setPaused(false)
+      adapter.current?.setPaused(false)
+    }
   }, [paused])
 
   useEffect(() => {

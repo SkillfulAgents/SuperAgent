@@ -47,7 +47,9 @@ export function useHoldSound({ enabled, agentTurn, working, speaking = false, de
 
   useEffect(() => {
     if (speaking) {
-      holdSound.stopImmediately()
+      // A fade, as before: the conversation cuts it hard only for the person's
+      // own voice, where any overlap is jarring.
+      holdSound.stop()
       return
     }
     if (!enabled || !agentTurn) return
