@@ -1,5 +1,6 @@
 import type { ZodType } from 'zod'
 import type { IntegrationProvider } from '../agent-integrations/registry'
+import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { ChatAgentIntegration, ChatConnectorClass } from './chat-agent-integration'
 import { telegramConfigSchema, slackConfigSchema, imessageConfigSchema, type ChatProvider } from './config-schema'
 import { resolveAppLinkContext, type AppLinkContext } from './utils'
@@ -11,10 +12,16 @@ type ConnectorConstructor<Config> = ChatConnectorClass & {
 }
 
 /** Pair each schema with its constructor, keeping transport imports lazy. */
-function chatProvider<Config>(
+function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
   provider: ChatProvider,
   schema: ZodType<Config>,
-  load: () => Promise<ConnectorConstructor<Config>>,
+  load: () => Promise<Connector>,
+  instantiate?: (
+    Connector: Connector,
+    config: Config,
+    appLink: AppLinkContext,
+    record: AgentIntegrationRecord,
+  ) => ChatAgentIntegration | Promise<ChatAgentIntegration>,
 ): IntegrationProvider {
   return {
     definition: chatDefinitions[provider],
@@ -27,7 +34,8 @@ function chatProvider<Config>(
         throw new Error(`Invalid config for ${provider} integration ${record.id}`)
       }
       const Connector = await load()
-      return new Connector(config, resolveAppLinkContext(record.agentSlug))
+      const appLink = resolveAppLinkContext(record.agentSlug)
+      return instantiate ? instantiate(Connector, config, appLink, record) : new Connector(config, appLink)
     },
     async describeTarget(externalId) {
       const Connector = await load()
@@ -38,6 +46,12 @@ function chatProvider<Config>(
 
 export const chatProviders: IntegrationProvider[] = [
   chatProvider('telegram', telegramConfigSchema, async () => (await import('./telegram-connector')).TelegramConnector),
-  chatProvider('slack', slackConfigSchema, async () => (await import('./slack-connector')).SlackConnector),
+  chatProvider(
+    'slack', slackConfigSchema, async () => (await import('./slack-connector')).SlackConnector,
+    async (Connector, config, appLink, record) => {
+      const { createSlackThreadStateStore } = await import('./slack-thread-state')
+      return new Connector(config, appLink, createSlackThreadStateStore(record.id))
+    },
+  ),
   chatProvider('imessage', imessageConfigSchema, async () => (await import('./imessage-connector')).IMessageConnector),
 ]

@@ -37,7 +37,9 @@ The normalized response event carries a request ID, request kind, and value. Cha
 
 ## Persistence and compatibility
 
-`store.ts` adapts the existing `chat_integrations` and `chat_integration_sessions` services to neutral installation/session records. Existing IDs, credentials, approvals, timeout/model overrides, mappings, and transcripts stay in place. Chat reads its existing settings columns and keeps its existing session metadata flags. No database migration or customer setup is required.
+`store.ts` adapts the existing `chat_integrations` and `chat_integration_sessions` services to neutral installation/session records. Existing IDs, credentials, approvals, timeout/model overrides, mappings, and transcripts stay in place. Chat reads its existing settings columns and keeps its existing session metadata flags.
+
+The Slack provider factory supplies an installation-scoped store for joined-thread participation. `SlackConnector` saves its bounded thread list in `slack_thread_state` and restores it before accepting events, including when multiple threads share one agent session. The automatic migration preserves existing session rows; no integration reinstall is required.
 
 Application startup, desktop resume, and API lifecycle calls use the same `agentIntegrationManager` singleton. The old manager and `ChatClientConnector` import paths re-export compatibility aliases; they do not create another runtime. Existing chat HTTP paths, tool names, and UI setup flows remain compatible.
 
