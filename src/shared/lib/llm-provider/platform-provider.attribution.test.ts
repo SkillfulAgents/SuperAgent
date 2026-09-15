@@ -9,6 +9,7 @@ const ORG_TOKEN = `${Buffer.from('{"alg":"none"}').toString('base64url')}.${Buff
 const mockGetAgentOwnerUserId = vi.fn((_slug: string): string | null => null)
 const platformAccountByUser: Record<string, string> = {
   user_creator: 'sub_creator',
+  user_creator_b: 'sub_creator_b',
   user_owner: 'sub_owner',
 }
 
@@ -59,7 +60,7 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 }))
 vi.mock('../config/settings', () => ({ getSettings: () => ({}) }))
 
-import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
+import { getRequestUserId, runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import {
   installPlatformFetchInterceptor,
   _uninstallPlatformFetchInterceptorForTest,
@@ -67,7 +68,7 @@ import {
 import { PlatformLlmProvider } from './platform-provider'
 
 const provider = new PlatformLlmProvider()
-const sentRequests: Array<{ url: string; headers: Headers }> = []
+const sentRequests: Array<{ url: string; headers: Headers; userId: string | undefined }> = []
 const originalFetch = globalThis.fetch
 
 function fakeMessage(): Response {
@@ -97,7 +98,7 @@ beforeAll(() => {
   // the interceptor must both be in place before any createClient().
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-    sentRequests.push({ url, headers: new Headers(init?.headers) })
+    sentRequests.push({ url, headers: new Headers(init?.headers), userId: getRequestUserId() })
     return fakeMessage()
   }) as typeof fetch
   installPlatformFetchInterceptor()
@@ -125,6 +126,41 @@ describe('host-direct request attribution (creator vs owner)', () => {
     expect(sent.headers.get('x-superagent-agent-id')).toBe('agent_a')
     expect(sent.headers.get('x-superagent-agent-name')).toBe('Agent%20A')
     expect(mockGetAgentOwnerUserId).not.toHaveBeenCalled()
+  })
+
+  it('isolates concurrent creators across interleaved requests after awaits', async () => {
+    let releaseFirst!: () => void
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const request = { model: 'test', max_tokens: 8, messages: [{ role: 'user' as const, content: 'hi' }] }
+
+    const first = runWithOptionalUser('user_creator', async () => {
+      const client = provider.createClient({ id: 'agent_a', name: 'Agent A' })
+      await firstGate
+      await client.messages.create(request)
+    })
+    const second = runWithOptionalUser('user_creator_b', async () => {
+      const client = provider.createClient({ id: 'agent_b', name: 'Agent B' })
+      await Promise.resolve()
+      await client.messages.create(request)
+      releaseFirst()
+      await first
+      await client.messages.create(request)
+    })
+
+    await Promise.all([first, second])
+
+    expect(sentRequests.map(({ headers, userId }) => ({
+      userId,
+      authorization: headers.get('authorization'),
+      agentId: headers.get('x-superagent-agent-id'),
+      agentName: headers.get('x-superagent-agent-name'),
+    }))).toEqual([
+      { userId: 'user_creator_b', authorization: `Bearer ${ORG_TOKEN}::sub_creator_b`, agentId: 'agent_b', agentName: 'Agent%20B' },
+      { userId: 'user_creator', authorization: `Bearer ${ORG_TOKEN}::sub_creator`, agentId: 'agent_a', agentName: 'Agent%20A' },
+      { userId: 'user_creator_b', authorization: `Bearer ${ORG_TOKEN}::sub_creator_b`, agentId: 'agent_b', agentName: 'Agent%20B' },
+    ])
+    expect(mockGetAgentOwnerUserId).not.toHaveBeenCalled()
+    expect(getRequestUserId()).toBeUndefined()
   })
 
   it('falls back to the agent owner when no session creator scope is active', async () => {

@@ -90,8 +90,7 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     return auth
   }
 
-  // Attribution is fixed at construction: use the client inside the same ambient
-  // scope it was built in; do not cache it across requests or users.
+  // Construction sets default attribution; the fetch interceptor can override it at send time, so never share clients across request/user scopes.
   createClient(agent?: AgentIdentity): Anthropic {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new Error('Platform token not configured. Please log in to the platform.')
