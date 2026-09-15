@@ -6,19 +6,21 @@
  */
 
 import { getActiveLlmProvider } from './index'
+import type { AgentIdentity } from './base-llm-provider'
 import { NonRetryableError, withRetry } from '../utils/retry'
 import type Anthropic from '@anthropic-ai/sdk'
 
 /**
  * Get a configured Anthropic client from the active LLM provider.
+ * Pass `agent` when the call runs on behalf of an agent so usage attributes to it.
  * Throws if the API key is not configured.
  */
-export function getConfiguredLlmClient(): Anthropic {
+export function getConfiguredLlmClient(agent?: AgentIdentity): Anthropic {
   const provider = getActiveLlmProvider()
   if (!provider.getApiKeyStatus().isConfigured) {
     throw new Error('LLM API key not configured')
   }
-  return provider.createClient()
+  return provider.createClient(agent)
 }
 
 /**

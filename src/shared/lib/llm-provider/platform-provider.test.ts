@@ -28,11 +28,19 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 vi.mock('../config/settings', () => ({
   getSettings: () => ({}),
 }))
-vi.mock('@anthropic-ai/sdk', () => ({ default: class {} }))
+vi.mock('@anthropic-ai/sdk', () => ({
+  default: class {
+    constructor(public readonly options: Record<string, unknown>) {}
+  },
+}))
 
-import { PlatformLlmProvider, sanitizeAgentName } from './platform-provider'
+import { PlatformLlmProvider, agentAttributionHeaders, sanitizeAgentName } from './platform-provider'
 
 const provider = new PlatformLlmProvider()
+
+function clientOptions(agent?: { id: string; name?: string }) {
+  return (provider.createClient(agent) as unknown as { options: Record<string, unknown> }).options
+}
 
 beforeEach(() => {
   currentAttribution.mockReset().mockReturnValue(null)
@@ -70,6 +78,71 @@ describe('getContainerEnvVars auth token (cold start)', () => {
     requiresActingMember.mockReturnValue(false)
     expect(provider.getContainerEnvVars({ id: 'abc123' }).ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
     expect(captureMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe('createClient auth token (host-direct)', () => {
+  it('uses the agent-resolved attribution and agent headers when an identity is provided', () => {
+    forAgentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_owner' })
+    const options = clientOptions({ id: 'abc123', name: 'My Agent' })
+    expect(forAgentAttribution).toHaveBeenCalledWith('abc123')
+    expect(options.authToken).toBe('org-jwt::sub_owner')
+    expect(options.baseURL).toBe('https://proxy.example/v1')
+    expect(options.defaultHeaders).toEqual({
+      'X-Superagent-Agent-Id': 'abc123',
+      'X-Superagent-Agent-Name': 'My%20Agent',
+    })
+  })
+
+  it('uses the ambient attribution and no agent headers when no identity is provided', () => {
+    currentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_ambient' })
+    const options = clientOptions()
+    expect(options.authToken).toBe('org-jwt::sub_ambient')
+    expect(options.defaultHeaders).toEqual({})
+    expect(forAgentAttribution).not.toHaveBeenCalled()
+  })
+
+  it('reports and falls back to the bare token when an org JWT resolves no member', () => {
+    requiresActingMember.mockReturnValue(true)
+    expect(clientOptions({ id: 'abc123' }).authToken).toBe('platform-token')
+    expect(captureMessage).toHaveBeenCalledTimes(1)
+    expect(captureMessage).toHaveBeenCalledWith(
+      'platform host client built without acting member',
+      expect.objectContaining({
+        tags: { area: 'platform-attribution', op: 'host.client.no_member' },
+        extra: { agentId: 'abc123' },
+      }),
+    )
+  })
+
+  it('does not report the fallback for an opaque access key', () => {
+    requiresActingMember.mockReturnValue(false)
+    expect(clientOptions({ id: 'abc123' }).authToken).toBe('platform-token')
+    expect(captureMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe('agentAttributionHeaders', () => {
+  it('returns no headers without an agent id', () => {
+    expect(agentAttributionHeaders()).toEqual({})
+    expect(agentAttributionHeaders({ id: ' ', name: 'x' })).toEqual({})
+  })
+
+  it('strips unsafe id characters and percent-encodes the sanitized name', () => {
+    expect(agentAttributionHeaders({ id: 'ab c/1', name: 'Multi\nLine Bot' })).toEqual({
+      'X-Superagent-Agent-Id': 'abc1',
+      'X-Superagent-Agent-Name': 'Multi%20Line%20Bot',
+    })
+  })
+
+  it('omits the name header when the name sanitizes to empty', () => {
+    expect(agentAttributionHeaders({ id: 'abc123', name: '\n\t ' })).toEqual({ 'X-Superagent-Agent-Id': 'abc123' })
+  })
+
+  it('does not throw on a lone surrogate in the name', () => {
+    expect(agentAttributionHeaders({ id: 'abc123', name: 'a\uD800b' })['X-Superagent-Agent-Name']).toBe(
+      encodeURIComponent('a\uFFFDb'),
+    )
   })
 })
 

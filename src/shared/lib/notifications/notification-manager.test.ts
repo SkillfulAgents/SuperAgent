@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // vi.mock is hoisted above all top-level locals, so any mock factory that
 // references a `vi.fn()` must define it inside `vi.hoisted` to be available.
@@ -77,6 +77,7 @@ const mockGetSessionMetadata = mocks.getSessionMetadata
 const mockBroadcastGlobal = mocks.broadcastGlobal
 const mockPromoteAutomatedSession = mocks.promoteAutomatedSession
 
+import { getRequestUserId } from '@shared/lib/platform-attribution/request-context'
 import { notificationManager } from './notification-manager'
 
 beforeEach(() => {
@@ -96,6 +97,10 @@ beforeEach(() => {
 })
 
 describe('triggerSessionComplete — automated-session gating', () => {
+  afterEach(() => {
+    mocks.getConfiguredLlmClient.mockImplementation(() => ({ messages: {} }))
+  })
+
   it('uses the final visible response as the canonical body on every channel', async () => {
     await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
       responseText: '**Done.** The report is ready.',
@@ -193,6 +198,46 @@ describe('triggerSessionComplete — automated-session gating', () => {
     expect(mockCreateNotification).toHaveBeenCalledWith(
       expect.objectContaining({ body: 'A concise completion summary.' }),
     )
+  })
+
+  it('runs the summarizer under the session creator scope with the agent identity', async () => {
+    mockGetSessionMetadata.mockResolvedValue({ createdByUserId: 'user-creator' })
+    const scopeAtClientBuild: Array<string | undefined> = []
+    const scopeAtSummarize: Array<string | undefined> = []
+    mocks.getConfiguredLlmClient.mockImplementation(() => {
+      scopeAtClientBuild.push(getRequestUserId())
+      return { messages: {} }
+    })
+    mocks.createSummarizerText.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      scopeAtSummarize.push(getRequestUserId())
+      return 'A concise completion summary.'
+    })
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(mocks.getConfiguredLlmClient).toHaveBeenCalledWith({ id: 'agent-x', name: 'Demo Agent' })
+    expect(scopeAtClientBuild).toEqual(['user-creator'])
+    expect(scopeAtSummarize).toEqual(['user-creator'])
+    expect(getRequestUserId()).toBeUndefined()
+  })
+
+  it('passes the agent identity without a creator scope when the session has no creator', async () => {
+    mocks.getAgent.mockResolvedValueOnce({ frontmatter: {} } as never)
+    const scopeAtClientBuild: Array<string | undefined> = []
+    mocks.getConfiguredLlmClient.mockImplementation(() => {
+      scopeAtClientBuild.push(getRequestUserId())
+      return { messages: {} }
+    })
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(mocks.getConfiguredLlmClient).toHaveBeenCalledWith({ id: 'agent-x', name: undefined })
+    expect(scopeAtClientBuild).toEqual([undefined])
   })
 
   it('preserves per-session notification order when an earlier summary is slow', async () => {

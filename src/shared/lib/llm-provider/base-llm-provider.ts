@@ -89,8 +89,11 @@ export abstract class BaseLlmProvider {
     return process.env[this.envVarName]
   }
 
-  /** Create an Anthropic-compatible SDK client configured for this provider. */
-  abstract createClient(): Anthropic
+  /**
+   * Create an Anthropic-compatible SDK client configured for this provider.
+   * Providers that attribute usage per agent fold `agent` into the client; others ignore it.
+   */
+  abstract createClient(agent?: AgentIdentity): Anthropic
 
   /**
    * The provider's built-in catalog of concrete model ids (shipped in code).
