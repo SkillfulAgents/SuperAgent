@@ -1,14 +1,15 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import { ChevronDown, HelpCircle } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@renderer/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 
 export interface StaleSessionNoticeProps {
   onIgnore: () => void
   onContinueCompacted: () => void
   onStartFresh: () => void
-  /** Fires while any of the card's popovers is open, so the column can hold its scroll. */
+  isPending?: boolean
+  /** Holds the column's scroll while the menu or help tooltip is open. */
   onPopoverOpenChange?: (open: boolean) => void
 }
 
@@ -26,24 +27,29 @@ function OptionRow({
   title,
   description,
   onSelect,
+  disabled,
   testId,
 }: {
   title: string
   description: string
   onSelect: () => void
+  disabled: boolean
   testId: string
 }) {
+  const id = useId()
   return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={onSelect}
+    <DropdownMenuItem
+      onSelect={onSelect}
+      disabled={disabled}
+      textValue={title}
+      aria-labelledby={`${id}-title`}
+      aria-describedby={`${id}-description`}
       data-testid={testId}
-      className="flex w-full flex-col items-start gap-0.5 rounded-sm px-2 py-1.5 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground"
+      className="w-full flex-col items-start gap-0.5"
     >
-      <span className="text-sm">{title}</span>
-      <span className="w-full truncate text-xs text-muted-foreground">{description}</span>
-    </button>
+      <span id={`${id}-title`}>{title}</span>
+      <span id={`${id}-description`} className="w-full truncate text-xs text-muted-foreground">{description}</span>
+    </DropdownMenuItem>
   )
 }
 
@@ -52,6 +58,7 @@ export function StaleSessionNotice({
   onIgnore,
   onContinueCompacted,
   onStartFresh,
+  isPending = false,
   onPopoverOpenChange,
 }: StaleSessionNoticeProps) {
   const [learnMoreOpen, setLearnMoreOpen] = useState(false)
@@ -62,11 +69,6 @@ export function StaleSessionNotice({
     onPopoverOpenChange?.(anyOpen)
     return () => onPopoverOpenChange?.(false)
   }, [anyOpen, onPopoverOpenChange])
-
-  const choose = (action: () => void) => () => {
-    setOptionsOpen(false)
-    action()
-  }
 
   return (
     <div data-testid="stale-toast" className="mx-auto mb-2 w-full max-w-[740px] px-4">
@@ -89,8 +91,6 @@ export function StaleSessionNotice({
                     <HelpCircle className="h-3 w-3" aria-hidden="true" />
                   </button>
                 </TooltipTrigger>
-                {/* Styled like a popover rather than the dark one-line tooltip: three
-                    teaching points need the light surface and two text tones. */}
                 <TooltipContent
                   side="top"
                   align="start"
@@ -111,46 +111,54 @@ export function StaleSessionNotice({
             This conversation has gotten long — a fresh one will be faster and cheaper.
           </p>
         </div>
-        {/* Dismiss stays a plain button beside the real choice; the dropdown answers
-            the card's question and its popover explains the two ways. */}
         <div className="flex shrink-0 items-center gap-2">
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={onIgnore}
+            disabled={isPending}
             data-testid="stale-toast-ignore"
           >
             Dismiss
           </Button>
-          <Popover open={optionsOpen} onOpenChange={setOptionsOpen}>
-            <PopoverTrigger asChild>
-              <Button type="button" size="sm" data-testid="stale-options-trigger">
+          <DropdownMenu open={optionsOpen} onOpenChange={setOptionsOpen} modal={false}>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                size="sm"
+                loading={isPending}
+                disabled={isPending}
+                aria-busy={isPending}
+                aria-label={isPending ? 'Starting new conversation' : undefined}
+                data-testid="stale-options-trigger"
+              >
                 New conversation
-                <ChevronDown className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
+                {!isPending && <ChevronDown className="ml-1 h-3.5 w-3.5" aria-hidden="true" />}
               </Button>
-            </PopoverTrigger>
-            <PopoverContent
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
               side="top"
               align="end"
-              role="menu"
-              className="flex w-96 flex-col p-1"
+              className="w-96"
               data-testid="stale-options-popover"
             >
               <OptionRow
                 title="Start with a summary"
                 description="Condenses this conversation's history and picks up there."
-                onSelect={choose(onContinueCompacted)}
+                onSelect={onContinueCompacted}
+                disabled={isPending}
                 testId="stale-summarize-continue"
               />
               <OptionRow
                 title="Start totally fresh"
                 description="Nothing carries over except your unsent message."
-                onSelect={choose(onStartFresh)}
+                onSelect={onStartFresh}
+                disabled={isPending}
                 testId="stale-new-chat"
               />
-            </PopoverContent>
-          </Popover>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
     </div>

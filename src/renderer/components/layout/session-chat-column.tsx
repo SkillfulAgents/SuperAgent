@@ -136,6 +136,7 @@ export function SessionChatColumn({
                   onIgnore={staleSession.ignore}
                   onContinueCompacted={staleSession.continueCompacted}
                   onStartFresh={staleSession.startFresh}
+                  isPending={staleSession.isPending}
                   onPopoverOpenChange={staleSession.setPopoverOpen}
                 />
               )}

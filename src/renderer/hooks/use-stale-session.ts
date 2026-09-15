@@ -39,12 +39,13 @@ export function useStaleSession({
 }: UseStaleSessionArgs) {
   const navigate = useNavigate()
   const draftsStore = useDraftsStore()
-  const forkAndCompact = useForkAndCompact()
+  const { mutate: forkAndCompact, isPending } = useForkAndCompact()
   const [ignored, setIgnored] = useState(false)
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [liveActivityAt, setLiveActivityAt] = useState<number | null>(null)
   const wasActiveRef = useRef(isActive)
   const composerSnapshotRef = useRef<(() => ComposerSnapshot) | null>(null)
+  const forkInFlightRef = useRef(false)
 
   // Persisted activity can lag a just-completed turn. Stamp active -> idle locally
   // so the prompt does not immediately return after the user continues the session.
@@ -77,6 +78,7 @@ export function useStaleSession({
   }, [])
 
   const startFresh = useCallback(() => {
+    if (forkInFlightRef.current) return
     const { draftText, carryover } = splitComposerSnapshot(composerSnapshotRef.current?.())
     if (draftText !== undefined) draftsStore.set(`agent:${agentSlug}`, draftText)
     draftsStore.set(newSessionCarryoverKey(agentSlug), carryover)
@@ -87,11 +89,18 @@ export function useStaleSession({
   // Continue in a compacted copy. The display slug goes to the fork so the
   // copy's URL keeps it, as startFresh does.
   const continueCompacted = useCallback(() => {
-    forkAndCompact.mutate({ sessionId, agentSlug: routeAgentSlug ?? agentSlug })
+    // Guard synchronously: a second selection can arrive before isPending renders.
+    if (forkInFlightRef.current) return
+    forkInFlightRef.current = true
+    forkAndCompact(
+      { sessionId, agentSlug: routeAgentSlug ?? agentSlug },
+      { onSettled: () => { forkInFlightRef.current = false } },
+    )
   }, [agentSlug, forkAndCompact, routeAgentSlug, sessionId])
 
   return {
     showNotice: shouldPrompt && !isActive && !isViewOnly && !ignored,
+    isPending,
     ignore: useCallback(() => setIgnored(true), []),
     popoverOpen,
     setPopoverOpen,
