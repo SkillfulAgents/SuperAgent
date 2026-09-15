@@ -109,18 +109,20 @@ function agentFiles(agentSlug: string): FileOps {
   return agentRegistry.get(agentSlug).files
 }
 
-/** A workspace text file, or null when there is nothing (or not a file) at the path. */
-async function readWorkspaceText(files: FileOps, workspacePath: string): Promise<string | null> {
-  let bytes: Uint8Array | null
+/** A workspace file's bytes, or null when there is nothing (or not a file) at the path. */
+async function readWorkspaceBytes(files: FileOps, workspacePath: string): Promise<Buffer | null> {
   try {
-    bytes = await files.getDoc(workspacePath)
+    const bytes = await files.getDoc(workspacePath)
+    return bytes === null ? null : Buffer.from(bytes)
   } catch (error) {
     if (error instanceof WorkspaceFileError && error.code === 'not-a-file') return null
     throw error
   }
-  // Decoded the way `fs.readFile(path, 'utf-8')` decodes the cache side, so a
-  // package hashes the same whichever side it is read from.
-  return bytes === null ? null : Buffer.from(bytes).toString('utf-8')
+}
+
+async function readWorkspaceText(files: FileOps, workspacePath: string): Promise<string | null> {
+  // Match fs.readFile(path, 'utf-8') on the cache side, including BOM handling.
+  return (await readWorkspaceBytes(files, workspacePath))?.toString('utf-8') ?? null
 }
 
 async function workspaceDirExists(files: FileOps, workspacePath: string): Promise<boolean> {
@@ -272,7 +274,16 @@ async function readSkillPackageFiles(skillDir: string): Promise<SkillPackageFile
  * variant, so the two hash alike.
  */
 async function readWorkspaceSkillPackageFiles(files: FileOps, skillDir: string): Promise<SkillPackageFile[]> {
-  const packageFiles: SkillPackageFile[] = []
+  return readWorkspaceSkillPackage(files, skillDir, (entryPath) => readWorkspaceText(files, entryPath))
+}
+
+/** Share traversal/exclusions while letting exports keep bytes and other callers decode text. */
+async function readWorkspaceSkillPackage<T>(
+  files: FileOps,
+  skillDir: string,
+  readContent: (entryPath: string) => Promise<T | null>,
+): Promise<Array<{ relativePath: string; content: T }>> {
+  const packageFiles: Array<{ relativePath: string; content: T }> = []
   // Each read is a round trip through the actor (the path check, then the
   // bytes); reading a directory's files one after another made an install
   // wait on every file in turn. The result is sorted, so order is free.
@@ -292,7 +303,7 @@ async function readWorkspaceSkillPackageFiles(files: FileOps, skillDir: string):
       }
 
       reads.push(limit(async () => {
-        const content = await readWorkspaceText(files, entry.path)
+        const content = await readContent(entry.path)
         if (content !== null) packageFiles.push({ relativePath, content })
       }))
     }
@@ -2041,8 +2052,8 @@ export async function exportSkill(
     throw new Error('SKILL.md not found in skill directory')
   }
 
-  const packageFiles = await readWorkspaceSkillPackageFiles(files, skillDir)
-  const zipEntries: Record<string, string> = {}
+  const packageFiles = await readWorkspaceSkillPackage(files, skillDir, (entryPath) => readWorkspaceBytes(files, entryPath))
+  const zipEntries: Record<string, Buffer> = {}
   for (const f of packageFiles) {
     zipEntries[`${skillDirName}/${f.relativePath}`] = f.content
   }
