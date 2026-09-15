@@ -10,6 +10,7 @@ import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
+import { useCanUseVoiceMode } from '@renderer/hooks/use-voice-input'
 import { VoiceModeComposer } from './voice-mode-composer'
 import { VoiceModeControls, useHoldSoundPreference } from './voice-mode-controls'
 import { useVoiceMode } from '@renderer/hooks/use-voice-mode'
@@ -290,6 +291,14 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
 
   const isDisabled = sendMessage.isPending || composer.isUploading || isOffline || !isRuntimeReady
 
+  // An empty composer leads with voice mode as its one live action. Once there
+  // is something to send, Send takes the primary slot and voice mode steps
+  // back beside it as a secondary button.
+  const canUseVoiceMode = useCanUseVoiceMode()
+  const voiceModeIsPrimary = canUseVoiceMode && !composer.hasContent
+  // Not mid-dictation: that mic and socket would stay open under voice mode's own.
+  const voiceModeDisabled = isDisabled || composer.voiceInput.isRecording || composer.voiceInput.isConnecting
+
   // Voice mode. A session opened from the home page's voice button arrives
   // with the request already made (and the entry notice already sent as its
   // first message); otherwise it starts here, with the notice appended for
@@ -503,8 +512,9 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
               message={composer.message}
               disabled={isDisabled}
             />
-            {/* Not mid-dictation: that mic and socket would stay open under voice mode's own. */}
-            <VoiceModeButton onClick={enterVoiceMode} disabled={isDisabled || composer.voiceInput.isRecording || composer.voiceInput.isConnecting} />
+            {!voiceModeIsPrimary && (
+              <VoiceModeButton onClick={enterVoiceMode} disabled={voiceModeDisabled} />
+            )}
             <ComposerActionButton
               isActive={isActive}
               isWaitingBackground={isWaitingBackground}
@@ -512,6 +522,9 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
               isSending={sendMessage.isPending || composer.isUploading}
               isInterrupting={interruptSession.isPending}
               onInterrupt={handleInterrupt}
+              primary={voiceModeIsPrimary ? (
+                <VoiceModeButton variant="default" onClick={enterVoiceMode} disabled={voiceModeDisabled} />
+              ) : undefined}
             />
           </>
         )}

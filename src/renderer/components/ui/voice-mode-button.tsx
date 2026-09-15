@@ -6,6 +6,11 @@ interface VoiceModeButtonProps {
   onClick: () => void
   disabled?: boolean
   className?: string
+  /**
+   * `default` (filled) while voice mode is the composer's primary action —
+   * i.e. there is nothing to send yet. `outline` once Send takes that slot.
+   */
+  variant?: 'outline' | 'default'
 }
 
 /**
@@ -13,14 +18,14 @@ interface VoiceModeButtonProps {
  * when the configured voice provider can both transcribe and speak — a
  * dictation-only setup keeps just the mic.
  */
-export function VoiceModeButton({ onClick, disabled, className = 'h-[34px] w-[34px]' }: VoiceModeButtonProps) {
+export function VoiceModeButton({ onClick, disabled, className = 'h-[34px] w-[34px]', variant = 'outline' }: VoiceModeButtonProps) {
   const canUseVoiceMode = useCanUseVoiceMode()
   if (!canUseVoiceMode) return null
   return (
     <Button
       type="button"
       size="icon"
-      variant="outline"
+      variant={variant}
       className={className}
       onClick={onClick}
       disabled={disabled}
