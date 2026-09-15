@@ -9,7 +9,7 @@ import { agentRegistry } from '@shared/lib/agent-actor'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
-import { runWithOptionalUser } from '@shared/lib/platform-attribution'
+import { resolveAutomationUserId, runWithOptionalUser } from '@shared/lib/platform-attribution'
 import {
   getDueTasks,
   markTaskExecuted,
@@ -21,7 +21,6 @@ import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
-import { isOrphanedCreator, pauseOrphanedAutomations } from '@shared/lib/services/orphaned-automations'
 import { captureException } from '@shared/lib/error-reporting'
 import { deliverSessionWake } from './wake-delivery'
 
@@ -171,16 +170,11 @@ class TaskScheduler {
    * Execute a single scheduled task.
    */
   private async executeTask(task: ScheduledTask): Promise<void> {
-    // A deleted creator resolves no member; stop the row instead of firing (SUP-858).
-    if (isOrphanedCreator(task.createdByUserId)) {
-      await pauseOrphanedAutomations(task.createdByUserId, 'scheduled_task', {
-        taskId: task.id,
-        agentSlug: task.agentSlug,
-      })
-      return
-    }
-    // Attribute to task creator (baked into ANTHROPIC token on cold start).
-    return runWithOptionalUser(task.createdByUserId, () => this.executeTaskInner(task))
+    // Creator, else the agent owner once the creator is gone (SUP-858). Baked into the token on cold start.
+    return runWithOptionalUser(
+      resolveAutomationUserId(task.createdByUserId, task.agentSlug),
+      () => this.executeTaskInner(task),
+    )
   }
 
   private async executeTaskInner(task: ScheduledTask): Promise<void> {

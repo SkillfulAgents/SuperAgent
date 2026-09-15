@@ -116,6 +116,7 @@ vi.mock('@shared/lib/services/schedule-parser', () => ({
 }))
 
 vi.mock('@shared/lib/platform-attribution', () => ({
+  resolveAutomationUserId: (userId: string | null) => userId,
   runWithOptionalUser: (_userId: string | null | undefined, fn: () => unknown) => fn(),
 }))
 

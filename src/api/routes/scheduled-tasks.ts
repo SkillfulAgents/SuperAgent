@@ -22,7 +22,6 @@ import {
   pauseScheduledTask,
   resumeScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
-import { isOrphanedCreator } from '@shared/lib/services/orphaned-automations'
 import { promptUpdateSchema } from './trigger-prompt-schema'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
@@ -131,9 +130,6 @@ scheduledTasksRouter.post('/:taskId/resume', TaskAgentRole('user'), async (c) =>
     if (!task) {
       return c.json({ error: 'Task not found' }, 404)
     }
-    if (isOrphanedCreator(task.createdByUserId)) {
-      return c.json({ error: 'The task creator was deleted. Create a new scheduled task to run it again.' }, 409)
-    }
     const resumed = await resumeScheduledTask(task.id)
     if (!resumed) {
       return c.json({ error: 'Task is not paused' }, 400)
@@ -151,9 +147,6 @@ scheduledTasksRouter.post('/:taskId/resume', TaskAgentRole('user'), async (c) =>
 scheduledTasksRouter.post('/:taskId/reset', TaskAgentRole('user'), async (c) => {
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
-    if (isOrphanedCreator(task!.createdByUserId)) {
-      return c.json({ error: 'The task creator was deleted. Create a new scheduled task to run it again.' }, 409)
-    }
     const reset = await resetScheduledTask(task!.id)
 
     if (!reset) {

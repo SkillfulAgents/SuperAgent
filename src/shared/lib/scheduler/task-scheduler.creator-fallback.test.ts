@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// A due task whose creator was deleted must be paused, not executed. Only the
-// scheduled-task-service boundary and the orphan guard are mocked; the early
-// return keeps the heavy collaborators (containers, sessions) out of reach.
+// The scheduler must run each task under the user resolveAutomationUserId picks
+// (creator, else agent owner). agentExists=false stops executeTaskInner early so
+// the heavy collaborators (containers, sessions) stay out of reach.
 const mockGetDueTasks = vi.fn()
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   getDueTasks: () => mockGetDueTasks(),
@@ -12,20 +12,15 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   updateNextExecution: vi.fn().mockResolvedValue(undefined),
 }))
 
-const mockIsOrphanedCreator = vi.fn((_userId: string | null | undefined) => false)
-const mockPauseOrphanedAutomations = vi.fn().mockResolvedValue({ scheduledTasks: 1, webhookTriggers: 0 })
-vi.mock('@shared/lib/services/orphaned-automations', () => ({
-  isOrphanedCreator: (userId: string | null | undefined) => mockIsOrphanedCreator(userId),
-  pauseOrphanedAutomations: (...args: unknown[]) => mockPauseOrphanedAutomations(...args),
-}))
-
 const mockAgentExists = vi.fn().mockResolvedValue(false)
 vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: (...args: unknown[]) => mockAgentExists(...args),
 }))
 
+const mockResolveAutomationUserId = vi.fn((userId: string | null, _agentSlug: string) => userId)
 const mockRunWithOptionalUser = vi.fn((_userId: string | null | undefined, fn: () => unknown) => fn())
 vi.mock('@shared/lib/platform-attribution', () => ({
+  resolveAutomationUserId: (userId: string | null, agentSlug: string) => mockResolveAutomationUserId(userId, agentSlug),
   runWithOptionalUser: (userId: string | null | undefined, fn: () => unknown) => mockRunWithOptionalUser(userId, fn),
 }))
 
@@ -56,37 +51,30 @@ function dueTask(createdByUserId: string | null) {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockIsOrphanedCreator.mockImplementation(() => false)
+  mockResolveAutomationUserId.mockImplementation((userId) => userId)
 })
 
 afterEach(() => {
   taskScheduler.stop()
 })
 
-describe('TaskScheduler — deleted creator', () => {
-  it('pauses the creator’s automations and does not execute the task', async () => {
-    mockIsOrphanedCreator.mockImplementation((userId) => userId === 'user_deleted')
+describe('TaskScheduler — run attribution', () => {
+  it('runs the task under the user resolved for the creator and agent', async () => {
+    mockResolveAutomationUserId.mockReturnValue('user_owner')
     mockGetDueTasks.mockResolvedValueOnce([dueTask('user_deleted')]).mockResolvedValue([])
 
     await taskScheduler.start()
 
-    expect(mockPauseOrphanedAutomations).toHaveBeenCalledWith('user_deleted', 'scheduled_task', {
-      taskId: 'task_1',
-      agentSlug: 'agent-x',
-    })
-    expect(mockRunWithOptionalUser).not.toHaveBeenCalled()
-    expect(mockAgentExists).not.toHaveBeenCalled()
+    expect(mockResolveAutomationUserId).toHaveBeenCalledWith('user_deleted', 'agent-x')
+    expect(mockRunWithOptionalUser).toHaveBeenCalledWith('user_owner', expect.any(Function))
+    expect(mockAgentExists).toHaveBeenCalledWith('agent-x')
   })
 
-  it('executes under the creator scope when the creator still exists', async () => {
-    // agentExists=false makes executeTaskInner stop at the "agent gone" check,
-    // which is enough to prove the guard let it through.
+  it('runs under the creator when resolution keeps them', async () => {
     mockGetDueTasks.mockResolvedValueOnce([dueTask('user_alive')]).mockResolvedValue([])
 
     await taskScheduler.start()
 
-    expect(mockIsOrphanedCreator).toHaveBeenCalledWith('user_alive')
-    expect(mockPauseOrphanedAutomations).not.toHaveBeenCalled()
     expect(mockRunWithOptionalUser).toHaveBeenCalledWith('user_alive', expect.any(Function))
   })
 })

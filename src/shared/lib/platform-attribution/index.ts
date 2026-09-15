@@ -93,6 +93,16 @@ export function runWithAttribution<T>(
   return auth ? attributionContext.run({ auth }, fn) : fn()
 }
 
+// Scheduled/automated runs: the creator while they still have a platform account,
+// else the agent owner (deleted creator, SUP-858), else the creator as given
+// (single-user / opaque-key mode, where nobody has an account row).
+export function resolveAutomationUserId(createdByUserId: string | null, agentSlug: string): string | null {
+  if (createdByUserId && getPlatformAccountIdForUserId(createdByUserId)) return createdByUserId
+  const ownerUserId = getAgentOwnerUserId(agentSlug)
+  if (ownerUserId && getPlatformAccountIdForUserId(ownerUserId)) return ownerUserId
+  return createdByUserId
+}
+
 function fromCurrentRequest(): Attribution | null {
   const userId = getRequestUserId()
   return userId ? buildAttribution(resolveMemberIdForUserId(userId)) : null
@@ -123,7 +133,7 @@ export const attribution = {
   },
   // Container cold start: ambient scope, else the agent owner, else the stored
   // member. Same fallback chain as trigger minting (SUP-765); null only when
-  // nothing resolves, so callers never bake a bare org token by accident (SUP-858).
+  // nothing resolves, so callers never bake a bare org token by accident (SUP-805).
   forAgent(agentSlug: string): Attribution | null {
     const ambient = attributionContext.getStore()?.auth ?? fromCurrentRequest()
     if (ambient) return ambient

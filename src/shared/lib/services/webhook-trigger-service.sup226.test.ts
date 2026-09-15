@@ -47,6 +47,7 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
 import {
   createWebhookTrigger,
   getDistinctPlatformMemberIdsForActiveTriggers,
+  resolveTriggerPrincipal,
 } from './webhook-trigger-service'
 
 const NOW = new Date('2026-04-01T12:00:00.000Z')
@@ -197,5 +198,68 @@ describe('SUP-226: getDistinctPlatformMemberIdsForActiveTriggers owner fallback'
       'sub_minted_member',
       'sub_creator_member',
     ])
+  })
+})
+
+// SUP-858: a deleted creator cascades away their authAccount and connected
+// accounts, so the session must fall through to the agent owner.
+describe('resolveTriggerPrincipal agent-owner fallback', () => {
+  const previousAuthMode = process.env.AUTH_MODE
+
+  beforeEach(async () => {
+    process.env.AUTH_MODE = 'true'
+    testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'sup858-'))
+    testSqlite = new Database(':memory:')
+    testDb = drizzle(testSqlite, { schema })
+    migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
+  })
+
+  afterEach(async () => {
+    if (previousAuthMode === undefined) delete process.env.AUTH_MODE
+    else process.env.AUTH_MODE = previousAuthMode
+    testSqlite?.close()
+    await fs.promises.rm(testDir, { recursive: true, force: true })
+  })
+
+  async function insertOwnerAcl(agentSlug: string, userId: string) {
+    await testDb.insert(schema.agentAcl).values({
+      id: `acl_${agentSlug}_${userId}`,
+      agentSlug,
+      userId,
+      role: 'owner',
+      createdAt: NOW,
+    })
+  }
+
+  it('falls back to the agent owner when the creator and connected account are gone', async () => {
+    await insertUser('owner_user')
+    await insertPlatformAccount('owner_user', 'sub_owner_member')
+    await insertOwnerAcl('agent-1', 'owner_user')
+
+    expect(
+      resolveTriggerPrincipal({ createdByUserId: 'deleted_user', connectedAccountId: 'ca_gone', agentSlug: 'agent-1' }),
+    ).toEqual({ userId: 'owner_user', memberId: 'sub_owner_member' })
+  })
+
+  it('prefers the connected-account owner over the agent owner', async () => {
+    await insertUser('owner_user')
+    await insertUser('ca_owner')
+    await insertPlatformAccount('owner_user', 'sub_owner_member')
+    await insertPlatformAccount('ca_owner', 'sub_ca_member')
+    await insertOwnerAcl('agent-1', 'owner_user')
+    await insertConnectedAccount('ca_1', 'ca_owner')
+
+    expect(
+      resolveTriggerPrincipal({ createdByUserId: 'deleted_user', connectedAccountId: 'ca_1', agentSlug: 'agent-1' }),
+    ).toEqual({ userId: 'ca_owner', memberId: 'sub_ca_member' })
+  })
+
+  it('returns null when the agent owner has no platform account either', async () => {
+    await insertUser('owner_user')
+    await insertOwnerAcl('agent-1', 'owner_user')
+
+    expect(
+      resolveTriggerPrincipal({ createdByUserId: 'deleted_user', connectedAccountId: null, agentSlug: 'agent-1' }),
+    ).toBeNull()
   })
 })

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 // ============================================================================
 // Mocks
@@ -86,13 +86,6 @@ vi.mock('@shared/lib/services/agent-preferences-service', () => ({
 const mockAgentExists = vi.fn().mockResolvedValue(true)
 vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: (...args: unknown[]) => mockAgentExists(...args),
-}))
-
-const mockIsOrphanedCreator = vi.fn((_userId: string | null | undefined) => false)
-const mockPauseOrphanedAutomations = vi.fn().mockResolvedValue({ scheduledTasks: 0, webhookTriggers: 1 })
-vi.mock('@shared/lib/services/orphaned-automations', () => ({
-  isOrphanedCreator: (userId: string | null | undefined) => mockIsOrphanedCreator(userId),
-  pauseOrphanedAutomations: (...args: unknown[]) => mockPauseOrphanedAutomations(...args),
 }))
 
 const mockPollAndClaimEvents = vi.fn()
@@ -465,91 +458,6 @@ describe('TriggerManager', () => {
       await triggerManager.start()
 
       expect(mockPollAndClaimEvents).not.toHaveBeenCalled()
-
-      triggerManager.stop()
-    })
-  })
-
-  describe('deleted creator', () => {
-    afterEach(() => {
-      mockIsOrphanedCreator.mockImplementation(() => false)
-    })
-
-    it('pauses the trigger and acks the events instead of spawning a session', async () => {
-      mockIsOrphanedCreator.mockImplementation((userId) => userId === 'user_deleted')
-      mockGetWebhookTriggersByComposioId.mockResolvedValue([
-        {
-          id: 'trigger_orphan',
-          agentSlug: 'test-agent',
-          composioTriggerId: 'ti_abc',
-          connectedAccountId: 'ca_1',
-          createdByUserId: 'user_deleted',
-          triggerType: 'GMAIL_NEW_EMAIL',
-          prompt: 'Handle this email',
-          status: 'active',
-          fireCount: 0,
-        },
-      ])
-      mockPollAndClaimEvents.mockResolvedValue({
-        events: [
-          {
-            id: 'whe_1',
-            composio_trigger_id: 'ti_abc',
-            trigger_type: 'GMAIL_NEW_EMAIL',
-            payload: { subject: 'Hello' },
-            created_at: '2026-04-01T00:00:00Z',
-          },
-        ],
-        realtime: null,
-      })
-
-      await triggerManager.start()
-
-      expect(mockPauseOrphanedAutomations).toHaveBeenCalledWith('user_deleted', 'webhook_trigger', {
-        triggerId: 'trigger_orphan',
-        agentSlug: 'test-agent',
-      })
-      expect(mockRunWithOptionalUser).not.toHaveBeenCalled()
-      expect(mockEnsureRunning).not.toHaveBeenCalled()
-      expect(mockCreateSession).not.toHaveBeenCalled()
-      expect(mockMarkTriggerFired).not.toHaveBeenCalled()
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
-
-      triggerManager.stop()
-    })
-
-    it('fires normally when the creator still exists', async () => {
-      mockGetWebhookTriggersByComposioId.mockResolvedValue([
-        {
-          id: 'trigger_1',
-          agentSlug: 'test-agent',
-          composioTriggerId: 'ti_abc',
-          connectedAccountId: 'ca_1',
-          createdByUserId: 'user_alive',
-          triggerType: 'GMAIL_NEW_EMAIL',
-          prompt: 'Handle this email',
-          status: 'active',
-          fireCount: 0,
-        },
-      ])
-      mockPollAndClaimEvents.mockResolvedValue({
-        events: [
-          {
-            id: 'whe_1',
-            composio_trigger_id: 'ti_abc',
-            trigger_type: 'GMAIL_NEW_EMAIL',
-            payload: { subject: 'Hello' },
-            created_at: '2026-04-01T00:00:00Z',
-          },
-        ],
-        realtime: null,
-      })
-
-      await triggerManager.start()
-
-      expect(mockIsOrphanedCreator).toHaveBeenCalledWith('user_alive')
-      expect(mockPauseOrphanedAutomations).not.toHaveBeenCalled()
-      expect(mockCreateSession).toHaveBeenCalledTimes(1)
 
       triggerManager.stop()
     })

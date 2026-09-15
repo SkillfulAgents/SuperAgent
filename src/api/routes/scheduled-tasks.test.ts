@@ -29,10 +29,6 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   resumeScheduledTask: (...args: unknown[]) => mockResumeScheduledTask(...args),
 }))
 
-vi.mock('@shared/lib/services/orphaned-automations', () => ({
-  isOrphanedCreator: (userId: string | null | undefined) => userId === 'deleted-user',
-}))
-
 const mockGetSessionsByScheduledTask = vi.fn()
 const mockRegisterSession = vi.fn()
 const mockUpdateSessionMetadata = vi.fn()
@@ -598,38 +594,6 @@ describe('scheduled-tasks route', () => {
     expect(mockMessagesCreate).toHaveBeenCalledWith(expect.objectContaining({
       model: 'claude-haiku-4-5',
     }))
-  })
-
-  it.each(['resume', 'reset'])('rejects %s when the task creator was deleted without changing the task', async (action) => {
-    task = createTask({ status: action === 'resume' ? 'paused' : 'cancelled', createdByUserId: 'deleted-user' })
-
-    const res = await app.request(`http://localhost/api/scheduled-tasks/task-1/${action}`, { method: 'POST' })
-
-    expect(res.status).toBe(409)
-    expect(await res.json()).toEqual({ error: 'The task creator was deleted. Create a new scheduled task to run it again.' })
-    expect(mockResumeScheduledTask).not.toHaveBeenCalled()
-    expect(mockResetScheduledTask).not.toHaveBeenCalled()
-    expect(mockLogAuditEvent).not.toHaveBeenCalled()
-  })
-
-  it.each(['live-user', null, undefined])('preserves resume for an existing or legacy creator (%s)', async (createdByUserId) => {
-    task = createTask({ status: 'paused', createdByUserId })
-
-    const res = await app.request('http://localhost/api/scheduled-tasks/task-1/resume', { method: 'POST' })
-
-    expect(res.status).toBe(200)
-    expect(mockResumeScheduledTask).toHaveBeenCalledWith('task-1')
-    expect(mockLogAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ action: 'resumed' }))
-  })
-
-  it('preserves reset when the creator still exists', async () => {
-    task = createTask({ status: 'cancelled', createdByUserId: 'live-user' })
-    mockResetScheduledTask.mockResolvedValueOnce(true)
-
-    const res = await app.request('http://localhost/api/scheduled-tasks/task-1/reset', { method: 'POST' })
-
-    expect(res.status).toBe(200)
-    expect(mockResetScheduledTask).toHaveBeenCalledWith('task-1')
   })
 
   it('only allows recurring cron tasks to be paused', async () => {

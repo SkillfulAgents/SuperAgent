@@ -95,6 +95,7 @@ const mockRunWithOptionalUser = vi.fn(
 )
 
 vi.mock('@shared/lib/platform-attribution', () => ({
+  resolveAutomationUserId: (userId: string | null) => userId,
   runWithOptionalUser: (userId: string | null | undefined, fn: () => unknown) =>
     mockRunWithOptionalUser(userId, fn),
 }))

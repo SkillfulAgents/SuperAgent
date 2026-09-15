@@ -14,7 +14,6 @@ import {
   updateWebhookTriggerPrompt,
   updateWebhookTriggerRuntimeOptions,
 } from '@shared/lib/services/webhook-trigger-service'
-import { isOrphanedCreator } from '@shared/lib/services/orphaned-automations'
 import { promptUpdateSchema } from './trigger-prompt-schema'
 import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
 import { agentRegistry } from '@shared/lib/agent-actor'
@@ -84,9 +83,6 @@ webhookTriggersRouter.post('/:triggerId/pause', TriggerAgentRole('user'), async 
 webhookTriggersRouter.post('/:triggerId/resume', TriggerAgentRole('user'), async (c) => {
   try {
     const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
-    if (isOrphanedCreator(trigger!.createdByUserId)) {
-      return c.json({ error: 'The trigger creator was deleted. Create a new trigger to run it again.' }, 409)
-    }
     const resumed = await resumeWebhookTrigger(trigger!.id)
     if (!resumed) {
       return c.json({ error: 'Trigger is not paused' }, 400)

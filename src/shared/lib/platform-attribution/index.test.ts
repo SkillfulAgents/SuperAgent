@@ -48,6 +48,7 @@ vi.mock('drizzle-orm', () => ({
 import {
   attribution,
   decodeOrgIdFromToken,
+  resolveAutomationUserId,
   runWithAttribution,
   runWithRequestUser,
 } from './index'
@@ -206,6 +207,38 @@ describe('attribution.forAgent (container cold start)', () => {
   it('returns a member-less attribution for an opaque access key', () => {
     mockGetPlatformAccessToken.mockReturnValue(ACCESS_KEY)
     expect(attribution.forAgent('agent_a')?.bearerToken()).toBe(ACCESS_KEY)
+  })
+})
+
+describe('resolveAutomationUserId (scheduled runs)', () => {
+  beforeEach(() => {
+    mockGetAgentOwnerUserId.mockReturnValue('user_owner')
+  })
+
+  it('keeps the creator while they still have a platform account', () => {
+    expect(resolveAutomationUserId('user_creator', 'agent_a')).toBe('user_creator')
+    expect(mockGetAgentOwnerUserId).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the agent owner when the creator has no platform account', () => {
+    mockDbAll.mockReturnValueOnce([]).mockReturnValueOnce([{ accountId: 'sub_owner' }])
+    expect(resolveAutomationUserId('user_deleted', 'agent_a')).toBe('user_owner')
+    expect(mockGetAgentOwnerUserId).toHaveBeenCalledWith('agent_a')
+  })
+
+  it('falls back to the agent owner when the run has no creator', () => {
+    expect(resolveAutomationUserId(null, 'agent_a')).toBe('user_owner')
+  })
+
+  it('returns the creator as given when neither creator nor owner has an account', () => {
+    mockDbAll.mockReturnValue([])
+    expect(resolveAutomationUserId('user_local', 'agent_a')).toBe('user_local')
+  })
+
+  it('returns the creator as given when the agent has no owner', () => {
+    mockDbAll.mockReturnValue([])
+    mockGetAgentOwnerUserId.mockReturnValue(null)
+    expect(resolveAutomationUserId('user_deleted', 'agent_a')).toBe('user_deleted')
   })
 })
 

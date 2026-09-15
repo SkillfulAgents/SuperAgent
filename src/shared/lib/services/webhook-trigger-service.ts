@@ -21,6 +21,7 @@ import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { disablePlatformWebhookEndpoint } from '@shared/lib/services/webhook-endpoints-client'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 
 const PLATFORM_PROVIDER_ID = 'platform'
 
@@ -377,20 +378,6 @@ export async function cancelWebhookTrigger(triggerId: string): Promise<boolean> 
   return (result.changes ?? 0) > 0
 }
 
-// Used when the creator is deleted. Returns the number of rows changed.
-export async function pauseWebhookTriggersCreatedBy(userId: string): Promise<number> {
-  const result = await db
-    .update(webhookTriggers)
-    .set({ status: 'paused', pausedAt: new Date() })
-    .where(
-      and(
-        eq(webhookTriggers.createdByUserId, userId),
-        eq(webhookTriggers.status, 'active')
-      )
-    )
-  return result.changes ?? 0
-}
-
 /**
  * Pause a webhook trigger. Events matching its Composio subscription will be
  * acked and discarded instead of firing the agent. The upstream Composio
@@ -596,14 +583,15 @@ async function tearDownUpstream(trigger: WebhookTrigger, upstreamId: string): Pr
   throw new UpstreamOwnerUnresolvedError(upstreamId, memberIds)
 }
 
-// SUP-226 candidate order (creator, then connected-account owner), shared by
-// polling and session attribution so the two chains cannot drift.
+// Session attribution: creator, then connected-account owner (SUP-226), then the
+// agent owner so a deleted creator's trigger keeps a billable member (SUP-858).
 export function resolveTriggerPrincipal(
-  trigger: Pick<WebhookTrigger, 'createdByUserId' | 'connectedAccountId'>,
+  trigger: Pick<WebhookTrigger, 'createdByUserId' | 'connectedAccountId' | 'agentSlug'>,
 ): { userId: string; memberId: string } | null {
   return resolvePlatformMemberForCandidates([
     trigger.createdByUserId,
     getConnectedAccountOwnerUserId(trigger.connectedAccountId),
+    getAgentOwnerUserId(trigger.agentSlug),
   ])
 }
 

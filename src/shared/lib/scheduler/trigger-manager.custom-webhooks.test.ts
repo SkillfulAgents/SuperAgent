@@ -73,11 +73,6 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: vi.fn().mockResolvedValue(true),
 }))
 
-vi.mock('@shared/lib/services/orphaned-automations', () => ({
-  isOrphanedCreator: () => false,
-  pauseOrphanedAutomations: vi.fn(),
-}))
-
 const mockPollAndClaimEvents = vi.fn()
 const mockAcknowledgeEvents = vi.fn().mockResolvedValue(undefined)
 vi.mock('@shared/lib/services/webhook-events-client', () => ({
