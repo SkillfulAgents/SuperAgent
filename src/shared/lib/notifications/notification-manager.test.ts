@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   promoteAutomatedSession: vi.fn(async () => {}),
   isAuthMode: vi.fn(() => false),
   captureException: vi.fn(),
+  getAgentOwnerUserId: vi.fn((_agentSlug: string): string | null => null),
 }))
 
 vi.mock('@shared/lib/services/notification-service', () => ({
@@ -56,6 +57,9 @@ vi.mock('@shared/lib/auth/mode', () => ({
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: mocks.captureException,
 }))
+vi.mock('@shared/lib/services/agent-owner', () => ({
+  getAgentOwnerUserId: mocks.getAgentOwnerUserId,
+}))
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
     broadcastGlobal: mocks.broadcastGlobal,
@@ -78,10 +82,12 @@ const mockBroadcastGlobal = mocks.broadcastGlobal
 const mockPromoteAutomatedSession = mocks.promoteAutomatedSession
 
 import { notificationManager } from './notification-manager'
+import { getRequestUserId } from '@shared/lib/platform-attribution/request-context'
 
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.isAuthMode.mockReturnValue(false)
+  mocks.getAgentOwnerUserId.mockReturnValue(null)
   mocks.getAgentAccessUserIds.mockResolvedValue(['user-a'])
   mocks.getUserSettings.mockReturnValue({
     notifications: {
@@ -192,6 +198,67 @@ describe('triggerSessionComplete — automated-session gating', () => {
     expect(mocks.createSummarizerText).toHaveBeenCalledTimes(1)
     expect(mockCreateNotification).toHaveBeenCalledWith(
       expect.objectContaining({ body: 'A concise completion summary.' }),
+    )
+  })
+
+  it('runs the summarizer under the agent owner request scope', async () => {
+    mocks.getAgentOwnerUserId.mockReturnValue('owner-user')
+    let scopeAtClientBuild: string | undefined
+    let scopeAtSummarize: string | undefined
+    mocks.getConfiguredLlmClient.mockImplementationOnce(() => {
+      scopeAtClientBuild = getRequestUserId()
+      return { messages: {} }
+    })
+    mocks.createSummarizerText.mockImplementationOnce(async () => {
+      await Promise.resolve()
+      scopeAtSummarize = getRequestUserId()
+      return 'A concise completion summary.'
+    })
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(mocks.getAgentOwnerUserId).toHaveBeenCalledWith('agent-x')
+    expect(scopeAtClientBuild).toBe('owner-user')
+    expect(scopeAtSummarize).toBe('owner-user')
+    expect(getRequestUserId()).toBeUndefined()
+  })
+
+  it('runs the summarizer unscoped when the agent has no owner', async () => {
+    let scopeAtSummarize: string | undefined = 'unset'
+    mocks.createSummarizerText.mockImplementationOnce(async () => {
+      scopeAtSummarize = getRequestUserId()
+      return 'A concise completion summary.'
+    })
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(mocks.createSummarizerText).toHaveBeenCalledTimes(1)
+    expect(scopeAtSummarize).toBeUndefined()
+  })
+
+  it('falls back to the plain body when the owner lookup throws', async () => {
+    mocks.getAgentOwnerUserId.mockImplementationOnce(() => {
+      throw new Error('acl unavailable')
+    })
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(mocks.createSummarizerText).not.toHaveBeenCalled()
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'session_complete',
+        body: 'Demo Agent has finished running',
+      }),
+    )
+    expect(mocks.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ tags: { area: 'notifications', op: 'session-complete-body' } }),
     )
   })
 
