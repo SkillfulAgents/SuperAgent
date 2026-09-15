@@ -9,22 +9,27 @@ const IDLE = { isActive: false, isAwaitingInput: false, isStreaming: false }
 const mockApiFetch = vi.fn()
 const {
   mockFork,
+  mockForkAndCompact,
   mockSnapshot,
   mockSeed,
   mockSetQueryData,
   mockNavigate,
   mockStore,
   mockCanUse,
+  mockForkPending,
 } = vi.hoisted(() => {
   const mockCanUse = { value: true }
+  const mockForkPending = { value: false }
   return {
     mockFork: vi.fn(),
+    mockForkAndCompact: vi.fn(),
     mockSnapshot: vi.fn(() => ({ text: 'draft', securedSecrets: undefined })),
     mockSeed: vi.fn(),
     mockSetQueryData: vi.fn(),
     mockNavigate: vi.fn(),
     mockStore: { get: vi.fn(), set: vi.fn() },
     mockCanUse,
+    mockForkPending,
   }
 })
 
@@ -76,6 +81,21 @@ vi.mock('@renderer/components/ui/context-menu', () => ({
     </button>
   ),
   ContextMenuSeparator: () => <hr />,
+  ContextMenuSub: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  ContextMenuSubTrigger: ({
+    children,
+    disabled,
+    'data-testid': testId,
+  }: {
+    children: React.ReactNode
+    disabled?: boolean
+    'data-testid'?: string
+  }) => (
+    <div data-testid={testId} data-disabled={disabled ? '' : undefined}>
+      {children}
+    </div>
+  ),
+  ContextMenuSubContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }))
 
 vi.mock('@renderer/components/ui/alert-dialog', () => ({
@@ -107,6 +127,7 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSetSessionMarkedUnread: () => ({ mutateAsync: mockSetMarkedUnread, isPending: false }),
   useForkSession: () => ({ mutate: mockFork, isPending: false }),
+  useForkAndCompact: () => ({ mutate: mockForkAndCompact, isPending: mockForkPending.value }),
 }))
 
 const mockCanAdminAgent = vi.fn(() => true)
@@ -339,11 +360,13 @@ describe('SessionContextMenu mark as unread', () => {
 describe('Fork Session item', () => {
   beforeEach(() => {
     mockFork.mockReset()
+    mockForkAndCompact.mockReset()
     mockSnapshot.mockClear()
     mockSeed.mockReset()
     mockSetQueryData.mockReset()
     mockNavigate.mockReset()
     mockCanUse.value = true
+    mockForkPending.value = false
     mockCanAdminAgent.mockReturnValue(true)
     mockCanUseAgent.mockReturnValue(true)
   })
@@ -356,25 +379,51 @@ describe('Fork Session item', () => {
     )
   }
 
-  it('shows the item for anyone who can use the agent', () => {
+  it('shows the submenu, with both entries, for anyone who can use the agent', () => {
     renderMenu()
-    expect(screen.getByTestId('fork-session-item')).toHaveTextContent('Fork Session')
+    expect(screen.getByTestId('fork-session-trigger')).toHaveTextContent('Fork Session')
+    expect(screen.getByTestId('fork-session-item')).toHaveTextContent('Fork')
+    expect(screen.getByTestId('fork-summarize-session-item')).toHaveTextContent('Fork & Summarize')
   })
 
-  it('hides the item without canUseAgent', () => {
+  it('hides the submenu without canUseAgent', () => {
     mockCanUse.value = false
     renderMenu()
-    expect(screen.queryByTestId('fork-session-item')).toBeNull()
+    expect(screen.queryByTestId('fork-session-trigger')).toBeNull()
   })
 
-  it('disables the item while the source is active', () => {
+  it('disables the submenu while the source is active', () => {
     renderMenu({ isActive: true })
-    expect(screen.getByTestId('fork-session-item')).toHaveAttribute('data-disabled')
+    expect(screen.getByTestId('fork-session-trigger')).toHaveAttribute('data-disabled')
   })
 
-  it('disables the item while the source is streaming', () => {
+  it('disables the submenu while the source is streaming', () => {
     renderMenu({ isStreaming: true })
+    expect(screen.getByTestId('fork-session-trigger')).toHaveAttribute('data-disabled')
+  })
+
+  it('disables the submenu and both rows while a fork-and-compact is in flight', () => {
+    mockForkPending.value = true
+    renderMenu()
+    expect(screen.getByTestId('fork-session-trigger')).toHaveAttribute('data-disabled')
     expect(screen.getByTestId('fork-session-item')).toHaveAttribute('data-disabled')
+    expect(screen.getByTestId('fork-summarize-session-item')).toHaveAttribute('data-disabled')
+    fireEvent.click(screen.getByTestId('fork-summarize-session-item'))
+    expect(mockForkAndCompact).not.toHaveBeenCalled()
+  })
+
+  it('disables both rows too when the source goes active with the submenu open', () => {
+    const { rerender } = renderMenu()
+    expect(screen.getByTestId('fork-session-item')).not.toHaveAttribute('data-disabled')
+    rerender(
+      <SessionContextMenu sessionId="src-1" sessionName="Pricing" agentSlug="agent-a" activity={{ ...IDLE, isActive: true }}>
+        <div>row</div>
+      </SessionContextMenu>,
+    )
+    expect(screen.getByTestId('fork-session-item')).toHaveAttribute('data-disabled')
+    expect(screen.getByTestId('fork-summarize-session-item')).toHaveAttribute('data-disabled')
+    fireEvent.click(screen.getByTestId('fork-summarize-session-item'))
+    expect(mockForkAndCompact).not.toHaveBeenCalled()
   })
 
   it('forks; navigation, draft and cache seed live in the hook', async () => {
@@ -386,4 +435,12 @@ describe('Fork Session item', () => {
     expect(mockSeed).not.toHaveBeenCalled()
     expect(mockSetQueryData).not.toHaveBeenCalled()
   })
+
+  it('forks and summarizes through the shared chain', async () => {
+    renderMenu()
+    fireEvent.click(screen.getByTestId('fork-summarize-session-item'))
+    await waitFor(() => expect(mockForkAndCompact).toHaveBeenCalledWith({ sessionId: 'src-1', agentSlug: 'agent-a' }))
+    expect(mockFork).not.toHaveBeenCalled()
+  })
+
 })
