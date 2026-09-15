@@ -96,10 +96,21 @@ export function createAgentCatalog(): AgentCatalog {
   const rowFor = (slug: AgentSlug): AgentRow | undefined =>
     db.select().from(agents).where(eq(agents.slug, slug)).get()
 
-  const records = async (): Promise<AgentRecord[]> =>
-    db.select().from(agents).orderBy(desc(agents.createdAt), agents.slug).all().map(toRecord)
+  // The boot reconcile runs while HTTP is already serving. Until it has
+  // finished, the table may be empty (a fresh database, an upgrade) or stale,
+  // so every read and write waits for it. Nothing waits when no reconcile
+  // has been started: a process that never runs one sees the table as it is.
+  let firstReconcile: Promise<unknown> | null = null
+  const ready = (): Promise<void> =>
+    firstReconcile ? firstReconcile.then(() => undefined, () => undefined) : Promise.resolve()
+
+  const records = async (): Promise<AgentRecord[]> => {
+    await ready()
+    return db.select().from(agents).orderBy(desc(agents.createdAt), agents.slug).all().map(toRecord)
+  }
 
   const mint = async (): Promise<AgentSlug> => {
+    await ready()
     // Checked against the table and against every directory, legacy folders
     // included, so a slug never collides with a workspace the table has not
     // imported yet.
@@ -118,10 +129,12 @@ export function createAgentCatalog(): AgentCatalog {
     list: async () => (await records()).map((record) => record.slug),
     records,
     get: async (slug) => {
+      await ready()
       const row = rowFor(slug)
       return row === undefined ? null : toRecord(row)
     },
     getMany: async (slugs) => {
+      await ready()
       if (slugs.length === 0) return []
       return db
         .select()
@@ -131,9 +144,13 @@ export function createAgentCatalog(): AgentCatalog {
         .all()
         .map(toRecord)
     },
-    exists: async (slug) => rowFor(slug) !== undefined,
+    exists: async (slug) => {
+      await ready()
+      return rowFor(slug) !== undefined
+    },
     mint,
     insert: async ({ slug, name, description, createdAt }) => {
+      await ready()
       db.insert(agents).values({
         slug,
         name,
@@ -145,6 +162,7 @@ export function createAgentCatalog(): AgentCatalog {
       return toRecord(rowFor(slug)!)
     },
     update: async (slug, changes: AgentIdentityChanges) => {
+      await ready()
       const values: Partial<AgentRow> = {}
       if (changes.name !== undefined) values.name = changes.name
       if (changes.description !== undefined) values.description = changes.description
@@ -156,6 +174,7 @@ export function createAgentCatalog(): AgentCatalog {
     },
     resolve: async (input) => {
       if (!input || !SAFE_AGENT_INPUT_RE.test(input)) return null
+      await ready()
       // Exact match handles a bare minted slug and a legacy compound folder name.
       if (rowFor(input) !== undefined) return input
       // Otherwise the slug is the final hyphen-delimited segment (minted slugs
@@ -167,16 +186,27 @@ export function createAgentCatalog(): AgentCatalog {
       return null
     },
     remove: async (slug) => {
+      await ready()
       const row = rowFor(slug)
       if (row === undefined) return
-      db.delete(agents).where(eq(agents.slug, slug)).run()
+      // The workspace goes first: a removal that fails (a busy mount, a
+      // permission) leaves the row, so the agent still exists and the delete
+      // can be retried, instead of a workspace on disk that nothing lists.
       if (row.runtime === LOCAL_RUNTIME) {
         const dir = getAgentDir(slug)
         assertPathWithinDir(getAgentsDir(), dir)
         await removeDirectory(dir)
       }
+      db.delete(agents).where(eq(agents.slug, slug)).run()
     },
-    reconcile: async () => {
+    reconcile: () => {
+      const run = reconcileOnce()
+      firstReconcile ??= run
+      return run
+    },
+  }
+
+  async function reconcileOnce() {
       const agentsDir = getAgentsDir()
       await ensureDirectory(agentsDir)
       const directories = new Set(await listDirectories(agentsDir))
@@ -221,7 +251,6 @@ export function createAgentCatalog(): AgentCatalog {
       }
 
       return { imported, removed }
-    },
   }
 }
 

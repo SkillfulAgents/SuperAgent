@@ -1292,6 +1292,9 @@ export async function refreshAgentTemplates(
           }
           if (await directoryExists(agentDirInRepo)) {
             await copyTemplateFiles(agentDirInRepo, actor.files)
+            // The merged template's CLAUDE.md replaced the projection; the
+            // agent keeps its name, and the hash records what is on disk.
+            await writeAgentIdentityProjection(slug)
             meta.originalContentHash = await computeWorkspaceTemplateHash(actor.files)
           }
         }
@@ -1322,7 +1325,11 @@ export async function refreshAgentTemplates(
         && currentHash !== meta.originalContentHash
         && repoHash !== meta.originalContentHash) {
       await copyTemplateFiles(agentDirInRepo, actor.files)
-      meta.originalContentHash = repoHash
+      // Same as above: restore the identity projection the upstream CLAUDE.md
+      // overwrote, then record the hash of the workspace as it now is, not
+      // the repo's, so the projection does not read as a local change.
+      await writeAgentIdentityProjection(slug)
+      meta.originalContentHash = await computeWorkspaceTemplateHash(actor.files)
       meta.openPrUrl = undefined
 
       try {

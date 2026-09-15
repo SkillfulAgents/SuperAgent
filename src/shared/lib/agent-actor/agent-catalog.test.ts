@@ -165,6 +165,27 @@ describe('removing an agent', () => {
     await catalog.remove('stray')
     expect(fs.existsSync(getAgentDir('stray'))).toBe(true)
   })
+
+  it('keeps the row when the workspace cannot be removed, so the delete can be retried', async () => {
+    await writeAgentDirectory('stuck', '---\nname: Stuck\n---\nBody')
+    await catalog.insert({ slug: 'stuck', name: 'Stuck', createdAt: new Date() })
+    // A directory without write permission refuses to unlink its children.
+    const workspace = path.join(getAgentDir('stuck'), 'workspace')
+    await fs.promises.chmod(workspace, 0o555)
+
+    try {
+      await expect(catalog.remove('stuck')).rejects.toThrow()
+      expect(rowFor('stuck')).toBeDefined()
+      expect(await catalog.exists('stuck')).toBe(true)
+      expect(fs.existsSync(getAgentDir('stuck'))).toBe(true)
+    } finally {
+      await fs.promises.chmod(workspace, 0o755)
+    }
+
+    await catalog.remove('stuck')
+    expect(rowFor('stuck')).toBeUndefined()
+    expect(fs.existsSync(getAgentDir('stuck'))).toBe(false)
+  })
 })
 
 describe('reconciling with the agents directory', () => {
@@ -233,6 +254,44 @@ describe('reconciling with the agents directory', () => {
     expect(result).toEqual({ imported: [], removed: ['vanished'] })
     expect(await catalog.exists('vanished')).toBe(false)
     expect((await catalog.get('remote'))?.placement).toEqual({ runtime: 'modal', workspaceHandle: 'superagent-remote' })
+  })
+
+  it('answers reads that arrive during the first reconcile only once it has finished', async () => {
+    // The boot reconcile runs while HTTP is already serving: a listing that
+    // lands before it has imported the directories must not see an empty
+    // table (and a request for an existing agent must not 404).
+    await writeAgentDirectory('early', '---\nname: Early Agent\n---\nBody')
+    await writeAgentDirectory('other', '---\nname: Other Agent\n---\nBody')
+
+    const reconciling = catalog.reconcile()
+    const [listed, record, resolved, present] = await Promise.all([
+      catalog.list(),
+      catalog.get('early'),
+      catalog.resolve('early'),
+      catalog.exists('other'),
+    ])
+
+    expect(listed.sort()).toEqual(['early', 'other'])
+    expect(record?.name).toBe('Early Agent')
+    expect(resolved).toBe('early')
+    expect(present).toBe(true)
+    await expect(reconciling).resolves.toMatchObject({ removed: [] })
+  })
+
+  it('does not hold reads when no reconcile has been started', async () => {
+    await catalog.insert({ slug: 'plain', name: 'Plain', createdAt: new Date() })
+    expect(await catalog.list()).toEqual(['plain'])
+  })
+
+  it('still answers reads when the first reconcile fails', async () => {
+    // The agents path is a file, so the reconcile cannot list it.
+    await fs.promises.mkdir(dataDir, { recursive: true })
+    await fs.promises.writeFile(getAgentsDir(), 'not a directory')
+    await catalog.insert({ slug: 'kept', name: 'Kept', createdAt: new Date() })
+
+    await expect(catalog.reconcile()).rejects.toThrow()
+
+    expect(await catalog.list()).toEqual(['kept'])
   })
 
   it('creates the agents directory when it does not exist yet', async () => {
