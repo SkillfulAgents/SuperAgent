@@ -29,6 +29,7 @@ import type {
   StopOptions,
 } from '@shared/lib/container/types'
 import type { CoalescedUserMessage } from '@shared/lib/container/runtime-death'
+import type { ActiveSubagentSnapshot } from '@shared/lib/container/message-persister'
 import type { WebSocket } from 'ws'
 import type { ConnectionRuntimeKind } from '@shared/lib/container/connection-runtime-sync'
 import type { CommonLoadOptions, DailyUsageData } from '@shared/lib/services/usage-service'
@@ -308,6 +309,8 @@ export interface SessionOps {
   setSlashCommands(sessionId: string, commands: SlashCommandInfo[]): void
   /** `messagePersister.getActiveBackgroundTasks` */
   backgroundTasks(sessionId: string): Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }>
+  /** `messagePersister.getActiveSubagents` — running and completed subagents for the current turn. */
+  activeSubagents(sessionId: string): ActiveSubagentSnapshot[]
 
   // Container stream attachment — messagePersister follows the container's
   // stream for a session and persists what arrives.

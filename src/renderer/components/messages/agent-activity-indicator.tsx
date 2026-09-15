@@ -188,10 +188,11 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         ? resumeByToolId.get(sub.parentToolId)
         : undefined
       const isSendMessageRun = resume !== undefined
+      const isLifecycleAgent = !!sub.subagentType
       // local_workflow also emits subagent lifecycle events, but it has its own
-      // activity UI. Only Agent/Task launches and their SendMessage resumes
-      // belong in this list.
-      if (!directLaunch && !originalLaunch && !isSendMessageRun) continue
+      // activity UI. A lifecycle-identified Agent may originate in a Skill
+      // sidechain and therefore have no launch call in the main transcript.
+      if (!directLaunch && !originalLaunch && !isSendMessageRun && !isLifecycleAgent) continue
 
       const stableAgentId = sub.agentId
         ?? directLaunch?.agentId

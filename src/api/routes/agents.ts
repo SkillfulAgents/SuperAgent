@@ -3180,6 +3180,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         }
       }
       const backgroundTasks = agentRegistry.get(agentSlug).sessions.backgroundTasks(sessionId)
+      const activeSubagents = agentRegistry.get(agentSlug).sessions.activeSubagents(sessionId)
       // A background task can run while the turn is still streaming, so the
       // task list alone does not say whether the turn's output has ended.
       const isWaitingBackground = agentRegistry.get(agentSlug).sessions.isWaitingBackground(sessionId)
@@ -3190,6 +3191,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
           isWaitingBackground,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
           backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
+          activeSubagents,
         }),
         event: 'message',
       })
