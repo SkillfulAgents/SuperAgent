@@ -8,7 +8,7 @@ import { mcpReauthManager } from './proxy/mcp-reauth-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { triggerManager } from './scheduler/trigger-manager'
 import { platformNotificationsManager } from './scheduler/platform-notifications-manager'
-import { chatIntegrationManager } from './chat-integrations/chat-integration-manager'
+import { agentIntegrationManager } from './agent-integrations/agent-integration-manager'
 import { captureException } from './error-reporting'
 import { registerAllAccountProviders } from './account-providers/register'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
@@ -199,12 +199,12 @@ async function initializeServicesInner() {
     console.error('Failed to start platform notifications manager:', error)
   })
 
-  // Start chat integration manager
+  // Start agent integration manager
   scheduleStartupIo(
-    () => chatIntegrationManager.start(),
-    () => chatIntegrationManager.stop(),
+    () => agentIntegrationManager.start(),
+    () => agentIntegrationManager.stop(),
   ).catch((error) => {
-    console.error('Failed to start chat integration manager:', error)
+    console.error('Failed to start agent integration manager:', error)
     // TODO add exception capturing for all other services that start in this file
     captureException(error, { tags: { component: 'chat-integration', operation: 'startup' } })
   })
@@ -285,7 +285,7 @@ export async function shutdownServices() {
   accountReauthManager.rejectAll()
   mcpReauthManager.rejectAll()
   stopBrowserProfileCleanup()
-  chatIntegrationManager.stop()
+  agentIntegrationManager.stop()
   await credentialBroker.shutdown()
   await stopAllProviders()
   taskScheduler.stop()

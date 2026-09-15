@@ -249,8 +249,8 @@ vi.mock('@shared/lib/services/chat-integration-service', () => ({
   listChatIntegrationsByAgents: vi.fn(),
 }))
 
-vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
-  chatIntegrationManager: {},
+vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
+  agentIntegrationManager: {},
 }))
 
 vi.mock('@shared/lib/services/notification-service', () => ({

@@ -1,3 +1,4 @@
+import { mockChatIntegration } from '@shared/lib/chat-integrations/test-helpers'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import Database from 'better-sqlite3'
@@ -67,13 +68,18 @@ const mockGetActiveIntegrationIds = vi.fn()
 const mockEnsureSession = vi.fn()
 const mockGetConnectorClass = vi.fn()
 
-vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
-  chatIntegrationManager: {
+vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
+  agentIntegrationManager: {
     addIntegration: (...args: unknown[]) => mockAddIntegration(...args),
-    getConnector: (...args: unknown[]) => mockGetConnector(...args),
+    getConnector: (...args: unknown[]) => {
+      const transport = mockGetConnector(...args)
+      return transport ? mockChatIntegration(transport) : undefined
+    },
     getActiveIntegrationIds: (...args: unknown[]) => mockGetActiveIntegrationIds(...args),
     ensureSession: (...args: unknown[]) => mockEnsureSession(...args),
-    getConnectorClass: (...args: unknown[]) => mockGetConnectorClass(...args),
+    getDefinition: (...args: unknown[]) => mockGetConnectorClass(...args),
+    describeTarget: async (provider: string, externalId: string) => ({ type: (await mockGetConnectorClass(provider))?.classifyChatId?.({ chatId: externalId }) }),
+    integrationCreated: vi.fn(),
   },
 }))
 
@@ -230,7 +236,7 @@ describe('x-agent chat route', () => {
 
   it('labels chats and advertises capabilities from the connector class statics', async () => {
     mockGetConnectorClass.mockResolvedValue({
-      discoveryCapabilities: ['list_users', 'list_channels', 'dm_by_user_id'],
+      capabilities: ['list_users', 'list_channels', 'dm_by_user_id'],
       classifyChatId: (chat: { chatId: string }) => (chat.chatId.startsWith('D') ? 'dm' : chat.chatId.includes('|') ? 'thread' : 'channel'),
     })
     mockListChatIntegrationSessions.mockReturnValue([
@@ -495,7 +501,7 @@ describe('x-agent chat route', () => {
 
   it('resolves a user_id to a direct chat and sends there', async () => {
     immediateTimeout()
-    mockGetConnectorClass.mockResolvedValue({ discoveryCapabilities: ['dm_by_user_id'] })
+    mockGetConnectorClass.mockResolvedValue({ capabilities: ['dm_by_user_id'] })
     const resolveDirectChat = vi.fn().mockResolvedValue('D0NEWCHAT')
     mockGetConnector.mockReturnValue({ ...connector, resolveDirectChat })
 
@@ -530,7 +536,7 @@ describe('x-agent chat route', () => {
   })
 
   it('surfaces DM-resolution failures as a clear error', async () => {
-    mockGetConnectorClass.mockResolvedValue({ discoveryCapabilities: ['dm_by_user_id'] })
+    mockGetConnectorClass.mockResolvedValue({ capabilities: ['dm_by_user_id'] })
     const resolveDirectChat = vi.fn().mockRejectedValue(new Error('user_not_found'))
     mockGetConnector.mockReturnValue({ ...connector, resolveDirectChat })
 
@@ -544,7 +550,7 @@ describe('x-agent chat route', () => {
   it('applies the own-chat guard to the chat a user_id resolves to', async () => {
     // The caller session IS the DM conversation with this user: resolving the
     // user id lands on the caller's own chat, which must still be rejected.
-    mockGetConnectorClass.mockResolvedValue({ discoveryCapabilities: ['dm_by_user_id'] })
+    mockGetConnectorClass.mockResolvedValue({ capabilities: ['dm_by_user_id'] })
     const resolveDirectChat = vi.fn().mockResolvedValue('D0AAA111')
     mockGetConnector.mockReturnValue({ ...connector, resolveDirectChat })
     mockGetChatIntegrationSessionBySessionId.mockReturnValue({
@@ -569,7 +575,7 @@ describe('x-agent chat route', () => {
   }
 
   it('lists directory users through the connector', async () => {
-    mockGetConnectorClass.mockResolvedValue({ discoveryCapabilities: ['list_users', 'list_channels'] })
+    mockGetConnectorClass.mockResolvedValue({ capabilities: ['list_users', 'list_channels'] })
     const listChatUsers = vi.fn().mockResolvedValue({
       items: [{ id: 'U0MIKE', name: 'Mike Reid', title: 'Office Manager' }],
       truncated: false,
@@ -587,7 +593,7 @@ describe('x-agent chat route', () => {
   })
 
   it('lists directory channels and passes the truncation flag through', async () => {
-    mockGetConnectorClass.mockResolvedValue({ discoveryCapabilities: ['list_users', 'list_channels'] })
+    mockGetConnectorClass.mockResolvedValue({ capabilities: ['list_users', 'list_channels'] })
     const listChatChannels = vi.fn().mockResolvedValue({
       items: [{ id: 'C0OFFICE', name: '#office', isPrivate: false, isMember: true }],
       truncated: true,
@@ -621,7 +627,7 @@ describe('x-agent chat route', () => {
   })
 
   it('does not reconnect a paused integration for directory listings', async () => {
-    mockGetConnectorClass.mockResolvedValue({ discoveryCapabilities: ['list_users', 'list_channels'] })
+    mockGetConnectorClass.mockResolvedValue({ capabilities: ['list_users', 'list_channels'] })
     mockGetChatIntegration.mockReturnValue(createIntegration({ status: 'paused' }))
     mockGetConnector.mockReturnValue(undefined)
 

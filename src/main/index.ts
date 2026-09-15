@@ -126,7 +126,7 @@ import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target
 import { applyPreferredApiTarget, resolveApiTargetForRenderer } from './api-target'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
-import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
+import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
 // Set the app name (shows in macOS menu bar instead of "Electron" during dev)
@@ -1495,10 +1495,10 @@ async function startApp() {
 
   void afterBindInitialize()
 
-  // Reconnect chat integrations after system sleep
+  // Reconnect agent integrations after system sleep
   powerMonitor.on('resume', () => {
-    chatIntegrationManager.reconnectAll().catch((err) => {
-      console.error('Failed to reconnect chat integrations after resume:', err)
+    agentIntegrationManager.reconnectAll().catch((err) => {
+      console.error('Failed to reconnect agent integrations after resume:', err)
     })
   })
 

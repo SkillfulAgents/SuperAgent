@@ -1,3 +1,5 @@
+import { inputEvent, mockChatIntegration } from './test-helpers'
+import type { IntegrationInputEvent, IntegrationResponseEvent } from '../agent-integrations/types'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
@@ -67,14 +69,12 @@ interface ManagerInternals {
   chatSessions: Map<string, unknown>
   handleIncomingMessageInner: (
     integrationId: string,
-    message: IncomingMessage,
+    message: IntegrationInputEvent,
     integration: unknown,
   ) => Promise<void>
   handleInteractiveResponse: (
     integrationId: string,
-    toolUseId: string,
-    response: unknown,
-    chatId?: string,
+    event: IntegrationResponseEvent,
   ) => Promise<void>
 }
 
@@ -133,20 +133,15 @@ function msg(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
 function injectConn(): void {
   sendMessage = vi.fn().mockResolvedValue('sent-id')
   mgr.connections.set(INT, {
-    connector: {
-      sendMessage,
-      showTypingIndicator: vi.fn().mockResolvedValue(undefined),
-    },
+    connector: mockChatIntegration({ sendMessage }),
     integration,
-    messageUnsubscribe: null,
-    interactiveUnsubscribe: null,
     errorUnsubscribe: null,
-    typingHintUnsubscribe: null,
+    eventUnsubscribe: null,
   })
 }
 
 function deliver(message: IncomingMessage): Promise<void> {
-  return mgr.handleIncomingMessageInner(INT, message, integration)
+  return mgr.handleIncomingMessageInner(INT, inputEvent(message), integration)
 }
 
 describe('chat-integration inbound access gate', () => {
@@ -262,15 +257,13 @@ describe('chat-integration inbound access gate', () => {
     const slackIntegration = { ...integration, id: SLACK, provider: 'slack' }
     const slackSend = vi.fn().mockResolvedValue('sent-id')
     mgr.connections.set(SLACK, {
-      connector: { sendMessage: slackSend, showTypingIndicator: vi.fn().mockResolvedValue(undefined) },
+      connector: mockChatIntegration({ provider: 'slack', sendMessage: slackSend }),
       integration: slackIntegration,
-      messageUnsubscribe: null,
-      interactiveUnsubscribe: null,
       errorUnsubscribe: null,
-      typingHintUnsubscribe: null,
+      eventUnsubscribe: null,
     })
 
-    await mgr.handleIncomingMessageInner(SLACK, msg({ chatId: 'sc1', chatType: 'private', text: '/start' }), slackIntegration)
+    await mgr.handleIncomingMessageInner(SLACK, inputEvent(msg({ chatId: 'sc1', chatType: 'private', text: '/start' })), slackIntegration)
 
     // Not intercepted with the greeting; reached the spend path (agent lookup +
     // container start) instead.
@@ -323,7 +316,7 @@ describe('chat-integration inbound access gate', () => {
 
 describe('chat-integration callback access gate', () => {
   function callback(chatId?: string): Promise<void> {
-    return mgr.handleInteractiveResponse(INT, 'review:test-review', { answer: 'allow' }, chatId)
+    return mgr.handleInteractiveResponse(INT, { type: 'response', externalId: chatId ?? '', requestId: 'test-review', requestKind: 'review', value: 'allow' })
   }
 
   beforeEach(() => {

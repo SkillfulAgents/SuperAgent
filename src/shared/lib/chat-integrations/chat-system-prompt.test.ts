@@ -94,6 +94,7 @@ vi.mock('./slack-connector', async (importOriginal) => {
       static generateSystemPrompt = actual.SlackConnector.generateSystemPrompt
       static classifyChatId = actual.SlackConnector.classifyChatId
       constructor() {
+        Object.defineProperty(mockConnector, 'constructor', { value: new.target, configurable: true })
         return mockConnector
       }
     },
@@ -108,6 +109,7 @@ vi.mock('./imessage-connector', async (importOriginal) => {
       static generateSystemPrompt = actual.IMessageConnector.generateSystemPrompt
       static classifyChatId = actual.IMessageConnector.classifyChatId
       constructor() {
+        Object.defineProperty(mockConnector, 'constructor', { value: new.target, configurable: true })
         return mockConnector
       }
     },
@@ -122,6 +124,7 @@ vi.mock('./telegram-connector', async (importOriginal) => {
       static generateSystemPrompt = actual.TelegramConnector.generateSystemPrompt
       static classifyChatId = actual.TelegramConnector.classifyChatId
       constructor() {
+        Object.defineProperty(mockConnector, 'constructor', { value: new.target, configurable: true })
         return mockConnector
       }
     },
@@ -398,9 +401,8 @@ describe('chat session system prompt wiring', () => {
   })
 
   it('fails closed through the manager when a connector has no classifier', async () => {
-    const connectorClassSpy = vi.spyOn(chatIntegrationManager, 'getConnectorClass').mockResolvedValue({
-      generateSystemPrompt: TelegramConnector.generateSystemPrompt,
-    })
+    const original = TelegramConnector.classifyChatId
+    TelegramConnector.classifyChatId = undefined as never
     try {
       const args = await startSession('telegram', {
         chatId: '-1001234567890',
@@ -409,7 +411,7 @@ describe('chat session system prompt wiring', () => {
       })
       expect(args.initialMessage).toBe('hey')
     } finally {
-      connectorClassSpy.mockRestore()
+      TelegramConnector.classifyChatId = original
     }
   })
 })

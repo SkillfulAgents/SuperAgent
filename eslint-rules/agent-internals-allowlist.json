@@ -26,7 +26,7 @@
   "src/api/routes/x-agent.ts": [
     "@shared/lib/container/message-persister"
   ],
-  "src/shared/lib/chat-integrations/chat-integration-manager.ts": [
+  "src/shared/lib/agent-integrations/agent-integration-manager.ts": [
     "@shared/lib/container/message-persister"
   ],
   "src/shared/lib/notifications/channels/client-broadcast-channel.ts": [
