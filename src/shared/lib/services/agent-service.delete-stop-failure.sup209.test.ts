@@ -62,7 +62,7 @@ vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 // Import after mocking
 import { deleteAgent, agentExists, AgentContainerStopError } from './agent-service'
-import { agentCatalog } from '@shared/lib/agent-actor'
+import { importAgentDirectories } from '@shared/lib/db/data-migrations/0001-import-agents-from-directories'
 
 describe('agent-service deleteAgent — container stop failure (SUP-209)', () => {
   let testDir: string
@@ -94,7 +94,7 @@ describe('agent-service deleteAgent — container stop failure (SUP-209)', () =>
     const workspaceDir = path.join(testDir, 'agents', slug, 'workspace')
     await fs.promises.mkdir(workspaceDir, { recursive: true })
     await fs.promises.writeFile(path.join(workspaceDir, 'CLAUDE.md'), claudeMdContent)
-    await agentCatalog.reconcile()
+    importAgentDirectories(testDb)
   }
 
   it('does not delete the workspace when stopping the container fails', async () => {

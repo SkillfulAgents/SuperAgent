@@ -116,13 +116,6 @@ export interface AgentIdentityChanges {
   description?: string | null
 }
 
-export interface AgentReconcileResult {
-  /** Directories that had no row and were imported as local agents. */
-  imported: AgentSlug[]
-  /** Local rows whose directory is gone and were removed. */
-  removed: AgentSlug[]
-}
-
 /**
  * Which agents exist and what they are called. Host level, like
  * `ContainerHost`: an actor is about one agent, this is about the set, and
@@ -153,14 +146,6 @@ export interface AgentCatalog {
   resolve(input: string): Promise<AgentSlug | null>
   /** Remove an agent and everything it owns. The caller stops its container first. */
   remove(slug: AgentSlug): Promise<void>
-  /**
-   * Bring the catalog in line with the agents data directory: a directory
-   * with a `CLAUDE.md` and no row is imported as a local agent, named from
-   * its frontmatter; a local row whose directory is gone is removed. Rows
-   * placed elsewhere are never removed here: the row is the only record of
-   * that workspace. Runs at boot.
-   */
-  reconcile(): Promise<AgentReconcileResult>
 }
 
 export interface ContainerOps {

@@ -199,9 +199,10 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
 }
 
 /**
- * Mint a slug, write the workspace, then record the agent. The row is written
- * last so a workspace that failed to write never shows as an agent; a
- * workspace whose row failed to write is imported at the next boot.
+ * Mint a slug, record the agent, then write its workspace. The row goes first
+ * so that a crash in between leaves an agent that is listed (with no
+ * instructions yet) and can be deleted, never a workspace on disk that
+ * nothing lists. A workspace write that fails takes the row with it.
  */
 async function writeNewAgent(
   identity: { name: string; description?: string },
@@ -210,18 +211,23 @@ async function writeNewAgent(
   // Mint an opaque id — the name no longer feeds the folder, so the "Untitled"
   // promptless-create flow can't poison it.
   const slug = await agentCatalog.mint()
-  const actor = agentRegistry.get(slug)
   const createdAt = new Date()
-
-  await actor.files.mkdir('')
+  const record = await agentCatalog.insert({ slug, name: identity.name, description: identity.description, createdAt })
 
   const frontmatter: AgentFrontmatter = { name: identity.name, createdAt: createdAt.toISOString() }
   if (identity.description) {
     frontmatter.description = identity.description
   }
-  await actor.config.put('instructions', serializeMarkdownWithFrontmatter(frontmatter, body))
+  try {
+    const actor = agentRegistry.get(slug)
+    await actor.files.mkdir('')
+    await actor.config.put('instructions', serializeMarkdownWithFrontmatter(frontmatter, body))
+  } catch (error) {
+    await agentCatalog.remove(slug).catch(() => undefined)
+    throw error
+  }
 
-  return agentCatalog.insert({ slug, name: identity.name, description: identity.description, createdAt })
+  return record
 }
 
 /**

@@ -482,6 +482,15 @@ export const mcpAuditLog = sqliteTable('mcp_audit_log', {
   mcpAgentIdx: index('mcp_audit_log_mcp_agent_idx').on(table.remoteMcpId, table.agentSlug),
 }))
 
+// Data migrations - the ledger of one-time data moves that have run against
+// this database (see data-migrations/). Keyed by sequence number, never by
+// app version: a database that is lost re-runs every one of them.
+export const dataMigrations = sqliteTable('data_migrations', {
+  id: integer('id').primaryKey(),
+  name: text('name').notNull(),
+  appliedAt: integer('applied_at', { mode: 'timestamp_ms' }).notNull(),
+})
+
 // Agents - which agents exist and what they are called. The row is the
 // authority for name and description; the agent's CLAUDE.md keeps a
 // frontmatter projection of them that the host writes on create and rename.
@@ -742,6 +751,7 @@ export type AgentRemoteMcp = typeof agentRemoteMcps.$inferSelect
 export type NewAgentRemoteMcp = typeof agentRemoteMcps.$inferInsert
 export type McpAuditLogEntry = typeof mcpAuditLog.$inferSelect
 export type NewMcpAuditLogEntry = typeof mcpAuditLog.$inferInsert
+export type DataMigrationRow = typeof dataMigrations.$inferSelect
 export type AgentRow = typeof agents.$inferSelect
 export type NewAgentRow = typeof agents.$inferInsert
 export type AgentAcl = typeof agentAcl.$inferSelect

@@ -67,7 +67,7 @@ import {
   adoptAgentIdentityFromWorkspace,
   writeAgentIdentityProjection,
 } from './agent-service'
-import { agentCatalog } from '@shared/lib/agent-actor'
+import { importAgentDirectories } from '@shared/lib/db/data-migrations/0001-import-agents-from-directories'
 
 describe('agent-service', () => {
   let testDir: string
@@ -108,7 +108,8 @@ describe('agent-service', () => {
   })
 
   // Helper to create an agent the way an install found on disk is: a
-  // directory with a CLAUDE.md, imported into the catalog at boot.
+  // directory with a CLAUDE.md, imported into the catalog by the data
+  // migration that runs when the database is opened.
   async function createTestAgent(slug: string, claudeMdContent: string) {
     const workspaceDir = path.join(testDir, 'agents', slug, 'workspace')
     await fs.promises.mkdir(workspaceDir, { recursive: true })
@@ -116,7 +117,7 @@ describe('agent-service', () => {
       path.join(workspaceDir, 'CLAUDE.md'),
       claudeMdContent
     )
-    await agentCatalog.reconcile()
+    importAgentDirectories(testDb)
   }
 
   // ============================================================================
@@ -131,7 +132,7 @@ describe('agent-service', () => {
 
     it('returns null when a directory exists but CLAUDE.md is missing, so it was never imported', async () => {
       await fs.promises.mkdir(path.join(testDir, 'agents', 'hollow', 'workspace'), { recursive: true })
-      await agentCatalog.reconcile()
+      importAgentDirectories(testDb)
 
       const agent = await getAgent('hollow')
 
@@ -144,7 +145,7 @@ describe('agent-service', () => {
     it('returns null when the slug names a regular file in the agents dir', async () => {
       await fs.promises.mkdir(path.join(testDir, 'agents'), { recursive: true })
       await fs.promises.writeFile(path.join(testDir, 'agents', 'stray-file'), 'not an agent')
-      await agentCatalog.reconcile()
+      importAgentDirectories(testDb)
 
       await expect(getAgent('stray-file')).resolves.toBeNull()
     })
@@ -448,6 +449,26 @@ Instructions`
       })
 
       expect(agent.instructions).toBe(customInstructions)
+    })
+
+    it('records the agent before writing its workspace, and takes the row back if the write fails', async () => {
+      // Pin the minted slug and put a file where its directory must go, so
+      // the workspace write fails after the row exists.
+      const slug = 'a'.repeat(10)
+      await fs.promises.mkdir(path.join(testDir, 'agents'), { recursive: true })
+      const random = vi.spyOn(Math, 'random').mockReturnValue(0)
+      try {
+        await fs.promises.writeFile(path.join(testDir, 'agents', slug), 'in the way')
+        // mint() also refuses a slug whose directory exists, so it falls back
+        // to the timestamp form; block that too by making every candidate
+        // collide with a file.
+        await expect(createAgent({ name: 'Doomed' })).rejects.toThrow()
+      } finally {
+        random.mockRestore()
+      }
+
+      expect(await agentExists(slug)).toBe(false)
+      expect(await listAgents()).toEqual([])
     })
 
     it('creates unique slugs for same name', async () => {

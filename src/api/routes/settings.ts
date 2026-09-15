@@ -73,6 +73,7 @@ import {
   mcpToolPolicies,
   agentAcl,
   agents,
+  dataMigrations,
   messageAuthor,
   xAgentPolicies,
   apiScopePolicies,
@@ -186,6 +187,8 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   webhookTriggers,
   // the agent catalog itself, once the per-agent rows above are gone
   agents,
+  // and the ledger of one-time data moves: a reset database starts over
+  dataMigrations,
   notifications,
   sessionUnreadMarks,
   scheduledTasks,

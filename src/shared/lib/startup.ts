@@ -1,6 +1,6 @@
 import type { ServerType } from '@hono/node-server'
 import pLimit from 'p-limit'
-import { agentCatalog, containerHost } from './agent-actor'
+import { containerHost } from './agent-actor'
 import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
 import { accountReauthManager } from './proxy/account-reauth-manager'
@@ -99,14 +99,6 @@ export async function afterBindInitialize(options: AfterBindInitOptions = {}): P
 }
 
 async function initializeServicesInner() {
-  // HTTP is already serving. The catalog is rebuilt from the agent
-  // directories before anything lists it: a database that was lost still
-  // finds every local agent, and a workspace removed by hand no longer
-  // shows. Started first, so a request that lands during boot waits on it
-  // (the catalog holds its reads until the first reconcile settles) instead
-  // of seeing an empty or stale table.
-  const catalogReconciled = agentCatalog.reconcile()
-
   // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
   // initErrorReporting is a no-op if already initialized, so this is safe.
   // Skip in dev mode — dev errors are too noisy and pollute Sentry.
@@ -167,15 +159,7 @@ async function initializeServicesInner() {
         captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
       }
     })(),
-    (async () => {
-      const reconciled = await catalogReconciled
-      if (reconciled.imported.length > 0 || reconciled.removed.length > 0) {
-        console.log(
-          `[startup] Agent catalog reconciled: ${reconciled.imported.length} imported, ${reconciled.removed.length} removed`,
-        )
-      }
-      return listAgents()
-    })(),
+    listAgents(),
   ])
   markBoot('dbReady')
   const slugs = agents.map((a) => a.slug)

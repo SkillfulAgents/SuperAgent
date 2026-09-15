@@ -12,8 +12,8 @@ let testDb: ReturnType<typeof drizzle>
 let sqlite: InstanceType<typeof Database>
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
-import { createAgentCatalog, identityFromInstructions } from './agent-catalog'
-import { AGENT_ID_LENGTH, ensureDirectory, getAgentDir, getAgentsDir, getAgentClaudeMdPath } from '@shared/lib/utils/file-storage'
+import { createAgentCatalog } from './agent-catalog'
+import { AGENT_ID_LENGTH, ensureDirectory, getAgentDir, getAgentClaudeMdPath } from '@shared/lib/utils/file-storage'
 import type { AgentCatalog } from './types'
 
 let dataDir: string
@@ -185,126 +185,5 @@ describe('removing an agent', () => {
     await catalog.remove('stuck')
     expect(rowFor('stuck')).toBeUndefined()
     expect(fs.existsSync(getAgentDir('stuck'))).toBe(false)
-  })
-})
-
-describe('reconciling with the agents directory', () => {
-  it('imports a directory with a CLAUDE.md as a local agent named from its frontmatter', async () => {
-    await writeAgentDirectory('imported', [
-      '---',
-      'name: Imported Agent',
-      'description: Came from disk',
-      'createdAt: "2026-01-24T01:30:50.090Z"',
-      '---',
-      'Body',
-    ].join('\n'))
-
-    const result = await catalog.reconcile()
-
-    expect(result).toEqual({ imported: ['imported'], removed: [] })
-    expect(await catalog.get('imported')).toEqual({
-      slug: 'imported',
-      name: 'Imported Agent',
-      description: 'Came from disk',
-      createdAt: new Date('2026-01-24T01:30:50.090Z'),
-      placement: { runtime: 'local', workspaceHandle: null },
-    })
-  })
-
-  it('falls back to the slug for a missing name and to the directory birth time for a missing date', async () => {
-    await writeAgentDirectory('bare', 'No frontmatter at all')
-    const before = Date.now() - 1000
-
-    await catalog.reconcile()
-
-    const record = await catalog.get('bare')
-    expect(record?.name).toBe('bare')
-    expect(record).not.toHaveProperty('description')
-    expect(record!.createdAt.getTime()).toBeGreaterThanOrEqual(before)
-    expect(record!.createdAt.getTime()).toBeLessThanOrEqual(Date.now())
-  })
-
-  it('coerces a name the frontmatter parser turned into a number', async () => {
-    await writeAgentDirectory('numbered', '---\nname: 123\n---\nBody')
-    await catalog.reconcile()
-    expect((await catalog.get('numbered'))?.name).toBe('123')
-  })
-
-  it('skips a directory without a CLAUDE.md and leaves an existing row alone', async () => {
-    await writeAgentDirectory('hollow', null)
-    await writeAgentDirectory('known', '---\nname: On Disk\n---\nBody')
-    await catalog.insert({ slug: 'known', name: 'In The Table', createdAt: new Date() })
-
-    const result = await catalog.reconcile()
-
-    expect(result).toEqual({ imported: [], removed: [] })
-    expect(await catalog.exists('hollow')).toBe(false)
-    expect((await catalog.get('known'))?.name).toBe('In The Table')
-  })
-
-  it('removes a local row whose directory is gone and keeps a row placed elsewhere', async () => {
-    await catalog.insert({ slug: 'vanished', name: 'Vanished', createdAt: new Date() })
-    testDb.insert(schema.agents).values({
-      slug: 'remote', name: 'Remote', createdAt: new Date(), runtime: 'modal', workspaceHandle: 'superagent-remote',
-    }).run()
-    await ensureDirectory(getAgentsDir())
-
-    const result = await catalog.reconcile()
-
-    expect(result).toEqual({ imported: [], removed: ['vanished'] })
-    expect(await catalog.exists('vanished')).toBe(false)
-    expect((await catalog.get('remote'))?.placement).toEqual({ runtime: 'modal', workspaceHandle: 'superagent-remote' })
-  })
-
-  it('answers reads that arrive during the first reconcile only once it has finished', async () => {
-    // The boot reconcile runs while HTTP is already serving: a listing that
-    // lands before it has imported the directories must not see an empty
-    // table (and a request for an existing agent must not 404).
-    await writeAgentDirectory('early', '---\nname: Early Agent\n---\nBody')
-    await writeAgentDirectory('other', '---\nname: Other Agent\n---\nBody')
-
-    const reconciling = catalog.reconcile()
-    const [listed, record, resolved, present] = await Promise.all([
-      catalog.list(),
-      catalog.get('early'),
-      catalog.resolve('early'),
-      catalog.exists('other'),
-    ])
-
-    expect(listed.sort()).toEqual(['early', 'other'])
-    expect(record?.name).toBe('Early Agent')
-    expect(resolved).toBe('early')
-    expect(present).toBe(true)
-    await expect(reconciling).resolves.toMatchObject({ removed: [] })
-  })
-
-  it('does not hold reads when no reconcile has been started', async () => {
-    await catalog.insert({ slug: 'plain', name: 'Plain', createdAt: new Date() })
-    expect(await catalog.list()).toEqual(['plain'])
-  })
-
-  it('still answers reads when the first reconcile fails', async () => {
-    // The agents path is a file, so the reconcile cannot list it.
-    await fs.promises.mkdir(dataDir, { recursive: true })
-    await fs.promises.writeFile(getAgentsDir(), 'not a directory')
-    await catalog.insert({ slug: 'kept', name: 'Kept', createdAt: new Date() })
-
-    await expect(catalog.reconcile()).rejects.toThrow()
-
-    expect(await catalog.list()).toEqual(['kept'])
-  })
-
-  it('creates the agents directory when it does not exist yet', async () => {
-    expect(await catalog.reconcile()).toEqual({ imported: [], removed: [] })
-    expect(fs.existsSync(getAgentsDir())).toBe(true)
-  })
-})
-
-describe('identityFromInstructions', () => {
-  it('reads name, description and a valid date, and leaves out what is absent or blank', () => {
-    expect(identityFromInstructions('---\nname: A\ndescription: B\ncreatedAt: "2026-01-01T00:00:00.000Z"\n---\nBody'))
-      .toEqual({ name: 'A', description: 'B', createdAt: new Date('2026-01-01T00:00:00.000Z') })
-    expect(identityFromInstructions('---\nname:\ndescription:   \ncreatedAt: not-a-date\n---\nBody')).toEqual({})
-    expect(identityFromInstructions('Body only')).toEqual({})
   })
 })

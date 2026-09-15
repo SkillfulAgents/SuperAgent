@@ -59,11 +59,10 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
 
   // Env must be set before these modules load: the container manager reads
   // E2E_MOCK at construction and the db resolves its path on first access.
+  // Opening the database also runs the data migrations, which import the
+  // seeded agent directories into the catalog table the listing reads.
   const { sqlite } = await import('@shared/lib/db')
   sqlite.prepare('select 1').get()
-  // The agent listing reads the catalog table; startup fills it from the
-  // seeded directories, and so does this.
-  await (await import('@shared/lib/agent-actor')).agentCatalog.reconcile()
   const { Hono: HonoCtor } = await import('hono')
   const agentsRouter = (await import('@/api/routes/agents')).default
   const { invalidateSessionSummaryCache } = await import('@shared/lib/services/session-summary-cache')
