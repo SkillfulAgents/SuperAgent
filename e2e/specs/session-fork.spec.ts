@@ -47,6 +47,9 @@ test.describe('Fork Session', () => {
     await expect(page).not.toHaveURL(new RegExp(`/sessions/${session.id}$`), { timeout: 15000 })
     await expect(page.locator('[data-testid="session-breadcrumb"]')).toContainText('(fork)')
     await expect(page.locator('[data-testid="fork-boundary"]')).toContainText(`Branched from ${session.name}`)
+    // The header icon reads the session metadata, so it shows wherever the thread is scrolled.
+    await page.locator('[data-testid="forked-from-indicator"]').hover()
+    await expect(page.locator('[data-testid="forked-from-link"]')).toHaveText(session.name)
 
     // History carried, source unchanged.
     let fork: TestSession | undefined
