@@ -1,3 +1,4 @@
+import { captureException } from '@shared/lib/error-reporting'
 import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
@@ -67,6 +68,7 @@ import {
   chatIntegrations,
   chatIntegrationSessions,
   chatIntegrationAccess,
+  integrationTaskEvents,
   remoteMcpServers,
   agentRemoteMcps,
   mcpAuditLog,
@@ -188,6 +190,7 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   scheduledTasks,
   // chat integrations (access + sessions cascade from integrations)
   chatIntegrationAccess,
+  integrationTaskEvents,
   chatIntegrationSessions,
   chatIntegrations,
   // connected accounts + dependents (api scope policies + agent mappings cascade)
@@ -892,6 +895,13 @@ settings.post('/validate-web-key', async (c) => {
 // POST /api/settings/factory-reset - Reset all data
 settings.post('/factory-reset', async (c) => {
   try {
+    // Provider-owned endpoints need the platform credential for teardown.
+    try {
+      const { cleanupIntegrationResources } = await import('@shared/lib/agent-integrations/cleanup')
+      await cleanupIntegrationResources()
+    } catch (error) {
+      captureException(error, { tags: { component: 'settings', operation: 'factory-reset-integrations' } })
+    }
     // Revoke platform token remotely before clearing local state
     try {
       await revokePlatformToken({ clearLocal: false })

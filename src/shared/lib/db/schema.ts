@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { sqliteTable, text, integer, uniqueIndex, index, check, primaryKey } from 'drizzle-orm/sqlite-core'
-import { CHAT_PROVIDERS } from '@shared/lib/chat-integrations/config-schema'
+import { AGENT_INTEGRATION_PROVIDERS } from '@shared/lib/agent-integrations/provider-types'
 
 // =============================================================================
 // Better Auth tables (user, session, account, verification)
@@ -620,7 +620,7 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
 export const chatIntegrations = sqliteTable('chat_integrations', {
   id: text('id').primaryKey(),
   agentSlug: text('agent_slug').notNull(),
-  provider: text('provider', { enum: CHAT_PROVIDERS }).notNull(),
+  provider: text('provider', { enum: AGENT_INTEGRATION_PROVIDERS }).notNull(),
   name: text('name'), // User-defined label
 
   // Provider credentials (JSON: { botToken, chatId } | { botToken, appToken, channelId } | { gatewayUrl, phoneNumber, token })
@@ -648,6 +648,28 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
 }, (table) => ({
   agentSlugIdx: index('chat_integrations_agent_slug_idx').on(table.agentSlug),
   statusIdx: index('chat_integrations_status_idx').on(table.status),
+}))
+
+// Durable task work and publication state. An event keeps its reply destination
+// even when a later invocation targets another thread on the same issue.
+export const integrationTaskEvents = sqliteTable('integration_task_events', {
+  id: text('id').primaryKey(),
+  integrationId: text('integration_id').notNull().references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  externalEventId: text('external_event_id').notNull(),
+  taskId: text('task_id').notNull(),
+  interactionId: text('interaction_id').notNull(),
+  eventJson: text('event_json').notNull(),
+  status: text('status', { enum: ['queued', 'running', 'awaiting_input', 'responding', 'complete', 'cancelled', 'failed', 'context'] }).notNull().default('queued'),
+  sessionId: text('session_id'),
+  responseText: text('response_text'),
+  publicationJson: text('publication_json'),
+  publishedId: text('published_id'),
+  inputRequestJson: text('input_request_json'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({
+  deliveryUnique: uniqueIndex('integration_task_events_delivery_unique').on(table.integrationId, table.externalEventId),
+  workIndex: index('integration_task_events_work_idx').on(table.integrationId, table.taskId, table.status),
 }))
 
 // Chat integration sessions - maps external chat IDs to agent sessions (supports multi-DM)

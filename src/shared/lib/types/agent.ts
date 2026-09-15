@@ -103,6 +103,9 @@ export interface SessionMetadata {
   automationStatus?: 'running' | 'succeeded' | 'failed'
   // One webhook session can represent a batch of several claimed deliveries.
   webhookInvocationCount?: number
+  isTaskIntegrationSession?: boolean
+  agentIntegrationId?: string
+  externalTaskId?: string
   // Chat integration fields - present when session was created from an external chat
   isChatIntegrationSession?: boolean
   chatIntegrationId?: string

@@ -1,5 +1,6 @@
 import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy } from './types'
+import { taskManagerProviders } from '../task-manager-integrations/providers'
 import { chatProviders } from '../chat-integrations/providers'
 
 export interface IntegrationProvider {
@@ -7,6 +8,7 @@ export interface IntegrationProvider {
   /** Access and session policy must be available independently of a live connection. */
   policy: Pick<AgentIntegration, 'isAllowed' | 'sessionPolicy'>
   create(record: AgentIntegrationRecord): Promise<AgentIntegration>
+  cleanup?(record: AgentIntegrationRecord): Promise<void>
   describeTarget?(externalId: string): Promise<{ type?: string }>
 }
 
@@ -45,6 +47,10 @@ export class AgentIntegrationRegistry {
     return this.providers.get(provider)?.describeTarget?.(externalId) ?? {}
   }
 
+  async cleanup(record: AgentIntegrationRecord): Promise<void> {
+    await this.providers.get(record.provider)?.cleanup?.(record)
+  }
+
   async create(record: AgentIntegrationRecord): Promise<AgentIntegration> {
     const provider = this.providers.get(record.provider)
     if (!provider) throw new Error(`Unknown integration provider: ${record.provider}`)
@@ -52,4 +58,4 @@ export class AgentIntegrationRegistry {
   }
 }
 
-export const agentIntegrationRegistry = new AgentIntegrationRegistry(chatProviders)
+export const agentIntegrationRegistry = new AgentIntegrationRegistry([...chatProviders, ...taskManagerProviders])

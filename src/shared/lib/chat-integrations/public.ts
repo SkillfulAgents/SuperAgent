@@ -1,6 +1,7 @@
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import {
   parseChatIntegrationConfig,
+  type ChatProvider,
   type SlackConfig,
   type TelegramConfig,
 } from './config-schema'
@@ -19,8 +20,9 @@ export interface PublicChatIntegrationSettings {
   newSessionPerThread?: boolean
 }
 
-export type PublicChatIntegration = Omit<ChatIntegration, 'config'> & {
+export type PublicChatIntegration = Omit<ChatIntegration, 'config' | 'provider'> & {
   /** True only when the stored credential config validates against the current provider schema. */
+  provider: ChatProvider
   hasCredentials: boolean
   settings: PublicChatIntegrationSettings
 }
@@ -31,7 +33,8 @@ export type PublicChatIntegration = Omit<ChatIntegration, 'config'> & {
  * inside the process still receive the full row needed by connectors.
  */
 export function toPublicChatIntegration(integration: ChatIntegration): PublicChatIntegration {
-  const { config, ...publicFields } = integration
+  if (integration.provider === 'linear') throw new Error('Use the agent integration API for Linear')
+  const { config, provider, ...publicFields } = integration
   const parsed = typeof config === 'string'
     ? parseChatIntegrationConfig(integration.provider, config)
     : null
@@ -51,6 +54,7 @@ export function toPublicChatIntegration(integration: ChatIntegration): PublicCha
 
   return {
     ...publicFields,
+    provider,
     hasCredentials: parsed !== null,
     settings,
   }
