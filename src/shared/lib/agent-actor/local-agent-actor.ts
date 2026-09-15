@@ -96,7 +96,11 @@ export class LocalAgentActor implements AgentActor {
   }
 }
 
-function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps {
+// The op factories are shared with the Modal actor: its container, sessions,
+// messages, inputs and usage act through the same runtime and host-side
+// state; only where its files are differs.
+
+export function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps {
   const runtime = () => deps.containerHost.runtime(slug)
   const client = () => runtime().getClient()
   return {
@@ -134,7 +138,7 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
   }
 }
 
-function createSessionOps(slug: AgentSlug, deps: LocalActorDeps): SessionOps {
+export function createSessionOps(slug: AgentSlug, deps: LocalActorDeps): SessionOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
   return {
     list: (...args) => deps.sessionService.listSessions(slug, ...args),
@@ -209,7 +213,7 @@ function createSessionOps(slug: AgentSlug, deps: LocalActorDeps): SessionOps {
   }
 }
 
-function createMessageOps(slug: AgentSlug, deps: LocalActorDeps): MessageOps {
+export function createMessageOps(slug: AgentSlug, deps: LocalActorDeps): MessageOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
   return {
     send: (...args) => client().sendMessage(...args),
@@ -239,7 +243,7 @@ function createMessageOps(slug: AgentSlug, deps: LocalActorDeps): MessageOps {
   }
 }
 
-function createInputOps(slug: AgentSlug, deps: LocalActorDeps): InputOps {
+export function createInputOps(slug: AgentSlug, deps: LocalActorDeps): InputOps {
   const manager = () => deps.userInputRequestManager
   /** The open request when this agent owns it. Another agent's request is not found. */
   const owned = (id: string): PendingUserInputRequest | null => {
@@ -302,7 +306,7 @@ function createComputerUseOps(slug: AgentSlug, deps: LocalActorDeps): ComputerUs
   }
 }
 
-function createUsageOps(slug: AgentSlug, deps: LocalActorDeps): UsageOps {
+export function createUsageOps(slug: AgentSlug, deps: LocalActorDeps): UsageOps {
   return {
     daily: (options) => deps.loadDailyUsageData({ claudePath: deps.getAgentClaudeConfigDir(slug), ...options }),
   }

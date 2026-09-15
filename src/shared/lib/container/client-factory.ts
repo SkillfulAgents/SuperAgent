@@ -11,6 +11,8 @@ import { PlatformK8sRuntimeClient } from './platform-k8s-runtime'
 import { LambdaMicroVmRuntimeClient } from './lambda-microvm-runtime'
 import { RunnerSetupError, type RunnerSetupRemediation } from './wsl2-setup-errors'
 import { MockContainerClient } from './mock-container-client'
+import { ModalSandboxRuntimeClient } from './modal/modal-sandbox-runtime'
+import { readAgentPlacement } from '@shared/lib/agent-actor/placement'
 import { getSettings } from '@shared/lib/config/settings'
 import { BaseContainerClient, execWithPath, spawnWithPath, AGENT_CONTAINER_PATH } from './base-container-client'
 import { platform, homedir } from 'os'
@@ -947,6 +949,11 @@ export function createContainerClient(config: ContainerConfig): ContainerClient 
     return new MockContainerClient(config)
   }
   console.log('[ContainerClient] Using real container client, E2E_MOCK:', process.env.E2E_MOCK)
+
+  // An agent placed on Modal runs there whatever runner this machine uses.
+  if (readAgentPlacement(config.agentId).runtime === 'modal') {
+    return new ModalSandboxRuntimeClient(config)
+  }
 
   const settings = getSettings()
   const ClientClass = getContainerClientClass(settings.container.containerRunner as ContainerRunner)

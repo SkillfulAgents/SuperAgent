@@ -3,6 +3,8 @@ export { containerHost, type ContainerHost } from './host'
 export { agentCatalog } from './local-agent-catalog'
 export { copyHostDirIntoWorkspace } from './copy-into-workspace'
 export { CONFIG_DOCS, ConfigDocError, type ConfigDoc, type ConfigDocErrorCode, type ConfigDocId } from './config-schema'
+export { agentPlacementSchema, loadAgentPlacements, readAgentPlacement, type AgentPlacement } from './placement'
+export { AgentAlreadyOnModalError, moveAgentToModal, type MoveToModalResult } from './modal-migration'
 // Pure helpers of the fenced transcript modules that routes still need: how a
 // media reference is spelled in a URL, and how session lists are ordered and
 // capped.
