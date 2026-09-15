@@ -46,15 +46,24 @@ function toApiAgent(
 ): ApiAgent {
   const healthWarnings = agentRegistry.get(record.slug).container.health()
   return {
+    ...newAgentResponse(record, instructions),
+    status,
+    containerPort,
+    ...(healthWarnings.length > 0 ? { healthWarnings } : {}),
+  }
+}
+
+/** The API shape of an agent that was just created: stopped, and with no health to report yet. */
+function newAgentResponse(record: AgentRecord, instructions?: string): ApiAgent {
+  return {
     slug: record.slug,
     displaySlug: displaySlug(record.name, record.slug),
     name: record.name,
     description: record.description,
     ...(instructions === undefined ? {} : { instructions }),
     createdAt: record.createdAt,
-    status,
-    containerPort,
-    ...(healthWarnings.length > 0 ? { healthWarnings } : {}),
+    status: 'stopped',
+    containerPort: null,
   }
 }
 
@@ -195,7 +204,7 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
   const name = String(rawName)
   const body = instructions || DEFAULT_AGENT_INSTRUCTIONS
   const record = await writeNewAgent({ name, description: description || undefined }, body)
-  return toApiAgent(record, 'stopped', null, body)
+  return newAgentResponse(record, body)
 }
 
 /**
@@ -380,7 +389,7 @@ export async function createAgentFromExistingWorkspace(rawName: string): Promise
   const name = String(rawName)
   // A basic CLAUDE.md (may be overwritten by template)
   const record = await writeNewAgent({ name }, DEFAULT_AGENT_INSTRUCTIONS)
-  return toApiAgent(record, 'stopped', null)
+  return newAgentResponse(record)
 }
 
 /**
