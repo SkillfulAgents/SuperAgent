@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
 import * as path from 'path'
 import * as os from 'os'
 import { promises as fs } from 'fs'
@@ -181,6 +182,8 @@ describe('subagent routing replay — sequential subagents across state reset', 
     // message-persister is a module-level singleton, so import fresh per test.
     vi.resetModules()
     const { messagePersister } = await import('./message-persister')
+    // The registry attaches the real stores; this test drives the persister alone.
+    messagePersister.attachSessionStores(createInMemorySessionStore)
     const { client, send } = createReplayClient()
 
     // Collect SSE events

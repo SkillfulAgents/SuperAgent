@@ -50,7 +50,7 @@ export async function updateAgentPreferences(
 ): Promise<AgentPreferences> {
   // Serialized read-modify-write: fresh STRICT read (a corrupt document aborts
   // the update, never synthesizes {} from a parse error), merge, atomic write.
-  return agentRegistry.get(agentSlug).config.update('preferences', (current) => {
+  const updated = await agentRegistry.get(agentSlug).config.update('preferences', (current) => {
     const merged: Record<string, unknown> = { ...(current ?? {}) }
     for (const [key, value] of Object.entries(updates)) {
       if (value === null || value === undefined) {
@@ -61,4 +61,6 @@ export async function updateAgentPreferences(
     }
     return agentPreferencesSchema.parse(merged)
   })
+  // The mutator always returns a document, so there is one afterwards.
+  return updated ?? agentPreferencesSchema.parse({})
 }

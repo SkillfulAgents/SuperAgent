@@ -83,10 +83,11 @@ export function createConfigOps(files: FileOps, hooks: ConfigOpsHooks = {}): Con
       serialize(id, async () => {
         const current = await get(id)
         const next = await mutate(current)
-        // A mutator that hands the current document back (a lookup that found
-        // nothing to change, a conflict it reports another way) leaves the
-        // file untouched: no rewrite, no mtime bump, no mode reset.
-        if (current !== null && Object.is(next, current)) return next
+        // A mutator that hands the current document back, or null (a lookup
+        // that found nothing to change, a conflict it reports another way),
+        // leaves the file untouched: no rewrite, no mtime bump, no mode
+        // reset, and no empty file materialized for a no-op.
+        if (next === null || Object.is(next, current)) return current
         await put(id, next)
         return next
       }),

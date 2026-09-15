@@ -8,7 +8,7 @@ import type { LocalActorDeps } from './local-agent-actor'
 // registries. These tests build their own registry from fakes, so the real
 // modules are stubbed to keep the import side-effect free.
 vi.mock('@shared/lib/container/container-host', () => ({ containerHost: { attachAgentWorkspaces: () => {} } }))
-vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: {} }))
+vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: { attachSessionStores: () => {} } }))
 vi.mock('@shared/lib/user-input/request-manager', () => ({ userInputRequestManager: {} }))
 vi.mock('@shared/lib/proxy/review-manager', () => ({ reviewManager: {} }))
 vi.mock('@shared/lib/computer-use/permission-manager', () => ({ computerUsePermissionManager: {} }))
@@ -139,7 +139,7 @@ function fakeDeps() {
   const recordSessionActivity = vi.fn()
   const deps = {
     containerHost,
-    messagePersister: {},
+    messagePersister: { attachSessionStores: vi.fn() },
     userInputRequestManager: inputManager,
     reviewManager,
     computerUsePermissionManager: {},
@@ -150,8 +150,6 @@ function fakeDeps() {
     appendAssistantEntry,
     recordSessionActivity,
     getAgentWorkspaceDir: vi.fn((slug: string) => `/workspaces/${slug}`),
-    getAgentClaudeConfigDir: vi.fn((slug: string) => `/workspaces/${slug}/.claude`),
-    getSessionJsonlPath: vi.fn((slug: string, sessionId: string) => `/workspaces/${slug}/sessions/${sessionId}.jsonl`),
     syncAgentConnectionEnvironment,
     loadDailyUsageData,
     loadSessionUsageTotals,
@@ -269,7 +267,7 @@ describe('createAgentRegistry', () => {
       const syncAgentSessionsAwaiting = vi.fn()
       const deps = {
         ...fake.deps,
-        messagePersister: { broadcastSessionUpdate, syncAgentSessionsAwaiting },
+        messagePersister: { attachSessionStores: vi.fn(), broadcastSessionUpdate, syncAgentSessionsAwaiting },
       } as unknown as LocalActorDeps
       const actor = createAgentRegistry(deps).get('a')
       actor.sessions.broadcastUpdate('s1')
@@ -308,23 +306,40 @@ describe('createAgentRegistry', () => {
       expect(fake.syncAgentConnectionEnvironment).toHaveBeenCalledWith('a', 'remote-mcps', fake.runtimes.get('a'))
     })
 
-    it('usage.daily reads this agent\'s Claude data directory', async () => {
+    it('usage.daily reads every transcript the CLI wrote for this agent', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       await actor.usage.daily({ since: '2026-09-01', providerId: 'anthropic' })
       expect(fake.loadDailyUsageData).toHaveBeenCalledWith({
-        claudePath: '/workspaces/a/.claude',
+        files: actor.files,
+        dir: '.claude/projects/-workspace',
         since: '2026-09-01',
         providerId: 'anthropic',
       })
     })
 
-    it('sessions.usage reads this session\'s transcript', async () => {
+    it('sessions.usage reads this session\'s transcript through the agent\'s files', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       await actor.sessions.usage('s1', { providerId: 'anthropic' })
       expect(fake.loadSessionUsageTotals).toHaveBeenCalledWith({
-        sessionPath: '/workspaces/a/sessions/s1.jsonl',
+        files: actor.files,
+        transcript: '.claude/projects/-workspace/s1.jsonl',
         providerId: 'anthropic',
       })
+    })
+
+    it('hands the persister this agent\'s session store, the one its own reads use', () => {
+      const registry = createAgentRegistry(fake.deps)
+      const attach = (fake.deps.messagePersister as unknown as { attachSessionStores: ReturnType<typeof vi.fn> }).attachSessionStores
+      // On the first handle, once: the persister is not initialized while the registry module evaluates.
+      expect(attach).not.toHaveBeenCalled()
+      const actor = registry.get('a')
+      registry.get('b')
+      expect(attach).toHaveBeenCalledTimes(1)
+      const resolve = attach.mock.calls[0]![0] as (slug: string) => { slug: string; files: unknown; transcriptsDir: string }
+      const store = resolve('a')
+      expect(store.slug).toBe('a')
+      expect(store.files).toBe(actor.files)
+      expect(store.transcriptsDir).toBe('.claude/projects/-workspace')
     })
 
     it('inputs.reviews.request stamps the actor\'s slug onto the review', async () => {
@@ -342,28 +357,30 @@ describe('createAgentRegistry', () => {
       expect(fake.reviewManager.requestReview).toHaveBeenCalledWith({ ...details, agentSlug: 'a' })
     })
 
-    it('transcript-adjacent reads bind the slug and forward the rest', async () => {
+    it('transcript-adjacent reads bind the session store and forward the rest', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
+      const store = expect.objectContaining({ slug: 'a', files: actor.files })
       const except = new Set(['known'])
       await expect(actor.sessions.subagents('s1', { except })).resolves.toEqual([{ id: 'sub-1', toolUseId: 'tu-1' }])
-      expect(fake.transcripts.listSubagents).toHaveBeenCalledWith('a', 's1', { except })
+      expect(fake.transcripts.listSubagents).toHaveBeenCalledWith(store, 's1', { except })
       await actor.sessions.workflowAgentTranscript('s1', 'wf_1', 'agent-x')
-      expect(fake.transcripts.readWorkflowAgentTranscript).toHaveBeenCalledWith('a', 's1', 'wf_1', 'agent-x')
+      expect(fake.transcripts.readWorkflowAgentTranscript).toHaveBeenCalledWith(store, 's1', 'wf_1', 'agent-x')
       await actor.sessions.copyDerivedFiles('s1', 's2')
-      expect(fake.transcripts.copyDerivedSessionFiles).toHaveBeenCalledWith('a', 's1', 's2')
+      expect(fake.transcripts.copyDerivedSessionFiles).toHaveBeenCalledWith(store, 's1', 's2')
       const signal = new AbortController().signal
       await actor.messages.media('s1', { kind: 'x' } as never, signal)
-      expect(fake.transcripts.openMedia).toHaveBeenCalledWith('a', 's1', { kind: 'x' }, signal)
+      expect(fake.transcripts.openMedia).toHaveBeenCalledWith(store, 's1', { kind: 'x' }, signal)
     })
 
-    it('appendAssistant and recordActivity reach the transcript writers with the slug', () => {
+    it('appendAssistant and recordActivity reach the transcript writers with the session store', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
-      actor.messages.appendAssistant('s1', 'delivered elsewhere')
-      expect(fake.appendAssistantEntry).toHaveBeenCalledWith('a', 's1', 'delivered elsewhere')
+      const store = expect.objectContaining({ slug: 'a', files: actor.files })
+      await actor.messages.appendAssistant('s1', 'delivered elsewhere')
+      expect(fake.appendAssistantEntry).toHaveBeenCalledWith(store, 's1', 'delivered elsewhere')
       actor.sessions.recordActivity('s1')
-      expect(fake.recordSessionActivity).toHaveBeenCalledWith('a', 's1')
+      expect(fake.recordSessionActivity).toHaveBeenCalledWith(store, 's1')
       actor.sessions.recordActivity('s1', 1234)
-      expect(fake.recordSessionActivity).toHaveBeenCalledWith('a', 's1', 1234)
+      expect(fake.recordSessionActivity).toHaveBeenCalledWith(store, 's1', 1234)
     })
   })
 

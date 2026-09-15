@@ -10,6 +10,17 @@ vi.mock('../config/settings', () => ({
 }))
 
 import { calculateCost, loadDailyUsageData, loadSessionUsageTotals } from './usage-service'
+import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
+
+/** A fixture's Claude directory as a workspace: the usage loaders read through file operations. */
+function dailyOptions(claudePath: string) {
+  return { files: new LocalFileOps(() => claudePath), dir: 'projects' }
+}
+
+/** One transcript by host path, as the workspace it sits in plus its name. */
+function sessionOptions(sessionPath: string) {
+  return { files: new LocalFileOps(() => path.dirname(sessionPath)), transcript: path.basename(sessionPath) }
+}
 
 type JsonlEntry = Record<string, unknown>
 
@@ -75,7 +86,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
     ]
 
     await withTranscript(entries, async ({ sessionPath }) => {
-      await expect(loadSessionUsageTotals({ sessionPath })).resolves.toMatchObject({
+      await expect(loadSessionUsageTotals({ ...sessionOptions(sessionPath) })).resolves.toMatchObject({
         totalTokens: 1_101,
         totalCost: 0.01,
       })
@@ -99,7 +110,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
     ]
 
     await withTranscript(entries, async ({ sessionPath }) => {
-      await expect(loadSessionUsageTotals({ sessionPath })).resolves.toMatchObject({
+      await expect(loadSessionUsageTotals({ ...sessionOptions(sessionPath) })).resolves.toMatchObject({
         totalTokens: 101,
         totalCost: 0.02,
       })
@@ -123,7 +134,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
     ]
 
     await withTranscript(entries, async ({ sessionPath }) => {
-      await expect(loadSessionUsageTotals({ sessionPath })).resolves.toMatchObject({
+      await expect(loadSessionUsageTotals({ ...sessionOptions(sessionPath) })).resolves.toMatchObject({
         totalTokens: 41,
         totalCost: 0.03,
       })
@@ -167,7 +178,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
       await withTranscript(
         order.map((key) => entriesByKey[key]),
         async ({ sessionPath }) => {
-          await expect(loadSessionUsageTotals({ sessionPath })).resolves.toMatchObject({
+          await expect(loadSessionUsageTotals({ ...sessionOptions(sessionPath) })).resolves.toMatchObject({
             totalTokens: 41,
             totalCost: 0.04,
           })
@@ -213,7 +224,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
       ]
 
       await withTranscript(entries, async ({ sessionPath }) => {
-        await expect(loadSessionUsageTotals({ sessionPath })).resolves.toMatchObject({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(sessionPath) })).resolves.toMatchObject({
           totalTokens: 760,
           totalCost: 0.000816,
         })
@@ -241,7 +252,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
     ]
 
     await withTranscript(entries, async ({ sessionPath }) => {
-      await expect(loadSessionUsageTotals({ sessionPath })).resolves.toMatchObject({
+      await expect(loadSessionUsageTotals({ ...sessionOptions(sessionPath) })).resolves.toMatchObject({
         totalTokens: 60,
         totalCost: 0.0001665,
       })
@@ -290,7 +301,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
     ]
 
     await withTranscript(entries, async ({ claudePath }) => {
-      const [day] = await loadDailyUsageData({ claudePath })
+      const [day] = await loadDailyUsageData({ ...dailyOptions(claudePath) })
       expect(day).toMatchObject({
         inputTokens: 159_421,
         outputTokens: 8_296,
@@ -314,7 +325,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
 
     await withTranscript(entries, async ({ sessionPath }) => {
       await expect(
-        loadSessionUsageTotals({ sessionPath, providerId: 'anthropic' }),
+        loadSessionUsageTotals({ ...sessionOptions(sessionPath), providerId: 'anthropic' }),
       ).resolves.toMatchObject({
         totalCost: 0.105,
       })
@@ -353,7 +364,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
 
     await withTranscript(entries, async ({ sessionPath }) => {
       await expect(
-        loadSessionUsageTotals({ sessionPath, providerId: 'anthropic' }),
+        loadSessionUsageTotals({ ...sessionOptions(sessionPath), providerId: 'anthropic' }),
       ).resolves.toMatchObject({
         totalTokens: 300_000,
         // 200K at $6/M plus the remaining 100K at $12/M.
@@ -389,7 +400,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
 
     await withTranscript(entries, async ({ sessionPath }) => {
       await expect(
-        loadSessionUsageTotals({ sessionPath, providerId: 'platform' }),
+        loadSessionUsageTotals({ ...sessionOptions(sessionPath), providerId: 'platform' }),
       ).resolves.toMatchObject({
         totalTokens: 202_000,
         // All buckets use Grok's >200K tier; a 1h write is 2x the $4/M input rate.
@@ -440,7 +451,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
 
       await withTranscript(entries, async ({ sessionPath }) => {
         await expect(
-          loadSessionUsageTotals({ sessionPath, providerId: 'anthropic' }),
+          loadSessionUsageTotals({ ...sessionOptions(sessionPath), providerId: 'anthropic' }),
         ).resolves.toMatchObject({
           totalTokens: 5_000_000,
           // $2 input + $10 output + $2.50 5m write + $4 1h write + $0.20 read.
@@ -515,7 +526,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
         ],
         async ({ sessionPath }) => {
           await expect(
-            loadEffectiveDated({ sessionPath, providerId: 'anthropic' }),
+            loadEffectiveDated({ ...sessionOptions(sessionPath), providerId: 'anthropic' }),
           ).resolves.toMatchObject({
             totalTokens: 5_000_000,
             totalCost: 18.7,
@@ -535,7 +546,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
         ],
         async ({ sessionPath }) => {
           await expect(
-            loadEffectiveDated({ sessionPath, providerId: 'anthropic' }),
+            loadEffectiveDated({ ...sessionOptions(sessionPath), providerId: 'anthropic' }),
           ).resolves.toMatchObject({
             totalTokens: 5_000_000,
             totalCost: 37.4,
@@ -573,7 +584,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
 
     await withTranscript(entries, async ({ sessionPath }) => {
       await expect(
-        loadSessionUsageTotals({ sessionPath, providerId: 'anthropic' }),
+        loadSessionUsageTotals({ ...sessionOptions(sessionPath), providerId: 'anthropic' }),
       ).resolves.toMatchObject({
         totalTokens: 5_000_000,
         totalCost: expectedCost,
@@ -595,7 +606,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
     ]
 
     await withTranscript(entries, async ({ sessionPath }) => {
-      await expect(loadSessionUsageTotals({ sessionPath })).resolves.toMatchObject({
+      await expect(loadSessionUsageTotals({ ...sessionOptions(sessionPath) })).resolves.toMatchObject({
         totalTokens: 0,
         totalCost: 0,
         priceMissing: false,
@@ -618,7 +629,7 @@ describe('CCUsage post-v15.2 calculation regressions', () => {
     ]
 
     await withTranscript(entries, async ({ sessionPath }) => {
-      await expect(loadSessionUsageTotals({ sessionPath })).resolves.toMatchObject({
+      await expect(loadSessionUsageTotals({ ...sessionOptions(sessionPath) })).resolves.toMatchObject({
         totalTokens: 0,
         totalCost: 0,
         usageIncomplete: true,

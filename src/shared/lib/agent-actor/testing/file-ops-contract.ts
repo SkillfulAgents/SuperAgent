@@ -113,6 +113,77 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
       expect(await files.write('uploads/raw.bin', new Uint8Array([9, 8, 7]))).toEqual({ size: 3 })
     })
 
+    it('append creates a file and its parents, then adds to the end without interleaving', async () => {
+      await files.append('logs/a.jsonl', 'one\n')
+      await files.append('logs/a.jsonl', text('two\n'))
+      expect(decode(await files.getDoc('logs/a.jsonl'))).toBe('one\ntwo\n')
+
+      await Promise.all(Array.from({ length: 20 }, (_, i) => files.append('logs/many.txt', `${i}\n`)))
+      const lines = decode(await files.getDoc('logs/many.txt'))!.split('\n').filter(Boolean).map(Number).sort((a, b) => a - b)
+      expect(lines).toEqual(Array.from({ length: 20 }, (_, i) => i))
+
+      await files.mkdir('dir')
+      expect(await codeOf(files.append('dir', 'x'))).toBe('not-a-file')
+      expect(await codeOf(files.append('', 'x'))).toBe('invalid-path')
+    })
+
+    it('concurrent appends larger than one write land whole, never interleaved', async () => {
+      // A filesystem writes a large buffer in several calls; two appends in
+      // flight at once must still each be one contiguous line, or a JSONL
+      // reader silently drops both as malformed.
+      const payloads = [0, 1, 2, 3].map(
+        (i) => JSON.stringify({ i, pad: String.fromCharCode(65 + i).repeat(2 * 1024 * 1024) }) + '\n',
+      )
+      await Promise.all(payloads.map((payload) => files.append('big.jsonl', payload)))
+
+      const lines = decode(await files.getDoc('big.jsonl'))!.split('\n').filter((line) => line !== '')
+      expect(lines).toHaveLength(4)
+      const parsed = lines.map((line) => {
+        try {
+          return JSON.parse(line) as { i: number; pad: string }
+        } catch {
+          throw new Error(`a line is not one whole payload: ${line.slice(0, 40)}…`)
+        }
+      })
+      expect(parsed.map((entry) => entry.i).sort()).toEqual([0, 1, 2, 3])
+      for (const entry of parsed) {
+        expect(entry.pad).toBe(String.fromCharCode(65 + entry.i).repeat(2 * 1024 * 1024))
+      }
+    })
+
+    it('open reads at byte offsets, sees the file grow, and streams a range', async () => {
+      await files.putDoc('t.jsonl', '0123456789')
+      const file = await files.open('t.jsonl')
+      try {
+        expect(await file.size()).toBe(10)
+        expect(decode(await file.readAt(2, 3))).toBe('234')
+        // Past the end: what is there, not an error.
+        expect(decode(await file.readAt(8, 5))).toBe('89')
+        expect(decode(await file.readAt(20, 5))).toBe('')
+
+        await files.append('t.jsonl', 'ab')
+        expect(await file.size()).toBe(12)
+        expect(decode(await file.readAt(10, 2))).toBe('ab')
+
+        // The stream is the handle's last use; nothing else after it.
+        expect(decode(await readAllBytes(file.stream({ start: 3, end: 5 })))).toBe('345')
+      } finally {
+        await file.close()
+        await file.close()
+      }
+      const past = await files.open('t.jsonl')
+      expect(decode(await readAllBytes(past.stream({ start: 9, end: 40 })))).toBe('9ab')
+      const whole = await files.open('t.jsonl')
+      expect(decode(await readAllBytes(whole.stream()))).toBe('0123456789ab')
+      await whole.close()
+    })
+
+    it('open refuses what is not a file', async () => {
+      expect(await codeOf(files.open('missing.jsonl'))).toBe('not-found')
+      await files.mkdir('dir')
+      expect(await codeOf(files.open('dir').then((file) => file.size()))).toBe('not-a-file')
+    })
+
     it('list returns immediate children with kinds and their own paths', async () => {
       await files.putDoc('a/one.txt', '1')
       await files.putDoc('a/b/two.txt', '2')
@@ -203,6 +274,8 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
         files.write(bad, new Uint8Array([1])),
         files.delete(bad, { recursive: true }),
         files.mkdir(bad),
+        files.append(bad, 'x'),
+        files.open(bad),
       ]) {
         const code = await codeOf(attempt)
         expect(['invalid-path', 'outside-workspace']).toContain(code)

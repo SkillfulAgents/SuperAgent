@@ -4,6 +4,7 @@ import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { listSubagents, readSubagentTranscript } from './local-transcript-ops'
 import { WorkspaceFileError } from './workspace-path'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
 // Real directories: the sessions directory lives inside the workspace the
 // container bind-mounts, so the agent can plant links in it, and these reads
@@ -57,8 +58,8 @@ describe('local transcript ops — containment', () => {
     await fs.promises.writeFile(path.join(subagentsDir, 'agent-x.jsonl'), JSON.stringify({ type: 'assistant', n: 1 }) + '\n')
     await fs.promises.writeFile(path.join(subagentsDir, 'agent-x.meta.json'), JSON.stringify({ toolUseId: 'tu-1' }))
 
-    expect(await readSubagentTranscript(AGENT, SESSION, 'x')).toEqual([{ type: 'assistant', n: 1 }])
-    expect(await listSubagents(AGENT, SESSION)).toEqual([{ id: 'x', toolUseId: 'tu-1' }])
+    expect(await readSubagentTranscript(createLocalSessionStore(AGENT), SESSION, 'x')).toEqual([{ type: 'assistant', n: 1 }])
+    expect(await listSubagents(createLocalSessionStore(AGENT), SESSION)).toEqual([{ id: 'x', toolUseId: 'tu-1' }])
   })
 
   it('does not read the sidecars of the subagents the caller already knows', async () => {
@@ -66,7 +67,7 @@ describe('local transcript ops — containment', () => {
     await fs.promises.writeFile(path.join(subagentsDir, 'agent-new.meta.json'), JSON.stringify({ toolUseId: 'tu-2' }))
     const reads = vi.spyOn(fs.promises, 'readFile')
     try {
-      expect(await listSubagents(AGENT, SESSION, { except: new Set(['known']) })).toEqual([{ id: 'new', toolUseId: 'tu-2' }])
+      expect(await listSubagents(createLocalSessionStore(AGENT), SESSION, { except: new Set(['known']) })).toEqual([{ id: 'new', toolUseId: 'tu-2' }])
       expect(reads.mock.calls.map(([file]) => path.basename(String(file)))).toEqual(['agent-new.meta.json'])
     } finally {
       reads.mockRestore()
@@ -76,7 +77,7 @@ describe('local transcript ops — containment', () => {
   it("a link planted in the subagents directory does not read another agent's transcript", async () => {
     await fs.promises.symlink(otherTranscript, path.join(subagentsDir, 'agent-x.jsonl'))
 
-    expect(await codeOf(readSubagentTranscript(AGENT, SESSION, 'x'))).toBe('not-found')
+    expect(await codeOf(readSubagentTranscript(createLocalSessionStore(AGENT), SESSION, 'x'))).toBe('not-found')
   })
 
   it('a link swapped in for the sessions directory itself is caught against the workspace', async () => {
@@ -84,10 +85,10 @@ describe('local transcript ops — containment', () => {
     await fs.promises.rm(sessionsDir, { recursive: true, force: true })
     await fs.promises.symlink(path.dirname(otherTranscript), sessionsDir)
 
-    expect(await codeOf(readSubagentTranscript(AGENT, 'anything', 'x'))).toBe('not-found')
+    expect(await codeOf(readSubagentTranscript(createLocalSessionStore(AGENT), 'anything', 'x'))).toBe('not-found')
   })
 
   it('a traversal in a segment is rejected before the filesystem is consulted', async () => {
-    expect(await codeOf(readSubagentTranscript(AGENT, '../../..', 'x'))).toBe('invalid-path')
+    expect(await codeOf(readSubagentTranscript(createLocalSessionStore(AGENT), '../../..', 'x'))).toBe('invalid-path')
   })
 })

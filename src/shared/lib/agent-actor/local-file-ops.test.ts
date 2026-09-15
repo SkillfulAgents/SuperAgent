@@ -52,6 +52,18 @@ describe('LocalFileOps — links and host files', () => {
     await fs.promises.rm(parent, { recursive: true, force: true })
   })
 
+  it('resolve refuses an absent path below a link that leads out of the workspace', async () => {
+    // A link swapped in for a directory escapes for every name below it,
+    // present or not: an absent transcript under it must not read as merely absent.
+    await fs.promises.symlink(outside, path.join(root, 'sessions'))
+    expect(await codeOf(files.resolve('sessions/missing.jsonl'))).toBe('outside-workspace')
+    expect(await codeOf(files.resolve('sessions/deeper/missing.jsonl'))).toBe('outside-workspace')
+    // An absent path below a real directory is simply absent.
+    await fs.promises.mkdir(path.join(root, 'real'))
+    expect(await files.resolve('real/missing.jsonl')).toBeNull()
+    expect(await files.resolve('never/made/missing.jsonl')).toBeNull()
+  })
+
   it('resolve reports where a link leads inside the workspace', async () => {
     await fs.promises.mkdir(path.join(root, 'real'))
     await fs.promises.writeFile(path.join(root, 'real', 'x.txt'), 'x')

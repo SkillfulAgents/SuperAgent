@@ -130,6 +130,7 @@ vi.mock('fs', () => ({
     rm: (...args: unknown[]) => mockFsRm(...args),
     open: (...args: unknown[]) => mockFsOpen(...args),
   },
+  constants: { COPYFILE_EXCL: 1 },
   existsSync: (...args: unknown[]) => mockFsExistsSync(...args),
   createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
   createWriteStream: (...args: unknown[]) => mockCreateWriteStream(...args),
@@ -618,6 +619,12 @@ const mockGetAgentWorkspaceDir = vi.fn((_slug?: string) => '/mock/workspace')
 const mockGetSessionJsonlPath = vi.fn(
   (agentSlug: string, sessionId: string) => `/mock/sessions/${agentSlug}/${sessionId}.jsonl`,
 )
+// Subagent transcripts are read through the JSONL reader over the agent's files.
+vi.mock('@shared/lib/agent-actor/jsonl-files', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/agent-actor/jsonl-files')>()),
+  readJsonl: vi.fn(),
+  streamJsonl: vi.fn(async function* () {}),
+}))
 vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@shared/lib/utils/file-storage')>()),
   // ResolveAgent() resolves the :id param via resolveAgentId. Delegate to the
@@ -719,7 +726,8 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { listUserSecrets, setSecret, updateSecret, deleteSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
-import { readJsonlFile, streamJsonlFile, writeFileAtomicStream, readFileOrNull } from '@shared/lib/utils/file-storage'
+import { writeFileAtomicStream, readFileOrNull } from '@shared/lib/utils/file-storage'
+import { readJsonl, streamJsonl } from '@shared/lib/agent-actor/jsonl-files'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
@@ -1253,7 +1261,8 @@ describe('session usage — GET /:id/sessions/:sessionId/usage', () => {
       usageIncomplete: false,
     })
     expect(mockLoadSessionUsageTotals).toHaveBeenCalledWith({
-      sessionPath: '/mock/sessions/test-agent/session-1.jsonl',
+      files: expect.anything(),
+      transcript: '.claude/projects/-workspace/session-1.jsonl',
       providerId: 'anthropic',
     })
   })
@@ -1283,11 +1292,15 @@ describe('session raw log — GET /:id/sessions/:sessionId/raw-log', () => {
     tmpDir = await realFs.promises.mkdtemp(realPath.join(realOs.tmpdir(), 'raw-log-route-'))
 
     // Back the route with the real filesystem so the body assertions compare
-    // genuine bytes: point the transcript path at a temp file and delegate the
-    // fs helpers (both the readFileOrNull and open/createReadStream paths) to
-    // the real implementations.
-    mockGetSessionJsonlPath.mockImplementation(
-      (_agentSlug: string, sessionId: string) => realPath.join(tmpDir, `${sessionId}.jsonl`),
+    // genuine bytes: the temp directory is the agent's workspace, and the fs
+    // helpers the store uses (stat, realpath, open) delegate to the real
+    // implementations.
+    mockGetAgentWorkspaceDir.mockReturnValue(tmpDir)
+    mockFsStat.mockImplementation((...args: unknown[]) =>
+      (realFs.promises.stat as (...a: unknown[]) => Promise<unknown>)(...args),
+    )
+    mockFsRealpath.mockImplementation((...args: unknown[]) =>
+      (realFs.promises.realpath as (...a: unknown[]) => Promise<unknown>)(...args),
     )
     mockFsOpen.mockImplementation((...args: unknown[]) =>
       (realFs.promises.open as (...a: unknown[]) => Promise<unknown>)(...args),
@@ -1309,16 +1322,18 @@ describe('session raw log — GET /:id/sessions/:sessionId/raw-log', () => {
     await realFs.promises.rm(tmpDir, { recursive: true, force: true })
     // These implementations must not leak into other suites (vi.clearAllMocks
     // clears calls, not implementations).
-    mockGetSessionJsonlPath.mockImplementation(
-      (agentSlug: string, sessionId: string) => `/mock/sessions/${agentSlug}/${sessionId}.jsonl`,
-    )
+    mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
+    mockFsStat.mockReset()
+    mockFsRealpath.mockReset()
     mockFsOpen.mockReset()
     mockFsReadFile.mockReset()
     vi.mocked(readFileOrNull).mockReset()
   })
 
   async function writeTranscript(sessionId: string, content: string | Buffer) {
-    await realFs.promises.writeFile(realPath.join(tmpDir, `${sessionId}.jsonl`), content)
+    const transcriptsDir = realPath.join(tmpDir, '.claude', 'projects', '-workspace')
+    await realFs.promises.mkdir(transcriptsDir, { recursive: true })
+    await realFs.promises.writeFile(realPath.join(transcriptsDir, `${sessionId}.jsonl`), content)
   }
 
   it('returns the transcript byte-identical to the file with the plain-text content type', async () => {
@@ -1332,7 +1347,7 @@ describe('session raw log — GET /:id/sessions/:sessionId/raw-log', () => {
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toBe('text/plain; charset=UTF-8')
     const body = Buffer.from(await res.arrayBuffer())
-    const fileBytes = await realFs.promises.readFile(realPath.join(tmpDir, 'session-1.jsonl'))
+    const fileBytes = await realFs.promises.readFile(realPath.join(tmpDir, '.claude', 'projects', '-workspace', 'session-1.jsonl'))
     expect(body.equals(fileBytes)).toBe(true)
     expect(res.headers.get('content-length')).toBe(String(fileBytes.length))
   })
@@ -1365,7 +1380,7 @@ describe('session raw log — GET /:id/sessions/:sessionId/raw-log', () => {
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toBe('text/plain; charset=UTF-8')
     const body = Buffer.from(await res.arrayBuffer())
-    const fileBytes = await realFs.promises.readFile(realPath.join(tmpDir, 'big-session.jsonl'))
+    const fileBytes = await realFs.promises.readFile(realPath.join(tmpDir, '.claude', 'projects', '-workspace', 'big-session.jsonl'))
     expect(body.length).toBe(fileBytes.length)
     expect(body.equals(fileBytes)).toBe(true)
     expect(res.headers.get('content-length')).toBe(String(fileBytes.length))
@@ -1386,7 +1401,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     const res = await getReq(app, '/api/agents/authorized-agent/sessions/foreign-session/stream')
 
     expect(res.status).toBe(404)
-    expect(sessionIsKnown).toHaveBeenCalledWith('authorized-agent', 'foreign-session')
+    expect(sessionIsKnown).toHaveBeenCalledWith(expect.objectContaining({ slug: 'authorized-agent' }), 'foreign-session')
     expect(mockStreamSSE).not.toHaveBeenCalled()
   })
 
@@ -1396,7 +1411,7 @@ describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
     const res = await getReq(app, '/api/agents/authorized-agent/sessions/new-session/stream')
 
     expect(res.status).toBe(200)
-    expect(sessionIsKnown).toHaveBeenCalledWith('authorized-agent', 'new-session')
+    expect(sessionIsKnown).toHaveBeenCalledWith(expect.objectContaining({ slug: 'authorized-agent' }), 'new-session')
     expect(mockStreamSSE).toHaveBeenCalledOnce()
   })
 })
@@ -3924,13 +3939,13 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     mockRequestDevice.value = 'device-family-9'
     expect((await postJson(app, URL, { content: 'from phone' })).status).toBe(201)
     expect(updateSessionMetadata).toHaveBeenCalledWith(
-      'test-agent', 'sess-1', { alertDeviceId: 'device-family-9' })
+      expect.objectContaining({ slug: 'test-agent' }), 'sess-1', { alertDeviceId: 'device-family-9' })
 
     // A deviceless surface (web) speaks: the claim is explicitly cleared.
     mockRequestDevice.value = null
     expect((await postJson(app, URL, { content: 'from web' })).status).toBe(201)
     expect(updateSessionMetadata).toHaveBeenLastCalledWith(
-      'test-agent', 'sess-1', { alertDeviceId: null })
+      expect.objectContaining({ slug: 'test-agent' }), 'sess-1', { alertDeviceId: null })
   })
 
   it('generates UUID, inserts messageAuthor, passes it to sendMessage, and returns it in auth mode', async () => {
@@ -3987,7 +4002,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const res = await postJson(app, URL, { content: 'hello', model: 'claude-haiku-4-5' })
     expect(res.status).toBe(201)
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { model: 'claude-haiku-4-5' })
-    expect(updateSessionMetadata).toHaveBeenCalledWith('test-agent', 'sess-1', {
+    expect(updateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
       model: 'claude-haiku-4-5',
     })
     expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('test-agent', 'sess-1')
@@ -4023,7 +4038,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     const res = await postJson(app, URL, { content: 'hello again', model: 'claude-haiku-4-5' })
     expect(res.status).toBe(201)
-    expect(updateSessionMetadata).toHaveBeenCalledWith('test-agent', 'sess-1', {
+    expect(updateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
       model: 'claude-haiku-4-5',
     })
     expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
@@ -4310,7 +4325,7 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     expect(body).toHaveLength(1)
     expect(body[0].id).toBe('m1')
     expect(body).not.toHaveProperty('nextCursor')
-    expect(getSessionMessagesWithCompact).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(getSessionMessagesWithCompact).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1')
     expect(getSessionMessagesPage).not.toHaveBeenCalled()
   })
 
@@ -4342,7 +4357,7 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     expect(body.messages).toHaveLength(1)
     expect(body.messages[0].id).toBe('m1')
     expect(body.nextCursor).toBe('m1')
-    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', { limit: 2, cursor: undefined, signal: expect.any(AbortSignal) })
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', { limit: 2, cursor: undefined, signal: expect.any(AbortSignal) })
     expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
   })
 
@@ -4354,7 +4369,7 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
 
     const res = await getReq(app, `${URL}?limit=2&cursor=m1`)
     expect(res.status).toBe(200)
-    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
       limit: 2,
       cursor: 'm1',
       signal: expect.any(AbortSignal),
@@ -4373,7 +4388,7 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     const res = await getReq(app, `${URL}?limit=2&media=ref`)
     expect(res.status).toBe(200)
     expect(getSessionMessagesPage).toHaveBeenCalledWith(
-      'test-agent',
+      expect.objectContaining({ slug: 'test-agent' }),
       'sess-1',
       expect.objectContaining({ media: 'ref' })
     )
@@ -4385,7 +4400,7 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     const res = await getReq(app, `${URL}?after=m1&media=ref`)
     expect(res.status).toBe(200)
     expect(getSessionMessagesDelta).toHaveBeenCalledWith(
-      'test-agent',
+      expect.objectContaining({ slug: 'test-agent' }),
       'sess-1',
       expect.objectContaining({ media: 'ref' })
     )
@@ -4404,7 +4419,7 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     const res = await getReq(app, `${URL}?media=ref`)
     expect(res.status).toBe(200)
     expect(getSessionMessagesPage).toHaveBeenCalledWith(
-      'test-agent',
+      expect.objectContaining({ slug: 'test-agent' }),
       'sess-1',
       expect.objectContaining({ media: 'ref' })
     )
@@ -4427,7 +4442,7 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
 
     const res = await getReq(app, `${URL}?limit=300`)
     expect(res.status).toBe(200)
-    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
       limit: 100,
       cursor: undefined,
       signal: expect.any(AbortSignal),
@@ -4443,7 +4458,7 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
 
     const res = await getReq(app, `${URL}?limit=200&cursor=m1`)
     expect(res.status).toBe(200)
-    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
       limit: 80,
       cursor: 'm1',
       signal: expect.any(AbortSignal),
@@ -4622,7 +4637,7 @@ describe('GET /:id/sessions/:sessionId/messages forward delta (?after=)', () => 
     expect(body.anchor).toBe('m5')
     expect(body).not.toHaveProperty('resync')
     expect(body).not.toHaveProperty('nextCursor')
-    expect(getSessionMessagesDelta).toHaveBeenCalledWith('test-agent', 'sess-1', {
+    expect(getSessionMessagesDelta).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', {
       after: 'm5',
       signal: expect.any(AbortSignal),
     })
@@ -4769,11 +4784,11 @@ describe('GET /:id/sessions/:sessionId/subagent/:agentId/messages', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
-    vi.mocked(readJsonlFile).mockResolvedValue([])
+    vi.mocked(readJsonl).mockResolvedValue([])
   })
 
   it('returns the transformed transcript as a parseable JSON array', async () => {
-    vi.mocked(readJsonlFile).mockResolvedValue([
+    vi.mocked(readJsonl).mockResolvedValue([
       { type: 'user', message: { role: 'user', content: 'hi' } },
       { type: 'assistant', message: { role: 'assistant', content: [] } },
     ])
@@ -4820,7 +4835,7 @@ describe('GET /:id/sessions/:sessionId/subagent/:agentId/messages', () => {
   })
 
   it('returns 500 when reading the transcript fails', async () => {
-    vi.mocked(readJsonlFile).mockRejectedValue(new Error('disk error'))
+    vi.mocked(readJsonl).mockRejectedValue(new Error('disk error'))
 
     const res = await getReq(app, URL)
     expect(res.status).toBe(500)
@@ -4834,7 +4849,7 @@ describe('GET /:id/sessions/:sessionId/subagent/:agentId/messages', () => {
     const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1/subagent/..%2Fsibling/messages')
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ error: 'Subagent transcript not found' })
-    expect(readJsonlFile).not.toHaveBeenCalled()
+    expect(readJsonl).not.toHaveBeenCalled()
   })
 })
 
@@ -4855,7 +4870,7 @@ describe('DELETE /:id/sessions/:sessionId', () => {
     const res = await deleteReq(app, URL)
 
     expect(res.status).toBe(204)
-    expect(deleteSession).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(deleteSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1')
   })
 
   it('cleans up notification rows for the deleted session (both modes)', async () => {
@@ -6300,7 +6315,7 @@ describe('GET /api/agents/:id/scheduled-tasks/completed-sessions', () => {
     expect(res.status).toBe(200)
     expect(vi.mocked(listCompletedOneTimeTasks)).toHaveBeenCalledWith('test-agent')
     expect(vi.mocked(listSessionsByIds)).toHaveBeenCalledWith(
-      'test-agent',
+      expect.objectContaining({ slug: 'test-agent' }),
       ['settled-session', 'legacy-session'],
     )
     expect(await res.json()).toEqual([
@@ -6439,13 +6454,13 @@ describe('GET /api/agents (enriched summary)', () => {
       hasUnreadNotification: false,
       hasPendingInput: false,
     })
-    expect(listSessionsFromSummary).toHaveBeenCalledWith('agent-1', {
+    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), {
       metadata: {},
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
     expect(getSessionMessagesPage).toHaveBeenCalledWith(
-      'agent-1',
+      expect.objectContaining({ slug: 'agent-1' }),
       'settled-visible',
       {
         limit: 20,
@@ -6517,7 +6532,7 @@ describe('GET /api/agents (enriched summary)', () => {
     })
     expect(getSessionMessagesPage).toHaveBeenCalledTimes(1)
     expect(getSessionMessagesPage).toHaveBeenCalledWith(
-      'agent-1',
+      expect.objectContaining({ slug: 'agent-1' }),
       'latest-visible',
       expect.any(Object),
     )
@@ -6598,7 +6613,7 @@ describe('GET /api/agents (enriched summary)', () => {
     })
     expect(getSessionMessagesPage).toHaveBeenCalledTimes(1)
     expect(getSessionMessagesPage).toHaveBeenCalledWith(
-      'agent-1',
+      expect.objectContaining({ slug: 'agent-1' }),
       'latest-visible',
       expect.any(Object),
     )
@@ -6763,7 +6778,7 @@ describe('GET /api/agents (enriched summary)', () => {
         hasUnreadNotification: false,
         hasPendingInput: false,
       })
-      expect(sessionExists).toHaveBeenCalledWith('agent-1', 'missing-transcript')
+      expect(sessionExists).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), 'missing-transcript')
       expect(consoleError).toHaveBeenCalledWith(
         'Failed to fetch latest visible session tail for agent agent-1:',
         expect.objectContaining({
@@ -6802,7 +6817,7 @@ describe('GET /api/agents (enriched summary)', () => {
         hasPendingInput: false,
       })
       expect(getSessionMessagesPage).toHaveBeenCalledWith(
-        'agent-1',
+        expect.objectContaining({ slug: 'agent-1' }),
         'registered-pending',
         expect.any(Object),
       )
@@ -6872,10 +6887,10 @@ describe('GET /api/agents (enriched summary)', () => {
   it('hydrates every agent in one collection response without legacy full-transcript reads', async () => {
     const agent2 = { ...baseAgent, slug: 'agent-2', name: 'Agent Two' }
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent, agent2])
-    vi.mocked(listSessionsFromSummary).mockImplementation(async (slug) => [
-      sessionInfo('session-' + slug, slug),
+    vi.mocked(listSessionsFromSummary).mockImplementation(async (store) => [
+      sessionInfo('session-' + store.slug, store.slug),
     ])
-    vi.mocked(getSessionMessagesPage).mockImplementation(async (_slug, sessionId) => ({
+    vi.mocked(getSessionMessagesPage).mockImplementation(async (_store, sessionId) => ({
       messages: [{
         id: 'message-' + sessionId,
         type: 'assistant',
@@ -6904,11 +6919,11 @@ describe('GET /api/agents (enriched summary)', () => {
   it('isolates a missing or corrupt transcript to its agent', async () => {
     const agent2 = { ...baseAgent, slug: 'agent-2', name: 'Agent Two' }
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent, agent2])
-    vi.mocked(listSessionsFromSummary).mockImplementation(async (slug) => [
-      sessionInfo('session-' + slug, slug),
+    vi.mocked(listSessionsFromSummary).mockImplementation(async (store) => [
+      sessionInfo('session-' + store.slug, store.slug),
     ])
-    vi.mocked(getSessionMessagesPage).mockImplementation(async (slug) => {
-      if (slug === 'agent-1') throw new Error('corrupt transcript')
+    vi.mocked(getSessionMessagesPage).mockImplementation(async (store) => {
+      if (store.slug === 'agent-1') throw new Error('corrupt transcript')
       return { messages: [], nextCursor: null }
     })
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -6970,9 +6985,9 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body).toHaveLength(1)
     expect(body[0].slug).toBe('agent-1')
     expect(listSessionsFromSummary).toHaveBeenCalledTimes(1)
-    expect(listSessionsFromSummary).toHaveBeenCalledWith('agent-1', expect.any(Object))
+    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), expect.any(Object))
     expect(getSessionMessagesPage).toHaveBeenCalledWith(
-      'agent-1',
+      expect.objectContaining({ slug: 'agent-1' }),
       'visible-session',
       expect.any(Object),
     )
@@ -7325,8 +7340,8 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[1]).toHaveProperty('dashboards')
     // getSessionSummary called once per agent
     expect(getSessionSummary).toHaveBeenCalledTimes(2)
-    expect(getSessionSummary).toHaveBeenCalledWith('agent-1')
-    expect(getSessionSummary).toHaveBeenCalledWith('agent-2')
+    expect(getSessionSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }))
+    expect(getSessionSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-2' }))
   })
 })
 
@@ -8581,7 +8596,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     expect(updateSessionName).not.toHaveBeenCalled()
 
     expect((await postJson(app, MESSAGES_URL, { content: 'what is the weather like' })).status).toBe(201)
-    await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith('test-agent', 'session-123', 'Weather Chat'))
+    await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Weather Chat'))
     expect(mockLlmMessagesCreate).toHaveBeenCalledTimes(1)
     expect(String((mockLlmMessagesCreate.mock.calls[0][0] as { messages: Array<{ content: string }> }).messages[0].content)).toContain('what is the weather like')
 
@@ -8594,7 +8609,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
   it('a session opened by a person is named from that message as before', async () => {
     mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Greeting' }] })
     expect((await postJson(app, SESSIONS_URL, { message: 'hello there' })).status).toBe(201)
-    await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith('test-agent', 'session-123', 'Greeting'))
+    await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Greeting'))
   })
 
   it('falls back to agent preference defaults when the request has no model/effort', async () => {
@@ -8614,7 +8629,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     expect(args.speed).toBe('fast')
     expect(args.prewarmDefaults.model).toBe('haiku')
     expect(args.prewarmDefaults.effort).toBe('high')
-    expect(registerSession).toHaveBeenCalledWith('test-agent', 'session-123', 'New Session', {
+    expect(registerSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'New Session', {
       model: 'haiku',
       effort: 'high',
       speed: 'fast',
@@ -8642,7 +8657,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     expect(args.prewarmDefaults.model).toBe('haiku')
     expect(args.prewarmDefaults.effort).toBe('high')
     expect(registerSession).toHaveBeenCalledWith(
-      'test-agent',
+      expect.objectContaining({ slug: 'test-agent' }),
       'session-123',
       'New Session',
       expect.objectContaining({ model: 'claude-opus-4', effort: 'low' }),
@@ -8660,7 +8675,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     expect(args.prewarmDefaults.model).toBe('global-agent-model')
     expect(args.prewarmDefaults.effort).toBe('medium')
     expect(registerSession).toHaveBeenCalledWith(
-      'test-agent',
+      expect.objectContaining({ slug: 'test-agent' }),
       'session-123',
       'New Session',
       expect.objectContaining({ model: 'global-agent-model', effort: 'medium' }),
@@ -8705,7 +8720,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
       'newer-visible',
       'older-visible',
     ])
-    expect(listSessionsFromSummary).toHaveBeenCalledWith('test-agent', {
+    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
       excludeAutomated: true,
     })
   })
@@ -8761,7 +8776,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     expect(res.status).toBe(200)
     expect((await res.json()).map((session: { id: string }) => session.id))
       .toEqual(['newest-visible'])
-    expect(listSessionsFromSummary).toHaveBeenCalledWith('test-agent', {
+    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
       limit: 1,
@@ -8772,7 +8787,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     const res = await getReq(app, URL + '?limit=1000')
 
     expect(res.status).toBe(200)
-    expect(listSessionsFromSummary).toHaveBeenCalledWith('test-agent', {
+    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
       excludeAutomated: true,
       limit: 100,
     })
@@ -8782,7 +8797,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     const res = await getReq(app, URL + '?notable=false&limit=2')
 
     expect(res.status).toBe(200)
-    expect(listSessionsFromSummary).toHaveBeenCalledWith('test-agent', {
+    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
       excludeAutomated: true,
       limit: 2,
     })
@@ -8851,7 +8866,7 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
     const res = await getReq(app, NOTABLE_URL)
     expect(res.status).toBe(200)
     expect(vi.mocked(listSessionsByIds)).toHaveBeenCalledWith(
-      'test-agent',
+      expect.objectContaining({ slug: 'test-agent' }),
       ['s-live', 's-awaiting', 's-both', 's-unread'],
       { excludeAutomated: true },
     )
@@ -9083,7 +9098,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
     await getReq(app, '/api/agents/test-agent/sessions?notable=true')
 
     expect(vi.mocked(listSessionsByIds)).toHaveBeenCalledWith(
-      'test-agent',
+      expect.objectContaining({ slug: 'test-agent' }),
       ['sess-marked'],
       { excludeAutomated: true },
     )
@@ -9168,7 +9183,7 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
   it('registers the fork with the source runtime choices, slash commands and lineage, and answers the create projection', async () => {
     const res = await fork()
     expect(res.status).toBe(201)
-    expect(registerSession).toHaveBeenCalledWith('test-agent', 'fork-1', 'Pricing (fork)', expect.objectContaining({
+    expect(registerSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'fork-1', 'Pricing (fork)', expect.objectContaining({
       model: 'claude-sonnet-5', effort: 'high', speed: 'fast', forkedFromSessionId: 'src-1',
       slashCommands: [{ name: 'review', description: 'Review', argumentHint: '' }],
     }))
@@ -9177,7 +9192,7 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
     expect(body.initialMessageUuid).toBeUndefined()
     expect(readSessionMetadata).toHaveBeenCalledTimes(1)
     expect(getSessionMetadata).not.toHaveBeenCalled()
-    expect(getSession).toHaveBeenCalledWith('test-agent', 'src-1', {
+    expect(getSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'src-1', {
       metadata: expect.objectContaining({ model: 'claude-sonnet-5', effort: 'high' }),
     })
   })
@@ -9187,12 +9202,14 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
     vi.mocked(deleteSession).mockRejectedValue(new Error('unlink failed'))
     const res = await fork()
     expect(res.status).toBe(500)
-    expect(deleteSession).toHaveBeenCalledWith('test-agent', 'fork-1')
+    expect(deleteSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'fork-1')
     expect(mockClientDeleteSession).toHaveBeenCalledWith('fork-1')
   })
 
   it('copies the session directory and survives a copy failure', async () => {
-    mockFsLstat.mockResolvedValue({ isDirectory: () => true })
+    mockFsRealpath.mockImplementation(async (p: unknown) => p)
+    mockFsStat.mockResolvedValue({ isDirectory: () => true, isFile: () => false, size: 0, mtimeMs: 0, birthtimeMs: 0, mode: 0o755 })
+    mockFsMkdir.mockResolvedValue(undefined)
     mockFsReaddir.mockRejectedValue(new Error('EIO'))
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
     const res = await fork()
@@ -9202,7 +9219,8 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
   })
 
   it('skips the sidecar copy when the session folder is a symlink', async () => {
-    mockFsLstat.mockResolvedValue({ isDirectory: () => false, isSymbolicLink: () => true })
+    // A link resolves somewhere else; only a directory that is where it says it is gets copied.
+    mockFsRealpath.mockImplementation(async (p: unknown) => String(p).replace('src-1', 'elsewhere'))
     const res = await fork()
     expect(res.status).toBe(201)
     expect(mockFsReaddir).not.toHaveBeenCalled()
@@ -9210,7 +9228,7 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
 
   it('rebuilds attribution for copied user messages in auth mode', async () => {
     mockIsAuthMode.mockReturnValue(true)
-    vi.mocked(streamJsonlFile).mockImplementation(async function* () {
+    vi.mocked(streamJsonl).mockImplementation(async function* () {
       yield { type: 'user', uuid: 'new-u1', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-u1' } }
       yield { type: 'assistant', uuid: 'new-a1', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-a1' } }
     })
@@ -9293,7 +9311,7 @@ describe('session existence guards read metadata, not the transcript', () => {
       forkedFromSessionName: 'Pricing',
     })
     expect(getSession).toHaveBeenCalledTimes(1)
-    expect(getSession).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(getSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1')
   })
 
   it('uses the registered listing name, not a transcript-derived title', async () => {
@@ -9334,7 +9352,7 @@ describe('session existence guards read metadata, not the transcript', () => {
 
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ id: 'sess-1', name: 'Renamed', messageCount: 7 })
-    expect(updateSessionName).toHaveBeenCalledWith('test-agent', 'sess-1', 'Renamed')
+    expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', 'Renamed')
     // Was two full passes over the transcript — one on each side of the rename.
     expect(getSession).toHaveBeenCalledTimes(1)
   })
@@ -9355,7 +9373,7 @@ describe('session existence guards read metadata, not the transcript', () => {
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/computer-use/revoke', {})
 
     expect(res.status).not.toBe(404)
-    expect(sessionIsKnown).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(sessionIsKnown).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1')
     expect(getSession).not.toHaveBeenCalled()
   })
 
@@ -9488,16 +9506,16 @@ describe('cross-agent session scoping', () => {
     // The attacker owns exactly one session; the victim's id belongs to another
     // agent, so it resolves to neither a transcript nor a metadata entry here.
     vi.mocked(sessionIsKnown).mockImplementation(
-      async (agentSlug: string, sessionId: string) =>
-        agentSlug === ATTACKER && sessionId === OWN_SESSION,
+      async (store, sessionId: string) =>
+        store.slug === ATTACKER && sessionId === OWN_SESSION,
     )
     vi.mocked(sessionExists).mockImplementation(
-      async (agentSlug: string, sessionId: string) =>
-        agentSlug === ATTACKER && sessionId === OWN_SESSION,
+      async (store, sessionId: string) =>
+        store.slug === ATTACKER && sessionId === OWN_SESSION,
     )
-    vi.mocked(getSession).mockImplementation(async (agentSlug: string, sessionId: string) =>
-      agentSlug === ATTACKER && sessionId === OWN_SESSION
-        ? ({ id: sessionId, agentSlug, name: 'Own', createdAt: new Date(), lastActivityAt: new Date(), messageCount: 1 } as any)
+    vi.mocked(getSession).mockImplementation(async (store, sessionId: string) =>
+      store.slug === ATTACKER && sessionId === OWN_SESSION
+        ? ({ id: sessionId, agentSlug: store.slug, name: 'Own', createdAt: new Date(), lastActivityAt: new Date(), messageCount: 1 } as any)
         : null,
     )
     vi.mocked(deleteSession).mockResolvedValue(false)
@@ -9831,7 +9849,7 @@ describe('cross-agent session scoping', () => {
 
       expect(res.status).toBe(204)
       expect(messagePersister.unsubscribeFromSession).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
-      expect(deleteSession).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
+      expect(deleteSession).toHaveBeenCalledWith(expect.objectContaining({ slug: ATTACKER }), OWN_SESSION)
     })
   })
 })

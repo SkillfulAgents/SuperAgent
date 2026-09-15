@@ -19,12 +19,12 @@
  * flushed, as it never was, because a flush per file is what makes a
  * thousand-file import slow.
  */
-import fs from 'fs'
-import path from 'path'
+import * as fs from 'fs'
+import * as path from 'path'
 import { Readable } from 'stream'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { writeFileAtomicStream } from '@shared/lib/utils/file-storage'
-import type { ByteRange, FileEntry, FileOps, FileStat, WriteOptions } from './types'
+import type { ByteRange, FileEntry, FileOps, FileStat, OpenFile, WriteOptions } from './types'
 import { WorkspaceFileError, normalizeWorkspacePath } from './workspace-path'
 
 export interface LocalFileOpsDeps {
@@ -137,6 +137,66 @@ function modeBits(stat: fs.Stats): number {
   return stat.mode & 0o777
 }
 
+/**
+ * Appends in flight, by host path. The filesystem writes a large buffer in
+ * several calls, so two appends to the same file at once would interleave
+ * their bytes; an append waits for the one before it. Module level, not per
+ * instance: every `LocalFileOps` over the same workspace shares the file.
+ */
+const appendsInFlight = new Map<string, Promise<void>>()
+
+async function appendSerialized(abs: string, write: () => Promise<void>): Promise<void> {
+  const previous = appendsInFlight.get(abs) ?? Promise.resolve()
+  const run = previous.then(write, write)
+  appendsInFlight.set(abs, run)
+  try {
+    await run
+  } finally {
+    if (appendsInFlight.get(abs) === run) appendsInFlight.delete(abs)
+  }
+}
+
+/**
+ * A file handle for reads at byte offsets. Each call is the one filesystem
+ * call it names: `size` a stat of the handle, `readAt` positional reads until
+ * the buffer is full or the file ends (a network filesystem may fill it in
+ * several), `stream` a read stream over the handle, which closes the handle
+ * when it ends or is destroyed. `close` after that is a no-op, as the
+ * handle's own is.
+ */
+class LocalOpenFile implements OpenFile {
+  constructor(private readonly handle: fs.promises.FileHandle) {}
+
+  async size(): Promise<number> {
+    const stat = await this.handle.stat().catch(fromFsError)
+    if (stat.isDirectory()) throw new WorkspaceFileError('not-a-file')
+    return stat.size
+  }
+
+  async readAt(offset: number, length: number, signal?: AbortSignal): Promise<Uint8Array> {
+    const buffer = Buffer.allocUnsafe(length)
+    let filled = 0
+    while (filled < length) {
+      signal?.throwIfAborted()
+      const { bytesRead } = await this.handle
+        .read(buffer, filled, length - filled, offset + filled)
+        .catch(fromFsError)
+      if (bytesRead === 0) break
+      filled += bytesRead
+    }
+    return buffer.subarray(0, filled)
+  }
+
+  stream(range?: { start: number; end?: number }): ReadableStream<Uint8Array> {
+    const source = this.handle.createReadStream(range ? { start: range.start, end: range.end } : undefined)
+    return Readable.toWeb(source) as ReadableStream<Uint8Array>
+  }
+
+  close(): Promise<void> {
+    return this.handle.close()
+  }
+}
+
 /** Create the directories a path is written under. A file in the way is `not-a-directory`. */
 async function ensureDirectory(dir: string): Promise<void> {
   try {
@@ -200,8 +260,19 @@ export class LocalFileOps implements FileOps {
     const { abs, root } = this.absolute(workspacePath)
     const cachedRoot = await this.realRoot(root)
     if (!cachedRoot) return null
-    const real = await realpathOrNull(abs)
-    if (!real) return null
+    // An absent path still leads somewhere: through its nearest existing
+    // ancestor. A link swapped in for a directory (the agent's transcripts
+    // directory, say) escapes for every name below it, present or not, so
+    // the ancestor is what is checked when the path itself is not there.
+    let existing = abs
+    let real = await realpathOrNull(existing)
+    while (!real) {
+      const parent = path.dirname(existing)
+      if (parent === existing) return null
+      existing = parent
+      if (!isPathWithinDir(root, existing)) return null
+      real = await realpathOrNull(existing)
+    }
     // A miss re-resolves the root once, so a root replaced underneath the
     // cache is not mistaken for an escape; a miss against the fresh root is one.
     let realRoot = cachedRoot
@@ -210,6 +281,7 @@ export class LocalFileOps implements FileOps {
       if (!fresh || !isPathWithinDir(fresh, real)) throw new WorkspaceFileError('outside-workspace')
       realRoot = fresh
     }
+    if (existing !== abs) return null
     return toWorkspacePath(path.relative(realRoot, real))
   }
 
@@ -274,9 +346,19 @@ export class LocalFileOps implements FileOps {
     const stat = await statOrNull(abs)
     if (!stat) return rel === '' ? { kind: 'directory', size: 0, mtimeMs: 0 } : null
     const mode = modeBits(stat)
-    if (stat.isDirectory()) return { kind: 'directory', size: stat.size, mtimeMs: stat.mtimeMs, mode }
-    if (stat.isFile()) return { kind: 'file', size: stat.size, mtimeMs: stat.mtimeMs, mode }
+    const birthtimeMs = stat.birthtimeMs
+    if (stat.isDirectory()) return { kind: 'directory', size: stat.size, mtimeMs: stat.mtimeMs, mode, birthtimeMs }
+    if (stat.isFile()) return { kind: 'file', size: stat.size, mtimeMs: stat.mtimeMs, mode, birthtimeMs }
     return null
+  }
+
+  async open(workspacePath: string): Promise<OpenFile> {
+    const { rel, abs } = this.absolute(workspacePath)
+    if (rel === '') throw new WorkspaceFileError('not-a-file')
+    // One open, nothing else: a directory opens like a file on POSIX and is
+    // refused by the first read or stat of the handle instead.
+    const handle = await fs.promises.open(abs, 'r').catch(fromFsError)
+    return new LocalOpenFile(handle)
   }
 
   async read(workspacePath: string, range?: ByteRange): Promise<ReadableStream<Uint8Array>> {
@@ -334,7 +416,7 @@ export class LocalFileOps implements FileOps {
     const chunks = source ?? [asBuffer(body as Uint8Array)]
     try {
       await this.writing(target.abs, () =>
-        writeFileAtomicStream(target.abs, chunks, { ...atomicWriteOptions(options), fsync: false }),
+        writeFileAtomicStream(target.abs, chunks, { ...atomicWriteOptions(options), fsync: options?.flush === true }),
       )
     } catch (error) {
       // A destination that could not be opened (or written) leaves the
@@ -366,5 +448,11 @@ export class LocalFileOps implements FileOps {
   async mkdir(workspacePath: string): Promise<void> {
     const { abs } = this.absolute(workspacePath)
     await ensureDirectory(abs)
+  }
+
+  async append(workspacePath: string, bytes: Uint8Array | string): Promise<void> {
+    const { abs } = this.forWrite(workspacePath)
+    const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : asBuffer(bytes)
+    await appendSerialized(abs, () => this.writing(abs, () => fs.promises.appendFile(abs, data))).catch(fromWriteError)
   }
 }

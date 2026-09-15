@@ -38,6 +38,7 @@ export type {
   McpReauthOps,
   MediaBlob,
   MessageOps,
+  OpenFile,
   SubagentRef,
   OpenWebSocketInit,
   ReviewOps,

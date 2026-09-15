@@ -16,6 +16,7 @@ import type { ZodType } from 'zod'
 import pLimit from 'p-limit'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
+import { CLI_TRANSCRIPTS_DIR } from '@shared/lib/agent-actor/session-store'
 
 // ============================================================================
 // Slug Generation
@@ -364,223 +365,6 @@ export async function readJsonlFile<T = unknown>(filePath: string): Promise<T[]>
 }
 
 const NEWLINE_BYTE = 0x0a
-const TAIL_READ_CHUNK = 64 * 1024
-
-/** Fill `buf` from an absolute file position, looping over legal short reads
- * (network filesystems may return fewer bytes than requested mid-file).
- * Returns the bytes actually filled — less than `buf.length` only when the
- * file ended early, i.e. it was truncated concurrently with the walk.
- *
- * `signal` is observed before every physical read: one logical chunk can take
- * many RPC-priced reads on the filesystems where short reads happen at all. */
-async function readFileRangeFully(
-  fileHandle: fs.promises.FileHandle,
-  buf: Buffer,
-  position: number,
-  signal?: AbortSignal
-): Promise<number> {
-  let filled = 0
-  while (filled < buf.length) {
-    signal?.throwIfAborted()
-    const { bytesRead } = await fileHandle.read(buf, filled, buf.length - filled, position + filled)
-    if (bytesRead === 0) break
-    filled += bytesRead
-  }
-  return filled
-}
-
-/** Last `maxLines` JSONL rows from disk, with each row's byte offset. Older
- * rows are never read into a line buffer.
- *
- * `signal` (optional) aborts the backward walk between chunk reads: transcripts
- * run to tens of MB and network filesystems make each read slow, so a caller
- * whose HTTP client already hung up must be able to stop paying for the rest
- * of the file. Throws the signal's abort reason (AbortError). */
-export async function readJsonlTailLines(
-  filePath: string,
-  maxLines: number,
-  signal?: AbortSignal
-): Promise<{ lines: Buffer[]; offsets: number[]; reachedStart: boolean }> {
-  signal?.throwIfAborted()
-  if (maxLines <= 0) return { lines: [], offsets: [], reachedStart: true }
-
-  let fileHandle: fs.promises.FileHandle
-  try {
-    fileHandle = await fs.promises.open(filePath, 'r')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { lines: [], offsets: [], reachedStart: true }
-    }
-    throw error
-  }
-
-  try {
-    const stat = await fileHandle.stat()
-    if (stat.size === 0) return { lines: [], offsets: [], reachedStart: true }
-
-    let pos = stat.size
-    const parts: Buffer[] = []
-    let newlineCount = 0
-    let truncated = false
-
-    while (pos > 0 && newlineCount <= maxLines) {
-      // Check BEFORE each read (an abort landing during open/stat or a prior
-      // iteration must not start another RPC-priced read) and AFTER it (an
-      // abort landing while the FINAL chunk is in flight has no next iteration
-      // to observe it, and would otherwise still pay for concatenating and
-      // line-scanning the whole tail window).
-      signal?.throwIfAborted()
-      const size = Math.min(TAIL_READ_CHUNK, pos)
-      const chunkStart = pos - size
-      const buf = Buffer.allocUnsafe(size)
-      const filled = await readFileRangeFully(fileHandle, buf, chunkStart, signal)
-      signal?.throwIfAborted()
-      if (filled < size) {
-        // The file shrank while we walked it (rewrite race). Splicing a short
-        // chunk against already-collected higher chunks would garble line
-        // boundaries — stop here and serve only what was read cleanly.
-        truncated = true
-        break
-      }
-      // Only once the chunk is in hand: `pos` is the file offset that `parts`
-      // starts at, and every returned offset is derived from it. Lowering it
-      // before a read that then comes up short would leave it pointing a chunk
-      // below the bytes actually collected.
-      pos = chunkStart
-      parts.unshift(buf)
-      for (let i = 0; i < buf.length; i++) {
-        if (buf[i] === NEWLINE_BYTE) newlineCount++
-      }
-    }
-
-    const combined = parts.length === 1 ? parts[0]! : Buffer.concat(parts)
-    const lines: Buffer[] = []
-    // Kept in lockstep with `lines` through every trim below, so consumers that
-    // address into the file (media refs) can do so without a second pass.
-    const offsets: number[] = []
-    let start = 0
-    for (let i = 0; i < combined.length; i++) {
-      if (combined[i] === NEWLINE_BYTE) {
-        lines.push(combined.subarray(start, i))
-        offsets.push(pos + start)
-        start = i + 1
-      }
-    }
-    if (start < combined.length) {
-      lines.push(combined.subarray(start))
-      offsets.push(pos + start)
-    }
-
-    const reachedStart = pos === 0 && !truncated
-    if (!reachedStart && lines.length > 0) {
-      lines.shift()
-      offsets.shift()
-    }
-    if (lines.length > 0 && lines[lines.length - 1]!.length === 0) {
-      lines.pop()
-      offsets.pop()
-    }
-
-    if (lines.length > maxLines) {
-      return { lines: lines.slice(-maxLines), offsets: offsets.slice(-maxLines), reachedStart: false }
-    }
-    return { lines, offsets, reachedStart }
-  } finally {
-    await fileHandle.close()
-  }
-}
-
-/**
- * Iterate a file's raw lines BACKWARD from EOF without retaining the file.
- * Yields `{ line, offset }` per line — `offset` is the byte position of the
- * line's first byte; the newline is excluded from `line`. Memory held between
- * iterations is one read chunk plus the partial head of the line currently
- * being assembled, so walking an arbitrarily deep tail is O(chunk) — the
- * property the paged messages reader's index scan relies on. Yielded buffers
- * may alias an internal read chunk: consume them within the iteration, don't
- * retain them.
- *
- * Missing file yields nothing. `signal` aborts between chunk reads (throws the
- * abort reason), same contract as readJsonlTailLines.
- */
-export async function* iterateJsonlLinesBackward(
-  filePath: string,
-  signal?: AbortSignal
-): AsyncGenerator<{ line: Buffer; offset: number }> {
-  signal?.throwIfAborted()
-  let fileHandle: fs.promises.FileHandle
-  try {
-    fileHandle = await fs.promises.open(filePath, 'r')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
-    throw error
-  }
-
-  try {
-    const stat = await fileHandle.stat()
-    let pos = stat.size
-    // Fragments (in file order) of the line whose start lies in a chunk not
-    // yet read — the bytes below the lowest newline processed so far. Kept as
-    // an array and concatenated ONCE at the line boundary: re-concatenating
-    // per chunk would make a multi-chunk row cost O(rowBytes²) in copying.
-    let carryParts: Buffer[] = []
-    let carryBytes = 0
-    // The first candidate is the region between the last newline and EOF —
-    // empty when the file ends with a newline. Skip only that empty
-    // pseudo-line; interior empty lines are yielded (parseJsonlLine treats
-    // them as blanks), matching readJsonlTailLines.
-    let first = true
-
-    while (pos > 0) {
-      signal?.throwIfAborted()
-      const size = Math.min(TAIL_READ_CHUNK, pos)
-      pos -= size
-      const buf = Buffer.allocUnsafe(size)
-      const filled = await readFileRangeFully(fileHandle, buf, pos, signal)
-      signal?.throwIfAborted()
-      if (filled < size) {
-        // File shrank while we walked it (rewrite race): the bytes above were
-        // read from the old layout, so stop instead of splicing garbage.
-        return
-      }
-
-      // Unprocessed region of this chunk, scanned high-to-low.
-      let high = buf.length
-      let idx = high > 0 ? buf.lastIndexOf(NEWLINE_BYTE, high - 1) : -1
-      while (idx !== -1) {
-        const segment = buf.subarray(idx + 1, high)
-        const line =
-          carryParts.length > 0 ? Buffer.concat([segment, ...carryParts]) : segment
-        carryParts = []
-        carryBytes = 0
-        if (line.length > 0 || !first) {
-          yield { line, offset: pos + idx + 1 }
-        }
-        first = false
-        high = idx
-        idx = high > 0 ? buf.lastIndexOf(NEWLINE_BYTE, high - 1) : -1
-      }
-      if (high > 0) {
-        carryParts.unshift(buf.subarray(0, high))
-        carryBytes += high
-      }
-    }
-
-    if (carryBytes > 0) {
-      // Release the source fragments BEFORE yielding: the yield suspends the
-      // generator, and holding both the fragments and their concatenation
-      // would double the resident memory of exactly the oversized rows this
-      // reader is sized for (same pattern as streamFileLines' pending).
-      const firstLine = Buffer.concat(carryParts)
-      carryParts = []
-      carryBytes = 0
-      yield { line: firstLine, offset: 0 }
-    }
-  } finally {
-    await fileHandle.close()
-  }
-}
-
 /**
  * Stream-read JSONL file line by line (for large files)
  * Yields parsed objects one at a time
@@ -790,15 +574,19 @@ export function getAgentClaudeConfigDir(slug: string): string {
 }
 
 /**
- * Get sessions directory where JSONL files are stored
+ * Host path of the directory the CLI writes a local agent's transcripts to.
+ * The application reads transcripts through the agent's session store; this
+ * is for the code that stands in for the CLI (the mock container client) and
+ * for test fixtures.
  * ~/.superagent/agents/{slug}/workspace/.claude/projects/-workspace/
  */
 export function getAgentSessionsDir(slug: string): string {
-  return path.join(getAgentClaudeConfigDir(slug), 'projects', '-workspace')
+  return path.join(getAgentWorkspaceDir(slug), ...CLI_TRANSCRIPTS_DIR.split('/'))
 }
 
 /**
- * Get path to a specific session's JSONL file
+ * Host path of a local session's transcript, for the same callers as
+ * {@link getAgentSessionsDir}.
  * ~/.superagent/agents/{slug}/workspace/.claude/projects/-workspace/{sessionId}.jsonl
  */
 export function getSessionJsonlPath(slug: string, sessionId: string): string {

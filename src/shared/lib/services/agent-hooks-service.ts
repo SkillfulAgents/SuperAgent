@@ -98,5 +98,6 @@ export async function removeAgentHook(
     return updatedSettings
   })
 
-  return updated.hooks ? flattenHooks(updated.hooks) : []
+  // The mutator above always returns a document, so the settings are there.
+  return updated?.hooks ? flattenHooks(updated.hooks) : []
 }

@@ -1,36 +1,30 @@
 /**
  * Session Service
  *
- * File-based operations for sessions.
- * Sessions are stored as JSONL files by Claude Code SDK.
+ * Stored sessions: the JSONL transcripts the CLI writes and the metadata
+ * document beside them, read and edited through the agent's `SessionStore`
+ * — its workspace file operations, its configuration documents, and the
+ * directory the CLI writes transcripts to. Nothing here knows where the
+ * workspace is; a local actor and a remote one bring their own store.
  */
 
-import * as fs from 'fs'
-import * as path from 'path'
 import pLimit from 'p-limit'
 import {
-  getAgentsDir,
-  getAgentSessionsDir,
-  getAgentWorkspaceDir,
-  getAgentSessionMetadataPath,
-  getSessionJsonlPath,
-  listDirectories,
-  directoryExists,
-  fileExists,
-  writeJsonFileAtomic,
-  readJsonFileStrict,
-  withFileLock,
-  CorruptFileError,
-  readJsonlFile,
-  streamJsonlFile,
-  readJsonlTailLines,
-  iterateJsonlLinesBackward,
-  parseJsonl,
-  streamFileLines,
-  parseJsonlLine,
-  writeFileAtomicStream,
-  ensureDirectory,
-} from '@shared/lib/utils/file-storage'
+  isSessionIdWellFormed,
+  transcriptPath,
+  type SessionStore,
+} from '@shared/lib/agent-actor/session-store'
+import {
+  isAbsentFile,
+  iterateLinesBackward,
+  readJsonl,
+  readTailLines,
+  streamJsonl,
+  streamLines,
+} from '@shared/lib/agent-actor/jsonl-files'
+import { ConfigDocError, type ConfigDoc } from '@shared/lib/agent-actor/config-schema'
+import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
+import { parseJsonl, parseJsonlLine } from '@shared/lib/utils/file-storage'
 import {
   transformMessages,
   isToolResultOnlyMessage,
@@ -44,7 +38,6 @@ import {
   type SessionActivityFields,
 } from '@shared/lib/session-ordering'
 import { replaceInlineMediaWithRefs } from './session-media'
-import { sessionMetadataMapSchema } from './session-metadata-schema'
 import { isHiddenAutomatedSession } from './session-visibility'
 import {
   SessionInfo,
@@ -57,7 +50,6 @@ import {
   ContentBlock,
 } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
-import { isRealPathWithinDir } from '@shared/lib/utils/path-safety'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import {
   getSessionSummaryCacheSlot,
@@ -70,112 +62,102 @@ import {
 
 // A session id is unique within its agent, not across the install: it comes
 // from the container, and an agent can write any id it likes into its own
-// bind-mounted workspace. That used to matter because the process-global
-// registries (the message persister above all) were keyed by session id ALONE,
-// so a forged transcript let one agent's request address another agent's live
-// session (SUP-479). It was answered with a host-owned ownership index kept
-// outside every workspace.
+// workspace. The registries keyed by session id are keyed by agent AND
+// session, so a forged transcript resolves to an empty slot in the forging
+// agent's OWN namespace and reaches nothing.
 //
-// Those registries are now keyed by agent AND session, so the same forged file
-// resolves to an empty slot in the forging agent's OWN namespace and reaches
-// nothing. There is no ownership question left to answer, and no second source
-// of truth to keep in step with imports, clones or deletes — which is what the
-// index kept getting wrong.
-//
-// What remains is containment, which the index also enforced: an id that
-// cannot name a file under this agent's session directory (`..`, an absolute
-// path, a separator) is not one of its sessions, and must not reach a registry
-// or the filesystem.
-// Path-shape validation, NOT an existence or ownership check: it answers true
-// for any well-formed id whether or not a session by that name exists — callers
-// that need "does this session exist / is it really this agent's" must use
+// What remains is containment: an id that cannot name a file directly under
+// this agent's transcripts directory (`..`, an absolute path, a separator) is
+// not one of its sessions, and must not reach a registry or the store.
+// Path-shape validation, NOT an existence check: it answers true for any
+// well-formed id whether or not a session by that name exists — callers that
+// need "does this session exist / is it really this agent's" use
 // sessionExists / sessionIsKnown, which layer those on top.
 //
-// Lexical containment only: `sessionId` names a file under this agent's session
-// directory (no `..`, absolute path, or separator). Deliberately touches no
-// filesystem — it runs once per transcript in the listing/summary hot loops,
-// whose op budget is pinned exactly by the perf suite. It is enough to reject a
-// traversal-shaped id; the SYMLINK escape (a link inside the agent's own dir
-// resolving to another agent's transcript) is caught on the content/action
-// gates instead — see {@link sessionFileRealPathWithinAgent} — because those
-// are the paths that actually read or mutate the file, and they are off the
-// listing hot path.
-function sessionIdPathWithinAgent(agentSlug: string, sessionId: string): boolean {
-  try {
-    getSessionJsonlPath(agentSlug, sessionId)
-    return true
-  } catch {
-    return false
-  }
-}
+// Lexical only: it touches no storage, because it runs once per transcript in
+// the listing/summary hot loops, whose op budget the perf suite pins exactly.
+// The LINK escape (a link inside the agent's own directory resolving to
+// another agent's transcript) is caught on the content/action gates instead —
+// see {@link sessionFileRealPathWithinAgent} — because those are the paths
+// that actually read or mutate the file, and they are off the listing hot path.
 
-// Lexical containment PLUS symlink resolution: the id names a file whose REAL
-// location is inside this agent's own workspace. The workspace is bind-mounted
-// read/write into the container, so the agent can plant a symlink — named after
+// Lexical containment PLUS link resolution: the id names a file whose REAL
+// location is inside this agent's own workspace. The workspace is mounted
+// read/write into the container, so the agent can plant a link — named after
 // another agent's session, OR replacing a whole directory like `-workspace` —
 // that resolves to another agent's transcript: a name that looks local but
 // escapes on read. Use this on every gate that goes on to serve or act on the
-// transcript (never in a listing loop): it costs a realpath, but a session that
-// fails it must not be readable. This is what the deleted ownership index also
-// enforced, without a second source of truth.
+// transcript (never in a listing loop): it costs a real-path lookup, but a
+// session that fails it must not be readable.
 //
-// Containment is anchored on the WORKSPACE, not the session directory: the
-// session dir (and every dir under the workspace) is attacker-writable, so a
-// symlinked `-workspace` would make base and candidate realpath to the SAME
-// escaped location and pass. The workspace is the bind-mount point itself,
-// which the container cannot replace, so it is the trustworthy boundary.
-export function sessionFileRealPathWithinAgent(agentSlug: string, sessionId: string): boolean {
-  let jsonlPath: string
+// The store's `resolve` anchors containment on the WORKSPACE, the mount point
+// the container cannot replace: a link swapped in for the transcripts
+// directory still resolves to a location outside it. A transcript that is not
+// there is not an escape: there is nothing to disclose, and the read that
+// follows answers "not found" on its own.
+export async function sessionFileRealPathWithinAgent(store: SessionStore, sessionId: string): Promise<boolean> {
+  if (!isSessionIdWellFormed(sessionId)) return false
   try {
-    jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  } catch {
-    return false
+    await store.files.resolve(transcriptPath(store, sessionId))
+    return true
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return false
+    throw error
   }
-  return isRealPathWithinDir(getAgentWorkspaceDir(agentSlug), jsonlPath)
 }
+
+/**
+ * How long a registered session may exist without a transcript before it is
+ * taken for deleted. A registration precedes the first transcript write by
+ * moments (every flow that registers a session sends it a message at once),
+ * so a metadata entry that is still alone after this long belongs to a
+ * transcript the agent removed, or the CLI's retention cleanup did. Such an
+ * entry is dropped from listings and, in the background, from the document.
+ */
+export const NEW_SESSION_GRACE_MS = 60 * 60 * 1000
 
 // ============================================================================
 // Session Metadata (custom names, starred status)
 // ============================================================================
 
 /**
- * Strict read of the session metadata map: returns `{}` ONLY when the file is
- * absent (ENOENT); a present-but-unreadable file (torn/corrupt/IO error) THROWS.
+ * Strict read of the session metadata map: returns `{}` ONLY when the
+ * document is absent; a present-but-unusable document (torn/corrupt) THROWS
+ * `ConfigDocError`.
  *
- * This is what the read-modify-write helper below uses, so a transiently
- * unreadable file aborts the write instead of being overwritten with a near-empty
- * map — the permanent-data-loss mechanism. Do NOT use this on read-only
- * display paths; use {@link readSessionMetadata}, which degrades gracefully.
+ * This is what the read-modify-write helper below relies on, so a transiently
+ * unreadable document aborts the write instead of being overwritten with a
+ * near-empty map — the permanent-data-loss mechanism. Do NOT use this on
+ * read-only display paths; use {@link readSessionMetadata}, which degrades
+ * gracefully.
  */
-async function readSessionMetadataStrict(agentSlug: string): Promise<SessionMetadataMap> {
-  const metadataPath = getAgentSessionMetadataPath(agentSlug)
-  const parsed = await readJsonFileStrict(metadataPath, sessionMetadataMapSchema, {})
-  return parsed as SessionMetadataMap
+async function readSessionMetadataStrict(store: SessionStore): Promise<SessionMetadataMap> {
+  const doc = await store.config.get('sessionMetadata')
+  return (doc ?? {}) as SessionMetadataMap
 }
 
 /**
  * Read session metadata map for READ-ONLY consumers (listing, display, lookup).
  *
- * Behaviour preserved from before, plus loud reporting: missing file → `{}`;
- * corrupt/torn file → log + capture + `{}` (so the sessions view degrades to
- * auto-titles instead of crashing). Returning `{}` here is safe ONLY because
- * these callers never write — the destructive overwrite came from a write that
- * followed a swallowed bad read, and writes now go through
- * {@link mutateSessionMetadata}, which re-throws on corruption. A non-ENOENT IO
- * error still propagates (matches the original `readFileOrNull` behaviour).
+ * Missing document → `{}`; corrupt/torn document → log + capture + `{}` (so
+ * the sessions view degrades to auto-titles instead of crashing). Returning
+ * `{}` here is safe ONLY because these callers never write — the destructive
+ * overwrite came from a write that followed a swallowed bad read, and writes
+ * go through {@link mutateSessionMetadata}, which re-throws on corruption.
+ * Any other failure propagates.
  */
-export async function readSessionMetadata(agentSlug: string): Promise<SessionMetadataMap> {
+export async function readSessionMetadata(store: SessionStore): Promise<SessionMetadataMap> {
   try {
-    return await readSessionMetadataStrict(agentSlug)
+    return await readSessionMetadataStrict(store)
   } catch (error) {
-    if (error instanceof CorruptFileError) {
+    if (error instanceof ConfigDocError && error.code === 'corrupt') {
       console.error(
-        `Corrupt session metadata for agent ${agentSlug}; using empty map for read-only access (NOT overwriting)`,
+        `Corrupt session metadata for agent ${store.slug}; using empty map for read-only access (NOT overwriting)`,
         error
       )
       captureException(error, {
         tags: { area: 'session-metadata', op: 'read' },
-        extra: { agentSlug },
+        extra: { agentSlug: store.slug },
       })
       return {}
     }
@@ -186,39 +168,39 @@ export async function readSessionMetadata(agentSlug: string): Promise<SessionMet
 /**
  * Serialized read-modify-write of an agent's session metadata map.
  *
- * Holds a per-file in-process lock so concurrent mutations can't interleave
- * (lost-update protection), re-reads fresh under the lock with the STRICT reader
- * (so a corrupt file throws and aborts the write rather than clobbering), and
- * persists with an atomic temp-file+rename (so an interrupted write never leaves
- * a torn file). The `mutator` returns `false` to signal "no change" and skip the
- * write entirely (avoids materializing an empty file for a no-op).
+ * The store's `update` serializes concurrent mutations (lost-update
+ * protection), re-reads fresh with the STRICT reader (so a corrupt document
+ * throws and aborts the write rather than clobbering), and persists atomically
+ * (an interrupted write never leaves a torn file). The `mutator` returns
+ * `false` to signal "no change" and skip the write entirely (no empty
+ * document is materialized for a no-op).
  */
 async function mutateSessionMetadata(
-  agentSlug: string,
+  store: SessionStore,
   mutator: (metadata: SessionMetadataMap) => boolean | void
 ): Promise<void> {
-  const metadataPath = getAgentSessionMetadataPath(agentSlug)
-  await withFileLock(metadataPath, async () => {
-    const metadata = await readSessionMetadataStrict(agentSlug)
+  await store.config.update('sessionMetadata', (current) => {
+    // A copy: the mutator edits in place, and handing the document it was
+    // given back to `update` means "nothing changed".
+    const metadata = { ...(current ?? {}) } as SessionMetadataMap
     const changed = mutator(metadata)
-    if (changed === false) return
-    await writeJsonFileAtomic(metadataPath, metadata)
+    return changed === false ? null : (metadata as ConfigDoc<'sessionMetadata'>)
   })
 }
 
 /**
  * Update metadata for a single session. Returns the session's previous
- * metadata entry (undefined when it had none), captured under the same lock
- * as the write, so callers can tell whether an update actually changed a
- * value without racing a concurrent update.
+ * metadata entry (undefined when it had none), captured under the same
+ * serialization as the write, so callers can tell whether an update actually
+ * changed a value without racing a concurrent update.
  */
 export async function updateSessionMetadata(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   updates: Partial<SessionMetadata>
 ): Promise<SessionMetadata | undefined> {
   let previous: SessionMetadata | undefined
-  await mutateSessionMetadata(agentSlug, (metadata) => {
+  await mutateSessionMetadata(store, (metadata) => {
     previous = metadata[sessionId]
     metadata[sessionId] = {
       ...metadata[sessionId],
@@ -243,12 +225,12 @@ export type AutomationStatusResult = 'updated' | 'not-automation' | 'already-fin
  * - a finalized outcome (anything but 'running') is never overwritten.
  */
 export async function finalizeAutomationStatus(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   automationStatus: 'succeeded' | 'failed'
 ): Promise<AutomationStatusResult> {
   let result: AutomationStatusResult = 'not-automation'
-  await mutateSessionMetadata(agentSlug, (metadata) => {
+  await mutateSessionMetadata(store, (metadata) => {
     const meta = metadata[sessionId]
     // Every session kind that sets automationStatus: 'running' at creation
     // must be listed here, or its status never leaves 'running' — and a guard
@@ -269,10 +251,10 @@ export async function finalizeAutomationStatus(
  * Get metadata for a single session
  */
 export async function getSessionMetadata(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string
 ): Promise<SessionMetadata | null> {
-  const metadata = await readSessionMetadata(agentSlug)
+  const metadata = await readSessionMetadata(store)
   // Own-property check for the same reason as isSessionRegistered: a bare index
   // read returns an inherited Object.prototype member for ids like 'constructor'.
   return Object.hasOwn(metadata, sessionId) ? metadata[sessionId] : null
@@ -283,15 +265,15 @@ export async function getSessionMetadata(
  * This ensures the session appears in listings before the JSONL file exists
  */
 export async function registerSession(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   name?: string,
   initialMetadata?: Partial<SessionMetadata>,
 ): Promise<void> {
   // Containment is checked here for the same reason transcript writes check
   // it: an externally supplied id must not become a durable metadata key.
-  getSessionJsonlPath(agentSlug, sessionId)
-  await mutateSessionMetadata(agentSlug, (metadata) => {
+  transcriptPath(store, sessionId)
+  await mutateSessionMetadata(store, (metadata) => {
     metadata[sessionId] = {
       ...initialMetadata,
       name: name || 'New Session',
@@ -308,10 +290,10 @@ export async function registerSession(
  * otherwise answer "registered" and walk straight through any gate built on this.
  */
 export async function isSessionRegistered(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string
 ): Promise<boolean> {
-  const metadata = await readSessionMetadata(agentSlug)
+  const metadata = await readSessionMetadata(store)
   return Object.hasOwn(metadata, sessionId)
 }
 
@@ -386,10 +368,10 @@ const EMPTY_TRANSCRIPT_SUMMARY: TranscriptSummary = {
  * Stream a session transcript and accumulate only what SessionInfo reports.
  * Nothing per-entry is retained, so cost is one pass and constant memory.
  */
-async function summarizeSessionTranscript(jsonlPath: string): Promise<TranscriptSummary> {
+async function summarizeSessionTranscript(store: SessionStore, jsonlPath: string): Promise<TranscriptSummary> {
   const summary: TranscriptSummary = { ...EMPTY_TRANSCRIPT_SUMMARY }
 
-  for await (const raw of streamJsonlFile<JsonlEntry>(jsonlPath)) {
+  for await (const raw of streamJsonl<JsonlEntry>(store.files, jsonlPath)) {
     // Normalize queued_command attachments so mid-turn messages count toward
     // naming, messageCount, and activity timestamps like any other user message.
     const entry = normalizeQueuedCommandEntry(raw)
@@ -473,12 +455,12 @@ function parseSessionInfo(
 
 /**
  * Build the SessionInfo for a session that is registered in metadata but whose
- * JSONL transcript doesn't exist on disk yet: a just-created session still
- * settling before the agent has streamed its first message (the transcript is
- * written asynchronously, after the create response returns). Shared by
- * getSession and listSessions so a single-session read and the list agree on a
- * session's existence and fields rather than drifting. Callers gate on
- * `meta.createdAt` — a properly registered session always has it.
+ * JSONL transcript doesn't exist yet: a just-created session still settling
+ * before the agent has streamed its first message (the transcript is written
+ * asynchronously, after the create response returns). Shared by getSession
+ * and listSessions so a single-session read and the list agree on a session's
+ * existence and fields rather than drifting. Callers gate on
+ * {@link metadataOnlySession}.
  */
 function emptySessionFromMetadata(
   sessionId: string,
@@ -496,16 +478,69 @@ function emptySessionFromMetadata(
   }
 }
 
-// Prefer metadata createdAt; birthtime is unsupported (epoch 0) on
-// network filesystems like S3 Files / EFS used by the k8s / microVM runtime.
+/**
+ * What a metadata entry with no transcript means. `new`: registered a moment
+ * ago, the transcript is about to appear, and the session is listed from its
+ * metadata. `orphaned`: registered longer ago than {@link NEW_SESSION_GRACE_MS}
+ * and still without a transcript — the transcript was deleted, and the entry
+ * is treated as deleted too. `unregistered`: no `createdAt`, so it never
+ * described a session on its own (a rename or star recorded against a
+ * transcript that predates registration) and is never listed. A `createdAt`
+ * that does not parse says nothing about age, so the entry is kept.
+ */
+function metadataOnlySession(
+  meta: SessionMetadata | undefined,
+  now: number,
+): 'new' | 'orphaned' | 'unregistered' {
+  if (!meta?.createdAt) return 'unregistered'
+  const createdAt = parseStoredDate(meta.createdAt)
+  if (!createdAt) return 'new'
+  return now - createdAt.getTime() > NEW_SESSION_GRACE_MS ? 'orphaned' : 'new'
+}
+
+/**
+ * Drop the metadata of sessions a listing found orphaned. Runs after the
+ * listing has answered, and decides every id under the document's
+ * serialization, transcript check included: an entry is removed only when
+ * its transcript is still absent and it is still older than the grace
+ * window at that moment, so a transcript that appeared while the prune
+ * waited for the document, or a re-registration, survives. Failures are
+ * reported and otherwise ignored: the next listing finds the same orphans.
+ */
+function pruneOrphanedMetadata(store: SessionStore, sessionIds: string[]): void {
+  if (sessionIds.length === 0) return
+  void store.config
+    .update('sessionMetadata', async (current) => {
+      const metadata = { ...(current ?? {}) } as SessionMetadataMap
+      const now = Date.now()
+      let changed = false
+      for (const sessionId of sessionIds) {
+        if (!Object.hasOwn(metadata, sessionId)) continue
+        if (metadataOnlySession(metadata[sessionId], now) !== 'orphaned') continue
+        if ((await store.files.stat(transcriptPath(store, sessionId))) !== null) continue
+        delete metadata[sessionId]
+        changed = true
+      }
+      return changed ? (metadata as ConfigDoc<'sessionMetadata'>) : null
+    })
+    .then(() => undefined)
+    .catch((error) => {
+      console.warn(`Could not prune orphaned session metadata for agent ${store.slug}:`, error)
+      captureException(error, { tags: { area: 'session-metadata', op: 'prune-orphans' }, extra: { agentSlug: store.slug } })
+    })
+}
+
+// Prefer metadata createdAt; birthtime is unsupported (epoch 0) on network
+// filesystems like S3 Files / EFS used by the k8s / microVM runtime, and
+// absent from a store that keeps none.
 function resolveSessionCreatedAt(
   meta: SessionMetadata | undefined,
-  stat: { birthtimeMs: number; mtimeMs: number },
+  stat: { birthtimeMs?: number; mtimeMs: number },
 ): Date {
   const recorded = parseStoredDate(meta?.createdAt)
   if (recorded) return recorded
   // Same rounding Node applies when it derives stat.birthtime from the ns value.
-  if (stat.birthtimeMs > 0) return new Date(Math.round(stat.birthtimeMs))
+  if (stat.birthtimeMs !== undefined && stat.birthtimeMs > 0) return new Date(Math.round(stat.birthtimeMs))
   return new Date(stat.mtimeMs)
 }
 
@@ -530,87 +565,92 @@ function summaryFromActivityMap(activityBySession: ReadonlyMap<string, SessionAc
   }
 }
 
-async function getSessionsDirectoryMtime(sessionsDir: string): Promise<number | null> {
+/** Whether the transcripts directory exists: one stat. */
+async function transcriptsDirectoryExists(store: SessionStore): Promise<boolean> {
   try {
-    const stat = await fs.promises.stat(sessionsDir)
-    return stat.isDirectory() ? stat.mtimeMs : null
+    return (await store.files.stat(store.transcriptsDir))?.kind === 'directory'
   } catch {
-    // Preserve directoryExists()'s existing fail-soft behavior.
+    return false
+  }
+}
+
+/** Whether a transcript exists: one stat, false for any failure. */
+async function transcriptExists(store: SessionStore, jsonlPath: string): Promise<boolean> {
+  try {
+    return (await store.files.stat(jsonlPath))?.kind === 'file'
+  } catch {
+    return false
+  }
+}
+
+async function getSessionsDirectoryMtime(store: SessionStore): Promise<number | null> {
+  try {
+    const stat = await store.files.stat(store.transcriptsDir)
+    return stat?.kind === 'directory' ? stat.mtimeMs : null
+  } catch {
+    // Fail soft, as the existence check does.
     return null
   }
 }
 
 /**
- * Stat one transcript for the summary build. A file deleted between readdir
- * and stat (deleteSession racing a scan) is not an error — it drops out of
- * the build. Anything else is: the build's result is cached for minutes, so
- * treating a transient network-filesystem failure (ESTALE, EIO, a timeout)
- * as "no such session" would hide or misorder that session until the next
- * reconciliation. Retry once, then let the build fail; nothing is cached and
- * the next read rebuilds.
+ * Stat one transcript for the summary build. A file deleted between the
+ * listing and the stat (deleteSession racing a scan) is not an error — it
+ * drops out of the build. Anything else is: the build's result is cached for
+ * minutes, so treating a transient network-filesystem failure (ESTALE, EIO, a
+ * timeout) as "no such session" would hide or misorder that session until
+ * the next reconciliation. Retry once, then let the build fail; nothing is
+ * cached and the next read rebuilds.
  */
-async function statTranscriptForSummary(filePath: string): Promise<fs.Stats | null> {
-  const isMissing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === 'ENOENT'
+async function statTranscriptForSummary(store: SessionStore, jsonlPath: string) {
   try {
-    return await fs.promises.stat(filePath)
-  } catch (error) {
-    if (isMissing(error)) return null
-    try {
-      return await fs.promises.stat(filePath)
-    } catch (retryError) {
-      if (isMissing(retryError)) return null
-      throw retryError
-    }
+    return await store.files.stat(jsonlPath)
+  } catch {
+    return store.files.stat(jsonlPath)
   }
 }
 
 /**
- * Names of the `.jsonl` transcript files directly in `sessionsDir`, EXCLUDING
- * symlinks.
- *
- * A real session transcript is always a regular file the container wrote; a
- * symlink named like a session is an escape attempt — it resolves to another
- * agent's transcript (the dir is bind-mounted read/write into the container).
+ * Names of the `.jsonl` transcript files directly in the transcripts
+ * directory. Links are never listed by the store: a real session transcript
+ * is always a regular file the container wrote, and a link named like a
+ * session is an escape attempt (it resolves to another agent's transcript).
  * Dropping it here keeps it out of every listing consumer at once, including
- * the home-card tail that goes on to READ the latest session's content — so a
- * planted link can never surface a stranger's messages through a listing.
+ * the home-card tail that goes on to READ the latest session's content.
  *
- * The symlink test reads the dirent type that `readdir` already returns, so it
- * adds no syscall over a plain `readdir` — this stays on the perf hot path.
- * (Direct id access that bypasses the listing is caught separately by the
- * realpath gate in {@link sessionFileRealPathWithinAgent}.)
- *
- * KNOWN RESIDUAL (accepted, out of scope): this drops symlinked ENTRIES, but
- * `readdir` still follows a symlinked ANCESTOR (an agent that replaced its own
- * `-workspace` with a link), so such a listing reflects another agent's dir.
- * Fully closing it needs a per-listing realpath on the perf-pinned path — see
- * the note in getLatestVisibleSessionTail, the one place it reaches content.
+ * KNOWN RESIDUAL (accepted, out of scope): this drops linked ENTRIES, but a
+ * listing still follows a linked ANCESTOR (an agent that replaced its own
+ * transcripts directory with a link), so such a listing reflects another
+ * agent's directory. Fully closing it needs a per-listing real-path lookup
+ * on the perf-pinned path — see the note in getLatestVisibleSessionTail, the
+ * one place it reaches content.
  */
-async function readSessionTranscriptNames(sessionsDir: string): Promise<string[]> {
-  const entries = await fs.promises.readdir(sessionsDir, { withFileTypes: true })
-  return entries
-    .filter((e) => e.name.endsWith('.jsonl') && !e.isSymbolicLink())
-    .map((e) => e.name)
+async function readSessionTranscriptNames(store: SessionStore): Promise<string[]> {
+  const entries = await store.files.list(store.transcriptsDir)
+  return entries.filter((e) => e.kind === 'file' && e.name.endsWith('.jsonl')).map((e) => e.name)
+}
+
+function sessionIdOfTranscript(name: string): string {
+  return name.slice(0, -'.jsonl'.length)
 }
 
 async function buildSessionActivityMap(
-  agentSlug: string,
-  sessionsDir: string,
+  store: SessionStore,
   directoryMtimeMs: number | null,
 ): Promise<Map<string, SessionActivityEntry>> {
   if (directoryMtimeMs === null) return new Map()
 
-  const jsonlFiles = await readSessionTranscriptNames(sessionsDir)
+  const jsonlFiles = await readSessionTranscriptNames(store)
   const limit = pLimit(10)
   const stats = await Promise.all(
     jsonlFiles.map((file) => limit(async () => {
-      const stat = await statTranscriptForSummary(path.join(sessionsDir, file))
+      const sessionId = sessionIdOfTranscript(file)
+      if (!isSessionIdWellFormed(sessionId)) return null
+      const stat = await statTranscriptForSummary(store, transcriptPath(store, sessionId))
       if (!stat) return null
-      const sessionId = path.basename(file, '.jsonl')
-      if (!sessionIdPathWithinAgent(agentSlug, sessionId)) return null
       return {
         sessionId,
-        entry: { mtimeMs: stat.mtimeMs, birthtimeMs: stat.birthtimeMs, size: stat.size },
+        entry: { mtimeMs: stat.mtimeMs, birthtimeMs: stat.birthtimeMs ?? 0, size: stat.size },
       }
     })),
   )
@@ -624,17 +664,20 @@ async function buildSessionActivityMap(
 
 /**
  * The per-agent activity map behind {@link getSessionSummary} and
- * {@link listSessionsFromSummary}: one entry per owned transcript on disk.
+ * {@link listSessionsFromSummary}: one entry per transcript in the store.
  * The first read (and structural/TTL reconciliation) stats every transcript;
  * warm reads validate the directory with one stat and use stream-maintained
  * per-session entries. Callers must treat the returned map as read-only.
+ *
+ * Invalidation: the directory's mtime (a transcript added or removed), the
+ * TTL, and the writes the persister and the transcript appends record
+ * through `recordSessionActivity`. Nothing watches the directory.
  */
 async function loadSessionActivityMap(
-  agentSlug: string,
+  store: SessionStore,
 ): Promise<ReadonlyMap<string, SessionActivityEntry>> {
-  const sessionsDir = getAgentSessionsDir(agentSlug)
-  const slot = getSessionSummaryCacheSlot(sessionsDir)
-  const directoryMtimeMs = await getSessionsDirectoryMtime(sessionsDir)
+  const slot = getSessionSummaryCacheSlot(store)
+  const directoryMtimeMs = await getSessionsDirectoryMtime(store)
   const now = Date.now()
   if (
     slot.value &&
@@ -653,11 +696,11 @@ async function loadSessionActivityMap(
     ) {
       return loaded.activityBySession
     }
-    return loadSessionActivityMap(agentSlug)
+    return loadSessionActivityMap(store)
   }
 
   const revision = slot.revision
-  const loading = buildSessionActivityMap(agentSlug, sessionsDir, directoryMtimeMs)
+  const loading = buildSessionActivityMap(store, directoryMtimeMs)
     .then((activityBySession): SessionSummaryCacheValue => {
       if (slot.revision !== revision) {
         if (slot.loading === loading) slot.loading = undefined
@@ -683,7 +726,7 @@ async function loadSessionActivityMap(
   slot.loading = loading
   try {
     const loaded = await loading
-    if (slot.value !== loaded) return loadSessionActivityMap(agentSlug)
+    if (slot.value !== loaded) return loadSessionActivityMap(store)
     return loaded.activityBySession
   } finally {
     if (slot.loading === loading) slot.loading = undefined
@@ -691,16 +734,16 @@ async function loadSessionActivityMap(
 }
 
 /**
- * Lightweight session summary from filesystem stats only (no JSONL parsing).
+ * Lightweight session summary from file stats only (no JSONL parsing).
  * Returns session IDs, count, and latest activity time. Warm reads cost one
  * directory stat; see {@link loadSessionActivityMap}.
  */
-export async function getSessionSummary(agentSlug: string): Promise<{
+export async function getSessionSummary(store: SessionStore): Promise<{
   sessionIds: string[]
   sessionCount: number
   lastActivityAt: Date | null
 }> {
-  return summaryFromActivityMap(await loadSessionActivityMap(agentSlug))
+  return summaryFromActivityMap(await loadSessionActivityMap(store))
 }
 
 export type SessionSortBy = 'last_activity_at'
@@ -735,13 +778,11 @@ export function sortSessionsNewestFirst<T extends SessionActivityFields>(
  * Does NOT read full JSONL file contents — safe for large session directories.
  */
 export async function listSessions(
-  agentSlug: string,
+  store: SessionStore,
   options?: ListSessionsOptions,
 ): Promise<SessionInfo[]> {
-  const sessionsDir = getAgentSessionsDir(agentSlug)
-
   // Read session metadata (includes newly created sessions without JSONL yet)
-  const metadata = await readSessionMetadata(agentSlug)
+  const metadata = await readSessionMetadata(store)
 
   const isAutomated = (sessionId: string) => isHiddenAutomatedSession(metadata[sessionId])
 
@@ -750,16 +791,16 @@ export async function listSessions(
   const sessions: SessionInfo[] = []
 
   // First, process sessions with JSONL files
-  if (await directoryExists(sessionsDir)) {
-    const jsonlFiles = await readSessionTranscriptNames(sessionsDir)
+  if (await transcriptsDirectoryExists(store)) {
+    const jsonlFiles = await readSessionTranscriptNames(store)
 
     const limit = pLimit(10)
     const statResults = await Promise.all(
       jsonlFiles.map((file) => limit(async () => {
-        const sessionId = path.basename(file, '.jsonl')
-        const jsonlPath = path.join(sessionsDir, file)
+        const sessionId = sessionIdOfTranscript(file)
+        if (!isSessionIdWellFormed(sessionId)) return { sessionId, stat: null }
         try {
-          const stat = await fs.promises.stat(jsonlPath)
+          const stat = await store.files.stat(transcriptPath(store, sessionId))
           return { sessionId, stat }
         } catch (error) {
           console.warn(`Failed to stat session ${sessionId}:`, error)
@@ -773,7 +814,7 @@ export async function listSessions(
       const { sessionId, stat } = result
       processedSessionIds.add(sessionId)
 
-      if (!sessionIdPathWithinAgent(agentSlug, sessionId)) continue
+      if (!stat || !isSessionIdWellFormed(sessionId)) continue
 
       // Skip empty JSONL files that aren't registered in metadata
       // These are typically created by Claude SDK for subagent directories
@@ -788,7 +829,7 @@ export async function listSessions(
 
       sessions.push({
         id: sessionId,
-        agentSlug,
+        agentSlug: store.slug,
         name: metadata[sessionId]?.name || 'New Session',
         createdAt: resolveSessionCreatedAt(metadata[sessionId], stat),
         lastActivityAt: new Date(stat.mtimeMs),
@@ -799,17 +840,25 @@ export async function listSessions(
 
   // Then, add sessions from metadata that don't have JSONL files yet
   // (newly created sessions where the agent hasn't streamed yet)
+  const now = Date.now()
+  const orphaned: string[] = []
   for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
-    if (!processedSessionIds.has(sessionId) && sessionMeta.createdAt) {
-      if (!sessionIdPathWithinAgent(agentSlug, sessionId)) continue
-      // Skip scheduled/webhook sessions when requested
-      if (options?.excludeAutomated && isAutomated(sessionId)) {
-        continue
-      }
-
-      sessions.push(emptySessionFromMetadata(sessionId, agentSlug, sessionMeta))
+    if (processedSessionIds.has(sessionId)) continue
+    if (!isSessionIdWellFormed(sessionId)) continue
+    const kind = metadataOnlySession(sessionMeta, now)
+    if (kind === 'unregistered') continue
+    if (kind === 'orphaned') {
+      orphaned.push(sessionId)
+      continue
     }
+    // Skip scheduled/webhook sessions when requested
+    if (options?.excludeAutomated && isAutomated(sessionId)) {
+      continue
+    }
+
+    sessions.push(emptySessionFromMetadata(sessionId, store.slug, sessionMeta))
   }
+  pruneOrphanedMetadata(store, orphaned)
 
   // Visibility filtering above must happen before ordering and limiting: a
   // newer hidden automation must never consume a mobile client's limit.
@@ -829,22 +878,20 @@ export async function listSessions(
  * it already holds. This is what request-path consumers should use: the
  * agents list hydrates every agent per poll, and on network filesystems each
  * transcript stat is a round trip. Freshness is that of the summary cache —
- * structural changes (new/deleted transcripts, ownership claims) reconcile via
- * directory mtime and invalidation, appends via recordSessionActivity — i.e.
- * exactly the fidelity of the agent card's lastActivityAt.
+ * structural changes (new/deleted transcripts) reconcile via directory mtime
+ * and invalidation, appends via recordSessionActivity — i.e. exactly the
+ * fidelity of the agent card's lastActivityAt.
  *
- * Applies the same rules as listSessions: ownership (the cache is built
- * a read of this agent's own session directory; metadata-only sessions are
- * checked here),
- * unregistered empty transcripts skipped, visibility filtered BEFORE ordering
- * and limit.
+ * Applies the same rules as listSessions: unregistered empty transcripts
+ * skipped, orphaned registrations dropped, visibility filtered BEFORE
+ * ordering and limit.
  */
 export async function listSessionsFromSummary(
-  agentSlug: string,
+  store: SessionStore,
   options?: ListSessionsOptions & { metadata?: SessionMetadataMap },
 ): Promise<SessionInfo[]> {
-  const metadata = options?.metadata ?? (await readSessionMetadata(agentSlug))
-  const activity = await loadSessionActivityMap(agentSlug)
+  const metadata = options?.metadata ?? (await readSessionMetadata(store))
+  const activity = await loadSessionActivityMap(store)
   const metaFor = (sessionId: string): SessionMetadata | undefined =>
     Object.hasOwn(metadata, sessionId) ? metadata[sessionId] : undefined
   const isAutomated = (sessionId: string) => isHiddenAutomatedSession(metaFor(sessionId))
@@ -858,7 +905,7 @@ export async function listSessionsFromSummary(
     if (options?.excludeAutomated && isAutomated(sessionId)) continue
     sessions.push({
       id: sessionId,
-      agentSlug,
+      agentSlug: store.slug,
       name: meta?.name || 'New Session',
       createdAt: resolveSessionCreatedAt(meta, entry),
       lastActivityAt: new Date(entry.mtimeMs),
@@ -867,12 +914,21 @@ export async function listSessionsFromSummary(
   }
 
   // Registered sessions whose agent has not streamed yet (no transcript).
+  const now = Date.now()
+  const orphaned: string[] = []
   for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
-    if (activity.has(sessionId) || !sessionMeta.createdAt) continue
-    if (!sessionIdPathWithinAgent(agentSlug, sessionId)) continue
+    if (activity.has(sessionId)) continue
+    if (!isSessionIdWellFormed(sessionId)) continue
+    const kind = metadataOnlySession(sessionMeta, now)
+    if (kind === 'unregistered') continue
+    if (kind === 'orphaned') {
+      orphaned.push(sessionId)
+      continue
+    }
     if (options?.excludeAutomated && isAutomated(sessionId)) continue
-    sessions.push(emptySessionFromMetadata(sessionId, agentSlug, sessionMeta))
+    sessions.push(emptySessionFromMetadata(sessionId, store.slug, sessionMeta))
   }
+  pruneOrphanedMetadata(store, orphaned)
 
   const ordered = sortSessionsNewestFirst(sessions, options?.sortBy)
   return options?.limit === undefined ? ordered : ordered.slice(0, options.limit)
@@ -880,45 +936,51 @@ export async function listSessionsFromSummary(
 
 /**
  * Build SessionInfo for a specific set of session ids without enumerating
- * the sessions directory — one metadata read plus one stat per requested id.
- * The badge/toolbar consumers ("notable sessions") only ever need a handful
- * of live/unread ids; listSessions stats EVERY transcript, which is 20k
- * stats for a 20k-session agent. Unknown ids (no transcript, no metadata
+ * the transcripts directory — one metadata read plus one stat per requested
+ * id. The badge/toolbar consumers ("notable sessions") only ever need a
+ * handful of live/unread ids; listSessions stats EVERY transcript, which is
+ * 20k stats for a 20k-session agent. Unknown ids (no transcript, no metadata
  * registration) are skipped.
  */
 export async function listSessionsByIds(
-  agentSlug: string,
+  store: SessionStore,
   sessionIds: string[],
   options?: { excludeAutomated?: boolean },
 ): Promise<SessionInfo[]> {
   if (sessionIds.length === 0) return []
-  const metadata = await readSessionMetadata(agentSlug)
+  const metadata = await readSessionMetadata(store)
   const isAutomated = (sessionId: string) => isHiddenAutomatedSession(metadata[sessionId])
   const limit = pLimit(10)
+  const now = Date.now()
   const sessions = await Promise.all(
     [...new Set(sessionIds)].map((sessionId) =>
       limit(async (): Promise<SessionInfo | null> => {
-        if (!sessionIdPathWithinAgent(agentSlug, sessionId)) return null
+        if (!isSessionIdWellFormed(sessionId)) return null
         if (options?.excludeAutomated && isAutomated(sessionId)) return null
-        const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+        let stat: Awaited<ReturnType<typeof store.files.stat>>
         try {
-          const stat = await fs.promises.stat(jsonlPath)
+          stat = await store.files.stat(transcriptPath(store, sessionId))
+        } catch {
+          stat = null
+        }
+        if (stat) {
           // Same rule as listSessions: unregistered empty JSONLs are SDK
           // subagent artifacts, not sessions.
           if (stat.size === 0 && !metadata[sessionId]) return null
           return {
             id: sessionId,
-            agentSlug,
+            agentSlug: store.slug,
             name: metadata[sessionId]?.name || 'New Session',
             createdAt: resolveSessionCreatedAt(metadata[sessionId], stat),
             lastActivityAt: new Date(stat.mtimeMs),
             messageCount: 0,
           }
-        } catch {
-          const meta = metadata[sessionId]
-          if (meta?.createdAt) return emptySessionFromMetadata(sessionId, agentSlug, meta)
-          return null
         }
+        const meta = metadata[sessionId]
+        if (meta && metadataOnlySession(meta, now) === 'new') {
+          return emptySessionFromMetadata(sessionId, store.slug, meta)
+        }
+        return null
       }),
     ),
   )
@@ -929,20 +991,20 @@ export async function listSessionsByIds(
  * Get a single session's info
  */
 export async function getSession(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   already?: { metadata: SessionMetadata | null },
 ): Promise<SessionInfo | null> {
-  // Content-serving path (the single-session route reads this): symlink-aware,
+  // Content-serving path (the single-session route reads this): link-aware,
   // so a planted link to another agent's transcript resolves to null, not that
   // agent's session summary.
-  if (!sessionFileRealPathWithinAgent(agentSlug, sessionId)) return null
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  const metadata = already ? already.metadata : await getSessionMetadata(agentSlug, sessionId)
+  if (!(await sessionFileRealPathWithinAgent(store, sessionId))) return null
+  const jsonlPath = transcriptPath(store, sessionId)
+  const metadata = already ? already.metadata : await getSessionMetadata(store, sessionId)
 
-  if (await fileExists(jsonlPath)) {
-    const summary = await summarizeSessionTranscript(jsonlPath)
-    return parseSessionInfo(sessionId, agentSlug, summary, metadata || undefined)
+  if (await transcriptExists(store, jsonlPath)) {
+    const summary = await summarizeSessionTranscript(store, jsonlPath)
+    return parseSessionInfo(sessionId, store.slug, summary, metadata || undefined)
   }
 
   // No transcript yet, but the session is registered → it was just created and
@@ -950,10 +1012,11 @@ export async function getSession(
   // JSONL). Report it as an empty session, matching listSessions, instead of
   // 404ing a session that genuinely exists. Registration (the metadata write)
   // is synchronous in the create path, so by the time a client navigates to a
-  // new session it is always readable here. A genuine 404 means the session is
-  // in neither store — truly missing.
-  if (metadata?.createdAt) {
-    return emptySessionFromMetadata(sessionId, agentSlug, metadata)
+  // new session it is always readable here. A registration older than the
+  // grace window with no transcript is a deleted session; a genuine 404 means
+  // the session is in neither store — truly missing.
+  if (metadata && metadataOnlySession(metadata, Date.now()) === 'new') {
+    return emptySessionFromMetadata(sessionId, store.slug, metadata)
   }
 
   return null
@@ -963,16 +1026,16 @@ export async function getSession(
  * Get all messages from a session
  */
 export async function getSessionMessages(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string
 ): Promise<JsonlMessageEntry[]> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const jsonlPath = transcriptPath(store, sessionId)
 
-  if (!(await fileExists(jsonlPath))) {
+  if (!(await transcriptExists(store, jsonlPath))) {
     return []
   }
 
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
+  const entries = await readJsonl<JsonlEntry>(store.files, jsonlPath)
   return entries.map(normalizeQueuedCommandEntry).filter(isMessageEntry)
 }
 
@@ -994,16 +1057,16 @@ function isMessageOrSystemDisplayEntry(
  * Get all messages from a session including compact boundary markers
  */
 export async function getSessionMessagesWithCompact(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string
 ): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const jsonlPath = transcriptPath(store, sessionId)
 
-  if (!(await fileExists(jsonlPath))) {
+  if (!(await transcriptExists(store, jsonlPath))) {
     return []
   }
 
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
+  const entries = await readJsonl<JsonlEntry>(store.files, jsonlPath)
   return entries.map(normalizeQueuedCommandEntry).filter(isMessageOrSystemDisplayEntry)
 }
 
@@ -1058,6 +1121,7 @@ function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | nu
  * callers are HTTP routes whose clients cancel superseded refetches, and without
  * the signal every abandoned request still pays full transcript reads server-side. */
 async function readTransformedTail(
+  store: SessionStore,
   jsonlPath: string,
   maxLines: number,
   signal?: AbortSignal,
@@ -1069,7 +1133,7 @@ async function readTransformedTail(
   entries: (JsonlMessageEntry | JsonlSystemEntry)[]
   reachedStart: boolean
 }> {
-  const { lines, offsets, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines, signal)
+  const { lines, offsets, reachedStart } = await readTailLines(store.files, jsonlPath, maxLines, signal)
   // An abort landing on the last chunk read still saves the parse/transform
   // below — on large transcripts that is seconds of synchronous work.
   signal?.throwIfAborted()
@@ -1271,6 +1335,7 @@ function classifyExtensionRow(
  * and a window boundary inside the run makes pagination skip the reordered
  * items entirely. */
 async function scanMessagesPageWindow(
+  store: SessionStore,
   jsonlPath: string,
   opts: { limit: number; cursor?: string; byteBudget: number; signal?: AbortSignal }
 ): Promise<PageWindowScan> {
@@ -1316,7 +1381,7 @@ async function scanMessagesPageWindow(
   // the same span collapse away and must not count as display items.
   let boundaryCountedSinceAnchor = false
 
-  for await (const { line, offset } of iterateJsonlLinesBackward(jsonlPath, signal)) {
+  for await (const { line, offset } of iterateLinesBackward(store.files, jsonlPath, signal)) {
     linesScanned++
     if (linesScanned > MAX_TAIL_LINES) {
       // Same reachability contract as the old tail reader: history deeper
@@ -1484,6 +1549,7 @@ async function scanMessagesPageWindow(
  * range chosen by pass 1. Identical filtering to readTransformedTail; memory
  * is bounded by the range, which pass 1 bounded by the byte budget. */
 async function readEntriesRange(
+  store: SessionStore,
   jsonlPath: string,
   startOffset: number,
   endOffset: number | undefined,
@@ -1497,7 +1563,8 @@ async function readEntriesRange(
   let lineOffset = startOffset
   // The signal is threaded into the reader itself (checked per chunk): a
   // multi-MB row spans many chunks before it ever surfaces as a line here.
-  for await (const line of streamFileLines(
+  for await (const line of streamLines(
+    store.files,
     jsonlPath,
     { start: startOffset, end: endOffset },
     signal
@@ -1534,7 +1601,7 @@ async function readEntriesRange(
  * valid short pages: nextCursor points at their first item and the client's
  * scroll-up paging walks the rest. */
 export async function getSessionMessagesPage(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   opts: {
     limit: number
@@ -1545,7 +1612,7 @@ export async function getSessionMessagesPage(
     media?: 'ref'
   }
 ): Promise<SessionMessagesPage> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const jsonlPath = transcriptPath(store, sessionId)
   const { limit, cursor, signal } = opts
   const byteBudget = opts.byteBudget ?? MESSAGES_PAGE_BYTE_BUDGET
 
@@ -1553,11 +1620,11 @@ export async function getSessionMessagesPage(
   // has no transcript and pages as empty, and a stat before every read is a
   // wasted round trip on network filesystems. The backward scan yields
   // nothing for a missing file; the forward read then fails to open it and
-  // the ENOENT is answered with the same empty terminal page.
+  // the absence is answered with the same empty terminal page.
   let scan: PageWindowScan
   let entries: (JsonlMessageEntry | JsonlSystemEntry)[]
   try {
-    scan = await scanMessagesPageWindow(jsonlPath, { limit, cursor, byteBudget, signal })
+    scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, byteBudget, signal })
     signal?.throwIfAborted()
     if (!scan.found) {
       // Vanished id (or cursor deeper than MAX_TAIL_LINES): terminate paging.
@@ -1572,6 +1639,7 @@ export async function getSessionMessagesPage(
       return { messages: [], nextCursor: null }
     }
     entries = await readEntriesRange(
+      store,
       jsonlPath,
       scan.startOffset,
       scan.endOffset,
@@ -1579,7 +1647,7 @@ export async function getSessionMessagesPage(
       opts.media === 'ref'
     )
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (isAbsentFile(error)) {
       return { messages: [], nextCursor: null }
     }
     throw error
@@ -1654,12 +1722,12 @@ const DELTA_MAX_TAIL_LINES = 10_000
  * a different id, so an anchor inside a cut group misses and forces growth —
  * anchors always resolve against complete items. */
 export async function getSessionMessagesDelta(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   opts: { after: string; signal?: AbortSignal; media?: 'ref' }
 ): Promise<SessionMessagesDelta> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  if (!(await fileExists(jsonlPath))) {
+  const jsonlPath = transcriptPath(store, sessionId)
+  if (!(await transcriptExists(store, jsonlPath))) {
     return { messages: [], anchor: null, resync: true }
   }
 
@@ -1668,6 +1736,7 @@ export async function getSessionMessagesDelta(
 
   for (let attempt = 0; attempt < 32; attempt++) {
     const { transformed, entries, reachedStart } = await readTransformedTail(
+      store,
       jsonlPath,
       maxLines,
       signal,
@@ -1763,6 +1832,7 @@ const TAIL_WINDOW_MAX_BYTES = 4 * 1024 * 1024
  * text never starts inside a multi-byte UTF-8 sequence.
  */
 async function readSessionEntriesFromTail(
+  store: SessionStore,
   jsonlPath: string,
   windowBytes: number,
   endOffset?: number,
@@ -1770,15 +1840,15 @@ async function readSessionEntriesFromTail(
   entries: (JsonlMessageEntry | JsonlSystemEntry)[]
   coveredWholeFile: boolean
 } | null> {
-  let fileHandle: fs.promises.FileHandle
+  let file: Awaited<ReturnType<typeof store.files.open>>
   try {
-    fileHandle = await fs.promises.open(jsonlPath, 'r')
+    file = await store.files.open(jsonlPath)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    if (isAbsentFile(error)) return null
     throw error
   }
   try {
-    const { size } = await fileHandle.stat()
+    const size = await file.size()
     // Callers may anchor a read to a transcript byte offset captured at turn
     // completion. Clamp it to the current file size so truncation/replacement
     // degrades to the surviving prefix without crossing into a later turn.
@@ -1787,19 +1857,9 @@ async function readSessionEntriesFromTail(
       : Math.min(size, Math.max(0, Math.floor(endOffset)))
     const offset = Math.max(0, effectiveEnd - windowBytes)
     const length = effectiveEnd - offset
-    const buffer = Buffer.alloc(length)
-    let bytesReadTotal = 0
-    while (bytesReadTotal < length) {
-      const { bytesRead } = await fileHandle.read(
-        buffer,
-        bytesReadTotal,
-        length - bytesReadTotal,
-        offset + bytesReadTotal
-      )
-      if (bytesRead === 0) break // file shrank under us; parse what we got
-      bytesReadTotal += bytesRead
-    }
-    let window = buffer.subarray(0, bytesReadTotal)
+    // A read that comes up short means the file shrank under us; parse what we got.
+    const raw = await file.readAt(offset, length)
+    let window = Buffer.isBuffer(raw) ? raw : Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength)
     if (offset > 0) {
       const firstNewline = window.indexOf(0x0a) // '\n'
       if (firstNewline === -1) {
@@ -1813,7 +1873,7 @@ async function readSessionEntriesFromTail(
       .filter(isMessageOrSystemDisplayEntry)
     return { entries, coveredWholeFile: offset === 0 }
   } finally {
-    await fileHandle.close()
+    await file.close()
   }
 }
 
@@ -1840,12 +1900,12 @@ async function readSessionEntriesFromTail(
  * unlike timestamps, file offsets do not compare host and container clocks.
  */
 export async function findLastSessionEntry(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   predicate: (entry: JsonlMessageEntry | JsonlSystemEntry) => boolean,
   options: { endOffset?: number | null } = {},
 ): Promise<JsonlMessageEntry | JsonlSystemEntry | null> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const jsonlPath = transcriptPath(store, sessionId)
   const endOffset = options.endOffset == null || !Number.isFinite(options.endOffset)
     ? undefined
     : Math.max(0, Math.floor(options.endOffset))
@@ -1855,7 +1915,7 @@ export async function findLastSessionEntry(
     windowBytes <= TAIL_WINDOW_MAX_BYTES;
     windowBytes *= TAIL_WINDOW_GROWTH_FACTOR
   ) {
-    const tail = await readSessionEntriesFromTail(jsonlPath, windowBytes, endOffset)
+    const tail = await readSessionEntriesFromTail(store, jsonlPath, windowBytes, endOffset)
     if (tail === null) return null // no transcript file
     for (let i = tail.entries.length - 1; i >= 0; i--) {
       if (predicate(tail.entries[i])) return tail.entries[i]
@@ -1872,7 +1932,7 @@ export async function findLastSessionEntry(
 
   // Unanchored callers keep exact pre-existing behavior via the line-streaming
   // whole-file parser (never one readFile-sized string).
-  const entries = await getSessionMessagesWithCompact(agentSlug, sessionId)
+  const entries = await getSessionMessagesWithCompact(store, sessionId)
   for (let i = entries.length - 1; i >= 0; i--) {
     if (predicate(entries[i])) return entries[i]
   }
@@ -1883,15 +1943,15 @@ export async function findLastSessionEntry(
  * Delete a session (removes JSONL file and metadata)
  */
 export async function deleteSession(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string
 ): Promise<boolean> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  const jsonlExisted = await fileExists(jsonlPath)
+  const jsonlPath = transcriptPath(store, sessionId)
+  const jsonlExisted = await transcriptExists(store, jsonlPath)
 
   if (jsonlExisted) {
     try {
-      await fs.promises.unlink(jsonlPath)
+      await store.files.delete(jsonlPath)
     } catch (error) {
       // The file existed when we checked, so this is a genuine failure
       // (permissions, lock, I/O error), not a benign "already gone". Report it
@@ -1900,25 +1960,25 @@ export async function deleteSession(
       // unnamed session in listings).
       captureException(error, {
         tags: { area: 'session-delete', op: 'unlink' },
-        extra: { agentSlug, sessionId },
+        extra: { agentSlug: store.slug, sessionId },
       })
       throw error
     }
   } else {
     // No transcript to remove — e.g. it was deleted by the CLI's retention
-    // cleanup while the metadata entry lingered. Skip the unlink (an unlink
-    // here would fail with ENOENT) and just clear the dangling metadata.
+    // cleanup while the metadata entry lingered. Just clear the dangling
+    // metadata.
     console.warn(
-      `deleteSession: no JSONL transcript for ${agentSlug}/${sessionId}; removing metadata only`
+      `deleteSession: no JSONL transcript for ${store.slug}/${sessionId}; removing metadata only`
     )
   }
 
   // Remove from metadata regardless, so dangling entries can be cleared. Done
   // under the serialized read-modify-write so a concurrent registration/rename
-  // can't lose updates, and a corrupt metadata file aborts (throws) rather than
-  // being rewritten without this entry's siblings.
+  // can't lose updates, and a corrupt metadata document aborts (throws) rather
+  // than being rewritten without this entry's siblings.
   let hadMetadata = false
-  await mutateSessionMetadata(agentSlug, (metadata) => {
+  await mutateSessionMetadata(store, (metadata) => {
     hadMetadata = Object.hasOwn(metadata, sessionId)
     if (!hadMetadata) return false // nothing to delete — skip the write
     delete metadata[sessionId]
@@ -1934,7 +1994,7 @@ export async function deleteSession(
  * Returns the IDs of sessions whose JSONL files were actually removed.
  */
 export async function deleteSessionsBatch(
-  agentSlug: string,
+  store: SessionStore,
   sessionIds: string[]
 ): Promise<string[]> {
   if (sessionIds.length === 0) return []
@@ -1942,25 +2002,21 @@ export async function deleteSessionsBatch(
   const deleted: string[] = []
 
   for (const sessionId of sessionIds) {
-    const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
     try {
-      await fs.promises.unlink(jsonlPath)
+      // An absent transcript is a no-op for the store, and counts as deleted:
+      // its metadata entry is dangling and goes with the batch.
+      await store.files.delete(transcriptPath(store, sessionId))
       deleted.push(sessionId)
     } catch (error: unknown) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code === 'ENOENT') {
-        deleted.push(sessionId)
-      } else {
-        // Keep this session's metadata: its transcript is still on disk.
-        console.error(`Failed to delete session file ${sessionId}:`, error)
-      }
+      // Keep this session's metadata: its transcript is still there.
+      console.error(`Failed to delete session file ${sessionId}:`, error)
     }
   }
 
   // Drop metadata only for the sessions whose JSONL was actually removed, in a
   // single serialized + atomic read-modify-write.
   if (deleted.length > 0) {
-    await mutateSessionMetadata(agentSlug, (metadata) => {
+    await mutateSessionMetadata(store, (metadata) => {
       let changed = false
       for (const sessionId of deleted) {
         if (Object.hasOwn(metadata, sessionId)) {
@@ -1979,29 +2035,28 @@ export async function deleteSessionsBatch(
  * Update session name
  */
 export async function updateSessionName(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   name: string
 ): Promise<void> {
-  await updateSessionMetadata(agentSlug, sessionId, { name })
+  await updateSessionMetadata(store, sessionId, { name })
 }
 
 /**
- * Whether this agent has a transcript on disk for `sessionId`.
+ * Whether this agent has a transcript for `sessionId`.
  *
  * Never throws, and never answers true for an id that is not this agent's:
  * `sessionFileRealPathWithinAgent` rejects a traversal-shaped id (which would
- * otherwise throw out of `getSessionJsonlPath` into the caller's `catch` and,
- * on the routes that gate delete/interrupt on this, answer 500 instead of a
- * clean 404) and a symlink whose real target escapes the agent's directory.
+ * otherwise throw out of `transcriptPath` into the caller's `catch` and, on
+ * the routes that gate delete/interrupt on this, answer 500 instead of a
+ * clean 404) and a link whose real target escapes the agent's workspace.
  */
 export async function sessionExists(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string
 ): Promise<boolean> {
-  if (!sessionFileRealPathWithinAgent(agentSlug, sessionId)) return false
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  return fileExists(jsonlPath)
+  if (!(await sessionFileRealPathWithinAgent(store, sessionId))) return false
+  return transcriptExists(store, transcriptPath(store, sessionId))
 }
 
 /**
@@ -2015,27 +2070,25 @@ export async function sessionExists(
  * and the metadata entry covers the window from `registerSession` up to then.
  *
  * It is also the ownership gate for every route that reaches a registry keyed by
- * session id ALONE — above all the message persister, which is process-global
- * and has no agent dimension. Authorizing the agent in the URL says nothing
- * about the session id in it, so without this a caller with a role on their own
- * agent drives a stranger's live session.
+ * session id — above all the message persister. Authorizing the agent in the
+ * URL says nothing about the session id in it, so without this a caller with a
+ * role on their own agent drives a stranger's live session.
  *
- * Never throws. `getSessionJsonlPath` rejects ids that escape the agent's
- * session directory, and an id that cannot even name a file under this agent
- * cannot be one of its sessions. Letting that throw escape would hand the
- * request to the caller's `catch`, and interrupt's deliberately marks the
+ * Never throws. An id that cannot name a file under this agent's transcripts
+ * directory cannot be one of its sessions. Letting a throw escape would hand
+ * the request to the caller's `catch`, and interrupt's deliberately marks the
  * session interrupted on the error path — the exact thing the gate exists to
  * stop.
  */
 export async function sessionIsKnown(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string
 ): Promise<boolean> {
-  if (!sessionIdPathWithinAgent(agentSlug, sessionId)) return false
+  if (!isSessionIdWellFormed(sessionId)) return false
   try {
-    if (await sessionExists(agentSlug, sessionId)) return true
-    const metadata = await getSessionMetadata(agentSlug, sessionId)
-    return Boolean(metadata?.createdAt)
+    if (await sessionExists(store, sessionId)) return true
+    const metadata = await getSessionMetadata(store, sessionId)
+    return metadata !== null && metadataOnlySession(metadata, Date.now()) === 'new'
   } catch {
     return false
   }
@@ -2046,38 +2099,11 @@ export async function sessionIsKnown(
 // ============================================================================
 
 /**
- * Ensure session directory exists for an agent
+ * Ensure the transcripts directory exists for an agent
  * This is called when starting a container to ensure Claude has a place to write
  */
-export async function ensureSessionsDirectory(agentSlug: string): Promise<void> {
-  const sessionsDir = getAgentSessionsDir(agentSlug)
-  await ensureDirectory(sessionsDir)
-}
-
-// ============================================================================
-// Session Lookup (for routes without agent context)
-// ============================================================================
-
-/**
- * Find which agent a session belongs to by scanning all agents
- * Returns { agentSlug, sessionInfo } or null if not found
- */
-export async function findSessionAcrossAgents(
-  sessionId: string
-): Promise<{ agentSlug: string; session: SessionInfo } | null> {
-  const agentsDir = getAgentsDir()
-
-  // List all agent directories
-  const slugs = await listDirectories(agentsDir)
-
-  for (const slug of slugs) {
-    const session = await getSession(slug, sessionId)
-    if (session) {
-      return { agentSlug: slug, session }
-    }
-  }
-
-  return null
+export async function ensureSessionsDirectory(store: SessionStore): Promise<void> {
+  await store.files.mkdir(store.transcriptsDir)
 }
 
 // ============================================================================
@@ -2092,12 +2118,12 @@ export async function findSessionAcrossAgents(
  * For user messages: removes the single entry matching the uuid.
  */
 export async function removeMessage(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   messageUuid: string
 ): Promise<boolean> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  if (!(await fileExists(jsonlPath))) return false
+  const jsonlPath = transcriptPath(store, sessionId)
+  if (!(await transcriptExists(store, jsonlPath))) return false
 
   // Find the target entry by id. Regular messages match by top-level uuid;
   // queued (mid-turn) messages surface in the UI with id = the queued_command
@@ -2112,7 +2138,7 @@ export async function removeMessage(
   // associated tool_use ids if needed, then stream-rewrite.
   let target: JsonlEntry | undefined
   try {
-    for await (const entry of streamJsonlFile<JsonlEntry>(jsonlPath)) {
+    for await (const entry of streamJsonl<JsonlEntry>(store.files, jsonlPath)) {
       if (matchesTargetId(entry)) {
         target = entry
         break
@@ -2121,7 +2147,7 @@ export async function removeMessage(
   } catch (error) {
     // Transcript deleted between the existence check and the read: the old
     // full-read implementation treated this as "not found".
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    if (isAbsentFile(error)) return false
     throw error
   }
   if (!target) return false
@@ -2135,7 +2161,7 @@ export async function removeMessage(
     messageIdsToRemove.add(target.message.id)
 
     // Collect tool_use IDs from all entries with this message.id
-    for await (const entry of streamJsonlFile<JsonlEntry>(jsonlPath)) {
+    for await (const entry of streamJsonl<JsonlEntry>(store.files, jsonlPath)) {
       if (!('message' in entry)) continue
       const e = entry as JsonlMessageEntry
       if (e.type === 'assistant' && e.message.id === target.message.id) {
@@ -2151,7 +2177,7 @@ export async function removeMessage(
     }
   }
 
-  await rewriteTranscript(jsonlPath, (entry) => {
+  await rewriteTranscript(store, jsonlPath, (entry) => {
     // Remove the target entry (user message or queued_command attachment)
     if (matchesTargetId(entry)) return 'drop'
     if (!('uuid' in entry)) return 'keep' // keep non-message entries
@@ -2171,7 +2197,7 @@ export async function removeMessage(
 
     return 'keep'
   })
-  recordSessionActivity(agentSlug, sessionId)
+  recordSessionActivity(store, sessionId)
   return true
 }
 
@@ -2180,8 +2206,8 @@ export async function removeMessage(
  * replace its line. Kept lines are copied through byte-for-byte from the
  * original file (never parse-and-restringified, which could alter number
  * formatting or unicode escapes); blank/malformed lines are copied through
- * untouched. Output goes to a sibling temp file that atomically replaces the
- * original (see writeFileAtomicStream), so a failure mid-rewrite leaves the
+ * untouched. The store writes the output whole and atomically in place of
+ * the original, flushed to disk, so a failure mid-rewrite leaves the
  * transcript exactly as it was.
  *
  * Like the read-modify-write it replaces, this takes no lock against
@@ -2189,12 +2215,13 @@ export async function removeMessage(
  * assumption as before.
  */
 async function rewriteTranscript(
+  store: SessionStore,
   jsonlPath: string,
   mapEntry: (entry: JsonlEntry) => JsonlEntry | 'keep' | 'drop'
 ): Promise<void> {
   const newline = Buffer.from('\n')
-  async function* lines(): AsyncGenerator<Buffer | string> {
-    for await (const raw of streamFileLines(jsonlPath)) {
+  async function* lines(): AsyncGenerator<Uint8Array> {
+    for await (const raw of streamLines(store.files, jsonlPath)) {
       const entry = parseJsonlLine<JsonlEntry>(raw)
       if (entry === undefined) {
         // Blank or malformed line (mid-write artifact): copy through untouched
@@ -2209,10 +2236,21 @@ async function rewriteTranscript(
         yield newline
         continue
       }
-      yield JSON.stringify(result) + '\n'
+      yield Buffer.from(JSON.stringify(result) + '\n', 'utf-8')
     }
   }
-  await writeFileAtomicStream(jsonlPath, lines())
+  const source = lines()
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await source.next()
+      if (done) controller.close()
+      else controller.enqueue(value)
+    },
+    async cancel() {
+      await source.return(undefined)
+    },
+  })
+  await store.files.write(jsonlPath, body, { flush: true })
 }
 
 /**
@@ -2223,12 +2261,12 @@ async function rewriteTranscript(
  * remaining content blocks, the entire entry is removed.
  */
 export async function removeToolCall(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   toolCallId: string
 ): Promise<boolean> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  if (!(await fileExists(jsonlPath))) return false
+  const jsonlPath = transcriptPath(store, sessionId)
+  if (!(await transcriptExists(store, jsonlPath))) return false
 
   // Decide what to do with one entry: remove the tool_use block from assistant
   // entries and the tool_result block from user entries, dropping an entry
@@ -2269,7 +2307,7 @@ export async function removeToolCall(
   // only writing when `found`.
   let found = false
   try {
-    for await (const entry of streamJsonlFile<JsonlEntry>(jsonlPath)) {
+    for await (const entry of streamJsonl<JsonlEntry>(store.files, jsonlPath)) {
       if (mapEntry(entry) !== 'keep') {
         found = true
         break
@@ -2278,13 +2316,13 @@ export async function removeToolCall(
   } catch (error) {
     // Transcript deleted between the existence check and the read: the old
     // full-read implementation treated this as "not found".
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    if (isAbsentFile(error)) return false
     throw error
   }
   if (!found) return false
 
-  await rewriteTranscript(jsonlPath, mapEntry)
-  recordSessionActivity(agentSlug, sessionId)
+  await rewriteTranscript(store, jsonlPath, mapEntry)
+  recordSessionActivity(store, sessionId)
   return true
 }
 
@@ -2294,12 +2332,12 @@ export async function removeToolCall(
  * instead of loading all sessions for the agent.
  */
 async function getSessionsByMetadata(
-  agentSlug: string,
+  store: SessionStore,
   predicate: (meta: SessionMetadata) => boolean,
 ): Promise<SessionInfo[]> {
-  const metadata = await readSessionMetadata(agentSlug)
+  const metadata = await readSessionMetadata(store)
 
-  // Find matching session IDs from metadata (fast — no filesystem I/O)
+  // Find matching session IDs from metadata (fast — no storage I/O)
   const matchingIds: string[] = []
   for (const [sessionId, meta] of Object.entries(metadata)) {
     if (predicate(meta)) matchingIds.push(sessionId)
@@ -2308,24 +2346,27 @@ async function getSessionsByMetadata(
 
   // Only stat the matching JSONL files
   const sessions: SessionInfo[] = []
+  const now = Date.now()
   for (const sessionId of matchingIds) {
-    const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
     const meta = metadata[sessionId]
+    let stat: Awaited<ReturnType<typeof store.files.stat>>
     try {
-      const stat = await fs.promises.stat(jsonlPath)
+      stat = await store.files.stat(transcriptPath(store, sessionId))
+    } catch {
+      stat = null
+    }
+    if (stat) {
       sessions.push({
         id: sessionId,
-        agentSlug,
+        agentSlug: store.slug,
         name: meta?.name || 'New Session',
         createdAt: resolveSessionCreatedAt(meta, stat),
         lastActivityAt: new Date(stat.mtimeMs),
         messageCount: 0,
       })
-    } catch {
+    } else if (meta && metadataOnlySession(meta, now) !== 'orphaned') {
       // JSONL doesn't exist yet — use metadata createdAt
-      if (meta) {
-        sessions.push(emptySessionFromMetadata(sessionId, agentSlug, meta))
-      }
+      sessions.push(emptySessionFromMetadata(sessionId, store.slug, meta))
     }
   }
 
@@ -2336,23 +2377,23 @@ async function getSessionsByMetadata(
  * Get all sessions created by a scheduled task.
  */
 export async function getSessionsByScheduledTask(
-  agentSlug: string,
+  store: SessionStore,
   scheduledTaskId: string
 ): Promise<SessionInfo[]> {
-  return getSessionsByMetadata(agentSlug, (meta) => meta.scheduledTaskId === scheduledTaskId)
+  return getSessionsByMetadata(store, (meta) => meta.scheduledTaskId === scheduledTaskId)
 }
 
 /**
  * Get the session for a specific scheduled task execution slot.
  */
 export async function getSessionForScheduledExecution(
-  agentSlug: string,
+  store: SessionStore,
   scheduledTaskId: string,
   scheduledExecutionAt: Date,
 ): Promise<SessionInfo | null> {
   const executionAt = scheduledExecutionAt.toISOString()
   const sessions = await getSessionsByMetadata(
-    agentSlug,
+    store,
     (meta) =>
       meta.isScheduledExecution === true &&
       meta.scheduledTaskId === scheduledTaskId &&
@@ -2366,8 +2407,8 @@ export async function getSessionForScheduledExecution(
  * Get all sessions that were spawned by a webhook trigger.
  */
 export async function getSessionsByWebhookTrigger(
-  agentSlug: string,
+  store: SessionStore,
   webhookTriggerId: string
 ): Promise<SessionInfo[]> {
-  return getSessionsByMetadata(agentSlug, (meta) => meta.webhookTriggerId === webhookTriggerId)
+  return getSessionsByMetadata(store, (meta) => meta.webhookTriggerId === webhookTriggerId)
 }
