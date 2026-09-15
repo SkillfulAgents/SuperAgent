@@ -190,12 +190,10 @@ export class DeepgramConversationAdapter implements VoiceConversationAdapter {
   }
 
   private samplePlayback(): boolean {
-    const ownsReader = readAloud.getSnapshot().activeId === this.streamId
-    if (ownsReader && readAloud.isAudible()) this.lastAudioAt = Date.now()
-    const next = ownsReader && Date.now() - this.lastAudioAt < 1200
+    if (readAloud.isAudible()) this.lastAudioAt = Date.now()
+    const next = Date.now() - this.lastAudioAt < 1200
     const changed = next !== this.assistantSpeaking
     this.assistantSpeaking = next
-    if (!ownsReader) this.lastAudioAt = -Infinity
     return changed
   }
 

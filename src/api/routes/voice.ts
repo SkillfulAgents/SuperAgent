@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { randomUUID } from 'node:crypto'
+import { LiveSessionRegistry } from '@shared/lib/voice/live-session-registry'
 import { z } from 'zod'
 import { limitJsonBody, type LimitedJsonBodyEnv } from '../middleware/limit-json-body'
 import { Authenticated } from '../middleware/auth'
@@ -48,7 +48,7 @@ voice.use('/live/*', async (c, next) => {
   return next()
 })
 // Opaque, user-bound handles prevent one user from closing another's call.
-const liveSessions = new Map<string, { owner: string; id: string; timer: ReturnType<typeof setTimeout> }>()
+const liveSessions = new LiveSessionRegistry((id) => getVoiceProvider('openai').closeLiveSession(id))
 const pendingLiveStarts = new Map<string, number>()
 const liveSessionSchema = z.object({ sdp: z.string().min(1).max(64000), history: voiceHistorySchema })
 voice.post('/live/session', async (c) => {
@@ -56,25 +56,19 @@ voice.post('/live/session', async (c) => {
   if (!parsed.success) return c.json({ error: 'Invalid Live session request.' }, 400)
   const owner = getCurrentUserId(c)
   const pending = pendingLiveStarts.get(owner) ?? 0
-  if (pending + [...liveSessions.values()].filter((session) => session.owner === owner).length >= 4) {
+  if (pending + liveSessions.activeCount(owner) >= 4) {
     return c.json({ error: 'Close an existing voice session before starting another.' }, 429)
   }
   pendingLiveStarts.set(owner, pending + 1)
   try {
     const provider = getVoiceProvider('openai')
     const answer = await provider.createLiveSession(parsed.data.sdp, parsed.data.history)
+    const registered = liveSessions.add(owner, answer.session.id)
     if (c.req.raw.signal.aborted) {
-      await provider.closeLiveSession(answer.session.id)
+      await liveSessions.release(registered.handle, owner)
       return c.json({ error: 'Voice connection request was cancelled.' }, 408)
     }
-    const handle = randomUUID()
-    const timer = setTimeout(() => {
-      liveSessions.delete(handle)
-      void provider.closeLiveSession(answer.session.id).catch(() => {})
-    }, 60 * 60 * 1000)
-    timer.unref()
-    liveSessions.set(handle, { owner, id: answer.session.id, timer })
-    return c.json({ ...answer, handle }, 201)
+    return c.json({ ...answer, ...registered }, 201)
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : 'Failed to create Live session.' }, 502)
   } finally {
@@ -84,17 +78,9 @@ voice.post('/live/session', async (c) => {
   }
 })
 voice.delete('/live/session/:handle', async (c) => {
-  const handle = c.req.param('handle')
-  const session = liveSessions.get(handle)
-  if (!session || session.owner !== getCurrentUserId(c)) return c.json({ error: 'Voice session not found.' }, 404)
-  try {
-    await getVoiceProvider('openai').closeLiveSession(session.id)
-    clearTimeout(session.timer)
-    liveSessions.delete(handle)
-    return c.json({ closed: true })
-  } catch {
-    return c.json({ error: 'Could not close voice session.' }, 502)
-  }
+  const result = await liveSessions.release(c.req.param('handle'), getCurrentUserId(c))
+  if (result === 'missing') return c.json({ error: 'Voice session not found.' }, 404)
+  return c.json({ closed: result === 'closed', closing: result === 'closing' }, result === 'closed' ? 200 : 202)
 })
 voice.post('/live/map', async (c) => {
   const parsed = liveMappingSchema.safeParse(c.get('limitedJsonBody'))

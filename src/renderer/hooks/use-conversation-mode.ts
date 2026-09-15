@@ -76,19 +76,24 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
         const talking = next.userSpeaking || next.assistantSpeaking
         if (talking && !speechActive) holdSound.stopImmediately()
         speechActive = talking
-        setSnapshot(next)
+        setSnapshot(previous => previous.phase === next.phase && previous.ready === next.ready
+          && previous.userSpeaking === next.userSpeaking && previous.assistantSpeaking === next.assistantSpeaking
+          && previous.utterance === next.utterance && previous.transcript === next.transcript
+          && previous.hold.allowed === next.hold.allowed && previous.hold.delayMs === next.hold.delayMs
+          ? previous : next)
       },
       onError: (message) => { if (!disposed) setProviderError(message) },
     })
     const turns = new VoiceAgentCoordinator({
       snapshot: getAgentSnapshot,
       send: (text) => latest.current.args.send(text),
-      interrupt: async () => { await latest.current.interrupt.mutateAsync({ sessionId, agentSlug }) },
+      interrupt: async (signal) => { await latest.current.interrupt.mutateAsync({ sessionId, agentSlug, signal }) },
       onEvent: (event) => conversation.acceptAgentEvent(event),
       onState: (state) => {
         if (disposed) return
         if (!state.awaiting) handoff.pending = false
-        setAgent(state)
+        setAgent(previous => previous.active === state.active && previous.awaiting === state.awaiting
+          && previous.toolsUsed === state.toolsUsed ? previous : state)
       },
       onIssue: (message) => { if (!disposed) setAgentIssue(message) },
     })

@@ -564,11 +564,12 @@ export function useInterruptSession() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ sessionId, agentSlug, scope = 'turn' }: { sessionId: string; agentSlug: string; scope?: InterruptScope }) => {
+    mutationFn: async ({ sessionId, agentSlug, scope = 'turn', signal }: { sessionId: string; agentSlug: string; scope?: InterruptScope; signal?: AbortSignal }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/interrupt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scope }),
+        signal,
       })
       if (!res.ok) throw new Error('Failed to interrupt session')
       return res.json()

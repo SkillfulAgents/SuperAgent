@@ -17,10 +17,18 @@ interface ConversationEvents {
 // Keep the speaking state through breaths and sentence gaps. Audio samples,
 // not transcript arrival, tell us whether the remote voice is being played.
 export const LIVE_SPEECH_RELEASE_MS = 1200
+export const LIVE_DISCONNECT_GRACE_MS = 8000
 const AUDIO_METER_MS = 20
 const OUTPUT_SPEECH_RMS = 0.003
 // Only extends speech already confirmed by transcription; never opens the gate.
 const INPUT_SPEECH_RMS = 0.006
+
+function sampleRms(analyser: AnalyserNode, buffer: Float32Array<ArrayBuffer>): number {
+  analyser.getFloatTimeDomainData(buffer)
+  let energy = 0
+  for (let i = 0; i < buffer.length; i++) energy += buffer[i] * buffer[i]
+  return Math.sqrt(energy / buffer.length)
+}
 
 /** WebRTC media and the Live protocol belong to the OpenAI implementation. */
 export class OpenAILiveConversation {
@@ -35,6 +43,9 @@ export class OpenAILiveConversation {
   private inputSpeechTimer: ReturnType<typeof setInterval> | undefined
   private lastInputActivity = -Infinity
   private inputSpeaking = false
+  private disconnectTimer: ReturnType<typeof setTimeout> | undefined
+  private expiryWarningTimer: ReturnType<typeof setTimeout> | undefined
+  private readonly onPageHide = () => { this.close(); this.cleanup() }
   private closingTimer: ReturnType<typeof setTimeout> | undefined
   private startupTimer: ReturnType<typeof setTimeout> | undefined
   private ready = false
@@ -56,14 +67,17 @@ export class OpenAILiveConversation {
         const res = await apiFetch('/api/voice/live/map', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal,
         })
-        const data = await res.json()
-        if (!res.ok) throw new Error(data.error || 'Voice mapping failed.')
+        const data = await res.json().catch(() => null)
+        if (!res.ok) throw new Error(data?.error || `Voice mapping failed (${res.status}).`)
+        if (!data) throw new Error('Voice mapping returned an invalid response.')
         return data
       },
     }, history)
   }
 
   async start() {
+    if (this.closed) return
+    window.addEventListener('pagehide', this.onPageHide)
     try {
       const peer = new RTCPeerConnection()
       this.peer = peer
@@ -102,8 +116,17 @@ export class OpenAILiveConversation {
         })
       }
       peer.onconnectionstatechange = () => {
-        if (!this.closed && (peer.connectionState === 'failed' || peer.connectionState === 'disconnected')) {
+        if (this.closed) return
+        if (peer.connectionState === 'failed') {
           this.fail('Voice connection lost. Exit voice mode and re-enter to reconnect.')
+        } else if (peer.connectionState === 'disconnected') {
+          if (this.disconnectTimer === undefined) this.disconnectTimer = setTimeout(() => {
+            this.disconnectTimer = undefined
+            if (peer.connectionState !== 'connected') this.fail('Voice connection lost. Exit voice mode and re-enter to reconnect.')
+          }, LIVE_DISCONNECT_GRACE_MS)
+        } else if (peer.connectionState === 'connected') {
+          clearTimeout(this.disconnectTimer)
+          this.disconnectTimer = undefined
         }
       }
       const channel = peer.createDataChannel('oai-events')
@@ -142,10 +165,14 @@ export class OpenAILiveConversation {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sdp, history: this.history }),
       })
-      const answer = await res.json() as LiveSessionAnswer & { error?: string; handle: string }
-      if (!res.ok) throw new Error(answer.error || 'Could not connect OpenAI Live.')
+      const answer = await res.json().catch(() => null) as (LiveSessionAnswer & { error?: string; handle: string; expiresAt?: number }) | null
+      if (!res.ok) throw new Error(answer?.error || `Could not connect OpenAI Live (${res.status}).`)
+      if (!answer?.handle || !answer.transport?.sdp) throw new Error('OpenAI Live returned an invalid session answer.')
       this.sessionId = answer.handle
       if (this.closed) { this.releaseSession(); return }
+      if (answer.expiresAt) this.expiryWarningTimer = setTimeout(() => {
+        this.events.onError('This voice connection expires in one minute. Exit and re-enter voice mode to continue; your agent work will keep running.')
+      }, Math.max(0, answer.expiresAt - Date.now() - 60_000))
       this.startupTimer = setTimeout(() => this.fail('OpenAI Live did not start. Re-enter voice mode to retry.'), 15_000)
       await peer.setRemoteDescription({ type: 'answer', sdp: answer.transport.sdp })
     } catch (error) {
@@ -165,8 +192,7 @@ export class OpenAILiveConversation {
     const buffer = analyser ? new Float32Array(analyser.fftSize) : null
     this.inputSpeechTimer = setInterval(() => {
       if (analyser && buffer) {
-        analyser.getFloatTimeDomainData(buffer)
-        const rms = Math.sqrt(buffer.reduce((sum, value) => sum + value * value, 0) / buffer.length)
+        const rms = sampleRms(analyser, buffer)
         if (rms > INPUT_SPEECH_RMS) this.lastInputActivity = Date.now()
       }
       if (Date.now() - this.lastInputActivity >= LIVE_SPEECH_RELEASE_MS) this.clearInputSpeech()
@@ -188,8 +214,7 @@ export class OpenAILiveConversation {
     let lastSound = -Infinity
     let speaking = false
     return setInterval(() => {
-      analyser.getFloatTimeDomainData(buffer)
-      const rms = Math.sqrt(buffer.reduce((sum, value) => sum + value * value, 0) / buffer.length)
+      const rms = sampleRms(analyser, buffer)
       if (!this.paused && rms > threshold) lastSound = Date.now()
       if (this.paused) lastSound = -Infinity
       const next = !this.paused && Date.now() - lastSound < LIVE_SPEECH_RELEASE_MS
@@ -277,6 +302,9 @@ export class OpenAILiveConversation {
   close() {
     if (this.closed) return
     this.closed = true
+    window.removeEventListener('pagehide', this.onPageHide)
+    clearTimeout(this.disconnectTimer)
+    clearTimeout(this.expiryWarningTimer)
     this.events.onClosed?.()
     this.events.onSpeaking(false)
     this.clearInputSpeech()

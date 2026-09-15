@@ -360,7 +360,7 @@ describe('useVoiceMode', () => {
     const enough = `${below} more`
     act(() => listener.hear(enough))
     expect(reader.stop).toHaveBeenCalled()
-    expect(interruptSession.mutate).toHaveBeenCalledWith({ sessionId: 's1', agentSlug: 'agent' }, expect.anything())
+    expect(interruptSession.mutate).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1', agentSlug: 'agent', signal: expect.any(AbortSignal) }), expect.anything())
     expect(result.current.phase).toBe('listening')
     expect(result.current.utterance).toBe(enough)
   })
@@ -388,7 +388,7 @@ describe('useVoiceMode', () => {
     expect(result.current.phase).toBe('thinking')
     // isActive is still false: the server has not confirmed the turn yet.
     act(() => result.current.pressMic())
-    expect(interruptSession.mutate).toHaveBeenCalledWith({ sessionId: 's1', agentSlug: 'agent' }, expect.anything())
+    expect(interruptSession.mutate).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1', agentSlug: 'agent', signal: expect.any(AbortSignal) }), expect.anything())
     expect(result.current.phase).toBe('listening')
   })
 
@@ -580,4 +580,18 @@ describe('useVoiceMode', () => {
     expect(listener.stop).toHaveBeenCalledTimes(1)
     expect(reader.stop).toHaveBeenCalled()
   })
+  it('suppresses hold music while an older message is being read aloud', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result, setStream, unmount } = setup()
+      setStream({ isActive: true })
+      act(() => reader.set({ activeId: 'older-message', status: 'speaking' }))
+      expect(result.current.speechActive).toBe(true)
+      act(() => reader.set({ activeId: null, status: 'idle' }))
+      act(() => vi.advanceTimersByTime(1400))
+      expect(result.current.speechActive).toBe(false)
+      unmount()
+    } finally { vi.useRealTimers() }
+  })
+
 })

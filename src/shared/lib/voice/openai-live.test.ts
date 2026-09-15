@@ -38,7 +38,7 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     expect(await provider.mapLiveConversation({ kind: 'request', transcript: 'user: Actually Thursday.', history: [], previousRequest: 'Check Friday.', agentBusy: true }))
       .toEqual({ action: 'message', text: 'Check Thursday instead of Friday.' })
     expect(mocks.resolve).toHaveBeenCalledWith('configured-summary-model', 'summarizer')
-    expect(mocks.summarize).toHaveBeenCalledWith(mocks.client, expect.objectContaining({ model: 'resolved-summary-model' }), expect.any(AbortSignal))
+    expect(mocks.summarize).toHaveBeenCalledWith(mocks.client, expect.objectContaining({ model: 'resolved-summary-model', output_config: { format: expect.objectContaining({ type: 'json_schema', schema: expect.objectContaining({ required: ['action', 'text'], additionalProperties: false }) }) } }), expect.any(AbortSignal))
   })
 
   it.each(['not JSON', '{"action":"execute","text":"bad"}', '{"action":"message","text":""}'])('rejects unusable mappings: %s', async (text) => {
@@ -59,4 +59,14 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     fetchMock.mockResolvedValue(new Response('sensitive upstream body', { status: 403 }))
     await expect(provider.createLiveSession('offer', [])).rejects.toThrow('GPT-Live access')
   })
+  it('omits empty and whitespace-only turns from upstream history', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ session: { id: 'live_test' }, transport: { sdp: 'answer' } })))
+    await provider.createLiveSession('offer', [
+      { role: 'user', content: 'Research this' }, { role: 'assistant', content: '' },
+      { role: 'assistant', content: '  ' }, { role: 'assistant', content: 'Found it' },
+    ])
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.session.input.map((entry: { content: Array<{ text: string }> }) => entry.content[0].text)).toEqual(['Research this', 'Found it'])
+  })
+
 })

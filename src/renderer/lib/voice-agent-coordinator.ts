@@ -1,11 +1,12 @@
 import type { VoiceAgentCommand, VoiceAgentEvent, VoiceAgentSnapshot, VoiceAgentState, VoiceCommandResult } from './voice-conversation'
 
 export const VOICE_TURN_START_TIMEOUT_MS = 15_000
+export const VOICE_INTERRUPT_TIMEOUT_MS = 10_000
 
 interface CoordinatorDependencies {
   snapshot(): VoiceAgentSnapshot
   send(text: string): Promise<boolean>
-  interrupt(): Promise<void>
+  interrupt(signal?: AbortSignal): Promise<void>
   onEvent(event: VoiceAgentEvent): void
   onState(state: VoiceAgentState): void
   onIssue(message: string | null): void
@@ -32,6 +33,7 @@ export class VoiceAgentCoordinator {
   private commands = 0
   private queue: Promise<VoiceCommandResult> | null = null
   private cancellationError: string | null = null
+  private interruptAbort: AbortController | null = null
   private waitTimer: ReturnType<typeof setTimeout> | undefined
   private latest: VoiceAgentSnapshot
 
@@ -67,8 +69,10 @@ export class VoiceAgentCoordinator {
     this.publishState()
     // Run the first operation immediately. Later commands wait for its result,
     // including a cancellation requested while a submission is in flight.
-    const pending = this.queue
-      ? this.queue.then(() => this.execute(command))
+    const queued = this.queue
+    if (!queued) this.cancellationError = null
+    const pending = queued
+      ? queued.then(() => this.execute(command))
       : this.execute(command)
     this.queue = pending
     void pending.then(() => { if (this.queue === pending) this.queue = null })
@@ -77,19 +81,20 @@ export class VoiceAgentCoordinator {
 
   private async execute(command: VoiceAgentCommand): Promise<VoiceCommandResult> {
     try {
-      if (this.closed || this.paused) return { accepted: false }
+      if (this.closed || this.paused) {
+        this.awaiting = this.pendingAccepted
+        if (command.type === 'cancel') this.cancelled = false
+        return { accepted: false }
+      }
       if (command.type === 'cancel') {
         this.awaiting = false
-        await this.dependencies.interrupt()
-        this.cancellationError = null
-        this.pendingAccepted = false
+        if (this.dependencies.snapshot().active || this.pendingAccepted) await this.interruptWork()
         this.cancelledStart = this.dependencies.snapshot().startedAt
         return { accepted: true }
       }
       // An already-queued replacement must not pass a failed cancellation.
       if (this.cancellationError) {
         const message = this.cancellationError
-        this.cancellationError = null
         throw new Error(message)
       }
       this.awaiting = true
@@ -97,8 +102,11 @@ export class VoiceAgentCoordinator {
       this.previousStart = before.startedAt
       this.sawIdle = !before.active
       const alreadyCancelled = this.cancelled && before.startedAt === this.cancelledStart
-      if ((before.active || this.pendingAccepted) && !alreadyCancelled) await this.dependencies.interrupt()
-      if (this.closed || this.paused) return { accepted: false }
+      if ((before.active || this.pendingAccepted) && !alreadyCancelled) await this.interruptWork()
+      if (this.closed || this.paused) {
+        this.awaiting = this.pendingAccepted
+        return { accepted: false }
+      }
       this.staleText = this.dependencies.snapshot().text
       this.cancelled = false
       this.pendingAccepted = false
@@ -109,6 +117,7 @@ export class VoiceAgentCoordinator {
       this.pendingAccepted = true
       return { accepted: true }
     } catch (reason) {
+      if (this.closed) return { accepted: false }
       const message = reason instanceof Error ? reason.message : 'Could not send the voice request.'
       if (command.type === 'cancel') {
         this.cancellationError = message
@@ -123,6 +132,29 @@ export class VoiceAgentCoordinator {
         this.update(this.dependencies.snapshot())
         this.armWait()
       }
+    }
+  }
+
+  private async interruptWork() {
+    const controller = new AbortController()
+    this.interruptAbort = controller
+    const timeout = setTimeout(() => controller.abort(), VOICE_INTERRUPT_TIMEOUT_MS)
+    const aborted = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener('abort', () => reject(new Error('Could not confirm the agent stopped. Please try again.')), { once: true })
+    })
+    try {
+      await Promise.race([this.dependencies.interrupt(controller.signal), aborted])
+      this.cancellationError = null
+      this.pendingAccepted = false
+      this.cancelled = true
+      this.cancelledStart = this.dependencies.snapshot().startedAt
+    } catch (error) {
+      this.cancellationError = error instanceof Error ? error.message : 'Could not stop the agent.'
+      this.cancelled = false
+      throw error
+    } finally {
+      clearTimeout(timeout)
+      if (this.interruptAbort === controller) this.interruptAbort = null
     }
   }
 
@@ -246,6 +278,7 @@ export class VoiceAgentCoordinator {
 
   close() {
     this.closed = true
+    this.interruptAbort?.abort()
     this.clearWait()
   }
 }

@@ -92,6 +92,7 @@ export class OpenAILiveBridge {
 
   /** The explicit mic button may request a handoff without waiting for Live. */
   requestNow() {
+    if (this.closed || this.paused || this.userRevision === this.handledRevision) return
     if (!this.pendingDelegation) this.pendingDelegation = 'manual'
     this.scheduleRequest(0)
   }

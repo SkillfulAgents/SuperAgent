@@ -345,6 +345,11 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     exitTimerRef.current = null
   }, [voiceModeOn])
   const { submitMessage } = composer
+  const voiceHistory = useMemo(() => (messages ?? []).slice(-24).flatMap((message) =>
+      (message.type === 'user' || message.type === 'assistant') && message.content.text.trim()
+        ? [{ role: message.type, content: message.content.text.slice(-4000) }]
+        : [],
+    ).slice(-24), [messages])
   const voice = useVoiceMode({
     sessionId,
     agentSlug,
@@ -352,11 +357,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     paused: suspended,
     send: submitMessage,
     startWithAgentTurn: openedByVoice,
-    history: (messages ?? []).slice(-24).flatMap((message) =>
-      message.type === 'user' || message.type === 'assistant'
-        ? [{ role: message.type, content: message.content.text.slice(-4000) }]
-        : [],
-    ).slice(-24),
+    history: voiceHistory,
   })
   // Something to hear while the agent works, unless the person muted it.
   const holdSoundWanted = useHoldSoundPreference()

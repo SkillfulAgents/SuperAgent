@@ -83,6 +83,35 @@ describe('Live voice routes', () => {
     expect((await voice.request(`/live/session/${handle}`, { method: 'DELETE' })).status).toBe(200)
     expect(mocks.close).toHaveBeenCalledExactlyOnceWith('live_test')
   })
+  it('releases admission slots while a failed upstream hangup is retried', async () => {
+    vi.useFakeTimers()
+    mocks.user = 'cleanup-retry-owner'
+    mocks.close.mockRejectedValue(new Error('Temporary upstream failure'))
+    try {
+      const handles: string[] = []
+      for (let i = 0; i < 4; i++) {
+        const response = await request('/live/session', { sdp: 'offer', history: [] })
+        expect(response.status).toBe(201)
+        const body = await response.json()
+        expect(body.expiresAt).toBeGreaterThan(Date.now())
+        handles.push(body.handle)
+      }
+      expect((await request('/live/session', { sdp: 'offer', history: [] })).status).toBe(429)
+      for (const handle of handles) {
+        expect((await voice.request(`/live/session/${handle}`, { method: 'DELETE' })).status).toBe(202)
+      }
+      const replacement = await request('/live/session', { sdp: 'offer', history: [] })
+      expect(replacement.status).toBe(201)
+      const { handle } = await replacement.json()
+      mocks.close.mockResolvedValue(undefined)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(mocks.close).toHaveBeenCalledTimes(8)
+      expect((await voice.request(`/live/session/${handle}`, { method: 'DELETE' })).status).toBe(200)
+    } finally {
+      mocks.close.mockResolvedValue(undefined)
+      vi.useRealTimers()
+    }
+  })
   it('returns a mapping error without disclosing provider details', async () => {
     mocks.map.mockRejectedValueOnce(new Error('secret upstream info'))
     const response = await request('/live/map', { kind: 'reply', text: 'Working...' })

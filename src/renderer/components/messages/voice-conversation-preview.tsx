@@ -12,6 +12,10 @@ export function VoiceConversationPreview({ transcript }: { transcript: VoiceTran
     const observer = new ResizeObserver(followLatest)
     observer.observe(element)
     return () => observer.disconnect()
+  }, [])
+  useLayoutEffect(() => {
+    const element = viewport.current
+    if (element) element.scrollTop = element.scrollHeight
   }, [transcript])
 
   return (

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({ fetch: vi.fn(), mic: vi.fn() }))
 vi.mock('./api', () => ({ apiFetch: mocks.fetch }))
 vi.mock('./stt', () => ({ acquireMicStream: mocks.mic }))
-import { OpenAILiveConversation, LIVE_SPEECH_RELEASE_MS } from './voice-conversation-openai'
+import { OpenAILiveConversation, LIVE_SPEECH_RELEASE_MS, LIVE_DISCONNECT_GRACE_MS } from './voice-conversation-openai'
 
 class FakeChannel {
   readyState = 'open'
@@ -17,6 +17,8 @@ class FakePeer {
   static last: FakePeer
   channel = new FakeChannel()
   ontrack: ((event: { track: unknown }) => void) | null = null
+  connectionState = 'connected'
+  onconnectionstatechange: (() => void) | null = null
   iceGatheringState = 'complete'
   localDescription = { sdp: 'offer' }
   createDataChannel = () => this.channel
@@ -276,4 +278,61 @@ describe('Live WebRTC lifecycle', () => {
     expect(FakePeer.last.close).toHaveBeenCalled()
     expect(mocks.fetch).toHaveBeenCalledWith('/api/voice/live/session/owned-handle', expect.objectContaining({ method: 'DELETE' }))
   })
+  it('releases the host handle immediately on pagehide without waiting for close acknowledgment', async () => {
+    const { adapter } = setup()
+    await adapter.start()
+    FakePeer.last.channel.receive({ type: 'session.started' })
+    window.dispatchEvent(new Event('pagehide'))
+    expect(FakePeer.last.close).toHaveBeenCalledOnce()
+    expect(mocks.fetch).toHaveBeenCalledWith('/api/voice/live/session/owned-handle', expect.objectContaining({ method: 'DELETE', keepalive: true }))
+    const count = mocks.fetch.mock.calls.length
+    window.dispatchEvent(new Event('pagehide'))
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(mocks.fetch).toHaveBeenCalledTimes(count)
+  })
+
+  it('allows transient WebRTC disconnects to recover and closes sustained failures', async () => {
+    const { adapter, callbacks } = setup()
+    await adapter.start()
+    const peer = FakePeer.last
+    peer.channel.receive({ type: 'session.started' })
+    peer.connectionState = 'disconnected'
+    peer.onconnectionstatechange?.()
+    await vi.advanceTimersByTimeAsync(LIVE_DISCONNECT_GRACE_MS - 1)
+    expect(callbacks.onError).not.toHaveBeenCalled()
+    peer.connectionState = 'connected'
+    peer.onconnectionstatechange?.()
+    await vi.advanceTimersByTimeAsync(LIVE_DISCONNECT_GRACE_MS)
+    expect(callbacks.onError).not.toHaveBeenCalled()
+    peer.connectionState = 'disconnected'
+    peer.onconnectionstatechange?.()
+    await vi.advanceTimersByTimeAsync(LIVE_DISCONNECT_GRACE_MS)
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.stringContaining('connection lost'))
+    adapter.close()
+  })
+
+  it('closes terminal failures immediately and reports non-JSON API errors clearly', async () => {
+    const { adapter, callbacks } = setup()
+    await adapter.start()
+    FakePeer.last.connectionState = 'failed'
+    FakePeer.last.onconnectionstatechange?.()
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.stringContaining('connection lost'))
+    mocks.fetch.mockResolvedValueOnce(new Response('Bad Gateway', { status: 502 }))
+    const second = setup()
+    await second.adapter.start()
+    expect(second.callbacks.onError).toHaveBeenCalledWith('Could not connect OpenAI Live (502).')
+    adapter.close()
+    second.adapter.close()
+  })
+
+  it('warns before the server lease expires and cancels the warning on close', async () => {
+    mocks.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ session: { id: 'live_1' }, transport: { sdp: 'answer' }, handle: 'owned-handle', expiresAt: Date.now() + 120_000 })))
+    const { adapter, callbacks } = setup()
+    await adapter.start()
+    FakePeer.last.channel.receive({ type: 'session.started' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.stringContaining('expires in one minute'))
+    adapter.close()
+  })
+
 })

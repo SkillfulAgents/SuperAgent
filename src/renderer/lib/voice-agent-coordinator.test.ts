@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { VoiceAgentCoordinator, VOICE_TURN_START_TIMEOUT_MS } from './voice-agent-coordinator'
+import { VoiceAgentCoordinator, VOICE_TURN_START_TIMEOUT_MS, VOICE_INTERRUPT_TIMEOUT_MS } from './voice-agent-coordinator'
 import type { VoiceAgentEvent, VoiceAgentSnapshot } from './voice-conversation'
 
 function deferred<T>() {
@@ -13,7 +13,7 @@ function setup(initial: Partial<VoiceAgentSnapshot> = {}, expectTurn = false) {
   const events: VoiceAgentEvent[] = []
   const dependencies = {
     snapshot: () => snapshot,
-    send: vi.fn(async (_text: string) => true), interrupt: vi.fn(async () => {}),
+    send: vi.fn(async (_text: string) => true), interrupt: vi.fn(async (_signal?: AbortSignal) => {}),
     onEvent: vi.fn((event: VoiceAgentEvent) => events.push(event)), onState: vi.fn(), onIssue: vi.fn(),
   }
   const coordinator = new VoiceAgentCoordinator(dependencies)
@@ -263,4 +263,69 @@ describe('shared voice agent coordinator', () => {
     expect(dependencies.send).not.toHaveBeenCalled()
     coordinator.close()
   })
+  it('drops a replacement paused during interruption without leaving a phantom request', async () => {
+    const { coordinator, dependencies, update } = setup({ active: true, startedAt: 1 })
+    const stop = deferred<void>()
+    dependencies.interrupt.mockReturnValueOnce(stop.promise)
+    const pending = coordinator.command({ type: 'submit', text: 'Replacement' })
+    coordinator.setPaused(true)
+    update({ active: false })
+    stop.resolve()
+    expect(await pending).toEqual({ accepted: false })
+    coordinator.setPaused(false)
+    await vi.advanceTimersByTimeAsync(VOICE_TURN_START_TIMEOUT_MS)
+    expect(dependencies.send).not.toHaveBeenCalled()
+    expect(dependencies.onIssue).not.toHaveBeenCalledWith(expect.any(String))
+    expect(dependencies.onState).toHaveBeenLastCalledWith(expect.objectContaining({ awaiting: false }))
+    coordinator.close()
+  })
+
+  it('drops queued unsent work while paused without inventing an acknowledgment wait', async () => {
+    const { coordinator, dependencies, update } = setup({ active: true })
+    const stop = deferred<void>()
+    dependencies.interrupt.mockReturnValueOnce(stop.promise)
+    const cancel = coordinator.command({ type: 'cancel' })
+    const queued = coordinator.command({ type: 'submit', text: 'Queued' })
+    coordinator.setPaused(true)
+    update({ active: false })
+    stop.resolve()
+    await cancel
+    expect(await queued).toEqual({ accepted: false })
+    coordinator.setPaused(false)
+    await vi.advanceTimersByTimeAsync(VOICE_TURN_START_TIMEOUT_MS)
+    expect(dependencies.send).not.toHaveBeenCalled()
+    expect(dependencies.onIssue).not.toHaveBeenCalledWith(expect.any(String))
+    coordinator.close()
+  })
+
+  it('allows a fresh utterance after failed cancellation without first swallowing a request', async () => {
+    const { coordinator, dependencies } = setup({ active: true })
+    dependencies.interrupt.mockRejectedValueOnce(new Error('Temporary failure'))
+    expect((await coordinator.command({ type: 'cancel' })).accepted).toBe(false)
+    expect(await coordinator.command({ type: 'submit', text: 'Fresh request' })).toEqual({ accepted: true })
+    expect(dependencies.send).toHaveBeenCalledExactlyOnceWith('Fresh request')
+    coordinator.close()
+  })
+
+  it('never calls the backend interrupt endpoint for an idle playback tail', async () => {
+    const { coordinator, dependencies } = setup()
+    expect(await coordinator.command({ type: 'cancel' })).toEqual({ accepted: true })
+    expect(dependencies.interrupt).not.toHaveBeenCalled()
+    coordinator.close()
+  })
+
+  it('bounds a stalled interrupt and rejects queued replacements without submitting them', async () => {
+    const { coordinator, dependencies } = setup({ active: true })
+    dependencies.interrupt.mockImplementationOnce(() => new Promise(() => {}))
+    const first = coordinator.command({ type: 'submit', text: 'First' })
+    const queued = coordinator.command({ type: 'submit', text: 'Queued' })
+    await vi.advanceTimersByTimeAsync(VOICE_INTERRUPT_TIMEOUT_MS)
+    expect(await first).toMatchObject({ accepted: false, error: expect.stringContaining('confirm') })
+    expect(await queued).toMatchObject({ accepted: false, error: expect.stringContaining('confirm') })
+    expect(dependencies.send).not.toHaveBeenCalled()
+    expect(dependencies.interrupt.mock.calls[0][0]?.aborted).toBe(true)
+    expect(await coordinator.command({ type: 'submit', text: 'Retry' })).toEqual({ accepted: true })
+    coordinator.close()
+  })
+
 })

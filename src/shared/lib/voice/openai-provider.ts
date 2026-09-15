@@ -51,7 +51,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider {
             'session.commentary.append', 'session.thinking.append', 'session.instructions.append',
             'session.input_audio.mute', 'session.input_audio.unmute', 'session.close',
           ] } },
-          input: history.slice(-12).map((message) => ({
+          input: history.filter((message) => message.content.trim()).slice(-12).map((message) => ({
             role: message.role,
             content: [{ type: message.role === 'user' ? 'input_text' : 'text', text: message.content.slice(-800) }],
           })),
@@ -83,11 +83,19 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider {
       model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
       system: input.kind === 'request' ? LIVE_REQUEST_PROMPT : LIVE_REPLY_PROMPT,
       messages: [{ role: 'user', content: JSON.stringify(input) }],
+      ...(input.kind === 'request' ? { output_config: { format: {
+        type: 'json_schema' as const,
+        schema: {
+          type: 'object',
+          properties: { action: { type: 'string', enum: liveRequestSchema.shape.action.options }, text: { type: 'string' } },
+          required: ['action', 'text'], additionalProperties: false,
+        },
+      } } } : {}),
     }, signal ? AbortSignal.any([signal, deadline]) : deadline)
     if (!text) throw new Error('The configured summarizer returned no voice mapping. Please try again.')
     if (input.kind === 'reply') return { text: text.slice(0, 1800) }
     try {
-      const request = liveRequestSchema.parse(JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, '')))
+      const request = liveRequestSchema.parse(JSON.parse(text))
       if (request.action !== 'none' && !request.text.trim()) throw new Error('Empty request')
       return request
     } catch {
