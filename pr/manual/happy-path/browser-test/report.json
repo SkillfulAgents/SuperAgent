@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail:  Domain\" (HTTP 200). Browser closed.\" — Verification successful\n\n**[STEP]** Step 7: Took screenshot of final response — Screenshot captured showing the complete chat conversation with agent's response clearly visible\n\nAll steps executed successfully without any bugs or unexpected behavior detected.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 69266,
+  "sessionId": "e63c2a6f-f462-4da6-a1f3-e9f212b50a1b",
+  "cost": {
+    "inputTokens": 336,
+    "outputTokens": 10572,
+    "cacheCreationTokens": 72971,
+    "cacheReadTokens": 948163,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.239226
+  }
+}
