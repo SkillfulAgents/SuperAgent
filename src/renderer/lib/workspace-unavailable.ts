@@ -1,6 +1,4 @@
-// Set by the cloud router when it answers for a workspace that is not ready.
-// The value is the route state (sleeping, waking, ...) or "unreachable".
-export const WORKSPACE_UNAVAILABLE_HEADER = 'x-workspace-unavailable'
+export { WORKSPACE_UNAVAILABLE_HEADER } from '@shared/lib/workspace-unavailable-header'
 
 const STATE_DESCRIPTIONS: Record<string, string> = {
   sleeping: 'asleep',
