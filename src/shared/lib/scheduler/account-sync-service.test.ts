@@ -52,7 +52,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getAccountProviderUserId: () => 'test-user',
 }))
 
-vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
+vi.mock('@shared/lib/services/connection-sync-service', () => ({
   syncAgentsAssignedConnectedAccount: (...args: unknown[]) =>
     mockSyncAgentsAssignedConnectedAccount(...args),
 }))

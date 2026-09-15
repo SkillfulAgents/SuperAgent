@@ -4,7 +4,7 @@ import {
   getAgentActivityStats,
   getConnectionActivityStats,
 } from '@shared/lib/services/activity-stats-service'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { parseActivityDays, parseActivityTzOffset } from './activity-query'
 import {
   AgentRead,
@@ -22,7 +22,7 @@ activityRouter.use('*', Authenticated())
 // actually processing — a persisted 'running' with an inactive session is a
 // dead or stopped run and must downgrade to failed instead of pulsing forever.
 const isSessionLive = (agentSlug: string, sessionId: string) =>
-  messagePersister.isSessionActive(agentSlug, sessionId)
+  agentRegistry.get(agentSlug).sessions.isActive(sessionId)
 
 activityRouter.get('/agents/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {

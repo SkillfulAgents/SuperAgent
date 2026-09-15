@@ -21,7 +21,7 @@ import {
   findAgentsAssignedConnectedAccount,
   syncAgentsAssignedConnectedAccount,
   syncConnectedAccountAgents,
-} from '@shared/lib/container/connection-runtime-sync'
+} from '@shared/lib/services/connection-sync-service'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 
 const connectedAccountsRouter = new Hono()

@@ -6,8 +6,7 @@ import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { ownerScope } from '@shared/lib/auth/ownership'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { finishConnectionReplacement } from '@shared/lib/container/connection-replacement'
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -28,8 +27,9 @@ accountReauth.post('/:id/reauth-request/:requestId/replace-account', AgentUser()
     // Keep validation and the mapping swap synchronous and atomic: a timeout,
     // dismissal, or owner reconnect cannot settle the card between them.
     const result = db.transaction((tx) => {
-      const request = userInputRequestManager.getOpenRequest(requestId)
-      if (request?.kind !== 'account_reauth_required' || request.scope.agentSlug !== slug) {
+      // The actor only hands back this agent's requests; another agent's reads as absent.
+      const request = agentRegistry.get(slug).inputs.get(requestId)
+      if (request?.kind !== 'account_reauth_required') {
         return { error: 'Reconnection request is no longer available', status: 404 as const }
       }
       const previousAccountId = request.payload.accountId
@@ -75,8 +75,9 @@ accountReauth.post('/:id/reauth-request/:requestId/replace-account', AgentUser()
       replacementId: result.accountId,
     }, () => {
       if (!accountReauthManager.replaceAccount(requestId, slug, result.accountId)) {
-        userInputRequestManager.resolve(requestId, 'answered')
-        messagePersister.syncAgentSessionsAwaiting(slug)
+        const actor = agentRegistry.get(slug)
+        actor.inputs.resolve(requestId, 'answered')
+        actor.sessions.syncAwaiting()
       }
     })
     return c.json({ success: true, ...recovery })

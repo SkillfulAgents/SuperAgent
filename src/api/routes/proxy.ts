@@ -4,7 +4,7 @@ import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
-import { reviewManager } from '@shared/lib/proxy/review-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
 import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
@@ -279,8 +279,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
 
   if (policyResult.decision === 'review') {
     try {
-      const decision = await reviewManager.requestReview({
-        agentSlug,
+      const decision = await agentRegistry.get(agentSlug).inputs.reviews.request({
         accountId,
         toolkit: account.toolkitSlug,
         method,

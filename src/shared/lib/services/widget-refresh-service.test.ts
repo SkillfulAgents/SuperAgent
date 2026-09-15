@@ -17,13 +17,16 @@ vi.mock('./widget-service', () => ({
 vi.mock('./widget-repair-service', () => ({
   openWidgetRepairSession: (...args: unknown[]) => (mocks.openRepair as any)(...args),
 }))
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getCachedInfo: () => ({ status: mocks.cachedStatus }),
-    ensureRunning: (...args: unknown[]) => mocks.ensureRunning(...args),
-    getClient: () => ({ fetch: mocks.clientFetch }),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getCachedInfo: () => ({ status: mocks.cachedStatus }),
+      ensureRunning: (...args: unknown[]) => mocks.ensureRunning(...args),
+      getClient: () => ({ fetch: mocks.clientFetch }),
+    }),
+  }
+})
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
     broadcastGlobal: (...args: unknown[]) => mocks.broadcastGlobal(...args),

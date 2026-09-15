@@ -63,11 +63,21 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
 const mockCreateSession = vi.fn()
 const mockEnsureRunning = vi.fn()
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
-  },
-}))
+// The actor reaches the container client through getClient after start();
+// hand back whatever ensureRunning last resolved to.
+let mockClient: unknown
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning: async (...args: unknown[]) => {
+        mockClient = await mockEnsureRunning(...args)
+        return mockClient
+      },
+      getClient: () => mockClient,
+    }),
+  }
+})
 
 const mockMessagePersister = vi.hoisted(() => ({
   withSessionSend: vi.fn(async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => send()),

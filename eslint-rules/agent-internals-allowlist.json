@@ -1,0 +1,54 @@
+{
+  "perf/harness.ts": [
+    "@shared/lib/services/session-summary-cache"
+  ],
+  "src/api/routes/agent-bootstrap.ts": [
+    "@shared/lib/container/message-persister"
+  ],
+  "src/api/routes/agents.ts": [
+    "@shared/lib/container/message-persister"
+  ],
+  "src/api/routes/browser.ts": [
+    "@shared/lib/container/message-persister"
+  ],
+  "src/api/routes/mcp-proxy.ts": [
+    "@shared/lib/proxy/mcp-reauth-manager"
+  ],
+  "src/api/routes/notifications.ts": [
+    "@shared/lib/container/message-persister"
+  ],
+  "src/api/routes/remote-mcps.ts": [
+    "@shared/lib/proxy/mcp-reauth-manager"
+  ],
+  "src/api/routes/scheduled-tasks.ts": [
+    "@shared/lib/container/message-persister"
+  ],
+  "src/api/routes/x-agent.ts": [
+    "@shared/lib/container/message-persister"
+  ],
+  "src/shared/lib/chat-integrations/chat-integration-manager.ts": [
+    "@shared/lib/container/message-persister"
+  ],
+  "src/shared/lib/notifications/channels/client-broadcast-channel.ts": [
+    "@shared/lib/container/message-persister"
+  ],
+  "src/shared/lib/proxy/account-reauth-manager.ts": [
+    "@shared/lib/user-input/request-manager"
+  ],
+  "src/shared/lib/scheduler/platform-notifications-manager.ts": [
+    "@shared/lib/container/message-persister"
+  ],
+  "src/shared/lib/scheduler/wake-delivery.ts": [
+    "@shared/lib/container/message-persister"
+  ],
+  "src/shared/lib/services/widget-refresh-service.ts": [
+    "@shared/lib/container/message-persister"
+  ],
+  "src/shared/lib/services/widget-repair-service.ts": [
+    "@shared/lib/container/message-persister"
+  ],
+  "src/shared/lib/startup.ts": [
+    "@shared/lib/proxy/mcp-reauth-manager",
+    "@shared/lib/proxy/review-manager"
+  ]
+}

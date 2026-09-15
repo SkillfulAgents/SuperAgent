@@ -1,4 +1,4 @@
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getEffectiveModels } from '@shared/lib/config/settings'
@@ -7,7 +7,6 @@ import type { SessionMetadata } from '@shared/lib/types/agent'
 import { getAgentOwnerUserId } from './agent-owner'
 import { readAgentPreferences } from './agent-preferences-service'
 import { getSecretEnvVars } from './secrets-service'
-import { readSessionMetadata, registerSession } from './session-service'
 import { readWidgetLogTail } from './widget-service'
 
 /**
@@ -119,7 +118,7 @@ export async function openWidgetRepairSession(
 ): Promise<RepairOutcome> {
   // The agent is mid-turn: it may be editing this widget right now, and its
   // own refresh_widget call already told it what broke.
-  if (messagePersister.hasActiveSessionsForAgent(agentSlug) || opening.has(agentSlug)) {
+  if (agentRegistry.get(agentSlug).sessions.hasActive() || opening.has(agentSlug)) {
     return { started: false, reason: 'agent-busy' }
   }
   opening.add(agentSlug)
@@ -136,7 +135,7 @@ async function openRepairSession(
   error: string,
   now: number,
 ): Promise<RepairOutcome> {
-  const metadata = await readSessionMetadata(agentSlug)
+  const metadata = await agentRegistry.get(agentSlug).sessions.readMetadata()
   const previous = repairSessions(metadata, widgetSlug)
   // A repair still marked running is one in flight — but only inside the
   // cooldown window. A session killed by an app restart keeps 'running'
@@ -166,7 +165,8 @@ async function startRepairSession(
   error: string,
 ): Promise<RepairOutcome> {
   try {
-    const client = await containerManager.ensureRunning(agentSlug)
+    const actor = agentRegistry.get(agentSlug)
+    await actor.container.start()
     const [availableEnvVars, agentPrefs, logTail] = await Promise.all([
       getSecretEnvVars(agentSlug),
       readAgentPreferences(agentSlug),
@@ -175,7 +175,7 @@ async function startRepairSession(
     const models = getEffectiveModels()
     const resolved = resolveRuntimeInherit({}, agentPrefs, models)
 
-    const session = await client.createSession({
+    const session = await actor.sessions.create({
       ...(availableEnvVars.length > 0 ? { availableEnvVars } : {}),
       initialMessage: buildPrompt(widgetSlug, error, logTail),
       model: resolved.model,
@@ -186,13 +186,13 @@ async function startRepairSession(
       ...(resolved.speed ? { speed: resolved.speed } : {}),
     })
 
-    await registerSession(agentSlug, session.id, 'Invoked to fix widget', {
+    await actor.sessions.register(session.id, 'Invoked to fix widget', {
       isWidgetRepair: true,
       widgetRepairSlug: widgetSlug,
       automationStatus: 'running',
     })
-    await messagePersister.subscribeToSession(agentSlug, session.id, client, session.id)
-    messagePersister.markSessionActive(agentSlug, session.id)
+    await actor.sessions.subscribeStream(session.id, session.id)
+    actor.sessions.markActive(session.id)
     // The home entry and inbound history may already be mounted.
     messagePersister.broadcastGlobal({ type: 'session_updated', agentSlug, sessionId: session.id })
     console.log(`[WidgetRepair] ${agentSlug}/${widgetSlug}: opened repair session ${session.id}`)

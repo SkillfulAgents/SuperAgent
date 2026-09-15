@@ -31,9 +31,14 @@ vi.mock('../db', () => ({
   },
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: { ensureRunning: vi.fn() },
-}))
+// Manager-shaped mock behind the container host: the actor reaches an agent's
+// runtime through containerHost.runtime(slug), and the adapter forwards each
+// runtime method here with the slug prepended.
+const containerManager = vi.hoisted(() => ({ ensureRunning: vi.fn() }))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock(containerManager) }
+})
 
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: { submitDecision: vi.fn() },
@@ -44,7 +49,6 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 }))
 
 import { chatIntegrationManager } from './chat-integration-manager'
-import { containerManager } from '@shared/lib/container/container-manager'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import {

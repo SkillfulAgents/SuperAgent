@@ -89,6 +89,9 @@ function iconForModelId(modelId: string): string | undefined {
     case 'moonshotai':
     case 'moonshot':
       return 'kimi'
+    case 'deepseek':
+    case 'deepseek-ai':
+      return 'deepseek'
     default:
       return undefined
   }

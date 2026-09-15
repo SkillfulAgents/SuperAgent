@@ -4,6 +4,7 @@ import { Hono } from 'hono'
 import { runInNewContext } from 'node:vm'
 import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
+import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
 
 // ============================================================================
 // Mocks — must be declared before import
@@ -33,8 +34,62 @@ class MemoryWriteStream extends Writable {
 const mockCreateWriteStream = vi.fn((..._args: unknown[]) => new MemoryWriteStream())
 const mockFsRealpath = vi.fn(async (value: unknown) => value)
 const mockFsRename = vi.fn()
+const mockFsCopyFile = vi.fn()
 const mockFsUnlink = vi.fn()
 const mockFsRm = vi.fn()
+
+// The routes reach workspace files through the agent actor, whose local
+// implementation runs on this same mocked `fs`: realpath (identity by default)
+// for the workspace root and the target, stat/readdir/readFile for reads, and
+// for a write an lstat walk up to the deepest existing ancestor before
+// writeFile+rename (putDoc) or createWriteStream (write). These answer that.
+const enoent = () => Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+/** A directory entry as fs.readdir(…, { withFileTypes: true }) reports it. */
+const dirent = (name: string, type: 'file' | 'directory' | 'symlink') => ({
+  name,
+  isFile: () => type === 'file',
+  isDirectory: () => type === 'directory',
+  isSymbolicLink: () => type === 'symlink',
+})
+/** Let a write land anywhere under the workspace: only the root "exists" to lstat. */
+function answerLstatForWorkspaceWrites(workspaceDir = '/mock/workspace') {
+  mockFsLstat.mockImplementation(async (p: unknown) => {
+    if (p === workspaceDir) return { isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false }
+    throw enoent()
+  })
+}
+/** What fs.stat reports for these host paths; anything else is absent (ENOENT). */
+function answerStatForPaths(entries: Record<string, 'file' | 'directory'>) {
+  mockFsStat.mockImplementation(async (p: unknown) => {
+    const kind = entries[String(p)]
+    if (!kind) throw enoent()
+    return { isDirectory: () => kind === 'directory', isFile: () => kind === 'file', size: 0, mtimeMs: 0 }
+  })
+}
+/** The bytes fs.readFile hands back for a JSON document. */
+const jsonDoc = (value: unknown) => Buffer.from(JSON.stringify(value))
+
+/**
+ * The agent's preferences document as the actor reads it off the mocked fs
+ * (the workspace is `/mock/workspace` for every slug). `null` = no file yet.
+ * Every other path keeps the default answer. Implementations survive
+ * vi.clearAllMocks, so a suite that calls this resets mockFsReadFile after.
+ */
+const PREFERENCES_PATH = '/mock/workspace/agent-preferences.json'
+function storePreferences(prefs: Record<string, unknown> | null) {
+  mockFsReadFile.mockImplementation(async (p: unknown) => {
+    if (String(p) !== PREFERENCES_PATH) return undefined
+    if (prefs === null) throw enoent()
+    return jsonDoc(prefs)
+  })
+}
+/** What putDoc persisted for the preferences document: the bytes the atomic writer was handed for it. */
+function persistedPreferences(): unknown {
+  const index = mockCreateWriteStream.mock.calls.findIndex(([target]) => target === PREFERENCES_PATH)
+  if (index === -1) throw new Error('preferences document was not written')
+  const sink = mockCreateWriteStream.mock.results[index]!.value as InstanceType<typeof MemoryWriteStream>
+  return JSON.parse(Buffer.concat(sink.chunks).toString('utf-8'))
+}
 
 vi.mock('fs', () => ({
   default: {
@@ -48,10 +103,14 @@ vi.mock('fs', () => ({
       cp: (...args: unknown[]) => mockFsCp(...args),
       realpath: (...args: unknown[]) => mockFsRealpath(args[0]),
       rename: (...args: unknown[]) => mockFsRename(...args),
+      copyFile: (...args: unknown[]) => mockFsCopyFile(...args),
       unlink: (...args: unknown[]) => mockFsUnlink(...args),
       rm: (...args: unknown[]) => mockFsRm(...args),
       open: (...args: unknown[]) => mockFsOpen(...args),
     },
+    // The flag the workspace copy passes so an existing entry is refused, not
+    // written through; the value fs assigns it.
+    constants: { COPYFILE_EXCL: 1 },
     existsSync: (...args: unknown[]) => mockFsExistsSync(...args),
     createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
     createWriteStream: (...args: unknown[]) => mockCreateWriteStream(...args),
@@ -66,6 +125,7 @@ vi.mock('fs', () => ({
     cp: (...args: unknown[]) => mockFsCp(...args),
     realpath: (...args: unknown[]) => mockFsRealpath(args[0]),
     rename: (...args: unknown[]) => mockFsRename(...args),
+    copyFile: (...args: unknown[]) => mockFsCopyFile(...args),
     unlink: (...args: unknown[]) => mockFsUnlink(...args),
     rm: (...args: unknown[]) => mockFsRm(...args),
     open: (...args: unknown[]) => mockFsOpen(...args),
@@ -132,20 +192,27 @@ vi.mock('../middleware/auth', () => ({
   getAuthorizedAgentRole: (c: any) => c.get('authorizedAgentRole') ?? null,
 }))
 
-// Container manager
+// Container host — a manager-shaped mock (slug as first argument) adapted into
+// the per-agent runtime shape the actor reads through containerHost.runtime(slug).
 const mockContainerFetch = vi.fn()
 const mockSendMessage = vi.fn()
 const mockCancelQueuedMessage = vi.fn()
 const mockKeepAlive = vi.fn()
+const mockEnsureRunning = vi.fn()
 const mockInterruptSession = vi.fn()
 const mockStopTask = vi.fn()
 const mockForkSession = vi.fn()
 const mockClientDeleteSession = vi.fn()
 const mockGetCachedInfo = vi.fn(() => ({ status: 'running', port: 8080 }))
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
+// The actor reaches the client through getClient after start(), so the
+// create-session fake lives here rather than on ensureRunning's resolved value.
+const mockClientCreateSession = vi.fn()
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  const host = hostFromManagerMock({
     getClient: () => ({
       fetch: (...args: unknown[]) => mockContainerFetch(...args),
+      createSession: (...args: unknown[]) => mockClientCreateSession(...args),
       sendMessage: (...args: unknown[]) => mockSendMessage(...args),
       cancelQueuedMessage: (...args: unknown[]) => mockCancelQueuedMessage(...args),
       interruptSession: (...args: unknown[]) => mockInterruptSession(...args),
@@ -155,12 +222,17 @@ vi.mock('@shared/lib/container/container-manager', () => ({
       start: vi.fn(),
       stop: vi.fn(),
     }),
-    ensureRunning: vi.fn(),
+    ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
     getCachedInfo: () => mockGetCachedInfo(),
     removeClient: vi.fn(),
+    clearClients: vi.fn(),
     keepAlive: (...args: unknown[]) => mockKeepAlive(...args),
-  },
-}))
+  })
+  // Where an agent's workspace lives on this machine — the host capability the
+  // open-directory and reveal-path routes use. The manager mock never had it.
+  host.workspaceHostPath = (slug: string) => mockGetAgentWorkspaceDir(slug)
+  return { containerHost: host }
+})
 
 // Message persister
 vi.mock('@shared/lib/container/message-persister', () => ({
@@ -560,8 +632,8 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
   readJsonlFile: vi.fn(),
   streamJsonlFile: vi.fn(async function* () {}),
   getAgentWorkspaceDir: (slug: string) => mockGetAgentWorkspaceDir(slug),
-  // The skills-files route checks the skill dir via directoryExists; delegate
-  // to the same mock the tests already use for fs.existsSync.
+  // Services in the route's import graph check directories via directoryExists;
+  // delegate to the same mock the tests already use for fs.existsSync.
   directoryExists: async (p: string) => mockFsExistsSync(p),
   getAgentPreferencesPath: vi.fn((slug: string) => `/mock/workspace/${slug}/agent-preferences.json`),
   getTempUploadsDir: vi.fn(() => '/mock/tmp/uploads'),
@@ -575,13 +647,21 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
   writeJsonFileAtomicSync: vi.fn(() => {}),
   writeFileAtomic: vi.fn(async () => {}),
   writeFileAtomicSync: vi.fn(() => {}),
+  // The actor's putDoc and write go through the atomic writer. Here it drains
+  // the chunks into the in-memory sink the upload tests already read, so the
+  // bytes and the destination stay observable through mockCreateWriteStream.
+  writeFileAtomicStream: vi.fn(
+    async (filePath: string, chunks: Iterable<Buffer | string> | AsyncIterable<Buffer | string>) => {
+      const { pipeline } = await import('node:stream/promises')
+      await pipeline(Readable.from(chunks), mockCreateWriteStream(filePath) as Writable)
+    },
+  ),
   withFileLock: vi.fn(async (_path: string, fn: () => Promise<unknown>) => fn()),
   withCrossProcessFileLock: vi.fn(async (_path: string, fn: () => Promise<unknown>) => fn()),
   CorruptFileError: class CorruptFileError extends Error {},
 }))
 
 const mockStoreUploadChunk = vi.fn()
-const mockMoveUploadedFile = vi.fn()
 vi.mock('@shared/lib/utils/chunked-upload', () => {
   function formatUploadTooLargeMessage(size: number, maxBytes: number): string {
     return `File too large (${(size / 1024 / 1024).toFixed(1)}MB, max ${maxBytes / 1024 / 1024}MB)`
@@ -601,7 +681,6 @@ vi.mock('@shared/lib/utils/chunked-upload', () => {
     formatUploadTooLargeMessage,
     UploadTooLargeError,
     storeUploadChunk: (...args: unknown[]) => mockStoreUploadChunk(...args),
-    moveUploadedFile: (...args: unknown[]) => mockMoveUploadedFile(...args),
     cleanupStaleTempUploads: vi.fn(async () => undefined),
   }
 })
@@ -637,11 +716,10 @@ import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSe
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
-import { containerManager } from '@shared/lib/container/container-manager'
-import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
+import { listUserSecrets, setSecret, updateSecret, deleteSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
-import { readJsonFileStrict, readJsonlFile, streamJsonlFile, writeJsonFileAtomic, readFileOrNull } from '@shared/lib/utils/file-storage'
+import { readJsonlFile, streamJsonlFile, writeFileAtomicStream, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
@@ -656,6 +734,9 @@ function createApp() {
 }
 
 beforeEach(() => {
+  // Fresh actor handles: the file operations cache the workspace root's real
+  // path per handle, and these tests script realpath answers per test.
+  agentRegistry.evictAll()
   vi.mocked(getUserSummaries).mockReturnValue(new Map())
   vi.mocked(userExists).mockReturnValue(true)
   mockAuthorizedAgentRole = 'owner'
@@ -1343,12 +1424,12 @@ describe('agent startup — POST /:id/start', () => {
   afterEach(() => {
     // Restore the file-level default so a pending/rejected mock from these
     // tests doesn't leak into later describe blocks.
-    vi.mocked(containerManager.ensureRunning).mockReset()
+    mockEnsureRunning.mockReset()
   })
 
   it('does not resolve until the container has become healthy', async () => {
     let resolveStart!: (value: unknown) => void
-    vi.mocked(containerManager.ensureRunning).mockReturnValue(new Promise((resolve) => {
+    mockEnsureRunning.mockReturnValue(new Promise((resolve) => {
       resolveStart = resolve
     }) as never)
 
@@ -1360,7 +1441,7 @@ describe('agent startup — POST /:id/start', () => {
         return response
       })
 
-    await vi.waitFor(() => expect(containerManager.ensureRunning).toHaveBeenCalledWith('test-agent'))
+    await vi.waitFor(() => expect(mockEnsureRunning).toHaveBeenCalledWith('test-agent'))
     expect(settled).toBe(false)
     // The identity read must wait for health so the response reflects the
     // post-start status.
@@ -1379,7 +1460,7 @@ describe('agent startup — POST /:id/start', () => {
   })
 
   it('returns the startup error when container health never succeeds', async () => {
-    vi.mocked(containerManager.ensureRunning).mockRejectedValue(new Error('Container failed to become healthy'))
+    mockEnsureRunning.mockRejectedValue(new Error('Container failed to become healthy'))
 
     const response = await createApp().request(
       'http://localhost/api/agents/test-agent/start',
@@ -2172,10 +2253,24 @@ describe('ACL — POST /:id/access (invite user)', () => {
 describe('path traversal security — GET /:id/files/*', () => {
   let app: ReturnType<typeof createApp>
 
+  // What fs.stat reports for the resolved target; the actor reads kind and size,
+  // once for the headers and again when it opens the stream, so it is set for
+  // the whole test rather than once.
+  const fileStat = (size: number) => ({ isFile: () => true, isDirectory: () => false, size })
+  // A missing target: realpath resolves the workspace root, then fails on the file.
+  const fileMissing = () => mockFsRealpath.mockResolvedValueOnce('/mock/workspace').mockRejectedValueOnce(enoent())
+
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
     mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
+  })
+
+  afterEach(() => {
+    // Neither the per-test stat nor an unconsumed once-value for the read
+    // stream (a 500 before the stream opens leaves it queued) may leak onward.
+    mockFsStat.mockReset()
+    mockCreateReadStream.mockReset()
   })
 
   it('blocks absolute paths that escape workspace', async () => {
@@ -2194,7 +2289,7 @@ describe('path traversal security — GET /:id/files/*', () => {
   })
 
   it('returns 404 when file does not exist', async () => {
-    mockFsStat.mockResolvedValueOnce(null)
+    fileMissing()
 
     const res = await getReq(app, '/api/agents/test-agent/files/legitimate/file.txt')
     expect(res.status).toBe(404)
@@ -2203,7 +2298,7 @@ describe('path traversal security — GET /:id/files/*', () => {
   })
 
   it('returns 404 when path is a directory', async () => {
-    mockFsStat.mockResolvedValueOnce({ isFile: () => false, size: 0 })
+    mockFsStat.mockResolvedValueOnce({ isFile: () => false, isDirectory: () => true, size: 0 })
 
     const res = await getReq(app, '/api/agents/test-agent/files/some-directory')
     expect(res.status).toBe(404)
@@ -2212,7 +2307,7 @@ describe('path traversal security — GET /:id/files/*', () => {
   })
 
   it('allows legitimate nested file paths within workspace', async () => {
-    mockFsStat.mockResolvedValueOnce({ isFile: () => true, size: 100 })
+    mockFsStat.mockResolvedValue(fileStat(100))
     mockCreateReadStream.mockReturnValueOnce({ pipe: vi.fn() })
 
     const res = await getReq(app, '/api/agents/test-agent/files/uploads/2024-01-01-photo.png')
@@ -2221,7 +2316,7 @@ describe('path traversal security — GET /:id/files/*', () => {
   })
 
   it('allows files in deeply nested subdirectories', async () => {
-    mockFsStat.mockResolvedValueOnce({ isFile: () => true, size: 42 })
+    mockFsStat.mockResolvedValue(fileStat(42))
     mockCreateReadStream.mockReturnValueOnce({ pipe: vi.fn() })
 
     const res = await getReq(app, '/api/agents/test-agent/files/a/b/c/d/e/file.txt')
@@ -2229,7 +2324,7 @@ describe('path traversal security — GET /:id/files/*', () => {
   })
 
   it('marks workspace files uncacheable so a CDN cannot serve a stale or cross-user body', async () => {
-    mockFsStat.mockResolvedValueOnce({ isFile: () => true, size: 100 })
+    mockFsStat.mockResolvedValue(fileStat(100))
     mockCreateReadStream.mockReturnValueOnce({ pipe: vi.fn() })
 
     const res = await getReq(app, '/api/agents/test-agent/files/out/render.mp4?inline=true')
@@ -2257,7 +2352,7 @@ describe('path traversal security — GET /:id/files/*', () => {
   // the size beside the filename.
   describe('HEAD', () => {
     it('answers with the size and no file descriptor opened', async () => {
-      mockFsStat.mockResolvedValueOnce({ isFile: () => true, size: 5_242_880 })
+      mockFsStat.mockResolvedValue(fileStat(5_242_880))
 
       const res = await headReq(app, '/api/agents/test-agent/files/out/render.mp4?inline=true')
 
@@ -2269,7 +2364,7 @@ describe('path traversal security — GET /:id/files/*', () => {
     })
 
     it('answers a ranged HEAD with the range headers and still opens nothing', async () => {
-      mockFsStat.mockResolvedValueOnce({ isFile: () => true, size: 1000 })
+      mockFsStat.mockResolvedValue(fileStat(1000))
 
       const res = await headReq(app, '/api/agents/test-agent/files/out/render.mp4', { range: 'bytes=0-99' })
 
@@ -2280,13 +2375,13 @@ describe('path traversal security — GET /:id/files/*', () => {
     })
 
     it('still 404s a missing file', async () => {
-      mockFsStat.mockResolvedValueOnce(null)
+      fileMissing()
       const res = await headReq(app, '/api/agents/test-agent/files/gone.txt')
       expect(res.status).toBe(404)
     })
 
     it('leaves the GET streaming the body', async () => {
-      mockFsStat.mockResolvedValueOnce({ isFile: () => true, size: 100 })
+      mockFsStat.mockResolvedValue(fileStat(100))
       mockCreateReadStream.mockReturnValueOnce({ pipe: vi.fn() })
 
       await getReq(app, '/api/agents/test-agent/files/out/render.mp4')
@@ -2296,9 +2391,9 @@ describe('path traversal security — GET /:id/files/*', () => {
 
   // Note: path traversal with ../ in URLs (e.g. /files/../../etc/passwd) is typically
   // resolved by the HTTP layer/URL parser before reaching the route handler. The
-  // server-side guard (fullPath.startsWith(workspaceDir)) protects against any
-  // path that resolves outside the workspace after path.resolve() is called.
-  // The absolute path test above (//etc/passwd) tests this guard directly.
+  // actor's file operations reject any path that would leave the workspace,
+  // lexically or through a link. The absolute path test above (//etc/passwd)
+  // and the symlink test exercise that guard directly.
 })
 
 // ============================================================================
@@ -2308,17 +2403,18 @@ describe('path traversal security — GET /:id/files/*', () => {
 describe('bookmarked workspace folder listing', () => {
   let app: ReturnType<typeof createApp>
 
-  const dirent = (name: string, type: 'file' | 'directory' | 'symlink') => ({
-    name,
-    isFile: () => type === 'file',
-    isDirectory: () => type === 'directory',
-    isSymbolicLink: () => type === 'symlink',
-  })
-
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
     mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
+  })
+
+  afterEach(() => {
+    // A once-value a failing test left unconsumed must not feed a later describe,
+    // and realpath goes back to identity (mockReset restores the vi.fn(impl) original).
+    mockFsStat.mockReset()
+    mockFsReaddir.mockReset()
+    mockFsRealpath.mockReset()
   })
 
   function folderUrl(root: string, currentPath = root) {
@@ -2327,9 +2423,11 @@ describe('bookmarked workspace folder listing', () => {
   }
 
   it('lists one level, sorts directories first, and omits symlinks', async () => {
-    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+    mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
+    // One stat resolves the bookmarked root, one the listed path.
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsReaddir.mockResolvedValueOnce([
       dirent('z-last.txt', 'file'),
@@ -2354,9 +2452,11 @@ describe('bookmarked workspace folder listing', () => {
   })
 
   it('allows a descendant of the bookmarked root', async () => {
-    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+    mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
+    // Root, then the descendant.
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsReaddir.mockResolvedValueOnce([])
 
@@ -2402,7 +2502,7 @@ describe('bookmarked workspace folder listing', () => {
   })
 
   it('does not expose a workspace folder that is not bookmarked', async () => {
-    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+    mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
 
@@ -2420,13 +2520,15 @@ describe('bookmarked workspace folder listing', () => {
   })
 
   it('rejects a descendant symlink whose canonical path escapes the root', async () => {
-    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+    mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
     mockFsRealpath.mockImplementation(async value => {
       if (value === '/mock/workspace/reports/linked') return '/private/outside'
       return value
     })
+    // The root resolves fine; the escape is caught on the descendant before its stat.
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
 
     const res = await getReq(app, folderUrl('/workspace/reports', '/workspace/reports/linked'))
 
@@ -2436,7 +2538,9 @@ describe('bookmarked workspace folder listing', () => {
 
   it('round-trips special characters and Unicode names', async () => {
     const root = '/workspace/Reports & 2026'
-    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([{ name: 'Reports', folder: root }]))
+    mockFsReadFile.mockResolvedValueOnce(jsonDoc([{ name: 'Reports', folder: root }]))
+    // The root is also the listed path: it is resolved once as root, once as path.
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsReaddir.mockResolvedValueOnce([dirent('résumé #1.md', 'file')])
 
@@ -2451,9 +2555,11 @@ describe('bookmarked workspace folder listing', () => {
   })
 
   it('caps a listing at 1,000 entries and reports truncation', async () => {
-    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+    mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
+    // Root, then the listed path (the same directory here).
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsReaddir.mockResolvedValueOnce(
       Array.from({ length: 1_001 }, (_, index) => dirent(`file-${index}.txt`, 'file')),
@@ -2487,10 +2593,22 @@ describe('bookmarked workspace folder file actions', () => {
         headers: { 'Content-Type': 'application/json' },
       })
     })
+    // The resolver stats the addressed entry (root and target realpath to
+    // themselves) before any mutation is forwarded to the container.
+    answerStatForPaths({
+      '/mock/workspace/reports': 'directory',
+      '/mock/workspace/reports/old.txt': 'file',
+    })
+  })
+
+  afterEach(() => {
+    mockFsStat.mockReset()
+    // Back to identity realpath (mockReset restores the vi.fn(impl) original).
+    mockFsRealpath.mockReset()
   })
 
   function seedBookmarkedFile() {
-    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+    mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
   }
@@ -2574,14 +2692,16 @@ describe('bookmarked workspace folder file actions', () => {
     expect(mockFsUnlink).not.toHaveBeenCalled()
   })
 
-  it('propagates a container-side leaf symlink rejection', async () => {
-    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+  it('answers a dangling link at the leaf as not found without asking the container', async () => {
+    mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
-    mockContainerFetch.mockResolvedValueOnce(new Response(
-      JSON.stringify({ error: 'File not found' }),
-      { status: 404, headers: { 'Content-Type': 'application/json' } },
-    ))
+    // A dangling link: the host sees nothing at the leaf (its realpath fails;
+    // every other path, the bookmarks file included, resolves to itself).
+    mockFsRealpath.mockImplementation(async (value: unknown) => {
+      if (value === '/mock/workspace/reports/linked.txt') throw enoent()
+      return value
+    })
 
     const res = await app.request('http://localhost/api/agents/test-agent/folders/file', {
       method: 'DELETE',
@@ -2593,7 +2713,35 @@ describe('bookmarked workspace folder file actions', () => {
     })
 
     expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Folder or file not found' })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
     expect(mockFsUnlink).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['DELETE', { root: '/workspace/reports', path: '/workspace/reports/gone.txt' }],
+    ['PATCH', { root: '/workspace/reports', path: '/workspace/reports/gone.txt', name: 'renamed.txt' }],
+  ] as const)('%s of an entry that is not there is answered here, without waking the container', async (method, body) => {
+    // The container does the rename or delete, so it has to be running for
+    // one; a stale browser acting on an entry that is already gone must not
+    // boot it for nothing.
+    seedBookmarkedFile()
+    mockFsRealpath.mockImplementation(async (value: unknown) => {
+      if (value === '/mock/workspace/reports/gone.txt') throw enoent()
+      return value
+    })
+
+    const res = await app.request('http://localhost/api/agents/test-agent/folders/file', {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Folder or file not found' })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
   })
 })
 
@@ -2616,10 +2764,21 @@ describe('workspace folder directory actions and native reveal', () => {
         headers: { 'Content-Type': 'application/json' },
       })
     })
+    // The resolver stats the addressed entry (root and target realpath to
+    // themselves) before any mutation is forwarded to the container.
+    answerStatForPaths({
+      '/mock/workspace/reports': 'directory',
+      '/mock/workspace/reports/drafts': 'directory',
+      '/mock/workspace/reports/notes.md': 'file',
+    })
+  })
+
+  afterEach(() => {
+    mockFsStat.mockReset()
   })
 
   function seedBookmarkedDirectory() {
-    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+    mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
   }
@@ -2667,7 +2826,7 @@ describe('workspace folder directory actions and native reveal', () => {
   })
 
   it('never allows deleting the browser root itself', async () => {
-    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+    mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
 
@@ -2685,9 +2844,11 @@ describe('workspace folder directory actions and native reveal', () => {
   })
 
   it('resolves a contained regular entry for Electron reveal', async () => {
-    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+    mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
+    // The resolver's stat (answered above) confirms the entry exists inside the
+    // workspace; the route then refuses a link at the host path before revealing it.
     mockFsLstat.mockResolvedValueOnce({
       isDirectory: () => false,
       isFile: () => true,
@@ -2711,11 +2872,17 @@ describe('workspace folder directory actions and native reveal', () => {
 describe('bookmark validation', () => {
   beforeEach(() => {
     mockFsReadFile.mockReset()
-    vi.mocked(writeJsonFileAtomic).mockClear()
+    mockFsWriteFile.mockClear()
+    mockFsRename.mockClear()
+    answerLstatForWorkspaceWrites()
+  })
+
+  afterEach(() => {
+    mockFsLstat.mockReset()
   })
 
   it('returns valid bookmarks individually and canonicalizes folder paths', async () => {
-    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+    mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Docs', link: 'https://example.com/docs' },
       { name: 'Legacy', link: 'http://legacy.example.com' },
       { name: 'Workspace', folder: '/workspace/' },
@@ -2732,6 +2899,23 @@ describe('bookmark validation', () => {
     ])
   })
 
+  it('writes the validated bookmarks atomically into the workspace root', async () => {
+    const app = createApp()
+    const bookmarks = [{ name: 'Docs', link: 'https://example.com/docs' }]
+    const res = await app.request('http://localhost/api/agents/test-agent/bookmarks', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bookmarks),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(bookmarks)
+    // putDoc hands the whole document to the atomic writer, aimed at the target.
+    expect(mockCreateWriteStream).toHaveBeenCalledWith('/mock/workspace/bookmarks.json')
+    const sink = mockCreateWriteStream.mock.results[0]!.value as InstanceType<typeof MemoryWriteStream>
+    expect(JSON.parse(Buffer.concat(sink.chunks).toString('utf-8'))).toEqual(bookmarks)
+  })
+
   it('rejects a folder bookmark outside /workspace', async () => {
     const app = createApp()
     const res = await app.request('http://localhost/api/agents/test-agent/bookmarks', {
@@ -2741,7 +2925,8 @@ describe('bookmark validation', () => {
     })
 
     expect(res.status).toBe(400)
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
+    expect(mockFsRename).not.toHaveBeenCalled()
   })
 })
 
@@ -2756,6 +2941,13 @@ describe('path traversal security — skill file endpoints', () => {
     vi.clearAllMocks()
     app = createApp()
     mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
+    answerLstatForWorkspaceWrites()
+  })
+
+  afterEach(() => {
+    mockFsLstat.mockReset()
+    mockFsStat.mockReset()
+    mockFsReaddir.mockReset()
   })
 
   // --------------------------------------------------------------------------
@@ -2770,7 +2962,8 @@ describe('path traversal security — skill file endpoints', () => {
     // are the reliable route-level tests for this security check.
 
     it('returns 404 when skill directory does not exist', async () => {
-      mockFsExistsSync.mockReturnValueOnce(false)
+      // The skill directory is absent.
+      mockFsStat.mockRejectedValueOnce(enoent())
 
       const res = await getReq(app, '/api/agents/test-agent/skills/my-skill/files')
       expect(res.status).toBe(404)
@@ -2779,14 +2972,14 @@ describe('path traversal security — skill file endpoints', () => {
     })
 
     it('returns file listing for valid skill directory', async () => {
-      mockFsExistsSync.mockReturnValueOnce(true)
+      mockFsStat.mockResolvedValueOnce({ isDirectory: () => true, isFile: () => false })
       mockFsReaddir.mockResolvedValueOnce([
-        { name: 'index.ts', isDirectory: () => false },
-        { name: 'utils', isDirectory: () => true },
+        dirent('index.ts', 'file'),
+        dirent('utils', 'directory'),
       ])
       // readdir for 'utils' subdirectory
       mockFsReaddir.mockResolvedValueOnce([
-        { name: 'helper.ts', isDirectory: () => false },
+        dirent('helper.ts', 'file'),
       ])
 
       const res = await getReq(app, '/api/agents/test-agent/skills/my-skill/files')
@@ -2838,7 +3031,7 @@ describe('path traversal security — skill file endpoints', () => {
     })
 
     it('returns file content for a valid path', async () => {
-      mockFsReadFile.mockResolvedValueOnce('const x = 1;')
+      mockFsReadFile.mockResolvedValueOnce(Buffer.from('const x = 1;'))
 
       const res = await getReq(
         app,
@@ -2851,7 +3044,7 @@ describe('path traversal security — skill file endpoints', () => {
     })
 
     it('allows reading files in subdirectories', async () => {
-      mockFsReadFile.mockResolvedValueOnce('export {}')
+      mockFsReadFile.mockResolvedValueOnce(Buffer.from('export {}'))
 
       const res = await getReq(
         app,
@@ -2927,11 +3120,10 @@ describe('path traversal security — skill file endpoints', () => {
       const body = await res.json()
       expect(body.saved).toBe(true)
 
-      expect(mockFsWriteFile).toHaveBeenCalledWith(
-        expect.stringContaining('my-skill'),
-        'const y = 2;',
-        'utf-8'
-      )
+      // putDoc hands the whole document to the atomic writer, aimed at the target.
+      expect(mockCreateWriteStream).toHaveBeenCalledWith('/mock/workspace/.claude/skills/my-skill/index.ts')
+      const sink = mockCreateWriteStream.mock.results[0]!.value as InstanceType<typeof MemoryWriteStream>
+      expect(Buffer.concat(sink.chunks).toString('utf-8')).toBe('const y = 2;')
     })
 
     it('writes to nested paths within skill directory', async () => {
@@ -3340,7 +3532,7 @@ describe('skill dir validation edge cases', () => {
   })
 
   it('accepts valid alphanumeric skill directory names', async () => {
-    mockFsExistsSync.mockReturnValueOnce(true)
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true, isFile: () => false })
     mockFsReaddir.mockResolvedValueOnce([])
 
     const res = await getReq(app, '/api/agents/test-agent/skills/my-cool-skill-v2/files')
@@ -3348,7 +3540,7 @@ describe('skill dir validation edge cases', () => {
   })
 
   it('accepts skill names with hyphens and underscores', async () => {
-    mockFsExistsSync.mockReturnValueOnce(true)
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true, isFile: () => false })
     mockFsReaddir.mockResolvedValueOnce([])
 
     const res = await getReq(app, '/api/agents/test-agent/skills/skill_name-123/files')
@@ -3390,29 +3582,43 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     app = createApp()
     mockFsMkdir.mockResolvedValue(undefined)
     mockFsWriteFile.mockResolvedValue(undefined)
+    // The actor reads the landed file's size back with stat once the write is done.
+    mockFsStat.mockResolvedValue({ isFile: () => true, isDirectory: () => false, size: 0 })
+    mockCreateReadStream.mockReset()
+    answerLstatForWorkspaceWrites()
+  })
+
+  afterEach(() => {
+    mockFsLstat.mockReset()
+    mockCreateReadStream.mockReset()
   })
 
   it('uploads file with relativePath preserving directory structure', async () => {
-    const formData = new FormData()
-    formData.append('file', new File(['hello'], 'test.txt', { type: 'text/plain' }))
-    formData.append('relativePath', 'myfolder/sub/test.txt')
+    // The nested folders do not exist yet: the write's first attempt finds
+    // them missing, creates them, and writes again.
+    vi.mocked(writeFileAtomicStream).mockRejectedValueOnce(enoent())
+    {
+      const formData = new FormData()
+      formData.append('file', new File(['hello'], 'test.txt', { type: 'text/plain' }))
+      formData.append('relativePath', 'myfolder/sub/test.txt')
 
-    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.path).toBe('/workspace/uploads/myfolder/sub/test.txt')
-    expect(body.success).toBe(true)
-    expect(body.filename).toBe('test.txt')
+      const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.path).toBe('/workspace/uploads/myfolder/sub/test.txt')
+      expect(body.success).toBe(true)
+      expect(body.filename).toBe('test.txt')
 
-    // Verify mkdir was called with the parent directory
-    expect(mockFsMkdir).toHaveBeenCalledWith(
-      expect.stringContaining('myfolder/sub'),
-      { recursive: true }
-    )
-    // Verify the file was streamed to the destination path
-    expect(mockCreateWriteStream).toHaveBeenCalledWith(
-      expect.stringContaining('myfolder/sub/test.txt'),
-    )
+      // Verify mkdir was called with the parent directory
+      expect(mockFsMkdir).toHaveBeenCalledWith(
+        expect.stringContaining('myfolder/sub'),
+        { recursive: true }
+      )
+      // Verify the file was streamed to the destination path
+      expect(mockCreateWriteStream).toHaveBeenCalledWith(
+        expect.stringContaining('myfolder/sub/test.txt'),
+      )
+    }
   })
 
   it('writes the uploaded bytes to disk unchanged (hash-identical)', async () => {
@@ -3473,20 +3679,22 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     expect(mockFsUnlink).not.toHaveBeenCalled()
   })
 
-  it('removes the partial file when the disk write fails mid-stream', async () => {
+  it('answers 500 when the disk write fails and never touches the target path', async () => {
+    // The write is atomic (temp file, fsync, rename), so a failure mid-stream
+    // leaves the destination as it was and nothing there to unlink; the
+    // real-filesystem test on LocalFileOps pins the temp-file cleanup.
     mockCreateWriteStream.mockImplementationOnce(() => {
       const failing = new MemoryWriteStream()
       failing._write = (_chunk, _enc, cb) => cb(new Error('disk full'))
       return failing
     })
-    mockFsUnlink.mockResolvedValue(undefined)
 
     const formData = new FormData()
     formData.append('file', new File(['payload'], 'doomed.txt', { type: 'text/plain' }))
 
     const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
     expect(res.status).toBe(500)
-    expect(mockFsUnlink).toHaveBeenCalledWith(expect.stringContaining('uploads'))
+    expect(mockFsUnlink).not.toHaveBeenCalled()
   })
 
   it('uploads file without relativePath uses timestamped name', async () => {
@@ -3551,10 +3759,11 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     }
   })
 
-  it('moves assembled chunked upload via moveUploadedFile', async () => {
+  it('moves the assembled chunked upload from the host temp file into the workspace', async () => {
     const assembledPath = '/mock/tmp/uploads/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.assembled'
     mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
-    mockMoveUploadedFile.mockResolvedValue(11)
+    mockFsRename.mockResolvedValue(undefined)
+    mockFsStat.mockResolvedValue({ isFile: () => true, isDirectory: () => false, size: 11 })
     mockFsUnlink.mockResolvedValue(undefined)
 
     const form = new FormData()
@@ -3570,10 +3779,12 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     expect(body.success).toBe(true)
     expect(body.filename).toBe('report.pdf')
     expect(body.size).toBe(11)
-    expect(mockMoveUploadedFile).toHaveBeenCalledWith(
-      assembledPath,
-      expect.stringContaining('/mock/workspace/uploads/'),
-    )
+    // The assembled temp file is renamed under the workspace's uploads/, not
+    // read and written again; the rename consumed it, so nothing is copied.
+    expect(mockFsRename).toHaveBeenCalledWith(assembledPath, expect.stringContaining('/mock/workspace/uploads/'))
+    expect(mockCreateReadStream).not.toHaveBeenCalled()
+    expect(mockCreateWriteStream).not.toHaveBeenCalled()
+    expect(mockFsCopyFile).not.toHaveBeenCalled()
     expect(mockStoreUploadChunk).toHaveBeenCalledWith(
       'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
       0,
@@ -3595,11 +3806,25 @@ describe('folder upload — POST /:id/upload-folder', () => {
     vi.clearAllMocks()
     app = createApp()
     mockFsMkdir.mockResolvedValue(undefined)
-    mockFsCp.mockResolvedValue(undefined)
+    // The host folder is walked with readdir: empty unless a test says otherwise.
+    mockFsReaddir.mockReset()
+    mockFsReaddir.mockResolvedValue([])
+    mockCreateReadStream.mockReset()
+    answerLstatForWorkspaceWrites()
+  })
+
+  afterEach(() => {
+    mockFsLstat.mockReset()
+    mockFsReaddir.mockReset()
+    mockCreateReadStream.mockReset()
   })
 
   it('copies folder to workspace uploads directory', async () => {
-    mockFsStat.mockResolvedValue({ isDirectory: () => true })
+    mockFsStat.mockResolvedValue({ isDirectory: () => true, isFile: () => false, size: 0 })
+    mockFsReaddir
+      .mockResolvedValueOnce([dirent('README.md', 'file'), dirent('src', 'directory'), dirent('linked', 'symlink')])
+      .mockResolvedValueOnce([dirent('index.ts', 'file')])
+    mockFsCopyFile.mockResolvedValue(undefined)
 
     const res = await postJson(app, '/api/agents/test-agent/upload-folder', {
       sourcePath: '/Users/joe/Desktop/my-project',
@@ -3610,11 +3835,20 @@ describe('folder upload — POST /:id/upload-folder', () => {
     expect(body.path).toBe('/workspace/uploads/my-project/')
     expect(body.folderName).toBe('my-project')
 
-    expect(mockFsCp).toHaveBeenCalledWith(
-      '/Users/joe/Desktop/my-project',
-      expect.stringContaining('my-project'),
-      { recursive: true }
-    )
+    // Every regular file is copied from the host folder into uploads/<folder>/
+    // in one filesystem copy (which keeps its mode), its directories are
+    // created, and the symlink is skipped rather than followed.
+    // Each file is one exclusive copy: an entry already there (a link the
+    // agent planted, say) is refused rather than written through.
+    const exclusive = 1 // fs.constants.COPYFILE_EXCL, as mocked
+    expect(mockFsCopyFile.mock.calls).toEqual([
+      ['/Users/joe/Desktop/my-project/README.md', '/mock/workspace/uploads/my-project/README.md', exclusive],
+      ['/Users/joe/Desktop/my-project/src/index.ts', '/mock/workspace/uploads/my-project/src/index.ts', exclusive],
+    ])
+    expect(mockCreateReadStream).not.toHaveBeenCalled()
+    expect(mockCreateWriteStream).not.toHaveBeenCalled()
+    expect(mockFsMkdir).toHaveBeenCalledWith('/mock/workspace/uploads/my-project/src', { recursive: true })
+    expect(mockFsCp).not.toHaveBeenCalled()
   })
 
   it('returns 400 when no sourcePath is provided', async () => {
@@ -4592,6 +4826,16 @@ describe('GET /:id/sessions/:sessionId/subagent/:agentId/messages', () => {
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'Failed to fetch subagent messages' })
   })
+
+  it('404s a subagent id that cannot name a transcript, without reading anything', async () => {
+    // The id is a raw URL segment; the actor refuses one that would leave the
+    // session's subagents directory and the route answers as if there were
+    // no such transcript, not with a 500 from the failed read.
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1/subagent/..%2Fsibling/messages')
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Subagent transcript not found' })
+    expect(readJsonlFile).not.toHaveBeenCalled()
+  })
 })
 
 describe('DELETE /:id/sessions/:sessionId', () => {
@@ -5345,12 +5589,16 @@ describe('decision routes refuse to re-run side effects — the already-settled 
       // toolUseId is a caller-supplied pointer into one global, cross-agent
       // registry. Without an agent-bound check, another agent's parked ask is
       // decidable here — and these routes reach host side effects (run-script
-      // executes on the host, computer-use drives the machine).
+      // executes on the host, computer-use drives the machine). The actor scopes
+      // every lookup to its own agent, so a foreign id is indistinguishable
+      // from an unknown one: the route answers the outcome-less settled shape
+      // and nothing happens.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.mocked(getSession).mockResolvedValue({ id: 'sess-1' } as any)
       parkOpen(body.toolUseId as string, kind, 'sess-1', {}, 'victim-agent')
       const res = await postJson(app, url, body)
-      expect(res.status).toBe(404)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ success: true, alreadySettled: true })
       expect(mockContainerFetch).not.toHaveBeenCalled()
       expect(messagePersister.completeInputRequest).not.toHaveBeenCalled()
       // Still open — a rejected probe must not settle what it could not decide.
@@ -5364,8 +5612,10 @@ describe('decision routes refuse to re-run side effects — the already-settled 
       toolUseId: 'tool-gate-auto-x',
       decline: true,
     })
-    expect(res.status).toBe(404)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, alreadySettled: true })
     expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(userInputRequestManager.getOpenRequest('tool-gate-auto-x')).not.toBeNull()
   })
 
   it('a request with no agent in scope is unattributable and decidable by nobody', async () => {
@@ -5375,13 +5625,16 @@ describe('decision routes refuse to re-run side effects — the already-settled 
       secretName: 'K',
       decline: true,
     })
-    expect(res.status).toBe(404)
+    // No actor owns it, so no route can see it; it stays parked, undecided.
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, alreadySettled: true })
     expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(userInputRequestManager.getOpenRequest('tool-gate-noagent')).not.toBeNull()
   })
 
   it("does not disclose a settled outcome to another agent's route", async () => {
-    // Settling must not widen who may read the record: the same 404 an open
-    // cross-agent probe gets, not the outcome.
+    // Settling must not widen who may read the record: another agent's route
+    // gets the same outcome-less shape an unknown id gets, never the outcome.
     parkOpen('tool-gate-settled-agent', 'secret', 'sess-1', {}, 'victim-agent')
     userInputRequestManager.resolve('tool-gate-settled-agent', 'answered')
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
@@ -5389,8 +5642,8 @@ describe('decision routes refuse to re-run side effects — the already-settled 
       secretName: 'K',
       decline: true,
     })
-    expect(res.status).toBe(404)
-    expect(await res.json()).toEqual({ error: 'Request not found' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, alreadySettled: true })
     expect(mockContainerFetch).not.toHaveBeenCalled()
   })
 
@@ -7473,6 +7726,16 @@ describe('GET /:id/artifacts/:slug/screenshot.png', () => {
     expect(res.status).toBe(404)
   })
 
+  it('serves the screenshot of an artifact whose directory name is not a widget slug', async () => {
+    // The listing shows every artifact directory with a manifest, whatever
+    // its name; its card must be able to show a thumbnail.
+    mockFsReadFile.mockResolvedValueOnce(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+
+    const res = await getReq(app, '/api/agents/my-agent/artifacts/Bad_Slug/screenshot.png')
+    expect(res.status).toBe(200)
+    expect(mockFsReadFile.mock.calls[0][0]).toBe('/mock/workspace/artifacts/Bad_Slug/screenshot.png')
+  })
+
   it('returns 400 for a slug that would escape the artifacts dir', async () => {
     // `..` in the path would resolve above /mock/workspace/artifacts.
     // Hono may normalize `..` segments before the handler sees them, but the
@@ -7504,7 +7767,7 @@ describe('POST /api/agents/:id/keep-alive', () => {
     app = createApp()
   })
 
-  it('calls containerManager.keepAlive and returns ok', async () => {
+  it('records the keep-alive on the runtime and returns ok', async () => {
     const res = await app.request('http://localhost/api/agents/my-agent/keep-alive', {
       method: 'POST',
     })
@@ -7863,6 +8126,35 @@ describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
     app = createApp()
   })
 
+  it.each([
+    ['GET', '/secrets', listUserSecrets],
+    ['GET', '/secrets/MY_API_KEY/value', getSecret],
+    ['POST', '/secrets', getSecret],
+    ['PUT', '/secrets/MY_API_KEY', updateSecret],
+    ['DELETE', '/secrets/MY_API_KEY', deleteSecret],
+  ] as const)('%s %s reports an actionable .env directory error', async (method, route, service) => {
+    vi.mocked(service).mockRejectedValueOnce(new WorkspaceFileError('not-a-file'))
+    vi.mocked(keyToEnvVar).mockReturnValue('MY_API_KEY')
+    const res = await app.request('http://localhost/api/agents/my-agent' + route, {
+      method,
+      ...(method === 'POST' || method === 'PUT' ? {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'My API Key', value: 'synthetic' }),
+      } : {}),
+    })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({
+      error: 'Cannot access secrets: workspace .env is a directory; a regular file is required.',
+    })
+  })
+
+  it('does not expose unrelated internal read errors', async () => {
+    vi.mocked(listUserSecrets).mockRejectedValueOnce(new Error('EIO /private/host/path'))
+    const res = await getReq(app, '/api/agents/my-agent/secrets')
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Failed to fetch secrets' })
+  })
+
   describe('GET /:id/secrets (bug 3 — reserved runtime vars are not user secrets)', () => {
     it('surfaces exactly what listUserSecrets returns (filtered upstream)', async () => {
       // The container writes CONNECTED_ACCOUNTS into the same .env; listUserSecrets
@@ -8098,7 +8390,6 @@ describe('agent preferences — PUT /:id/preferences', () => {
   let app: ReturnType<typeof createApp>
 
   const PREFS_URL = '/api/agents/test-agent/preferences'
-  const PREFS_PATH = '/mock/workspace/test-agent/agent-preferences.json'
 
   async function putJson(url: string, body: unknown): Promise<Response> {
     return app.request(`http://localhost${url}`, {
@@ -8111,10 +8402,15 @@ describe('agent preferences — PUT /:id/preferences', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
-    // The real agent-preferences-service runs against the file-storage mocks:
-    // readJsonFileStrict supplies the stored prefs (default: no file yet) and
-    // writeJsonFileAtomic captures what gets persisted.
-    vi.mocked(readJsonFileStrict).mockResolvedValue({} as never)
+    // The real agent-preferences-service runs through the actor on the mocked
+    // fs: readFile supplies the stored document (default: no file yet) and
+    // putDoc's writeFile + rename capture what gets persisted.
+    answerLstatForWorkspaceWrites()
+    storePreferences(null)
+  })
+
+  afterEach(() => {
+    mockFsReadFile.mockReset()
   })
 
   it('sets defaultModel and defaultEffort and persists them', async () => {
@@ -8122,7 +8418,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ defaultModel: 'claude-opus-4', defaultEffort: 'high' })
-    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, {
+    expect(persistedPreferences()).toEqual({
       defaultModel: 'claude-opus-4',
       defaultEffort: 'high',
     })
@@ -8135,14 +8431,14 @@ describe('agent preferences — PUT /:id/preferences', () => {
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ autoDeleteInactiveDays: 0 })
-    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, { autoDeleteInactiveDays: 0 })
+    expect(persistedPreferences()).toEqual({ autoDeleteInactiveDays: 0 })
   })
 
   it('rejects a negative autoDeleteInactiveDays with 400', async () => {
     const res = await putJson(PREFS_URL, { autoDeleteInactiveDays: -1 })
 
     expect(res.status).toBe(400)
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('rejects an unknown defaultEffort with 400 and never writes', async () => {
@@ -8151,7 +8447,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('defaultEffort')
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('rejects an empty defaultModel with 400', async () => {
@@ -8160,7 +8456,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('defaultModel')
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('rejects a whitespace-only defaultModel with 400', async () => {
@@ -8169,7 +8465,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('defaultModel')
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('returns 400 (not 500) for a null body', async () => {
@@ -8178,7 +8474,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('Invalid preferences')
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('returns 400 (not 500) for a string body', async () => {
@@ -8187,7 +8483,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('Invalid preferences')
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('returns 400 (not 500) for an array body', async () => {
@@ -8196,20 +8492,20 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('Invalid preferences')
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('null clears a previously-set field back to the app-wide default', async () => {
-    vi.mocked(readJsonFileStrict).mockResolvedValue({
+    storePreferences({
       defaultModel: 'claude-sonnet-4',
       defaultEffort: 'high',
-    } as never)
+    })
 
     const res = await putJson(PREFS_URL, { defaultModel: null })
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ defaultEffort: 'high' })
-    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, { defaultEffort: 'high' })
+    expect(persistedPreferences()).toEqual({ defaultEffort: 'high' })
   })
 
   it('trims surrounding whitespace before storing defaultModel', async () => {
@@ -8218,7 +8514,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.defaultModel).toBe('opus')
-    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, { defaultModel: 'opus' })
+    expect(persistedPreferences()).toEqual({ defaultModel: 'opus' })
   })
 
   it('strips unknown keys from the stored prefs and the response', async () => {
@@ -8226,7 +8522,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ defaultModel: 'opus' })
-    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, { defaultModel: 'opus' })
+    expect(persistedPreferences()).toEqual({ defaultModel: 'opus' })
   })
 })
 
@@ -8238,21 +8534,21 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
   let app: ReturnType<typeof createApp>
 
   const SESSIONS_URL = '/api/agents/test-agent/sessions'
-  const mockCreateSession = vi.fn()
+  const mockCreateSession = mockClientCreateSession
 
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
-    // Agent prefs come from the real service reading through the file-storage
-    // mock; default = no prefs file.
-    vi.mocked(readJsonFileStrict).mockResolvedValue({} as never)
+    // Agent prefs come from the real service reading the actor's document off
+    // the mocked fs; default = no prefs file.
+    storePreferences(null)
     vi.mocked(getAgent).mockResolvedValue({
       slug: 'test-agent',
       frontmatter: { name: 'Test Agent' },
     } as never)
     vi.mocked(getSecretEnvVars).mockResolvedValue([])
     mockCreateSession.mockResolvedValue({ id: 'session-123' })
-    vi.mocked(containerManager.ensureRunning).mockResolvedValue({
+    mockEnsureRunning.mockResolvedValue({
       createSession: mockCreateSession,
     } as never)
     mockGetEffectiveModels.mockReturnValue({
@@ -8262,6 +8558,10 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
       dashboardBuilderModel: 'dashboard-model',
       agentEffort: 'medium',
     })
+  })
+
+  afterEach(() => {
+    mockFsReadFile.mockReset()
   })
 
   it('a session opened by a system notice is named by the first message a person sends, not the notice', async () => {
@@ -8298,11 +8598,11 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
   })
 
   it('falls back to agent preference defaults when the request has no model/effort', async () => {
-    vi.mocked(readJsonFileStrict).mockResolvedValue({
+    storePreferences({
       defaultModel: 'haiku',
       defaultEffort: 'high',
       defaultSpeed: 'fast',
-    } as never)
+    })
 
     const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
 
@@ -8323,10 +8623,10 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
   })
 
   it('explicit per-session model/effort win over agent preference defaults', async () => {
-    vi.mocked(readJsonFileStrict).mockResolvedValue({
+    storePreferences({
       defaultModel: 'haiku',
       defaultEffort: 'high',
-    } as never)
+    })
 
     const res = await postJson(app, SESSIONS_URL, {
       message: 'hello',
@@ -8832,7 +9132,7 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
     const res = await fork()
     expect(res.status).toBe(404)
     expect(mockForkSession).not.toHaveBeenCalled()
-    expect(containerManager.ensureRunning).not.toHaveBeenCalled()
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
   })
 
   it('409s while the source is active', async () => {

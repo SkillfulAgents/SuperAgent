@@ -1,5 +1,5 @@
 import crypto from 'crypto'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import { ReauthDismissedError, reauthDismissedMessage } from './reauth-dismissal'
@@ -81,7 +81,7 @@ export class AccountReauthManager {
       if (action.type === 'resolve') waiter.resolve()
       else waiter.reject(action.error)
     }
-    messagePersister.syncAgentSessionsAwaiting(group.agentSlug)
+    agentRegistry.get(group.agentSlug).sessions.syncAwaiting()
     return waiters.length
   }
 
@@ -107,7 +107,7 @@ export class AccountReauthManager {
     if (entry && AccountReauthManager.isAccountReauthEntry(entry)) {
       userInputRequestManager.resolve(entry.id, outcome)
     }
-    messagePersister.syncAgentSessionsAwaiting(group.agentSlug)
+    agentRegistry.get(group.agentSlug).sessions.syncAwaiting()
   }
 
   requestReauth(details: AccountReauthDetails, signal?: AbortSignal): Promise<void> {
@@ -205,7 +205,7 @@ export class AccountReauthManager {
         return
       }
 
-      messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
+      agentRegistry.get(details.agentSlug).sessions.syncAwaiting()
     })
   }
 

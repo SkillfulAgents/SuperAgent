@@ -71,9 +71,9 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
 
   // One throwaway request, unmeasured: pays Hono's first-request setup and
   // the JIT, and loads the process-lifetime caches that are not part of any
-  // route's cost (the session-ownership index) so that op counts do not
-  // depend on which scenario happens to run first. The summary caches it
-  // warms are dropped again so "cold" scenarios stay cold.
+  // route's cost, so that op counts do not depend on which scenario happens
+  // to run first. The summary caches it warms are dropped again so "cold"
+  // scenarios stay cold.
   disableNfsShim()
   const warmup = await app.request('http://localhost/api/agents')
   if (warmup.status !== 200) {
