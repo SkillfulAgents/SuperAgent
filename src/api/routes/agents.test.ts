@@ -4,7 +4,7 @@ import { Hono } from 'hono'
 import { runInNewContext } from 'node:vm'
 import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
-import { agentRegistry } from '@shared/lib/agent-actor'
+import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
 
 // ============================================================================
 // Mocks — must be declared before import
@@ -716,7 +716,7 @@ import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSe
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
-import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
+import { listUserSecrets, setSecret, updateSecret, deleteSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { readJsonlFile, streamJsonlFile, writeFileAtomicStream, readFileOrNull } from '@shared/lib/utils/file-storage'
@@ -8124,6 +8124,35 @@ describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
+  })
+
+  it.each([
+    ['GET', '/secrets', listUserSecrets],
+    ['GET', '/secrets/MY_API_KEY/value', getSecret],
+    ['POST', '/secrets', getSecret],
+    ['PUT', '/secrets/MY_API_KEY', updateSecret],
+    ['DELETE', '/secrets/MY_API_KEY', deleteSecret],
+  ] as const)('%s %s reports an actionable .env directory error', async (method, route, service) => {
+    vi.mocked(service).mockRejectedValueOnce(new WorkspaceFileError('not-a-file'))
+    vi.mocked(keyToEnvVar).mockReturnValue('MY_API_KEY')
+    const res = await app.request('http://localhost/api/agents/my-agent' + route, {
+      method,
+      ...(method === 'POST' || method === 'PUT' ? {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'My API Key', value: 'synthetic' }),
+      } : {}),
+    })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({
+      error: 'Cannot access secrets: workspace .env is a directory; a regular file is required.',
+    })
+  })
+
+  it('does not expose unrelated internal read errors', async () => {
+    vi.mocked(listUserSecrets).mockRejectedValueOnce(new Error('EIO /private/host/path'))
+    const res = await getReq(app, '/api/agents/my-agent/secrets')
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Failed to fetch secrets' })
   })
 
   describe('GET /:id/secrets (bug 3 — reserved runtime vars are not user secrets)', () => {
