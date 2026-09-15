@@ -4585,6 +4585,15 @@ ${continuation}`
           return
         }
 
+        if (action === 'resume') {
+          const { isOrphanedCreator } = await import('@shared/lib/services/orphaned-automations')
+          if (isOrphanedCreator(task.createdByUserId)) {
+            await this.rejectContainerInput(agentSlug, toolUseId,
+              'The task creator was deleted. Create a new scheduled task to run it again.')
+            return
+          }
+        }
+
         const ok = action === 'pause'
           ? await pauseScheduledTask(input.task_id)
           : await resumeScheduledTask(input.task_id)

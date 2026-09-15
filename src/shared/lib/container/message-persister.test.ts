@@ -15,6 +15,10 @@ const mockCreateSessionWake = vi.fn<SchedMockFn>(() =>
   Promise.resolve({ taskId: 'wake_new_id', replaced: null })
 )
 
+vi.mock('@shared/lib/services/orphaned-automations', () => ({
+  isOrphanedCreator: (userId: string | null | undefined) => userId === 'deleted-user',
+}))
+
 // Mock external dependencies before importing
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   createScheduledTask: (...args: unknown[]) => mockCreateScheduledTask(...args),
@@ -7388,6 +7392,23 @@ describe('MessagePersister', () => {
         )
 
         globalCleanup()
+      })
+
+      it('rejects a deleted creator without resuming or broadcasting success', async () => {
+        sseEvents.length = 0
+        mockGetScheduledTask.mockResolvedValue({
+          id: 'task_orphan', agentSlug: AGENT_SLUG, status: 'paused', createdByUserId: 'deleted-user',
+        })
+
+        simulateToolUse('mcp__user-input__resume_scheduled_task', 'tool-sched-resume-orphan', { task_id: 'task_orphan' })
+        await flushHandlers()
+
+        expect(mockResumeScheduledTask).not.toHaveBeenCalled()
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-sched-resume-orphan/reject',
+          expect.objectContaining({ body: expect.stringContaining('The task creator was deleted. Create a new scheduled task to run it again.') }),
+        )
+        expect(sseEvents.filter(e => e.type === 'scheduled_task_updated')).toHaveLength(0)
       })
 
       it('rejects when the task cannot be resumed (not paused)', async () => {

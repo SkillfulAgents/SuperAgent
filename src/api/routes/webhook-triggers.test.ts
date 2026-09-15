@@ -19,6 +19,14 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   cancelWebhookTriggerWithCleanup: (...args: unknown[]) => mockCancelWebhookTriggerWithCleanup(...args),
 }))
 
+vi.mock('@shared/lib/services/orphaned-automations', () => ({
+  isOrphanedCreator: (userId: string | null | undefined) => userId === 'deleted-user',
+}))
+
+vi.mock('@shared/lib/agent-actor', () => ({
+  agentRegistry: { get: vi.fn() },
+}))
+
 vi.mock('@shared/lib/services/session-service', () => ({
   getSessionsByWebhookTrigger: vi.fn(() => []),
 }))
@@ -97,6 +105,28 @@ beforeEach(() => {
   authState.role = 'owner'
   mockGetWebhookTrigger.mockResolvedValue(trigger)
   mockPauseWebhookTrigger.mockResolvedValue(true)
+})
+
+describe('webhook trigger resume', () => {
+  it('rejects a deleted creator without reactivating the trigger', async () => {
+    mockGetWebhookTrigger.mockResolvedValue({ ...trigger, status: 'paused', createdByUserId: 'deleted-user' })
+
+    const res = await createApp().request('http://localhost/api/webhook-triggers/trigger-1/resume', { method: 'POST' })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'The trigger creator was deleted. Create a new trigger to run it again.' })
+    expect(mockResumeWebhookTrigger).not.toHaveBeenCalled()
+  })
+
+  it.each(['live-user', null])('preserves resume for an existing or legacy creator (%s)', async (createdByUserId) => {
+    mockGetWebhookTrigger.mockResolvedValue({ ...trigger, status: 'paused', createdByUserId })
+    mockResumeWebhookTrigger.mockResolvedValueOnce(true)
+
+    const res = await createApp().request('http://localhost/api/webhook-triggers/trigger-1/resume', { method: 'POST' })
+
+    expect(res.status).toBe(200)
+    expect(mockResumeWebhookTrigger).toHaveBeenCalledWith('trigger-1')
+  })
 })
 
 describe('webhook trigger response access', () => {

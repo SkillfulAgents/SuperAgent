@@ -415,7 +415,7 @@ export async function pauseScheduledTask(taskId: string): Promise<boolean> {
   return (result.changes ?? 0) > 0
 }
 
-// Used when the creator is deleted: recurring tasks pause (an admin can resume),
+// Used when the creator is deleted: recurring tasks pause,
 // one-time tasks are cancelled. Returns the number of rows changed.
 export async function pauseScheduledTasksCreatedBy(userId: string): Promise<number> {
   const now = new Date()
