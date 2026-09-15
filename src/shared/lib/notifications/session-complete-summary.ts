@@ -31,15 +31,11 @@ const AGENT_RESPONSE_CONTEXT_MAX_CHARS = 24_000
 export interface SessionCompleteBodyParams {
   sessionId: string
   agentSlug: string
-  /** Frontmatter display name; attributes the summarizer call to the agent. */
-  agentName?: string
   responseText?: string | null
   /** Transcript byte boundary captured synchronously when the turn completed. */
   responseTranscriptEndOffset?: number | null
   fallbackBody: string
 }
-
-type SummaryContext = Pick<SessionCompleteBodyParams, 'agentSlug' | 'sessionId' | 'agentName'>
 
 function clipMiddle(text: string, maxChars: number): string {
   const chars = Array.from(text)
@@ -149,14 +145,14 @@ async function summarizeResponse(
   response: string,
   userRequest: string | null,
   signal: AbortSignal,
-  context: SummaryContext,
+  context: Pick<SessionCompleteBodyParams, 'agentSlug' | 'sessionId'>,
 ): Promise<string | null> {
   // The E2E mock covers notification delivery without a real provider. Avoid a
   // doomed host-direct call and use the deterministic preview fallback.
   if (process.env.E2E_MOCK === 'true') return null
 
   try {
-    const client = getConfiguredLlmClient({ id: context.agentSlug, name: context.agentName })
+    const client = getConfiguredLlmClient()
     const model = resolveActiveProviderModel(
       getEffectiveModels().summarizerModel,
       'summarizer',
@@ -216,7 +212,7 @@ async function summarizeResponse(
 async function summarizeResponseWithDeadline(
   response: string,
   userRequest: string | null,
-  context: SummaryContext,
+  context: Pick<SessionCompleteBodyParams, 'agentSlug' | 'sessionId'>,
 ): Promise<string | null> {
   const controller = new AbortController()
   let timeout: ReturnType<typeof setTimeout> | undefined
@@ -278,7 +274,6 @@ export async function buildSessionCompleteBody(
   const summary = await summarizeResponseWithDeadline(response, userRequest, {
     agentSlug: params.agentSlug,
     sessionId: params.sessionId,
-    agentName: params.agentName,
   })
   return truncateSessionCompleteBody(summary || response)
 }

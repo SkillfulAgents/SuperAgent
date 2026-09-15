@@ -23,7 +23,7 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgent } from '@shared/lib/services/agent-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
-import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { getNotificationChannels } from './channels'
 import { isNotificationTypeEnabled } from './notification-preferences'
@@ -48,21 +48,16 @@ class NotificationManager {
   // first; unrelated sessions remain fully parallel.
   private readonly sessionCompleteChains = new Map<string, Promise<void>>()
 
-  /** Agent id plus frontmatter name; name is absent when unavailable. */
-  private async getAgentIdentity(agentSlug: string): Promise<AgentIdentity> {
-    try {
-      const agent = await getAgent(agentSlug)
-      return { id: agentSlug, name: agent?.frontmatter?.name || undefined }
-    } catch {
-      return { id: agentSlug }
-    }
-  }
-
   /**
    * Get the display name for an agent (name if available, otherwise slug)
    */
   private async getAgentDisplayName(agentSlug: string): Promise<string> {
-    return (await this.getAgentIdentity(agentSlug)).name || agentSlug
+    try {
+      const agent = await getAgent(agentSlug)
+      return agent?.frontmatter?.name || agentSlug
+    } catch {
+      return agentSlug
+    }
   }
 
   /**
@@ -231,8 +226,7 @@ class NotificationManager {
     if (isHiddenAutomatedSession(meta)) {
       return
     }
-    const agent = await this.getAgentIdentity(agentSlug)
-    const displayName = agent.name || agentSlug
+    const displayName = await this.getAgentDisplayName(agentSlug)
     const fallbackBody = `${displayName} has finished running`
     await this.triggerNotification({
       type: 'session_complete',
@@ -244,14 +238,12 @@ class NotificationManager {
       body: {
         fallback: fallbackBody,
         // The summarizer is a host-direct proxy call fired from the container
-        // event stream, outside any request scope. Run the whole async body
-        // build under the session creator so it attributes like the session did.
-        resolve: async () => runWithOptionalUser(meta?.createdByUserId, async () => {
+        // event stream, outside any request scope. Attribute it to the agent owner.
+        resolve: async () => runWithOptionalUser(getAgentOwnerUserId(agentSlug), async () => {
           try {
             return await buildSessionCompleteBody({
               sessionId,
               agentSlug,
-              agentName: agent.name,
               responseText: options.responseText,
               responseTranscriptEndOffset:
                 await options.responseTranscriptEndOffset,

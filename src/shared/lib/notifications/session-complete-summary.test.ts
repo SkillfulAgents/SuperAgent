@@ -160,13 +160,11 @@ describe('buildSessionCompleteBody', () => {
     await expect(
       buildSessionCompleteBody({
         ...params,
-        agentName: 'Demo Agent',
         responseText,
         responseTranscriptEndOffset,
       }),
     ).resolves.toBe('Shipped: notifications now show the final answer.')
 
-    expect(mocks.getConfiguredLlmClient).toHaveBeenCalledWith({ id: 'agent-1', name: 'Demo Agent' })
     expect(mocks.resolveActiveProviderModel).toHaveBeenCalledWith(
       'configured-summarizer',
       'summarizer',
