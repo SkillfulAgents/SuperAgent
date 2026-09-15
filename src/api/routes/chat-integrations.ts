@@ -44,7 +44,7 @@ chatIntegrationsRouter.use('*', Authenticated())
 
 const IntegrationAgentRole = EntityAgentRole({
   paramName: 'integrationId',
-  lookupFn: async (id: string) => getChatIntegration(id),
+  lookupFn: async (id: string) => { const row = getChatIntegration(id); return row?.provider === 'linear' ? null : row },
   contextKey: 'chatIntegration',
   entityName: 'Chat integration',
 })

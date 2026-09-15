@@ -67,6 +67,7 @@ async function webhookEventsFetch<T>(
   const response = await fetch(`${baseUrl}/v1/webhook-events${endpoint}`, {
     ...options,
     headers,
+    signal: options.signal ?? AbortSignal.timeout(20000),
   })
 
   if (!response.ok) {
@@ -80,10 +81,10 @@ async function webhookEventsFetch<T>(
 // Always scope by local trigger_ids. Includes paused triggers (still subscribed
 // upstream) so paused-period events are claimed and acked/discarded rather than
 // piling up pending and firing a session on resume (SUP-225).
-export async function pollAndClaimEvents(memberId: string): Promise<PollResult> {
+export async function pollAndClaimEvents(memberId: string, triggerIds?: string[]): Promise<PollResult> {
   return webhookEventsFetch<PollResult>('/poll', memberId, {
     method: 'POST',
-    body: JSON.stringify({ trigger_ids: getSubscribedComposioTriggerIds() }),
+    body: JSON.stringify({ trigger_ids: triggerIds ?? getSubscribedComposioTriggerIds() }),
   })
 }
 

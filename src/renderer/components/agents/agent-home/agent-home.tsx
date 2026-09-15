@@ -39,6 +39,7 @@ import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
 import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
+import { HomeTaskIntegrations } from '../../agent-integrations/home-task-integrations'
 import { HomeChatIntegrations } from './home-chat-integrations'
 import { HomeVolumes } from './home-volumes'
 import { HomeHooks } from './home-hooks'
@@ -693,6 +694,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
               }, 0)
             }} />
             <HomeChatIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
+            <HomeTaskIntegrations agentSlug={agent.slug} />
             <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
             <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
             <HomeHooks className="intro-step intro-step-9" agentSlug={agent.slug} isOwner={isOwner} />

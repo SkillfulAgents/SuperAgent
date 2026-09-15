@@ -57,6 +57,7 @@ vi.mock('./mcp-server', () => ({
   createDashboardsMcpServer: () => ({}),
   createWidgetsMcpServer: () => ({}),
   createAgentsMcpServer: () => ({}),
+  createIntegrationsMcpServer: () => ({ type: 'sdk', name: 'integrations' }),
   createChatMcpServer: () => ({}),
 }))
 vi.mock('./tools/browser', () => ({ createBrowserTools: () => [] }))

@@ -1,3 +1,4 @@
+import { integrationTools } from './tools/agent-integrations'
 /**
  * User Input MCP Server
  *
@@ -193,4 +194,9 @@ export function createWebMcpServer(opts: { search: boolean; fetch: boolean }) {
     version: '1.0.0',
     tools,
   })
+}
+
+/** Provider-neutral tools bound to the current external session. */
+export function createIntegrationsMcpServer(getSessionId: () => string) {
+  return createSdkMcpServer({ name: 'integrations', version: '1.0.0', tools: integrationTools(getSessionId) })
 }

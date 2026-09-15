@@ -17,6 +17,8 @@ import { cancelWebhookTriggerWithCleanup } from '@shared/lib/services/webhook-tr
 
 export async function cleanupAgentData(agentSlug: string): Promise<void> {
   await cleanupWebhookTriggers(agentSlug)
+  const { cleanupIntegrationResources } = await import('../agent-integrations/cleanup')
+  await cleanupIntegrationResources(agentSlug)
 
   // Delete all peripheral rows in a single transaction so the cleanup is atomic:
   // either every row referencing this agent is removed or none is, never a
