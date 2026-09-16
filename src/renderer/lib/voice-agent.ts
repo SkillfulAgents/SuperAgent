@@ -67,9 +67,9 @@ export interface VoiceAgentAdapter {
 export function createVoiceAgentAdapter(provider: VoiceProvider): VoiceAgentAdapter {
   switch (provider) {
     case 'deepgram':
-    case 'platform':
       return new DeepgramVoiceAgentAdapter()
     case 'openai':
+    case 'platform':
       return new OpenAIVoiceAgentAdapter()
     default:
       throw new Error(`Unknown Voice Agent provider: ${provider}`)

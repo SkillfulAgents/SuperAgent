@@ -551,9 +551,9 @@ class OpenaiAdapter extends WebSocketSttAdapter {
 export function createSttAdapter(provider: VoiceProvider): SttAdapter {
   switch (provider) {
     case 'deepgram':
-    case 'platform':
       return new DeepgramAdapter()
     case 'openai':
+    case 'platform':
       return new OpenaiAdapter()
     default:
       throw new Error(`Unknown voice provider: ${provider}`)

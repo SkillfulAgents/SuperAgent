@@ -127,12 +127,12 @@ describe('DeepgramTtsAdapter', () => {
 })
 
 describe('createTtsAdapter', () => {
-  it('maps deepgram and platform to the Deepgram adapter', () => {
+  it('maps a websocket connection to the Deepgram adapter', () => {
     expect(createTtsAdapter({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' } })).toBeInstanceOf(DeepgramTtsAdapter)
-    expect(createTtsAdapter({ provider: 'platform', connection: { transport: 'websocket', token: 'jwt' } })).toBeInstanceOf(DeepgramTtsAdapter)
   })
 
-  it('rejects providers without text-to-speech', () => {
+  it('maps an http connection to the server-streamed adapter for openai and platform', () => {
     expect(createTtsAdapter({ provider: 'openai', connection: { transport: 'http' } })).toBeInstanceOf(HttpTtsAdapter)
+    expect(createTtsAdapter({ provider: 'platform', connection: { transport: 'http' } })).toBeInstanceOf(HttpTtsAdapter)
   })
 })

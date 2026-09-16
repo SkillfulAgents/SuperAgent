@@ -79,7 +79,7 @@ describe('Live voice routes', () => {
     expect(mocks.create).not.toHaveBeenCalled()
     expect(mocks.map).not.toHaveBeenCalled()
   })
-  it.each([['deepgram', 'Deepgram'], ['platform', 'Platform']])('reports unsupported operations for %s', async (id, name) => {
+  it.each([['deepgram', 'Deepgram']])('reports unsupported operations for %s', async (id, name) => {
     mocks.providerName = id
     const creation = await request('/live/session', { sdp: 'offer', history: [] })
     expect(creation.status).toBe(400)
