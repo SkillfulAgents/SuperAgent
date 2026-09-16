@@ -1,6 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
 import { acquireMicStream } from '../../shared/audio-capture'
 import { OpenAILiveBridge } from './live-bridge'
+import { voiceTrace } from './live-trace'
 import type { LiveRequest, LiveSessionAnswer, VoiceHistory, VoiceTranscriptEntry } from '@shared/lib/voice/live-types'
 
 interface ConversationEvents {
@@ -61,13 +62,16 @@ export class OpenAILiveConversation {
   constructor(private events: ConversationEvents, private history: VoiceHistory = [], private agentSlug?: string) {
     this.bridge = new OpenAILiveBridge({
       ...events,
+      onRequest: (request) => { voiceTrace('4 request → agent', request); return events.onRequest(request) },
       onInputTranscript: (delta) => this.detectInputWords(delta),
       send: (event) => this.send(event),
       map: async (input, signal) => {
+        voiceTrace('2 map input', input)
         const res = await apiFetch('/api/voice/live/map', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal,
         })
         const data = await res.json().catch(() => null)
+        voiceTrace('3 map output', { status: res.status, data })
         if (!res.ok) throw new Error(data?.error || `Voice mapping failed (${res.status}).`)
         if (!data) throw new Error('Voice mapping returned an invalid response.')
         return data
@@ -133,6 +137,7 @@ export class OpenAILiveConversation {
       channel.onmessage = ({ data }) => {
         let event: Record<string, unknown>
         try { event = JSON.parse(data) } catch { return }
+        voiceTrace('1 live ← event', event)
         if (event.type === 'session.closed') {
           if (!this.closed) this.events.onError('The voice session ended. Re-enter voice mode to reconnect.')
           this.close()
@@ -294,6 +299,7 @@ export class OpenAILiveConversation {
 
   private send(event: Record<string, unknown>) {
     if (this.closed) return
+    voiceTrace('1 live → event', event)
     if (this.ready && this.channel?.readyState === 'open') this.channel.send(JSON.stringify(event))
     else if (this.commands.length < 128) this.commands.push(event)
   }
