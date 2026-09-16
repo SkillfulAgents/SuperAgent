@@ -317,7 +317,7 @@ export interface SystemPromptVars {
   subagentsEnabled: boolean;
   hasModelRoutedSubagents: boolean;
   composioTriggers: boolean;
-  composioX: boolean;
+  platformAccounts: boolean;
   webhookEndpoints: boolean;
   anyTriggers: boolean;
   /** Platform token present — media prompt section (agent calls platform `/v1/replicate`). */
@@ -363,10 +363,10 @@ export function buildSystemPromptVars(
   subagentModels?: SubagentModelDefinition[],
 ): SystemPromptVars {
   // Connected accounts run through Gamut's Composio (not a personal key). Managed
-  // triggers and the X auth config both exist only there, so both hang off it.
+  // triggers and the platform-only accounts both exist only there.
   const composioPlatform = process.env.COMPOSIO_PLATFORM_MODE === 'true';
   const composioTriggers = composioPlatform;
-  const composioX = composioPlatform;
+  const platformAccounts = composioPlatform;
   const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
   // Same gate as webhookEndpoints — do not tighten to also require proxy URL
   // (PLATFORM_AUTH_ACTIVE also gates webhook tools in mcp-server.ts).
@@ -391,7 +391,7 @@ export function buildSystemPromptVars(
     subagentsEnabled: policyFor(capabilityPolicies, 'subagents') !== 'block',
     hasModelRoutedSubagents: (subagentModels?.length ?? 0) > 0,
     composioTriggers,
-    composioX,
+    platformAccounts,
     webhookEndpoints,
     anyTriggers: composioTriggers || webhookEndpoints,
     platformServices,
