@@ -18,6 +18,7 @@ interface ServiceInfo {
 // Services that exist only through Gamut's Composio; the host sets this env at container start.
 const GAMUT_PLATFORM_ACCOUNTS: ServiceInfo[] = [
   { slug: 'twitter', displayName: 'X', category: 'Social Media', description: 'Posts, timelines, and direct messages' },
+  { slug: 'plaid', displayName: 'Plaid', category: 'Finance', description: 'Bank accounts, balances, and transactions' },
 ]
 
 export const SERVICES: ServiceInfo[] = [

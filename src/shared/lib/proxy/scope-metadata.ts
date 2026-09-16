@@ -627,6 +627,10 @@ export const SCOPE_METADATA: Record<string, Record<string, ScopeMeta>> = {
     "MailboxSettings.Read": { description: "Read user mailbox settings", label: "read" },
     "MailboxSettings.ReadWrite": { description: "Read and write user mailbox settings", label: "write" },
   },
+  "plaid": {
+    "accounts.read": { description: "View linked bank accounts, balances, and the institution", label: "read" },
+    "transactions.read": { description: "View transactions on linked bank accounts", label: "read" },
+  },
   "quickbooks": {
     "accounting.read": { description: "Read access to QuickBooks accounting data (customers, vendors, invoices, accounts)", label: "read" },
     "accounting.write": { description: "Read and write access to QuickBooks accounting data", label: "write" },
