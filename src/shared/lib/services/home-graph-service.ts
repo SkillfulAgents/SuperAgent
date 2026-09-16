@@ -174,8 +174,8 @@ export async function buildHomeGraph(scope: HomeGraphScope): Promise<HomeGraphDa
       mcpUsageCounts(agentSlugs, userId),
     ])
 
-  const chatsByAgent = listChatIntegrationsByAgents(agentSlugs, { allStatuses: true })
-  const sessionCounts = countSessionsPerIntegration(agentSlugs)
+  const chatsByAgent = await listChatIntegrationsByAgents(agentSlugs, { allStatuses: true })
+  const sessionCounts = await countSessionsPerIntegration(agentSlugs)
 
   const chats: HomeGraphData['chats'] = [...chatsByAgent.values()].flat().map((chat) => ({
     id: chat.id,

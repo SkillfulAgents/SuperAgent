@@ -102,7 +102,7 @@ function seedAccess(chatId: string, status: 'pending' | 'allowed' | 'denied'): v
 }
 
 describe('ChatIntegrationManager.ensureSession — outbound access gate', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
@@ -122,7 +122,7 @@ describe('ChatIntegrationManager.ensureSession — outbound access gate', () => 
     ;(chatIntegrationManager as any).connections.set(INT, { connector: new MockChatClientConnector(), integration: fakeIntegration() })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     ;(chatIntegrationManager as any).connections.clear()
     testSqlite?.close()
   })
@@ -162,7 +162,7 @@ describe('ChatIntegrationManager.ensureSession — outbound access gate', () => 
   it('creates an allowed outbound session during reconnection with the chat name and metadata', async () => {
     seedAccess('chat-allowed', 'allowed')
     mockResolveActiveSession.mockReturnValue(undefined)
-    vi.mocked(getLastDisplayName).mockReturnValueOnce('Alice')
+    vi.mocked(getLastDisplayName).mockResolvedValueOnce('Alice')
     mockGetChatIntegration.mockReturnValue(fakeIntegration({ createdByUserId: 'owner-1' }))
     ;(chatIntegrationManager as any).connections.clear()
 
@@ -191,7 +191,7 @@ describe('ChatIntegrationManager.ensureSession — outbound access gate', () => 
 })
 
 describe('ChatIntegrationManager.handleSSEEvent — outbound access gate', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
@@ -207,7 +207,7 @@ describe('ChatIntegrationManager.handleSSEEvent — outbound access gate', () =>
     ;(chatIntegrationManager as any).connections.set(INT, { connector: new MockChatClientConnector(), integration: fakeIntegration() })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     ;(chatIntegrationManager as any).connections.clear()
     testSqlite?.close()
   })
@@ -233,7 +233,7 @@ describe('ChatIntegrationManager.handleSSEEvent — outbound access gate', () =>
 })
 
 describe('ChatIntegrationManager.reconcileAccess — gate sessions after approval is enabled', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
@@ -249,7 +249,7 @@ describe('ChatIntegrationManager.reconcileAccess — gate sessions after approva
     ;(chatIntegrationManager as any).connections.set(INT, { connector: new MockChatClientConnector(), integration: fakeIntegration() })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     ;(chatIntegrationManager as any).connections.clear()
     testSqlite?.close()
   })

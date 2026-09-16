@@ -26,7 +26,7 @@ interface BuildInboundXAgentDetailsInput {
   viewerUserId?: string
   viewerCanAccessAll?: boolean
   aclRows: AgentAclRow[]
-  evaluatePolicy?: (callerSlug: string, targetSlug: string) => XAgentDecision
+  evaluatePolicy?: (callerSlug: string, targetSlug: string) => XAgentDecision | Promise<XAgentDecision>
 }
 
 /**
@@ -34,7 +34,7 @@ interface BuildInboundXAgentDetailsInput {
  * ACL/policy projection pure makes the security-sensitive visibility rules
  * straightforward to test independently of the route and database adapters.
  */
-export function buildInboundXAgentDetails({
+export async function buildInboundXAgentDetails({
   targetSlug,
   metadata,
   agents,
@@ -43,7 +43,7 @@ export function buildInboundXAgentDetails({
   viewerCanAccessAll = false,
   aclRows,
   evaluatePolicy = (callerSlug, target) => evaluateXAgentPolicy(callerSlug, 'invoke', target),
-}: BuildInboundXAgentDetailsInput): InboundXAgentDetails {
+}: BuildInboundXAgentDetailsInput): Promise<InboundXAgentDetails> {
   const agentBySlug = new Map(agents.map((agent) => [agent.slug, agent]))
   const sessions = Object.entries(metadata)
     .flatMap<InboundXAgentSession>(([id, meta]) => {
@@ -89,15 +89,15 @@ export function buildInboundXAgentDetails({
     ownerUsersByAgent.set(row.agentSlug, owners)
   }
 
-  const callers = agents
+  const callers = (await Promise.all(agents
     .filter((agent) => agent.slug !== targetSlug)
-    .flatMap((agent) => {
+    .map(async (agent) => {
       if (authMode) {
         const callerOwners = ownerUsersByAgent.get(agent.slug)
         if (!callerOwners || ![...callerOwners].some((userId) => targetUsers.has(userId))) return []
       }
 
-      const decision = evaluatePolicy(agent.slug, targetSlug)
+      const decision = await evaluatePolicy(agent.slug, targetSlug)
       if (decision === 'block') return []
       return [{
         slug: agent.slug,
@@ -106,7 +106,8 @@ export function buildInboundXAgentDetails({
         decision,
         canAccess: !authMode || viewerCanAccessAll || viewerAgents.has(agent.slug),
       }]
-    })
+    })))
+    .flat()
     .sort((a, b) => a.name.localeCompare(b.name))
 
   return { sessions, callers }

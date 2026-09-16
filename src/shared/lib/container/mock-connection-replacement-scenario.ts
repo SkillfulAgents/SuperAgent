@@ -56,7 +56,7 @@ class ConnectionReplacementScenario implements MockScenario {
       accountId = replacementId
     } else {
       registerAccountProvider(new DemoAccountProvider())
-      const mapping = db.select().from(agentConnectedAccounts)
+      const mapping = await db.select().from(agentConnectedAccounts)
         .where(eq(agentConnectedAccounts.agentSlug, agentSlug)).get()
       if (!mapping) throw new Error('No shared account assigned')
       accountId = mapping.connectedAccountId

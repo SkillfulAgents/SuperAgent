@@ -53,10 +53,10 @@ export interface UpdateChatIntegrationParams {
 
 // ── Create ──────────────────────────────────────────────────────────────
 
-export function createChatIntegration(params: CreateChatIntegrationParams): string {
+export async function createChatIntegration(params: CreateChatIntegrationParams): Promise<string> {
   const newToken = extractUniqueKey(params.provider, params.config)
   if (newToken) {
-    const duplicate = findIntegrationByUniqueKey(params.provider, newToken)
+    const duplicate = await findIntegrationByUniqueKey(params.provider, newToken)
     if (duplicate) {
       throw new DuplicateBotTokenError(duplicate.id, params.provider)
     }
@@ -84,7 +84,7 @@ export function createChatIntegration(params: CreateChatIntegrationParams): stri
     updatedAt: now,
   }
 
-  db.insert(chatIntegrations).values(newRecord).run()
+  await db.insert(chatIntegrations).values(newRecord).run()
   return id
 }
 
@@ -99,12 +99,12 @@ function extractUniqueKey(provider: string, config: Record<string, unknown>): st
   return typeof token === 'string' && token.length > 0 ? token : null
 }
 
-function findIntegrationByUniqueKey(
+async function findIntegrationByUniqueKey(
   provider: string,
   key: string,
   excludeId?: string,
-): ChatIntegration | null {
-  const rows = db.select().from(chatIntegrations)
+): Promise<ChatIntegration | null> {
+  const rows = await db.select().from(chatIntegrations)
     .where(eq(chatIntegrations.provider, provider as ChatIntegration['provider']))
     .all()
   const field = provider === 'imessage' ? 'phoneNumber' : 'botToken'
@@ -132,12 +132,12 @@ function safeParseConfig(row: ChatIntegration): Record<string, unknown> | null {
 
 // ── Read ────────────────────────────────────────────────────────────────
 
-export function getChatIntegration(id: string): ChatIntegration | null {
-  const results = db.select().from(chatIntegrations).where(eq(chatIntegrations.id, id)).all()
+export async function getChatIntegration(id: string): Promise<ChatIntegration | null> {
+  const results = await db.select().from(chatIntegrations).where(eq(chatIntegrations.id, id)).all()
   return results[0] || null
 }
 
-export function listChatIntegrations(agentSlug?: string, status?: string): ChatIntegration[] {
+export async function listChatIntegrations(agentSlug?: string, status?: string): Promise<ChatIntegration[]> {
   const conditions = []
   if (agentSlug) conditions.push(eq(chatIntegrations.agentSlug, agentSlug))
   if (status) conditions.push(eq(chatIntegrations.status, status as ChatIntegration['status']))
@@ -156,8 +156,8 @@ export function listChatIntegrations(agentSlug?: string, status?: string): ChatI
  * When duplicates exist, prefer `active` over `error`; within the same status,
  * prefer the most recently updated row.
  */
-export function listStartupChatIntegrations(): ChatIntegration[] {
-  const rows = db.select().from(chatIntegrations)
+export async function listStartupChatIntegrations(): Promise<ChatIntegration[]> {
+  const rows = await db.select().from(chatIntegrations)
     .where(inArray(chatIntegrations.status, ['active', 'error']))
     .all()
 
@@ -201,10 +201,10 @@ function isBetterStartupCandidate(candidate: ChatIntegration, current: ChatInteg
  * Count chat sessions per integration across a set of agents — the
  * "has this connection actually been used" signal for the home graph.
  */
-export function countSessionsPerIntegration(agentSlugs: string[]): Record<string, number> {
+export async function countSessionsPerIntegration(agentSlugs: string[]): Promise<Record<string, number>> {
   if (agentSlugs.length === 0) return {}
 
-  const rows = db
+  const rows = await db
     .select({ integrationId: chatIntegrationSessions.integrationId, sessions: count() })
     .from(chatIntegrationSessions)
     .innerJoin(chatIntegrations, eq(chatIntegrationSessions.integrationId, chatIntegrations.id))
@@ -217,15 +217,15 @@ export function countSessionsPerIntegration(agentSlugs: string[]): Record<string
   return counts
 }
 
-export function listChatIntegrationsByAgents(
+export async function listChatIntegrationsByAgents(
   agentSlugs: string[],
   // Default stays active-only (the agent-list enrichment tags live chats);
   // the home graph passes allStatuses so error/paused nodes still render.
   options?: { allStatuses?: boolean },
-): Map<string, ChatIntegration[]> {
+): Promise<Map<string, ChatIntegration[]>> {
   if (agentSlugs.length === 0) return new Map()
 
-  const results = db.select().from(chatIntegrations)
+  const results = await db.select().from(chatIntegrations)
     .where(and(
       inArray(chatIntegrations.agentSlug, agentSlugs),
       options?.allStatuses ? undefined : eq(chatIntegrations.status, 'active'),
@@ -243,13 +243,13 @@ export function listChatIntegrationsByAgents(
 
 // ── Update ──────────────────────────────────────────────────────────────
 
-export function updateChatIntegration(id: string, params: UpdateChatIntegrationParams): boolean {
+export async function updateChatIntegration(id: string, params: UpdateChatIntegrationParams): Promise<boolean> {
   let nextConfig: Record<string, unknown> | undefined
 
   // Guard against a PATCH moving a token to one that's already owned by
   // another integration — would re-create SUP-150's duplicate-poller scenario.
   if (params.config !== undefined) {
-    const current = getChatIntegration(id)
+    const current = await getChatIntegration(id)
     if (!current) return false
 
     nextConfig = mergeChatIntegrationConfig(current.provider, current.config, params.config)
@@ -261,7 +261,7 @@ export function updateChatIntegration(id: string, params: UpdateChatIntegrationP
     // Settings-only edits preserve the same unique key. Avoid re-checking those
     // against legacy duplicate rows that predate the create-time guard.
     if (newToken && newToken !== currentToken) {
-      const duplicate = findIntegrationByUniqueKey(current.provider, newToken, id)
+      const duplicate = await findIntegrationByUniqueKey(current.provider, newToken, id)
       if (duplicate) {
         throw new DuplicateBotTokenError(duplicate.id, current.provider)
       }
@@ -284,7 +284,7 @@ export function updateChatIntegration(id: string, params: UpdateChatIntegrationP
   if (params.errorMessage !== undefined) updates.errorMessage = params.errorMessage
 
 
-  const result = db.update(chatIntegrations)
+  const result = await db.update(chatIntegrations)
     .set(updates)
     .where(eq(chatIntegrations.id, id))
     .run()
@@ -292,18 +292,18 @@ export function updateChatIntegration(id: string, params: UpdateChatIntegrationP
   return changesOf(result) > 0
 }
 
-export function updateChatIntegrationStatus(
+export async function updateChatIntegrationStatus(
   id: string,
   status: ChatIntegration['status'],
   errorMessage?: string | null,
-): boolean {
+): Promise<boolean> {
   return updateChatIntegration(id, { status, errorMessage: errorMessage ?? null })
 }
 
 // ── Delete ──────────────────────────────────────────────────────────────
 
-export function deleteChatIntegration(id: string): boolean {
-  const result = db.delete(chatIntegrations)
+export async function deleteChatIntegration(id: string): Promise<boolean> {
+  const result = await db.delete(chatIntegrations)
     .where(eq(chatIntegrations.id, id))
     .run()
 

@@ -72,7 +72,7 @@ class ObjectIntegration extends AgentIntegration {
     return { externalId: (event.payload as { objectId: string }).objectId, interactionId: event.id, replyTarget: { comment: event.externalId }, action: 'run' as const }
   }
   async authorize() { return this.allowed }
-  isAllowed() { return this.allowed }
+  async isAllowed() { return this.allowed }
   sessionPolicy() { return { name: 'Object session', timeoutHours: null, metadata: {} } }
   async deliver(context: IntegrationSessionContext, output: IntegrationOutput) { this.outputs.push({ context, output }) }
   releaseSession(context: IntegrationSessionContext) { this.released.push(context) }
@@ -94,7 +94,7 @@ function record(id: string): AgentIntegrationRecord {
 let manager: AgentIntegrationManager
 let adapter: ObjectIntegration
 let registry: AgentIntegrationRegistry
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks()
   state.rows = [record('installation-a')]
   state.mappings.clear()
@@ -242,7 +242,7 @@ describe('AgentIntegration host contract', () => {
     await expect(manager.ensureSession('installation-a', 'object-7')).rejects.toThrow('not allowed')
   })
 
-  it('exposes provider metadata without creating a connection and rejects duplicate registration', () => {
+  it('exposes provider metadata without creating a connection and rejects duplicate registration', async () => {
     const create = vi.fn()
     const metadataOnly = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create }])
     expect(metadataOnly.getDefinition('test-objects')?.family).toBe('objects')
