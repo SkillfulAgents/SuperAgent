@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildLiveConversationPrompt, LIVE_AGENT_INSTRUCTIONS_MAX_CHARS } from './voice-live'
+import { buildLiveConversationPrompt, LIVE_AGENT_INSTRUCTIONS_MAX_CHARS, LIVE_REQUEST_PROMPT } from './voice-live'
 import type { LiveAgentContext } from '../lib/voice/live-types'
 
 const agent: LiveAgentContext = {
@@ -13,6 +13,37 @@ describe('Live agent prompt', () => {
     expect(prompt).toContain('connect a new one through an authorization card')
     expect(prompt).toContain('Ask the backend to check before declaring it unavailable')
     expect(prompt).toContain('Do not invent results')
+  })
+
+  it.each([undefined, agent])('keeps capability discovery and execution boundaries in both startup paths', (context) => {
+    const prompt = buildLiveConversationPrompt(context)
+    expect(prompt).toContain('This summary is not exhaustive')
+    expect(prompt).toContain("delegate the user's original question or task")
+    expect(prompt).toContain('tools, skills, configuration, and documentation')
+    expect(prompt).toContain('not permission to execute')
+    expect(prompt).toContain('Respect confirmed limitations and policy blocks')
+    expect(prompt).toContain('backend must consult current product documentation and runtime capabilities')
+  })
+
+  it('covers persistent and asynchronous work and qualifies deployment-dependent capabilities', () => {
+    const prompt = buildLiveConversationPrompt(agent)
+    expect(prompt).toContain('recall past conversations, save or forget memories')
+    expect(prompt).toContain('must reach the backend to persist')
+    expect(prompt).toContain('reusable skills')
+    expect(prompt).toContain('dashboards and automatically refreshed home-screen widgets')
+    expect(prompt).toContain('pause and resume this same conversation later')
+    expect(prompt).toContain('Chat integrations')
+    expect(prompt).toContain('other agents')
+    expect(prompt).toContain('Conditional capabilities: ask the backend to verify availability')
+    expect(prompt).toContain('These depend on the host/platform configuration')
+    expect(prompt).toContain('Preserve requests for approval and cost disclosures')
+    expect(prompt).toContain('never ask the user to speak passwords or tokens')
+  })
+
+  it('keeps capability checks and recall requests eligible for request mapping without inventing authorization', () => {
+    expect(LIVE_REQUEST_PROMPT).toContain('message requests for the backend, not none')
+    expect(LIVE_REQUEST_PROMPT).toContain('a capability question alone does not authorize execution')
+    expect(LIVE_REQUEST_PROMPT).toContain('Never infer authorization from the voice assistant')
   })
 
   it('includes saved identity and instructions while preserving the voice delegation boundary', () => {
