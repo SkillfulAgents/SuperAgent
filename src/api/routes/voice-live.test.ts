@@ -186,9 +186,17 @@ describe('Live voice routes', () => {
   })
   it('rejects invalid and oversized mappings before calling the LLM', async () => {
     expect((await request('/live/map', { kind: 'request', transcript: '' })).status).toBe(400)
-    expect((await request('/live/map', { kind: 'request', transcript: 'user: hi', history: [], previousRequest: '', agentBusy: false })).status).toBe(400)
+    expect((await request('/live/map', { kind: 'request', transcript: 'user: hi', userWords: '', history: [], previousRequest: '', agentBusy: false })).status).toBe(400)
     expect((await request('/live/map', { kind: 'reply', text: 'a'.repeat(140000) })).status).toBe(413)
     expect(mocks.map).not.toHaveBeenCalled()
+  })
+  it('still accepts a request mapping without userWords from an older client', async () => {
+    mocks.map.mockResolvedValueOnce({ action: 'message', text: 'mapped' })
+    const creation = await request('/live/session', { sdp: 'offer', history: [] })
+    expect(creation.status).toBe(201)
+    const input = { kind: 'request', transcript: 'user: hi', history: [], previousRequest: '', agentBusy: false }
+    expect(await (await request('/live/map', input)).json()).toEqual({ action: 'message', text: 'mapped' })
+    expect(mocks.map).toHaveBeenCalledExactlyOnceWith(input, expect.any(AbortSignal))
   })
   it.each(['openai', 'platform'] as const)('creates, maps, and closes a Live session for %s', async (id) => {
     mocks.providerName = id

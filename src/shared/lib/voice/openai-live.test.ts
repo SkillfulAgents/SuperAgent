@@ -64,6 +64,17 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     expect(mocks.summarize.mock.calls[0][1].messages).toEqual([{ role: 'user', content: JSON.stringify(input) }])
   })
 
+  it('answers a client that sent no userWords with the legacy prompt and action shape', async () => {
+    mocks.summarize.mockResolvedValue('{"action":"clarify","text":"Which day?"}')
+    expect(await provider.mapLiveConversation({ kind: 'request', transcript: 'user: Check...', history: [], previousRequest: '', agentBusy: false }))
+      .toEqual({ action: 'clarify', text: 'Which day?' })
+    const call = mocks.summarize.mock.calls[0][1]
+    expect(call.system).toContain('action (message, cancel, clarify, or none)')
+    expect(call.output_config.format.schema.required).toEqual(['action', 'text'])
+    mocks.summarize.mockResolvedValue('{"action":"message","text":""}')
+    await expect(provider.mapLiveConversation({ kind: 'request', transcript: 'user: hello', history: [], previousRequest: '', agentBusy: false })).rejects.toThrow('invalid voice request')
+  })
+
   it.each(['not JSON', '{"action":"message","text":"old shape"}', '{"text":"","mode":"interrupt"}', '{"text":"   ","mode":"queue"}', '{"text":"ok","mode":"clarify"}'])('rejects unusable mappings: %s', async (text) => {
     mocks.summarize.mockResolvedValue(text)
     await expect(provider.mapLiveConversation({ kind: 'request', transcript: 'user: hello', userWords: 'hello', history: [], previousRequest: '', agentBusy: false })).rejects.toThrow('invalid voice request')

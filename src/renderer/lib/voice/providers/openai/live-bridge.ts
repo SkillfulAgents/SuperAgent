@@ -1,5 +1,5 @@
 import { splitSpeechText } from '@shared/lib/voice/text-chunks'
-import { liveRequestSchema, type LiveMappingInput, type LiveRequest, type VoiceHistory, type VoiceTranscriptEntry } from '@shared/lib/voice/live-types'
+import { legacyLiveRequestSchema, liveRequestSchema, type LiveMappingInput, type LiveRequest, type VoiceHistory, type VoiceTranscriptEntry } from '@shared/lib/voice/live-types'
 
 export interface LiveBridgeEvents {
   send: (event: Record<string, unknown>) => void
@@ -151,19 +151,20 @@ export class OpenAILiveBridge {
     this.requestAbort = controller
     let dispatched = false
     try {
-      const mapped = liveRequestSchema.parse(await this.events.map({
+      const raw = await this.events.map({
         kind: 'request', history: this.history,
         transcript: this.transcript.map(({ role, text }) => `${role === 'user' ? 'user' : 'voice_assistant'}: ${text}`).join('\n').slice(-16000),
         userWords, previousRequest: this.previousRequest, agentBusy: this.busy,
-      }, controller.signal))
+      }, controller.signal)
       if (controller.signal.aborted || this.closed || this.paused || revision !== this.userRevision || id !== this.pendingDelegation) return
       this.pendingDelegation = null
       this.utterance = ''
       this.events.onUtterance('')
-      let request: LiveRequest = mapped
-      if (leaksAssistantSpeech(mapped.text, this.assistantSpeech(), userWords)) {
+      let request = this.normalize(raw, userWords, id, received)
+      if (!request) return
+      if (leaksAssistantSpeech(request.text, this.assistantSpeech(), userWords)) {
         console.warn('[voice] Live rewrite repeated the voice assistant\'s words; sending the user\'s own words instead.')
-        request = { ...mapped, text: userWords }
+        request = { ...request, text: userWords }
       }
       // Queued words join the running turn, so its replies stay valid.
       if (request.mode !== 'queue' || !this.busy) this.invalidateReplies()
@@ -189,6 +190,25 @@ export class OpenAILiveBridge {
       if (dispatched) this.dispatching = false
       if (this.requestAbort === controller) this.requestAbort = null
       if (revision !== this.userRevision) this.scheduleRequest()
+    }
+  }
+
+  /** A host older than this client still answers with an action; its verdicts map onto the pipe. */
+  private normalize(raw: unknown, userWords: string, delegation: string, received: number): LiveRequest | null {
+    const current = liveRequestSchema.safeParse(raw)
+    if (current.success) return current.data
+    const legacy = legacyLiveRequestSchema.parse(raw)
+    switch (legacy.action) {
+      case 'message': return { text: legacy.text.trim() || userWords, mode: 'interrupt' }
+      // The user's own words ("stop") reach the agent; the interrupt path halts the turn.
+      case 'cancel': return { text: userWords, mode: 'interrupt' }
+      // The words stay unsent, so an answer arrives together with what it answers.
+      case 'clarify':
+        if (legacy.text.trim()) this.commentary(`Clarification needed: ${legacy.text}`, delegation === 'manual' ? null : delegation)
+        return null
+      case 'none':
+        this.sentUserChars = Math.max(this.sentUserChars, received)
+        return null
     }
   }
 
