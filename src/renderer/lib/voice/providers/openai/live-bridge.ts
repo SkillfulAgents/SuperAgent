@@ -16,10 +16,35 @@ export function liveTextChunks(text: string): string[] {
   return splitSpeechText(text, 400, 'utf8')
 }
 
+/** After this many clarifications in a row, the user's own words go to the agent, which can ask better. */
+export const MAX_CONSECUTIVE_CLARIFY = 2
+const LEAK_NGRAM = 6
+
+function wordGrams(text: string): Set<string> {
+  const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/u).filter(Boolean)
+  const grams = new Set<string>()
+  for (let i = 0; i + LEAK_NGRAM <= words.length; i++) grams.add(words.slice(i, i + LEAK_NGRAM).join(' '))
+  return grams
+}
+
+/** True when `text` repeats a run of the voice assistant's words that the user never said. */
+export function leaksAssistantSpeech(text: string, assistantSpeech: string, userSpeech: string): boolean {
+  const assistant = wordGrams(assistantSpeech)
+  if (assistant.size === 0) return false
+  const user = wordGrams(userSpeech)
+  for (const gram of wordGrams(text)) if (assistant.has(gram) && !user.has(gram)) return true
+  return false
+}
+
 /** Live-specific mapping. Neither the session hook nor the agent sees protocol events. */
 export class OpenAILiveBridge {
   private transcript: VoiceTranscriptEntry[] = []
+  /** Live subtitle: the user's words since the last mapping. */
   private utterance = ''
+  /** Mapping source: the user's words since the last request actually sent; survives clarifications. */
+  private requestWords = ''
+  private lastClarify: string | null = null
+  private clarifyStreak = 0
   private userRevision = 0
   private handledRevision = 0
   private previousRequest = ''
@@ -66,6 +91,7 @@ export class OpenAILiveBridge {
       if (role === 'user') {
         this.events.onInputTranscript?.(event.delta)
         this.utterance = (this.utterance + event.delta).slice(-4000)
+        this.requestWords = (this.requestWords + event.delta).slice(-4000)
         this.events.onUtterance(this.utterance)
         this.userRevision++
         this.requestAbort?.abort()
@@ -105,9 +131,11 @@ export class OpenAILiveBridge {
     this.requestAbort = controller
     let dispatched = false
     try {
-      const request = liveRequestSchema.parse(await this.events.map({
+      const utterance = this.requestWords.trim()
+      let request = liveRequestSchema.parse(await this.events.map({
         kind: 'request', history: this.history,
         transcript: this.transcript.map(({ role, text }) => `${role}: ${text}`).join('\n').slice(-16000),
+        utterance, lastClarify: this.lastClarify,
         previousRequest: this.previousRequest, agentBusy: this.busy,
       }, controller.signal))
       if (controller.signal.aborted || this.closed || this.paused || revision !== this.userRevision || id !== this.pendingDelegation) return
@@ -115,11 +143,26 @@ export class OpenAILiveBridge {
       this.handledRevision = revision
       this.utterance = ''
       this.events.onUtterance('')
-      if (request.action === 'none') return
+      // The mapper asking itself questions is a loop the user cannot break by
+      // voice; after a bounded run, the user's words go to the agent unchanged.
+      if (request.action === 'clarify' && this.clarifyStreak >= MAX_CONSECUTIVE_CLARIFY && utterance) {
+        console.warn('[voice] Live mapping kept clarifying; sending the user\'s own words instead.')
+        request = { action: 'message', text: utterance }
+      }
+      // The mapper must not turn the voice assistant's speech, or its own
+      // clarification, into the user's request. Fall back to the user's words.
+      if (request.action === 'message' && leaksAssistantSpeech(request.text, this.assistantSpeech(), utterance)) {
+        console.warn('[voice] Live mapping repeated the assistant\'s words; sending the user\'s utterance instead.')
+        request = utterance ? { action: 'message', text: utterance } : { action: 'none', text: '' }
+      }
+      if (request.action === 'none') { this.resetRequestWords(); return }
       if (request.action === 'clarify') {
+        this.lastClarify = request.text
+        this.clarifyStreak++
         this.commentary(`Clarification needed: ${request.text}`, id === 'manual' ? null : id)
         return
       }
+      this.resetRequestWords()
       this.invalidateReplies()
       this.delegationId = id === 'manual' ? null : id
       this.dispatching = true
@@ -143,6 +186,17 @@ export class OpenAILiveBridge {
       if (this.requestAbort === controller) this.requestAbort = null
       if (revision !== this.userRevision) this.scheduleRequest()
     }
+  }
+
+  private resetRequestWords() {
+    this.requestWords = ''
+    this.lastClarify = null
+    this.clarifyStreak = 0
+  }
+
+  private assistantSpeech(): string {
+    const spoken = this.transcript.filter(({ role }) => role === 'assistant').map(({ text }) => text)
+    return [...spoken, this.lastClarify ?? ''].join('\n')
   }
 
   invalidateReplies() {

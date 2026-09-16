@@ -9,6 +9,10 @@ export const liveMappingSchema = z.discriminatedUnion('kind', [
     kind: z.literal('request'),
     history: voiceHistorySchema,
     transcript: z.string().min(1).max(16000),
+    // Everything the user said since the last request actually sent; the only source of a message's content.
+    utterance: z.string().max(4000),
+    // The clarification this mapper itself asked last time, spoken to the user by the voice model.
+    lastClarify: z.string().max(4000).nullable(),
     previousRequest: z.string().max(4000),
     agentBusy: z.boolean(),
   }),

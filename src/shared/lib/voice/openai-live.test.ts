@@ -51,7 +51,7 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
 
   it('reuses the configured summarizer and validates its normalized request', async () => {
     mocks.summarize.mockResolvedValue('{"action":"message","text":"Check Thursday instead of Friday."}')
-    expect(await provider.mapLiveConversation({ kind: 'request', transcript: 'user: Actually Thursday.', history: [], previousRequest: 'Check Friday.', agentBusy: true }))
+    expect(await provider.mapLiveConversation({ kind: 'request', transcript: 'user: Actually Thursday.', utterance: 'Actually Thursday.', lastClarify: null, history: [], previousRequest: 'Check Friday.', agentBusy: true }))
       .toEqual({ action: 'message', text: 'Check Thursday instead of Friday.' })
     expect(mocks.resolve).toHaveBeenCalledWith('configured-summary-model', 'summarizer')
     expect(mocks.summarize).toHaveBeenCalledWith(mocks.client, expect.objectContaining({ model: 'resolved-summary-model', output_config: { format: expect.objectContaining({ type: 'json_schema', schema: expect.objectContaining({ required: ['action', 'text'], additionalProperties: false }) }) } }), expect.any(AbortSignal))
@@ -59,7 +59,7 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
 
   it.each(['not JSON', '{"action":"execute","text":"bad"}', '{"action":"message","text":""}'])('rejects unusable mappings: %s', async (text) => {
     mocks.summarize.mockResolvedValue(text)
-    await expect(provider.mapLiveConversation({ kind: 'request', transcript: 'user: hello', history: [], previousRequest: '', agentBusy: false })).rejects.toThrow()
+    await expect(provider.mapLiveConversation({ kind: 'request', transcript: 'user: hello', utterance: 'hello', lastClarify: null, history: [], previousRequest: '', agentBusy: false })).rejects.toThrow()
   })
 
   it('uses the summarizer for outgoing updates and propagates aborts', async () => {

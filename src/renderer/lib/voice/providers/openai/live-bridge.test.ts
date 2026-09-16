@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { OpenAILiveBridge, liveTextChunks } from './live-bridge'
+import { MAX_CONSECUTIVE_CLARIFY, OpenAILiveBridge, leaksAssistantSpeech, liveTextChunks } from './live-bridge'
 
 function setup() {
   const events = {
@@ -96,6 +96,85 @@ afterEach(() => vi.useRealTimers())
     await vi.advanceTimersByTimeAsync(700)
     expect(events.onRequest).not.toHaveBeenCalled()
     bridge.close()
+  })
+
+  it('passes the user\'s own words and the mapper\'s last clarification, accumulating across clarifications', async () => {
+    const { bridge, events, user, delegate } = setup()
+    bridge.receive({ type: 'session.output_transcript.delta', delta: 'There is no Casual Greeting Agent here. Want me to create one?' })
+    user('You are the new casual greeting agent')
+    events.map.mockResolvedValueOnce({ action: 'clarify', text: 'Are you asking me to save your Supabase API key and ask for the project URL?' })
+    delegate()
+    await vi.advanceTimersByTimeAsync(700)
+    expect(events.map.mock.calls[0][0]).toMatchObject({ utterance: 'You are the new casual greeting agent', lastClarify: null })
+    expect(events.onUtterance).toHaveBeenLastCalledWith('')
+    bridge.receive({ type: 'session.output_transcript.delta', delta: 'Are you asking me to save your Supabase API key and ask for the project URL?' })
+    user(' Yes')
+    events.map.mockResolvedValueOnce({ action: 'message', text: 'You are the new Casual Greeting Agent, go ahead.' })
+    delegate('item_2')
+    await vi.advanceTimersByTimeAsync(700)
+    expect(events.map.mock.calls[1][0]).toMatchObject({
+      utterance: 'You are the new casual greeting agent Yes',
+      lastClarify: 'Are you asking me to save your Supabase API key and ask for the project URL?',
+    })
+    expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: 'You are the new Casual Greeting Agent, go ahead.' })
+    user(' Thanks')
+    events.map.mockResolvedValueOnce({ action: 'none', text: '' })
+    delegate('item_3')
+    await vi.advanceTimersByTimeAsync(700)
+    expect(events.map.mock.calls[2][0]).toMatchObject({ utterance: 'Thanks', lastClarify: null })
+    bridge.close()
+  })
+
+  it('sends the user\'s own words when the mapper answers its own clarification with a fabricated request', async () => {
+    const { bridge, events, user, delegate } = setup()
+    user('You are the new casual greeting agent')
+    const question = 'Just to confirm, are you asking me to save your Supabase API key and ask you for the project URL to complete the connection?'
+    events.map.mockResolvedValueOnce({ action: 'clarify', text: question })
+    delegate()
+    await vi.advanceTimersByTimeAsync(700)
+    bridge.receive({ type: 'session.output_transcript.delta', delta: question })
+    user(' Yes')
+    events.map.mockResolvedValueOnce({ action: 'message', text: 'Save my Supabase API key and ask me for my project URL to complete the connection.' })
+    delegate('item_2')
+    await vi.advanceTimersByTimeAsync(700)
+    expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: 'You are the new casual greeting agent Yes' })
+    bridge.close()
+  })
+
+  it('stops a clarification loop after the bounded run and sends the user\'s words', async () => {
+    const { bridge, events, user, delegate } = setup()
+    events.map.mockResolvedValue({ action: 'clarify', text: 'Which agent should I send it to?' })
+    user('Just go')
+    delegate('item_1')
+    for (let i = 0; i < MAX_CONSECUTIVE_CLARIFY; i++) {
+      await vi.advanceTimersByTimeAsync(700)
+      user(' just do it')
+      delegate(`item_${i + 2}`)
+    }
+    expect(events.onRequest).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(700)
+    expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: 'Just go just do it just do it' })
+    expect(events.send.mock.calls.filter(([e]) => String((e as { content?: string }).content).startsWith('Clarification needed'))).toHaveLength(MAX_CONSECUTIVE_CLARIFY)
+    bridge.close()
+  })
+
+  it('keeps a request that quotes the assistant in the user\'s own words', async () => {
+    const { bridge, events, user, delegate } = setup()
+    bridge.receive({ type: 'session.output_transcript.delta', delta: 'AWS staging read-only is the biggest gap.' })
+    user('You said AWS staging read-only is the biggest gap, so request that one.')
+    events.map.mockResolvedValueOnce({ action: 'message', text: 'Request AWS staging read-only access, since that is the biggest gap.' })
+    delegate()
+    await vi.advanceTimersByTimeAsync(700)
+    expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: 'Request AWS staging read-only access, since that is the biggest gap.' })
+    bridge.close()
+  })
+
+  it('flags only long verbatim runs of assistant speech the user did not say', () => {
+    const assistant = "Want me to probe a specific API next, like Workers or DNS? Just to clarify, are you asking about an existing credential?"
+    expect(leaksAssistantSpeech('Just to clarify, are you asking about an existing credential?', assistant, 'Do we have Supabase?')).toBe(true)
+    expect(leaksAssistantSpeech('Yes, probe a specific API next, like Workers.', assistant, 'Yes, probe a specific API next, like Workers.')).toBe(false)
+    expect(leaksAssistantSpeech('Probe the Workers API next.', assistant, 'Probe Workers.')).toBe(false)
+    expect(leaksAssistantSpeech('Check Friday.', '', 'Check Friday.')).toBe(false)
   })
 
   it('does not leak delayed replies across a new request or a closed session', async () => {
