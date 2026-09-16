@@ -3,7 +3,7 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { LocalAgentActor, type LocalActorDeps } from '../../src/shared/lib/agent-actor/local-agent-actor'
 import { getAgentWorkspaceDir } from '../../src/shared/lib/utils/file-storage'
-import { AGENT_MEMORY_DIR } from '../../src/shared/lib/services/agent-memory-service'
+import { AGENT_MEMORY_DIR } from '../../src/shared/lib/agent-actor/memory-schema'
 
 test('memories can be discovered, edited, and reloaded; stale saves keep the draft', async ({ page, request }) => {
   test.slow()
@@ -16,7 +16,8 @@ test('memories can be discovered, edited, and reloaded; stale saves keep the dra
   const agentUrl = new URL(page.url()).pathname
   const agent = await (await request.get(`/api/agents/${agentUrl.split('/')[2]}`)).json()
   // This fixture only exercises actor file operations; runtime dependencies stay unused.
-  const files = new LocalAgentActor(agent.slug, { getAgentWorkspaceDir } as LocalActorDeps).files
+  const actor = new LocalAgentActor(agent.slug, { getAgentWorkspaceDir } as LocalActorDeps)
+  const files = actor.files
 
   await page.getByTestId('home-memories-open-page').click()
   await expect(page.getByText('No memories yet')).toBeVisible()
@@ -35,12 +36,12 @@ test('memories can be discovered, edited, and reloaded; stale saves keep the dra
   await expect(page.getByText('Frontmatter "metadata.type" must be user, feedback, project, or reference.', { exact: true })).toBeVisible()
   await expect(editor).toHaveValue(invalid)
   await expect(page.getByRole('button', { name: 'Reload latest version', exact: true })).not.toBeVisible()
-  expect(new TextDecoder().decode(await files.getDoc(`${AGENT_MEMORY_DIR}/style.md`) ?? undefined)).toBe(original)
+  expect((await actor.memories.read('style.md')).content).toBe(original)
   const edited = original.replace('short paragraphs', 'clear examples')
   await editor.fill(edited)
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(page.getByText('Memory saved.', { exact: true })).toBeVisible()
-  expect(new TextDecoder().decode(await files.getDoc(`${AGENT_MEMORY_DIR}/style.md`) ?? undefined)).toBe(edited)
+  expect((await actor.memories.read('style.md')).content).toBe(edited)
 
   await page.reload()
   await expect(page).toHaveURL(/\/memories$/)

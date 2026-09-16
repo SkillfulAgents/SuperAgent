@@ -11,12 +11,18 @@ describe('createFakeAgentActor', () => {
     expect(actor.sessions.exists).not.toHaveBeenCalled()
   })
 
-  it('covers every group of the contract, config included', async () => {
+  it('covers every group of the contract, config and memories included', async () => {
     const actor = createFakeAgentActor('a')
     await actor.config.get('instructions')
     expect(actor.config.get).toHaveBeenCalledWith('instructions')
     expect(actor.usage.daily).not.toHaveBeenCalled()
     expect(await actor.files.stat('x')).toBeUndefined()
+    await actor.memories.list()
+    await actor.memories.read('style.md')
+    await actor.memories.save('style.md', 'content', 'revision')
+    expect(actor.memories.list).toHaveBeenCalledOnce()
+    expect(actor.memories.read).toHaveBeenCalledWith('style.md')
+    expect(actor.memories.save).toHaveBeenCalledWith('style.md', 'content', 'revision')
   })
 
   it('honours overrides, including nested input groups', async () => {

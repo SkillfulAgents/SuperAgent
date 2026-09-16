@@ -1,8 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
-import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
-import { listAgentMemories, readAgentMemory, saveAgentMemory, MemoryError, MAX_MEMORY_BYTES } from '@shared/lib/services/agent-memory-service'
+import { agentRegistry, WorkspaceFileError, MemoryError, MAX_MEMORY_BYTES } from '@shared/lib/agent-actor'
 import { AgentAdmin, getAgentId } from '../middleware/auth'
 
 export const agentMemoryRoutes = new Hono()
@@ -18,12 +17,12 @@ agentMemoryRoutes.onError((error, c) => {
 // Match the private agent-directory and skill editor's admin scope.
 agentMemoryRoutes.get('/:id/memories', AgentAdmin(), async c => {
   c.header('Cache-Control', 'no-store')
-  return c.json({ memories: await listAgentMemories(agentRegistry.get(getAgentId(c)).files) })
+  return c.json({ memories: await agentRegistry.get(getAgentId(c)).memories.list() })
 })
 
 agentMemoryRoutes.get('/:id/memories/content', AgentAdmin(), async c => {
   c.header('Cache-Control', 'no-store')
-  return c.json(await readAgentMemory(agentRegistry.get(getAgentId(c)).files, c.req.query('path') ?? ''))
+  return c.json(await agentRegistry.get(getAgentId(c)).memories.read(c.req.query('path') ?? ''))
 })
 
 agentMemoryRoutes.put('/:id/memories/content', AgentAdmin(), zValidator('json', z.object({
@@ -32,5 +31,5 @@ agentMemoryRoutes.put('/:id/memories/content', AgentAdmin(), zValidator('json', 
   revision: z.string().regex(/^[a-f0-9]{64}$/),
 })), async c => {
   const { path, content, revision } = c.req.valid('json')
-  return c.json(await saveAgentMemory(agentRegistry.get(getAgentId(c)).files, path, content, revision))
+  return c.json(await agentRegistry.get(getAgentId(c)).memories.save(path, content, revision))
 })

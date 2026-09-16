@@ -1,17 +1,10 @@
 import { createHash } from 'node:crypto'
 import { load, JSON_SCHEMA } from 'js-yaml'
-import type { FileOps } from '@shared/lib/agent-actor/types'
-import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
+import type { FileOps, MemoryOps } from './types'
+import { WorkspaceFileError } from './workspace-path'
 import type { AgentMemoryDocument, AgentMemoryEntry } from '@shared/lib/types/memory'
 
-export const AGENT_MEMORY_DIR = '.claude/projects/-workspace/memory'
-export const MAX_MEMORY_BYTES = 1024 * 1024
-
-export class MemoryError extends Error {
-  constructor(message: string, readonly status: 400 | 404 | 409 | 413 | 422) {
-    super(message)
-  }
-}
+import { AGENT_MEMORY_DIR, MAX_MEMORY_BYTES, MemoryError } from './memory-schema'
 
 function memoryPath(relative: string): string {
   if (!relative || relative.includes('\\') || relative.includes('\0') ||
@@ -87,7 +80,7 @@ function describeMemory(relative: string, content: string): Omit<AgentMemoryDocu
   }
 }
 
-export async function readAgentMemory(files: FileOps, relative: string): Promise<AgentMemoryDocument> {
+async function readAgentMemory(files: FileOps, relative: string): Promise<AgentMemoryDocument> {
   const target = await resolveMemoryPath(files, memoryPath(relative))
   if (!target) throw new MemoryError('Memory not found', 404)
   const stat = await files.stat(target)
@@ -111,7 +104,7 @@ export async function readAgentMemory(files: FileOps, relative: string): Promise
   return { ...describeMemory(relative, content), revision: createHash('sha256').update(bytes).digest('hex') }
 }
 
-export async function listAgentMemories(files: FileOps): Promise<AgentMemoryEntry[]> {
+async function listAgentMemories(files: FileOps): Promise<AgentMemoryEntry[]> {
   const root = await resolveMemoryPath(files, AGENT_MEMORY_DIR)
   if (!root) return []
   const result: AgentMemoryEntry[] = []
@@ -138,25 +131,35 @@ export async function listAgentMemories(files: FileOps): Promise<AgentMemoryEntr
   return result.sort((a, b) => Number(b.isIndex) - Number(a.isIndex) || a.title.localeCompare(b.title))
 }
 
-// Serialize API saves per actor file store. FileOps has no compare-and-swap:
-// external writers can still race the final revision check/atomic putDoc.
-const pendingSaves = new WeakMap<FileOps, Promise<unknown>>()
+/**
+ * Memory operations belong to one actor. The implementation uses its FileOps,
+ * so directory layout, validation, and save serialization stay behind memories.
+ */
+export function createMemoryOps(files: FileOps): MemoryOps {
+  // FileOps has no compare-and-swap: external writers can still race the final
+  // revision check/atomic putDoc. Saves through this actor are serialized.
+  let pendingSave: Promise<unknown> | undefined
 
-export async function saveAgentMemory(files: FileOps, relative: string, content: string, revision: string): Promise<AgentMemoryDocument> {
-  if (Buffer.byteLength(content, 'utf8') > MAX_MEMORY_BYTES) throw new MemoryError('This memory is too large to save (maximum 1 MB).', 413)
-  const previous = pendingSaves.get(files) ?? Promise.resolve()
-  const save = previous.catch(() => {}).then(async () => {
-    const current = await readAgentMemory(files, relative)
-    if (current.revision !== revision) throw new MemoryError('This memory changed since you opened it. Your draft has been kept. Reload the latest version before saving.', 409)
-    if (!await resolveMemoryPath(files, memoryPath(relative))) throw new MemoryError('Memory not found', 404)
-    validateMemoryFrontmatter(relative, content)
-    await files.putDoc(memoryPath(relative), content)
-    return { ...describeMemory(relative, content), revision: createHash('sha256').update(content).digest('hex') }
-  })
-  pendingSaves.set(files, save)
-  try {
-    return await save
-  } finally {
-    if (pendingSaves.get(files) === save) pendingSaves.delete(files)
+  return {
+    list: () => listAgentMemories(files),
+    read: relative => readAgentMemory(files, relative),
+    save: async (relative, content, revision) => {
+      if (Buffer.byteLength(content, 'utf8') > MAX_MEMORY_BYTES) throw new MemoryError('This memory is too large to save (maximum 1 MB).', 413)
+      const previous = pendingSave ?? Promise.resolve()
+      const save = previous.catch(() => {}).then(async () => {
+        const current = await readAgentMemory(files, relative)
+        if (current.revision !== revision) throw new MemoryError('This memory changed since you opened it. Your draft has been kept. Reload the latest version before saving.', 409)
+        if (!await resolveMemoryPath(files, memoryPath(relative))) throw new MemoryError('Memory not found', 404)
+        validateMemoryFrontmatter(relative, content)
+        await files.putDoc(memoryPath(relative), content)
+        return { ...describeMemory(relative, content), revision: createHash('sha256').update(content).digest('hex') }
+      })
+      pendingSave = save
+      try {
+        return await save
+      } finally {
+        if (pendingSave === save) pendingSave = undefined
+      }
+    },
   }
 }

@@ -2,11 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 import { InMemoryFileOps } from '@shared/lib/agent-actor/testing/in-memory-file-ops'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
-import { AGENT_MEMORY_DIR } from '@shared/lib/services/agent-memory-service'
+import { AGENT_MEMORY_DIR } from '@shared/lib/agent-actor/memory-schema'
+import { createMemoryOps } from '@shared/lib/agent-actor/memory-ops'
+import type { MemoryOps } from '@shared/lib/agent-actor/types'
 
 let files: InMemoryFileOps
-const get = vi.fn((_slug: string) => ({ files }))
-vi.mock('@shared/lib/agent-actor', () => ({
+let memories: MemoryOps
+const get = vi.fn((_slug: string) => ({ memories }))
+vi.mock('@shared/lib/agent-actor', async () => ({
+  ...await import('@shared/lib/agent-actor/memory-schema'),
   agentRegistry: { get: (slug: string) => get(slug) },
   get WorkspaceFileError() { return WorkspaceFileError },
 }))
@@ -25,21 +29,28 @@ const headers = { 'x-test-role': 'admin', 'Content-Type': 'application/json' }
 
 beforeEach(() => {
   files = new InMemoryFileOps()
+  memories = createMemoryOps(files)
   get.mockClear()
 })
 
 describe('memory API', () => {
   it('lists and edits through the resolved actor, preserving conflict responses', async () => {
     await files.putDoc(`${AGENT_MEMORY_DIR}/example.md`, '# Original')
+    const listMemory = vi.spyOn(memories, 'list')
+    const readMemory = vi.spyOn(memories, 'read')
+    const saveMemory = vi.spyOn(memories, 'save')
     const list = await app.request(url, { headers })
     expect(list.status).toBe(200)
     expect(list.headers.get('Cache-Control')).toBe('no-store')
     expect(get).toHaveBeenCalledWith('resolved-agent-slug')
+    expect(listMemory).toHaveBeenCalledOnce()
     const doc = await (await app.request(`${url}/content?path=example.md`, { headers })).json()
     const body = JSON.stringify({ path: 'example.md', content: '---\nname: Example\ndescription: Example memory\nmetadata:\n  type: project\n---\n# Edited', revision: doc.revision })
     expect((await app.request(`${url}/content`, { method: 'PUT', headers, body })).status).toBe(200)
     const conflict = await app.request(`${url}/content`, { method: 'PUT', headers, body })
     expect(conflict.status).toBe(409)
+    expect(readMemory).toHaveBeenCalledWith('example.md')
+    expect(saveMemory).toHaveBeenCalledWith('example.md', expect.any(String), doc.revision)
     expect(await conflict.json()).toMatchObject({ error: expect.stringContaining('changed') })
   })
 
