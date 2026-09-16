@@ -763,8 +763,8 @@ beforeEach(() => {
   // Fresh actor handles: the file operations cache the workspace root's real
   // path per handle, and these tests script realpath answers per test.
   agentRegistry.evictAll()
-  vi.mocked(getUserSummaries).mockReturnValue(new Map())
-  vi.mocked(userExists).mockReturnValue(true)
+  vi.mocked(getUserSummaries).mockResolvedValue(new Map())
+  vi.mocked(userExists).mockResolvedValue(true)
   mockAuthorizedAgentRole = 'owner'
   vi.mocked(sessionIsKnown).mockResolvedValue(true)
 })
@@ -2046,7 +2046,7 @@ describe('ACL — POST /:id/access (invite user)', () => {
   })
 
   it('returns 404 when target user does not exist', async () => {
-    vi.mocked(userExists).mockReturnValue(false)
+    vi.mocked(userExists).mockResolvedValue(false)
 
     const res = await postJson(app, INVITE_URL, { userId: 'nonexistent', role: 'user' })
     expect(res.status).toBe(404)
@@ -4075,7 +4075,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
       mockDbSelectFrom.mockReturnValue({
         where: () => Promise.resolve([{ messageId: 'msg-1', userId: 'user-1' }]),
       })
-      vi.mocked(getUserSummaries).mockReturnValue(new Map([['user-1', {
+      vi.mocked(getUserSummaries).mockResolvedValue(new Map([['user-1', {
         id: 'user-1', name: 'Alice', email: 'alice@example.com', image: 'https://example.com/alice.png',
       }]]))
 

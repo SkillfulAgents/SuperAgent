@@ -597,7 +597,7 @@ export class ContainerRuntime {
     }
 
     // Set container timezone to the agent owner's timezone
-    const tz = resolveTimezoneForAgent(slug)
+    const tz = await resolveTimezoneForAgent(slug)
     envVars['TZ'] = tz
 
     // Tell the agent container which host OS is running (for script type selection)

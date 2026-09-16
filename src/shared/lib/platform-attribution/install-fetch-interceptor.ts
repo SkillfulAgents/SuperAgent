@@ -25,7 +25,7 @@ export function installPlatformFetchInterceptor(): void {
     const proxyBase = getPlatformProxyBaseUrl()
     if (proxyBase && url.startsWith(proxyBase)) {
       const headers = new Headers(init?.headers)
-      attribution.current()?.applyTo(headers)
+      ;(await attribution.current())?.applyTo(headers)
       if (debug) {
         const t0 = Date.now()
         const method = init?.method ?? 'GET'

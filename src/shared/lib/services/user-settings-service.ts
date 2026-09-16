@@ -237,8 +237,8 @@ function seedFromAppSettings(): UserSettingsData {
  * Get user settings for a given user ID.
  * Returns defaults if no row exists. For the 'local' sentinel, seeds from settings.json on first access.
  */
-export function getUserSettings(userId: string): UserSettingsData {
-  const rows = db
+export async function getUserSettings(userId: string): Promise<UserSettingsData> {
+  const rows = await db
     .select({ settings: userSettings.settings })
     .from(userSettings)
     .where(eq(userSettings.userId, userId))
@@ -257,7 +257,7 @@ export function getUserSettings(userId: string): UserSettingsData {
   const initial = userId === 'local' ? seedFromAppSettings() : getDefaultUserSettings()
 
   // Persist the initial settings so future reads come from DB
-  db.insert(userSettings)
+  await db.insert(userSettings)
     .values({
       userId,
       settings: JSON.stringify(initial),
@@ -284,11 +284,11 @@ function mergeVoice(
   return merged
 }
 
-export function updateUserSettings(
+export async function updateUserSettings(
   userId: string,
   partial: UserSettingsWrite
-): UserSettingsData {
-  const current = getUserSettings(userId)
+): Promise<UserSettingsData> {
+  const current = await getUserSettings(userId)
 
   // Deep merge the nested groups if provided
   const merged = {
@@ -303,7 +303,7 @@ export function updateUserSettings(
   const validated = userSettingsSchema.parse(merged)
   const json = JSON.stringify(validated)
 
-  db.insert(userSettings)
+  await db.insert(userSettings)
     .values({
       userId,
       settings: json,
@@ -324,7 +324,7 @@ export function updateUserSettings(
 /**
  * Get a user's timezone, falling back to the system timezone or UTC.
  */
-export function getUserTimezone(userId: string): string {
-  const settings = getUserSettings(userId)
+export async function getUserTimezone(userId: string): Promise<string> {
+  const settings = await getUserSettings(userId)
   return settings.timezone || detectSystemTimezone()
 }

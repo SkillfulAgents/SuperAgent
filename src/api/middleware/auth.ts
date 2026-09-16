@@ -445,7 +445,7 @@ export function IsAgent(): MiddlewareHandler {
       return c.json({ error: 'Unauthorized' }, 401)
     }
     c.set('agentSlug' as never, agentSlug as never)
-    return runWithOptionalUser(getAgentOwnerUserId(agentSlug), () => next())
+    return runWithOptionalUser(await getAgentOwnerUserId(agentSlug), () => next())
   }
 }
 
