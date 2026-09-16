@@ -28,7 +28,7 @@ const mockStreamState = {
   activeSubagents: [] as any[],
   completedSubagents: null as Set<string> | null,
   slashCommands: [],
-  backgroundTasks: [] as Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean; launchedBySubagent?: boolean; label?: { title: string; detail: string | null } }>,
+  backgroundTasks: [] as Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean; launchedBySubagent?: boolean; fromSnapshot?: boolean; label?: { title: string; detail: string | null } }>,
 }
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -968,13 +968,19 @@ describe('AgentActivityIndicator', () => {
   })
 
   describe('subagent status', () => {
-    it.each([false, true])('renders one stoppable nested task with named lifecycle row %s', async (hasNamedRow) => {
+    it.each([
+      { hasNamedRow: false, fromSnapshot: false },
+      { hasNamedRow: true, fromSnapshot: false },
+      { hasNamedRow: false, fromSnapshot: true },
+      { hasNamedRow: true, fromSnapshot: true },
+    ])('renders one stoppable nested task (named row: $hasNamedRow, snapshot: $fromSnapshot)', async ({ hasNamedRow, fromSnapshot }) => {
       mockStreamState.isActive = true
       mockStreamState.backgroundTasks = [{
         taskId: 'nested-agent-id',
         startedAt: Date.now(),
-        isSubagent: true,
-        launchedBySubagent: true,
+        isSubagent: !fromSnapshot,
+        launchedBySubagent: !fromSnapshot,
+        fromSnapshot,
         label: { title: 'code-reviewer', detail: 'Review the changes' },
       }]
       if (hasNamedRow) {

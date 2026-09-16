@@ -88,12 +88,12 @@ export function ActivityCard({
   const [isCollapsed, setIsCollapsed] = useState(false)
   const listRef = useRef<HTMLUListElement>(null)
 
-  // Main and nested agents can both have named lifecycle rows. Keep the
-  // sidechain fallback only when no running named row represents that task.
+  // Main and nested agents can both have named lifecycle rows. Keep a
+  // sidechain or snapshot fallback only when no running named row represents it.
   const visibleBackgroundTasks = backgroundTasks.filter((task) =>
-    !task.isSubagent || (task.launchedBySubagent && !subagents.some((subagent) =>
+    (!task.isSubagent || task.launchedBySubagent) && !subagents.some((subagent) =>
       subagent.taskId === task.taskId && subagent.status === 'running'
-    ))
+    )
   )
   const backgroundWorkflowCount = visibleBackgroundTasks.filter((task) => task.isWorkflow).length
   const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount
