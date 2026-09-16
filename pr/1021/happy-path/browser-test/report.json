@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the browser use feature works correctly: agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and provided the correct response.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Application loaded successfully with home view showing agent list",
+    "Found and clicked the \"QA-20260916-175742-0wax\" agent in the sidebar — Agent page opened and displayed agent configuration interface with message input field",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message typed into input field and sent successfully; agent transitioned to working state",
+    "Waited for agent response (up to 3 minutes) — Agent completed work in approximately 6 seconds, executing 3 tool calls (ToolSearch, Open Browser, Close Browser) using 148,085 tokens",
+    "Verified the response mentions \"Example Domain\" and took screenshot — Response displayed: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\" This confirms the agent successfully used browser tools to navigate to the URL, retrieve the page title, and report back the correct result."
+  ],
+  "bugs": [],
+  "durationMs": 71984,
+  "sessionId": "b68e039f-2b11-433b-af38-890d8d5b8746",
+  "cost": {
+    "inputTokens": 426,
+    "outputTokens": 11646,
+    "cacheCreationTokens": 85892,
+    "cacheReadTokens": 1315395,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.297561
+  }
+}
