@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { useState } from 'react'
+import { buildConnectionReplacementMessage } from '@shared/lib/utils/connection-replacement-message'
 import { MessageList } from './message-list'
 // Resolves to the mocked module's class below — the one the component's
 // instanceof check sees.
@@ -151,6 +152,13 @@ vi.mock('./informational-item', () => ({
   ),
 }))
 
+// The line's own copy and link are covered in fork-boundary.test.tsx; here only
+// its placement in the list matters.
+vi.mock('./fork-boundary', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./fork-boundary')>()),
+  ForkBoundaryItem: () => <div data-testid="fork-boundary" />,
+}))
+
 vi.mock('./message-context-menu', () => ({
   MessageContextMenu: ({ children }: any) => <>{children}</>,
 }))
@@ -215,6 +223,45 @@ describe('MessageList', () => {
     )
     expect(screen.getByText('Hi')).toBeInTheDocument()
     expect(screen.getByText('Hello!')).toBeInTheDocument()
+  })
+
+  it.each(['connected-accounts', 'remote-mcps'] as const)('replaces the adjacent interrupt badge with a %s notice when it arrives', (kind) => {
+    const interrupted = [
+      createUserMessage({ content: { text: 'Read the shared connection' } }),
+      createAssistantMessage({ content: { text: 'Reading…' } }),
+      createUserMessage({ content: { text: '[Request interrupted by user]' } }),
+    ]
+    mockMessagesData.data = interrupted
+    const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByTestId('interrupt-marker')).toBeInTheDocument()
+
+    mockMessagesData.data = [
+      ...interrupted,
+      createUserMessage({ content: { text: '[SYSTEM] Hidden runtime bookkeeping' } }),
+      createUserMessage({ content: { text: buildConnectionReplacementMessage({
+        kind, name: kind === 'connected-accounts' ? 'Slack' : 'Amplitude', previousId: 'old', replacementId: 'new',
+      }) } }),
+      createAssistantMessage({ content: { text: 'Continuing with the new connection' } }),
+    ]
+    rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByTestId('connection-replacement-notice')).toHaveTextContent('connection replaced')
+    expect(screen.queryByTestId('interrupt-marker')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Hidden runtime bookkeeping/)).not.toBeInTheDocument()
+    expect(screen.getByText('Continuing with the new connection')).toBeInTheDocument()
+  })
+
+  it('keeps a separate user stop when intervening conversation separates it from the replacement', () => {
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: '[Request interrupted by user]' } }),
+      createUserMessage({ content: { text: 'Try again' } }),
+      createAssistantMessage({ content: { text: 'Reading Slack' } }),
+      createUserMessage({ content: { text: buildConnectionReplacementMessage({
+        kind: 'connected-accounts', name: 'Slack', previousId: 'old', replacementId: 'new',
+      }) } }),
+    ]
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByTestId('interrupt-marker')).toHaveTextContent('Stopped')
+    expect(screen.getByTestId('connection-replacement-notice')).toBeInTheDocument()
   })
 
   it('renders the interrupt marker as a bare chip in the user column', () => {
@@ -411,6 +458,33 @@ describe('MessageList', () => {
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
     expect(screen.getByText('Compacted')).toBeInTheDocument()
+  })
+
+  it('draws the fork line after the copied history, or at the end of a fresh fork', () => {
+    const copied = [
+      createUserMessage({ content: { text: 'copied question' }, forked: true }),
+      createAssistantMessage({ content: { text: 'copied answer' }, forked: true }),
+    ]
+    mockMessagesData.data = [...copied, createUserMessage({ content: { text: 'fresh question' } })]
+    const { unmount } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+    const line = screen.getByTestId('fork-boundary')
+    expect(line.compareDocumentPosition(screen.getByText('copied answer')) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+    expect(line.compareDocumentPosition(screen.getByText('fresh question')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    unmount()
+
+    // Fresh fork: the line closes the copied history, and the first message
+    // typed into the fork sits below it while it is still a pending ghost.
+    mockMessagesData.data = copied
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'pm-1', uuid: 'pm-1', text: 'typed into the fork', sentAt: Date.now() }]}
+      />
+    )
+    const trailing = screen.getByTestId('fork-boundary')
+    expect(trailing.compareDocumentPosition(screen.getByText('copied answer')) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+    expect(trailing.compareDocumentPosition(screen.getByText('typed into the fork')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('shows pending user message optimistically', () => {

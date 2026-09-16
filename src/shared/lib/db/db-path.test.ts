@@ -20,6 +20,10 @@ vi.mock('drizzle-orm/better-sqlite3/migrator', () => ({
   migrate: vi.fn(),
 }))
 
+vi.mock('./data-migrations', () => ({
+  runDataMigrations: vi.fn(() => []),
+}))
+
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))

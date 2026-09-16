@@ -31,6 +31,10 @@ import {
 import { TelegramConnector } from './telegram-connector'
 import { MockChatClientConnector } from './mock-connector'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
+
+// The registry attaches the real stores; these tests drive the persister alone.
+messagePersister.attachSessionStores(createInMemorySessionStore)
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import type { SessionActivity } from '@shared/lib/types/agent'
 
@@ -51,10 +55,6 @@ function makeManaged(connector: ManagedConnector['connector'], chatId: string): 
       updatedAt: new Date(),
     } as ChatIntegration,
     chatId,
-    sseUnsubscribe: null,
-    messageUnsubscribe: null,
-    interactiveUnsubscribe: null,
-    errorUnsubscribe: null,
     streamingState: { currentMessageId: null, accumulatedText: '', lastUpdateTime: 0 },
     currentToolInput: '',
     pendingToolMessages: [],

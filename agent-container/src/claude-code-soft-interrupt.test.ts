@@ -98,6 +98,7 @@ vi.mock('./mcp-server', () => ({
   createDashboardsMcpServer: () => ({}),
   createAgentsMcpServer: () => ({}),
   createChatMcpServer: () => ({}),
+  createWidgetsMcpServer: () => ({}),
 }))
 vi.mock('./tools/browser', () => ({ createBrowserTools: () => [] }))
 vi.mock('./tools/computer-use', () => ({ computerUseTools: [] }))
@@ -226,6 +227,77 @@ describe('ClaudeCodeProcess soft interrupt', () => {
     expect(outcome).toEqual({ interrupted: false, discardedUuids: [], processKept: true })
     expect(query.interrupt).not.toHaveBeenCalled()
     expect(queryCalls).toHaveLength(1)
+  })
+
+  // CLI 2.1.269+: while a background subagent is live the CLI emits no idle
+  // after the lead turn's result (fixture sdk272-bg-subagent-no-idle). The
+  // turn is still over — Stop must not send an interrupt that no result ever
+  // answers, because the fallback restart would kill the subagent.
+  it('is a no-op for the turn after a result with no idle while a background subagent is live', async () => {
+    let query: MockQuery
+    ;({ proc, query } = await startProcess())
+    await proc.sendMessage('launch a background agent', '11111111-1111-4111-8111-111111111111')
+    query.push(stateFrame('running'))
+    query.push({ type: 'system', subtype: 'task_started', task_id: 'a1', task_type: 'local_agent', session_id: 'sess-1' })
+    query.push({ type: 'result', subtype: 'success', session_id: 'sess-1', user_message_uuids: ['11111111-1111-4111-8111-111111111111'] })
+    await tick()
+
+    const outcome = await proc.interrupt({ scope: 'turn' })
+
+    expect(outcome).toEqual({ interrupted: false, discardedUuids: [], processKept: true })
+    expect(query.interrupt).not.toHaveBeenCalled()
+    expect(queryCalls).toHaveLength(1)
+    expect(proc.isRunning()).toBe(true)
+  })
+
+  it('the completion wake turn after such a result is interruptible again, even with no state event', async () => {
+    let query: MockQuery
+    ;({ proc, query } = await startProcess())
+    await proc.sendMessage('launch a background agent', '11111111-1111-4111-8111-111111111111')
+    query.push(stateFrame('running'))
+    query.push({ type: 'result', subtype: 'success', session_id: 'sess-1', user_message_uuids: ['11111111-1111-4111-8111-111111111111'] })
+    await tick()
+    // The wake turn starts with model output and no session_state_changed.
+    query.push({ type: 'stream_event', event: { type: 'message_start' }, parent_tool_use_id: null, session_id: 'sess-1' })
+    await tick()
+
+    const outcome = await proc.interrupt({ scope: 'turn' })
+
+    expect(outcome.interrupted).toBe(true)
+    expect(outcome.processKept).toBe(true)
+    expect(query.interrupt).toHaveBeenCalledTimes(1)
+  })
+
+  it('a queued follow-up keeps the turn interruptible in the gap after the previous result', async () => {
+    let query: MockQuery
+    ;({ proc, query } = await startProcess())
+    await proc.sendMessage('first', '11111111-1111-4111-8111-111111111111')
+    await proc.sendMessage('second', '22222222-2222-4222-8222-222222222222')
+    query.push(stateFrame('running'))
+    // The first turn's result names only the send it answered; the second is
+    // being dequeued and has produced no frame yet.
+    query.push({ type: 'result', subtype: 'success', session_id: 'sess-1', user_message_uuids: ['11111111-1111-4111-8111-111111111111'] })
+    await tick()
+
+    const outcome = await proc.interrupt({ scope: 'turn' })
+
+    expect(outcome.interrupted).toBe(true)
+    expect(query.interrupt).toHaveBeenCalledTimes(1)
+  })
+
+  it('a result naming no sends counts as answering all of them', async () => {
+    let query: MockQuery
+    ;({ proc, query } = await startProcess())
+    await proc.sendMessage('first', '11111111-1111-4111-8111-111111111111')
+    await proc.sendMessage('second', '22222222-2222-4222-8222-222222222222')
+    query.push(stateFrame('running'))
+    query.push({ type: 'result', subtype: 'success', session_id: 'sess-1' })
+    await tick()
+
+    const outcome = await proc.interrupt({ scope: 'turn' })
+
+    expect(outcome).toEqual({ interrupted: false, discardedUuids: [], processKept: true })
+    expect(query.interrupt).not.toHaveBeenCalled()
   })
 
   it('a send after idle makes the next turn interruptible again', async () => {

@@ -1,3 +1,4 @@
+import { UserAvatar } from '@renderer/components/ui/user-avatar'
 
 import { useMessages, useDeleteMessage, useDeleteToolCall, useCancelQueuedMessage, TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useAgent } from '@renderer/hooks/use-agents'
@@ -23,6 +24,7 @@ import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
 import { InformationalItem } from './informational-item'
 import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
+import { ForkBoundaryItem, forkBoundaryIndex } from './fork-boundary'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, ChevronRight, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
@@ -426,11 +428,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return () => clearTimeout(timerId)
   }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
 
-  // Visible messages with system-injected entries filtered out (these must not
-  // consume window slots, and the windowing operates on what the user can see).
+  // Hidden system messages and redundant interrupt markers must not consume
+  // window slots: windowing operates on what the user can see.
   const visibleMessages = useMemo(() => {
     if (!messages) return []
-    return messages.filter((item) => !classifyUserMessage(item).hidden)
+    const visible = messages.filter((item) => !classifyUserMessage(item).hidden)
+    // The replacement notice explains its preceding interrupt. Keep the raw
+    // transcript intact for turn bookkeeping; only omit the redundant badge
+    // from display, before windowing. Other user stops remain visible.
+    return visible.filter((item, index) => !(
+      classifyUserMessage(item).kind === 'interrupt' &&
+      visible[index + 1] &&
+      classifyUserMessage(visible[index + 1]).kind === 'connection-replacement'
+    ))
   }, [messages])
 
   // Time flags are derived from all loaded history rather than the trailing DOM
@@ -454,7 +464,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       if (
         item.type !== 'user' ||
         item.queued ||
-        classifyUserMessage(item).kind === 'interrupt'
+        classifyUserMessage(item).kind === 'interrupt' ||
+        classifyUserMessage(item).kind === 'connection-replacement'
       ) continue
 
       const createdAt = new Date(item.createdAt)
@@ -892,6 +903,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     activeSubagents,
   })
 
+  // The fork line goes after the last copied message; the length means it
+  // closes the thread (a fresh fork). Computed on the window so it lands
+  // where the reader is, and hidden with the history when scrolled out.
+  const forkBoundaryAt = useMemo(() => forkBoundaryIndex(windowedMessages), [windowedMessages])
+
   // Drop expansion state for turns that no longer exist after edits/refetches.
   useEffect(() => {
     const validIds = new Set(completedTurns.map((turn) => turn.id))
@@ -1008,7 +1024,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     text: string
     sentAt: number
     queued?: boolean
-    sender?: { id: string; name: string; email: string }
+    sender?: { id: string; name: string; email: string; image?: string | null }
     testId?: string
     /** Set for own queued ghosts once the server uuid is known — enables Cancel. */
     onCancel?: () => void
@@ -1078,7 +1094,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       sentAt: peer.receivedAt,
       queued: peer.queued,
       sender: peer.sender.name
-        ? { id: peer.sender.id, name: peer.sender.name, email: peer.sender.email || '' }
+        ? { id: peer.sender.id, name: peer.sender.name, email: peer.sender.email || '', image: peer.sender.image }
         : undefined,
     })
 
@@ -1261,6 +1277,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                   }
                 />
               )}
+              {index === forkBoundaryAt && (
+                <ForkBoundaryItem sessionId={sessionId} agentSlug={agentSlug} />
+              )}
               {timeFlagState.messageIds.has(item.id) && (
                 <SessionTimeFlag date={new Date(item.createdAt)} />
               )}
@@ -1268,6 +1287,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             </Fragment>
           )
         })}
+
+        {/* A fresh fork has nothing after the copied history yet, so its line
+            closes it. Before the ghosts and streaming output: the first message
+            sent in the fork belongs below the line from the moment it is typed,
+            and the compacting indicator further down keeps Fork & Summarize in
+            order (fork first, then compact). */}
+        {forkBoundaryAt === windowedMessages.length && (
+          <ForkBoundaryItem sessionId={sessionId} agentSlug={agentSlug} />
+        )}
 
         {/* Turn-starting ghosts (sent while idle) — the next turn belongs to
             them, so they render before any streaming content. Queued ghosts
@@ -1298,11 +1326,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             message from suppressing a real peer's indicator. */}
         {typingUser && typingUser.id !== user?.id && visiblePeerMessages.length === 0 && (
           <div data-testid="typing-indicator" className="flex gap-3 flex-row-reverse">
-            <div className="h-8 w-8 rounded-full items-center justify-center shrink-0 hidden md:flex bg-primary text-primary-foreground">
-              <span className="text-xs font-medium">
-                {typingUser.name?.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) || '?'}
-              </span>
-            </div>
+            <UserAvatar user={typingUser} size={32} className="hidden md:inline-flex" />
             <div className="rounded-lg px-4 py-2 bg-primary text-primary-foreground">
               <span className="animate-pulse tracking-widest">...</span>
             </div>

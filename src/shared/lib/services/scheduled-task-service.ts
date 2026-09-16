@@ -6,10 +6,12 @@
  */
 
 import { db } from '@shared/lib/db'
+import { batch, changesOf } from '@shared/lib/db/batch'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
 import { eq, and, lte, inArray, isNotNull, isNull, desc } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
 import { trackServerEvent } from '../analytics/server-analytics'
+import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 
 // Re-export the ScheduledTask type for external use
 export type { ScheduledTask, NewScheduledTask }
@@ -122,10 +124,31 @@ export async function createScheduledTask(
  *
  * The schedule expression is validated BEFORE any mutation (a bad wakeTime
  * must never cancel the session's valid wake), and the cancel+insert pair runs
- * in a transaction so concurrent calls can't interleave into duplicate pending
+ * as one batch so concurrent calls can't interleave into duplicate pending
  * wakes. A partial unique index on pending wakes backstops both.
  */
-export async function createSessionWake(
+const MAX_WAKE_REPLACE_ATTEMPTS = 5
+
+/** The partial unique index on pending wakes rejected an insert (SQLite names the column, not the index). */
+function isPendingWakeConflict(error: unknown): boolean {
+  return error instanceof Error
+    && error.message.includes('UNIQUE constraint failed')
+    && error.message.includes('resume_session_id')
+}
+
+export function createSessionWake(
+  params: CreateSessionWakeParams
+): Promise<{ taskId: string; replaced: ScheduledTask | null }> {
+  // Wakes for one session are serialized within this process, so a burst of
+  // replacements lands in arrival order with every call succeeding, each
+  // reporting the wake it displaced. The batch below still guards against
+  // another process through the partial unique index.
+  return serializeByKey(`session-wake:${params.agentSlug}\u0000${params.sessionId}`, () =>
+    replaceSessionWake(params),
+  )
+}
+
+async function replaceSessionWake(
   params: CreateSessionWakeParams
 ): Promise<{ taskId: string; replaced: ScheduledTask | null }> {
   // Throws on unparseable/past expressions — before existing state is touched.
@@ -151,33 +174,34 @@ export async function createSessionWake(
     resumeSessionId: params.sessionId,
   }
 
-  // Synchronous better-sqlite3 transaction: read-existing → cancel → insert is
-  // one atomic unit, so no other caller can observe (or create) an
-  // intermediate state.
-  const replaced = db.transaction((tx) => {
-    const existing = tx
-      .select()
-      .from(scheduledTasks)
-      .where(
-        and(
-          eq(scheduledTasks.agentSlug, params.agentSlug),
-          eq(scheduledTasks.resumeSessionId, params.sessionId),
-          eq(scheduledTasks.status, 'pending')
-        )
-      )
-      .all()
-
-    for (const wake of existing) {
-      tx.update(scheduledTasks)
-        .set({ status: 'cancelled', cancelledAt: now })
-        .where(eq(scheduledTasks.id, wake.id))
-        .run()
+  const pendingWake = and(
+    eq(scheduledTasks.agentSlug, params.agentSlug),
+    eq(scheduledTasks.resumeSessionId, params.sessionId),
+    eq(scheduledTasks.status, 'pending')
+  )
+  // `replaced` is the wake this call cancels, so cancel it by id and let the
+  // change count say whether it was still pending: a concurrent cancel that
+  // got there first means nothing was replaced. A concurrent create that got
+  // there first leaves its own pending wake, which the partial unique index
+  // rejects the insert against; read again and replace that one instead.
+  let replaced: ScheduledTask | null = null
+  for (let attempt = 1; ; attempt++) {
+    const existing = (await db.select().from(scheduledTasks).where(pendingWake).get()) ?? null
+    const cancelExisting = existing
+      ? [
+          db.update(scheduledTasks)
+            .set({ status: 'cancelled', cancelledAt: now })
+            .where(and(eq(scheduledTasks.id, existing.id), eq(scheduledTasks.status, 'pending'))),
+        ]
+      : []
+    try {
+      const results = await batch([...cancelExisting, db.insert(scheduledTasks).values(newTask)])
+      replaced = existing && changesOf(results[0]) > 0 ? existing : null
+      break
+    } catch (error) {
+      if (attempt >= MAX_WAKE_REPLACE_ATTEMPTS || !isPendingWakeConflict(error)) throw error
     }
-
-    tx.insert(scheduledTasks).values(newTask).run()
-
-    return existing[0] ?? null
-  })
+  }
 
   trackServerEvent('task_scheduled', {
     scheduleType: 'at',

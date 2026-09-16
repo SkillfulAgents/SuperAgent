@@ -28,7 +28,7 @@ const mockStreamState = {
   activeSubagents: [] as any[],
   completedSubagents: null as Set<string> | null,
   slashCommands: [],
-  backgroundTasks: [] as Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }>,
+  backgroundTasks: [] as Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean; launchedBySubagent?: boolean; label?: { title: string; detail: string | null } }>,
 }
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -968,6 +968,61 @@ describe('AgentActivityIndicator', () => {
   })
 
   describe('subagent status', () => {
+    it.each([false, true])('renders one stoppable nested task with named lifecycle row %s', async (hasNamedRow) => {
+      mockStreamState.isActive = true
+      mockStreamState.backgroundTasks = [{
+        taskId: 'nested-agent-id',
+        startedAt: Date.now(),
+        isSubagent: true,
+        launchedBySubagent: true,
+        label: { title: 'code-reviewer', detail: 'Review the changes' },
+      }]
+      if (hasNamedRow) {
+        mockStreamState.activeSubagents = [{
+          parentToolId: 'nested-agent-tool',
+          agentId: 'nested-agent-id',
+          subagentType: 'code-reviewer',
+          description: 'Review the changes',
+        }]
+      }
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getAllByText('Review the changes')).toHaveLength(1)
+      expect(screen.queryAllByTestId('background-task-row')).toHaveLength(hasNamedRow ? 0 : 1)
+      expect(screen.queryAllByTestId('subagent-activity-row')).toHaveLength(hasNamedRow ? 1 : 0)
+      await userEvent.click(screen.getByTestId('stop-task-button'))
+      expect(mockStopBackgroundTask.mutateAsync).toHaveBeenLastCalledWith({ agentSlug: 'agent-1', sessionId: 's-1', taskId: 'nested-agent-id' })
+    })
+
+    it('shows lifecycle-only subagents launched inside a Skill', () => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [{
+        parentToolId: 'nested-agent-tool',
+        agentId: 'nested-agent-id',
+        subagentType: 'code-reviewer',
+        description: 'Review the changes',
+        progressSummary: 'Inspecting tests',
+      }]
+      mockStreamState.completedSubagents = new Set()
+      mockMessages.push({
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'skill-tool',
+          name: 'Skill',
+          input: { skill: 'code-review' },
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getByText('code-reviewer')).toBeInTheDocument()
+      expect(screen.getByText('Review the changes')).toBeInTheDocument()
+      expect(screen.getByText('Inspecting tests')).toBeInTheDocument()
+    })
+
     const renderWithSubagent = (opts: { result?: unknown; subagentStatus?: string; completed?: boolean }) => {
       mockStreamState.isActive = true
       mockStreamState.activeStartTime = Date.now()

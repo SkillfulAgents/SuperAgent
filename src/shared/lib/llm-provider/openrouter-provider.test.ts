@@ -110,6 +110,24 @@ describe('OpenRouterLlmProvider.searchModels — listing mapping', () => {
     expect(model).toMatchObject({ id: 'moonshotai/kimi-k3', icon: 'kimi' })
   })
 
+  it('maps deepseek/* listings onto the deepseek brand icon', async () => {
+    stubFetch({
+      data: [
+        {
+          id: 'deepseek/deepseek-v4.1-flash',
+          name: 'DeepSeek: DeepSeek V4.1 Flash',
+          description: 'Multimodal MoE model.',
+          context_length: 1040000,
+          pricing: { prompt: '0.00000022', completion: '0.00000066' },
+        },
+      ],
+    })
+
+    const [model] = await provider.searchModels('deepseek')
+
+    expect(model).toMatchObject({ id: 'deepseek/deepseek-v4.1-flash', icon: 'deepseek' })
+  })
+
   it('reports image-input support from advertised input modalities', async () => {
     stubFetch({
       data: [
@@ -127,11 +145,11 @@ describe('OpenRouterLlmProvider.searchModels — listing mapping', () => {
   })
 
   it('flags a generic non-Claude model for web search but adds no GPT hints', async () => {
-    stubFetch({ data: [{ id: 'deepseek/deepseek-chat', name: 'DeepSeek Chat' }] })
+    stubFetch({ data: [{ id: 'qwen/qwen3-max', name: 'Qwen3 Max' }] })
 
-    const [model] = await provider.searchModels('deepseek')
+    const [model] = await provider.searchModels('qwen')
 
-    expect(model.family).toBe('deepseek')
+    expect(model.family).toBe('qwen3')
     expect(model.icon).toBeUndefined() // unknown vendor → no bundled icon
     expect(model.supportsWebSearch).toBe(false)
     expect(model).not.toHaveProperty('promptHints')

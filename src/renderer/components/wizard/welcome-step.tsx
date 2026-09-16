@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
+import { OAuthFlowCancel } from '@renderer/components/connections/oauth-flow-cancel'
 import { RequestError } from '@renderer/components/messages/request-error'
 import { ManualAccessKeyInput } from '@renderer/components/settings/manual-access-key-input'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
@@ -22,6 +23,8 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
   const updateSettings = useUpdateSettings()
   const {
     handleConnect,
+    cancelConnect,
+    canCancel,
     isLaunching,
     error: platformError,
     isConnected: isPlatformConnected,
@@ -152,7 +155,10 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
               </p>
             )}
             {isLaunching && (
-              <ManualAccessKeyInput prefixText="Log in issues?" className="text-sm text-muted-foreground" />
+              <div className="flex items-center gap-3 max-w-[380px] text-sm text-muted-foreground">
+                <ManualAccessKeyInput prefixText="Log in issues?" className="flex-1" />
+                <OAuthFlowCancel visible={canCancel} onCancel={cancelConnect} testId="wizard-cancel-login" />
+              </div>
             )}
           </div>
         )}

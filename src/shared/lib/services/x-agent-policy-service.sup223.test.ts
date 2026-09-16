@@ -3,7 +3,7 @@
  *
  * x_agent_policies has a UNIQUE(caller, target, operation) index, but SQLite
  * treats NULL target as a distinct value, so the index does NOT dedupe global
- * (target=null) rows. replacePoliciesForCaller() bulk-deletes then reinserts
+ * (target=null) rows. await replacePoliciesForCaller() bulk-deletes then reinserts
  * the payload; without dedup, two global entries like (alice, NULL, 'list')
  * with conflicting decisions both persist, and getPolicy/evaluate resolve them
  * non-deterministically via limit(1) with no ORDER BY.
@@ -55,8 +55,8 @@ describe('x-agent-policy-service (SUP-223: duplicate null-target global policies
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
 
-  it('Case 1: dedupes duplicate global list policies (last-write-wins)', () => {
-    replacePoliciesForCaller('alice', [
+  it('Case 1: dedupes duplicate global list policies (last-write-wins)', async () => {
+    await replacePoliciesForCaller('alice', [
       { operation: 'list', targetSlug: null, decision: 'allow' },
       { operation: 'list', targetSlug: null, decision: 'block' },
     ])
@@ -72,8 +72,8 @@ describe('x-agent-policy-service (SUP-223: duplicate null-target global policies
     expect(evaluate('alice', 'list', null)).toBe('block')
   })
 
-  it('Case 2: dedupes duplicate global read policies (last-write-wins)', () => {
-    replacePoliciesForCaller('alice', [
+  it('Case 2: dedupes duplicate global read policies (last-write-wins)', async () => {
+    await replacePoliciesForCaller('alice', [
       { operation: 'read', targetSlug: null, decision: 'allow' },
       { operation: 'read', targetSlug: null, decision: 'block' },
     ])
@@ -87,8 +87,8 @@ describe('x-agent-policy-service (SUP-223: duplicate null-target global policies
     expect(evaluate('alice', 'read', 'any-target')).toBe('block')
   })
 
-  it('dedupes duplicate global invoke policies too', () => {
-    replacePoliciesForCaller('alice', [
+  it('dedupes duplicate global invoke policies too', async () => {
+    await replacePoliciesForCaller('alice', [
       { operation: 'invoke', targetSlug: null, decision: 'block' },
       { operation: 'invoke', targetSlug: null, decision: 'allow' },
     ])
@@ -102,8 +102,8 @@ describe('x-agent-policy-service (SUP-223: duplicate null-target global policies
 
   // --- Positive / regression coverage: the dedup must NOT change other behavior ---
 
-  it('keeps a deduped global alongside untouched specific-target rows', () => {
-    replacePoliciesForCaller('alice', [
+  it('keeps a deduped global alongside untouched specific-target rows', async () => {
+    await replacePoliciesForCaller('alice', [
       { operation: 'list', targetSlug: null, decision: 'allow' },
       { operation: 'read', targetSlug: 'bob', decision: 'allow' },
       { operation: 'list', targetSlug: null, decision: 'block' },
@@ -116,21 +116,21 @@ describe('x-agent-policy-service (SUP-223: duplicate null-target global policies
     expect(evaluate('alice', 'read', 'bob')).toBe('allow')
   })
 
-  it('still rejects duplicate NON-null target rows via the unique index (rolls back)', () => {
+  it('still rejects duplicate NON-null target rows via the unique index (rolls back)', async () => {
     // Non-null duplicates are already enforced by UNIQUE(caller, target, op):
     // the dedup must only cover null-target globals, leaving this behavior intact.
-    expect(() =>
+    await expect(
       replacePoliciesForCaller('alice', [
         { operation: 'invoke', targetSlug: 'carol', decision: 'allow' },
         { operation: 'invoke', targetSlug: 'carol', decision: 'block' },
       ]),
-    ).toThrow()
-    // Transaction rolled back — no partial row committed.
+    ).rejects.toThrow()
+    // The batch rolled back — no partial row committed.
     expect(listPoliciesForCaller('alice')).toHaveLength(0)
   })
 
-  it('distinct globals across operations are all kept', () => {
-    replacePoliciesForCaller('alice', [
+  it('distinct globals across operations are all kept', async () => {
+    await replacePoliciesForCaller('alice', [
       { operation: 'list', targetSlug: null, decision: 'allow' },
       { operation: 'read', targetSlug: null, decision: 'block' },
       { operation: 'invoke', targetSlug: null, decision: 'allow' },

@@ -50,7 +50,6 @@ vi.mock('@renderer/router/use-route-location', () => ({
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({
     isAuthMode: false,
-    user: null,
     canAccessAgent: () => true,
   }),
 }))
@@ -136,6 +135,32 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     // back to the prototype getter.
     vi.restoreAllMocks()
     Reflect.deleteProperty(document, 'visibilityState')
+  })
+
+  it('invalidates the current roster on changes and rejects malformed hints', () => {
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'agent_members_changed', agentSlug: 'shared-agent' })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['agent-members', 'shared-agent'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+    invalidate.mockClear()
+    simulateSSEMessage(getLatestEventSource(), { type: 'agent_members_changed', agentSlug: 42 })
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
+  it('drops revoked data, updates roles immediately, and leaves the active agent', async () => {
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({ selectedAgentSlug: 'launch-0123456789', view: { kind: 'agent' } } as unknown as ReturnType<typeof useRouteLocation>)
+    queryClient.setQueryData(['agents'], [{ slug: '0123456789', displaySlug: 'launch-0123456789' }])
+    queryClient.setQueryData(['agent-members', '0123456789'], [{ id: 'peer' }])
+    queryClient.setQueryData(['agents', 'launch-0123456789'], { name: 'Private' })
+    queryClient.setQueryData(['my-agent-roles'], { '0123456789': { role: 'viewer' }, other: { role: 'user' } })
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    await act(async () => simulateSSEMessage(getLatestEventSource(), { type: 'agent_access_revoked', agentSlug: '0123456789' }))
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/' })
+    expect(queryClient.getQueryData(['my-agent-roles'])).toEqual({ other: { role: 'user' } })
+    expect(queryClient.getQueryData(['agent-members', '0123456789'])).toBeUndefined()
+    expect(queryClient.getQueryData(['agents', 'launch-0123456789'])).toBeUndefined()
   })
 
   it('user_request_created/resolved invalidate the unified store', () => {
@@ -875,7 +900,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
   })
 
-  it('SSE open invalidates agents and roles, including the first connect', () => {
+  it('only refreshes collaboration queries on reconnect, not first open', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     render(
@@ -888,12 +913,16 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     es.onopen?.()
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-members'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
 
     invalidateSpy.mockClear()
     es.onerror?.()
     es.onopen?.()
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-members'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
     // Mount and a browser-handled reconnect are not outages.
     expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
   })

@@ -23,9 +23,11 @@ import crypto from 'crypto'
 import { createZipBuffer } from '@shared/lib/utils/zip'
 
 vi.mock('@shared/lib/services/agent-service', () => ({
+  adoptAgentIdentityFromWorkspace: vi.fn(),
   createAgentFromExistingWorkspace: vi.fn(),
   getAgentWithStatus: vi.fn(),
   listAgents: vi.fn(async () => []),
+  writeAgentIdentityProjection: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/skillset-service', async (importOriginal) => {
@@ -57,6 +59,7 @@ import { importAgentFromTemplate } from './agent-template-service'
 import { listSessions, registerSession, sessionIsKnown } from './session-service'
 import { createAgentFromExistingWorkspace, getAgentWithStatus } from '@shared/lib/services/agent-service'
 import { getAgentDir, getAgentSessionsDir, getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
 const MINIMAL_CLAUDE_MD = `---
 name: Test Agent
@@ -81,7 +84,7 @@ beforeEach(async () => {
   // go missing: a lazily-built index would otherwise sweep the imported
   // transcripts up on its first read and hide the bug.
   fs.mkdirSync(getAgentSessionsDir('pre-existing-agent'), { recursive: true })
-  await registerSession('pre-existing-agent', crypto.randomUUID(), 'Pre-existing session')
+  await registerSession(createLocalSessionStore('pre-existing-agent'), crypto.randomUUID(), 'Pre-existing session')
 })
 
 afterEach(() => {
@@ -122,7 +125,7 @@ describe('full `.agent` import restores its sessions', () => {
 
     await importAgentFromTemplate(await archiveWithSession(sessionId), undefined, 'full')
 
-    await expect(listSessions('imported-agent')).resolves.toEqual([
+    await expect(listSessions(createLocalSessionStore('imported-agent'))).resolves.toEqual([
       expect.objectContaining({
         id: sessionId,
         agentSlug: 'imported-agent',
@@ -137,7 +140,7 @@ describe('full `.agent` import restores its sessions', () => {
 
     await importAgentFromTemplate(await archiveWithSession(sessionId), undefined, 'full')
 
-    expect(await sessionIsKnown('known-agent', sessionId)).toBe(true)
+    expect(await sessionIsKnown(createLocalSessionStore('known-agent'), sessionId)).toBe(true)
   })
 
   it('restores the sessions again after the imported agent is deleted', async () => {
@@ -156,7 +159,7 @@ describe('full `.agent` import restores its sessions', () => {
     nextAgentIs('second-import')
     await importAgentFromTemplate(archive, undefined, 'full')
 
-    await expect(listSessions('second-import')).resolves.toEqual([
+    await expect(listSessions(createLocalSessionStore('second-import'))).resolves.toEqual([
       expect.objectContaining({ id: sessionId, agentSlug: 'second-import' }),
     ])
   })
@@ -174,10 +177,10 @@ describe('full `.agent` import restores its sessions', () => {
     nextAgentIs('clone-two')
     await importAgentFromTemplate(archive, undefined, 'full')
 
-    await expect(listSessions('clone-one')).resolves.toEqual([
+    await expect(listSessions(createLocalSessionStore('clone-one'))).resolves.toEqual([
       expect.objectContaining({ id: sessionId, agentSlug: 'clone-one' }),
     ])
-    await expect(listSessions('clone-two')).resolves.toEqual([
+    await expect(listSessions(createLocalSessionStore('clone-two'))).resolves.toEqual([
       expect.objectContaining({ id: sessionId, agentSlug: 'clone-two' }),
     ])
   })
@@ -187,26 +190,26 @@ describe('an import never takes sessions away from an existing agent', () => {
   it('leaves the pre-existing agent’s own sessions listed', async () => {
     const sessionId = crypto.randomUUID()
     nextAgentIs('bystander-import')
-    const before = await listSessions('pre-existing-agent')
+    const before = await listSessions(createLocalSessionStore('pre-existing-agent'))
     expect(before).toHaveLength(1)
 
     await importAgentFromTemplate(await archiveWithSession(sessionId), undefined, 'full')
 
-    await expect(listSessions('pre-existing-agent')).resolves.toEqual(before)
+    await expect(listSessions(createLocalSessionStore('pre-existing-agent'))).resolves.toEqual(before)
   })
 
   it('leaves the pre-existing agent’s sessions listed when the import collides with one', async () => {
     // An archive whose transcript is named after a session that already exists
     // on this host. Whatever the import does with its own copy, the agent that
     // already had that session keeps it.
-    const collidingId = (await listSessions('pre-existing-agent'))[0].id
+    const collidingId = (await listSessions(createLocalSessionStore('pre-existing-agent')))[0].id
     nextAgentIs('colliding-import')
-    const before = await listSessions('pre-existing-agent')
+    const before = await listSessions(createLocalSessionStore('pre-existing-agent'))
 
     await importAgentFromTemplate(await archiveWithSession(collidingId), undefined, 'full')
       .catch(() => undefined)
 
-    await expect(listSessions('pre-existing-agent')).resolves.toEqual(before)
-    expect(await sessionIsKnown('pre-existing-agent', collidingId)).toBe(true)
+    await expect(listSessions(createLocalSessionStore('pre-existing-agent'))).resolves.toEqual(before)
+    expect(await sessionIsKnown(createLocalSessionStore('pre-existing-agent'), collidingId)).toBe(true)
   })
 })

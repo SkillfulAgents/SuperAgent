@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import yauzl from 'yauzl'
+import yazl from 'yazl'
 import {
   openZipFromBuffer,
   openZipFromFile,
@@ -206,11 +207,25 @@ describe('openZipFromFile', () => {
       }
       return count
     }
+    // close() hands the descriptor to the OS asynchronously, so the release
+    // trails the rejection by an unpredictable amount under load — a busy CI
+    // worker loses that race where a quiet laptop wins it. Wait for the
+    // descriptor to go rather than sampling once: a real leak never goes and
+    // still fails, just a second later.
+    const waitForReleasedFd = async (timeoutMs = 2000): Promise<number> => {
+      const deadline = Date.now() + timeoutMs
+      let open = openFdsForZip()
+      while (open > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        open = openFdsForZip()
+      }
+      return open
+    }
     try {
       await expect(openZipFromFile(zipPath)).rejects.toThrow(/central directory/i)
       expect(closeSpy).toHaveBeenCalled()
       // The descriptor opened for the zip must be released on the error path.
-      expect(openFdsForZip()).toBe(0)
+      expect(await waitForReleasedFd()).toBe(0)
     } finally {
       closeSpy.mockRestore()
     }
@@ -275,6 +290,64 @@ describe('readEntry', () => {
 // ============================================================================
 // extractEntry
 // ============================================================================
+
+describe('openEntryStream', () => {
+  async function collect(stream: NodeJS.ReadableStream): Promise<Buffer> {
+    const chunks: Buffer[] = []
+    for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    return Buffer.concat(chunks)
+  }
+
+  it('streams an entry', async () => {
+    const content = 'y'.repeat(70_000)
+    const buf = await createZipBuffer({ 'big.txt': content })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      expect((await collect(await reader.openEntryStream('big.txt'))).toString('utf-8')).toBe(content)
+      expect((await collect(await reader.openEntryStream('big.txt', 70_000))).toString('utf-8')).toBe(content)
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('fails the stream with ZipExtractionSizeError past maxBytes', async () => {
+    const buf = await createZipBuffer({ 'big.txt': 'x'.repeat(1000) })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      await expect(collect(await reader.openEntryStream('big.txt', 500))).rejects.toThrow(ZipExtractionSizeError)
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('throws for nonexistent entry', async () => {
+    const buf = await createZipBuffer({ 'a.txt': 'content' })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      await expect(reader.openEntryStream('nonexistent.txt')).rejects.toThrow('Entry not found')
+    } finally {
+      reader.close()
+    }
+  })
+})
+
+describe('entry modes', () => {
+  it('reports the mode of an entry written with one, and none otherwise', async () => {
+    const zipFile = new yazl.ZipFile()
+    zipFile.addBuffer(Buffer.from('#!/bin/sh\n'), 'run.sh', { mode: 0o100755 })
+    zipFile.addBuffer(Buffer.from('n'), 'notes.txt', { mode: 0o100644 })
+    zipFile.end()
+    const chunks: Buffer[] = []
+    for await (const chunk of zipFile.outputStream) chunks.push(chunk as Buffer)
+    const reader = await openZipFromBuffer(Buffer.concat(chunks))
+    try {
+      expect(reader.entries.find((e) => e.fileName === 'run.sh')?.mode).toBe(0o755)
+      expect(reader.entries.find((e) => e.fileName === 'notes.txt')?.mode).toBe(0o644)
+    } finally {
+      reader.close()
+    }
+  })
+})
 
 describe('extractEntry', () => {
   it('extracts file to disk', async () => {

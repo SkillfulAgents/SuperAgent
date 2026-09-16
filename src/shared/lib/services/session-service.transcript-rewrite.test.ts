@@ -18,6 +18,7 @@ import * as path from 'path'
 import * as os from 'os'
 
 import { removeMessage, removeToolCall } from './session-service'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
 // ---------------------------------------------------------------------------
 // Oracle: the previous implementation, verbatim logic, operating on a raw
@@ -291,7 +292,7 @@ describe('transcript rewrite (streaming) vs previous implementation', () => {
         const oracle = oracleRemoveMessage(input, 'target-uuid')
         expect(oracle).not.toBeNull()
 
-        const result = await removeMessage('test-agent', 'sess-1', 'target-uuid')
+        const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'target-uuid')
         expect(result).toBe(true)
 
         const actual = await readTranscript('sess-1')
@@ -330,7 +331,7 @@ describe('transcript rewrite (streaming) vs previous implementation', () => {
       await writeTranscript('sess-1', input)
 
       const oracle = oracleRemoveMessage(input, 'asst-1-part-1')
-      const result = await removeMessage('test-agent', 'sess-1', 'asst-1-part-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'asst-1-part-1')
       expect(result).toBe(true)
 
       const actual = await readTranscript('sess-1')
@@ -358,7 +359,7 @@ describe('transcript rewrite (streaming) vs previous implementation', () => {
       await writeTranscript('sess-1', input)
 
       const oracle = oracleRemoveMessage(input, 'queue-source-uuid')
-      const result = await removeMessage('test-agent', 'sess-1', 'queue-source-uuid')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'queue-source-uuid')
       expect(result).toBe(true)
       assertDifferential(input, await readTranscript('sess-1'), oracle!)
     })
@@ -373,7 +374,7 @@ describe('transcript rewrite (streaming) vs previous implementation', () => {
       await writeTranscript('sess-1', input)
 
       const oracle = oracleRemoveMessage(input, 'target-uuid')
-      const result = await removeMessage('test-agent', 'sess-1', 'target-uuid')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'target-uuid')
       expect(result).toBe(true)
 
       const actual = await readTranscript('sess-1')
@@ -385,7 +386,7 @@ describe('transcript rewrite (streaming) vs previous implementation', () => {
       const input = [...NON_CANONICAL_LINES, JSON.stringify(userEntry('user-1', 'hi'))].join('\n') + '\n'
       await writeTranscript('sess-1', input)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'nonexistent-uuid')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'nonexistent-uuid')
       expect(result).toBe(false)
       expect(await readTranscript('sess-1')).toBe(input)
       expect(await listTempFiles()).toEqual([])
@@ -406,7 +407,7 @@ describe('transcript rewrite (streaming) vs previous implementation', () => {
       ].join('\n') + '\n'
       await writeTranscript('sess-1', input)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'target-uuid')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'target-uuid')
       expect(result).toBe(true)
 
       const actual = await readTranscript('sess-1')
@@ -425,7 +426,7 @@ describe('transcript rewrite (streaming) vs previous implementation', () => {
       const err = Object.assign(new Error('injected rename failure'), { code: 'EIO' })
       const renameSpy = vi.spyOn(fs.promises, 'rename').mockRejectedValue(err)
       try {
-        await expect(removeMessage('test-agent', 'sess-1', 'target-uuid')).rejects.toThrow(
+        await expect(removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'target-uuid')).rejects.toThrow(
           'injected rename failure'
         )
       } finally {
@@ -459,7 +460,7 @@ describe('transcript rewrite (streaming) vs previous implementation', () => {
       await writeTranscript('sess-1', input)
 
       const oracle = oracleRemoveToolCall(input, 'tc-1')
-      const result = await removeToolCall('test-agent', 'sess-1', 'tc-1')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tc-1')
       expect(result).toBe(true)
 
       const actual = await readTranscript('sess-1')
@@ -489,7 +490,7 @@ describe('transcript rewrite (streaming) vs previous implementation', () => {
       await writeTranscript('sess-1', input)
 
       const oracle = oracleRemoveToolCall(input, 'tc-1')
-      const result = await removeToolCall('test-agent', 'sess-1', 'tc-1')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tc-1')
       expect(result).toBe(true)
 
       const actual = await readTranscript('sess-1')
@@ -501,7 +502,7 @@ describe('transcript rewrite (streaming) vs previous implementation', () => {
       const input = [...NON_CANONICAL_LINES, JSON.stringify(userEntry('user-1', 'hi'))].join('\n') + '\n'
       await writeTranscript('sess-1', input)
 
-      const result = await removeToolCall('test-agent', 'sess-1', 'nonexistent-tc')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'nonexistent-tc')
       expect(result).toBe(false)
       expect(await readTranscript('sess-1')).toBe(input)
       expect(await listTempFiles()).toEqual([])
@@ -523,7 +524,7 @@ describe('transcript rewrite (streaming) vs previous implementation', () => {
       await writeTranscript('sess-1', input)
 
       const oracle = oracleRemoveToolCall(input, 'tc-1')
-      const result = await removeToolCall('test-agent', 'sess-1', 'tc-1')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tc-1')
       expect(result).toBe(true)
 
       assertDifferential(input, await readTranscript('sess-1'), oracle!, {

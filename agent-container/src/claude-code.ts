@@ -15,11 +15,14 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { EffortLevel, SpeedLevel } from './types';
-import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createAgentsMcpServer, createChatMcpServer, createWebMcpServer } from './mcp-server';
+import { gamutPluginDir } from './gamut-plugin';
+import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createWidgetsMcpServer, createAgentsMcpServer, createChatMcpServer, createWebMcpServer } from './mcp-server';
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
 import { fileHooks, resolveToolFilePath } from './file-hooks';
+import { elapsedTimeNote } from './elapsed-time-note';
+import { promptDate } from './prompt-date';
 
 /**
  * `Query` plus the `cancel_async_message` control request, which drops a queued
@@ -305,14 +308,19 @@ export function isComputerUseHost(): boolean {
  */
 export interface SystemPromptVars {
   CLAUDE_CONFIG_DIR: string;
+  todayWeekday: string;
+  todayDate: string;
+  timeZone: string;
+  utcOffset: string;
   webSearchToolName: string;
   webFetchToolName: string;
   subagentsEnabled: boolean;
   hasModelRoutedSubagents: boolean;
   composioTriggers: boolean;
+  platformAccounts: boolean;
   webhookEndpoints: boolean;
   anyTriggers: boolean;
-  /** Platform token present — media prompt section (agent calls platform `/v1/replicate`). */
+  /** Platform token present — built-in service prompt sections (Replicate, Apollo). */
   platformServices: boolean;
   computerUse: boolean;
   hasModelHints: boolean;
@@ -354,7 +362,11 @@ export function buildSystemPromptVars(
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
 ): SystemPromptVars {
-  const composioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true';
+  // Connected accounts run through Gamut's Composio (not a personal key). Managed
+  // triggers and the platform-only accounts both exist only there.
+  const composioPlatform = process.env.COMPOSIO_PLATFORM_MODE === 'true';
+  const composioTriggers = composioPlatform;
+  const platformAccounts = composioPlatform;
   const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
   // Same gate as webhookEndpoints — do not tighten to also require proxy URL
   // (PLATFORM_AUTH_ACTIVE also gates webhook tools in mcp-server.ts).
@@ -365,8 +377,13 @@ export function buildSystemPromptVars(
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
   const mountPaths = parseMountPaths(process.env.SUPERAGENT_MOUNTS);
+  const today = promptDate();
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
+    todayWeekday: today.weekday,
+    todayDate: today.date,
+    timeZone: today.timeZone,
+    utcOffset: today.utcOffset,
     webSearchToolName: webSearchProvider ? 'mcp__web__web_search' : 'WebSearch',
     webFetchToolName: webFetchProvider ? 'mcp__web__web_fetch' : 'WebFetch',
     // Blocked subagents must not be advertised anywhere in the prompt; review
@@ -374,6 +391,7 @@ export function buildSystemPromptVars(
     subagentsEnabled: policyFor(capabilityPolicies, 'subagents') !== 'block',
     hasModelRoutedSubagents: (subagentModels?.length ?? 0) > 0,
     composioTriggers,
+    platformAccounts,
     webhookEndpoints,
     anyTriggers: composioTriggers || webhookEndpoints,
     platformServices,
@@ -518,7 +536,9 @@ export class ClaudeCodeProcess extends EventEmitter {
   private sessionId: string;
   private workingDirectory: string;
   private claudeSessionId: string | null;
-  private systemPrompt: string;
+  private systemPrompt = '';
+  // Local calendar day the prompt (and any subprocess spawned from it) reads as today.
+  private promptRenderedOn = '';
   private model: string | undefined;
   private browserModel: string | undefined;
   private dashboardBuilderModel: string | undefined;
@@ -591,6 +611,25 @@ export class ClaudeCodeProcess extends EventEmitter {
   private lastTurnInformationals: SDKMessage[] = [];
   private lastResultMessage: SDKMessage | null = null;
   private lastSessionState: string | null = null;
+  // Whether the CLI is between turns, for interruptTurn. `lastSessionState`
+  // alone stopped being enough with CLI 2.1.269: while a background subagent
+  // is live the CLI emits NO session_state_changed:idle after the lead turn's
+  // result (the sdk272-bg-subagent-* fixtures), so a Stop pressed then used
+  // to look like a live turn — the soft path sent an interrupt nobody
+  // answered with a result and fell back to the restart, killing the very
+  // background agent perTaskStopAffordance exists to spare. A main-thread
+  // `result` ends the foreground turn; a send, a running/requires_action
+  // state or foreground model output (assistant / stream_event without a
+  // parent_tool_use_id — the completion wake turn arrives with no state
+  // event at all) starts one.
+  private foregroundTurnEnded = false;
+  // Sends the CLI has not answered with a result yet. A queued follow-up is
+  // dequeued the instant the previous result lands, before it produces any
+  // frame of its own, so "result seen" alone would make a Stop in that gap a
+  // no-op. Results name the sends they answered (user_message_uuids; a whole
+  // coalesced batch) — subtract those, and treat a result without them as
+  // having answered everything.
+  private pendingSends = 0;
   // Protocol capabilities the CLI advertised on system/init (SDK feature
   // detection — see Options.perTaskStopAffordance and interruptTurn).
   private cliCapabilities = new Set<string>();
@@ -628,23 +667,16 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.availableEnvVars = options.availableEnvVars;
     this.userSystemPrompt = options.userSystemPrompt;
     this.modelPromptHints = options.modelPromptHints;
-    this.systemPrompt = generateSystemPrompt(
-      options.availableEnvVars,
-      options.userSystemPrompt,
-      options.modelPromptHints,
-      options.webSearchProvider,
-      options.webFetchProvider,
-      options.capabilityPolicies,
-      this.subagentModels,
-    );
+    this.refreshSystemPrompt();
   }
 
   /**
    * Regenerate the system prompt from the current runtime env. The live query
-   * keeps the prompt it was created with; the refreshed text is what the NEXT
-   * query creation (cold restart, effort/model re-query) carries.
+   * keeps the prompt it was created with; every query creation re-renders so
+   * the date line reads the day the subprocess starts.
    */
   private refreshSystemPrompt(): void {
+    this.promptRenderedOn = promptDate().date;
     this.systemPrompt = generateSystemPrompt(
       this.availableEnvVars,
       this.userSystemPrompt,
@@ -901,6 +933,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       'user-input': createUserInputMcpServer(() => this),
       'browser': createBrowserMcpServer(browserMcpTools),
       'dashboards': createDashboardsMcpServer(),
+      'widgets': createWidgetsMcpServer(),
       'agents': createAgentsMcpServer(() => this.sessionId),
       'chat': createChatMcpServer(() => this.sessionId),
       ...((this.webSearchProvider || this.webFetchProvider)
@@ -929,7 +962,19 @@ export class ClaudeCodeProcess extends EventEmitter {
     // stripped from the query (and the system prompt stops advertising it)
     // rather than denied call-by-call. Review-tier gating happens in canUseTool.
     const capabilityTools = applyCapabilityPolicies(this.capabilityPolicies, {
-      allowedTools: ['Skill', 'Task', 'Agent', ...remoteMcpToolPatterns],
+      allowedTools: [
+        'Skill', 'Task', 'Agent',
+        // CLI 2.1.233+ registers the task-tracking tools by default only on
+        // older models (Claude 3.x, Opus 4.0-4.7, Sonnet 4.0-4.6, Haiku 4.5);
+        // elsewhere they must be listed here (SDK 0.3.268 changelog). Our
+        // task-list UI (derive-task-list.ts) and existing agent workflows
+        // depend on them, so opt in on every model. Verified live on
+        // claude-opus-4-8 with SDK 0.3.272: listing them here registers all
+        // four; the CLAUDE_CODE_ENABLE_TODO_TOOLS env var is the CLI-side
+        // equivalent and is no longer needed.
+        'TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate',
+        ...remoteMcpToolPatterns,
+      ],
       disallowedTools: [
         'TaskOutput', 'Monitor', 'DesignSync',
         'CronCreate', 'CronDelete', 'CronList',
@@ -940,6 +985,10 @@ export class ClaudeCodeProcess extends EventEmitter {
         // agent's other sessions — cross-session messaging we neither want nor
         // surface. SendMessage stays: it is how a spawned subagent is continued.
         'ListAgents',
+        // Only meaningful under the CLI's bundled code-review skill, which
+        // `disableBundledSkills` (below) removes — without it the tool is dead
+        // weight in every session's tool list.
+        'ReportFindings',
         // Suppress native WebSearch only when a host vendor is active; it's replaced by mcp__web__web_search.
         ...(this.webSearchProvider ? ['WebSearch'] : []),
         // Same for native WebFetch → mcp__web__web_fetch when a host fetch vendor is active.
@@ -974,8 +1023,26 @@ export class ClaudeCodeProcess extends EventEmitter {
       // the `settings` flag layer (`enableWorkflows` is a Settings field, not a
       // top-level Option). Without it the model can't see a Workflow tool at all
       // and falls back to simulating with Agent subagents.
-      settings: { enableWorkflows: capabilityTools.enableWorkflows },
+      settings: {
+        enableWorkflows: capabilityTools.enableWorkflows,
+        // Drop every skill and workflow that ships inside the CLI (dataviz,
+        // claude-api, code-review, loop, batch, ...). They are developer-
+        // workflow skills that fire on their own — `dataviz` on any chart or
+        // dashboard, `claude-api` on any mention of Claude — and pull guidance
+        // that competes with ours into context. A per-skill denylist would
+        // silently admit whatever the next SDK bump adds, so opt out of the
+        // whole set. The one we want, `deep-research`, is vendored in the
+        // Gamut plugin (`plugins` below); plugin skills and agent-created
+        // skills under /workspace/.claude/skills are unaffected by this flag.
+        disableBundledSkills: true,
+      },
       settingSources: ['user', 'project'],
+      // The image-baked Gamut plugin: the dashboards + widgets skills and the
+      // vendored deep-research workflow. The CLI discovers skills only under
+      // $CLAUDE_CONFIG_DIR and inside plugins, so this is what makes them
+      // visible to the model (see gamut-plugin.ts). We own every MCP
+      // connection ourselves, so the plugin's MCP discovery is skipped.
+      plugins: [{ type: 'local', path: gamutPluginDir(), skipMcpDiscovery: true }],
       allowedTools: capabilityTools.allowedTools,
       disallowedTools: capabilityTools.disallowedTools,
       // Request summarized thinking so reasoning text streams to the UI. Without an
@@ -1027,13 +1094,6 @@ export class ClaudeCodeProcess extends EventEmitter {
         // self-updated. Pinned like the other vars here: customEnvVars is
         // spread above, so an agent cannot turn this back on.
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-        // CLI 2.1.233+ stops registering TaskCreate/TaskGet/TaskList/TaskUpdate
-        // on newer models (opus >=4.8, sonnet/fable/mythos >=5). Our task-list
-        // UI (derive-task-list.ts) and existing agent workflows depend on those
-        // tools, so opt back in on every model. This is the CLI's only lever
-        // that works for us: its other re-enable path is a server-side feature
-        // flag, which NONESSENTIAL_TRAFFIC above blocks from ever reaching us.
-        CLAUDE_CODE_ENABLE_TODO_TOOLS: 'true',
         // Explicit maxOutputTokens setting takes precedence over custom env var
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
         // Tell the SDK the real context window for non-Claude models (it
@@ -1177,6 +1237,19 @@ export class ClaudeCodeProcess extends EventEmitter {
         return { behavior: 'allow' as const, updatedInput: toolInput };
       },
       hooks: {
+        // The transcript the CLI hands the hook does not yet hold this prompt,
+        // so its newest entry is the end of the previous exchange.
+        UserPromptSubmit: [
+          {
+            hooks: [
+              async (input) => {
+                const note = await elapsedTimeNote(input.transcript_path);
+                if (!note) return {};
+                return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit' as const, additionalContext: note } };
+              },
+            ],
+          },
+        ],
         PreToolUse: [
           {
             matcher: 'mcp__user-input__.*',
@@ -1331,7 +1404,14 @@ export class ClaudeCodeProcess extends EventEmitter {
           },
         ],
       },
-      systemPrompt: this.systemPrompt,
+      // Object form with `snapshot: false`: SDK 0.3.267+ records a custom
+      // prompt on the conversation's first request and replays that record on
+      // every later launch/resume until compaction (a bare string follows
+      // that default). Our prompt is regenerated and the query restarted when
+      // connected accounts, remote MCPs, capability policies or the date
+      // change (refreshSystemPrompt / sendMessage), so it must render fresh
+      // on every launch or those refreshes are silently ignored.
+      systemPrompt: { type: 'custom', prompt: this.systemPrompt, snapshot: false },
     };
   }
 
@@ -1342,13 +1422,27 @@ export class ClaudeCodeProcess extends EventEmitter {
     // New query generation: a stale processMessages loop from a previous
     // query must not clobber this one's state when it finally unwinds.
     this.queryGeneration++;
+    // A parked subprocess baked in the prompt of the day it was spawned. Past
+    // a midnight its date line is wrong, and the CLI's own date-change notice
+    // carries the date but not the weekday — spawn cold instead.
+    if (this.warmHandle && this.promptRenderedOn !== promptDate().date) {
+      console.log(`[Session ${this.sessionId}] Discarding pre-warmed subprocess rendered on ${this.promptRenderedOn}`);
+      this.warmHandle.close();
+      this.warmHandle = null;
+    }
     // A pre-warmed subprocess was spawned with prewarm()'s AbortController
     // already baked into its options; replacing it here would leave that
     // subprocess with no way to be aborted.
     if (!this.warmHandle) {
       this.abortController = new AbortController();
+      this.refreshSystemPrompt();
     }
     this.messageQueue = new MessageQueue();
+    // Turn bookkeeping is per process: a replacement query starts with no
+    // turn and no unanswered sends (a resumed turn re-sends through
+    // sendMessage and counts itself again).
+    this.foregroundTurnEnded = false;
+    this.pendingSends = 0;
     this.queryInstance = this.createQuery();
     this.isReady = true;
     // Background tasks are process-local and die with the old process; the
@@ -1682,7 +1776,11 @@ export class ClaudeCodeProcess extends EventEmitter {
     // no longer known-idle (interruptTurn reads this to decide whether there
     // is a foreground turn to abort, and a Stop in the send→running window
     // must still reach it).
-    if (shouldQuery !== false) this.lastSessionState = null;
+    if (shouldQuery !== false) {
+      this.lastSessionState = null;
+      this.foregroundTurnEnded = false;
+      this.pendingSends++;
+    }
     // Every send path must reach the session's settlement tracker — including
     // internal ones that bypass SessionManager.sendMessage (the MCP-injection
     // continuation in addRemoteMcpServer). Without this, a send landing while
@@ -1844,15 +1942,27 @@ export class ClaudeCodeProcess extends EventEmitter {
 
   /** Record the frames a late-joining WebSocket subscriber must not miss. */
   private trackForLateJoinReplay(message: SDKMessage): void {
-    const msg = message as { type: string; subtype?: string; state?: string };
+    const msg = message as {
+      type: string;
+      subtype?: string;
+      state?: string;
+      parent_tool_use_id?: string | null;
+      user_message_uuids?: unknown;
+    };
     if (msg.type === 'system' && msg.subtype === 'informational') {
       this.currentTurnInformationals.push(message);
     } else if (msg.type === 'result') {
       this.lastResultMessage = message;
       this.lastTurnInformationals = this.currentTurnInformationals;
       this.currentTurnInformationals = [];
+      this.foregroundTurnEnded = true;
+      const answered = Array.isArray(msg.user_message_uuids) ? msg.user_message_uuids.length : this.pendingSends;
+      this.pendingSends = Math.max(0, this.pendingSends - answered);
     } else if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
       this.lastSessionState = msg.state ?? null;
+      if (msg.state !== 'idle') this.foregroundTurnEnded = false;
+    } else if ((msg.type === 'assistant' || msg.type === 'stream_event') && !msg.parent_tool_use_id) {
+      this.foregroundTurnEnded = false;
     }
   }
 
@@ -1935,10 +2045,14 @@ export class ClaudeCodeProcess extends EventEmitter {
       console.warn(`[Session ${this.sessionId}] CLI does not advertise interrupt_receipt_v1`);
       return null;
     }
-    // Between turns (the turn-end `idle` — which the CLI also emits while
-    // background work is still running) there is no foreground turn to abort.
-    // Stop is then a no-op for the turn; the caller stops tasks one by one.
-    if (this.lastSessionState === 'idle') {
+    // Between turns there is no foreground turn to abort: after the turn-end
+    // `idle` (which the CLI emits while backgrounded Bash is still running),
+    // or after the lead turn's result while a background subagent is live
+    // (CLI 2.1.269+ emits no idle then — see foregroundTurnEnded). Stop is
+    // then a no-op for the turn; the caller stops tasks one by one. Sending
+    // the interrupt anyway would get a receipt but never a result, and the
+    // fallback restart would kill the background work.
+    if (this.lastSessionState === 'idle' || (this.foregroundTurnEnded && this.pendingSends === 0)) {
       console.log(`[Session ${this.sessionId}] No foreground turn to interrupt`);
       return { interrupted: false, discardedUuids: [], processKept: true };
     }

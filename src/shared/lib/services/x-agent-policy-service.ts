@@ -16,7 +16,9 @@ import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { and, desc, eq, isNull, ne, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { batch, changesOf } from '@shared/lib/db/batch'
 import { xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
+import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 
 // ============================================================================
 // Zod schemas (boundary validation per CLAUDE.md)
@@ -81,47 +83,62 @@ export function getPolicy(
   return rows[0] ?? null
 }
 
+const MAX_SET_POLICY_ATTEMPTS = 5
+
 /**
- * Upsert a policy row atomically.
+ * Set a policy row and report exactly what it displaced: whether a row was
+ * created and the decision it replaced. The graph's drawn edges rely on that
+ * to decide whether to refresh, so it cannot be a guess from a read next to
+ * the write.
  *
- * SQLite's unique-index semantics treat NULL != NULL, so a (caller, NULL, op)
- * row is not deduped by the unique index — two concurrent inserts could both
- * succeed and create duplicates. We wrap the read + insert/update in a
- * transaction so concurrent setPolicy calls serialize correctly.
- *
- * Returns Promise to keep the call-site signature stable; the actual work is
- * sync (better-sqlite3 transactions are synchronous). The result reports
- * whether a row was created and what it replaced, so single-policy callers
- * (the graph's drawn edges) can message accurately without a list round-trip.
+ * Calls for the same key are serialized within this process, so a burst of
+ * edits to one edge lands in arrival order with every call succeeding, as
+ * the old transaction gave. Against another process the write is still a
+ * compare-and-set: update only while the row holds the decision that was
+ * read, or insert only while no row holds the key (the NULL-safe unique
+ * index from migration 0044 makes a global, null-target key conflict too);
+ * zero changes means read again and swap against what the other writer left.
  */
-export async function setPolicy(
+export function setPolicy(
+  callerSlug: string,
+  operation: XAgentOperation,
+  targetSlug: string | null,
+  decision: XAgentDecision,
+): Promise<{ created: boolean; previousDecision: XAgentDecision | null }> {
+  return serializeByKey(`x-agent-policy:${callerSlug}\u0000${operation}\u0000${targetSlug ?? ''}`, () =>
+    compareAndSetPolicy(callerSlug, operation, targetSlug, decision),
+  )
+}
+
+async function compareAndSetPolicy(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string | null,
   decision: XAgentDecision,
 ): Promise<{ created: boolean; previousDecision: XAgentDecision | null }> {
   const now = new Date()
-  return db.transaction(() => {
-    const existing = db
-      .select()
+  const key = and(
+    eq(xAgentPolicies.callerAgentSlug, callerSlug),
+    eq(xAgentPolicies.operation, operation),
+    targetMatch(targetSlug),
+  )
+  for (let attempt = 0; attempt < MAX_SET_POLICY_ATTEMPTS; attempt++) {
+    const existing = await db
+      .select({ id: xAgentPolicies.id, decision: xAgentPolicies.decision })
       .from(xAgentPolicies)
-      .where(
-        and(
-          eq(xAgentPolicies.callerAgentSlug, callerSlug),
-          eq(xAgentPolicies.operation, operation),
-          targetMatch(targetSlug),
-        ),
-      )
-      .limit(1)
-      .all()
-    if (existing.length > 0) {
-      db.update(xAgentPolicies)
+      .where(key)
+      .get()
+    if (existing) {
+      const updated = await db
+        .update(xAgentPolicies)
         .set({ decision, updatedAt: now })
-        .where(eq(xAgentPolicies.id, existing[0].id))
+        .where(and(eq(xAgentPolicies.id, existing.id), eq(xAgentPolicies.decision, existing.decision)))
         .run()
-      return { created: false, previousDecision: existing[0].decision as XAgentDecision }
+      if (changesOf(updated) > 0) return { created: false, previousDecision: existing.decision as XAgentDecision }
+      continue
     }
-    db.insert(xAgentPolicies)
+    const inserted = await db
+      .insert(xAgentPolicies)
       .values({
         id: randomUUID(),
         callerAgentSlug: callerSlug,
@@ -131,9 +148,11 @@ export async function setPolicy(
         createdAt: now,
         updatedAt: now,
       })
+      .onConflictDoNothing()
       .run()
-    return { created: true, previousDecision: null }
-  })
+    if (changesOf(inserted) > 0) return { created: true, previousDecision: null }
+  }
+  throw new Error('Policy changed concurrently; try again')
 }
 
 /** Delete the exact policy row(s) for (caller, operation, target). */
@@ -272,21 +291,19 @@ export const replacePoliciesForCallerInputSchema = z.object({
 })
 export type ReplacePoliciesForCallerInput = z.infer<typeof replacePoliciesForCallerInputSchema>
 
-export function replacePoliciesForCaller(
+export async function replacePoliciesForCaller(
   callerSlug: string,
   policies: ReplacePoliciesForCallerInput['policies'],
-): void {
+): Promise<void> {
   const now = new Date()
 
-  // Dedupe the payload before inserting. The (caller, target, operation) unique
-  // index already rejects duplicate NON-null target rows, but SQLite treats NULL
-  // as distinct, so two global entries like (alice, NULL, 'list') would both
-  // persist and getPolicy/evaluate would resolve them non-deterministically
-  // (limit(1)). Collapse global (null-target) entries per operation with
-  // last-write-wins — later payload entries overwrite earlier ones — mirroring
-  // the upsert semantics setPolicy uses for the same NULL-distinct case. Non-null
-  // duplicates are intentionally left to the unique index (a client sending two
-  // conflicting specific-target rows is an error and rolls back the transaction).
+  // Dedupe the payload before inserting. Two global entries like
+  // (alice, NULL, 'list') in one payload are the editor re-stating a toggle,
+  // so collapse them per operation with last-write-wins (later entries win),
+  // mirroring setPolicy's upsert. Both unique indexes then hold: the plain one
+  // rejects duplicate specific-target rows and the null-safe one duplicate
+  // globals, and a client sending two conflicting specific-target rows is an
+  // error that aborts the whole batch.
   const globalByOp = new Map<XAgentOperation, ReplacePoliciesForCallerInput['policies'][number]>()
   const specific: ReplacePoliciesForCallerInput['policies'] = []
   for (const p of policies) {
@@ -298,22 +315,18 @@ export function replacePoliciesForCaller(
   }
   const toInsert = [...specific, ...globalByOp.values()]
 
-  db.transaction(() => {
-    db.delete(xAgentPolicies)
-      .where(eq(xAgentPolicies.callerAgentSlug, callerSlug))
-      .run()
-    for (const p of toInsert) {
-      db.insert(xAgentPolicies)
-        .values({
-          id: randomUUID(),
-          callerAgentSlug: callerSlug,
-          targetAgentSlug: p.targetSlug,
-          operation: p.operation,
-          decision: p.decision,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .run()
-    }
-  })
+  await batch([
+    db.delete(xAgentPolicies).where(eq(xAgentPolicies.callerAgentSlug, callerSlug)),
+    ...toInsert.map((p) =>
+      db.insert(xAgentPolicies).values({
+        id: randomUUID(),
+        callerAgentSlug: callerSlug,
+        targetAgentSlug: p.targetSlug,
+        operation: p.operation,
+        decision: p.decision,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    ),
+  ])
 }

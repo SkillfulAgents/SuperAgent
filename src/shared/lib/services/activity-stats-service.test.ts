@@ -208,6 +208,29 @@ describe('activity stats data pathways', () => {
     expect(result.connectionById).not.toHaveProperty('account-account-not-mapped')
   })
 
+  it('exposes inbound history when widget repairs are the only invocations', async () => {
+    mockReadSessionMetadata.mockResolvedValue({
+      legacy: { isWidgetRepair: true, createdAt: '2026-07-01T10:00:00.000Z' },
+      failed: { isWidgetRepair: true, automationStatus: 'failed', createdAt: '2026-07-08T18:00:00.000Z' },
+      running: { isWidgetRepair: true, automationStatus: 'running', createdAt: '2026-07-09T10:00:00.000Z' },
+      invalid: { isWidgetRepair: true, createdAt: 'invalid' },
+      human: { createdAt: '2026-07-09T11:00:00.000Z' },
+      cron: { isScheduledExecution: true, createdAt: '2026-07-09T11:00:00.000Z' },
+    })
+
+    const result = await getAgentActivityStats('agent-a', { days: 2, now: NOW, cronSlots: 2 })
+
+    // Like x-agent calls, this series counts invocations when they start.
+    expect(result.inboundXAgent).toEqual({
+      total: 3,
+      lastInvokedAt: '2026-07-09T10:00:00.000Z',
+      activity: [
+        { date: '2026-07-08', succeeded: 1, failed: 0 },
+        { date: '2026-07-09', succeeded: 1, failed: 0 },
+      ],
+    })
+  })
+
   it('owner-scopes connection IDs and usage in shared-agent activity', async () => {
     await insertUser('owner-a')
     await insertUser('owner-b')

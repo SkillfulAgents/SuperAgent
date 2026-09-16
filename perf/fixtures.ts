@@ -4,9 +4,7 @@
  * Everything is derived from the profile and a seeded PRNG — names, timestamps,
  * which sessions are hidden automations — so two runs of the same profile
  * issue the same filesystem operations and produce the same op counts.
- * Transcript mtimes are pinned with `utimes`, and the ownership index is
- * written up front so the one-time legacy discovery migration is never part
- * of a measurement.
+ * Transcript mtimes are pinned with `utimes`.
  */
 import * as fs from 'fs'
 import * as path from 'path'
@@ -72,7 +70,13 @@ function prng(seed: number): () => number {
   }
 }
 
-const BASE_TIME = Date.UTC(2026, 0, 1)
+/**
+ * The clock every fixture date hangs off. The harness pins `Date.now` to it
+ * while the app runs, so what the fixtures say about age holds whenever the
+ * suite runs: a registration minutes before it is a new session, not an
+ * orphaned one the listing would drop and prune.
+ */
+export const BASE_TIME = Date.UTC(2026, 0, 1)
 
 function transcriptLines(sessionId: string, turns: number, rand: () => number): string {
   const lines: string[] = []
@@ -107,7 +111,6 @@ function transcriptLines(sessionId: string, turns: number, rand: () => number): 
 export async function seedDataDir(dataDir: string, profile: SeedProfile): Promise<SeededData> {
   const rand = prng(0xc0ffee)
   const agentsDir = path.join(dataDir, 'agents')
-  const ownership: Record<string, string> = {}
   const agentSlugs: string[] = []
   const latestVisibleByAgent: Record<string, string> = {}
   let transcriptCount = 0
@@ -129,7 +132,6 @@ export async function seedDataDir(dataDir: string, profile: SeedProfile): Promis
 
     for (let s = 0; s < profile.sessionsPerAgent; s++) {
       const id = `${slug}-s${String(s).padStart(5, '0')}`
-      ownership[id] = slug
       // Activity spread over ~100 days, in a shuffled order so directory
       // order and activity order disagree.
       const at = BASE_TIME + Math.floor(rand() * 100 * 86_400_000)
@@ -149,15 +151,15 @@ export async function seedDataDir(dataDir: string, profile: SeedProfile): Promis
 
     for (let m = 0; m < profile.metadataOnlyPerAgent; m++) {
       const id = `${slug}-pending${m}`
-      ownership[id] = slug
-      // Older than every transcript so it never becomes "latest" (keeps the
-      // latest-session tail read on a real transcript).
-      metadata[id] = { name: `Pending ${m}`, createdAt: new Date(BASE_TIME - 86_400_000 * (m + 1)).toISOString() }
+      // Registered minutes before the pinned clock, so it is still a new
+      // session and not an orphan; older than every transcript so it never
+      // becomes "latest" (keeps the latest-session tail read on a real
+      // transcript).
+      metadata[id] = { name: `Pending ${m}`, createdAt: new Date(BASE_TIME - 600_000 * (m + 1)).toISOString() }
     }
 
     for (let e = 0; e < profile.sdkArtifactsPerAgent; e++) {
       const id = `${slug}-artifact${e}`
-      ownership[id] = slug
       const file = path.join(sessionsDir, `${id}.jsonl`)
       await fs.promises.writeFile(file, '')
       // Newest of all, so a listing that forgets the empty-unregistered rule
@@ -185,8 +187,6 @@ export async function seedDataDir(dataDir: string, profile: SeedProfile): Promis
 
     if (latestVisible) latestVisibleByAgent[slug] = latestVisible.id
   }
-
-  await fs.promises.writeFile(path.join(dataDir, 'session-ownership.json'), JSON.stringify(ownership))
 
   return { dataDir, agentSlugs, latestVisibleByAgent, transcriptCount }
 }

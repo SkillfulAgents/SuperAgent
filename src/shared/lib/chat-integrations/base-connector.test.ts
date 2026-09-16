@@ -4,121 +4,130 @@ import { MockChatClientConnector } from './mock-connector'
 // We test the base class behavior through MockChatClientConnector,
 // which extends ChatClientConnector and exposes the emit* methods.
 
-describe('ChatClientConnector event system', () => {
-  // ── onMessage ──────────────────────────────────────────────────────
+describe('ChatAgentIntegration event system', () => {
+  // ── onEvent ──────────────────────────────────────────────────────
 
-  describe('onMessage', () => {
-    it('calls registered handler when message is emitted', () => {
+  describe('onEvent', () => {
+    it('calls registered handler when message is emitted', async () => {
       const connector = new MockChatClientConnector()
       const handler = vi.fn()
 
-      connector.onMessage(handler)
+      connector.onEvent(handler)
       connector.simulateIncomingMessage('hello')
+      await Promise.resolve()
 
       expect(handler).toHaveBeenCalledOnce()
-      expect(handler.mock.calls[0][0].text).toBe('hello')
+      expect(handler.mock.calls[0][0].payload.text).toBe('hello')
     })
 
-    it('calls multiple handlers', () => {
+    it('calls multiple handlers', async () => {
       const connector = new MockChatClientConnector()
       const handler1 = vi.fn()
       const handler2 = vi.fn()
 
-      connector.onMessage(handler1)
-      connector.onMessage(handler2)
+      connector.onEvent(handler1)
+      connector.onEvent(handler2)
       connector.simulateIncomingMessage('hello')
+      await Promise.resolve()
 
       expect(handler1).toHaveBeenCalledOnce()
       expect(handler2).toHaveBeenCalledOnce()
     })
 
-    it('returns unsubscribe function that removes handler', () => {
+    it('returns unsubscribe function that removes handler', async () => {
       const connector = new MockChatClientConnector()
       const handler = vi.fn()
 
-      const unsubscribe = connector.onMessage(handler)
+      const unsubscribe = connector.onEvent(handler)
       unsubscribe()
       connector.simulateIncomingMessage('hello')
+      await Promise.resolve()
 
       expect(handler).not.toHaveBeenCalled()
     })
 
-    it('unsubscribing one handler does not affect others', () => {
+    it('unsubscribing one handler does not affect others', async () => {
       const connector = new MockChatClientConnector()
       const handler1 = vi.fn()
       const handler2 = vi.fn()
 
-      const unsub1 = connector.onMessage(handler1)
-      connector.onMessage(handler2)
+      const unsub1 = connector.onEvent(handler1)
+      connector.onEvent(handler2)
 
       unsub1()
       connector.simulateIncomingMessage('hello')
+      await Promise.resolve()
 
       expect(handler1).not.toHaveBeenCalled()
       expect(handler2).toHaveBeenCalledOnce()
     })
 
-    it('error in one handler does not prevent others from being called', () => {
+    it('error in one handler does not prevent others from being called', async () => {
       const connector = new MockChatClientConnector()
       const errorHandler = vi.fn(() => { throw new Error('handler error') })
       const goodHandler = vi.fn()
 
-      connector.onMessage(errorHandler)
-      connector.onMessage(goodHandler)
+      connector.onEvent(errorHandler)
+      connector.onEvent(goodHandler)
 
       // Should not throw
       connector.simulateIncomingMessage('hello')
+      await Promise.resolve()
 
       expect(errorHandler).toHaveBeenCalledOnce()
       expect(goodHandler).toHaveBeenCalledOnce()
     })
   })
 
-  // ── onInteractiveResponse ──────────────────────────────────────────
+  // ── response events ──────────────────────────────────────────
 
-  describe('onInteractiveResponse', () => {
-    it('calls registered handler with toolUseId and response', () => {
+  describe('response events', () => {
+    it('calls registered handler with the normalized response', async () => {
       const connector = new MockChatClientConnector()
       const handler = vi.fn()
 
-      connector.onInteractiveResponse(handler)
-      connector.simulateInteractiveResponse('tu-1', { answer: 'yes' })
+      connector.onEvent(handler)
+      connector.simulateInteractiveResponse('tu-1', { question: 'Continue?', answer: 'yes' }, 'chat-42')
+      await Promise.resolve()
 
-      expect(handler).toHaveBeenCalledWith('tu-1', { answer: 'yes' }, undefined)
+      expect(handler).toHaveBeenCalledWith({ type: 'response', externalId: 'chat-42', requestId: 'tu-1', requestKind: 'input', value: { 'Continue?': 'yes' } })
     })
 
-    it('returns unsubscribe function', () => {
+    it('returns unsubscribe function', async () => {
       const connector = new MockChatClientConnector()
       const handler = vi.fn()
 
-      const unsub = connector.onInteractiveResponse(handler)
+      const unsub = connector.onEvent(handler)
       unsub()
       connector.simulateInteractiveResponse('tu-1', { answer: 'yes' })
+      await Promise.resolve()
 
       expect(handler).not.toHaveBeenCalled()
     })
 
-    it('calls multiple handlers', () => {
+    it('calls multiple handlers', async () => {
       const connector = new MockChatClientConnector()
       const h1 = vi.fn()
       const h2 = vi.fn()
 
-      connector.onInteractiveResponse(h1)
-      connector.onInteractiveResponse(h2)
+      connector.onEvent(h1)
+      connector.onEvent(h2)
       connector.simulateInteractiveResponse('tu-1', 'value')
+      await Promise.resolve()
 
       expect(h1).toHaveBeenCalledOnce()
       expect(h2).toHaveBeenCalledOnce()
     })
 
-    it('error in one handler does not prevent others', () => {
+    it('error in one handler does not prevent others', async () => {
       const connector = new MockChatClientConnector()
       const bad = vi.fn(() => { throw new Error('oops') })
       const good = vi.fn()
 
-      connector.onInteractiveResponse(bad)
-      connector.onInteractiveResponse(good)
+      connector.onEvent(bad)
+      connector.onEvent(good)
       connector.simulateInteractiveResponse('tu-1', 'val')
+      await Promise.resolve()
 
       expect(good).toHaveBeenCalledOnce()
     })
@@ -165,19 +174,21 @@ describe('ChatClientConnector event system', () => {
   // ── Message data structure ─────────────────────────────────────────
 
   describe('incoming message shape', () => {
-    it('includes all expected fields', () => {
+    it('includes all expected fields', async () => {
       const connector = new MockChatClientConnector()
       const handler = vi.fn()
 
-      connector.onMessage(handler)
+      connector.onEvent(handler)
       connector.simulateIncomingMessage('test message', 'chat-42', 'user-7')
+      await Promise.resolve()
 
-      const msg = handler.mock.calls[0][0]
+      const msg = handler.mock.calls[0][0].payload
       expect(msg.text).toBe('test message')
       expect(msg.chatId).toBe('chat-42')
       expect(msg.userId).toBe('user-7')
       expect(msg.externalMessageId).toBeDefined()
       expect(msg.timestamp).toBeInstanceOf(Date)
+      expect(handler.mock.calls[0][0]).toMatchObject({ type: 'input', externalId: 'chat-42', id: msg.externalMessageId, timestamp: msg.timestamp })
     })
   })
 })

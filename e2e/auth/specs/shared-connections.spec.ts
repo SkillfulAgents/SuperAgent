@@ -314,18 +314,24 @@ test.describe('Shared agent connections', () => {
 
     // The credential is the member's, so the owner cannot reconnect it. Before
     // the escape hatch this was the wedge: nothing to press, five minutes to
-    // wait. A cross-agent dismissal still has to bounce.
+    // wait. A cross-agent dismissal still has to bounce: another agent's route
+    // cannot see the request at all, so it answers the same settled shape an
+    // unknown id gets, discloses no outcome, and leaves the request open.
     const crossAgent = await user2Page.request.post(
       `/api/agents/${otherAgentSlug}/reauth-request/${requestId}/dismiss`,
       { data: {} },
     )
-    expect(crossAgent.status()).toBe(404)
+    expect(crossAgent.status()).toBe(200)
+    expect(await crossAgent.json()).toEqual({ success: true, alreadySettled: true })
 
     const dismissed = await user2Page.request.post(
       `/api/agents/${agentSlug}/reauth-request/${requestId}/dismiss`,
       { data: { reason: 'the owner is out today' } },
     )
     expect(dismissed.ok(), `dismiss ${dismissed.status()}`).toBeTruthy()
+    // Not `alreadySettled`: the owner's route found the request still open,
+    // which is what proves the cross-agent call touched nothing.
+    expect(await dismissed.json()).toEqual({ success: true })
 
     // The agent learns a person decided this, not that the wait stalled — a
     // 408 timeout would invite it straight back into the same wall.

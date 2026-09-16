@@ -203,18 +203,16 @@ describe('IMessageConnector', () => {
       await connector.sendUserRequestCard('chat-1', event as any)
 
       const handler = vi.fn()
-      connector.onInteractiveResponse(handler)
+      connector.onEvent(event => { if (event.type === 'response') handler(event) })
 
       // Simulate a thumbs-up reaction from the external user
       ;(connector as any).handleReactionAdded({
         reactionType: 'like',
         from: '+10005551234',
       })
+      await Promise.resolve()
 
-      expect(handler).toHaveBeenCalledWith('review:tool-1', {
-        question: '_approval',
-        answer: '✅ Allow',
-      }, undefined)
+      expect(handler).toHaveBeenCalledWith({ type: 'response', externalId: '', requestKind: 'review', requestId: 'tool-1', value: 'allow' })
     })
 
     it('emits deny response on thumbs-down reaction', async () => {
@@ -227,17 +225,15 @@ describe('IMessageConnector', () => {
       await connector.sendUserRequestCard('chat-1', event as any)
 
       const handler = vi.fn()
-      connector.onInteractiveResponse(handler)
+      connector.onEvent(event => { if (event.type === 'response') handler(event) })
 
       ;(connector as any).handleReactionAdded({
         reactionType: 'dislike',
         from: '+10005551234',
       })
+      await Promise.resolve()
 
-      expect(handler).toHaveBeenCalledWith('review:tool-1', {
-        question: '_approval',
-        answer: '❌ Deny',
-      }, undefined)
+      expect(handler).toHaveBeenCalledWith({ type: 'response', externalId: '', requestKind: 'review', requestId: 'tool-1', value: 'deny' })
     })
 
     it('removes pending approval after it is resolved', async () => {
@@ -380,7 +376,7 @@ describe('IMessageConnector', () => {
       await connector.sendUserRequestCard('chat-1', event as any)
 
       const handler = vi.fn()
-      connector.onInteractiveResponse(handler)
+      connector.onEvent(event => { if (event.type === 'response') handler(event) })
 
       // User replies with "2" to select Blue
       ;(connector as any).handleMessageReceived({
@@ -389,11 +385,9 @@ describe('IMessageConnector', () => {
         from: '+10005551234',
         parts: [{ type: 'text', value: '2' }],
       })
+      await Promise.resolve()
 
-      expect(handler).toHaveBeenCalledWith('q-6', {
-        question: 'Pick a color',
-        answer: 'Blue',
-      }, undefined)
+      expect(handler).toHaveBeenCalledWith({ type: 'response', externalId: '', requestKind: 'input', requestId: 'q-6', value: { 'Pick a color': 'Blue' } })
     })
 
     it('resolves question by exact label (case-insensitive)', async () => {
@@ -409,7 +403,7 @@ describe('IMessageConnector', () => {
       await connector.sendUserRequestCard('chat-1', event as any)
 
       const handler = vi.fn()
-      connector.onInteractiveResponse(handler)
+      connector.onEvent(event => { if (event.type === 'response') handler(event) })
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-reply',
@@ -417,11 +411,9 @@ describe('IMessageConnector', () => {
         from: '+10005551234',
         parts: [{ type: 'text', value: 'red' }],
       })
+      await Promise.resolve()
 
-      expect(handler).toHaveBeenCalledWith('q-7', {
-        question: 'Pick a color',
-        answer: 'Red',
-      }, undefined)
+      expect(handler).toHaveBeenCalledWith({ type: 'response', externalId: '', requestKind: 'input', requestId: 'q-7', value: { 'Pick a color': 'Red' } })
     })
 
     it('resolves question with raw text when no match', async () => {
@@ -437,7 +429,7 @@ describe('IMessageConnector', () => {
       await connector.sendUserRequestCard('chat-1', event as any)
 
       const handler = vi.fn()
-      connector.onInteractiveResponse(handler)
+      connector.onEvent(event => { if (event.type === 'response') handler(event) })
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-reply',
@@ -445,11 +437,9 @@ describe('IMessageConnector', () => {
         from: '+10005551234',
         parts: [{ type: 'text', value: 'Purple' }],
       })
+      await Promise.resolve()
 
-      expect(handler).toHaveBeenCalledWith('q-8', {
-        question: 'Pick a color',
-        answer: 'Purple',
-      }, undefined)
+      expect(handler).toHaveBeenCalledWith({ type: 'response', externalId: '', requestKind: 'input', requestId: 'q-8', value: { 'Pick a color': 'Purple' } })
     })
 
     it('does not emit a regular message when answering a question', async () => {
@@ -465,7 +455,7 @@ describe('IMessageConnector', () => {
       await connector.sendUserRequestCard('chat-1', event as any)
 
       const messageHandler = vi.fn()
-      connector.onMessage(messageHandler)
+      connector.onEvent(event => { if (event.type === 'input') messageHandler(event) })
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-reply',
@@ -473,6 +463,7 @@ describe('IMessageConnector', () => {
         from: '+10005551234',
         parts: [{ type: 'text', value: '1' }],
       })
+      await Promise.resolve()
 
       // Should NOT emit as a regular incoming message
       expect(messageHandler).not.toHaveBeenCalled()
@@ -512,9 +503,9 @@ describe('IMessageConnector', () => {
       wireUp(connector)
     })
 
-    it('concatenates multiple text parts', () => {
+    it('concatenates multiple text parts', async () => {
       const handler = vi.fn()
-      connector.onMessage(handler)
+      connector.onEvent(event => { if (event.type === 'input') handler(event) })
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-1',
@@ -525,14 +516,15 @@ describe('IMessageConnector', () => {
           { type: 'text', value: 'World' },
         ],
       })
+      await Promise.resolve()
 
       expect(handler).toHaveBeenCalledOnce()
-      expect(handler.mock.calls[0][0].text).toBe('Hello\nWorld')
+      expect(handler.mock.calls[0][0].payload.text).toBe('Hello\nWorld')
     })
 
-    it('extracts media parts as files', () => {
+    it('extracts media parts as files', async () => {
       const handler = vi.fn()
-      connector.onMessage(handler)
+      connector.onEvent(event => { if (event.type === 'input') handler(event) })
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-2',
@@ -542,9 +534,10 @@ describe('IMessageConnector', () => {
           { type: 'media', url: 'https://example.com/photo.jpg', filename: 'photo.jpg', mimeType: 'image/jpeg' },
         ],
       })
+      await Promise.resolve()
 
       expect(handler).toHaveBeenCalledOnce()
-      const msg = handler.mock.calls[0][0]
+      const msg = handler.mock.calls[0][0].payload
       expect(msg.files).toHaveLength(1)
       expect(msg.files[0]).toEqual({
         name: 'photo.jpg',
@@ -553,9 +546,9 @@ describe('IMessageConnector', () => {
       })
     })
 
-    it('handles mixed text and media parts', () => {
+    it('handles mixed text and media parts', async () => {
       const handler = vi.fn()
-      connector.onMessage(handler)
+      connector.onEvent(event => { if (event.type === 'input') handler(event) })
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-3',
@@ -566,16 +559,17 @@ describe('IMessageConnector', () => {
           { type: 'media', url: 'https://example.com/doc.pdf', filename: 'doc.pdf', mimeType: 'application/pdf' },
         ],
       })
+      await Promise.resolve()
 
-      const msg = handler.mock.calls[0][0]
+      const msg = handler.mock.calls[0][0].payload
       expect(msg.text).toBe('Check this out')
       expect(msg.files).toHaveLength(1)
       expect(msg.files[0].name).toBe('doc.pdf')
     })
 
-    it('uses "attachment" as default filename when not provided', () => {
+    it('uses "attachment" as default filename when not provided', async () => {
       const handler = vi.fn()
-      connector.onMessage(handler)
+      connector.onEvent(event => { if (event.type === 'input') handler(event) })
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-4',
@@ -585,14 +579,15 @@ describe('IMessageConnector', () => {
           { type: 'media', url: 'https://example.com/unnamed' },
         ],
       })
+      await Promise.resolve()
 
-      const msg = handler.mock.calls[0][0]
+      const msg = handler.mock.calls[0][0].payload
       expect(msg.files[0].name).toBe('attachment')
     })
 
-    it('omits files when there are no media parts', () => {
+    it('omits files when there are no media parts', async () => {
       const handler = vi.fn()
-      connector.onMessage(handler)
+      connector.onEvent(event => { if (event.type === 'input') handler(event) })
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-5',
@@ -600,14 +595,15 @@ describe('IMessageConnector', () => {
         from: '+10005551234',
         parts: [{ type: 'text', value: 'Just text' }],
       })
+      await Promise.resolve()
 
-      const msg = handler.mock.calls[0][0]
+      const msg = handler.mock.calls[0][0].payload
       expect(msg.files).toBeUndefined()
     })
 
-    it('tracks lastReceivedMessageId', () => {
+    it('tracks lastReceivedMessageId', async () => {
       const handler = vi.fn()
-      connector.onMessage(handler)
+      connector.onEvent(event => { if (event.type === 'input') handler(event) })
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-abc',
@@ -615,13 +611,14 @@ describe('IMessageConnector', () => {
         from: '+10005551234',
         parts: [{ type: 'text', value: 'hi' }],
       })
+      await Promise.resolve()
 
       expect((connector as any).lastReceivedMessageId).toBe('msg-abc')
     })
 
-    it('sends mark_read on receiving a message', () => {
+    it('sends mark_read on receiving a message', async () => {
       const ws = (connector as any).ws as MockWs
-      connector.onMessage(vi.fn())
+      connector.onEvent(vi.fn())
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-6',
@@ -629,6 +626,7 @@ describe('IMessageConnector', () => {
         from: '+10005551234',
         parts: [{ type: 'text', value: 'hi' }],
       })
+      await Promise.resolve()
 
       const messages = parseSent(ws)
       expect(messages.some((m) => m.type === 'mark_read')).toBe(true)
@@ -723,7 +721,7 @@ describe('IMessageConnector', () => {
       await connector.sendUserRequestCard('chat-1', event as any)
 
       const handler = vi.fn()
-      connector.onInteractiveResponse(handler)
+      connector.onEvent(event => { if (event.type === 'response') handler(event) })
 
       // Simulate an incoming message (not a reaction)
       ;(connector as any).handleMessageReceived({
@@ -732,12 +730,10 @@ describe('IMessageConnector', () => {
         from: '+10005551234',
         parts: [{ type: 'text', value: 'Do something else' }],
       })
+      await Promise.resolve()
 
       expect(handler).toHaveBeenCalledTimes(1)
-      expect(handler).toHaveBeenCalledWith('review:tool-A', {
-        question: '_approval',
-        answer: '❌ Deny',
-      }, undefined)
+      expect(handler).toHaveBeenCalledWith({ type: 'response', externalId: '', requestKind: 'review', requestId: 'tool-A', value: 'deny' })
     })
 
     it('denies multiple pending approvals when they have distinct IDs', async () => {
@@ -751,7 +747,7 @@ describe('IMessageConnector', () => {
       pendingApprovals.set('approval-2', { toolUseId: 'review:tool-B', sentMessageId: 'approval-2' })
 
       const handler = vi.fn()
-      connector.onInteractiveResponse(handler)
+      connector.onEvent(event => { if (event.type === 'response') handler(event) })
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-text',
@@ -759,12 +755,13 @@ describe('IMessageConnector', () => {
         from: '+10005551234',
         parts: [{ type: 'text', value: 'Do something else' }],
       })
+      await Promise.resolve()
 
       expect(handler).toHaveBeenCalledTimes(2)
-      const deniedIds = handler.mock.calls.map((c: any) => c[0]).sort()
-      expect(deniedIds).toEqual(['review:tool-A', 'review:tool-B'])
+      const deniedIds = handler.mock.calls.map((c: any) => c[0].requestId).sort()
+      expect(deniedIds).toEqual(['tool-A', 'tool-B'])
       for (const call of handler.mock.calls) {
-        expect(call[1]).toEqual({ question: '_approval', answer: '❌ Deny' })
+        expect(call[0]).toMatchObject({ requestKind: 'review', value: 'deny' })
       }
     })
 
@@ -781,7 +778,7 @@ describe('IMessageConnector', () => {
       await connector.sendUserRequestCard('chat-1', event as any)
 
       const messageHandler = vi.fn()
-      connector.onMessage(messageHandler)
+      connector.onEvent(event => { if (event.type === 'input') messageHandler(event) })
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-new',
@@ -789,10 +786,11 @@ describe('IMessageConnector', () => {
         from: '+10005551234',
         parts: [{ type: 'text', value: 'New instruction' }],
       })
+      await Promise.resolve()
 
       // The incoming message should still be emitted
       expect(messageHandler).toHaveBeenCalledOnce()
-      expect(messageHandler.mock.calls[0][0].text).toBe('New instruction')
+      expect(messageHandler.mock.calls[0][0].payload.text).toBe('New instruction')
     })
   })
 

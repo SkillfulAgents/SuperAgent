@@ -20,6 +20,7 @@ import { useDashboardHeader } from '@renderer/context/dashboard-header-context'
 import { DashboardHeaderActions } from '@renderer/components/dashboards/dashboard-header-actions'
 import type { ContainerStatus } from '@shared/lib/container/types'
 import { ScrollAwareNavTitle } from './scroll-aware-title'
+import { ForkedFromIndicator } from './forked-from-indicator'
 
 interface AgentHeaderProps {
   slug: string
@@ -171,7 +172,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
             </>
           )
         })()}
-        {sessionId && session?.invokedByAgentSlug && (
+        {sessionId && (session?.invokedByAgentSlug || session?.isWidgetRepair) && (
           <>
             <BreadcrumbSeparator />
             <AppLink
@@ -205,6 +206,13 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
                 {session?.name || 'Loading...'}
               </span>
             </SessionContextMenu>
+            {session?.forkedFromSessionId && (
+              <ForkedFromIndicator
+                agentSlug={slug}
+                sourceSessionId={session.forkedFromSessionId}
+                sourceSessionName={session.forkedFromSessionName}
+              />
+            )}
           </>
         )}
         {dashboardSlug && (

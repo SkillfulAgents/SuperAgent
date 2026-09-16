@@ -135,6 +135,12 @@ export interface CreateSessionOptions {
 
 export interface StartOptions {
   envVars?: Record<string, string>
+  /**
+   * The agent's display name, for the LLM provider's per-agent attribution.
+   * Supplied by the caller, which reads it through the agent's actor; the
+   * runtime has no view of the workspace and must not read it by host path.
+   */
+  agentName?: string
   additionalVolumes?: string[] // Extra -v flag values for bind mounts
   /**
    * Called when a bind mount is dropped at run time because the container
@@ -274,7 +280,8 @@ export interface ContainerClient {
   observeUnexpectedDeath(input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan>
   getRuntimeGenerationId(): string | null
 
-  // Streaming - returns unsubscribe function and a ready promise
+  // Streaming - ready resolves after listener attachment and terminal replay,
+  // before a new send may safely mark the session active.
   subscribeToStream(
     sessionId: string,
     callback: (message: StreamMessage) => void

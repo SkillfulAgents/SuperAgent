@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import * as path from 'path'
 import { WorkflowJournalTailer, type WorkflowAgentUpdate } from './workflow-journal-tailer'
+import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
 
 const FIXTURE_ROOT = path.join(__dirname, '__fixtures__', 'local-workflow-capture-probe')
 const SID = 'd63a9cbc-2f5e-44dd-8017-231ac99bef35'
@@ -8,8 +9,8 @@ const RUN = 'wf_818f758a-c17'
 
 function tailer(runId: string, sink: WorkflowAgentUpdate[]) {
   return new WorkflowJournalTailer({
-    sessionsDir: FIXTURE_ROOT,
-    sessionId: SID,
+    files: new LocalFileOps(() => FIXTURE_ROOT),
+    journalPath: `${SID}/subagents/workflows/${runId}/journal.jsonl`,
     runId,
     emit: (e) => sink.push(e),
   })

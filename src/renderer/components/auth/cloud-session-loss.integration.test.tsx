@@ -101,7 +101,7 @@ afterEach(() => {
 
 describe('a cloud workspace session going dead mid-use', () => {
   it('replaces the app with the reconnect screen', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401 }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401, headers: new Headers() }))
     renderApp()
 
     // Authenticated: the app is up.
@@ -117,7 +117,7 @@ describe('a cloud workspace session going dead mid-use', () => {
   })
 
   it('never signs out on the way there', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401 }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401, headers: new Headers() }))
     renderApp()
 
     await apiFetch('/api/agents')
@@ -129,7 +129,7 @@ describe('a cloud workspace session going dead mid-use', () => {
   })
 
   it('never offers a password form for a workspace credential', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401 }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401, headers: new Headers() }))
     renderApp()
 
     await apiFetch('/api/agents')
@@ -141,7 +141,7 @@ describe('a cloud workspace session going dead mid-use', () => {
   })
 
   it('leaves the app alone when the request succeeds', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 200 }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 200, headers: new Headers() }))
     renderApp()
 
     await apiFetch('/api/agents')
@@ -151,7 +151,7 @@ describe('a cloud workspace session going dead mid-use', () => {
   })
 
   it('re-checks the session once for a burst of failures, not once each', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401 }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401, headers: new Headers() }))
     renderApp()
 
     await Promise.all([

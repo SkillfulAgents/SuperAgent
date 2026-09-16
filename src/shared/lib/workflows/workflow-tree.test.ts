@@ -4,6 +4,7 @@ import * as path from 'path'
 import * as os from 'os'
 import { promises as fs } from 'fs'
 import { buildWorkflowTree } from './workflow-tree'
+import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
 
 const FIXTURE_ROOT = path.join(
   __dirname,
@@ -17,7 +18,7 @@ const RUN = 'wf_818f758a-c17'
 
 describe('buildWorkflowTree — real capture-probe fixture', () => {
   it('joins every agent to its label/phase/status/result via prompt-regex', async () => {
-    const tree = await buildWorkflowTree({ sessionsDir: FIXTURE_ROOT, sessionId: SID, runId: RUN })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => FIXTURE_ROOT), transcriptsDir: '', sessionId: SID, runId: RUN })
     expect(tree).not.toBeNull()
     expect(tree!.name).toBe('capture-probe')
     expect(tree!.phases.map((p) => p.title)).toEqual(['Scan', 'Summarize'])
@@ -64,7 +65,8 @@ describe('buildWorkflowTree — real capture-probe fixture', () => {
 
   it('returns null for an unknown runId', async () => {
     const tree = await buildWorkflowTree({
-      sessionsDir: FIXTURE_ROOT,
+      files: new LocalFileOps(() => FIXTURE_ROOT),
+      transcriptsDir: '',
       sessionId: SID,
       runId: 'wf_does-not-exist',
     })
@@ -81,7 +83,7 @@ describe('buildWorkflowTree — sdk 0.3.206 capture fixture', () => {
   const run = 'wf_255e9212-aaa'
 
   it('joins both agents (incl. the interpolated prompt) via prompt-regex', async () => {
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: sid, runId: run })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: sid, runId: run })
     expect(tree).not.toBeNull()
     expect(tree!.name).toBe('capture-probe')
     expect(tree!.phases.map((p) => p.title)).toEqual(['Run'])
@@ -162,7 +164,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
         { agentId: 'g2', firstPrompt: 'Tell me a fun fact about Jupiter.' },
       ],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     const byId = new Map(tree!.agents.map((a) => [a.agentId, a]))
     expect(byId.get('g1')).toMatchObject({ label: 'fact:Mars', phase: 'Gather', resolved: 'prompt-regex' })
     expect(byId.get('g2')).toMatchObject({ label: 'fact:Jupiter', phase: 'Gather', resolved: 'prompt-regex' })
@@ -182,7 +184,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
       ],
       agents: [{ agentId: 'd1', firstPrompt: 'Process widget.' }],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({
       label: 'agent 1', // `${i}` is not in the prompt, so it can't be resolved
       phase: 'P',
@@ -210,7 +212,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
         },
       ],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({ label: 'qualify:vibeflow', phase: 'Qualify', resolved: 'prompt-regex' })
     // Sized from the invocation's args when present; here there's no invocation, so 1 call site.
     expect(tree!.expectedAgents).toBe(1)
@@ -251,7 +253,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
         { agentId: 'm3', firstPrompt: 'Do C', meta: { agentType: 'workflow-subagent' } },
       ],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     const byId = new Map(tree!.agents.map((a) => [a.agentId, a]))
     expect(byId.get('m1')!.model).toBe('claude-haiku-4-5-20251001')
     expect(byId.get('m2')!.model).toBe('haiku-4-5')
@@ -320,7 +322,12 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
       },
     })
     await fs.writeFile(path.join(sessionsDir, 's1.jsonl'), toolUseLine + '\n' + toolResultLine + '\n')
-    const tree = await buildWorkflowTree({ sessionsDir, sessionId: 's1', runId: 'wf_sp' })
+    const tree = await buildWorkflowTree({
+      files: new LocalFileOps(() => path.resolve(sessionsDir, '..', '..', '..')),
+      transcriptsDir: '.claude/projects/-workspace',
+      sessionId: 's1',
+      runId: 'wf_sp',
+    })
     expect(tree!.name).toBe('probe')
     expect(tree!.phases.map((p) => p.title)).toEqual(['Analyze'])
     // args.videos fan-out (3) + the single merge call site.
@@ -354,7 +361,12 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
         },
       }) + '\n'
     )
-    const tree = await buildWorkflowTree({ sessionsDir, sessionId: 's1', runId: 'wf_esc' })
+    const tree = await buildWorkflowTree({
+      files: new LocalFileOps(() => path.resolve(sessionsDir, '..', '..', '..')),
+      transcriptsDir: '.claude/projects/-workspace',
+      sessionId: 's1',
+      runId: 'wf_esc',
+    })
     expect(tree!.name).toBeNull() // traversal path ignored → degraded (script-less) tree
   })
 
@@ -369,7 +381,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
       journal: [{ type: 'started', key: 'v2:1', agentId: 'w1' }],
       agents: [{ agentId: 'w1', firstPrompt: 'do the thing' }],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({ label: 'worker', phase: 'Go', status: 'running', result: null })
   })
 
@@ -396,7 +408,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
         },
       ],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({ status: 'failed', result: 'request_too_large: 413' })
   })
 
@@ -417,7 +429,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
         },
       ],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({ status: 'running', result: null })
   })
 
@@ -438,7 +450,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
         },
       ],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({ status: 'done', result: 'all good' })
   })
 })
@@ -486,7 +498,7 @@ describe('buildWorkflowTree — transcript reads stay bounded', () => {
     })
 
     try {
-      const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+      const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
       expect(tree!.agents).toHaveLength(AGENT_COUNT)
       // Sanity: the transcripts really were read concurrently, so the cap is
       // what bounds this rather than the reads happening to serialize.

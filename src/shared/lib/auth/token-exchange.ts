@@ -236,10 +236,17 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
     })
   }
 
+  const refreshImage = async (user: FoundUser) => {
+    if (claims.picture && claims.picture !== user.image) {
+      return ctx.internalAdapter.updateUser(user.id, { image: claims.picture })
+    }
+    return user
+  }
+
   const attempt = async () => {
     const found = await ctx.internalAdapter.findOAuthUser(email, claims.sub, providerId)
     if (found?.linkedAccount) {
-      return found.user
+      return refreshImage(found.user)
     }
 
     if (found) {
@@ -248,7 +255,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
       if (!found.user.emailVerified && found.user.email === email) {
         await ctx.internalAdapter.updateUser(found.user.id, { emailVerified: true })
       }
-      return found.user
+      return refreshImage(found.user)
     }
 
     const created = await ctx.internalAdapter.createOAuthUser(
@@ -256,6 +263,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
         email,
         name: claims.name?.trim() || email,
         emailVerified: true,
+        image: claims.picture,
       },
       {
         providerId,
@@ -283,7 +291,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
       throw new TokenExchangeError('invalid_grant')
     }
     if (winner.linkedAccount) {
-      return winner.user
+      return refreshImage(winner.user)
     }
     try {
       await linkPlatformMapping(winner.user)
@@ -296,7 +304,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
     if (!final?.linkedAccount) {
       throw new TokenExchangeError('invalid_grant')
     }
-    return final.user
+    return refreshImage(final.user)
   }
 }
 

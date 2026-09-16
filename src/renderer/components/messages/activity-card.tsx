@@ -35,7 +35,7 @@ export interface ActivityBackgroundTask {
   isWorkflow?: boolean
   /** Background subagents already render as named subagent rows — excluded here. */
   isSubagent?: boolean
-  /** Launched by a subagent: no named row represents it, so it is listed after all. */
+  /** Launched by a subagent: keep a fallback row when no named row represents it. */
   launchedBySubagent?: boolean
   /** What kind of work ("Background command"); the generic noun when absent. */
   title?: string
@@ -88,10 +88,13 @@ export function ActivityCard({
   const [isCollapsed, setIsCollapsed] = useState(false)
   const listRef = useRef<HTMLUListElement>(null)
 
-  // Background subagents are excluded: they already render as named subagent
-  // rows above, and counting them here would show the same work twice. One a
-  // subagent launched has no row above, so it stays.
-  const visibleBackgroundTasks = backgroundTasks.filter((task) => !task.isSubagent || task.launchedBySubagent)
+  // Main and nested agents can both have named lifecycle rows. Keep the
+  // sidechain fallback only when no running named row represents that task.
+  const visibleBackgroundTasks = backgroundTasks.filter((task) =>
+    !task.isSubagent || (task.launchedBySubagent && !subagents.some((subagent) =>
+      subagent.taskId === task.taskId && subagent.status === 'running'
+    ))
+  )
   const backgroundWorkflowCount = visibleBackgroundTasks.filter((task) => task.isWorkflow).length
   const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount
   const activeSubagentCount = subagents.filter((item) => item.status === 'running').length
@@ -198,6 +201,7 @@ export function ActivityCard({
               <li
                 key={item.id}
                 style={tracerRowStyle(computerUseRows + index)}
+                data-testid="subagent-activity-row"
                 data-tracer-live={item.status === 'running' ? 'true' : undefined}
               >
                 {/* A finished row recedes as a whole — the mark inherits the
