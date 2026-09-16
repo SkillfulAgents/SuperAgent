@@ -86,6 +86,15 @@ describe('removeMember', () => {
 })
 
 describe('changeMemberRole', () => {
+  it('changes a non-owner role without touching the owner count', async () => {
+    // The common case: the role <> 'owner' half of the guard passes on its
+    // own, so a sole owner is no obstacle.
+    seed([{ id: 'ann', role: 'owner' }, { id: 'bob', role: 'user' }])
+    expect(await changeMemberRole(AGENT, 'bob', 'viewer')).toBe('done')
+    expect(roleOf('bob')).toBe('viewer')
+    expect(owners()).toEqual(['ann'])
+  })
+
   it('demotes an owner while another remains', async () => {
     seed([{ id: 'ann', role: 'owner' }, { id: 'bob', role: 'owner' }])
     expect(await changeMemberRole(AGENT, 'ann', 'viewer')).toBe('done')
