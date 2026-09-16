@@ -54,6 +54,19 @@ afterEach(() => vi.useRealTimers())
     bridge.close()
   })
 
+  it('keeps assistant subtitles flowing while paused for a request card, dropping input and delegations', async () => {
+    const { bridge, events, user, delegate } = setup()
+    bridge.setPaused(true)
+    bridge.receive({ type: 'session.output_transcript.delta', delta: 'Please connect ' })
+    bridge.receive({ type: 'session.output_transcript.delta', delta: 'your account.' })
+    expect(events.onTranscript).toHaveBeenLastCalledWith([{ role: 'assistant', text: 'Please connect your account.' }])
+    user('Ignored while paused'); delegate()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(events.onUtterance).not.toHaveBeenCalled()
+    expect(events.map).not.toHaveBeenCalled()
+    bridge.close()
+  })
+
   it('discards an in-flight mapping if the user adds a correction', async () => {
     const { bridge, events, user, delegate } = setup()
     let resolve!: (value: unknown) => void
