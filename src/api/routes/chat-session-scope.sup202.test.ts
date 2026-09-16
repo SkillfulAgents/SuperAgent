@@ -102,7 +102,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 // Import the router after all mocks are registered.
-import chatIntegrationsRouter from './chat-integrations'
+import chatIntegrationsRouter from './agent-integration-crud'
 
 function app() {
   const a = new Hono()

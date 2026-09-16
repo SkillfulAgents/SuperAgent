@@ -2,9 +2,9 @@ import { IntegrationStatusCard } from './integration-status-card'
 import { IntegrationSettingsCard } from './integration-settings-card'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { IntegrationModelEffort } from './integration-settings-controls'
-import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
+import type { PublicAgentIntegration as ChatIntegration } from '@shared/lib/agent-integrations/public'
 
-export interface ChatIntegrationSidePanelProps {
+export interface AgentIntegrationSidePanelProps {
   integration: ChatIntegration
   canManage: boolean
   /** Telegram owner: can gate new conversations behind approval. */
@@ -13,7 +13,7 @@ export interface ChatIntegrationSidePanelProps {
   connected?: boolean
 }
 
-export function ChatIntegrationSidePanel({ integration, canManage, canManageAccess, connected }: ChatIntegrationSidePanelProps) {
+export function AgentIntegrationSidePanel({ integration, canManage, canManageAccess, connected }: AgentIntegrationSidePanelProps) {
   return (
     <div className="space-y-3">
       {canManage && <IntegrationStatusCard integration={integration} connected={connected} />}

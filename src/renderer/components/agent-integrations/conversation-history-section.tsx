@@ -1,12 +1,12 @@
 import { useMemo } from 'react'
 import { Dialog, DialogContent } from '@renderer/components/ui/dialog'
 import { SectionHeader } from '@renderer/components/ui/section-header'
-import { useChatIntegrationAccess } from '@renderer/hooks/use-chat-integrations'
+import { useAgentIntegrationAccess } from '@renderer/hooks/use-agent-integrations'
 import { buildChatRows, activeWindow, type ChatRow } from './chat-inbox-model'
 import { ChatListRow } from './chat-list-row'
 import { ConversationDetail } from './conversation-detail'
 import type { ChatIntegrationSession } from '@shared/lib/db/schema'
-import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
+import type { PublicAgentIntegration as ChatIntegration } from '@shared/lib/agent-integrations/public'
 
 interface ConversationHistorySectionProps {
   integration: ChatIntegration
@@ -42,7 +42,7 @@ export function ConversationHistorySection({
   canManageAccess,
 }: ConversationHistorySectionProps) {
   const canAccess = canManageAccess && integration.provider === 'telegram'
-  const { data: access } = useChatIntegrationAccess(integration.id, canAccess)
+  const { data: access } = useAgentIntegrationAccess(integration.id, canAccess)
 
   const rows = useMemo(
     () => buildChatRows(sessions, canAccess ? access : undefined),

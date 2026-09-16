@@ -21,10 +21,10 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import {
-  useCreateChatIntegration,
+  useCreateAgentIntegration,
   useTestChatIntegrationCredentials,
-  ChatIntegrationApiError,
-} from '@renderer/hooks/use-chat-integrations'
+  AgentIntegrationApiError,
+} from '@renderer/hooks/use-agent-integrations'
 import { Loader2, CheckCircle, AlertCircle, Copy, Check, Eye, EyeOff } from 'lucide-react'
 import { IMESSAGE_PHONE_E164, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 
@@ -151,18 +151,18 @@ const PROVIDER_INFO: Record<ChatProvider, {
   },
 }
 
-interface ChatIntegrationSetupDialogProps {
+interface AgentIntegrationSetupDialogProps {
   agentSlug: string
   /** Non-null opens the dialog for that provider; null is closed. */
   provider: ChatProvider | null
   onOpenChange: (open: boolean) => void
 }
 
-export function ChatIntegrationSetupDialog({
+export function AgentIntegrationSetupDialog({
   agentSlug,
   provider,
   onOpenChange,
-}: ChatIntegrationSetupDialogProps) {
+}: AgentIntegrationSetupDialogProps) {
   return (
     <Dialog open={!!provider} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl max-h-[85vh] overflow-hidden">
@@ -188,7 +188,7 @@ function SetupForm({
   provider: ChatProvider
   onClose: () => void
 }) {
-  const createIntegration = useCreateChatIntegration()
+  const createIntegration = useCreateAgentIntegration()
   const testCredentials = useTestChatIntegrationCredentials()
 
   const [formData, setFormData] = useState<Record<string, string>>({})
@@ -477,7 +477,7 @@ function SetupForm({
 
         {createIntegration.error && (
           <p className="text-xs text-red-500">
-            {createIntegration.error instanceof ChatIntegrationApiError && createIntegration.error.code === 'duplicate_bot_token'
+            {createIntegration.error instanceof AgentIntegrationApiError && createIntegration.error.code === 'duplicate_bot_token'
               ? provider === 'imessage'
                 ? 'This phone number is already connected to another integration. Remove the existing one first.'
                 : 'This bot is already connected to another integration. Remove the existing one first, or use a different bot.'

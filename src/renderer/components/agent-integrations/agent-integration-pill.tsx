@@ -23,7 +23,7 @@ const STATE_DOT: Record<ChatIntegrationState, { dot?: string; pulse?: boolean; p
  * tag. `showDot` adds the state dot / pause glyph (defaults on for `sm`, off for
  * `xs`, matching each surface's existing treatment).
  */
-export function ChatIntegrationPill({ state, size = 'sm', showDot = size === 'sm' }: {
+export function AgentIntegrationPill({ state, size = 'sm', showDot = size === 'sm' }: {
   state: ChatIntegrationState
   size?: 'sm' | 'xs'
   showDot?: boolean

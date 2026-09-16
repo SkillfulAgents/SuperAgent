@@ -6,8 +6,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { IntegrationModelEffort } from '@renderer/components/chat-integrations/integration-settings-controls'
-import { makeChatIntegration } from '@renderer/components/chat-integrations/test-factories'
+import { IntegrationModelEffort } from '@renderer/components/agent-integrations/integration-settings-controls'
+import { makeChatIntegration } from '@renderer/components/agent-integrations/test-factories'
 import { RuntimeOptionsCard } from './runtime-options-card'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel } from '@shared/lib/container/types'
@@ -22,8 +22,8 @@ const useSettingsMock = vi.fn()
 const useAgentPreferencesMock = vi.fn()
 const mutateChat = vi.hoisted(() => vi.fn())
 
-vi.mock('@renderer/hooks/use-chat-integrations', () => ({
-  useUpdateChatIntegration: () => ({ mutate: mutateChat, isPending: false }),
+vi.mock('@renderer/hooks/use-agent-integrations', () => ({
+  useUpdateAgentIntegration: () => ({ mutate: mutateChat, isPending: false }),
 }))
 
 vi.mock('@renderer/hooks/use-settings', () => ({

@@ -1,5 +1,5 @@
 import type { ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
-import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
+import type { PublicAgentIntegration as ChatIntegration } from '@shared/lib/agent-integrations/public'
 
 /** Schema-complete ChatIntegration for component tests; override any field. */
 export function makeChatIntegration(overrides: Partial<ChatIntegration> = {}): ChatIntegration {

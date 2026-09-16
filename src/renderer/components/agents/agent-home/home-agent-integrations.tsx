@@ -2,19 +2,19 @@ import { useState } from 'react'
 import { Plus } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { useChatIntegrations, useChatIntegrationAccess, type ChatIntegrationListItem } from '@renderer/hooks/use-chat-integrations'
+import { useAgentIntegrations, useAgentIntegrationAccess, type AgentIntegrationListItem } from '@renderer/hooks/use-agent-integrations'
 import { deriveChatIntegrationState, formatProviderName } from '@shared/lib/chat-integrations/utils'
-import { ChatIntegrationPill } from '@renderer/components/chat-integrations/chat-integration-pill'
+import { AgentIntegrationPill } from '@renderer/components/agent-integrations/agent-integration-pill'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
-import { ChatIntegrationSetupDialog } from '@renderer/components/chat-integrations/chat-integration-setup-dialog'
+import { AgentIntegrationSetupDialog } from '@renderer/components/agent-integrations/agent-integration-setup-dialog'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { HomeCollapsible } from './home-collapsible'
 
-interface HomeChatIntegrationsProps {
+interface HomeAgentIntegrationsProps {
   agentSlug: string
   className?: string
 }
@@ -29,15 +29,15 @@ const PROVIDER_TILES: Array<{ slug: ChatProvider; label: string }> = [
 // Status dot + an owner-only "N pending" count, derived from the access list
 // the app already polls. Lives in its own component so the access query (one per
 // integration) obeys the rules of hooks inside the integration list.
-function IntegrationNameBadges({ integration, showPending }: { integration: ChatIntegrationListItem; showPending: boolean }) {
+function IntegrationNameBadges({ integration, showPending }: { integration: AgentIntegrationListItem; showPending: boolean }) {
   // Approval gating is Telegram-only (see chat-integration-access-service); other
   // providers always forward, so there are never pending requests to badge.
   const enabled = showPending && integration.provider === 'telegram' && !!integration.requireApproval
-  const { data: access } = useChatIntegrationAccess(enabled ? integration.id : null)
+  const { data: access } = useAgentIntegrationAccess(enabled ? integration.id : null)
   const pending = enabled ? (access?.filter((a) => a.status === 'pending').length ?? 0) : 0
   return (
     <span className="inline-flex items-center gap-1">
-      <ChatIntegrationPill state={deriveChatIntegrationState(integration.status, integration.connected)} size="xs" />
+      <AgentIntegrationPill state={deriveChatIntegrationState(integration.status, integration.connected)} size="xs" />
       {pending > 0 && (
         <span className="text-2xs px-1.5 py-0 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400">
           {pending} pending
@@ -47,8 +47,8 @@ function IntegrationNameBadges({ integration, showPending }: { integration: Chat
   )
 }
 
-export function HomeChatIntegrations({ agentSlug, className }: HomeChatIntegrationsProps) {
-  const { data: integrations } = useChatIntegrations(agentSlug)
+export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegrationsProps) {
+  const { data: integrations } = useAgentIntegrations(agentSlug)
   const navigate = useNavigate()
   const { canAdminAgent } = useUser()
   const canManageApproval = canAdminAgent(agentSlug)
@@ -141,7 +141,7 @@ export function HomeChatIntegrations({ agentSlug, className }: HomeChatIntegrati
           </div>
         </div>
       )}
-      <ChatIntegrationSetupDialog
+      <AgentIntegrationSetupDialog
         agentSlug={agentSlug}
         provider={setupProvider}
         onOpenChange={(open) => { if (!open) setSetupProvider(null) }}
