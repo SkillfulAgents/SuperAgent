@@ -82,7 +82,7 @@ pushRouter.delete('/subscriptions', async (c) => {
     return c.json({ error: 'Invalid unsubscribe payload' }, 400)
   }
 
-  const deleted = deletePushSubscriptionByEndpoint(
+  const deleted = await deletePushSubscriptionByEndpoint(
     parsed.data.endpoint,
     getViewerUserId(c) ?? undefined
   )
@@ -132,8 +132,8 @@ pushRouter.post('/devices', async (c) => {
 })
 
 // DELETE /api/push/devices/:token - remove this device's registration (scoped to its owner)
-pushRouter.delete('/devices/:token', (c) => {
-  const deleted = deleteApnsDeviceByToken(
+pushRouter.delete('/devices/:token', async (c) => {
+  const deleted = await deleteApnsDeviceByToken(
     c.req.param('token').toLowerCase(),
     getViewerUserId(c) ?? undefined
   )

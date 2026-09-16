@@ -246,7 +246,7 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
 
     const integration = getChatIntegration(id)
     if (!integration) throw new Error('Chat integration disappeared after creation')
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
     return c.json(toPublicChatIntegration(integration), 201)
   } catch (error) {
     console.error('Failed to create chat integration:', error)
@@ -295,7 +295,7 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
 
     const updated = getChatIntegration(id)
     if (!updated) throw new Error('Chat integration disappeared after update')
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated' })
     return c.json(toPublicChatIntegration(updated))
   } catch (error) {
     if (error instanceof DuplicateBotTokenError) {
@@ -339,7 +339,7 @@ chatIntegrationsRouter.patch('/:integrationId/require-approval', IntegrationAgen
     }
     const updated = getChatIntegration(id)
     if (!updated) throw new Error('Chat integration disappeared after approval update')
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated', details: { requireApproval } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated', details: { requireApproval } })
     return c.json(toPublicChatIntegration(updated))
   } catch (error) {
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'set-require-approval' }, extra: { integrationId: c.req.param('integrationId') } })
@@ -363,7 +363,7 @@ chatIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), a
       return c.json({ error: 'Chat integration not found' }, 404)
     }
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'deleted' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'deleted' })
 
     return c.body(null, 204)
   } catch (error) {
@@ -491,7 +491,7 @@ for (const verb of ['approve', 'deny', 'revoke'] as const) {
       if (!row || row.integrationId !== integrationId) return c.json({ error: 'Access entry not found' }, 404)
       const ok = accessActions[verb](accessId, getCurrentUserId(c))
       if (ok) {
-        logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: integrationId, action: 'updated', details: { access: verb, accessId } })
+        await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: integrationId, action: 'updated', details: { access: verb, accessId } })
         if (verb === 'approve') void agentIntegrationManager.notifyAccessApproved(integrationId, row.externalChatId)
         if (verb === 'revoke' || verb === 'deny') await agentIntegrationManager.releaseExternalSession(integrationId, row.externalChatId)
       }

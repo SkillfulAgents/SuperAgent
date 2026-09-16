@@ -71,7 +71,7 @@ webhookTriggersRouter.post('/:triggerId/pause', TriggerAgentRole('user'), async 
     }
     const updated = await getWebhookTrigger(trigger!.id)
     if (!updated) throw new Error('Webhook trigger disappeared after pause')
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'paused' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'paused' })
     return c.json(toPublicWebhookTrigger(updated, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to pause webhook trigger:', error)
@@ -89,7 +89,7 @@ webhookTriggersRouter.post('/:triggerId/resume', TriggerAgentRole('user'), async
     }
     const updated = await getWebhookTrigger(trigger!.id)
     if (!updated) throw new Error('Webhook trigger disappeared after resume')
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'resumed' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'resumed' })
     return c.json(toPublicWebhookTrigger(updated, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to resume webhook trigger:', error)
@@ -114,7 +114,7 @@ webhookTriggersRouter.patch('/:triggerId/prompt', TriggerAgentRole('user'), asyn
 
     const refreshed = await getWebhookTrigger(trigger!.id)
     if (!refreshed) throw new Error('Webhook trigger disappeared after prompt update')
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'updated', details: { field: 'prompt' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'updated', details: { field: 'prompt' } })
     return c.json(toPublicWebhookTrigger(refreshed, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to update webhook trigger prompt:', error)
@@ -144,7 +144,7 @@ webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('use
 
     const refreshed = await getWebhookTrigger(trigger!.id)
     if (!refreshed) throw new Error('Webhook trigger disappeared after runtime options update')
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'updated', details: { field: 'runtime-options' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'updated', details: { field: 'runtime-options' } })
     return c.json(toPublicWebhookTrigger(refreshed, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to update webhook trigger runtime options:', error)
@@ -162,7 +162,7 @@ webhookTriggersRouter.delete('/:triggerId', TriggerAgentRole('user'), async (c) 
       return c.json({ error: 'Webhook trigger not found or already cancelled' }, 404)
     }
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'deleted' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'deleted' })
 
     return c.body(null, 204)
   } catch (error) {

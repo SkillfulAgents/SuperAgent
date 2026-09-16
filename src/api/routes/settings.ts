@@ -554,7 +554,7 @@ settings.put(
       }
 
       const runnerAvailability = await checkAllRunnersAvailability()
-      logAuditEvent({
+      await logAuditEvent({
         userId: getCurrentUserId(c),
         object: 'settings',
         objectId: 'global',

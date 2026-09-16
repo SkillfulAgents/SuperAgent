@@ -100,7 +100,7 @@ export class ApnsRelayChannel implements NotificationChannel {
       return
     }
 
-    const devices = listDeliverableApnsDevices()
+    const devices = await listDeliverableApnsDevices()
     if (devices.length === 0) {
       return
     }
@@ -217,14 +217,14 @@ export class ApnsRelayChannel implements NotificationChannel {
     }
 
     // Results come back in input order, one per push.
-    results.forEach((result, index) => {
+    for (const [index, result] of results.entries()) {
       const entry = chunk[index]
       if (!entry) {
-        return
+        continue
       }
       if (isTokenDead(result.status, result.reason)) {
-        deleteApnsDeviceById(entry.device.id)
-        return
+        await deleteApnsDeviceById(entry.device.id)
+        continue
       }
       if (result.status < 200 || result.status >= 300) {
         // Transient (RelayRateLimited 429, RelayFetchFailed 0, 5xx): log, keep.
@@ -232,6 +232,6 @@ export class ApnsRelayChannel implements NotificationChannel {
           `[ApnsRelayChannel] push failed (${result.status}${result.reason ? ` ${result.reason}` : ''}) for device ${entry.device.id}`
         )
       }
-    })
+    }
   }
 }

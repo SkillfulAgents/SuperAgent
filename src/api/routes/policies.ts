@@ -65,7 +65,7 @@ policies.put('/scope/:accountId', OwnsAccountByParam('accountId'), async (c) => 
     })),
   ])
 
-  logAuditEvent({ userId: getCurrentUserId(c), object: 'policy', objectId: accountId, action: 'updated', details: { type: 'scope', count: validated.length } })
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'policy', objectId: accountId, action: 'updated', details: { type: 'scope', count: validated.length } })
   return c.json({ ok: true })
 })
 
@@ -115,7 +115,7 @@ policies.put('/tool/:mcpId', OwnsMcpByParam('mcpId'), async (c) => {
     })),
   ])
 
-  logAuditEvent({ userId: getCurrentUserId(c), object: 'policy', objectId: mcpId, action: 'updated', details: { type: 'tool', count: validated.length } })
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'policy', objectId: mcpId, action: 'updated', details: { type: 'tool', count: validated.length } })
   return c.json({ ok: true })
 })
 
