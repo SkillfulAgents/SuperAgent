@@ -63,7 +63,7 @@ test('OpenAI read-aloud plays, pauses, resumes, and stops through the standard c
 
 test('Live stops read-aloud and reserves audio until the call exits', async ({ page, request }) => {
   const calls = await mockReadAloud(page)
-  await page.route('**/api/voice/live/session', route => route.fulfill({ status: 201, json: {
+  await page.route('**/api/voice/live/agents/*/session', route => route.fulfill({ status: 201, json: {
     handle: 'test-live-session', transport: { type: 'webrtc', sdp: 'mock-answer' }, expiresAt: Date.now() + 3600000,
   } }))
   await page.route('**/api/voice/live/session/*', route => route.fulfill({ json: { closed: true } }))
@@ -105,7 +105,11 @@ test('Live stops read-aloud and reserves audio until the call exits', async ({ p
   await page.evaluate(installLiveMocks)
   expect(await page.evaluate(() => navigator.mediaDevices.getUserMedia.toString())).toContain('createMediaStreamDestination')
   expect(await page.evaluate(() => RTCPeerConnection.toString())).toContain('mock-offer')
+  const liveStartup = page.waitForResponse(response =>
+    /\/api\/voice\/live\/agents\/[^/]+\/session$/.test(response.url()) && response.request().method() === 'POST',
+  )
   await page.getByTestId('voice-mode-button').click()
+  expect((await liveStartup).status()).toBe(201)
   await expect(page.getByTestId('voice-mode-composer')).toHaveAttribute('data-phase', 'listening')
   await expect(reply.getByTestId('read-aloud-controls')).toHaveCount(0)
   const requestsBefore = calls.length
