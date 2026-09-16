@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature allows agents to open a browser, navigate to URLs, retrieve page content, and report results in chat with live browser preview panel displaying the activity",
+  "reason": "Successfully tested browser use feature where agent opens a browser, navigates to https://example.com, retrieves the page title, and reports it back in chat.",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully, showing Gamut home page with sidebar displaying two agents including \"QA-20260916-005939-1wsm\"",
-    "Step 2: Clicked on the \"QA-20260916-005939-1wsm\" agent in the sidebar — Agent page opened successfully, displaying chat interface with input field and agent configuration panels",
-    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered into the chat input field and sent to the agent",
-    "Step 4: Waited up to 3 minutes for response mentioning \"Example Domain\" — Agent responded in 8 seconds with: \"The page title is \\\"Example Domain\\\".\" Browser preview panel appeared showing the live Example Domain page",
-    "Step 5: Verified response and captured screenshot — Response clearly mentions \"Example Domain\" as the page title. Browser panel displays the actual page content with URL https://example.com/ visible in the address bar. Tool metadata shows \"Worked for 8s · 2 tool calls · 110,415 tokens\""
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully showing \"Gamut\" app with agent list visible in sidebar, including \"QA-20260916-013423-ocb6\" agent.",
+    "Step 2: Clicked on \"QA-20260916-013423-ocb6\" agent in the sidebar — Agent page opened successfully, showing the chat interface with message input field and agent configuration options.",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was entered in the input field and the send button became enabled.",
+    "Step 4: Clicked send button — Message was sent successfully, agent status changed to \"working\", and a live browser preview appeared on the right side of the screen showing the Example Domain page.",
+    "Step 5: Waited for response — Agent completed the task in 8 seconds with 3 tool calls using 148,077 tokens. Response received states: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\""
   ],
   "bugs": [],
-  "durationMs": 104978,
-  "sessionId": "d04f7e9d-f381-4b60-ad30-844a02df5255",
+  "durationMs": 77289,
+  "sessionId": "bfc04aa8-bb14-4f05-bbe3-2b388a21c881",
   "cost": {
-    "inputTokens": 430,
-    "outputTokens": 13593,
-    "cacheCreationTokens": 89908,
-    "cacheReadTokens": 1324956,
+    "inputTokens": 468,
+    "outputTokens": 10309,
+    "cacheCreationTokens": 92422,
+    "cacheReadTokens": 1551167,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.313276
+    "totalCostUsd": 0.322657
   }
 }
