@@ -1,4 +1,4 @@
-import type { VoiceAgentCommand, VoiceAgentEvent, VoiceAgentSnapshot, VoiceAgentState, VoiceCommandResult, VoiceTurnPolicy } from './contracts/conversation'
+import type { VoiceAgentCommand, VoiceAgentEvent, VoiceAgentSnapshot, VoiceAgentState, VoiceCommandResult, VoiceTurnPolicy } from '../contracts/conversation'
 
 export const VOICE_TURN_START_TIMEOUT_MS = 15_000
 export const VOICE_INTERRUPT_TIMEOUT_MS = 10_000

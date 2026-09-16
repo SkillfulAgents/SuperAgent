@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({ start: vi.fn(), close: vi.fn(), release: vi.fn(), suspend: vi.fn(), callbacks: {} as { onClosed(): void } }))
-vi.mock('../../shared/read-aloud', () => ({ readAloud: { suspend: mocks.suspend } }))
+vi.mock('../../services/read-aloud', () => ({ readAloud: { suspend: mocks.suspend } }))
 vi.mock('./live-session', () => ({ OpenAILiveConversation: class {
   constructor(events: typeof mocks.callbacks) { mocks.callbacks = events }
   start = mocks.start

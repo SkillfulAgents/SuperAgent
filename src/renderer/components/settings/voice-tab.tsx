@@ -1,4 +1,4 @@
-import { VOICE_PROVIDERS, PROVIDER_CONFIG, isApiKeyProvider, getConversationNotice, type ApiKeyProvider } from '@renderer/lib/voice/registry/catalog'
+import { VOICE_PROVIDER_OPTIONS, PROVIDER_CONFIG, isApiKeyProvider, getConversationNotice, type ApiKeyProvider } from '@renderer/lib/voice/registry/catalog'
 import { useState, useCallback } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import {
@@ -19,7 +19,7 @@ import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Eye, EyeOff, Check, Loader2, ExternalLink, Square, Volume2 } from 'lucide-react'
 import { useIsTtsConfigured, useVoiceConversationEngine, useTtsVoices, useVoiceInput } from '@renderer/hooks/use-voice-input'
-import { readAloud } from '@renderer/lib/voice/shared/read-aloud'
+import { readAloud } from '@renderer/lib/voice/services/read-aloud'
 import { useReadAloud } from '@renderer/hooks/use-read-aloud'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
@@ -85,7 +85,7 @@ function SttApiKeyInput({ provider, disabled }: { provider: ApiKeyProvider; disa
   return (
     <div className="space-y-2">
       <Label htmlFor={`${provider}-api-key`}>
-        {VOICE_PROVIDERS.find(p => p.value === provider)?.label} API Key
+        {VOICE_PROVIDER_OPTIONS.find(p => p.value === provider)?.label} API Key
       </Label>
 
       {apiKeyStatus?.isConfigured && (
@@ -231,7 +231,7 @@ function VoiceTest() {
   )
 }
 
-const VALID_PROVIDERS = new Set(VOICE_PROVIDERS.map(p => p.value))
+const VALID_PROVIDERS = new Set(VOICE_PROVIDER_OPTIONS.map(p => p.value))
 
 const VOICE_PREVIEW_ID = 'settings-voice-preview'
 const VOICE_PREVIEW_TEXT = 'Hi! This is how your agent will sound when it reads a reply out loud.'
@@ -469,7 +469,7 @@ export function VoiceTab() {
                   <SelectValue placeholder="Select a provider" />
                 </SelectTrigger>
                 <SelectContent>
-                  {VOICE_PROVIDERS.map((provider) => (
+                  {VOICE_PROVIDER_OPTIONS.map((provider) => (
                     <SelectItem
                       key={provider.value}
                       value={provider.value}
@@ -488,7 +488,7 @@ export function VoiceTab() {
                 Choose which service to use for transcription and speech.
               </p>
               {selectedProvider && (() => {
-                const info = VOICE_PROVIDERS.find(p => p.value === selectedProvider)
+                const info = VOICE_PROVIDER_OPTIONS.find(p => p.value === selectedProvider)
                 if (!info) return null
                 return (
                   <p className="text-xs text-muted-foreground">

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore, type RefObject } from 'react'
-import { readAloud, voiceStreamId, READ_ALOUD_IDLE as IDLE, type ReadAloudStatus } from '@renderer/lib/voice/shared/read-aloud'
+import { readAloud, voiceStreamId, READ_ALOUD_IDLE as IDLE, type ReadAloudStatus } from '@renderer/lib/voice/services/read-aloud'
 
 export function useIsReadAloudAvailable(): boolean {
   return useSyncExternalStore(readAloud.subscribe, readAloud.isAvailable, readAloud.isAvailable)

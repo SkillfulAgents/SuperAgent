@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { readAloud } from '@renderer/lib/voice/shared/read-aloud'
+import { readAloud } from '@renderer/lib/voice/services/read-aloud'
 import { useVoiceConversationEngine } from './use-voice-input'
 import { useConversationMode, type UseVoiceModeArgs } from './use-conversation-mode'
 

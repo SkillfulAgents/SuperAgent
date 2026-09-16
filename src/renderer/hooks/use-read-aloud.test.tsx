@@ -44,7 +44,7 @@ vi.mock('@renderer/lib/voice/shared/speech/speech-player', () => ({
   },
 }))
 
-import { readAloud, voiceStreamId } from '@renderer/lib/voice/shared/read-aloud'
+import { readAloud, voiceStreamId } from '@renderer/lib/voice/services/read-aloud'
 import { useIsReadAloudAvailable, useReadAloud, useSpokenWordHighlight, useIsVoiceReading } from './use-read-aloud'
 
 function tokenResponse(body: unknown, ok = true) {

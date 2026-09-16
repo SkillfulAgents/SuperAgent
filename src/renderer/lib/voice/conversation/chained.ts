@@ -1,5 +1,5 @@
-import { readAloud, voiceStreamId } from '../shared/read-aloud'
-import { VoiceListener } from '../shared/listener'
+import { readAloud, voiceStreamId } from '../services/read-aloud'
+import { VoiceListener } from '../services/listener'
 import type { VoiceAgentEvent, VoiceAgentState, VoiceConversationAdapter, VoiceConversationContext, VoiceConversationEvents, VoiceTurnPolicy } from '../contracts/conversation'
 
 export const INTERRUPT_WORD_THRESHOLD = 4

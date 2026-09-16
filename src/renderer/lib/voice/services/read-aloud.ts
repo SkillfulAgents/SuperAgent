@@ -1,10 +1,10 @@
-import { prepareSpeechAudioOutput } from './speech/audio-output'
+import { prepareSpeechAudioOutput } from '../shared/speech/audio-output'
 import { apiFetch } from '@renderer/lib/api'
 import type { TtsSession } from '@shared/lib/voice/tts-types'
 import { createTtsAdapter } from '../registry/tts'
-import { SpeechPlayer } from './speech/speech-player'
-import { markdownToSpokenWords, type SpokenWord } from './speech/spoken-words'
-import { stableMarkdownPrefix } from './speech/stable-markdown'
+import { SpeechPlayer } from '../shared/speech/speech-player'
+import { markdownToSpokenWords, type SpokenWord } from '../shared/speech/spoken-words'
+import { stableMarkdownPrefix } from '../shared/speech/stable-markdown'
 
 export type ReadAloudStatus = 'idle' | 'connecting' | 'speaking' | 'paused'
 

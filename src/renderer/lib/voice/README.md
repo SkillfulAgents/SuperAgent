@@ -1,34 +1,36 @@
 # Renderer voice
 
-React hooks connect the UI and agent session to this package. Vendor protocols stay in `providers/`; shared code consumes the contracts below.
+React hooks connect the UI and agent session to this package. Vendor protocols stay in `providers/`; everything else consumes the contracts below. The layering is a convention kept by review, not by tooling.
 
-| Directory | Responsibility |
-| --- | --- |
-| `contracts/` | STT, TTS, voice-agent and agent-conversation interfaces; settings metadata types |
-| `registry/` | Select implementations and expose settings metadata; the only entrypoints that import provider code |
-| `providers/openai/` | Live session/media, transcript/delegation bridge, conversation adapter, transcription, voice-agent protocol, errors and settings metadata |
-| `providers/deepgram/` | Transcription, TTS, voice-agent protocol and settings metadata, including the platform-backed option |
-| `engines/` | Provider-independent chained STT + read-aloud conversation |
-| `shared/` | Microphone capture, PCM conversion, WebSocket STT lifecycle, HTTP TTS, listener and read-aloud service |
-| `shared/speech/` | Playback, segmentation, highlighting data, hold sound and browser audio workarounds |
-| `coordinator.ts` | Agent activity, submission/cancellation and response boundaries |
+| Directory | Responsibility | May import |
+| --- | --- | --- |
+| `contracts/` | STT, TTS, voice-agent and agent-conversation interfaces; settings metadata types | nothing in this package |
+| `shared/` | Leaf utilities: microphone capture, PCM conversion, WebSocket STT lifecycle, HTTP TTS, and `speech/` (playback, segmentation, highlighting data, hold sound, browser audio workarounds) | `contracts/` |
+| `providers/openai/`, `providers/deepgram/` | Vendor protocols: transcription, TTS, voice-agent, Live session/media and mapping, errors, settings metadata | `contracts/`, `shared/`, `services/` |
+| `registry/` | Select implementations by provider or engine and expose settings metadata; the only place that imports provider code | everything |
+| `services/` | App-wide services that compose providers through the registry: the read-aloud singleton and the microphone listener | `contracts/`, `shared/`, `registry/` |
+| `conversation/` | In-session voice: the coordinator that owns the agent loop, and the provider-independent chained engine (listener + read-aloud) | `contracts/`, `services/` |
 
-The separate registry entrypoints avoid loading conversation engines when a consumer only needs dictation or read-aloud. They preserve the server's existing provider/engine identifiers and select TTS by its connection transport.
+Two things are easy to confuse. A **voice agent** (`contracts/voice-agent.ts`) is the standalone spoken assistant used by agent creation and feedback aids: it has its own model and no session. A **conversation** (`contracts/conversation.ts`) is voice inside an agent session: the coordinator drives the agent, and an engine handles speech turn-taking. Both have a registry entrypoint and provider implementations.
+
+## Registry entrypoints
+
+There is one entrypoint per capability (`stt`, `tts`, `voice-agent`, `conversation`, `catalog`) rather than one per provider, so a consumer that only needs dictation or read-aloud never loads the Live session code. Each entrypoint is a `Record` over the provider or engine union checked with `satisfies`, so adding a member to the union without an implementation is a type error. TTS is selected by the connection transport the host reports; the websocket branch is the Deepgram speak protocol today. `catalog.ts` owns the platform option because which vendor backs it is the host's decision.
 
 ## Conversation contract
 
-`VoiceConversationAdapter` consumes agent events and emits commands, snapshots and errors. The coordinator owns the agent loop; adapters own speech turn-taking and protocol mapping. UI controls use capabilities and snapshots rather than provider-specific branches. `ChainedConversationAdapter` composes the generic listener and reader; it is not itself a Deepgram protocol implementation.
+`VoiceConversationAdapter` consumes agent events and emits commands, snapshots and errors. The coordinator owns the agent loop; adapters own speech turn-taking and protocol mapping, and hand the coordinator a `turnPolicy` for their timing and leniency. UI controls use capabilities and snapshots rather than provider-specific branches. `ChainedConversationAdapter` composes the listener and reader services; it is not itself a Deepgram protocol implementation.
 
-The OpenAI conversation implementation is intentionally split into a contract adapter (`conversation.ts`), media/session lifecycle (`live-session.ts`) and protocol/mapping logic (`live-bridge.ts`). These layers are private to the provider directory.
+The OpenAI conversation implementation is split into a contract adapter (`conversation.ts`), media/session lifecycle (`live-session.ts`) and protocol/mapping logic (`live-bridge.ts`). These layers are private to the provider directory.
 
 ## Audio and React
 
-`shared/read-aloud.ts` owns the app-wide reader, streaming playback, credentials and exclusive audio ownership (`suspend()` returns a release function). Live holds that ownership while connecting, running or paused. `hooks/use-read-aloud.ts` contains only React subscriptions and highlighting effects. Providers and services never import React hooks.
+`services/read-aloud.ts` owns the app-wide reader, streaming playback, credentials and exclusive audio ownership (`suspend()` returns a release function). Live holds that ownership while connecting, running or paused. `hooks/use-read-aloud.ts` contains only React subscriptions and highlighting effects. Nothing under `lib/voice/` imports React or a hook.
 
 Safari's output handling belongs to the shared speech player because it applies to every source of PCM audio. HTTP synthesis also stays shared: vendor credentials and synthesis details are handled by the host API.
 
 ## Extending a provider
 
-Implement the relevant contracts in the provider directory, register the implementation in the corresponding registry entrypoint, and add provider tests alongside it. Generic session/UI code should not require new protocol branches. ESLint enforces provider imports through the registry and disallows React dependencies in voice services.
+Implement the relevant contracts in the provider directory, add the provider to each registry record (the compiler lists the ones you missed), add its settings metadata to `catalog.ts`, and keep provider tests beside the implementation. Generic session and UI code should not need new protocol branches.
 
-Cross-provider STT lifecycle tests live with the registry; protocol-specific Live and TTS tests live beside their implementations. Shared PCM/capture tests exercise the real helpers, not copies of their implementations.
+Tests sit beside what they exercise: the shared WebSocket STT lifecycle cases live in `shared/`, run against both vendor adapters; registry tests cover selection only; Live and TTS protocol tests live beside their implementations.

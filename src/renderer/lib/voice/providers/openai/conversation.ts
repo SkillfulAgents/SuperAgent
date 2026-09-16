@@ -1,4 +1,4 @@
-import { readAloud } from '../../shared/read-aloud'
+import { readAloud } from '../../services/read-aloud'
 import { OpenAILiveConversation } from './live-session'
 import type { VoiceTranscriptEntry } from '@shared/lib/voice/conversation-types'
 import type { VoiceAgentEvent, VoiceAgentState, VoiceConversationAdapter, VoiceConversationContext, VoiceConversationEvents } from '../../contracts/conversation'

@@ -26,7 +26,7 @@ import { createMarkdownUrlTransform } from '@renderer/lib/markdown-url-transform
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 import { countSpokenWords, rehypeSpokenWords } from '@renderer/lib/voice/shared/speech/spoken-words'
-import { readAloud } from '@renderer/lib/voice/shared/read-aloud'
+import { readAloud } from '@renderer/lib/voice/services/read-aloud'
 import { useIsReadAloudAvailable, useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
 import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'

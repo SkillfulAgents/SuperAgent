@@ -1,5 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
-import { acquireMicStream, startAudioCapture, type AudioCaptureHandle } from './audio-capture'
+import { acquireMicStream, startAudioCapture, type AudioCaptureHandle } from '../shared/audio-capture'
 import { createSttAdapter } from '../registry/stt'
 import type { SttAdapter, VoiceProvider } from '../contracts/stt'
 

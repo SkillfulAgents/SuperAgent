@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { VoiceAgentCoordinator, VOICE_TURN_START_TIMEOUT_MS, VOICE_INTERRUPT_TIMEOUT_MS } from './coordinator'
-import type { VoiceAgentEvent, VoiceAgentSnapshot } from './contracts/conversation'
+import type { VoiceAgentEvent, VoiceAgentSnapshot } from '../contracts/conversation'
 
 function deferred<T>() {
   let resolve!: (value: T) => void

@@ -58,7 +58,7 @@ const stt = vi.hoisted(() => {
   }
 })
 vi.mock('../registry/stt', () => stt)
-vi.mock('./audio-capture', () => stt)
+vi.mock('../shared/audio-capture', () => stt)
 
 const apiFetch = vi.hoisted(() => vi.fn())
 vi.mock('@renderer/lib/api', () => ({ apiFetch }))
