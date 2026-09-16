@@ -61,21 +61,6 @@ export function useMcpOAuthRedirectUris() {
   })
 }
 
-/** Whether the current viewer owns this MCP server or is an administrator. */
-export function useCanManageRemoteMcp(mcpId: string) {
-  return useQuery<boolean>({
-    queryKey: ['remote-mcp-manage-access', mcpId],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/remote-mcps/${mcpId}`)
-      if (res.status === 403 || res.status === 404) return false
-      if (!res.ok) throw new Error('Failed to check MCP reconnect access')
-      return true
-    },
-    enabled: !!mcpId,
-    retry: false,
-  })
-}
-
 /**
  * Fetch remote MCPs assigned to a specific agent
  */

@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
-import { useCanManageRemoteMcp, useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
+import { useRemoteMcps, useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
@@ -38,7 +38,9 @@ export function McpReauthRequestItem({
 }: McpReauthRequestItemProps) {
   const queryClient = useQueryClient()
   const initiateOAuth = useInitiateMcpOAuth()
-  const { data: canManage } = useCanManageRemoteMcp(mcpId)
+  const { data: ownMcps } = useRemoteMcps()
+  // The list is owner-scoped, whereas the single-server endpoint also allows admins.
+  const isOwner = ownMcps?.servers.some((server) => server.id === mcpId)
   const [pending, setPending] = useState(false)
   const [loadingReplacement, setLoadingReplacement] = useState(false)
   const [replacementUrl, setReplacementUrl] = useState<string | null>(null)
@@ -50,7 +52,7 @@ export function McpReauthRequestItem({
     () => COMMON_MCP_SERVERS.find((server) => server.displayName === mcpName)?.slug,
     [mcpName],
   )
-  const canReconnect = !readOnly && canManage === true
+  const canReconnect = !readOnly && isOwner === true
   // See the account twin: the card blocks every session of the agent, so a
   // viewer who cannot reconnect still needs a way to let the agent move on.
   const canDismiss = !readOnly
@@ -178,7 +180,7 @@ export function McpReauthRequestItem({
   return (
     <RequestItemShell
       title={`This request needs ${mcpName}, which requires re-authentication.`}
-      subtitle={canManage === false
+      subtitle={isOwner === false
         ? 'Replace it with a connection you own to continue, or dismiss this request.'
         : 'Reconnect to continue. The original MCP request will resume automatically.'}
       icon={<ServiceIcon slug={serviceSlug} fallback="mcp" className="h-4 w-4" />}
