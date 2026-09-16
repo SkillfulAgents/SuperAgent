@@ -116,15 +116,7 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
     status: () => runtime().getCachedInfo(),
     syncStatus: () => runtime().syncAgentStatus(),
     health: () => runtime().getHealthWarnings(),
-    idleSince: () => {
-      if (
-        deps.messagePersister.hasActiveSessionsForAgent(slug) ||
-        deps.messagePersister.hasSessionsAwaitingInputForAgent(slug)
-      ) {
-        return null
-      }
-      return runtime().lastActivityAt() ?? null
-    },
+    idleSince: () => runtime().idleSince(),
     stats: () => client().getStats(),
     info: () => client().getInfo(),
     updateConnectedAccountsEnvironment: () => deps.updateConnectedAccountsEnvironment(slug, client()),

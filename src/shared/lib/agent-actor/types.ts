@@ -169,10 +169,14 @@ export interface ContainerOps {
    * awaiting input. Otherwise it is the latest of the container start, the
    * last `keepAlive()` and the last session activity (a message sent, a frame
    * received, a transcript write), and `null` when none has been recorded
-   * since the container last stopped. Answered from memory: the actor sees
-   * every event that defines activity and keeps the clock itself, so reading
-   * it costs nothing and a remote actor answers from its own state.
-   * Auto-sleep is `idleSince() !== null && now - idleSince() > timeout`.
+   * since the container last stopped.
+   *
+   * The actor puts itself to sleep: each of those events re-arms its own
+   * alarm for the auto-sleep timeout, and the alarm sleeps the container
+   * once `idleSince() !== null && now - idleSince() > timeout`. A local actor
+   * uses a timer on the runtime; a remote one uses its host's alarm. This op
+   * is the clock the alarm reads, answered from memory, exposed so a status
+   * view or a fallback sweep can read it too.
    */
   idleSince(): number | null
   /** `client.getStats` */

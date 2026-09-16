@@ -18,8 +18,9 @@
  *
  * Only methods present on the mock are forwarded; anything else is undefined,
  * exactly as it was on the partial manager mock — except the runtime's
- * activity clock (`keepAlive`, `noteSessionActivity`, `lastActivityAt`),
- * which every runtime has and which the actor marks on every session write.
+ * activity clock (`keepAlive`, `noteSessionActivity`, `lastActivityAt`,
+ * `idleSince`), which every runtime has and which the actor marks on every
+ * session write.
  */
 
 import { ActivityClock } from '@shared/lib/container/activity-clock'
@@ -41,6 +42,7 @@ const PER_AGENT_METHODS = [
   'keepAlive',
   'noteSessionActivity',
   'lastActivityAt',
+  'idleSince',
   'handleUnexpectedDeath',
 ] as const
 
@@ -66,6 +68,7 @@ const HOST_METHODS = [
   'stopHealthMonitor',
   'stopAll',
   'stopAllSync',
+  'rearmIdleAlarms',
   'workspaceHostPath',
   'agentHostPath',
 ] as const
@@ -94,6 +97,7 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
       keepAlive: () => activity.keepAlive(),
       noteSessionActivity: (at?: number) => activity.sessionActivity(at),
       lastActivityAt: () => activity.lastActivityAt(),
+      idleSince: () => activity.lastActivityAt() ?? null,
     }
     for (const name of PER_AGENT_METHODS) {
       const fn = manager[name]
@@ -126,6 +130,8 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
   // The registry attaches the agents' workspaces when it is created; a mock
   // host has no runtimes that would read them, so it only has to accept them.
   if (typeof host.attachAgentWorkspaces !== 'function') host.attachAgentWorkspaces = () => {}
+  // A mock host has no alarms to re-arm; it only has to accept the call.
+  if (typeof host.rearmIdleAlarms !== 'function') host.rearmIdleAlarms = () => {}
   // `onBeforeContainerStop` is a property the app assigns; share it with the mock.
   Object.defineProperty(host, 'onBeforeContainerStop', {
     get: () => manager.onBeforeContainerStop,

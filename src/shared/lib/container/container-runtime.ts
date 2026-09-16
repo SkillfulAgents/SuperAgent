@@ -10,6 +10,7 @@
  */
 import { createContainerClient } from './client-factory'
 import { ActivityClock } from './activity-clock'
+import { IdleAlarm } from './idle-alarm'
 import type {
   ContainerClient,
   ContainerConfig,
@@ -85,10 +86,21 @@ export class ContainerRuntime {
   private cached: CachedContainerStatus | null = null
   /**
    * When this container was last busy: its start, the last keep-alive, the
-   * last session activity. Auto-sleep reads it through the actor's
-   * `container.idleSince()`; nothing here touches the filesystem.
+   * last session activity. Every mark re-arms the idle alarm; nothing here
+   * touches the filesystem.
    */
   private readonly activity = new ActivityClock()
+  /**
+   * Puts the container to sleep once it has been idle for the auto-sleep
+   * timeout. Armed from the marks above, cancelled when the container stops
+   * or the runtime is dropped; the host re-arms it when the timeout changes.
+   */
+  readonly idleAlarm = new IdleAlarm({
+    timeoutMs: () => (getSettings().app?.autoSleepTimeoutMinutes ?? 30) * 60_000,
+    lastActivityAt: () => this.activity.lastActivityAt(),
+    isBusy: () => this.isBusy(),
+    sleep: () => this.sleepIdle(),
+  })
   /** Cached health warnings */
   private healthWarnings: HealthCheckResult[] = []
   /** Being stopped — skip health checks, sync, and connection error recovery */
@@ -259,6 +271,7 @@ export class ContainerRuntime {
   markAsStopped(): void {
     this.updateCachedStatus('stopped', null)
     this.activity.reset()
+    this.idleAlarm.cancel()
   }
 
   /**
@@ -366,6 +379,7 @@ export class ContainerRuntime {
     // rediscovery so zero-session warm containers are still reaped.
     if (info.status === 'running' && !this.activity.hasStarted()) {
       this.activity.started()
+      this.idleAlarm.schedule()
     }
 
     // Broadcast if status changed (e.g., container was stopped externally)
@@ -643,9 +657,10 @@ export class ContainerRuntime {
     const info = startedInfo ?? await client.getInfoFromRuntime()
     this.updateCachedStatus(info.status, info.port)
 
-    // Record start time so auto-sleep monitor doesn't immediately
-    // sleep the container based on stale session activity timestamps
+    // The start is the first mark on the idle clock: it floors stale session
+    // timestamps from before the previous sleep and arms the alarm.
     this.activity.started()
+    this.idleAlarm.schedule()
 
     // Broadcast agent status change globally
     messagePersister.broadcastGlobal({
@@ -660,6 +675,7 @@ export class ContainerRuntime {
   // Record a keep-alive ping (e.g. from an open dashboard) to prevent auto-sleep
   keepAlive(): void {
     this.activity.keepAlive()
+    this.idleAlarm.schedule()
   }
 
   /**
@@ -669,6 +685,7 @@ export class ContainerRuntime {
    */
   noteSessionActivity(at: number = Date.now()): void {
     this.activity.sessionActivity(at)
+    this.idleAlarm.schedule()
   }
 
   /**
@@ -681,6 +698,36 @@ export class ContainerRuntime {
   }
 
   /**
+   * When this container last stopped being busy, or null while a session is
+   * active or awaiting input, or while nothing has marked the clock. What
+   * the idle alarm decides on; see `ContainerOps.idleSince`.
+   */
+  idleSince(): number | null {
+    return this.isBusy() ? null : (this.activity.lastActivityAt() ?? null)
+  }
+
+  private isBusy(): boolean {
+    return (
+      messagePersister.hasActiveSessionsForAgent(this.slug) ||
+      messagePersister.hasSessionsAwaitingInputForAgent(this.slug)
+    )
+  }
+
+  /** What the idle alarm runs: stop without ever force-stopping the shared VM. */
+  private async sleepIdle(): Promise<void> {
+    const timeoutMinutes = getSettings().app?.autoSleepTimeoutMinutes ?? 30
+    console.log(`[ContainerRuntime] Agent ${this.slug} idle for >${timeoutMinutes}m, stopping...`)
+    await this.stopContainer({
+      stopTimeoutMs: 60_000,
+      killTimeoutMs: 30_000,
+      // Never force-stop the shared VM to reclaim one idle container — it would
+      // kill every running agent. If stop+kill time out, leave it running; the
+      // alarm retries.
+      escalateToForceStop: false,
+    })
+  }
+
+  /**
    * Forget the client and every cached fact about the container. Does not
    * stop the container.
    */
@@ -689,6 +736,7 @@ export class ContainerRuntime {
     this.client = null
     this.cached = null
     this.activity.reset()
+    this.idleAlarm.cancel()
     this.healthWarnings = []
     this.stopping = false
     this.starting = null

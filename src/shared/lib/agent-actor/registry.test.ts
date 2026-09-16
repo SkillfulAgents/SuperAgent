@@ -104,7 +104,7 @@ function fakeDeps() {
     getCachedInfo: vi.fn().mockReturnValue({ status: 'running', port: 4321 }),
     keepAlive: vi.fn(),
     noteSessionActivity: vi.fn(),
-    lastActivityAt: vi.fn<() => number | undefined>().mockReturnValue(undefined),
+    idleSince: vi.fn<() => number | null>().mockReturnValue(null),
   })
   const runtimes = new Map<string, ReturnType<typeof fakeRuntime>>()
   const containerHost = {
@@ -142,8 +142,6 @@ function fakeDeps() {
   const recordSessionActivity = vi.fn()
   const messagePersister = {
     attachSessionStores: vi.fn(),
-    hasActiveSessionsForAgent: vi.fn().mockReturnValue(false),
-    hasSessionsAwaitingInputForAgent: vi.fn().mockReturnValue(false),
     markSessionIdle: vi.fn(),
   }
   const deps = {
@@ -395,31 +393,11 @@ describe('createAgentRegistry', () => {
   })
 
   describe('container.idleSince is the actor\'s own clock', () => {
-    it('is null while a session is active', () => {
-      fake.messagePersister.hasActiveSessionsForAgent.mockReturnValue(true)
-      fake.containerHost.runtime('a').lastActivityAt.mockReturnValue(1_000)
-      const actor = createAgentRegistry(fake.deps).get('a')
-      expect(actor.container.idleSince()).toBeNull()
-      expect(fake.messagePersister.hasActiveSessionsForAgent).toHaveBeenCalledWith('a')
-    })
-
-    it('is null while a session is awaiting input', () => {
-      fake.messagePersister.hasSessionsAwaitingInputForAgent.mockReturnValue(true)
-      fake.containerHost.runtime('a').lastActivityAt.mockReturnValue(1_000)
-      const actor = createAgentRegistry(fake.deps).get('a')
-      expect(actor.container.idleSince()).toBeNull()
-      expect(fake.messagePersister.hasSessionsAwaitingInputForAgent).toHaveBeenCalledWith('a')
-    })
-
-    it('is null while the runtime has recorded no activity at all', () => {
-      const actor = createAgentRegistry(fake.deps).get('a')
-      expect(actor.container.idleSince()).toBeNull()
-    })
-
-    it('is the runtime\'s last activity once every session is quiet', () => {
-      fake.containerHost.runtime('a').lastActivityAt.mockReturnValue(1_000)
-      const actor = createAgentRegistry(fake.deps).get('a')
-      expect(actor.container.idleSince()).toBe(1_000)
+    it('is answered by this agent\'s runtime', () => {
+      fake.containerHost.runtime('a').idleSince.mockReturnValue(1_000)
+      const registry = createAgentRegistry(fake.deps)
+      expect(registry.get('a').container.idleSince()).toBe(1_000)
+      expect(registry.get('b').container.idleSince()).toBeNull()
     })
 
     it('hears of every session write through the store and marks the runtime', () => {
