@@ -17,7 +17,9 @@ import {
  * nothing here can outlive the agent or belong to another one: every request
  * in this store was registered under this agent's slug, and a lookup by
  * session id can only ever find this agent's sessions (a session id is unique
- * only within an agent — an import or a clone gives each agent its own copy).
+ * only within an agent — an import or a clone gives each agent its own copy,
+ * and with it the source's tool-use ids, so the same request id can be open
+ * here and in another agent's store at once).
  *
  * Everything downstream derives from the store: the session "awaiting input"
  * status (`isSessionAwaiting` — the persister's bit is an edge-detection

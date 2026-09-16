@@ -8,6 +8,7 @@ import { AccountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { McpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import { ComputerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { createAgentRegistry } from './registry'
+import type { AgentState } from './agent-state'
 import type { LocalActorDeps, LocalAgentActor } from './local-agent-actor'
 
 // The singleton registry wires the real host and persister. These tests build
@@ -531,6 +532,30 @@ describe('createAgentRegistry', () => {
       expect(directory.all()).toEqual([store])
       registry.evict('a')
       expect(directory.all()).toEqual([])
+    })
+  })
+
+  describe('a registry built over an earlier registry\'s state (a dev-server reload)', () => {
+    it('wraps every surviving state in a fresh handle, visible to the routers at once', () => {
+      const states = new Map<string, AgentState>()
+      const before = createAgentRegistry(fake.deps, { states })
+      const actor = before.get('a') as LocalAgentActor
+      actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's' }, blocking: true, payload: {} } as never)
+      expect(states.get('a')).toBe(actor.state)
+
+      const after = createAgentRegistry(fake.deps, { states })
+      const rebuilt = after.get('a') as LocalAgentActor
+      expect(rebuilt).not.toBe(actor)
+      expect(rebuilt.state).toBe(actor.state)
+      expect(rebuilt.inputs.get('q1')?.id).toBe('q1')
+      // The new registry's directory sees the rebuilt handle without a `get`:
+      // the last attach is the new registry's.
+      const directory = fake.inputManager.attachAgents.mock.calls.at(-1)![0] as { all: () => unknown[] }
+      expect(directory.all()).toEqual([rebuilt.state.inputRequests])
+
+      after.evict('a')
+      expect(states.has('a')).toBe(false)
+      expect(after.get('a').inputs.get('q1')).toBeNull()
     })
   })
 

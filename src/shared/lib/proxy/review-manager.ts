@@ -1,6 +1,6 @@
 import { AttachedStores, type AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
-import { isReviewEntry, type AgentReviews, type ReviewDecision, type XAgentOperation } from './agent-reviews'
+import type { AgentReviews, ReviewDecision, XAgentOperation } from './agent-reviews'
 import type { ReviewDetails } from './review-display'
 import type { ScopeLabel } from './scope-metadata'
 
@@ -34,15 +34,14 @@ export class ReviewManager {
    * Internal callers may omit it, in which case the review's owner decides.
    */
   submitDecision(id: string, decision: ReviewDecision, expectedAgentSlug?: string): boolean {
-    const entry = userInputRequestManager.getOpenRequest(id)
-    if (!entry || !isReviewEntry(entry)) return false
-    const owner = entry.scope.agentSlug
-    if (owner === undefined) return false
-    if (expectedAgentSlug !== undefined && owner !== expectedAgentSlug) {
-      // Don't leak existence of the review to an unauthorized caller —
-      // return the same `false` shape as "review not found".
-      return false
+    // With the agent named, only its store is consulted: a review id another
+    // agent holds is simply not found there — the same `false` shape as
+    // "review not found", so nothing leaks to an unauthorized caller.
+    if (expectedAgentSlug !== undefined) {
+      return this.agents.peek(expectedAgentSlug)?.submit(id, decision) ?? false
     }
+    const owner = userInputRequestManager.getOpenRequest(id)?.scope.agentSlug
+    if (owner === undefined) return false
     return this.agents.peek(owner)?.submit(id, decision) ?? false
   }
 

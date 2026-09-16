@@ -33,17 +33,36 @@ import type { AgentActor, AgentRegistry, AgentSlug } from './types'
  * agent's actor reads. In the same way it hands the user-input, review,
  * re-auth and computer-use routers the way to each actor's stores.
  */
-export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
+export function createAgentRegistry(
+  deps: LocalActorDeps,
+  options: {
+    /**
+     * State the actors own that outlived an earlier registry: in development
+     * the backend modules are re-evaluated on edit (the Vite adapter reloads
+     * the SSR entry in the same process), and the host, the persister and the
+     * routers all survive that on `globalThis`. What the actors hold — parked
+     * reviews and waits, open requests, grants — must survive with them, or a
+     * reload strands every pending approval; so the singleton registry keeps
+     * this map on `globalThis` too, and a reloaded module wraps each state in
+     * a fresh handle: the new code over the state the old one built.
+     */
+    states?: Map<AgentSlug, AgentState>
+  } = {},
+): AgentRegistry {
+  const states = options.states ?? new Map<AgentSlug, AgentState>()
   const handles = new Map<AgentSlug, LocalAgentActor>()
 
-  const get = (slug: AgentSlug): LocalAgentActor => {
-    let actor = handles.get(slug)
-    if (!actor) {
-      actor = new LocalAgentActor(slug, deps)
-      handles.set(slug, actor)
-    }
+  const wrap = (slug: AgentSlug, state?: AgentState): LocalAgentActor => {
+    const actor = new LocalAgentActor(slug, deps, state)
+    handles.set(slug, actor)
+    states.set(slug, actor.state)
     return actor
   }
+  // Handles for whatever state the previous registry left: sweeps over
+  // `all()` and reads through `peek` must see it without waiting for a `get`.
+  for (const [slug, state] of states) wrap(slug, state)
+
+  const get = (slug: AgentSlug): LocalAgentActor => handles.get(slug) ?? wrap(slug)
 
   const evict = (slug: AgentSlug): void => {
     // Release what the handle owns while its runtime still exists: settling
@@ -51,6 +70,7 @@ export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
     handles.get(slug)?.dispose()
     deps.containerHost.dropRuntime(slug)
     handles.delete(slug)
+    states.delete(slug)
   }
 
   // The container layer reaches an agent's workspace only through its actor;
@@ -113,9 +133,22 @@ export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
       // starting is kept, so the start still lands somewhere the host knows.
       for (const actor of handles.values()) actor.dispose()
       handles.clear()
+      states.clear()
       deps.containerHost.clearRuntimes()
     },
   }
+}
+
+// The actors' state persists across dev-server hot reloads on globalThis,
+// matching the host, the persister and the routers it is wired to: a reload
+// that kept the routers but lost the state would leave every parked approval
+// undecidable. See `createAgentRegistry`.
+const globalForRegistry = globalThis as unknown as {
+  agentActorStates: Map<AgentSlug, AgentState> | undefined
+}
+const agentActorStates = globalForRegistry.agentActorStates ?? new Map<AgentSlug, AgentState>()
+if (process.env.NODE_ENV !== 'production') {
+  globalForRegistry.agentActorStates = agentActorStates
 }
 
 // Getters, not values: each dependency is read when an actor method runs, not
@@ -177,4 +210,4 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   get loadSessionUsageTotals() {
     return loadSessionUsageTotals
   },
-})
+}, { states: agentActorStates })

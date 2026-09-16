@@ -99,7 +99,12 @@ export class LocalAgentActor implements AgentActor {
    */
   readonly state: AgentState
 
-  constructor(readonly slug: AgentSlug, deps: LocalActorDeps) {
+  /**
+   * `state` is given when the handle is wrapping state that outlived an
+   * earlier handle for the slug (the registry rebuilding after a dev-server
+   * reload); otherwise the handle starts with none.
+   */
+  constructor(readonly slug: AgentSlug, deps: LocalActorDeps, state?: AgentState) {
     // Every write to a session goes through the store, so this is where the
     // container's idle clock learns of session activity — the persister's
     // stream frames, the transcript appends and `sessions.recordActivity`
@@ -107,11 +112,13 @@ export class LocalAgentActor implements AgentActor {
     this.store = createLocalSessionStore(slug, deps, {
       onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
     })
-    this.state = createAgentState(slug, {
-      transitions: deps.userInputRequestManager,
-      // A test double of the persister may not carry the projection; the real one does.
-      syncAwaiting: () => deps.messagePersister.syncAgentSessionsAwaiting?.(slug),
-    })
+    this.state =
+      state ??
+      createAgentState(slug, {
+        transitions: deps.userInputRequestManager,
+        // A test double of the persister may not carry the projection; the real one does.
+        syncAwaiting: () => deps.messagePersister.syncAgentSessionsAwaiting?.(slug),
+      })
     this.files = this.store.files
     this.memories = createMemoryOps(this.files)
     this.config = this.store.config

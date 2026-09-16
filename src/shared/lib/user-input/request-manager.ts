@@ -20,10 +20,17 @@ export type { SettledUserInputRequest, UserInputRequestTransition } from './agen
  *
  * The requests themselves live in each agent's `AgentInputRequests`, owned by
  * its actor. This singleton holds only what spans agents: the index from
- * request id to owning agent (so a decision that arrives with a bare id finds
- * its store), the transition listeners (the single feed for the unified wire
- * events), and the process-wide sweeps. Every store reports its transitions
- * here, which is what keeps the index current.
+ * request id to the agents holding it open (so a call that arrives with a
+ * bare id finds a store), the transition listeners (the single feed for the
+ * unified wire events), and the process-wide sweeps. Every store reports its
+ * transitions here, which is what keeps the index current.
+ *
+ * An id can be open in more than one agent's store: a session cloned into
+ * another agent replays the tool-use ids of its source. So every id-addressed
+ * method takes the agent when the caller knows it — the persister always
+ * does — and only that agent's store is consulted. A bare id is answered by
+ * the agent that registered it first and still holds it, which is what the
+ * one global store used to answer.
  *
  * The slug-addressed methods dispatch to that agent's store; the agent's
  * actor calls its store directly. A read for an agent that has no handle
@@ -32,31 +39,46 @@ export type { SettledUserInputRequest, UserInputRequestTransition } from './agen
 export class UserInputRequestManager implements UserInputTransitionSink {
   private readonly agents = new AttachedStores<AgentInputRequests>('user-input requests')
 
-  /** Which agent's store holds each open request. */
-  private ownerById = new Map<string, AgentSlug>()
+  /** The agents holding each id open, in the order they registered it. */
+  private ownersById = new Map<string, Set<AgentSlug>>()
 
   private transitionListeners = new Set<(transition: UserInputRequestTransition) => void>()
 
   /** Called once by the agent registry with the way to each agent's store. */
   attachAgents(directory: AgentStoreDirectory<AgentInputRequests> | null): void {
     this.agents.attach(directory)
-    this.ownerById.clear()
+    this.ownersById.clear()
   }
 
   /** A store's transition: index it, then fan it out. */
   report(transition: UserInputRequestTransition): void {
-    const slug = transition.request.scope.agentSlug
-    if (transition.type === 'created' && slug !== undefined) {
-      this.ownerById.set(transition.request.id, slug)
-    } else if (transition.type === 'resolved') {
-      this.ownerById.delete(transition.request.id)
+    const { id, scope } = transition.request
+    const slug = scope.agentSlug
+    if (slug !== undefined) {
+      if (transition.type === 'created') {
+        let owners = this.ownersById.get(id)
+        if (!owners) {
+          owners = new Set()
+          this.ownersById.set(id, owners)
+        }
+        owners.add(slug)
+      } else {
+        const owners = this.ownersById.get(id)
+        owners?.delete(slug)
+        if (owners?.size === 0) this.ownersById.delete(id)
+      }
     }
     this.emitTransition(transition)
   }
 
-  private ownerOf(id: string): AgentInputRequests | undefined {
-    const slug = this.ownerById.get(id)
-    return slug === undefined ? undefined : this.agents.peek(slug)
+  /**
+   * The store an id-addressed call goes to: the named agent's, or for a bare
+   * id the store of the agent that registered it first and still holds it.
+   */
+  private storeFor(id: string, agentSlug?: AgentSlug): AgentInputRequests | undefined {
+    if (agentSlug !== undefined) return this.agents.peek(agentSlug)
+    const [first] = this.ownersById.get(id) ?? []
+    return first === undefined ? undefined : this.agents.peek(first)
   }
 
   /**
@@ -75,8 +97,8 @@ export class UserInputRequestManager implements UserInputTransitionSink {
   }
 
   /** Settle and remove a request. Idempotent: unknown ids are a no-op (null). */
-  resolve(id: string, outcome: UserInputRequestOutcome): PendingUserInputRequest | null {
-    return this.ownerOf(id)?.resolve(id, outcome) ?? null
+  resolve(id: string, outcome: UserInputRequestOutcome, agentSlug?: AgentSlug): PendingUserInputRequest | null {
+    return this.storeFor(id, agentSlug)?.resolve(id, outcome) ?? null
   }
 
   /**
@@ -99,13 +121,14 @@ export class UserInputRequestManager implements UserInputTransitionSink {
     }
   }
 
-  /** `AgentInputRequests.resolveIfInStore` on the request's owner. */
+  /** `AgentInputRequests.resolveIfInStore` on the agent's store. */
   resolveIfInStore(
     id: string,
     store: UserInputRequestStore,
     outcome: UserInputRequestOutcome,
+    agentSlug?: AgentSlug,
   ): PendingUserInputRequest | null {
-    return this.ownerOf(id)?.resolveIfInStore(id, store, outcome) ?? null
+    return this.storeFor(id, agentSlug)?.resolveIfInStore(id, store, outcome) ?? null
   }
 
   /** Mirror of the turn-boundary `pendingInputRequests.clear()` — stream store only. */
@@ -115,12 +138,17 @@ export class UserInputRequestManager implements UserInputTransitionSink {
 
   /**
    * Settle every open request registered under a parent Task tool_use — the
-   * dead-subagent sweep, across every agent. Returns what was settled.
+   * dead-subagent sweep. In the agent's store when named, else across every
+   * agent. Returns what was settled.
    */
   resolveRequestsByParent(
     parentToolUseId: string,
     outcome: UserInputRequestOutcome = 'invalidated',
+    agentSlug?: AgentSlug,
   ): PendingUserInputRequest[] {
+    if (agentSlug !== undefined) {
+      return this.agents.peek(agentSlug)?.resolveRequestsByParent(parentToolUseId, outcome) ?? []
+    }
     return this.agents.all().flatMap((store) => store.resolveRequestsByParent(parentToolUseId, outcome))
   }
 
@@ -133,28 +161,29 @@ export class UserInputRequestManager implements UserInputTransitionSink {
     this.agents.peek(agentSlug)?.dropSessionRequests(sessionId, outcome)
   }
 
-  /** Look up a single open request by id, whichever agent holds it. */
-  getOpenRequest(id: string): PendingUserInputRequest | null {
-    return this.ownerOf(id)?.getOpenRequest(id) ?? null
+  /** Look up a single open request by id, in the agent's store when named. */
+  getOpenRequest(id: string, agentSlug?: AgentSlug): PendingUserInputRequest | null {
+    return this.storeFor(id, agentSlug)?.getOpenRequest(id) ?? null
   }
 
-  /** `AgentInputRequests.enrichOpenRequestPayload` on the request's owner. */
+  /** `AgentInputRequests.enrichOpenRequestPayload` on the agent's store. */
   enrichOpenRequestPayload(
     id: string,
     kind: PendingUserInputRequest['kind'],
     enrichment: Record<string, unknown>,
+    agentSlug?: AgentSlug,
   ): boolean {
-    return this.ownerOf(id)?.enrichOpenRequestPayload(id, kind, enrichment) ?? false
+    return this.storeFor(id, agentSlug)?.enrichOpenRequestPayload(id, kind, enrichment) ?? false
   }
 
-  /** `AgentInputRequests.claimRequest` on the request's owner. */
-  claimRequest(id: string): PendingUserInputRequest | null {
-    return this.ownerOf(id)?.claimRequest(id) ?? null
+  /** `AgentInputRequests.claimRequest` on the agent's store. */
+  claimRequest(id: string, agentSlug?: AgentSlug): PendingUserInputRequest | null {
+    return this.storeFor(id, agentSlug)?.claimRequest(id) ?? null
   }
 
   /** Drop a claim. No-op for an id that already settled. */
-  releaseClaim(id: string): void {
-    this.ownerOf(id)?.releaseClaim(id)
+  releaseClaim(id: string, agentSlug?: AgentSlug): void {
+    this.storeFor(id, agentSlug)?.releaseClaim(id)
   }
 
   /**
@@ -236,7 +265,7 @@ export class UserInputRequestManager implements UserInputTransitionSink {
   /** Test hook: wipe every agent's store and the index, silently. */
   reset(): void {
     for (const store of this.agents.all()) store.reset()
-    this.ownerById.clear()
+    this.ownersById.clear()
   }
 }
 

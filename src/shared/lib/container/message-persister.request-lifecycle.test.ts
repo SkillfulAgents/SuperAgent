@@ -1825,3 +1825,50 @@ describe('pending user-input request lifecycle (characterization)', () => {
     })
   })
 })
+
+// A session cloned into another agent replays the tool-use ids of its
+// source, so the same request id can be open in two agents' stores at once.
+// Every persister path names the agent it is acting for, so it settles that
+// agent's request and no other; and settling one agent's copy must not make
+// the other's unreachable.
+describe('request id ownership across agents', () => {
+  beforeEach(() => userInputRequestManager.reset())
+  afterEach(() => userInputRequestManager.reset())
+
+  function registerInBoth(kind: 'secret' | 'computer_use') {
+    for (const agentSlug of ['original', 'clone']) {
+      userInputRequestManager.register({
+        id: 'copied-tool-id',
+        kind,
+        scope: { agentSlug, sessionId: 'copied-session-id' },
+        blocking: true,
+        payload: kind === 'secret' ? { secretName: 'TOKEN' } : {},
+      })
+    }
+  }
+
+  it('completeInputRequest settles the named agent\'s request when another agent holds the same id', () => {
+    const resolvedOwners: Array<string | undefined> = []
+    const stop = userInputRequestManager.onTransition((transition) => {
+      if (transition.type === 'resolved') resolvedOwners.push(transition.request.scope.agentSlug)
+    })
+    try {
+      registerInBoth('secret')
+      messagePersister.completeInputRequest('original', 'copied-session-id', 'copied-tool-id', 'answered')
+      expect(resolvedOwners).toEqual(['original'])
+      expect(userInputRequestManager.getOpenRequestsForAgent('original')).toHaveLength(0)
+      expect(userInputRequestManager.getOpenRequestsForAgent('clone')).toHaveLength(1)
+    } finally {
+      stop()
+    }
+  })
+
+  it('clearing one agent\'s copy leaves the other agent\'s reachable by bare id', () => {
+    registerInBoth('computer_use')
+    userInputRequestManager.dropSessionRequests('original', 'copied-session-id')
+    expect(userInputRequestManager.getOpenRequestsForAgent('original')).toHaveLength(0)
+    expect(userInputRequestManager.getOpenRequest('copied-tool-id')?.scope.agentSlug).toBe('clone')
+    expect(userInputRequestManager.getOpenRequest('copied-tool-id', 'clone')?.scope.agentSlug).toBe('clone')
+    expect(userInputRequestManager.getOpenRequest('copied-tool-id', 'original')).toBeNull()
+  })
+})

@@ -527,6 +527,37 @@ describe('UserInputRequestManager', () => {
       expect(agents.peek('agent-z')).toBeUndefined()
     })
 
+    it('an id open in two agents is addressed by agent; a bare id goes to the first registrant still holding it', () => {
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-a', sessionId: 's' } }))
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-b', sessionId: 's' } }))
+      expect(manager.getOpenRequestsForAgent('agent-a')).toHaveLength(1)
+      expect(manager.getOpenRequestsForAgent('agent-b')).toHaveLength(1)
+
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.getOpenRequest('tool-1', 'agent-b')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.claimRequest('tool-1', 'agent-b')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.claimRequest('tool-1', 'agent-a')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.enrichOpenRequestPayload('tool-1', 'secret', { note: 1 }, 'agent-b')).toBe(true)
+      expect(manager.getOpenRequest('tool-1', 'agent-a')?.payload).not.toHaveProperty('note')
+
+      // Settling the named agent's copy leaves the other's open, and the bare
+      // id now answers with the survivor.
+      expect(manager.resolveIfInStore('tool-1', 'stream', 'answered', 'agent-b')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.getOpenRequestsForAgent('agent-b')).toHaveLength(0)
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.resolve('tool-1', 'declined')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.getOpenRequest('tool-1')).toBeNull()
+      expect(manager.stats.open).toBe(0)
+    })
+
+    it('a named agent that does not hold the id is a miss, not a fallback to whoever does', () => {
+      manager.register(secretRequest())
+      expect(manager.getOpenRequest('tool-1', 'agent-z')).toBeNull()
+      expect(manager.resolveIfInStore('tool-1', 'stream', 'answered', 'agent-z')).toBeNull()
+      expect(manager.resolveRequestsByParent('task-1', 'invalidated', 'agent-z')).toEqual([])
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
+    })
+
     it('sweeps that span agents reach every store', () => {
       manager.register(secretRequest({ id: 'a-1', parentToolUseId: 'task-1' }))
       manager.register(secretRequest({ id: 'b-1', scope: { agentSlug: 'agent-b', sessionId: 's' }, parentToolUseId: 'task-1' }))
