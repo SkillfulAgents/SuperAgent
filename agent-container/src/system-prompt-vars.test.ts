@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { buildSystemPromptVars, generateSystemPrompt } from './claude-code'
@@ -99,10 +99,14 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('cost from that model')).toBe(webhook)
     expect(out.includes('Never invent a model slug')).toBe(webhook)
     expect(out.includes('## Built-in X reads')).toBe(webhook)
-    expect(out.includes('/opt/gamut/docs/x.md')).toBe(webhook)
+    expect(out.includes('/opt/gamut/docs/x.md')).toBe(webhook || composio)
     expect(out.includes('Never invent an X endpoint')).toBe(webhook)
     expect(out.includes('$0.01 per person')).toBe(webhook)
     expect(out.includes('## Built-in Deepgram audio')).toBe(webhook)
+    // The X connected account needs Gamut's Composio, so it follows the composio gate.
+    expect(out.includes('## X through a connected account')).toBe(composio)
+    expect(out.includes('$0.200')).toBe(composio)
+    expect(out.includes('public reads included')).toBe(composio)
     expect(out.includes('/opt/gamut/docs/deepgram.md')).toBe(webhook)
     expect(out.includes('Never invent a Deepgram endpoint')).toBe(webhook)
     expect(out.includes('Before long recordings')).toBe(webhook)
@@ -143,6 +147,17 @@ describe('generateSystemPrompt rendering', () => {
     expect(guide).toContain('/tweets`')
     expect(guide).toContain('7 days')
     expect(guide).toContain('followers')
+    expect(guide).toContain('Never print either environment variable')
+  })
+
+  it('teaches the X connected-account contract in the guide', () => {
+    const guide = readFileSync(join(__dirname, '..', 'docs', 'x.md'), 'utf8')
+    expect(guide).toContain('$PROXY_BASE_URL/<account_id>/api.x.com')
+    expect(guide).toContain('`POST /2/tweets`')
+    expect(guide).toContain('$0.200')
+    expect(guide).toContain('512 KB')
+    expect(guide).toContain('/2/media/upload/{id}/append')
+    expect(guide).toContain('`402`')
     expect(guide).toContain('Never print either environment variable')
   })
 
@@ -305,7 +320,21 @@ describe('generateSystemPrompt rendering', () => {
 
     const promptSlugs = [...line!.matchAll(/`([a-z_0-9]+)`/g)].map(match => match[1])
     expect(new Set(promptSlugs).size, 'prompt lists a slug twice').toBe(promptSlugs.length)
+    expect(promptSlugs).not.toContain('twitter')
     expect(promptSlugs.sort()).toEqual(SERVICES.map(service => service.slug).sort())
+  })
+
+  // The catalog reads the env at import, so platform mode needs a fresh import.
+  it('lists X in both the prompt and the catalog on Gamut\'s Composio', async () => {
+    process.env.COMPOSIO_PLATFORM_MODE = 'true'
+    vi.resetModules()
+    const { SERVICES: platformServices } = await import('./tools/search-connected-account-services')
+    const line = generateSystemPrompt()
+      .split('\n')
+      .find(candidate => candidate.startsWith('**Supported services include:**'))
+    const promptSlugs = [...line!.matchAll(/`([a-z_0-9]+)`/g)].map(match => match[1])
+    expect(promptSlugs).toContain('twitter')
+    expect(promptSlugs.sort()).toEqual(platformServices.map(service => service.slug).sort())
   })
 
   // The FAQ used to carry its own copy of the toolkit list, which drifted

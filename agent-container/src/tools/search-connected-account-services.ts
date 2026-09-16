@@ -58,6 +58,10 @@ export const SERVICES: ServiceInfo[] = [
   // Social Media
   { slug: 'linkedin', displayName: 'LinkedIn', category: 'Social Media', description: 'Professional networking' },
   { slug: 'instagram', displayName: 'Instagram', category: 'Social Media', description: 'Photo and video sharing' },
+  // X exists only through Gamut's Composio; the host sets this env at container start.
+  ...(process.env.COMPOSIO_PLATFORM_MODE === 'true'
+    ? [{ slug: 'twitter', displayName: 'X', category: 'Social Media', description: 'Posts, timelines, and direct messages' }]
+    : []),
   // Finance
   { slug: 'stripe', displayName: 'Stripe', category: 'Finance', description: 'Payment processing' },
   { slug: 'quickbooks', displayName: 'QuickBooks', category: 'Finance', description: 'Accounting and bookkeeping' },
