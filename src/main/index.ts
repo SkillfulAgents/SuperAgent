@@ -1461,6 +1461,8 @@ async function startApp() {
     await openDatabase()
   } catch (error) {
     console.error('Failed to open the database:', error)
+    // The fatal report was captured in openDatabase(); let it send before quitting.
+    await flushErrorReporting(2_000)
     app.quit()
     return
   }
