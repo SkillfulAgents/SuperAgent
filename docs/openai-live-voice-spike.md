@@ -69,3 +69,11 @@ Intentional behavior change: Deepgram no longer sends a replacement after failed
 - [Live prompting](https://developers.openai.com/api/docs/guides/live-prompting)
 
 Pause/resume continues tracking request acknowledgment while suppressing spoken replies. Returning from a request card does not create a new pending turn merely because the agent was active before the pause. Live request bodies are limited by streamed byte count and parsed into typed route context without rebuilding the HTTP adapter's Request object; regression tests exercise chunked input through the development Node adapter.
+
+### Agent context in Live instructions
+
+Current session voice mode starts through `POST /api/voice/live/agents/:id/session`. The route resolves the agent's canonical ID and requires `AgentUser` access before reading its saved configuration. The host supplies its name, description, custom instructions, and the same workspace subagent/workflow policies passed to backend execution. Browser-supplied instruction fields are ignored. The generic `/live/session` route remains for older clients.
+
+`buildLiveConversationPrompt` combines the voice delegation policy with a compact adaptation of the platform system prompt: account connection/discovery, authorization cards, MCP connections, secrets, research, files, code, artifacts, and scheduling. Unknown service availability is delegated to the backend. Voice must not infer that accounts are already connected or claim completion before a backend result.
+
+Custom instructions are included as saved agent configuration, capped at 6,000 characters and explicitly marked when truncated. The backend retains the full instructions and resolves detailed constraints. This context is a startup snapshot; exiting and re-entering voice reloads changes. It does not enumerate account credentials, connected-account metadata, or tool schemas. Prompt tests and mocked transport tests verify propagation; spoken behavior still needs a live conversation check (for example, “Connect my Gmail account”).

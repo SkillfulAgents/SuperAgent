@@ -58,7 +58,7 @@ export class OpenAILiveConversation {
   private replyFed = 0
   private replyTimer: ReturnType<typeof setTimeout> | undefined
 
-  constructor(private events: ConversationEvents, private history: VoiceHistory = []) {
+  constructor(private events: ConversationEvents, private history: VoiceHistory = [], private agentSlug?: string) {
     this.bridge = new OpenAILiveBridge({
       ...events,
       onInputTranscript: (delta) => this.detectInputWords(delta),
@@ -160,7 +160,10 @@ export class OpenAILiveConversation {
       if (!sdp) throw new Error('Could not create a microphone connection.')
       // Let creation finish even if stopped: the returned handle can then be
       // closed on the host, including when WebRTC never reached session.started.
-      const res = await apiFetch('/api/voice/live/session', {
+      const endpoint = this.agentSlug
+        ? `/api/voice/live/agents/${encodeURIComponent(this.agentSlug)}/session`
+        : '/api/voice/live/session'
+      const res = await apiFetch(endpoint, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sdp, history: this.history }),
       })

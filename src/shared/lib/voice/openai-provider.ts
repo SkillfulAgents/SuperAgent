@@ -6,8 +6,8 @@ import { BaseVoiceProvider } from './voice-provider'
 import { getEffectiveModels, type VoiceProvider } from '../config/settings'
 import { getConfiguredLlmClient, createSummarizerText } from '../llm-provider/helpers'
 import { resolveActiveProviderModel } from '../llm-provider'
-import { liveRequestSchema, type LiveConversationProvider, type LiveMappingInput, type LiveSessionAnswer, type VoiceHistory } from './live-types'
-import { LIVE_CONVERSATION_PROMPT, LIVE_REPLY_PROMPT, LIVE_REQUEST_PROMPT } from '../../prompts/voice-live'
+import { liveRequestSchema, type LiveAgentContext, type LiveConversationProvider, type LiveMappingInput, type LiveSessionAnswer, type VoiceHistory } from './live-types'
+import { buildLiveConversationPrompt, LIVE_REPLY_PROMPT, LIVE_REQUEST_PROMPT } from '../../prompts/voice-live'
 import { BYOK_VOICE_MESSAGES, type OpenaiVoiceMessages } from './openai-voice-messages'
 import type { SttProtocol } from './stt-protocol'
 
@@ -82,7 +82,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
   }
 
   /** The project key stays on the host; the renderer receives only an SDP answer. */
-  async createLiveSession(sdp: string, history: VoiceHistory): Promise<LiveSessionAnswer> {
+  async createLiveSession(sdp: string, history: VoiceHistory, agent?: LiveAgentContext): Promise<LiveSessionAnswer> {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new VoiceProviderError(this.messages().missingKey, 400)
     // Check the mapping dependency before creating a billable voice session.
@@ -94,7 +94,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
       body: JSON.stringify({
         session: {
           model: 'gpt-live-1',
-          instructions: LIVE_CONVERSATION_PROMPT,
+          instructions: buildLiveConversationPrompt(agent),
           delegation: { type: 'client' },
           audio: { output: { voice: 'marin' } },
           store: false,
