@@ -6,10 +6,16 @@ const base = (slug: string) => `/api/agents/${encodeURIComponent(slug)}/memories
 const listKey = (slug: string | null) => ['agent-memories', slug]
 const docKey = (slug: string, path: string | null) => ['agent-memory', slug, path]
 
+export class MemoryRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+  }
+}
+
 async function responseJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(typeof body?.error === 'string' ? body.error : 'Unable to access agent memories')
+    throw new MemoryRequestError(typeof body?.error === 'string' ? body.error : 'Unable to access agent memories', res.status)
   }
   return res.json()
 }

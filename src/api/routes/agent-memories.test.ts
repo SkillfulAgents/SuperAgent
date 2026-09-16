@@ -36,7 +36,7 @@ describe('memory API', () => {
     expect(list.headers.get('Cache-Control')).toBe('no-store')
     expect(get).toHaveBeenCalledWith('resolved-agent-slug')
     const doc = await (await app.request(`${url}/content?path=example.md`, { headers })).json()
-    const body = JSON.stringify({ path: 'example.md', content: '# Edited', revision: doc.revision })
+    const body = JSON.stringify({ path: 'example.md', content: '---\nname: Example\ndescription: Example memory\nmetadata:\n  type: project\n---\n# Edited', revision: doc.revision })
     expect((await app.request(`${url}/content`, { method: 'PUT', headers, body })).status).toBe(200)
     const conflict = await app.request(`${url}/content`, { method: 'PUT', headers, body })
     expect(conflict.status).toBe(409)
@@ -58,4 +58,18 @@ describe('memory API', () => {
     expect((await app.request(url + '/content?path=..%2Fprivate.md', { headers })).status).toBe(400)
     expect((await app.request(url + '/content?path=missing.md', { headers })).status).toBe(404)
   })
+  it('returns a helpful validation error and leaves stored content untouched', async () => {
+    await files.putDoc(`${AGENT_MEMORY_DIR}/example.md`, '# Existing memory')
+    const doc = await (await app.request(`${url}/content?path=example.md`, { headers })).json()
+    const write = vi.spyOn(files, 'putDoc')
+    const result = await app.request(`${url}/content`, {
+      method: 'PUT', headers,
+      body: JSON.stringify({ path: 'example.md', content: '---\nname: Example\n---\nBody', revision: doc.revision }),
+    })
+    expect(result.status).toBe(422)
+    expect(await result.json()).toEqual({ error: 'Frontmatter "description" must be non-empty text.' })
+    expect(write).not.toHaveBeenCalled()
+    expect(new TextDecoder().decode(await files.getDoc(`${AGENT_MEMORY_DIR}/example.md`) ?? undefined)).toBe('# Existing memory')
+  })
+
 })

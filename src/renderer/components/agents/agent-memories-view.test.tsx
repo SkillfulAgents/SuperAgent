@@ -19,19 +19,22 @@ vi.mock('@renderer/components/layout/settings-page', () => ({
 
 const initial = {
   path: 'style.md', title: 'Writing style', description: 'How to write', type: 'feedback', isIndex: false,
-  content: '---\nname: Writing style\n---\nBe concise.', body: 'Be concise.', revision: 'a'.repeat(64),
+  content: '---\nname: Writing style\ndescription: How to write\nmetadata:\n  type: feedback\n---\nBe concise.', body: 'Be concise.', revision: 'a'.repeat(64),
 }
 let doc = { ...initial }
 let conflict = false
+let validationError = false
 let client: QueryClient
 
 beforeEach(() => {
   doc = { ...initial }
   conflict = false
+  validationError = false
   user.isAuthMode = false
   apiFetch.mockReset()
   apiFetch.mockImplementation(async (url: string, options?: RequestInit) => {
     if (options?.method === 'PUT') {
+      if (validationError) return Response.json({ error: 'Frontmatter "name" must be non-empty text.' }, { status: 422 })
       if (conflict) return Response.json({ error: 'This memory changed since you opened it. Your draft has been kept.' }, { status: 409 })
       const data = JSON.parse(options.body as string)
       doc = { ...doc, content: data.content, body: data.content, revision: 'b'.repeat(64) }
@@ -62,10 +65,11 @@ describe('Memories page', () => {
     const editor = await openEditor(events)
     expect(editor).toHaveValue(initial.content)
     await events.clear(editor)
-    await events.type(editor, '# Updated memory')
+    const updated = initial.content + '\n\n# Updated memory'
+    await events.type(editor, updated)
     await events.click(screen.getByRole('button', { name: 'Save' }))
     expect(await screen.findByRole('heading', { name: 'Updated memory' })).toBeVisible()
-    expect(doc.content).toBe('# Updated memory')
+    expect(doc.content).toBe(updated)
     const write = apiFetch.mock.calls.find(([, options]) => options?.method === 'PUT')!
     expect(JSON.parse(write[1].body)).toMatchObject({ path: 'style.md', revision: initial.revision })
   })
@@ -115,4 +119,23 @@ describe('Memories page', () => {
     expect(screen.getByText('Only agent admins can view and edit memories.')).toBeVisible()
     await waitFor(() => expect(apiFetch).not.toHaveBeenCalled())
   })
+  it('keeps an invalid draft editable and lets the user fix and save it', async () => {
+    const events = setup()
+    const editor = await openEditor(events)
+    await events.clear(editor)
+    await events.type(editor, '# Invalid draft')
+    validationError = true
+    await events.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Frontmatter "name" must be non-empty text.')
+    expect(editor).toHaveValue('# Invalid draft')
+    expect(editor).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.queryByRole('button', { name: 'Reload latest version' })).not.toBeInTheDocument()
+    expect(doc.content).toBe(initial.content)
+    validationError = false
+    await events.clear(editor)
+    await events.type(editor, initial.content + '\nRepaired')
+    await events.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Memory saved.')).toBeVisible()
+  })
+
 })

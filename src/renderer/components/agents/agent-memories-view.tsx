@@ -9,7 +9,7 @@ import { Textarea } from '@renderer/components/ui/textarea'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@renderer/components/ui/alert-dialog'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { useUser } from '@renderer/context/user-context'
-import { useAgentMemories, useAgentMemory, useSaveAgentMemory } from '@renderer/hooks/use-agent-memories'
+import { useAgentMemories, useAgentMemory, useSaveAgentMemory, MemoryRequestError } from '@renderer/hooks/use-agent-memories'
 import type { AgentMemoryEntry } from '@shared/lib/types/memory'
 
 export function AgentMemoriesView({ agentSlug }: { agentSlug: string }) {
@@ -132,17 +132,17 @@ function MemoryDetail({ agentSlug, path, entries, onBack, onSelect }: {
           {draft ? (
             <>
               <label htmlFor="memory-content" className="block text-sm font-medium">Memory contents</label>
-              <p className="text-sm text-muted-foreground">Edit the Markdown, including any name, description, and type at the top.</p>
-              <Textarea id="memory-content" className="min-h-[360px] font-mono text-sm" value={draft.content} disabled={save.isPending}
+              <p className="text-sm text-muted-foreground">{memory.data.isIndex ? 'Edit the Markdown index. Frontmatter is not required.' : 'Keep name and description as non-empty text, and metadata.type as user, feedback, project, or reference.'}</p>
+              <Textarea id="memory-content" aria-invalid={save.error instanceof MemoryRequestError && save.error.status === 422} aria-describedby={save.isError ? 'memory-save-error' : undefined} className="min-h-[360px] font-mono text-sm" value={draft.content} disabled={save.isPending}
                 onChange={event => setDraft({ ...draft, content: event.target.value })} />
               {save.isError && (
                 <div role="alert" className="space-y-2">
-                  <p className="text-sm text-destructive">{save.error.message}</p>
-                  <Button variant="outline" size="sm" onClick={() => requestAction(() => {
+                  <p id="memory-save-error" className="text-sm text-destructive">{save.error.message}</p>
+                  {save.error instanceof MemoryRequestError && save.error.status === 409 && <Button variant="outline" size="sm" onClick={() => requestAction(() => {
                     setDraft(null)
                     save.reset()
                     void memory.refetch()
-                  })}>Reload latest version</Button>
+                  })}>Reload latest version</Button>}
                 </div>
               )}
               <div className="flex justify-end gap-2">

@@ -58,11 +58,11 @@ describe('agent memories through FileOps', () => {
     await files.putDoc(`${root}/style.md`, original)
     const doc = await readAgentMemory(files, 'style.md')
     const results = await Promise.allSettled([
-      saveAgentMemory(files, 'style.md', 'First', doc.revision),
-      saveAgentMemory(files, 'style.md', 'Second', doc.revision),
+      saveAgentMemory(files, 'style.md', original + 'First', doc.revision),
+      saveAgentMemory(files, 'style.md', original + 'Second', doc.revision),
     ])
     expect(results.map(result => result.status)).toEqual(['fulfilled', 'rejected'])
-    expect((await readAgentMemory(files, 'style.md')).content).toBe('First')
+    expect((await readAgentMemory(files, 'style.md')).content).toBe(original + 'First')
   })
 
   it.each(['../secrets.md', '/absolute.md', 'nested/../../escape.md', 'nested/../style.md', 'a\\b.md', 'a\0.md', 'a.txt'])('rejects invalid path %s before I/O', async relative => {
@@ -98,4 +98,64 @@ describe('agent memories through FileOps', () => {
     await expect(readAgentMemory(files, 'big.md')).rejects.toMatchObject({ status: 413 })
     await expect(saveAgentMemory(files, 'big.md', 'é'.repeat(MAX_MEMORY_BYTES), 'unused')).rejects.toMatchObject({ status: 413 })
   })
+  describe('frontmatter validation on save', () => {
+    it.each([
+      ['missing frontmatter', 'plain Markdown', 'enclosed by ---'],
+      ['missing closing delimiter', '---\nname: Example', 'enclosed by ---'],
+      ['malformed YAML', '---\nname: [broken\n---\nBody', 'invalid YAML'],
+      ['duplicate keys', original.replace('name: Writing style', 'name: First\nname: Second'), 'invalid YAML'],
+      ['empty YAML', '---\n\n---\nBody', 'named fields'],
+      ['list root', '---\n- name\n- description\n---\nBody', 'named fields'],
+      ['scalar root', '---\nhello\n---\nBody', 'named fields'],
+      ['missing name', original.replace('name: Writing style\n', ''), '"name"'],
+      ['blank name', original.replace('name: Writing style', 'name: "  "'), '"name"'],
+      ['numeric name', original.replace('name: Writing style', 'name: 123'), '"name"'],
+      ['missing description', original.replace('description: Keep answers concise\n', ''), '"description"'],
+      ['blank description', original.replace('description: Keep answers concise', 'description: "  "'), '"description"'],
+      ['non-text description', original.replace('description: Keep answers concise', 'description: false'), '"description"'],
+      ['missing metadata', original.replace('metadata:\n  type: feedback\n', ''), '"metadata.type"'],
+      ['null metadata', original.replace('metadata:\n  type: feedback', 'metadata: null'), '"metadata.type"'],
+      ['list metadata', original.replace('metadata:\n  type: feedback', 'metadata: [feedback]'), '"metadata.type"'],
+      ['unknown type', original.replace('type: feedback', 'type: typo'), '"metadata.type"'],
+      ['top-level type only', original.replace('metadata:\n  type: feedback', 'type: feedback'), '"metadata.type"'],
+    ])('rejects %s without writing', async (_label, content, message) => {
+      const files = new InMemoryFileOps()
+      await files.putDoc(`${root}/style.md`, original)
+      const current = await readAgentMemory(files, 'style.md')
+      const write = vi.spyOn(files, 'putDoc')
+      await expect(saveAgentMemory(files, 'style.md', content, current.revision)).rejects.toMatchObject({ status: 422, message: expect.stringContaining(message) })
+      expect(write).not.toHaveBeenCalled()
+      expect((await readAgentMemory(files, 'style.md')).content).toBe(original)
+    })
+
+    it.each(['user', 'feedback', 'project', 'reference'])('accepts %s and preserves comments, extra fields, BOM, and CRLF', async type => {
+      const files = new InMemoryFileOps()
+      await files.putDoc(`${root}/style.md`, original)
+      const current = await readAgentMemory(files, 'style.md')
+      const content = '\uFEFF' + original.replace('type: feedback', `type: ${type}\n  source: conversation # keep this\nextra: true`).replace(/\n/g, '\r\n')
+      await saveAgentMemory(files, 'style.md', content, current.revision)
+      expect(new TextDecoder('utf-8', { ignoreBOM: true }).decode(await files.getDoc(`${root}/style.md`) ?? undefined)).toBe(content)
+      expect((await readAgentMemory(files, 'style.md')).type).toBe(type)
+    })
+
+    it('lets users repair existing malformed files and retry after validation failure', async () => {
+      const files = new InMemoryFileOps()
+      await files.putDoc(`${root}/broken.md`, '---\nname: [broken\n---\nBody')
+      const current = await readAgentMemory(files, 'broken.md')
+      await expect(saveAgentMemory(files, 'broken.md', 'still broken', current.revision)).rejects.toMatchObject({ status: 422 })
+      expect((await saveAgentMemory(files, 'broken.md', original, current.revision)).content).toBe(original)
+    })
+
+    it('exempts only the root memory index', async () => {
+      const files = new InMemoryFileOps()
+      for (const relative of ['MEMORY.md', 'nested/MEMORY.md']) {
+        await files.putDoc(`${root}/${relative}`, original)
+        const current = await readAgentMemory(files, relative)
+        const save = saveAgentMemory(files, relative, '- [Style](style.md)', current.revision)
+        if (relative === 'MEMORY.md') expect((await save).content).toBe('- [Style](style.md)')
+        else await expect(save).rejects.toMatchObject({ status: 422 })
+      }
+    })
+  })
+
 })

@@ -8,7 +8,7 @@ export const AGENT_MEMORY_DIR = '.claude/projects/-workspace/memory'
 export const MAX_MEMORY_BYTES = 1024 * 1024
 
 export class MemoryError extends Error {
-  constructor(message: string, readonly status: 400 | 404 | 409 | 413) {
+  constructor(message: string, readonly status: 400 | 404 | 409 | 413 | 422) {
     super(message)
   }
 }
@@ -30,9 +30,39 @@ async function resolveMemoryPath(files: FileOps, target: string): Promise<string
   return resolved
 }
 
+const FRONTMATTER = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
+const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference']
+
+function isMapping(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function validateMemoryFrontmatter(relative: string, content: string): void {
+  // Only the root index is exempt; nested files named MEMORY.md are memories.
+  if (relative === 'MEMORY.md') return
+  const match = content.match(FRONTMATTER)
+  if (!match) throw new MemoryError('Memory must start with YAML frontmatter enclosed by --- lines.', 422)
+  let parsed: unknown
+  try {
+    parsed = load(match[1], { schema: JSON_SCHEMA })
+  } catch {
+    throw new MemoryError('Frontmatter contains invalid YAML. Check indentation, quoting, and duplicate keys.', 422)
+  }
+  if (!isMapping(parsed)) throw new MemoryError('Frontmatter must contain named fields, not a list or a single value.', 422)
+  for (const field of ['name', 'description']) {
+    if (typeof parsed[field] !== 'string' || !parsed[field].trim()) {
+      throw new MemoryError(`Frontmatter "${field}" must be non-empty text.`, 422)
+    }
+  }
+  if (!isMapping(parsed.metadata) || typeof parsed.metadata.type !== 'string' || !MEMORY_TYPES.includes(parsed.metadata.type)) {
+    throw new MemoryError('Frontmatter "metadata.type" must be user, feedback, project, or reference.', 422)
+  }
+  // Validate without reserializing: preserve comments, extra fields, and body.
+}
+
 function describeMemory(relative: string, content: string): Omit<AgentMemoryDocument, 'revision'> {
   const isIndex = relative === 'MEMORY.md'
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
+  const match = content.match(FRONTMATTER)
   let metadata: Record<string, unknown> = {}
   let body = content
   if (match) {
@@ -119,6 +149,7 @@ export async function saveAgentMemory(files: FileOps, relative: string, content:
     const current = await readAgentMemory(files, relative)
     if (current.revision !== revision) throw new MemoryError('This memory changed since you opened it. Your draft has been kept. Reload the latest version before saving.', 409)
     if (!await resolveMemoryPath(files, memoryPath(relative))) throw new MemoryError('Memory not found', 404)
+    validateMemoryFrontmatter(relative, content)
     await files.putDoc(memoryPath(relative), content)
     return { ...describeMemory(relative, content), revision: createHash('sha256').update(content).digest('hex') }
   })
