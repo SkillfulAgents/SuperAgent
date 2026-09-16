@@ -1,7 +1,9 @@
+import { UserAvatar } from '@renderer/components/ui/user-avatar'
 
 import { useMessages, useDeleteMessage, useDeleteToolCall, useCancelQueuedMessage, TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
+import { useIsVoiceReading } from '@renderer/hooks/use-read-aloud'
 import { VoiceAgentFeedbackDialog } from './voice-agent-feedback-dialog'
 import {
   useMessageStream,
@@ -10,8 +12,10 @@ import {
   clearPeerUserMessages,
   consumeDiscardedCommand,
 } from '@renderer/hooks/use-message-stream'
-import { isInterruptMarkerMessage, isTurnStartingUserMessage, type PendingMessage } from './pending-message'
+import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
+import { classifyUserMessage, classifyUserText } from './user-message-kinds'
 import { MessageItem } from './message-item'
+import { currentRoutedProviderError } from '@renderer/components/provider-error/provider-error-placement'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
@@ -20,9 +24,12 @@ import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
 import { InformationalItem } from './informational-item'
 import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
+import { ForkBoundaryItem, forkBoundaryIndex } from './fork-boundary'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, ChevronRight, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
-import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
+import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
+import { deliverFileDef, getDeliveredFileSize } from '@shared/lib/tool-definitions/deliver-file'
+import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { appendToSessionDraft, useDraft, useDraftsStore } from '@renderer/context/drafts-context'
@@ -30,59 +37,24 @@ import { useWorkflow } from '@renderer/context/workflow-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import {
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   useCallback,
   useMemo,
   Fragment,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
-  type UIEvent as ReactUIEvent,
 } from 'react'
-import { useStickToBottom } from 'use-stick-to-bottom'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
-import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
+import { useMessageListScroll } from './use-message-list-scroll'
 import {
   collectEmbeddedImageAliases,
   reuseEqualEmbeddedImageAliases,
   type EmbeddedImageAliases,
 } from '@renderer/lib/parse-tool-result'
 
-// Prefix for system-injected user messages that should be hidden in the UI.
-// Keep in sync with SYSTEM_MESSAGE_PREFIX in agent-container/src/claude-code.ts
-const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
-
-// On very long threads we render only a trailing window of messages to keep the
-// DOM small. Sessions with <= BASE_WINDOW visible items render in full, so small
-// and medium threads are completely unaffected. Scrolling near the top reveals
-// LOAD_STEP more at a time. The window is a fixed-size tail slice, so while new
-// messages stream in at the bottom the oldest rendered ones drop off the top and
-// the DOM node count stays flat. The window only grows on an explicit scroll-up
-// and is reset when the session changes.
-const BASE_WINDOW = MESSAGES_PAGE_LIMIT
-const LOAD_STEP = MESSAGES_PAGE_OLDER_LIMIT
-const TURN_ANCHOR_TOP = 100
-// Live-edge following (engage/escape/resume and the smooth chase) is owned by
-// use-stick-to-bottom: it derives escape from user-attributable signals (wheel
-// direction, scroll direction, text selection) and drives the viewport from
-// content resizes — scroll-event echoes of its own writes can never disengage
-// it. The layer in this file only manages what sits on top of that: the
-// new-turn reading-line reserve (the spacer) and windowed history loading.
-//
-// Scroll events cannot say who caused them, so the reserve adjustments below
-// only act on events that closely follow a real gesture (wheel/touch/keys, or
-// a held-down pointer for scrollbar drags). A layout clamp from shrinking
-// content carries no fresh gesture and passes through untouched.
-const SCROLL_GESTURE_WINDOW_MS = 400
 const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duration-200 ease-out motion-reduce:animate-none'
-const SCROLL_KEYS = new Set(['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '])
-const isManualCompactCommand = (text: string) => /^\/compact(?:\s|$)/.test(text.trim())
-
-const prefersReducedMotion = () =>
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
 interface CompletedTurn {
   id: string
@@ -148,11 +120,27 @@ function TurnSummaryRow({
   )
 }
 
-function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; agentSlug: string }) {
+interface DeliveredFile {
+  /** The deliver_file tool call's id: unique even when a turn delivers one path twice. */
+  id: string
+  filePath: string
+  description?: string
+  sizeBytes?: number
+}
+
+function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlug: string }) {
   return (
-    <div className="flex flex-wrap gap-1.5 ml-11 -mt-1 pb-1">
+    // max-w-[80%] matches the assistant column in MessageItem, so a row's right
+    // edge lines up with the text of the answer it belongs to.
+    <div className="flex max-w-[80%] flex-col gap-1.5 -mt-1 pb-1" data-testid="delivered-files">
       {files.map((file) => (
-        <FileDownloadPill key={file.filePath} filePath={file.filePath} agentSlug={agentSlug} />
+        <FileDeliveryRow
+          key={file.id}
+          filePath={file.filePath}
+          agentSlug={agentSlug}
+          description={file.description}
+          sizeBytes={file.sizeBytes}
+        />
       ))}
     </div>
   )
@@ -270,7 +258,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     isCompacting,
     activeSubagents,
     completedSubagents,
+    error: streamError,
     apiErrorCode,
+    errorPresentation,
     typingUser,
     peerUserMessages,
     discardedCommandUuids,
@@ -336,7 +326,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         match = findTextMatch(pending.text, pending.sentAt - 5000)
         if (match) claimed.add(match.id)
       }
-      if (!match && isManualCompactCommand(pending.text)) {
+      if (!match && classifyUserText(pending.text).kind === 'compact') {
         match = messages.find(
           (m) =>
             m.type === 'compact_boundary' &&
@@ -425,7 +415,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const timerId = setTimeout(() => {
       if (undelivered.length > 0) {
         const restored = undelivered
-          .filter((p) => !isManualCompactCommand(p.text))
+          .filter((p) => classifyUserText(p.text).kind !== 'compact')
           .map((p) => p.text.trim())
           .filter(Boolean)
         if (restored.length > 0) {
@@ -438,60 +428,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return () => clearTimeout(timerId)
   }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
 
-  // Live-edge following. `isAtBottom` goes false only on a user-attributable
-  // escape (wheel up, upward scroll, selection drag) and comes back when the
-  // reader returns near the bottom — geometry sampled from our own writes can
-  // never disengage it. Content growth is followed from the library's
-  // ResizeObserver on `contentRef`, so the bottom inset below must be a real
-  // element (content-box), not container padding.
-  const {
-    scrollRef,
-    contentRef,
-    scrollToBottom: stickScrollToBottom,
-    stopScroll: stickStopScroll,
-    isAtBottom,
-    state: stickState,
-  } = useStickToBottom({
-    initial: 'instant',
-    ...(prefersReducedMotion() ? { resize: 'instant' as const } : {}),
-  })
-  const contentBodyRef = useRef<HTMLDivElement>(null)
-  const bottomSpacerRef = useRef<HTMLDivElement>(null)
-  const bottomSpacerHeightRef = useRef(0)
-  const anchoredTurnRef = useRef<{ localId: string; scrollTop: number } | null>(null)
-  const lastScrollTopRef = useRef(0)
-  const lastGestureAtRef = useRef(0)
-  // Stamped when a gesture-attributed scroll event actually moved the reader
-  // upward — a stronger signal than lastGestureAtRef (which a downward wheel
-  // also stamps), used to honor escapes the transition shield swallowed.
-  const lastUpwardGestureAtRef = useRef(0)
-  const pointerDownRef = useRef(false)
-  // True from a send until its scroll-to-reading-line settles. The library
-  // only assigns state.animation in its first animation frame, so this is the
-  // signal that covers the whole interval (a commit landing between the send
-  // effect and that first frame would otherwise let the reserve restore
-  // preempt the glide with an instant jump).
-  const sendScrollInFlightRef = useRef(false)
-
-  // How many trailing (visible) messages to render. Grows on scroll-up and while
-  // the user is scrolled up during streaming. Starts at BASE_WINDOW; the component
-  // is keyed by sessionId at its mount site, so a switched session remounts fresh.
-  const [windowSize, setWindowSize] = useState(BASE_WINDOW)
-  // Scroll height captured just before a scroll-up expansion, used to re-anchor the
-  // viewport after the larger slice renders so the content under the user doesn't jump.
-  const prevScrollHeightRef = useRef<number | null>(null)
-
-  // Visible messages with system-injected entries filtered out (these must not
-  // consume window slots, and the windowing operates on what the user can see).
+  // Hidden system messages and redundant interrupt markers must not consume
+  // window slots: windowing operates on what the user can see.
   const visibleMessages = useMemo(() => {
     if (!messages) return []
-    return messages.filter((item) => {
-      if (item.type === 'user') {
-        const msg = item as ApiMessage
-        if (msg.content?.text?.startsWith(SYSTEM_MESSAGE_PREFIX)) return false
-      }
-      return true
-    })
+    const visible = messages.filter((item) => !classifyUserMessage(item).hidden)
+    // The replacement notice explains its preceding interrupt. Keep the raw
+    // transcript intact for turn bookkeeping; only omit the redundant badge
+    // from display, before windowing. Other user stops remain visible.
+    return visible.filter((item, index) => !(
+      classifyUserMessage(item).kind === 'interrupt' &&
+      visible[index + 1] &&
+      classifyUserMessage(visible[index + 1]).kind === 'connection-replacement'
+    ))
   }, [messages])
 
   // Time flags are derived from all loaded history rather than the trailing DOM
@@ -515,7 +464,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       if (
         item.type !== 'user' ||
         item.queued ||
-        isInterruptMarkerMessage(item)
+        classifyUserMessage(item).kind === 'interrupt' ||
+        classifyUserMessage(item).kind === 'connection-replacement'
       ) continue
 
       const createdAt = new Date(item.createdAt)
@@ -537,254 +487,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
   }, [visibleMessages, hasOlder])
 
-  // The trailing slice we actually render. The other derived values below still
-  // compute over the FULL message list, so turn boundaries / elapsed times / etc.
-  // stay correct even when their anchor message is outside the rendered window.
-  const windowedMessages = useMemo(
-    () => visibleMessages.slice(-windowSize),
-    [visibleMessages, windowSize]
-  )
-  const hiddenCount = visibleMessages.length - windowedMessages.length
-
-  // Keep the rendered range anchored at the top while the user is scrolled up.
-  // The window is a trailing slice, so when new messages are persisted it would
-  // normally drop the same number off the top — shifting the content the user is
-  // reading (overflow-anchor is disabled, so nothing compensates). Growing the
-  // window by exactly that delta keeps the same first rendered item; the new
-  // messages just append below, off-screen. When pinned to the bottom we leave the
-  // window alone so the slice slides and the DOM stays bounded.
-  const prevVisibleLenRef = useRef(visibleMessages.length)
-  useLayoutEffect(() => {
-    const grown = visibleMessages.length - prevVisibleLenRef.current
-    prevVisibleLenRef.current = visibleMessages.length
-    // Grow while the reader is away from the live edge (escaped), during the
-    // new-turn reserve, or when an older-page prepend is landing (a pending
-    // scroll capture marks that) — so the rows the user is reading keep their
-    // position instead of sliding off the trailing window.
-    if (
-      grown > 0 &&
-      (!stickState.isAtBottom || anchoredTurnRef.current || prevScrollHeightRef.current != null)
-    ) {
-      setWindowSize((n) => n + grown)
-    }
-  }, [visibleMessages, stickState])
-
-  const setBottomSpacerHeight = useCallback((height: number) => {
-    const spacer = bottomSpacerRef.current
-    if (!spacer) return
-    const nextHeight = Math.max(0, Math.ceil(height))
-    bottomSpacerHeightRef.current = nextHeight
-    spacer.style.height = `${nextHeight}px`
-    spacer.hidden = nextHeight === 0
-  }, [])
-
-  // A programmatic follow transition — the send-anchor scroll (where the
-  // previous turn collapses to a summary row and content shrinks above), or a
-  // viewport re-pin — can coincide with a browser clamp whose scroll event
-  // reads as the reader scrolling up. Two defenses: shield the library's
-  // deferred classification across the transition (it skips scroll events
-  // while a resize is in flight), and verify shortly after — an escape with
-  // no user gesture inside the window can only be such an echo, so reverse
-  // it. Real gestures (wheel, touch, held pointer, scroll keys) suppress the
-  // reversal, so a reader who actually leaves during the window stays left.
-  const verifyFollowTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  useEffect(() => () => clearTimeout(verifyFollowTimerRef.current), [])
-  const protectFollowTransition = useCallback(() => {
-    if (stickState.resizeDifference === 0) {
-      stickState.resizeDifference = 1
-      // Mirror the library's own reset: the clamp's deferred classification
-      // (a tick after its scroll event) must land inside the shield, so drop
-      // it a frame + a tick later. The guard keeps a concurrent real content
-      // resize's value intact.
-      requestAnimationFrame(() => {
-        setTimeout(() => {
-          if (stickState.resizeDifference === 1) stickState.resizeDifference = 0
-        }, 1)
-      })
-    }
-    const transitionAt = performance.now()
-    clearTimeout(verifyFollowTimerRef.current)
-    verifyFollowTimerRef.current = setTimeout(() => {
-      const gestured =
-        pointerDownRef.current || lastGestureAtRef.current >= transitionAt
-      if (!gestured && !stickState.isAtBottom) {
-        void stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined)
-        return
-      }
-      // The shield cuts both ways: while it holds, the library also discards
-      // the scroll classification of genuine keyboard, touch, and scrollbar
-      // escapes (wheel-up escapes through its own handler and is unaffected).
-      // If a gesture moved the reader upward during the window yet following
-      // still reads engaged and they are beyond the re-stick range, that
-      // escape was swallowed — honor it, or the next growth would yank them
-      // back down. Reserve eating is unaffected: it re-bases the reading line
-      // onto the reader, keeping them within the re-stick range.
-      if (
-        stickState.isAtBottom &&
-        lastUpwardGestureAtRef.current >= transitionAt &&
-        !stickState.isNearBottom
-      ) {
-        stickStopScroll()
-      }
-    }, 40)
-  }, [stickState, stickScrollToBottom, stickStopScroll])
-
-  // Keep the newly-sent turn fixed at its reading line while the response uses
-  // up the reserved room below it. The spacer inflates scrollHeight so that the
-  // reading line IS the scroll target: from the follow library's perspective
-  // the reader simply sits at the bottom, and content growth paired with an
-  // equal spacer shrink is a net-zero resize — no motion. Once the reserve
-  // reaches zero the anchor retires and real growth resumes normal following.
-  const syncTurnReserve = useCallback(() => {
-    const el = scrollRef.current
-    const anchoredTurn = anchoredTurnRef.current
-    if (!el || !anchoredTurn) return
-    const naturalScrollHeight = el.scrollHeight - bottomSpacerHeightRef.current
-    const requiredSpacer = Math.max(
-      0,
-      anchoredTurn.scrollTop + el.clientHeight - naturalScrollHeight,
-    )
-    setBottomSpacerHeight(requiredSpacer)
-    // The response now fills the viewport. Retire the special turn state so
-    // long-thread windowing can return to its bounded trailing slice.
-    if (requiredSpacer === 0) {
-      anchoredTurnRef.current = null
-      return
-    }
-    // A transient content shrink during the reserve hold (a working indicator
-    // swapping forms, a streamed block replaced by its shorter persisted copy)
-    // clamps scrollTop below the reading line for the instant before the
-    // spacer write above re-inflates the scroll range — and nothing else moves
-    // it back until content grows again, so the held turn visibly sags. The
-    // anchored reading line IS the scroll target while the reserve holds, so
-    // put the viewport back on it. Skip while the reader is gesturing (their
-    // scroll owns the position — reserve eating re-bases the anchor), while a
-    // send's scroll to the reading line is pending or animating (it starts
-    // below the target by construction), and while any other scroll
-    // animation is in flight.
-    const gestureDriven =
-      pointerDownRef.current ||
-      performance.now() - lastGestureAtRef.current < SCROLL_GESTURE_WINDOW_MS
-    const target = Math.max(0, stickState.calculatedTargetScrollTop)
-    if (
-      !sendScrollInFlightRef.current &&
-      !gestureDriven &&
-      stickState.isAtBottom &&
-      !stickState.animation &&
-      el.scrollTop < target
-    ) {
-      protectFollowTransition()
-      stickState.scrollTop = target
-      lastScrollTopRef.current = el.scrollTop
-    }
-  }, [scrollRef, setBottomSpacerHeight, stickState, protectFollowTransition])
-
-  // Pin the viewport to the live edge before first paint. The library's own
-  // initial scroll runs from its ResizeObserver callback, which lands after
-  // paint — without this, opening a session flashes the top of the transcript
-  // for a frame. Guarded and dep-free because the scroll container mounts only
-  // after loading/error states resolve.
-  const pinnedInitialRef = useRef(false)
-  useLayoutEffect(() => {
-    if (pinnedInitialRef.current || !scrollRef.current) return
-    pinnedInitialRef.current = true
-    stickState.scrollTop = Math.max(0, stickState.calculatedTargetScrollTop)
-    lastScrollTopRef.current = scrollRef.current.scrollTop
-  })
-
-  const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
-    const el = event.currentTarget
-    const previousScrollTop = lastScrollTopRef.current
-    lastScrollTopRef.current = el.scrollTop
-
-    // Only scroll events that closely follow a real gesture may adjust the
-    // reserve. Programmatic writes (the follow animation) and layout clamps
-    // from shrinking content reach this handler too, but carry no fresh
-    // wheel/touch/key stamp and no held pointer, so they pass through.
-    const gestureDriven =
-      pointerDownRef.current ||
-      performance.now() - lastGestureAtRef.current < SCROLL_GESTURE_WINDOW_MS
-
-    // Blank reserve is one-way. When the reader moves upward, consume the same
-    // number of pixels from the spacer. The new scroll position becomes the
-    // reserve's live edge, so that discarded blank area cannot be revisited.
-    const anchoredTurn = anchoredTurnRef.current
-    const upwardDelta = Math.max(0, previousScrollTop - el.scrollTop)
-    const downwardDelta = Math.max(0, el.scrollTop - previousScrollTop)
-    if (gestureDriven && upwardDelta > 0) {
-      lastUpwardGestureAtRef.current = performance.now()
-    }
-    if (gestureDriven && anchoredTurn && upwardDelta > 0 && bottomSpacerHeightRef.current > 0) {
-      const discard = Math.min(upwardDelta, bottomSpacerHeightRef.current)
-      const remainingSpacer = bottomSpacerHeightRef.current - discard
-      anchoredTurn.scrollTop = Math.max(0, anchoredTurn.scrollTop - discard)
-      setBottomSpacerHeight(remainingSpacer)
-      if (remainingSpacer === 0) anchoredTurnRef.current = null
-    }
-
-    // Reaching the actual live edge through a user scroll is an explicit trip
-    // to the bottom: retire the reserve so its blank room doesn't keep the
-    // streamed content away from the reader. The browser clamps scrollTop to
-    // the new natural maximum synchronously.
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (
-      gestureDriven &&
-      downwardDelta > 0 &&
-      anchoredTurnRef.current &&
-      distanceFromBottom <= 1
-    ) {
-      anchoredTurnRef.current = null
-      setBottomSpacerHeight(0)
-      lastScrollTopRef.current = el.scrollTop
-    }
-
-    // Near the top: reveal the next local chunk, or fetch the next API page.
-    // prevScrollHeightRef is only set when we know the DOM will grow (local
-    // expand, or fetchOlder about to prepend) so a failed/empty fetch cannot wedge.
-    if (el.scrollTop < 200 && prevScrollHeightRef.current == null) {
-      if (hiddenCount > 0) {
-        prevScrollHeightRef.current = el.scrollHeight
-        setWindowSize((n) => n + LOAD_STEP)
-      } else if (hasOlder && !isFetchingOlder && fetchOlder) {
-        void fetchOlder(() => {
-          // Back at the bottom mid-fetch: the trailing window doesn't move on
-          // prepend, so skip the capture — a lingering guard would block the
-          // next scroll-up gesture. Derived from geometry at capture time.
-          const viewport = scrollRef.current
-          if (
-            viewport &&
-            viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 100
-          ) {
-            prevScrollHeightRef.current = viewport.scrollHeight
-          }
-        })
-      }
-    }
-  }, [hiddenCount, hasOlder, isFetchingOlder, fetchOlder, setBottomSpacerHeight, scrollRef])
-
-  // After a scroll-up expansion adds older messages above the viewport, restore the
-  // scroll position so the content the user was reading stays put (no jump).
-  // Deps are [windowSize] ONLY: when a prepend lands the anchor effect grows
-  // windowSize in the same commit, so this fires exactly when the rows mount.
-  // A visibleMessages.length dep would consume the guard one commit early
-  // (data grows, window unchanged, delta 0) and leave the mount uncompensated.
-  useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (el && prevScrollHeightRef.current != null) {
-      el.scrollTop += el.scrollHeight - prevScrollHeightRef.current
-      prevScrollHeightRef.current = null
-    }
-    // scrollRef is a stable library ref — windowSize remains the sole trigger.
-  }, [windowSize, scrollRef])
-
-  const handleScrollToBottom = useCallback(() => {
-    // Drop the turn reserve first so the scroll target is the true live edge,
-    // not the blank reading-line reserve.
-    anchoredTurnRef.current = null
-    setBottomSpacerHeight(0)
-    void stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined)
-  }, [setBottomSpacerHeight, stickScrollToBottom])
-
   // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
   // messages, compaction is done and the SSE compact_complete event was missed.
   // Track the boundary count baseline when not compacting, then detect increases.
@@ -801,6 +503,25 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       boundaryCountRef.current = boundaryCount
     }
   }, [isCompacting, boundaryCount, sessionId])
+
+  // The one row (streaming or persisted) whose provider error a ProviderErrorPlacement shows right now.
+  const currentRoutedError = useMemo(
+    () => currentRoutedProviderError({ isActive, error: streamError, apiErrorCode, errorPresentation }, messages),
+    [isActive, streamError, apiErrorCode, errorPresentation, messages],
+  )
+
+  // Voice mode reading this session: subscribed once here and handed to
+  // the rows that can be read, so its flips do not re-render every row.
+  const voiceReading = useIsVoiceReading(sessionId)
+  // The newest assistant message: while voice mode reads a reply, the
+  // highlight moves from the streaming row to this once it is persisted.
+  const latestAssistantId = useMemo(() => {
+    if (!messages?.length) return null
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'assistant') return messages[i].id
+    }
+    return null
+  }, [messages])
 
   // Check if streaming message is already in persisted messages (prevents double-render)
   const isStreamingMessagePersisted = useMemo(() => {
@@ -859,7 +580,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       // the interrupted turn — breaking on it would collect none of that
       // turn's persisted thinking and let every live block re-render at the
       // end. Keep scanning into the turn it terminated.
-      if (isInterruptMarkerMessage(m)) {
+      if (classifyUserMessage(m).kind === 'interrupt') {
         interrupted = true
         continue
       }
@@ -914,10 +635,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
   // Collect delivered files for each completed turn.
   const turnDeliveredFiles = useMemo(() => {
-    const filesMap = new Map<string, { filePath: string }[]>()
+    const filesMap = new Map<string, DeliveredFile[]>()
     if (!messages) return filesMap
 
-    let turnFiles: { filePath: string }[] = []
+    let turnFiles: DeliveredFile[] = []
     let lastAssistantMessageId: string | null = null
 
     for (const msg of messages) {
@@ -931,9 +652,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         lastAssistantMessageId = msg.id
         for (const tc of msg.toolCalls) {
           if (tc.name === 'mcp__user-input__deliver_file' && !tc.isError) {
-            const input = tc.input as { filePath?: string }
-            if (input.filePath) {
-              turnFiles.push({ filePath: input.filePath })
+            const { filePath, description } = deliverFileDef.parseInput(tc.input)
+            if (filePath) {
+              turnFiles.push({
+                id: tc.id,
+                filePath,
+                description,
+                sizeBytes: getDeliveredFileSize(parseToolResult(tc.result).text),
+              })
             }
           }
         }
@@ -1139,17 +865,48 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     hasTurnStartingPendingMessage,
   ])
 
-  // A turn completing collapses its whole work phase into a summary row — a
-  // massive one-commit shrink whose browser clamp reads as the reader
-  // scrolling up, stranding the viewport above the final answer. Guard the
-  // transition from the same commit (this runs before the clamp's scroll
-  // event can dispatch, so the shield is race-free here).
-  const prevCompletedTurnCountRef = useRef(completedTurns.length)
-  useLayoutEffect(() => {
-    const grew = completedTurns.length > prevCompletedTurnCountRef.current
-    prevCompletedTurnCountRef.current = completedTurns.length
-    if (grew && stickState.isAtBottom) protectFollowTransition()
-  }, [completedTurns, stickState, protectFollowTransition])
+  // All scrolling behavior — live-edge following (the owned engine), the
+  // new-turn reading-line reserve, windowed rendering of long histories. The
+  // domain values passed through exist so the hook re-syncs its reserve on
+  // the commits that change transcript layout.
+  const {
+    scrollRef,
+    contentRef,
+    contentBodyRef,
+    bottomSpacerRef,
+    isAtBottom,
+    scrollToBottom: handleScrollToBottom,
+    windowedMessages,
+    hiddenCount,
+    handleScroll,
+    handleWheelGesture,
+    handlePointerDown,
+    handleScrollKey,
+    handleTouchStart,
+    handleTouchMove,
+    handleTouchEnd,
+  } = useMessageListScroll({
+    visibleMessages,
+    pendingUserMessages,
+    bottomInset,
+    hasOlder,
+    isFetchingOlder,
+    fetchOlder,
+    isLoading,
+    error,
+    messages,
+    streamingMessage,
+    streamingToolUses,
+    thinkingBlocks,
+    isCompacting,
+    pendingRequestCount,
+    activeSubagents,
+  })
+
+  // The fork line goes after the last copied message; the length means it
+  // closes the thread (a fresh fork). Computed on the window so it lands
+  // where the reader is, and hidden with the history when scrolled out.
+  const forkBoundaryAt = useMemo(() => forkBoundaryIndex(windowedMessages), [windowedMessages])
 
   // Drop expansion state for turns that no longer exist after edits/refetches.
   useEffect(() => {
@@ -1177,177 +934,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
     return result
   }, [messages, isActive, hasTurnStartingPendingMessage])
-
-  // Detect actual sends by id (rather than list length, since materialization
-  // can remove one ghost as another arrives). A turn-starting send gets a
-  // stable reading line 100px from the viewport top; queued mid-turn sends
-  // retain the regular live-edge behavior.
-  const seenPendingIdsRef = useRef(new Set<string>())
-  useLayoutEffect(() => {
-    const seen = seenPendingIdsRef.current
-    let hasNewSend = false
-    let newestTurnStart: PendingMessage | undefined
-    for (const pending of pendingUserMessages ?? []) {
-      if (!seen.has(pending.localId)) {
-        seen.add(pending.localId)
-        hasNewSend = true
-        if (!pending.queued) newestTurnStart = pending
-      }
-    }
-
-    if (hasNewSend) {
-      if (newestTurnStart) {
-        const viewport = scrollRef.current
-        const anchor = Array.from(
-          contentBodyRef.current?.querySelectorAll<HTMLElement>('[data-turn-anchor-id]') ?? [],
-        ).find((element) => element.dataset.turnAnchorId === newestTurnStart.localId)
-
-        if (viewport && anchor) {
-          lastScrollTopRef.current = viewport.scrollTop
-          const anchorTop =
-            anchor.getBoundingClientRect().top -
-            viewport.getBoundingClientRect().top +
-            viewport.scrollTop
-          anchoredTurnRef.current = {
-            localId: newestTurnStart.localId,
-            scrollTop: Math.max(0, anchorTop - TURN_ANCHOR_TOP),
-          }
-        } else {
-          anchoredTurnRef.current = null
-          setBottomSpacerHeight(0)
-        }
-      } else {
-        anchoredTurnRef.current = null
-        setBottomSpacerHeight(0)
-      }
-
-      // The viewport intentionally sits below the new reading line until the
-      // scroll below travels there — hold the reserve restore off for the
-      // whole interval (state.animation alone starts too late: the library
-      // assigns it in its first animation frame, and a commit can land first).
-      sendScrollInFlightRef.current = true
-      // Size the reserve before scrolling so the scroll target IS the new
-      // turn's reading line (the spacer inflates scrollHeight to end there).
-      syncTurnReserve()
-      // The collapse of the finished turn above (same commit as the ghost)
-      // shrinks content and can clamp scrollTop — guard the transition so
-      // that clamp echo cannot latch an escape under the send.
-      protectFollowTransition()
-      // A send always returns the reader to the thread: re-engage following
-      // and glide to the reading line (or the live edge for queued sends).
-      // Under reduced motion, position synchronously instead of gliding.
-      if (prefersReducedMotion()) {
-        stickState.scrollTop = Math.max(0, stickState.calculatedTargetScrollTop)
-      }
-      void Promise.resolve(
-        stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined),
-      ).finally(() => {
-        sendScrollInFlightRef.current = false
-      })
-      // Programmatic writes fire their scroll event asynchronously (and not at
-      // all in jsdom) — resync the gesture-delta baseline now so the write
-      // isn't misread as a user delta.
-      lastScrollTopRef.current = scrollRef.current?.scrollTop ?? 0
-      return
-    }
-
-    syncTurnReserve()
-  }, [
-    messages,
-    pendingUserMessages,
-    streamingMessage,
-    streamingToolUses,
-    thinkingBlocks,
-    isCompacting,
-    pendingRequestCount,
-    activeSubagents,
-    syncTurnReserve,
-    setBottomSpacerHeight,
-    scrollRef,
-    stickState,
-    stickScrollToBottom,
-    protectFollowTransition,
-    bottomInset,
-  ])
-
-  // Markdown, images, and expanded tool cards can change height without a
-  // message-state update. Feed those layout changes through the same reserve
-  // calculation so they cannot make the anchored turn jump. Re-attach after
-  // the loading/error states resolve — the scroll container mounts only then.
-  useEffect(() => {
-    const content = contentBodyRef.current
-    const viewport = scrollRef.current
-    if (!content || !viewport || typeof ResizeObserver === 'undefined') return
-    let frameId = 0
-    let lastViewportHeight = viewport.clientHeight
-    let lastContentHeight = content.offsetHeight
-    const observer = new ResizeObserver(() => {
-      // A vertical viewport resize is invisible to the follow library (it
-      // observes only the content element), and browsers anchor the TOP edge
-      // on resize — so a window shrink would slide the live edge behind the
-      // fold. Re-pin immediately while following, guarded against the grow
-      // clamp's scroll echo being read as an escape (a viewport GROW lowers
-      // the scroll range, and the browser's clamp fires a scroll event that
-      // classifies as the reader scrolling up). During the turn reserve the
-      // spacer math already keeps the reading line valid, so no pin there.
-      const viewportHeight = viewport.clientHeight
-      if (viewportHeight !== lastViewportHeight) {
-        lastViewportHeight = viewportHeight
-        if (stickState.isAtBottom && !anchoredTurnRef.current) {
-          protectFollowTransition()
-          stickState.scrollTop = Math.max(0, stickState.calculatedTargetScrollTop)
-          lastScrollTopRef.current = viewport.scrollTop
-        }
-      }
-      // Catch-all for content shrinks at the live edge (a thinking card
-      // collapsing, a streamed block swapped for its shorter persisted form):
-      // each one clamps scrollTop and can latch a spurious escape the same
-      // way. The commit-hooked guards cover the big known transitions
-      // race-free; this covers the rest via the deferred verification.
-      const contentHeight = content.offsetHeight
-      if (contentHeight < lastContentHeight && stickState.isAtBottom) {
-        protectFollowTransition()
-      }
-      lastContentHeight = contentHeight
-      cancelAnimationFrame(frameId)
-      frameId = requestAnimationFrame(syncTurnReserve)
-    })
-    observer.observe(content)
-    observer.observe(viewport)
-    return () => {
-      cancelAnimationFrame(frameId)
-      observer.disconnect()
-    }
-  }, [syncTurnReserve, scrollRef, stickState, protectFollowTransition, isLoading, error])
-
-  // Escape from following is owned by the stick-to-bottom library (wheel
-  // direction, scroll direction, selection). These stamps exist only so the
-  // scroll handler can attribute reserve adjustments to a live gesture.
-  const handleUserScrollIntent = useCallback(() => {
-    lastGestureAtRef.current = performance.now()
-  }, [])
-
-  // Scrollbar drags emit no wheel/touch/key events — track the held pointer so
-  // a multi-second drag stays attributable beyond the gesture window.
-  const handlePointerDown = useCallback(() => {
-    pointerDownRef.current = true
-    lastGestureAtRef.current = performance.now()
-  }, [])
-  useEffect(() => {
-    const release = () => {
-      pointerDownRef.current = false
-    }
-    window.addEventListener('pointerup', release)
-    window.addEventListener('pointercancel', release)
-    return () => {
-      window.removeEventListener('pointerup', release)
-      window.removeEventListener('pointercancel', release)
-    }
-  }, [])
-
-  const handleScrollKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (SCROLL_KEYS.has(event.key)) handleUserScrollIntent()
-  }, [handleUserScrollIntent])
 
   // Peer messages still worth showing optimistically: not our own, and the
   // persisted copy (by uuid, or — for queued/steering messages whose uuid the
@@ -1438,7 +1024,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     text: string
     sentAt: number
     queued?: boolean
-    sender?: { id: string; name: string; email: string }
+    sender?: { id: string; name: string; email: string; image?: string | null }
     testId?: string
     /** Set for own queued ghosts once the server uuid is known — enables Cancel. */
     onCancel?: () => void
@@ -1508,7 +1094,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       sentAt: peer.receivedAt,
       queued: peer.queued,
       sender: peer.sender.name
-        ? { id: peer.sender.id, name: peer.sender.name, email: peer.sender.email || '' }
+        ? { id: peer.sender.id, name: peer.sender.name, email: peer.sender.email || '', image: peer.sender.image }
         : undefined,
     })
 
@@ -1521,11 +1107,18 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   }
 
   // The transcript file is gone (e.g. removed by the CLI's retention cleanup)
-  // while the session still appears in the nav. Don't show this during the brief
-  // new-session window — the creating client has a pendingUserMessage then.
-  if (error instanceof TranscriptNotFoundError && !hasPendingMessages) {
+  // while the session still appears in the nav. Don't show this during the
+  // new-session window: the composer's client has a pendingUserMessage then,
+  // and every client sees the turn running (an onboarding session opens with
+  // no ghost at all) — a live session's transcript is not yet written, not
+  // gone. The server answers that window with an empty page; this also covers
+  // a server that predates it.
+  if (error instanceof TranscriptNotFoundError && !hasPendingMessages && !isActive) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center">
+      <div
+        className="flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center"
+        data-testid="session-transcript-not-found"
+      >
         <FileX2 className="h-8 w-8 text-muted-foreground" />
         <p className="text-sm font-medium text-foreground">Session transcript not found</p>
         <p className="max-w-sm text-xs text-muted-foreground">
@@ -1546,8 +1139,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         style={{ overflowAnchor: 'none' }}
         ref={scrollRef}
         onScroll={handleScroll}
-        onWheel={handleUserScrollIntent}
-        onTouchMove={handleUserScrollIntent}
+        onWheel={handleWheelGesture}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
         onPointerDown={handlePointerDown}
         onKeyDown={handleScrollKey}
         role="region"
@@ -1564,11 +1160,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           aria-relevant="additions"
           aria-busy={isStreaming || undefined}
         >
-        {hiddenCount > 0 && (
+        {hiddenCount > 0 ? (
           <div className="flex items-center justify-center py-3 text-xs text-muted-foreground">
             {hiddenCount} earlier {hiddenCount === 1 ? 'message' : 'messages'} hidden — scroll up to load
           </div>
-        )}
+        ) : isFetchingOlder ? (
+          <div
+            className="flex items-center justify-center gap-2 py-3 text-xs text-muted-foreground"
+            role="status"
+            aria-live="polite"
+          >
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            Loading older messages…
+          </div>
+        ) : null}
         {windowedMessages.map((item, index) => {
           const turn = completedTurnByItemId.get(item.id)
           const expanded = !!turn && expandedTurnIds.has(turn.id)
@@ -1586,14 +1191,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           const isAssistantItem = item.type === 'assistant'
           const isAnswerMessage =
             !!turn && isAssistantItem && turn.answerMessageIds.has(item.id)
-          const hideItem =
-            collapsed &&
-            isAssistantItem &&
-            !isAnswerMessage
-          const isRevealedWorkItem =
-            expanded &&
-            isAssistantItem &&
-            !isAnswerMessage
+          const isFoldedWorkItem =
+            (isAssistantItem && !isAnswerMessage) ||
+            item.type === 'compact_boundary'
+          const hideItem = collapsed && isFoldedWorkItem
+          const isRevealedWorkItem = expanded && isFoldedWorkItem
 
           let renderedItem: ReactNode = null
           if (!hideItem) {
@@ -1617,6 +1219,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                       message={displayedMessage}
                       agentSlug={agentSlug}
                       sessionId={sessionId}
+                      isLatestAssistant={item.id === latestAssistantId && !(streamingMessage && !isStreamingMessagePersisted)}
+                      voiceReading={voiceReading && item.id === latestAssistantId}
                       isSessionActive={canHaveRunningToolCalls.has(item.id)}
                       activeSubagents={activeSubagents}
                       completedSubagents={completedSubagents}
@@ -1634,22 +1238,29 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                           : undefined
                       }
                       embeddedImageAliases={embeddedImageAliases}
+                      suppressInlineError={item.id === currentRoutedError?.messageId}
                     />
                   </MessageErrorBoundary>
                   {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
-                    <DeliveredFiles files={turnDeliveredFiles.get(item.id)!} agentSlug={agentSlug} />
+                    <MessageErrorBoundary kind="delivered files" raw={turnDeliveredFiles.get(item.id)} itemId={item.id}>
+                      <DeliveredFiles files={turnDeliveredFiles.get(item.id)!} agentSlug={agentSlug} />
+                    </MessageErrorBoundary>
                   )}
                 </>
               )
-              renderedItem = isRevealedWorkItem ? (
-                <div
-                  className={TURN_WORK_REVEAL_CLASS}
-                  data-testid="turn-work-detail"
-                >
-                  {messageItem}
-                </div>
-              ) : messageItem
+              renderedItem = messageItem
             }
+          }
+
+          if (renderedItem && isRevealedWorkItem) {
+            renderedItem = (
+              <div
+                className={TURN_WORK_REVEAL_CLASS}
+                data-testid="turn-work-detail"
+              >
+                {renderedItem}
+              </div>
+            )
           }
 
           return (
@@ -1666,6 +1277,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                   }
                 />
               )}
+              {index === forkBoundaryAt && (
+                <ForkBoundaryItem sessionId={sessionId} agentSlug={agentSlug} />
+              )}
               {timeFlagState.messageIds.has(item.id) && (
                 <SessionTimeFlag date={new Date(item.createdAt)} />
               )}
@@ -1673,6 +1287,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             </Fragment>
           )
         })}
+
+        {/* A fresh fork has nothing after the copied history yet, so its line
+            closes it. Before the ghosts and streaming output: the first message
+            sent in the fork belongs below the line from the moment it is typed,
+            and the compacting indicator further down keeps Fork & Summarize in
+            order (fork first, then compact). */}
+        {forkBoundaryAt === windowedMessages.length && (
+          <ForkBoundaryItem sessionId={sessionId} agentSlug={agentSlug} />
+        )}
 
         {/* Turn-starting ghosts (sent while idle) — the next turn belongs to
             them, so they render before any streaming content. Queued ghosts
@@ -1703,11 +1326,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             message from suppressing a real peer's indicator. */}
         {typingUser && typingUser.id !== user?.id && visiblePeerMessages.length === 0 && (
           <div data-testid="typing-indicator" className="flex gap-3 flex-row-reverse">
-            <div className="h-8 w-8 rounded-full items-center justify-center shrink-0 hidden md:flex bg-primary text-primary-foreground">
-              <span className="text-xs font-medium">
-                {typingUser.name?.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) || '?'}
-              </span>
-            </div>
+            <UserAvatar user={typingUser} size={32} className="hidden md:inline-flex" />
             <div className="rounded-lg px-4 py-2 bg-primary text-primary-foreground">
               <span className="animate-pulse tracking-widest">...</span>
             </div>
@@ -1742,11 +1361,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 toolCalls: [],
                 createdAt: new Date(),
                 ...(apiErrorCode && { apiError: apiErrorCode }),
+                ...(errorPresentation && { errorPresentation }),
               }}
               isStreaming={isStreaming}
+              suppressInlineError={currentRoutedError?.live === true}
               agentSlug={agentSlug}
               sessionId={sessionId}
               embeddedImageAliases={embeddedImageAliases}
+              voiceReading={voiceReading}
             />
           </MessageErrorBoundary>
         )}
@@ -1804,7 +1426,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
         {/* Deferred delivered files — shown after streaming content */}
         {deferredElapsedMessageId && turnDeliveredFiles.has(deferredElapsedMessageId) && (
-          <DeliveredFiles files={turnDeliveredFiles.get(deferredElapsedMessageId)!} agentSlug={agentSlug} />
+          <MessageErrorBoundary kind="delivered files" raw={turnDeliveredFiles.get(deferredElapsedMessageId)} itemId={deferredElapsedMessageId}>
+            <DeliveredFiles files={turnDeliveredFiles.get(deferredElapsedMessageId)!} agentSlug={agentSlug} />
+          </MessageErrorBoundary>
+        )}
+
+        {/* Real-time compacting indicator. Above the queued ghosts: a message
+            queued during compaction is picked up on the far side of the
+            boundary, so it belongs below the compact line, not above it. */}
+        {isCompacting && (
+          <CompactBoundaryItem isCompacting />
         )}
 
         {/* Queued ghosts — waiting for the agent loop to pick them up, so they
@@ -1826,11 +1457,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               </span>
             </div>
           </div>
-        )}
-
-        {/* Real-time compacting indicator */}
-        {isCompacting && (
-          <CompactBoundaryItem isCompacting />
         )}
 
         {/* Pending interactive requests render in the composer slot — see SessionChatColumn. */}

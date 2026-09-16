@@ -20,6 +20,7 @@ import type {
   StopResult,
   StreamMessage,
 } from './types'
+import { ContainerConflictError, ContainerNotFoundError, type InterruptSessionOptions, type InterruptSessionResult } from './types'
 import type {
   ObserveUnexpectedDeathInput,
   RuntimeDeathProbe,
@@ -27,11 +28,11 @@ import type {
   UnexpectedDeathPlan,
 } from './runtime-death'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
+import { z } from 'zod'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { getActiveLlmProvider, getModelContextWindowMap } from '@shared/lib/llm-provider'
 import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
-import { readAgentDisplayNameSync } from '@shared/lib/utils/file-storage'
 import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
@@ -267,9 +268,16 @@ export function parseMemoryValue(value: string): number {
  * Subclasses should override getRunnerCommand() to specify the CLI command,
  * and the static methods isAvailable() and isRunning().
  */
+// Body of the container's POST /sessions/:id/interrupt. processKept is absent
+// on builds that predate the soft interrupt (they always restart the process).
+const interruptResponseSchema = z.object({
+  processKept: z.boolean().optional(),
+})
+
 export abstract class BaseContainerClient extends EventEmitter implements ContainerClient {
   protected config: ContainerConfig
   private wsConnections: Map<string, WebSocket> = new Map()
+  private wsReadyRejectors = new WeakMap<WebSocket, (error: Error) => void>()
 
   /** Whether this runner is eligible on the current platform. Override for platform-specific runners. */
   static isEligible(): boolean {
@@ -326,7 +334,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   protected handleConnectionError(): void {
     // The port may have changed if the container was restarted out from under
     // us — force the next fetch() to re-resolve it from the runtime.
-    this.cachedRunningPort = null
+    this.rememberRunningPort(null)
     if (this.config.onConnectionError) {
       this.config.onConnectionError()
     }
@@ -520,6 +528,25 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * The other face of the same corruption: `run` succeeds, but the agent
+   * server dies at boot reading a file that ships inside the image (a
+   * truncated package.json under /app/node_modules, a module missing from
+   * /app/dist, a JS file cut off mid-way). Seen on Docker Desktop (Windows)
+   * and the bundled Lima VM after a pull unpacked onto a strained disk. The
+   * container can never become healthy; the fix is the same remove-and-
+   * recreate as the snapshot case. Only image-owned paths (/app) count:
+   * /workspace is user data and is not something a re-pull can repair.
+   */
+  protected isCorruptImageContentLog(logs: string): boolean {
+    if (!logs) return false
+    return (
+      /Invalid package config \/app\//.test(logs) ||
+      /Cannot find module '\/app\//.test(logs) ||
+      /\/app\/(?:node_modules|dist)\/[^\n]*:\d+\n[\s\S]{0,500}SyntaxError: Unexpected end of input/.test(logs)
+    )
+  }
+
+  /**
    * Remove the agent image so the next ensureImageExists() recreates it from
    * scratch. Base implementation only removes the tagged image — conservative
    * on user-owned daemons (docker/podman) that may hold unrelated images.
@@ -555,7 +582,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   /**
    * Query the container runtime for the current container state.
-   * This spawns a CLI process - prefer containerManager.getCachedInfo() for cached status.
+   * This spawns a CLI process - prefer the runtime's cached status (containerHost.runtime(slug).getCachedInfo()) instead.
    */
   async getInfoFromRuntime(): Promise<ContainerInfo> {
     const containerName = this.getContainerName()
@@ -581,7 +608,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   /**
    * Alias for getInfoFromRuntime().
-   * @deprecated Use containerManager.getCachedInfo() for cached status instead.
+   * @deprecated Use the runtime's cached status (containerHost.runtime(slug).getCachedInfo()) instead.
    */
   async getInfo(): Promise<ContainerInfo> {
     return this.getInfoFromRuntime()
@@ -665,25 +692,32 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return usedPorts
   }
 
-  private isPortAvailable(port: number): Promise<boolean> {
-    return new Promise((resolve) => {
-      const server = net.createServer()
-      server.once('error', () => resolve(false))
-      server.once('listening', () => {
-        server.close()
-        resolve(true)
+  private async isPortAvailable(port: number): Promise<boolean> {
+    // Probe BOTH addresses. 0.0.0.0 matches docker/nerdctl's publish address
+    // (a 127.0.0.1-only bind would miss a conflict from a process already on
+    // 0.0.0.0:<port>) — but the converse also bites: a process holding ONLY
+    // 127.0.0.1:<port> (a Lima VM port-forward from another Superagent
+    // instance) does not block a wildcard publish, yet it shadows the
+    // loopback address this client actually connects to, so every request
+    // lands in the other instance's container.
+    const bindsOn = (host: string) =>
+      new Promise<boolean>((resolve) => {
+        const server = net.createServer()
+        server.once('error', () => resolve(false))
+        server.once('listening', () => {
+          server.close()
+          resolve(true)
+        })
+        server.listen(port, host)
       })
-      // Bind 0.0.0.0 to match docker/nerdctl's publish address — a 127.0.0.1
-      // bind would miss a conflict from a process already on 0.0.0.0:<port>.
-      server.listen(port, '0.0.0.0')
-    })
+    return (await bindsOn('0.0.0.0')) && (await bindsOn('127.0.0.1'))
   }
 
   async start(options?: StartOptions): Promise<ContainerInfo> {
     const info = await this.getInfo()
     if (info.status === 'running') {
       console.log(`Container ${this.getContainerName()} is already running on port ${info.port}`)
-      this.cachedRunningPort = info.port
+      this.rememberRunningPort(info.port)
       return info
     }
 
@@ -707,7 +741,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       let port = await this.findAvailablePort()
 
       // Write env vars to a temp file (avoids command length limits on Windows)
-      const { flag: envFileFlag, cleanup: cleanupEnvFile } = this.buildEnvFile(options?.envVars)
+      const { flag: envFileFlag, cleanup: cleanupEnvFile } = this.buildEnvFile(options?.envVars, options?.agentName)
       const containerName = this.getContainerName()
 
       // Build resource limit flags
@@ -735,7 +769,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // Bounded retry loop. Each recovery path makes exactly one attempt of
       // progress so the loop can't spin: dropping a mount shrinks `volumes`,
       // re-picking a port is capped by portRetries, and VM provisioning and
-      // image re-creation each run once. A fresh force-remove precedes every
+      // image re-creation each run once (the latter shared between the two
+      // corruption shapes: a run that fails to mount, and a run that starts
+      // but dies on a corrupt file). A fresh force-remove precedes every
       // attempt so we never double-start, using one runtime process instead
       // of a redundant stop followed by rm.
       const MAX_PORT_RETRIES = 3
@@ -750,7 +786,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
           try {
             ({ stdout } = await execWithPath(buildRunCmd(), { timeoutMs: this.getRunExecTimeoutMs() }))
-            break
           } catch (runError: any) {
             // 1. Inaccessible bind mount (e.g. iCloud/File Provider path the VM
             //    can't stat). Drop that one mount and retry without it.
@@ -814,48 +849,77 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
             throw runError
           }
+
+          console.log(`Started container ${stdout.trim()} on port ${port}`)
+
+          // Wait for container to be healthy
+          addErrorBreadcrumb({ category: 'container', message: 'Waiting for container health check', data: { port, containerName } })
+          const healthy = await this.waitForHealthy(60000, port)
+          if (healthy) break
+
+          // Grab logs to help diagnose the failure
+          const logs = await this.getLogs(30)
+
+          // 5. The run succeeded but the server died reading a file baked into
+          //    the image (see isCorruptImageContentLog). Same corruption, same
+          //    remedy, same once-only budget as #3: remove the image, recreate
+          //    it, and go around again. The dead container must go first — a
+          //    stopped container still pins the image, so `rmi` would refuse.
+          if (!imageRecoveryTried && this.isCorruptImageContentLog(logs)) {
+            imageRecoveryTried = true
+            console.warn(`[Container] Corrupt image content detected in container logs, removing ${image} and recreating`)
+            addErrorBreadcrumb({ category: 'container', message: 'Corrupt image content, removing image and recreating', data: { image, agentId: this.config.agentId } })
+            await execWithPathSilent(`${runner} rm -f ${containerName}`)
+            try {
+              await this.removeCorruptImage(image)
+              await this.recreateImage(image)
+              captureMessage('Recovered from corrupt container image content', {
+                level: 'warning',
+                tags: { component: 'container', operation: 'corrupt-image-recovery' },
+                extra: { agentId: this.config.agentId, image, containerLogs: logs.slice(0, 2000) },
+              })
+              continue
+            } catch (repairError) {
+              captureException(repairError, {
+                tags: { component: 'container', operation: 'corrupt-image-recovery' },
+                extra: { agentId: this.config.agentId, image, containerLogs: logs.slice(0, 2000) },
+              })
+              // Fall through — surface the health error below.
+            }
+          }
+
+          const logsSnippet = logs ? `\n\nContainer logs:\n${logs}` : ''
+          const healthError = new Error(`Container failed to become healthy${logsSnippet}`)
+          captureException(healthError, {
+            tags: { component: 'container', operation: 'health-check' },
+            extra: {
+              agentId: this.config.agentId,
+              containerName,
+              port,
+              image,
+              runner: settings.container.containerRunner,
+              cpu,
+              memory,
+              containerLogs: logs,
+            },
+          })
+          // Stop + remove the just-created-but-unhealthy container. Otherwise it
+          // stays process-alive, and the next start() short-circuits on the
+          // running-status early return (getInfoFromRuntime derives 'running'
+          // from inspect's State.Running, not /health), caching a container that
+          // never became healthy. Best-effort/silent so an already-gone container
+          // is harmless and cleanup failure never masks the health error. Logs
+          // were already captured above, before this removes the container.
+          await execWithPathSilent(`${runner} stop ${containerName}`)
+          await execWithPathSilent(`${runner} rm ${containerName}`)
+          throw healthError
         }
       } finally {
         cleanupEnvFile()
       }
 
-      console.log(`Started container ${stdout.trim()} on port ${port}`)
-
-      // Wait for container to be healthy
-      addErrorBreadcrumb({ category: 'container', message: 'Waiting for container health check', data: { port, containerName } })
-      const healthy = await this.waitForHealthy(60000, port)
-      if (!healthy) {
-        // Grab logs to help diagnose the failure
-        const logs = await this.getLogs(30)
-        const logsSnippet = logs ? `\n\nContainer logs:\n${logs}` : ''
-        const healthError = new Error(`Container failed to become healthy${logsSnippet}`)
-        captureException(healthError, {
-          tags: { component: 'container', operation: 'health-check' },
-          extra: {
-            agentId: this.config.agentId,
-            containerName,
-            port,
-            image,
-            runner: settings.container.containerRunner,
-            cpu,
-            memory,
-            containerLogs: logs,
-          },
-        })
-        // Stop + remove the just-created-but-unhealthy container. Otherwise it
-        // stays process-alive, and the next start() short-circuits on the
-        // running-status early return (getInfoFromRuntime derives 'running'
-        // from inspect's State.Running, not /health), caching a container that
-        // never became healthy. Best-effort/silent so an already-gone container
-        // is harmless and cleanup failure never masks the health error. Logs
-        // were already captured above, before this removes the container.
-        await execWithPathSilent(`${runner} stop ${containerName}`)
-        await execWithPathSilent(`${runner} rm ${containerName}`)
-        throw healthError
-      }
-
       console.log(`Container ${containerName} is now running on port ${port}`)
-      this.cachedRunningPort = port
+      this.rememberRunningPort(port)
       return { status: 'running', port }
     } catch (error: any) {
       // Only capture if not already captured (health check errors are captured
@@ -885,7 +949,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   protected terminateWebSocketConnections(): void {
     for (const ws of this.wsConnections.values()) {
+      this.wsReadyRejectors.get(ws)?.(new Error('Session stream stopped before initialization'))
       ws.removeAllListeners()
+      ws.on('error', () => {})
       try {
         ws.terminate()
       } catch {
@@ -896,7 +962,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async stop(options?: StopOptions): Promise<StopResult> {
-    this.cachedRunningPort = null
+    this.rememberRunningPort(null)
     let forceStopUsed = false
     const stopTimeoutMs = options?.stopTimeoutMs ?? 10_000
     const killTimeoutMs = options?.killTimeoutMs ?? 5_000
@@ -1102,6 +1168,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   // re-resolve, which is exactly the pre-cache behavior.
   private cachedRunningPort: number | null = null
 
+  // Subclasses that override start()/stop() must report the live proxy port
+  // here, or the next request talks to a dead 127.0.0.1:<port>.
+  protected rememberRunningPort(port: number | null): void {
+    this.cachedRunningPort = port
+  }
+
   private async getPortOrThrow(): Promise<number> {
     if (this.cachedRunningPort !== null) return this.cachedRunningPort
     const info = await this.getInfo()
@@ -1111,7 +1183,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       this.handleConnectionError()
       throw new Error('Container is not running')
     }
-    this.cachedRunningPort = info.port
+    this.rememberRunningPort(info.port)
     return info.port
   }
 
@@ -1178,6 +1250,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
     const modelPromptHints = getContainerModelPromptHints(resolvedModel)
     const subagentModels = getSubagentModelCatalog(getActiveLlmProvider().id)
+    // Catalog windows for ALL models (not just isLatest like subagentModels):
+    // the container passes the session model's window to the Claude Agent SDK
+    // via CLAUDE_CODE_MAX_CONTEXT_TOKENS, else non-Claude models compact at
+    // the SDK's 200k default (grok: 500k real, gpt-5.x: 1.05M real).
+    const modelContextWindows = getModelContextWindowMap(getActiveLlmProvider().id)
     // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
     // Resolved once here from global settings so every session-creation caller inherits it. One
     // stored vendor backs both tools; the two ids sent to the container are the per-tool enablement
@@ -1210,6 +1287,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           browserModel: resolvedBrowserModel,
           dashboardBuilderModel: resolvedDashboardBuilderModel,
           subagentModels,
+          modelContextWindows,
           webSearchProvider,
           webFetchProvider,
           maxOutputTokens: options.maxOutputTokens,
@@ -1236,6 +1314,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       if (!response.ok) {
         // Try to get more details from response body
         let errorDetail = ''
+        let containerErrorCode: string | undefined
+        let containerErrorClass: string | undefined
         try {
           const errorBody = await response.text()
           if (errorBody) {
@@ -1243,6 +1323,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             try {
               const parsed = JSON.parse(errorBody)
               errorDetail = parsed.error || errorBody
+              // Spawn errno + failure class forwarded by the container for
+              // CLI launch failures (see the POST /sessions handler).
+              if (typeof parsed.code === 'string') containerErrorCode = parsed.code
+              if (typeof parsed.errorClass === 'string') containerErrorClass = parsed.errorClass
             } catch {
               errorDetail = errorBody
             }
@@ -1258,7 +1342,16 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           )
         }
 
-        throw new Error(`Failed to create session: ${errorDetail || response.statusText}`)
+        // Fold the errno into the message so telemetry shows the real spawn
+        // failure (the SDK's message is a canned libc guess), and attach both
+        // fields for programmatic checks (microVM launch-failure auto-replace).
+        const diagnostic = [containerErrorClass, containerErrorCode].filter(Boolean).join(' ')
+        throw Object.assign(
+          new Error(
+            `Failed to create session: ${errorDetail || response.statusText}${diagnostic ? ` [${diagnostic}]` : ''}`,
+          ),
+          { containerErrorCode, containerErrorClass },
+        )
       }
 
       return response.json()
@@ -1407,10 +1500,72 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return body.cancelled === true
   }
 
-  async interruptSession(sessionId: string): Promise<boolean> {
-    const response = await this.fetch(`/sessions/${sessionId}/interrupt`, { method: 'POST' })
+  async interruptSession(sessionId: string, options?: InterruptSessionOptions): Promise<InterruptSessionResult> {
+    const scope = options?.scope ?? 'turn'
+    const response = await this.fetch(`/sessions/${sessionId}/interrupt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope }),
+    })
+    if (!response.ok) return { interrupted: false, processKept: false }
 
-    return response.ok
+    // A container build that predates the scope field always restarts the
+    // process (no processKept in its response) — read absence as "replaced"
+    // so the host drops the background tasks that really did die.
+    const body = interruptResponseSchema.safeParse(await response.json().catch(() => ({})))
+    return { interrupted: true, processKept: body.success && body.data.processKept === true }
+  }
+
+  async stopTask(sessionId: string, taskId: string): Promise<boolean> {
+    const response = await this.fetch(
+      `/sessions/${sessionId}/tasks/${encodeURIComponent(taskId)}/stop`,
+      { method: 'POST' }
+    )
+    if (response.status === 404) {
+      const text = await response.text().catch(() => '')
+      if (!text.trim().startsWith('{')) {
+        console.warn(
+          '[ContainerClient] stopTask: container returned 404 — the agent container predates the stop-task endpoint; restart the agent to pick up the current image'
+        )
+      }
+      return false
+    }
+    if (!response.ok) {
+      console.warn(`[ContainerClient] stopTask: container returned ${response.status}`)
+      return false
+    }
+    return true
+  }
+
+  async forkSession(sessionId: string): Promise<{ id: string } | null> {
+    const response = await this.fetch(`/sessions/${sessionId}/fork`, { method: 'POST' })
+    if (response.status === 404) {
+      const text = await response.text().catch(() => '')
+      const trimmed = text.trim()
+      if (trimmed.startsWith('{')) {
+        try {
+          const body = JSON.parse(trimmed) as { error?: string }
+          throw new ContainerNotFoundError(body.error ?? 'Session not found')
+        } catch (error) {
+          if (error instanceof ContainerNotFoundError) throw error
+        }
+      }
+      // Route missing = the container predates the fork endpoint. Restart the
+      // agent so a fresh container is created from the current image.
+      console.warn(
+        '[ContainerClient] forkSession: container returned 404 — the agent container predates the fork endpoint; restart the agent to pick up the current image'
+      )
+      return null
+    }
+    if (response.status === 409) {
+      const body = (await response.json().catch(() => ({}))) as { error?: string }
+      throw new ContainerConflictError(body.error ?? 'Session is currently running')
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(`Failed to fork session: ${response.status} ${text}`)
+    }
+    return (await response.json()) as { id: string }
   }
 
   // Drop listeners before close so a deliberate teardown cannot fire
@@ -1418,6 +1573,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   private closeTrackedWebSocket(sessionId: string): void {
     const ws = this.wsConnections.get(sessionId)
     if (!ws) return
+    this.wsReadyRejectors.get(ws)?.(new Error('Session stream closed before initialization'))
     ws.removeAllListeners()
     // close() on CONNECTING emits 'error'; zero listeners is an uncaughtException.
     ws.on('error', () => {})
@@ -1431,13 +1587,22 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   ): { unsubscribe: () => void; ready: Promise<void> } {
     let resolveReady: () => void
     let rejectReady: (error: Error) => void
+    let socket: WebSocket | undefined
+    let cancelled = false
     const ready = new Promise<void>((resolve, reject) => {
-      resolveReady = resolve
-      rejectReady = reject
+      resolveReady = () => {
+        if (socket) this.wsReadyRejectors.delete(socket)
+        resolve()
+      }
+      rejectReady = (error) => {
+        if (socket) this.wsReadyRejectors.delete(socket)
+        reject(error)
+      }
     })
 
     const setupWebSocket = async () => {
       const port = await this.getPortOrThrow()
+      if (cancelled) return
 
       if (this.wsConnections.has(sessionId)) {
         this.closeTrackedWebSocket(sessionId)
@@ -1448,9 +1613,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         { headers: this.getHostAuthHeaders() }
       )
 
+      socket = ws
+      this.wsReadyRejectors.set(ws, rejectReady)
+
       ws.on('open', () => {
         console.log(`WebSocket connected for session ${sessionId}`)
-        resolveReady()
       })
 
       ws.on('message', (data) => {
@@ -1464,6 +1631,19 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           }
           callback(streamMessage)
           this.emit('message', sessionId, message)
+          // The guest sends this acknowledgement AFTER attaching its listener
+          // and replaying terminal frames. Socket open precedes both: allowing
+          // a send then lets the previous result + idle settle the new turn.
+          // This existing status frame also works with older container images.
+          if (message.type === 'status' && message.data?.message === 'Connected to session stream') {
+            resolveReady()
+          }
+          // The guest refuses a session it does not have with an error frame, then
+          // closes. Keep its reason: the close alone reads as a transient drop, and
+          // callers that rotate a missing session match on "Session not found".
+          if (message.type === 'error') {
+            rejectReady(new Error(message.message))
+          }
         } catch (error) {
           console.error('Failed to parse WebSocket message:', error)
         }
@@ -1486,6 +1666,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       ws.on('close', () => {
         console.log(`WebSocket closed for session ${sessionId}`)
+        rejectReady(new Error('Session stream closed before initialization'))
         this.wsConnections.delete(sessionId)
         // Notify the callback that the connection was lost
         // This allows the message persister to handle the disconnection
@@ -1502,6 +1683,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
 
     setupWebSocket().catch((error) => {
+      if (cancelled) return
       console.error('Failed to set up WebSocket:', error)
       this.safeEmitError(error)
       // Notify the callback so the consumer (e.g. MessagePersister) can react to
@@ -1519,7 +1701,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     })
 
     const unsubscribe = () => {
-      this.closeTrackedWebSocket(sessionId)
+      cancelled = true
+      rejectReady(new Error('Session stream unsubscribed before initialization'))
+      if (socket && this.wsConnections.get(sessionId) === socket) {
+        this.closeTrackedWebSocket(sessionId)
+      }
     }
 
     return { unsubscribe, ready }
@@ -1544,17 +1730,17 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       if (imagesToRemove.length === 0) return
 
-      console.log(`[ContainerManager] Removing ${imagesToRemove.length} old image(s):`, imagesToRemove)
+      console.log(`[ContainerClient] Removing ${imagesToRemove.length} old image(s):`, imagesToRemove)
       for (const img of imagesToRemove) {
         try {
           await execWithPath(`${cliCommand} rmi ${img}`)
-          console.log(`[ContainerManager] Removed ${img}`)
+          console.log(`[ContainerClient] Removed ${img}`)
         } catch {
-          console.warn(`[ContainerManager] Could not remove ${img} (may be in use)`)
+          console.warn(`[ContainerClient] Could not remove ${img} (may be in use)`)
         }
       }
     } catch (error) {
-      console.warn('[ContainerManager] Failed to remove old images:', error)
+      console.warn('[ContainerClient] Failed to remove old images:', error)
     }
   }
 
@@ -1672,22 +1858,23 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   // Who this container belongs to, for providers that attribute LLM usage per
-  // agent. The display name is re-read from disk on every env build (i.e. each
-  // container start), so a rename takes effect on the next restart.
-  protected agentIdentityForEnv(): AgentIdentity {
+  // agent. The display name arrives with each start (StartOptions.agentName),
+  // read by the caller through the agent's actor, so a rename takes effect on
+  // the next restart and the runtime never reads the workspace itself.
+  protected agentIdentityForEnv(agentName?: string): AgentIdentity {
     return {
       id: this.config.agentId,
-      name: readAgentDisplayNameSync(this.config.agentId),
+      name: agentName,
     }
   }
 
   // The final agent env, transport-agnostic; subclasses only serialize it.
   // Merge order: provider defaults < runtime constants < config.envVars < extra.
-  protected buildAgentEnv(extra?: Record<string, string>): Record<string, string> {
+  protected buildAgentEnv(extra?: Record<string, string>, agentName?: string): Record<string, string> {
     const settings = getSettings()
     const provider = getActiveLlmProvider()
     const merged: Record<string, string | undefined> = {
-      ...provider.getContainerEnvVars(this.agentIdentityForEnv()),
+      ...provider.getContainerEnvVars(this.agentIdentityForEnv(agentName)),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       // The setting only switches tool search OFF; whether it may be on is the
       // provider's call, because it depends on the endpoint expanding deferred
@@ -1706,7 +1893,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   // Serialize the agent env to a temp --env-file (avoids shell-quoting + Windows
   // command-length limits). Caller cleans up the file after start.
-  protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
-    return writeEnvFile(this.buildAgentEnv(additionalEnvVars), this.config.agentId)
+  protected buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): { flag: string; cleanup: () => void } {
+    return writeEnvFile(this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId)
   }
 }

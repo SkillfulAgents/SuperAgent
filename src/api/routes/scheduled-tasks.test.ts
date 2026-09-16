@@ -63,13 +63,24 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
 const mockCreateSession = vi.fn()
 const mockEnsureRunning = vi.fn()
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
-  },
-}))
+// The actor reaches the container client through getClient after start();
+// hand back whatever ensureRunning last resolved to.
+let mockClient: unknown
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning: async (...args: unknown[]) => {
+        mockClient = await mockEnsureRunning(...args)
+        return mockClient
+      },
+      getClient: () => mockClient,
+    }),
+  }
+})
 
 const mockMessagePersister = vi.hoisted(() => ({
+  withSessionSend: vi.fn(async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => send()),
   isSessionActive: vi.fn(),
   subscribeToSession: vi.fn(),
   markSessionActive: vi.fn(),
@@ -198,7 +209,7 @@ describe('scheduled-tasks route', () => {
       { id: 'session-active', name: 'Active session' },
       { id: 'session-idle', name: 'Idle session' },
     ])
-    mockMessagePersister.isSessionActive.mockImplementation((sessionId: string) => sessionId === 'session-active')
+    mockMessagePersister.isSessionActive.mockImplementation((_agentSlug: string, sessionId: string) => sessionId === 'session-active')
     mockCreateSession.mockResolvedValue({ id: 'container-session-1' })
     mockEnsureRunning.mockResolvedValue({ createSession: mockCreateSession })
     mockGetSecretEnvVars.mockResolvedValue(['GITHUB_TOKEN'])
@@ -227,7 +238,7 @@ describe('scheduled-tasks route', () => {
       { id: 'session-active', name: 'Active session', isActive: true },
       { id: 'session-idle', name: 'Idle session', isActive: false },
     ])
-    expect(mockGetSessionsByScheduledTask).toHaveBeenCalledWith('agent-one', 'task-1')
+    expect(mockGetSessionsByScheduledTask).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'task-1')
   })
 
   it('runs a recurring task immediately and records a manual execution', async () => {
@@ -250,19 +261,19 @@ describe('scheduled-tasks route', () => {
       dashboardBuilderModel: undefined,
       effort: 'low',
     })
-    expect(mockRegisterSession).toHaveBeenCalledWith('agent-one', 'container-session-1', 'Daily report')
-    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith('agent-one', 'container-session-1', {
+    expect(mockRegisterSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', 'Daily report')
+    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', {
       isScheduledExecution: true,
       scheduledTaskId: 'task-1',
       scheduledTaskName: 'Daily report',
     })
     expect(mockMessagePersister.subscribeToSession).toHaveBeenCalledWith(
+      'agent-one',
       'container-session-1',
       { createSession: mockCreateSession },
       'container-session-1',
-      'agent-one',
     )
-    expect(mockMessagePersister.markSessionActive).toHaveBeenCalledWith('container-session-1', 'agent-one')
+    expect(mockMessagePersister.markSessionActive).toHaveBeenCalledWith('agent-one', 'container-session-1')
     expect(mockRecordManualExecution).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockMarkTaskExecuted).not.toHaveBeenCalled()
   })
@@ -279,7 +290,7 @@ describe('scheduled-tasks route', () => {
       model: 'custom-model',
       effort: 'high',
     }))
-    expect(mockRegisterSession).toHaveBeenCalledWith('agent-one', 'container-session-1', 'Scheduled Task (Run Now)')
+    expect(mockRegisterSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', 'Scheduled Task (Run Now)')
     expect(mockMarkTaskExecuted).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockRecordManualExecution).not.toHaveBeenCalled()
   })
@@ -328,7 +339,7 @@ describe('scheduled-tasks route', () => {
       expect(options).toEqual({ shouldQuery: true })
 
       expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
-        'agent-one',
+        expect.objectContaining({ slug: 'agent-one' }),
         'sleeping-session-1',
         expect.objectContaining({
           lastWake: expect.objectContaining({ taskId: 'task-1' }),

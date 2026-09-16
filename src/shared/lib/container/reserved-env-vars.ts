@@ -30,6 +30,7 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   // Account + MCP metadata
   'CONNECTED_ACCOUNTS',
   'REMOTE_MCPS',
+  'SUPERAGENT_MOUNTS',
   // Host browser
   'AGENT_BROWSER_USE_HOST',
   'HOST_APP_URL',
@@ -61,7 +62,7 @@ export function mergeCustomEnvVars(
   for (const [key, value] of Object.entries(customEnvVars)) {
     if (isReservedEnvVar(key)) {
       console.warn(
-        `[ContainerManager] Ignoring custom env var "${key}": it is a reserved runtime variable and cannot be overridden.`
+        `[ContainerRuntime] Ignoring custom env var "${key}": it is a reserved runtime variable and cannot be overridden.`
       )
       continue
     }

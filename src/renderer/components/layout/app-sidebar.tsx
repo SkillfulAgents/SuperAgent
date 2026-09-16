@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass, MoonStar } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, Compass, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -8,6 +8,9 @@ import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { openExternalUrl } from '@renderer/lib/open-external'
+import { targetIsRemote } from '@renderer/lib/api-target'
+import { resolveSidebarVersionState } from '@renderer/components/layout/sidebar-version-state'
 import { TargetSwitcher } from '@renderer/components/layout/target-switcher'
 import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
 import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
@@ -52,8 +55,10 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
@@ -71,6 +76,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { useUser } from '@renderer/context/user-context'
+import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
@@ -101,12 +107,13 @@ import {
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
 import { SidebarDragProvider, useSidebarDragActive } from './sidebar-drag-context'
-import { AgentDragOverlayRow, AgentFolderBlock } from './agent-folder-block'
+import { AgentDragOverlayRow, AgentFolderBlock, agentDropAnimation } from './agent-folder-block'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import {
   containerIdForFolder,
   buildFolderSections,
   dissolveFolder,
+  ROOT_FOLDER_ID,
   locateAgent,
   moveAgent,
   moveFolder,
@@ -124,9 +131,28 @@ import { useRenderTracker } from '@renderer/lib/perf'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
+import { useSidebarFileDrop } from './use-sidebar-file-drop'
 
 /** Set once Explore has been opened, which retires its "New" badge. */
 const EXPLORE_SEEN_KEY = 'explore.seen'
+
+function VersionBehindDot({
+  wayBehind,
+  label,
+}: {
+  wayBehind: boolean
+  label: string
+}) {
+  return (
+    <span
+      className={cn(
+        'ml-0.5 h-1.5 w-1.5 rounded-full',
+        wayBehind ? 'bg-orange-500' : 'bg-blue-500',
+      )}
+      aria-label={label}
+    />
+  )
+}
 
 // 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
 // agents-list group; pull out as a constant so the call site stays readable.
@@ -144,6 +170,8 @@ const THIN_SCROLLBAR =
 // toggle with inline options, ~0 with these hoisted.
 const POINTER_SENSOR_OPTIONS = { activationConstraint: { distance: 5 } }
 const KEYBOARD_SENSOR_OPTIONS = { coordinateGetter: sortableKeyboardCoordinates }
+const SIDEBAR_FILE_DROP_CUE =
+  'data-[file-drop-active]:bg-sidebar-accent data-[file-drop-active]:ring-1 data-[file-drop-active]:ring-sidebar-ring'
 
 /** The user-settings fields that together describe the left-nav tree. */
 type AgentTreeSettings = ReturnType<typeof sectionsToSettings>
@@ -177,13 +205,29 @@ function SessionSubItem({
   // redundant — the session clearly isn't asleep).
   const showPendingWake = !!session.pendingWakeAt && !isWorking && !isAwaitingInput
   const { ref: hintRef, hint } = useCmdHintTarget()
+  const dragHandlers = useSidebarFileDrop({
+    kind: 'session',
+    agentSlug,
+    sessionId: session.id,
+    // No composer is mounted behind a pending request, so a drop would be
+    // swallowed and then resurface once the request is answered.
+    disabled: isAwaitingInput,
+  })
 
   return (
-    <SidebarMenuSubItem>
+    <SidebarMenuSubItem
+      {...dragHandlers}
+      className={cn('rounded-md', SIDEBAR_FILE_DROP_CUE)}
+    >
       <SessionContextMenu
         sessionId={session.id}
         sessionName={session.name}
         agentSlug={agentSlug}
+        activity={{
+          isActive: !!session.isActive,
+          isAwaitingInput: !!session.isAwaitingInput,
+          isStreaming,
+        }}
       >
         <SidebarMenuSubButton
           asChild
@@ -417,7 +461,7 @@ const AgentMenuItemInner = React.forwardRef<
 >(({ agent, style, ...rest }, ref) => {
   useRenderTracker('AgentMenuItem')
   const { view } = useRouteLocation()
-  const { agentMemberCount } = useUser()
+  const { isAuthMode, agentMemberCount } = useUser()
   const queryClient = useQueryClient()
   // Route-derived selection (URL is authoritative — correct on a cold reload,
   // and inherently false on the global notifications/home views since they carry
@@ -454,7 +498,8 @@ const AgentMenuItemInner = React.forwardRef<
   }, [isViewingSubItem])
   const [showAll, setShowAll] = useState(false)
   const [showSkeleton, setShowSkeleton] = useState(false)
-  const isShared = agentMemberCount(agent.slug) > 1
+  const memberCount = agentMemberCount(agent.slug)
+  const isShared = isAuthMode && memberCount > 1
 
   // Lazy-load detail data only when expanded
   const { data: sessions, isLoading: sessionsLoading } = useSessions(isOpen ? agent.slug : null)
@@ -503,59 +548,81 @@ const AgentMenuItemInner = React.forwardRef<
   }
 
   const { ref: hintRef, hint } = useCmdHintTarget()
+  const dragHandlers = useSidebarFileDrop({
+    kind: 'agent',
+    agentSlug: agent.slug,
+    displaySlug: agent.displaySlug,
+  })
 
   return (
     <Collapsible asChild open={isOpen && !isDragActive} onOpenChange={setIsOpen}>
-      <SidebarMenuItem ref={ref} style={style} {...rest} onMouseEnter={handleMouseEnter}>
-        {/*
-          Wrap the row + chevron in a relative box so the absolutely-positioned
-          chevron tracks the row height, not the (potentially expanded) menu
-          item that also contains CollapsibleContent below.
-        */}
-        <div className="relative">
-          <AgentContextMenu agent={agent}>
-            <SidebarMenuButton
-              asChild
-              isActive={isSelected}
-              className="justify-between pl-7"
-              data-testid={`agent-item-${agent.slug}`}
-            >
-              <AppLink ref={hintRef} to="/agents/$slug" params={{ slug: agent.displaySlug }}>
-                <span className="flex items-center gap-1.5 min-w-0">
-                  <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-                  {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
-                </span>
+      <SidebarMenuItem
+        ref={ref}
+        style={style}
+        {...rest}
+        onMouseEnter={handleMouseEnter}
+        // Portaled menus bubble through React, but are outside the draggable row.
+        onPointerDown={event => {
+          if (event.currentTarget.contains(event.target as Node)) rest.onPointerDown?.(event)
+        }}
+        onKeyDown={event => {
+          if (event.currentTarget.contains(event.target as Node)) rest.onKeyDown?.(event)
+        }}
+      >
+        <AgentContextMenu agent={agent}>
+          <SidebarMenuButton
+            asChild
+            isActive={isSelected}
+            className={cn('relative gap-1.5 overflow-visible pl-7', SIDEBAR_FILE_DROP_CUE)}
+          >
+            <div {...dragHandlers}>
+              {/* Stretch the native link across the row; the roster and
+                  chevron sit above it as separate interactive controls. */}
+              <AppLink
+                ref={hintRef}
+                to="/agents/$slug"
+                params={{ slug: agent.displaySlug }}
+                data-testid={`agent-item-${agent.slug}`}
+                data-active={isSelected}
+                className="min-w-0 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
+              >
+                <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
+              </AppLink>
+              {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
+              {/* Expose the status title above the stretched link while keeping
+                  clicks (including modifier clicks) native agent navigation. */}
+              <AppLink
+                to="/agents/$slug"
+                params={{ slug: agent.displaySlug }}
+                tabIndex={-1}
+                aria-label={`Open ${agent.name}`}
+                className="relative z-10 ml-auto flex shrink-0 items-center"
+              >
                 {hint !== null ? (
                   <CmdHintBadge hint={hint} />
                 ) : (
                   <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
                 )}
               </AppLink>
-            </SidebarMenuButton>
-          </AgentContextMenu>
-          {/*
-            Sibling chevron button overlays its slot in the row so the row stays a
-            single <button> (no nested interactive controls). Only rendered when
-            there is expandable content so agents with no sessions or dashboards
-            do not show an empty chevron.
-          */}
-          {hasExpandableContent && (
-            <button
-              type="button"
-              onClick={handleChevronClick}
-              aria-label={isOpen ? 'Collapse' : 'Expand'}
-              aria-expanded={isOpen}
-              className="absolute left-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
-            >
-              <ChevronRight
-                className={cn(
-                  'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
-                  isOpen && !isDragActive && 'rotate-90'
-                )}
-              />
-            </button>
-          )}
-        </div>
+              {hasExpandableContent && (
+                <button
+                  type="button"
+                  onClick={handleChevronClick}
+                  aria-label={isOpen ? 'Collapse' : 'Expand'}
+                  aria-expanded={isOpen}
+                  className="absolute left-1.5 top-1/2 z-10 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
+                >
+                  <ChevronRight
+                    className={cn(
+                      'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
+                      isOpen && !isDragActive && 'rotate-90'
+                    )}
+                  />
+                </button>
+              )}
+            </div>
+          </SidebarMenuButton>
+        </AgentContextMenu>
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
@@ -664,7 +731,7 @@ function UserMenu() {
       <Popover>
         <PopoverTrigger asChild>
           <button className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="user-menu-trigger">
-            <User className="h-3 w-3" />
+            <UserAvatar user={user} size={22} />
             <span className="truncate max-w-[140px]">{user.name}</span>
           </button>
         </PopoverTrigger>
@@ -819,6 +886,14 @@ export function AppSidebar() {
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
+  const { data: platformAuth } = usePlatformAuthStatus()
+  const isCloud = targetIsRemote()
+  const desktopVersion = __APP_VERSION__
+  const versionState = resolveSidebarVersionState({
+    desktopVersion,
+    cloudVersion: isCloud ? runtimeStatus?.appVersion : undefined,
+    feedVersion: updateAvailable ? updateStatus.version : undefined,
+  })
   const isFullScreen = useFullScreen()
 
   // macOS fires `enter-full-screen` only after its ~700ms zoom animation completes;
@@ -1247,13 +1322,27 @@ export function AppSidebar() {
   // click time would revert whatever folder write was still in flight.
   const handleCreateFolder = useCallback(() => {
     const id = newFolderId()
-    // A folder with no recorded place renders at the end of the list, which is
-    // where the user just asked for it. The row mounts in rename mode, so
-    // creating a folder and naming it is one gesture.
+    // The + lives on the default folder's header, so the new folder goes
+    // directly ABOVE that folder — in view next to the button that made it,
+    // where the row's rename input mounts. Ranking it last put it below the
+    // scroll fold on a long list, which read as the button doing nothing.
     setPendingRenameFolderId(id)
     updateSettings.mutate((current) => {
       const folders = sanitizeFolders(current?.agentFolders)
-      return { agentFolders: [...folders, { id, name: uniqueFolderName(folders) }] }
+      const marker = sortableIdForFolder(id)
+      const rootMarker = sortableIdForFolder(ROOT_FOLDER_ID)
+      const order = (current?.agentListOrder ?? []).filter((key) => key !== marker)
+      const rootIndex = order.indexOf(rootMarker)
+      return {
+        agentFolders: [...folders, { id, name: uniqueFolderName(folders) }],
+        // Splice in just above the default folder wherever the user keeps it;
+        // an untouched install has no stored places yet, so root's marker is
+        // written too — without one it would default ahead (place -1).
+        agentListOrder:
+          rootIndex >= 0
+            ? [...order.slice(0, rootIndex), marker, ...order.slice(rootIndex)]
+            : [marker, rootMarker, ...order],
+      }
     })
   }, [updateSettings])
 
@@ -1344,13 +1433,10 @@ export function AppSidebar() {
         animates shut.
       */}
       <SidebarHeader
-        className="app-drag-region h-12 shrink-0 p-0 overflow-hidden transition-[padding-left] duration-200 ease-out"
+        className="app-drag-region h-12 shrink-0 p-0 transition-[padding-left] duration-200 ease-out"
         style={{ paddingLeft: needsTrafficLightPadding ? '80px' : undefined }}
       >
-        {/* `overflow-hidden` is load-bearing: hovering the target switcher
-            expands it in place, which pushes the buttons after it past the right
-            edge rather than squeezing them. */}
-        <div className="flex items-center h-12 px-2 gap-1 overflow-hidden">
+        <div className="flex items-center h-12 px-2 gap-1">
           {__WEB__ && (
             <span className="shrink-0 select-none text-base font-medium">Gamut</span>
           )}
@@ -1568,7 +1654,7 @@ export function AppSidebar() {
                           </AgentFolderBlock>
                         ))}
                       </SortableContext>
-                      <DragOverlay>
+                      <DragOverlay dropAnimation={agentDropAnimation}>
                         {activeDrag ? (
                           <AgentDragOverlayRow
                             label={activeDrag.label}
@@ -1596,18 +1682,69 @@ export function AppSidebar() {
             <Settings className="h-4 w-4" />
             <span>Settings</span>
           </SidebarMenuButton>
-          <button
-            type="button"
-            onClick={() => openSettings('general')}
-            className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
-            title={updateAvailable ? `Update available: v${updateStatus.version}` : undefined}
-            data-testid="sidebar-version"
-          >
-            {updateAvailable && (
-              <span className="h-2 w-2 rounded-full bg-blue-500" aria-label="Update available" />
-            )}
-            <span>v{__APP_VERSION__}</span>
-          </button>
+          {isCloud && versionState.showPair && versionState.cloudVersion ? (
+            <div
+              className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0"
+              data-testid="sidebar-version"
+            >
+              <button
+                type="button"
+                onClick={() => openSettings('general')}
+                className="inline-flex items-center gap-0.5 hover:text-foreground"
+                title={`Desktop v${versionState.desktopVersion}`}
+                data-testid="sidebar-version-desktop"
+              >
+                <Laptop className="mr-0.5 size-3" aria-hidden="true" />
+                {versionState.desktopVersion}
+                {versionState.desktopBehind && (
+                  <VersionBehindDot
+                    wayBehind={versionState.desktopWayBehind}
+                    label="Desktop update available"
+                  />
+                )}
+              </button>
+              <span className="h-2.5 w-px bg-current opacity-60" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={() => {
+                  const base = platformAuth?.platformBaseUrl
+                  const orgId = platformAuth?.orgId
+                  if (!base || !orgId) return
+                  void openExternalUrl(
+                    `${base}/dashboard/organizations/${orgId}?tab=cloud`,
+                  )
+                }}
+                className="inline-flex items-center gap-0.5 hover:text-foreground"
+                title={`Cloud v${versionState.cloudVersion}`}
+                data-testid="sidebar-version-cloud"
+              >
+                <Cloud className="mr-0.5 size-3" aria-hidden="true" />
+                {versionState.cloudVersion}
+                {versionState.cloudBehind && (
+                  <VersionBehindDot
+                    wayBehind={versionState.cloudWayBehind}
+                    label="Cloud update available"
+                  />
+                )}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => openSettings('general')}
+              className="inline-flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
+              title={updateAvailable ? `${isCloud ? 'Desktop update available' : 'Update available'}: v${updateStatus.version}` : undefined}
+              data-testid="sidebar-version"
+            >
+              <span>{versionState.cloudVersion ?? desktopVersion}</span>
+              {updateAvailable && (
+                <span
+                  className="h-1.5 w-1.5 rounded-full bg-blue-500"
+                  aria-label={isCloud ? 'Desktop update available' : 'Update available'}
+                />
+              )}
+            </button>
+          )}
         </div>
       </SidebarFooter>
 

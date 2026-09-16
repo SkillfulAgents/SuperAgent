@@ -1,0 +1,20 @@
+{
+  "agentSlug": "probe",
+  "sdkVersion": "0.3.272",
+  "cliVersion": "2.1.272",
+  "capturedAt": "2026-09-14",
+  "model": "claude-haiku-4-5-20251001",
+  "startActive": true,
+  "subagents": [],
+  "source": "scratch probe (probe-bg-idle.mjs): direct Agent SDK query() with streaming input, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, includePartialMessages, perTaskStopAffordance; same wrapper shape as the host captures (t = ms since start, message.content = SDK frame)",
+  "description": "Real capture (2026-09-14, SDK 0.3.272 / CLI 2.1.272). Explicit run_in_background:true Bash (`sleep 8`). Unchanged from the 0.3.206 shape: session_state_changed:idle fires right after the lead turn result while the task is live (premature idle), then background_tasks_changed:0 + task_updated/task_notification completed, session_state_changed:running, a wake turn with its own result + idle.",
+  "backgroundTasks": [
+    {
+      "taskId": "b0pbvmgqd",
+      "taskType": "local_bash",
+      "startedT": 3405,
+      "prematureIdleT": 4563,
+      "realCompletionT": 11407
+    }
+  ]
+}

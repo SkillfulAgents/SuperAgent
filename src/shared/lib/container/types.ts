@@ -1,6 +1,23 @@
 import type { RuntimeOptions } from './runtime-options'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
+/** The container refused an operation because the session is mid-turn (HTTP 409). */
+export class ContainerConflictError extends Error {
+  readonly code = 'session_busy'
+  constructor(message: string) {
+    super(message)
+    this.name = 'ContainerConflictError'
+  }
+}
+
+/** The container has the route but the session is gone (HTTP 404 + JSON). */
+export class ContainerNotFoundError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ContainerNotFoundError'
+  }
+}
+
 export interface SendMessageOptions extends RuntimeOptions {
   /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
   isAutomated?: boolean
@@ -49,6 +66,21 @@ export interface SlashCommandInfo {
   name: string
   description: string
   argumentHint: string
+}
+
+export type InterruptScope = 'turn' | 'all'
+
+export interface InterruptSessionOptions {
+  scope?: InterruptScope
+}
+
+export interface InterruptSessionResult {
+  // The container acknowledged the interrupt (false: session not live there).
+  interrupted: boolean
+  // The CLI process survived, so its background tasks are still running and
+  // their state must be kept. False when the process was replaced (a full
+  // stop, or a soft stop that had to fall back) — every background task died.
+  processKept: boolean
 }
 
 export interface ContainerSession {
@@ -103,6 +135,12 @@ export interface CreateSessionOptions {
 
 export interface StartOptions {
   envVars?: Record<string, string>
+  /**
+   * The agent's display name, for the LLM provider's per-agent attribution.
+   * Supplied by the caller, which reads it through the agent's actor; the
+   * runtime has no view of the workspace and must not read it by host path.
+   */
+  agentName?: string
   additionalVolumes?: string[] // Extra -v flag values for bind mounts
   /**
    * Called when a bind mount is dropped at run time because the container
@@ -219,20 +257,31 @@ export interface ContainerClient {
   createSession(options: CreateSessionOptions): Promise<ContainerSession>
   getSession(sessionId: string): Promise<ContainerSession | null>
   deleteSession(sessionId: string): Promise<boolean>
+  // Copy a session's transcript into a new session (Fork Session).
+  // null = the container predates the fork endpoint (plain 404). Throws
+  // ContainerNotFoundError when the session is gone (JSON 404),
+  // ContainerConflictError when the source is mid-turn.
+  forkSession(sessionId: string): Promise<{ id: string } | null>
 
   // Message operations
   sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void>
   // Cancel a queued (not yet picked up) message by the uuid it was sent with.
   // false = too late (already picked up) or session not live — never throws for that.
   cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>
-  interruptSession(sessionId: string): Promise<boolean>
+  // scope 'turn' (default) ends the foreground turn and spares background
+  // tasks; 'all' replaces the CLI process, which kills them too.
+  interruptSession(sessionId: string, options?: InterruptSessionOptions): Promise<InterruptSessionResult>
+  // Stop one background task by its SDK task id. false = the container could
+  // not (session not live, or a build that predates the endpoint).
+  stopTask(sessionId: string, taskId: string): Promise<boolean>
 
   // Default settles (today's session_error). Overrides must be safe on a live runtime (queued re-run).
   onFatalResult(kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery'
   observeUnexpectedDeath(input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan>
   getRuntimeGenerationId(): string | null
 
-  // Streaming - returns unsubscribe function and a ready promise
+  // Streaming - ready resolves after listener attachment and terminal replay,
+  // before a new send may safely mark the session active.
   subscribeToStream(
     sessionId: string,
     callback: (message: StreamMessage) => void

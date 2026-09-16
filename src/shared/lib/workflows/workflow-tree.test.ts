@@ -4,6 +4,7 @@ import * as path from 'path'
 import * as os from 'os'
 import { promises as fs } from 'fs'
 import { buildWorkflowTree } from './workflow-tree'
+import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
 
 const FIXTURE_ROOT = path.join(
   __dirname,
@@ -17,7 +18,7 @@ const RUN = 'wf_818f758a-c17'
 
 describe('buildWorkflowTree — real capture-probe fixture', () => {
   it('joins every agent to its label/phase/status/result via prompt-regex', async () => {
-    const tree = await buildWorkflowTree({ sessionsDir: FIXTURE_ROOT, sessionId: SID, runId: RUN })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => FIXTURE_ROOT), transcriptsDir: '', sessionId: SID, runId: RUN })
     expect(tree).not.toBeNull()
     expect(tree!.name).toBe('capture-probe')
     expect(tree!.phases.map((p) => p.title)).toEqual(['Scan', 'Summarize'])
@@ -49,6 +50,9 @@ describe('buildWorkflowTree — real capture-probe fixture', () => {
 
     // Per-agent metadata derived from the transcript.
     expect(byId.get('ae6ffae379942dd19')!.prompt).toBe('Return ONLY the single word: alpha')
+    // The model comes from the first assistant turn; the fixture's meta.json is a
+    // named agent type (`workflow-subagent`), which carries no model on its own.
+    expect(byId.get('ae6ffae379942dd19')!.model).toBe('claude-opus-4-6')
     expect(byId.get('a7720e731ec4c42db')!.prompt).toContain('Concatenate')
     for (const a of tree!.agents) {
       expect(a.toolCount).toBeGreaterThanOrEqual(0)
@@ -61,7 +65,8 @@ describe('buildWorkflowTree — real capture-probe fixture', () => {
 
   it('returns null for an unknown runId', async () => {
     const tree = await buildWorkflowTree({
-      sessionsDir: FIXTURE_ROOT,
+      files: new LocalFileOps(() => FIXTURE_ROOT),
+      transcriptsDir: '',
       sessionId: SID,
       runId: 'wf_does-not-exist',
     })
@@ -78,7 +83,7 @@ describe('buildWorkflowTree — sdk 0.3.206 capture fixture', () => {
   const run = 'wf_255e9212-aaa'
 
   it('joins both agents (incl. the interpolated prompt) via prompt-regex', async () => {
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: sid, runId: run })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: sid, runId: run })
     expect(tree).not.toBeNull()
     expect(tree!.name).toBe('capture-probe')
     expect(tree!.phases.map((p) => p.title)).toEqual(['Run'])
@@ -111,7 +116,13 @@ afterEach(async () => {
 async function scaffold(opts: {
   script: string
   journal: Array<Record<string, unknown>>
-  agents: Array<{ agentId: string; firstPrompt: string; extraLines?: Array<Record<string, unknown>> }>
+  agents: Array<{
+    agentId: string
+    firstPrompt: string
+    extraLines?: Array<Record<string, unknown>>
+    /** Written as the agent's `.meta.json` sidecar when given. */
+    meta?: Record<string, unknown>
+  }>
 }): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'wf-tree-'))
   tmpDirs.push(root)
@@ -127,6 +138,7 @@ async function scaffold(opts: {
       ...(a.extraLines ?? []),
     ]
     await fs.writeFile(path.join(runDir, `agent-${a.agentId}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
+    if (a.meta) await fs.writeFile(path.join(runDir, `agent-${a.agentId}.meta.json`), JSON.stringify(a.meta))
   }
   await fs.writeFile(path.join(root, sid, 'workflows', 'scripts', `probe-${run}.js`), opts.script)
   return root
@@ -152,7 +164,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
         { agentId: 'g2', firstPrompt: 'Tell me a fun fact about Jupiter.' },
       ],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     const byId = new Map(tree!.agents.map((a) => [a.agentId, a]))
     expect(byId.get('g1')).toMatchObject({ label: 'fact:Mars', phase: 'Gather', resolved: 'prompt-regex' })
     expect(byId.get('g2')).toMatchObject({ label: 'fact:Jupiter', phase: 'Gather', resolved: 'prompt-regex' })
@@ -172,13 +184,80 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
       ],
       agents: [{ agentId: 'd1', firstPrompt: 'Process widget.' }],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({
       label: 'agent 1', // `${i}` is not in the prompt, so it can't be resolved
       phase: 'P',
       result: '{"score":9}',
       resolved: 'prompt-regex',
     })
+  })
+
+  it('resolves a label var through a JSON.stringify(record) prompt hole (qualify:${c.slug})', async () => {
+    // The "here's the whole record" fan-out shape: the label reads one field of a
+    // record the prompt only embeds as pretty-printed JSON.
+    const script = [
+      "export const meta = { name: 'q', description: 'd', phases: [{ title: 'Qualify' }] }",
+      "phase('Qualify')",
+      'const r = await pipeline(args.companies, c => agent(`Evaluate this company:\\n${JSON.stringify(c, null, 1)}\\n\\nFetch ${c.website} first.`, { label: `qualify:${c.slug}`, phase: \'Qualify\' }))',
+    ].join('\n')
+    const company = { slug: 'vibeflow', website: 'https://vibeflow.ai/', team_size: 3 }
+    const root = await scaffold({
+      script,
+      journal: [{ type: 'started', key: 'v2:1', agentId: 'q1' }],
+      agents: [
+        {
+          agentId: 'q1',
+          firstPrompt: `Evaluate this company:\n${JSON.stringify(company, null, 1)}\n\nFetch https://vibeflow.ai/ first.`,
+        },
+      ],
+    })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
+    expect(tree!.agents[0]).toMatchObject({ label: 'qualify:vibeflow', phase: 'Qualify', resolved: 'prompt-regex' })
+    // Sized from the invocation's args when present; here there's no invocation, so 1 call site.
+    expect(tree!.expectedAgents).toBe(1)
+  })
+
+  it('reads the model from the first assistant turn, and from meta.json before one lands', async () => {
+    const script = [
+      "export const meta = { name: 'm', description: 'd', phases: [{ title: 'P' }] }",
+      "phase('P')",
+      "const a = await agent('Do A', { label: 'a', agentType: args.agentType })",
+      "const b = await agent('Do B', { label: 'b', agentType: args.agentType })",
+      "const c = await agent('Do C', { label: 'c' })",
+    ].join('\n')
+    const root = await scaffold({
+      script,
+      journal: [
+        { type: 'started', key: 'v2:1', agentId: 'm1' },
+        { type: 'started', key: 'v2:2', agentId: 'm2' },
+        { type: 'started', key: 'v2:3', agentId: 'm3' },
+      ],
+      agents: [
+        {
+          // Has replied: the transcript's model id wins over the meta slug.
+          agentId: 'm1',
+          firstPrompt: 'Do A',
+          meta: { agentType: 'model-haiku-4-5-1cbdtsn', spawnDepth: 1 },
+          extraLines: [
+            {
+              type: 'assistant',
+              timestamp: '2026-01-01T00:00:01.000Z',
+              message: { model: 'claude-haiku-4-5-20251001', role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+            },
+          ],
+        },
+        // Just spawned: only the meta.json sidecar exists.
+        { agentId: 'm2', firstPrompt: 'Do B', meta: { agentType: 'model-haiku-4-5-1cbdtsn', spawnDepth: 1 } },
+        // A named agent type carries no model.
+        { agentId: 'm3', firstPrompt: 'Do C', meta: { agentType: 'workflow-subagent' } },
+      ],
+    })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
+    const byId = new Map(tree!.agents.map((a) => [a.agentId, a]))
+    expect(byId.get('m1')!.model).toBe('claude-haiku-4-5-20251001')
+    expect(byId.get('m2')!.model).toBe('haiku-4-5')
+    expect(byId.get('m3')!.model).toBeNull()
   })
 
   it('falls back to the transcript-referenced script for scriptPath invocations', async () => {
@@ -243,7 +322,12 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
       },
     })
     await fs.writeFile(path.join(sessionsDir, 's1.jsonl'), toolUseLine + '\n' + toolResultLine + '\n')
-    const tree = await buildWorkflowTree({ sessionsDir, sessionId: 's1', runId: 'wf_sp' })
+    const tree = await buildWorkflowTree({
+      files: new LocalFileOps(() => path.resolve(sessionsDir, '..', '..', '..')),
+      transcriptsDir: '.claude/projects/-workspace',
+      sessionId: 's1',
+      runId: 'wf_sp',
+    })
     expect(tree!.name).toBe('probe')
     expect(tree!.phases.map((p) => p.title)).toEqual(['Analyze'])
     // args.videos fan-out (3) + the single merge call site.
@@ -277,7 +361,12 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
         },
       }) + '\n'
     )
-    const tree = await buildWorkflowTree({ sessionsDir, sessionId: 's1', runId: 'wf_esc' })
+    const tree = await buildWorkflowTree({
+      files: new LocalFileOps(() => path.resolve(sessionsDir, '..', '..', '..')),
+      transcriptsDir: '.claude/projects/-workspace',
+      sessionId: 's1',
+      runId: 'wf_esc',
+    })
     expect(tree!.name).toBeNull() // traversal path ignored → degraded (script-less) tree
   })
 
@@ -292,7 +381,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
       journal: [{ type: 'started', key: 'v2:1', agentId: 'w1' }],
       agents: [{ agentId: 'w1', firstPrompt: 'do the thing' }],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({ label: 'worker', phase: 'Go', status: 'running', result: null })
   })
 
@@ -319,7 +408,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
         },
       ],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({ status: 'failed', result: 'request_too_large: 413' })
   })
 
@@ -340,7 +429,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
         },
       ],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({ status: 'running', result: null })
   })
 
@@ -361,7 +450,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
         },
       ],
     })
-    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({ status: 'done', result: 'all good' })
   })
 })
@@ -409,7 +498,7 @@ describe('buildWorkflowTree — transcript reads stay bounded', () => {
     })
 
     try {
-      const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+      const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
       expect(tree!.agents).toHaveLength(AGENT_COUNT)
       // Sanity: the transcripts really were read concurrently, so the cap is
       // what bounds this rather than the reads happening to serialize.

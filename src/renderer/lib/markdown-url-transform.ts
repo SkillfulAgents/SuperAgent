@@ -1,5 +1,6 @@
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown'
-import { getApiBaseUrl } from './env'
+import { isPreviewableImage } from './file-types'
+import { getAgentFileUrl, isSafeWorkspaceFilePath } from './workspace-file-url'
 
 // react-markdown's defaultUrlTransform passes only URLs whose scheme matches
 // ^(https?|ircs?|mailto|xmpp)$ and rewrites everything else to '' (an empty
@@ -51,8 +52,6 @@ export interface MarkdownImageContext {
   agentSlug?: string
 }
 
-const IMAGE_FILE_EXTENSION = /\.(?:avif|gif|jpe?g|png|webp)$/i
-
 /** Resolve an agent-workspace file without ever handing `file:` to Chromium. */
 function workspaceImageUrl(url: string, agentSlug: string): string | null {
   let pathname: string
@@ -64,17 +63,14 @@ function workspaceImageUrl(url: string, agentSlug: string): string | null {
     return null
   }
 
-  const prefix = '/workspace/'
-  if (!pathname.startsWith(prefix) || !IMAGE_FILE_EXTENSION.test(pathname)) return null
+  // Both questions are answered where they are answered for every other
+  // surface: whether the path is inside the workspace and free of traversal,
+  // and whether the file is one a renderer here can draw. This used to carry
+  // its own copy of each, and the copies had drifted — an `.svg` the drawer
+  // previews was refused inline, and an `.avif` it did not was allowed.
+  if (!isSafeWorkspaceFilePath(pathname) || !isPreviewableImage(pathname)) return null
 
-  const parts = pathname.slice(prefix.length).split('/')
-  if (parts.length === 0 || parts.some((part) => !part || part === '.' || part === '..')) return null
-
-  const encodedPath = parts.map(encodeURIComponent).join('/')
-  return (
-    `${getApiBaseUrl()}/api/agents/${encodeURIComponent(agentSlug)}` +
-    `/files/${encodedPath}?inline=true`
-  )
+  return getAgentFileUrl(agentSlug, pathname, { inline: true })
 }
 
 /**

@@ -5,9 +5,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { SessionView } from './session-view'
 
+const xAgentSession = {
+  id: 'x-session', agentSlug: 'target-agent', name: 'Invoked by Caller Agent',
+  invokedByAgentSlug: 'caller-agent', invokedByAgentName: 'Caller Agent',
+}
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   markRead: vi.fn(),
+  setMarkedUnread: vi.fn(),
+  // Reports whether a dot was actually showing; defaults to the common no-op open.
+  clearUnread: vi.fn(() => false),
+  session: {} as Record<string, unknown>,
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -15,16 +23,11 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
-  useSession: () => ({
-    data: {
-      id: 'x-session',
-      agentSlug: 'target-agent',
-      name: 'Invoked by Caller Agent',
-      invokedByAgentSlug: 'caller-agent',
-      invokedByAgentName: 'Caller Agent',
-    },
-    error: null,
-  }),
+  useSession: () => ({ data: mocks.session, error: null }),
+  // Opening a session clears any "mark as unread" flag alongside the
+  // notification read-marking below.
+  useSetSessionMarkedUnread: () => ({ mutate: mocks.setMarkedUnread }),
+  useClearSessionUnread: () => mocks.clearUnread,
 }))
 
 vi.mock('@renderer/hooks/use-notifications', () => ({
@@ -58,9 +61,49 @@ vi.mock('@renderer/context/workflow-context', () => ({
   WorkflowProvider: ({ children }: { children: ReactNode }) => children,
 }))
 
+describe('SessionView unread clearing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.session = xAgentSession
+    mocks.clearUnread.mockReturnValue(false)
+  })
+
+  it('takes the dot down in the caches on mount and writes through immediately', () => {
+    mocks.clearUnread.mockReturnValue(true)
+    render(<SessionView agentSlug="target-agent" sessionId="x-session" />)
+
+    expect(mocks.clearUnread).toHaveBeenCalledWith('target-agent', 'x-session')
+    // A dot that was actually showing must not be able to come back on the next
+    // refetch, so its write does not wait out the quick-navigation debounce.
+    expect(mocks.markRead).toHaveBeenCalledWith('x-session')
+    expect(mocks.setMarkedUnread).toHaveBeenCalledWith({
+      sessionId: 'x-session',
+      agentSlug: 'target-agent',
+      markedUnread: false,
+    })
+  })
+
+  it('keeps the debounce for an open with no dot showing', () => {
+    vi.useFakeTimers()
+    try {
+      render(<SessionView agentSlug="target-agent" sessionId="x-session" />)
+
+      expect(mocks.markRead).not.toHaveBeenCalled()
+      expect(mocks.setMarkedUnread).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(1000)
+      expect(mocks.markRead).toHaveBeenCalledWith('x-session')
+      expect(mocks.setMarkedUnread).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('SessionView x-agent provenance', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.session = xAgentSession
+    mocks.clearUnread.mockReturnValue(false)
   })
 
   it('shows the Back bar and returns to Called from Other Agents', () => {
@@ -74,5 +117,40 @@ describe('SessionView x-agent provenance', () => {
       to: '/agents/$slug/called-from-agents',
       params: { slug: 'target-agent' },
     })
+  })
+})
+
+describe('SessionView widget repair provenance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.session = {
+      id: 'repair-session',
+      agentSlug: 'target-agent',
+      name: 'Invoked to fix widget',
+      isWidgetRepair: true,
+      widgetRepairSlug: 'weather',
+    }
+    mocks.clearUnread.mockReturnValue(false)
+  })
+
+  it('identifies the widget and returns to the invocation history', () => {
+    render(<SessionView agentSlug="target-agent" sessionId="repair-session" />)
+
+    expect(screen.getByTestId('widget-repair-session-banner')).toHaveTextContent('Invoked to fix widget: weather')
+    expect(screen.queryByTestId('x-agent-session-banner')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('widget-repair-session-back-button'))
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/called-from-agents',
+      params: { slug: 'target-agent' },
+    })
+  })
+})
+
+describe('SessionView fork provenance', () => {
+  it('draws no header bar for a fork; the thread marks the fork point instead', () => {
+    mocks.session = { id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)', forkedFromSessionId: 'src-1', forkedFromSessionName: 'Pricing' }
+    render(<SessionView agentSlug="agent-a" sessionId="fork-1" />)
+
+    expect(screen.queryByTestId('fork-session-banner')).toBeNull()
   })
 })

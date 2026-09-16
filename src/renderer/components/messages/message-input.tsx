@@ -1,12 +1,22 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { getApiBaseUrl } from '@renderer/lib/env'
-import { useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
+import { useMessages, useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { labelBackgroundTasks } from '@renderer/lib/background-task-label'
+import { StopSessionDialog } from './stop-session-dialog'
 import { WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
+import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
+import { VoiceModeComposer } from './voice-mode-composer'
+import { VoiceModeControls, useHoldSoundPreference } from './voice-mode-controls'
+import { useVoiceMode } from '@renderer/hooks/use-voice-mode'
+import { useHoldSound } from '@renderer/hooks/use-hold-sound'
+import { readAloud } from '@renderer/lib/voice/services/read-aloud'
+import { clearVoiceModeRequest, isVoiceModeRequested, setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
+import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { ComposerActionButton } from './composer-action-button'
 import { SlashCommandMenu } from './slash-command-menu'
@@ -40,9 +50,16 @@ interface MessageInputProps {
   initialModel?: string
   /** Registers a getter so the stale-session prompt can move the live draft. */
   registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
+  /**
+   * Hidden behind a request card the agent is waiting on. Voice mode pauses
+   * (mic closed, the reply being read finishes, no hold sound) and resumes
+   * when the card is gone, rather than ending, so the agent is not told the
+   * person left.
+   */
+  suspended?: boolean
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, registerSnapshot }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, registerSnapshot, suspended = false }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -67,7 +84,20 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()
   const interruptSession = useInterruptSession()
-  const { isActive, slashCommands, isWaitingBackground } = useMessageStream(sessionId, agentSlug)
+  const { isActive, slashCommands, isWaitingBackground, backgroundTasks } = useMessageStream(sessionId, agentSlug)
+  // The Stop dialog names what is running; the launching tool calls in the
+  // transcript carry the names.
+  const { data: messages } = useMessages(sessionId, agentSlug)
+  const [stopDialogOpen, setStopDialogOpen] = useState(false)
+  const stopDialogTasks = useMemo(
+    () => (stopDialogOpen ? labelBackgroundTasks(backgroundTasks, messages) : []),
+    [stopDialogOpen, backgroundTasks, messages]
+  )
+  // The tasks can finish while the question is open; with none left there is
+  // nothing to decide, and the next Stop goes straight through.
+  useEffect(() => {
+    if (stopDialogOpen && backgroundTasks.length === 0) setStopDialogOpen(false)
+  }, [stopDialogOpen, backgroundTasks.length])
   const isOnline = useIsOnline()
   const isOffline = !isOnline
   const { track } = useAnalyticsTracking()
@@ -121,7 +151,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         onMessageFailed?.(localId)
         throw error
       }
-      track('message_sent')
+      track('message_sent', { origin: 'user' })
     }, [onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
     submitDisabled: sendMessage.isPending || isOffline || !isRuntimeReady,
     draftKey: `session:${sessionId}`,
@@ -201,13 +231,24 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     }
   }, [composer, slashCommands.length, isAuthMode, agentSlug, sessionId])
 
-  const handleInterrupt = async () => {
+  const runInterrupt = async (scope: 'turn' | 'all') => {
     if (interruptSession.isPending) return
     try {
-      await interruptSession.mutateAsync({ sessionId, agentSlug })
+      await interruptSession.mutateAsync({ sessionId, agentSlug, scope })
     } catch (error) {
       console.error('Failed to interrupt session:', error)
     }
+  }
+
+  // Stop ends the response. Background tasks are the user's call: with any
+  // running, ask whether they go too, instead of killing them silently.
+  const handleInterrupt = () => {
+    if (interruptSession.isPending) return
+    if (backgroundTasks.length > 0) {
+      setStopDialogOpen(true)
+      return
+    }
+    void runInterrupt('turn')
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -249,9 +290,143 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
 
   const isDisabled = sendMessage.isPending || composer.isUploading || isOffline || !isRuntimeReady
 
+  // Voice mode. A session opened from the home page's voice button arrives
+  // with the request already made (and the entry notice already sent as its
+  // first message); otherwise it starts here, with the notice appended for
+  // the agent to read with the next utterance.
+  const [openedByVoice] = useState(() => isVoiceModeRequested(sessionId))
+  const [voiceModeOn, setVoiceModeOn] = useState(openedByVoice)
+  useEffect(() => clearVoiceModeRequest(sessionId), [sessionId])
+  // The rest of the session view draws around the mic (activity card, hints).
+  useEffect(() => {
+    setVoiceModeActive(sessionId, voiceModeOn)
+    return () => setVoiceModeActive(sessionId, false)
+  }, [sessionId, voiceModeOn])
+  // Its own mutation: the composer treats a pending send as "busy", and an
+  // utterance spoken while the entry notice is still in flight must not be
+  // dropped for it.
+  // A notice that fails (the session was deleted, the app is offline as
+  // the person leaves) is not worth a toast: the agent misses a hint.
+  const sendNotice = useSendMessage({ quiet: true })
+  const sendNoticeRef = useRef<(content: string) => void>(() => {})
+  sendNoticeRef.current = (content: string) => {
+    sendNotice.mutate(
+      { sessionId, agentSlug, content, shouldQuery: false },
+      { onError: (err) => console.warn('Voice-mode notice not delivered:', err) },
+    )
+  }
+  const enterVoiceMode = useCallback(() => {
+    // Audio output is unlocked inside the click, for the first reply to use.
+    readAloud.unlockAudio()
+    setVoiceModeOn(true)
+    sendNoticeRef.current(VOICE_MODE_ENTERED_MESSAGE)
+    track('voice_mode_entered', { origin: 'session' })
+  }, [track])
+  const exitVoiceMode = useCallback(() => setVoiceModeOn(false), [])
+  const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const trackRef = useRef(track)
+  trackRef.current = track
+  // Leaving voice mode — by the exit button or by navigating away from the
+  // session — tells the agent. Deferred a tick so a development-mode
+  // remount does not send it for a mode that is still on.
+  useEffect(() => {
+    if (!voiceModeOn) return
+    return () => {
+      const timer = setTimeout(() => {
+        sendNoticeRef.current(VOICE_MODE_EXITED_MESSAGE)
+        trackRef.current('voice_mode_exited', { origin: openedByVoice ? 'home' : 'session' })
+      }, 0)
+      exitTimerRef.current = timer
+    }
+  }, [voiceModeOn, openedByVoice])
+  useEffect(() => {
+    if (!voiceModeOn || exitTimerRef.current === null) return
+    clearTimeout(exitTimerRef.current)
+    exitTimerRef.current = null
+  }, [voiceModeOn])
+  const { submitMessage } = composer
+  const voiceHistory = useMemo(() => (messages ?? []).slice(-24).flatMap((message) =>
+      (message.type === 'user' || message.type === 'assistant') && message.content.text.trim()
+        ? [{ role: message.type, content: message.content.text.slice(-4000) }]
+        : [],
+    ).slice(-24), [messages])
+  const voice = useVoiceMode({
+    sessionId,
+    agentSlug,
+    active: voiceModeOn && !isViewOnly,
+    paused: suspended,
+    send: submitMessage,
+    startWithAgentTurn: openedByVoice,
+    history: voiceHistory,
+  })
+  // Something to hear while the agent works, unless the person muted it.
+  const holdSoundWanted = useHoldSoundPreference()
+  useHoldSound({
+    enabled: voiceModeOn && !isViewOnly && !suspended && holdSoundWanted,
+    agentTurn: voice.hold.allowed,
+    delayMs: voice.hold.delayMs,
+    speaking: voice.speechActive ?? voice.phase === 'speaking',
+    working: voice.working,
+  })
+
 
   if (isViewOnly) {
     return null
+  }
+
+  if (voiceModeOn) {
+    return (
+      <div
+        className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+        {...composer.dragHandlers}
+      >
+        <MountChoiceDialog
+          open={composer.mountDialog.open}
+          onChoice={composer.mountDialog.onChoice}
+          folderName={composer.mountDialog.folderName}
+        />
+        <VoiceModeComposer
+          phase={voice.phase}
+          utterance={voice.utterance}
+          transcript={voice.transcript}
+          error={voice.error}
+          onClearError={voice.clearError}
+          onPressMic={voice.pressMic}
+          getAnalyser={voice.getAnalyser}
+          onExit={exitVoiceMode}
+          attachments={composer.attachments}
+          onRemoveAttachment={composer.removeAttachment}
+          onRetryAttachment={composer.retryAttachment}
+          attachmentPicker={(
+            <AttachmentPicker
+              onFileSelect={composer.handleFileSelect}
+              onFolderSelect={composer.handleFolderSelect}
+              onRecentFileAttach={(file) => composer.addFiles([{ file }])}
+              disabled={isDisabled}
+            />
+          )}
+          composerOptions={(
+            <ComposerOptions
+              state={composerOptions}
+              disabled={isDisabled || isActive}
+              footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
+            />
+          )}
+          voiceControls={<VoiceModeControls showSpeed={voice.capabilities.speechSpeed} />}
+          footer={(
+            <>
+              {isOffline && (
+                <div className="mt-2 flex items-center justify-center gap-1.5 text-xs text-destructive">
+                  <WifiOff className="h-3 w-3 shrink-0" />
+                  <span>No internet connection. Messages cannot be sent.</span>
+                </div>
+              )}
+              <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2 justify-center" />
+            </>
+          )}
+        />
+      </div>
+    )
   }
 
   return (
@@ -260,6 +435,16 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       {...composer.dragHandlers}
     >
+      <StopSessionDialog
+        open={stopDialogOpen}
+        onOpenChange={setStopDialogOpen}
+        tasks={stopDialogTasks}
+        // Waiting on background work means the response already ended; the
+        // only thing left to stop is the tasks themselves.
+        turnInProgress={!isWaitingBackground}
+        onStopTurn={() => { setStopDialogOpen(false); void runInterrupt('turn') }}
+        onStopAll={() => { setStopDialogOpen(false); void runInterrupt('all') }}
+      />
       <MountChoiceDialog
         open={composer.mountDialog.open}
         onChoice={composer.mountDialog.onChoice}
@@ -327,6 +512,8 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
               message={composer.message}
               disabled={isDisabled}
             />
+            {/* Not mid-dictation: that mic and socket would stay open under voice mode's own. */}
+            <VoiceModeButton onClick={enterVoiceMode} disabled={isDisabled || composer.voiceInput.isRecording || composer.voiceInput.isConnecting} />
             <ComposerActionButton
               isActive={isActive}
               isWaitingBackground={isWaitingBackground}

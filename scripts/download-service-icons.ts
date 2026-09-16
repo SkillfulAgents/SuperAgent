@@ -38,6 +38,9 @@ const ALL_SLUGS = [
 
 // Slugs that share an icon with another service (saved under each slug's own filename)
 const SHARED_ICON_SLUGS: Record<string, string> = {
+  // Both Meta Ads rows share one mark. The logo source has no Meta glyph, so the
+  // Facebook mark stands in for it.
+  'meta-ads-official': 'facebook',
   'cloudflare-docs': 'cloudflare',
   'cloudflare-workers': 'cloudflare',
   'cloudflare-observability': 'cloudflare',
@@ -56,7 +59,7 @@ const SLUG_TO_API_NAME: Record<string, string> = {
   'googletasks': 'google-tasks',
   'dodo-payments': 'dodo',
   'microsoft-learn': 'microsoft',
-  'meta-ads': 'meta',
+  'meta-ads': 'facebook',
   'ean-search': 'ean',
   'short-io': 'short',
   'stackoverflow': 'stack-overflow',
@@ -83,6 +86,17 @@ function normalizeSvg(svg: string): string {
   return optimizeServiceIcon(sanitized)
 }
 
+// The logos API answers 200 with a generic grey placeholder for names it holds no
+// logo for, so a successful fetch is not proof of a real mark. Detect it by the
+// two colors its grid background is drawn with — no real icon in the set uses them.
+const PLACEHOLDER_GRID_STROKE = '#e4e4e7'
+const PLACEHOLDER_BACKGROUND_FILL = '#fafafa'
+
+function isPlaceholderSvg(svg: string): boolean {
+  const lower = svg.toLowerCase()
+  return lower.includes(PLACEHOLDER_GRID_STROKE) && lower.includes(PLACEHOLDER_BACKGROUND_FILL)
+}
+
 async function fetchSvg(apiName: string): Promise<string | null> {
   try {
     const res = await fetch(`${COMPOSIO_LOGOS_API}/${apiName}`)
@@ -91,6 +105,7 @@ async function fetchSvg(apiName: string): Promise<string | null> {
     if (!contentType.includes('svg')) return null
     const svg = await res.text()
     if (!svg.includes('<svg')) return null
+    if (isPlaceholderSvg(svg)) return null
     return normalizeSvg(svg)
   } catch {
     return null

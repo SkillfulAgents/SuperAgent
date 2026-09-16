@@ -44,7 +44,6 @@ vi.mock('./auth-tab', () => ({
   ),
 }))
 
-vi.mock('./profile-tab', () => ({ ProfileTab: () => null }))
 vi.mock('./mobile-tab', () => ({ MobileTab: () => null }))
 vi.mock('./general-tab', () => ({ GeneralTab: () => null }))
 vi.mock('./runtime-tab', () => ({ RuntimeTab: () => null }))
@@ -68,9 +67,14 @@ vi.mock('./settings-page', () => ({
   SettingsPage: ({
     groups,
   }: {
-    groups: Array<{ sections: Array<{ id: string; render: () => React.ReactNode }> }>
+    groups: Array<{ label?: string; sections: Array<{ id: string; render: () => React.ReactNode }> }>
   }) => (
     <div>
+      {groups.map((g) => (
+        <div key={g.label} data-testid={`group-order:${g.label}`}>
+          {g.sections.map((s) => s.id).join(',')}
+        </div>
+      ))}
       {groups
         .flatMap((g) => g.sections)
         .filter((s) => s.id === 'users' || s.id === 'auth')
@@ -159,5 +163,60 @@ describe('GlobalSettingsPage platform-controlled Users/Auth', () => {
     const usersTab = await screen.findByTestId('users-tab')
     expect(usersTab).toHaveAttribute('data-platform-controlled', '0')
     expect(usersTab).toHaveAttribute('data-invite-href', '')
+  })
+})
+
+describe('GlobalSettingsPage nav order', () => {
+  beforeEach(() => {
+    platformAuthMock.mockReturnValue({ data: undefined })
+  })
+
+  function groupOrder(label: string): string[] {
+    return screen.getByTestId(`group-order:${label}`).textContent!.split(',')
+  }
+
+  function renderPage() {
+    render(<GlobalSettingsPage onClose={() => {}} onOpenWizard={() => {}} />)
+  }
+
+  it('anchors General first and Admin last in App Settings for an auth-mode admin', () => {
+    useUserMock.mockReturnValue({ isAuthMode: true, isAdmin: true })
+    renderPage()
+    const order = groupOrder('App Settings')
+    expect(order[0]).toBe('general')
+    expect(order.at(-1)).toBe('admin')
+    // Auth sits directly above Admin — the mode-gated items stay between the anchors.
+    expect(order.at(-2)).toBe('auth')
+  })
+
+  it('anchors General first and Admin last in App Settings in local mode', () => {
+    useUserMock.mockReturnValue({ isAuthMode: false, isAdmin: false })
+    renderPage()
+    const order = groupOrder('App Settings')
+    expect(order[0]).toBe('general')
+    expect(order.at(-1)).toBe('admin')
+  })
+
+  it('keeps General first for a non-admin auth user, who has no Admin entry', () => {
+    useUserMock.mockReturnValue({ isAuthMode: true, isAdmin: false })
+    renderPage()
+    const order = groupOrder('App Settings')
+    expect(order[0]).toBe('general')
+    expect(order).not.toContain('admin')
+  })
+
+  it('leads Agent Capabilities with Mobile in auth mode, ahead of Connections', () => {
+    useUserMock.mockReturnValue({ isAuthMode: true, isAdmin: true })
+    renderPage()
+    expect(groupOrder('Agent Capabilities').slice(0, 2)).toEqual(['mobile', 'connections'])
+    expect(groupOrder('App Settings')).not.toContain('mobile')
+  })
+
+  it('has no Mobile entry in local mode, so Connections leads Agent Capabilities', () => {
+    useUserMock.mockReturnValue({ isAuthMode: false, isAdmin: false })
+    renderPage()
+    const order = groupOrder('Agent Capabilities')
+    expect(order[0]).toBe('connections')
+    expect(order).not.toContain('mobile')
   })
 })

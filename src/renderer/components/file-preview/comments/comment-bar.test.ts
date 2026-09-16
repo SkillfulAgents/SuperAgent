@@ -5,7 +5,7 @@ import type { FileComment } from '@renderer/context/file-preview-context'
 describe('formatComments', () => {
   it('formats text selection comments with quoted context', () => {
     const comments: FileComment[] = [
-      { id: '1', filePath: '/workspace/report.md', text: 'Please double-check this', selectedText: 'revenue grew by 15%' },
+      { id: '1', filePath: '/workspace/report.md', agentSlug: 'test-agent', text: 'Please double-check this', selectedText: 'revenue grew by 15%' },
     ]
     const result = formatComments('/workspace/report.md', comments)
     expect(result).toContain('File feedback on `report.md`')
@@ -15,7 +15,7 @@ describe('formatComments', () => {
 
   it('formats image annotation comments with coordinates', () => {
     const comments: FileComment[] = [
-      { id: '1', filePath: '/workspace/screenshot.png', text: 'Button misaligned', x: 45.3, y: 72.8 },
+      { id: '1', filePath: '/workspace/screenshot.png', agentSlug: 'test-agent', text: 'Button misaligned', x: 45.3, y: 72.8 },
     ]
     const result = formatComments('/workspace/screenshot.png', comments)
     expect(result).toContain('File feedback on `screenshot.png`')
@@ -25,7 +25,7 @@ describe('formatComments', () => {
 
   it('formats video comments with a timestamp and in-frame position', () => {
     const comments: FileComment[] = [
-      { id: '1', filePath: '/workspace/clip.mp4', text: 'Cut this scene', timestamp: 75.4, x: 30.2, y: 60.9 },
+      { id: '1', filePath: '/workspace/clip.mp4', agentSlug: 'test-agent', text: 'Cut this scene', timestamp: 75.4, x: 30.2, y: 60.9 },
     ]
     const result = formatComments('/workspace/clip.mp4', comments)
     expect(result).toContain('File feedback on `clip.mp4`')
@@ -35,7 +35,7 @@ describe('formatComments', () => {
 
   it('formats a video comment with a timestamp but no in-frame position', () => {
     const comments: FileComment[] = [
-      { id: '1', filePath: '/workspace/clip.mp4', text: 'Audio drops out', timestamp: 5 },
+      { id: '1', filePath: '/workspace/clip.mp4', agentSlug: 'test-agent', text: 'Audio drops out', timestamp: 5 },
     ]
     const result = formatComments('/workspace/clip.mp4', comments)
     expect(result).toContain('At 0:05:')
@@ -44,8 +44,8 @@ describe('formatComments', () => {
 
   it('formats multiple comments with blank line separators', () => {
     const comments: FileComment[] = [
-      { id: '1', filePath: '/workspace/doc.md', text: 'Fix typo', selectedText: 'teh' },
-      { id: '2', filePath: '/workspace/doc.md', text: 'Expand this section', selectedText: 'Conclusion' },
+      { id: '1', filePath: '/workspace/doc.md', agentSlug: 'test-agent', text: 'Fix typo', selectedText: 'teh' },
+      { id: '2', filePath: '/workspace/doc.md', agentSlug: 'test-agent', text: 'Expand this section', selectedText: 'Conclusion' },
     ]
     const result = formatComments('/workspace/doc.md', comments)
     const lines = result.split('\n')
@@ -57,7 +57,7 @@ describe('formatComments', () => {
 
   it('formats plain comments without context', () => {
     const comments: FileComment[] = [
-      { id: '1', filePath: '/workspace/file.txt', text: 'General feedback here' },
+      { id: '1', filePath: '/workspace/file.txt', agentSlug: 'test-agent', text: 'General feedback here' },
     ]
     const result = formatComments('/workspace/file.txt', comments)
     expect(result).toContain('General feedback here')
@@ -67,8 +67,8 @@ describe('formatComments', () => {
 
   it('handles mixed comment types', () => {
     const comments: FileComment[] = [
-      { id: '1', filePath: '/workspace/doc.md', text: 'Wrong number', selectedText: '42%' },
-      { id: '2', filePath: '/workspace/doc.md', text: 'Logo off-center', x: 50, y: 10 },
+      { id: '1', filePath: '/workspace/doc.md', agentSlug: 'test-agent', text: 'Wrong number', selectedText: '42%' },
+      { id: '2', filePath: '/workspace/doc.md', agentSlug: 'test-agent', text: 'Logo off-center', x: 50, y: 10 },
     ]
     const result = formatComments('/workspace/doc.md', comments)
     expect(result).toContain('> "42%"')
@@ -80,6 +80,7 @@ describe('formatComments', () => {
       {
         id: '1',
         filePath: '/workspace/contacts.csv',
+        agentSlug: 'test-agent',
         text: 'This email looks malformed',
         cell: { row: 3, col: 2, column: 'Email', value: 'john@@example' },
       },
@@ -95,6 +96,7 @@ describe('formatComments', () => {
       {
         id: '1',
         filePath: '/workspace/data.csv',
+        agentSlug: 'test-agent',
         text: 'Missing value here',
         cell: { row: 5, col: 0, column: 'Name' },
       },
@@ -109,6 +111,7 @@ describe('formatComments', () => {
       {
         id: '1',
         filePath: '/workspace/data.csv',
+        agentSlug: 'test-agent',
         text: 'should not be blank',
         cell: { row: 2, col: 1, column: 'Email', value: '' },
       },
@@ -122,6 +125,7 @@ describe('formatComments', () => {
       {
         id: '1',
         filePath: '/workspace/specs.csv',
+        agentSlug: 'test-agent',
         text: 'check this',
         cell: { row: 4, col: 0, column: 'Size', value: '27" monitor' },
       },
@@ -132,8 +136,8 @@ describe('formatComments', () => {
 
   it('disambiguates duplicate column names via the column position', () => {
     const comments: FileComment[] = [
-      { id: '1', filePath: '/d.csv', text: 'a', cell: { row: 1, col: 1, column: 'Email', value: 'x' } },
-      { id: '2', filePath: '/d.csv', text: 'b', cell: { row: 1, col: 2, column: 'Email', value: 'y' } },
+      { id: '1', filePath: '/d.csv', agentSlug: 'test-agent', text: 'a', cell: { row: 1, col: 1, column: 'Email', value: 'x' } },
+      { id: '2', filePath: '/d.csv', agentSlug: 'test-agent', text: 'b', cell: { row: 1, col: 2, column: 'Email', value: 'y' } },
     ]
     const result = formatComments('/d.csv', comments)
     expect(result).toContain('At cell 1:Email (col 2, value: "x"):')
@@ -146,6 +150,7 @@ describe('formatComments', () => {
       {
         id: '1',
         filePath: '/workspace/data.csv',
+        agentSlug: 'test-agent',
         text: 'too long',
         cell: { row: 1, col: 0, column: 'Blob', value: long },
       },
@@ -157,7 +162,7 @@ describe('formatComments', () => {
 
   it('extracts filename from full path', () => {
     const result = formatComments('/workspace/deep/nested/file.pdf', [
-      { id: '1', filePath: '/workspace/deep/nested/file.pdf', text: 'test' },
+      { id: '1', filePath: '/workspace/deep/nested/file.pdf', agentSlug: 'test-agent', text: 'test' },
     ])
     expect(result).toContain('`file.pdf`')
   })

@@ -12,7 +12,7 @@ vi.mock('@renderer/components/messages/message-list', () => ({
   ),
 }))
 vi.mock('@renderer/components/messages/message-input', () => ({
-  MessageInput: () => <div data-testid="message-input-mock" />,
+  MessageInput: ({ suspended }: { suspended?: boolean }) => <div data-testid="message-input-mock" data-suspended={String(!!suspended)} />,
 }))
 vi.mock('@renderer/components/messages/agent-activity-indicator', () => ({
   AgentActivityIndicator: () => null,
@@ -83,18 +83,21 @@ describe('SessionChatColumn composer swap', () => {
 
   it('renders MessageInput when there are no pending requests', () => {
     renderWithProviders(<SessionChatColumn {...baseProps} />)
-    expect(screen.getByTestId('message-input-mock')).toBeInTheDocument()
+    expect(screen.getByTestId('message-input-mock')).toBeVisible()
+    expect(screen.getByTestId('message-input-mock')).toHaveAttribute('data-suspended', 'false')
     expect(screen.queryByTestId('pending-request-stack')).not.toBeInTheDocument()
     expect(screen.queryByTestId('pending-request-slot')).not.toBeInTheDocument()
   })
 
-  it('replaces MessageInput with PendingRequestStack when a request is pending', () => {
+  it('hides MessageInput behind the PendingRequestStack while a request is pending, keeping it mounted and paused', () => {
     mockPendingResult.items = [secretDescriptor]
     mockPendingResult.count = 1
 
     renderWithProviders(<SessionChatColumn {...baseProps} />)
 
-    expect(screen.queryByTestId('message-input-mock')).not.toBeInTheDocument()
+    // Mounted, so a draft or voice mode survives the request; paused and out of sight meanwhile.
+    expect(screen.getByTestId('message-input-mock')).not.toBeVisible()
+    expect(screen.getByTestId('message-input-mock')).toHaveAttribute('data-suspended', 'true')
     expect(screen.getByTestId('pending-request-slot')).toBeInTheDocument()
     expect(screen.getByTestId('pending-request-stack')).toBeInTheDocument()
     expect(screen.getByTestId('pending-secret')).toBeInTheDocument()
@@ -135,8 +138,9 @@ describe('SessionChatColumn composer swap', () => {
 
     renderWithProviders(<SessionChatColumn {...baseProps} />)
 
-    expect(screen.queryByText('Send')).not.toBeInTheDocument()
-    expect(screen.queryByText('New line')).not.toBeInTheDocument()
+    // Mounted behind the card with the composer, but out of sight.
+    expect(screen.getByText('Send')).not.toBeVisible()
+    expect(screen.getByText('New line')).not.toBeVisible()
   })
 
   it('shows the new-conversation notice for an old session with a large context', () => {

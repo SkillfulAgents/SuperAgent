@@ -71,8 +71,15 @@ export const sessionMetadataSchema = z
     speed: z.string().optional(),
     model: z.string().optional(),
     invokedByAgentSlug: z.string().optional(),
+    // Widget repair session: automated, and the slug is the dedupe key that
+    // stops a permanently broken widget opening one session per refresh.
+    isWidgetRepair: z.boolean().optional(),
+    widgetRepairSlug: z.string().optional(),
     dispatchedByDashboardSlug: z.string().optional(),
     dispatchedByDashboardAgentSlug: z.string().optional(),
+    // Fork lineage: the session this one was copied from. Provenance only —
+    // a fork is a normal user session, never hidden as automated.
+    forkedFromSessionId: z.string().optional(),
   })
   .loose()
 

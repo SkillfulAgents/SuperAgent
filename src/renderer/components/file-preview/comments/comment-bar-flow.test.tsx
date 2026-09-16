@@ -37,6 +37,7 @@ describe('CommentBar feedback submission', () => {
     const comments: FileComment[] = [{
       id: 'comment-1',
       filePath: '/workspace/report.md',
+      agentSlug: 'test-agent',
       text: 'Clarify this conclusion',
       selectedText: 'Results were mixed',
     }]
@@ -48,6 +49,7 @@ describe('CommentBar feedback submission', () => {
         <CommentBar
           comments={comments}
           filePath="/workspace/report.md"
+          agentSlug="test-agent"
           sessionId={sessionId}
         />
       </>,

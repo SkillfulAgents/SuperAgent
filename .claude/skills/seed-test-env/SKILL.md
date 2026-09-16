@@ -39,7 +39,7 @@ Pick the first that exists AND has a populated `apiKeys.anthropicApiKey` (or ano
 
 ### 3. Create structure
 
-For each agent, create `agents/<slug>/workspace/CLAUDE.md`. **Important:** the CLAUDE.md lives inside `workspace/`, NOT directly under the agent dir. The file-storage layer (`src/shared/lib/utils/file-storage.ts:getAgentClaudeMdPath`) hard-codes that path — putting it elsewhere makes the agent invisible.
+For each agent, create `agents/<slug>/workspace/CLAUDE.md`. Write them before the first launch of the data dir: the app imports agent directories into its catalog table once, by a data migration when the database is first opened, and does not scan the directory again. An agent directory added to an already-launched data dir will not show up. **Important:** the CLAUDE.md lives inside `workspace/`, NOT directly under the agent dir. The file-storage layer (`src/shared/lib/utils/file-storage.ts:getAgentClaudeMdPath`) hard-codes that path — putting it elsewhere makes the agent invisible.
 
 CLAUDE.md uses YAML frontmatter delimited by `---`. Required fields: `name`, `createdAt` (ISO string). Optional: `description`. Body is the agent's instructions. Mirror the format from `src/shared/lib/services/agent-service.ts:createAgent`. Example:
 

@@ -3,6 +3,8 @@ import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/s
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
+import { defaultParseErrorResponse, type ProviderErrorPresentation } from './error-presentation'
+import { PROVIDER_ERROR_CODES, isUpstreamApiErrorCode } from '@shared/lib/types/api'
 
 export { LLM_PROVIDER_IDS } from './provider-types'
 export type { LlmProviderId } from './provider-types'
@@ -154,5 +156,32 @@ export abstract class BaseLlmProvider {
    */
   async searchModels(_query: string): Promise<ModelSearchResult[]> {
     throw new Error(`${this.name} does not support model search`)
+  }
+
+  // Presentation for a failed turn, or null when it is not a provider error.
+  // Only consulted for upstream API failures: classes this provider recognizes
+  // get one under any upstream code (the CLI tags some denials `unknown`);
+  // the generic banner only under a code that marks a provider error.
+  presentationForTurnError(
+    status: number | undefined,
+    body: unknown,
+    apiErrorCode: string | null | undefined,
+  ): ProviderErrorPresentation | null {
+    if (!isUpstreamApiErrorCode(apiErrorCode)) return null
+    const specialized = this.parseErrorResponseOverride(status, body)
+    if (specialized) return specialized
+    return PROVIDER_ERROR_CODES.has(apiErrorCode) ? defaultParseErrorResponse(status, body) : null
+  }
+
+  /**
+   * Provider-specific presentation for the error classes this provider
+   * recognizes. Return null for everything else — the generic banner is
+   * applied here in the base class, so overrides never build it themselves.
+   */
+  protected parseErrorResponseOverride(
+    _status: number | undefined,
+    _body: unknown,
+  ): ProviderErrorPresentation | null {
+    return null
   }
 }

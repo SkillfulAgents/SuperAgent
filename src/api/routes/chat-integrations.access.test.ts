@@ -90,15 +90,15 @@ const mockClearChatSessionById = vi.fn()
 const mockRemoveIntegration = vi.fn().mockResolvedValue(undefined)
 const mockSendContactCard = vi.fn().mockResolvedValue(undefined)
 
-vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
-  chatIntegrationManager: {
-    clearChatSessionById: (id: string) => mockClearChatSessionById(id),
-    notifyChatApproved: (...args: unknown[]) => mockNotifyChatApproved(...args),
-    tearDownChatSession: (...args: unknown[]) => mockTearDownChatSession(...args),
+vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
+  agentIntegrationManager: {
+    clearSessionById: (id: string) => mockClearChatSessionById(id),
+    notifyAccessApproved: (...args: unknown[]) => mockNotifyChatApproved(...args),
+    releaseExternalSession: (...args: unknown[]) => mockTearDownChatSession(...args),
     reconcileAccess: (...args: unknown[]) => mockReconcileAccess(...args),
     isIntegrationConnected: vi.fn(() => false),
     addIntegration: vi.fn(),
-    sendContactCard: (...args: unknown[]) => mockSendContactCard(...args),
+    integrationCreated: (...args: unknown[]) => mockSendContactCard(...args),
     removeIntegration: (...args: unknown[]) => mockRemoveIntegration(...args),
     pauseIntegration: vi.fn(),
     resumeIntegration: vi.fn(),
@@ -466,7 +466,7 @@ describe('chat-integrations access routes', () => {
         .get(accessId) as { status: string } | undefined
       expect(row?.status).toBe('denied')
 
-      // tearDownChatSession invoked with the right args
+      // releaseExternalSession invoked with the right args
       expect(mockTearDownChatSession).toHaveBeenCalledWith(INTEGRATION_A, 'chat-allowed')
     })
 
@@ -502,7 +502,7 @@ describe('chat-integrations access routes', () => {
         .prepare(`SELECT status FROM chat_integration_access WHERE id = ?`)
         .get(accessId) as { status: string } | undefined
       expect(row?.status).toBe('denied')
-      // tearDownChatSession IS called (it's a no-op when no live session exists);
+      // releaseExternalSession IS called (it's a no-op when no live session exists);
       // the key is that it does not throw.
       expect(mockTearDownChatSession).toHaveBeenCalledWith(INTEGRATION_A, 'chat-pending')
     })
@@ -524,7 +524,7 @@ describe('chat-integrations access routes', () => {
         .get(accessId) as { status: string } | undefined
       expect(row?.status).toBe('denied')
 
-      // tearDownChatSession must be called to kill the live SSE/forwarding session
+      // releaseExternalSession must be called to kill the live SSE/forwarding session
       expect(mockTearDownChatSession).toHaveBeenCalledWith(INTEGRATION_A, 'chat-allowed')
     })
   })

@@ -13,6 +13,7 @@ import {
   getProviderCatalog,
   getModelDefinition,
   getModelContextWindow,
+  getModelContextWindowMap,
   getModelPromptHints,
   hasVersionSegment,
   resolveModelForProvider,
@@ -60,7 +61,9 @@ describe('getProviderCatalog', () => {
       ['openai', 'gpt-5.6-sol'],
       ['xai', 'grok-4.6'],
       ['kimi', 'kimi-k3'],
-      ['meta', 'muse-spark-1.2'],
+      ['meta', 'muse-spark-1.3'],
+      ['zai', 'glm-5.3-flash'],
+      ['deepseek', 'deepseek-v4.1-flash'],
     ])
   })
 
@@ -217,6 +220,15 @@ describe('getProviderCatalog', () => {
       supportsWebFetch: false,
       pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     })
+    // Astra is selectable but not the family default: the bare `gpt` alias stays on Sol.
+    expect(catalog.find((m) => m.id === 'gpt-6-astra')).toMatchObject({
+      family: 'gpt',
+      supportsWebSearch: true,
+      supportsWebFetch: false,
+      pricing: { inputPerMtok: 10, outputPerMtok: 50 },
+      contextWindow: 1_050_000,
+    })
+    expect(catalog.find((m) => m.id === 'gpt-6-astra')!.isLatest).toBeFalsy()
     const gptLatest = catalog.filter((m) => m.family === 'gpt' && m.isLatest)
     expect(gptLatest.map((m) => m.id)).toEqual(['gpt-5.6-sol'])
     // Grok rides the same Responses wire (xai-responses upstream); bare id only.
@@ -250,6 +262,29 @@ describe('getProviderCatalog', () => {
       supportedSpeeds: ['normal', 'fast'],
       pricing: { inputPerMtok: 3, outputPerMtok: 15, speedMultipliers: { fast: 1.5 } },
     })
+    // Cloudflare Workers AI via the platform proxy. Bare id only.
+    expect(catalog.find((m) => m.id === 'glm-5.3-flash')).toMatchObject({
+      family: 'glm',
+      isLatest: true,
+      icon: 'zai',
+      supportsWebSearch: false,
+      supportsWebFetch: false,
+      supportsImageInput: true,
+      contextWindow: 1_048_576,
+      pricing: { inputPerMtok: 0.15, outputPerMtok: 0.5, cacheReadPerMtok: 0.03 },
+    })
+    // DeepSeek rides Fireworks' Anthropic-compatible wire; no fast router, so no speeds.
+    expect(catalog.find((m) => m.id === 'deepseek-v4.1-flash')).toMatchObject({
+      family: 'deepseek',
+      isLatest: true,
+      icon: 'deepseek',
+      supportsWebSearch: false,
+      supportsWebFetch: false,
+      supportsImageInput: true,
+      contextWindow: 1_040_000,
+      pricing: { inputPerMtok: 0.22, outputPerMtok: 0.66, cacheReadPerMtok: 0.007 },
+    })
+    expect(catalog.find((m) => m.id === 'deepseek-v4.1-flash')!.supportedSpeeds).toBeUndefined()
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
     expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
     expect(catalog.some((m) => m.id === 'z-ai/glm-5.2')).toBe(false)
@@ -495,6 +530,21 @@ describe('getModelContextWindow', () => {
   })
 })
 
+describe('getModelContextWindowMap', () => {
+  it('maps every Platform model that declares a window, non-latest included', () => {
+    const map = getModelContextWindowMap('platform')
+    expect(map['grok-4.6']).toBe(500_000)
+    expect(map['grok-4.5']).toBe(500_000)
+    expect(map['gpt-5.5']).toBe(1_050_000)
+    expect(map['gpt-5.4']).toBe(1_050_000)
+  })
+
+  it('omits Claude models (no catalog window; the SDK supplies theirs)', () => {
+    const map = getModelContextWindowMap('platform')
+    expect(Object.keys(map).some(id => id.startsWith('claude-'))).toBe(false)
+  })
+})
+
 describe('getModelPromptHints', () => {
   it('returns GPT-specific tool guidance for Platform and OpenRouter GPT models', () => {
     for (const [providerId, modelId] of [
@@ -586,14 +636,19 @@ describe('resolveModelForProvider', () => {
     )
   })
 
-  it('resolves Platform GPT/Grok models to bare ids and falls back for unsupported glm', () => {
+  it('resolves Platform GPT/Grok/GLM/DeepSeek models to bare ids', () => {
+    expect(resolveModelForProvider('deepseek', 'platform', 'agent')).toBe('deepseek-v4.1-flash')
+    expect(resolveModelForProvider('deepseek-v4.1-flash', 'platform', 'agent')).toBe(
+      'deepseek-v4.1-flash',
+    )
     expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.6-sol')
     expect(resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
     expect(resolveModelForProvider('gpt-5.6-luna', 'platform', 'agent')).toBe('gpt-5.6-luna')
     expect(resolveModelForProvider('grok', 'platform', 'agent')).toBe('grok-4.6')
     expect(resolveModelForProvider('grok-4.6', 'platform', 'agent')).toBe('grok-4.6')
     expect(resolveModelForProvider('grok-4.5', 'platform', 'agent')).toBe('grok-4.5')
-    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('grok-4.6')
+    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('glm-5.3-flash')
+    expect(resolveModelForProvider('glm-5.3-flash', 'platform', 'agent')).toBe('glm-5.3-flash')
   })
 
   it('resolves the SAME bare alias to each provider concrete id (cross-provider portability)', () => {

@@ -335,6 +335,13 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     composioSlug: 'figma',
     nangoSlug: 'figma',
   },
+  {
+    slug: 'canva',
+    displayName: 'Canva',
+    icon: 'pen-tool',
+    description: 'Designs, exports, and brand templates',
+    composioSlug: 'canva',
+  },
 
   // Scheduling & Forms
   {

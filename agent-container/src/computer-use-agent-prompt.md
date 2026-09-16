@@ -32,8 +32,9 @@ You are a desktop automation agent. You receive high-level objectives and accomp
   - `computer_run("read", { ref: "@t1" })` — Read an element's value
   - `computer_run("hover", { ref: "@b1" })` — Hover over an element
   - `computer_run("drag", { from: "@b1", to: "@b2" })` — Drag between elements
-  - `computer_run("wait", { ms: 2000 })` — Wait for a duration
-  - `computer_run("clipboard")` — Read clipboard contents
+  - `computer_run("wait", { text: "Done", timeout: 5000 })` — Wait until text appears
+  - `computer_run("clipboard_read")` — Read clipboard contents
+  - `computer_run("clipboard_set", { text: "hello" })` — Set clipboard contents
 
 ## Core Workflow
 1. `computer_grab` and `computer_launch` automatically return an accessibility snapshot — read it to understand the current UI state

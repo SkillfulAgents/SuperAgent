@@ -8,6 +8,9 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Progress } from '@renderer/components/ui/progress'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { RequestError } from '@renderer/components/messages/request-error'
+import { OAuthFlowCancel } from '@renderer/components/connections/oauth-flow-cancel'
+import { ProfileSection } from './profile-section'
+import { useUser } from '@renderer/context/user-context'
 import { usePlatformConnect, useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
 import { useCloudWorkspace } from '@renderer/hooks/use-cloud-workspace'
@@ -43,6 +46,7 @@ function SettingRow({ name, subtitle, right }: SettingRowProps) {
 }
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 
 const currencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -389,10 +393,12 @@ function AccessKeyInput({ onClose }: { onClose: () => void }) {
 interface NotConnectedEmptyStateProps {
   readOnly: boolean
   isLaunching: boolean
+  canCancel: boolean
   onConnect: () => void
+  onCancel: () => void
 }
 
-function NotConnectedEmptyState({ readOnly, isLaunching, onConnect }: NotConnectedEmptyStateProps) {
+function NotConnectedEmptyState({ readOnly, isLaunching, canCancel, onConnect, onCancel }: NotConnectedEmptyStateProps) {
   const [showKeyInput, setShowKeyInput] = useState(false)
 
   return (
@@ -419,6 +425,7 @@ function NotConnectedEmptyState({ readOnly, isLaunching, onConnect }: NotConnect
                 <Button size="sm" variant="outline" onClick={() => setShowKeyInput(true)}>
                   Add access key
                 </Button>
+                <OAuthFlowCancel visible={canCancel} onCancel={onCancel} testId="platform-cancel-connect" />
               </div>
             )}
           </div>
@@ -431,11 +438,13 @@ function NotConnectedEmptyState({ readOnly, isLaunching, onConnect }: NotConnect
 interface ReconnectRowProps {
   readOnly: boolean
   isLaunching: boolean
+  canCancel: boolean
   connectLabel: string
   onReconnect: () => void
+  onCancel: () => void
 }
 
-function ReconnectRow({ readOnly, isLaunching, connectLabel, onReconnect }: ReconnectRowProps) {
+function ReconnectRow({ readOnly, isLaunching, canCancel, connectLabel, onReconnect, onCancel }: ReconnectRowProps) {
   const [showInput, setShowInput] = useState(false)
 
   if (showInput) {
@@ -475,6 +484,7 @@ function ReconnectRow({ readOnly, isLaunching, connectLabel, onReconnect }: Reco
               Add key
             </Button>
           )}
+          <OAuthFlowCancel visible={canCancel} onCancel={onCancel} testId="platform-cancel-reconnect" />
         </div>
       </div>
     </div>
@@ -493,6 +503,8 @@ function formatTimestamp(value: string | null): string {
 export function PlatformTab({ readOnly = false }: PlatformTabProps) {
   const {
     handleConnect,
+    cancelConnect,
+    canCancel,
     isLaunching,
     error,
     message,
@@ -502,6 +514,9 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
   } = usePlatformConnect({
     successMessage: 'Connected. Please restart your running agents for the new token to take effect.',
   })
+  // The signed-in user's own profile leads this tab instead of having a tab of
+  // its own. Only auth mode has a user to edit, so local installs skip it.
+  const { isAuthMode } = useUser()
 
   const connectLabel = useMemo(() => {
     if (isLaunching) return 'Opening browser…'
@@ -515,9 +530,22 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        <span>Loading platform status…</span>
+      <div className="space-y-6">
+        {isAuthMode && <ProfileSection />}
+        <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span>Loading platform status…</span>
+        </div>
+      </div>
+    )
+  }
+
+  // Auth-mode users manage their own profile here; an unconfigured platform
+  // connection is deployment-wide and has no action they can take in this tab.
+  if (isAuthMode && !isConnected) {
+    return (
+      <div className="space-y-6">
+        <ProfileSection />
       </div>
     )
   }
@@ -526,50 +554,65 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
 
   return (
     <div className="space-y-6">
-      {isConnected && (
-        <div className={CARD_CLASS}>
-          <SettingRow
-            name="Workspace"
-            right={
-              // Switching workspaces means re-authenticating, so the popover's
-              // action opens the same platform login Reconnect below launches.
-              <WorkspaceSwitcher
-                orgName={data?.orgName ?? '—'}
-                switchDisabled={readOnly || isLaunching}
-                onSwitch={handleConnect}
-              />
-            }
+      {isAuthMode && <ProfileSection />}
+
+      {/* Headed so it reads as its own section under the profile, not as
+          more of it — this card is the Gamut platform account, not the login. */}
+      <div className="space-y-2">
+        <h3 className={SECTION_HEADING}>Gamut Account</h3>
+        {isConnected ? (
+          <div className={CARD_CLASS}>
+            <SettingRow
+              name="Workspace"
+              right={
+                // Switching workspaces means re-authenticating, so the popover's
+                // action opens the same platform login Reconnect below launches.
+                <WorkspaceSwitcher
+                  orgName={data?.orgName ?? '—'}
+                  switchDisabled={readOnly || isLaunching}
+                  onSwitch={handleConnect}
+                />
+              }
+            />
+            <SettingRow
+              name="Email"
+              right={<span className={valueClass}>{data?.email ?? '—'}</span>}
+            />
+            <SettingRow
+              name="Role"
+              right={<span className={`${valueClass} capitalize`}>{data?.role ?? '—'}</span>}
+            />
+            <SettingRow
+              name="Last updated"
+              right={<span className={valueClass}>{formatTimestamp(data?.updatedAt ?? null)}</span>}
+            />
+            <SettingRow
+              name="Manage your account and organization on the web"
+              right={
+                <Button
+                  size="sm"
+                  className="group gap-0"
+                  onClick={() => {
+                    void handleOpenPlatform()
+                  }}
+                  disabled={!data?.platformBaseUrl}
+                >
+                  Go to Account
+                  <HoverArrow />
+                </Button>
+              }
+            />
+          </div>
+        ) : (
+          <NotConnectedEmptyState
+            readOnly={readOnly}
+            isLaunching={isLaunching}
+            canCancel={canCancel}
+            onConnect={handleConnect}
+            onCancel={cancelConnect}
           />
-          <SettingRow
-            name="Email"
-            right={<span className={valueClass}>{data?.email ?? '—'}</span>}
-          />
-          <SettingRow
-            name="Role"
-            right={<span className={`${valueClass} capitalize`}>{data?.role ?? '—'}</span>}
-          />
-          <SettingRow
-            name="Last updated"
-            right={<span className={valueClass}>{formatTimestamp(data?.updatedAt ?? null)}</span>}
-          />
-          <SettingRow
-            name="Manage your account and organization on the web"
-            right={
-              <Button
-                size="sm"
-                className="group gap-0"
-                onClick={() => {
-                  void handleOpenPlatform()
-                }}
-                disabled={!data?.platformBaseUrl}
-              >
-                Go to Account
-                <HoverArrow />
-              </Button>
-            }
-          />
-        </div>
-      )}
+        )}
+      </div>
 
       {isConnected && (
         // Billing is non-critical display data — never let a glitch here take
@@ -588,21 +631,17 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
         </ErrorBoundary>
       )}
 
-      {isConnected ? (
+      {isConnected && (
         <div className={CARD_CLASS}>
           <ReconnectRow
             readOnly={readOnly}
             isLaunching={isLaunching}
+            canCancel={canCancel}
             connectLabel={connectLabel}
             onReconnect={handleConnect}
+            onCancel={cancelConnect}
           />
         </div>
-      ) : (
-        <NotConnectedEmptyState
-          readOnly={readOnly}
-          isLaunching={isLaunching}
-          onConnect={handleConnect}
-        />
       )}
 
       {readOnly && (

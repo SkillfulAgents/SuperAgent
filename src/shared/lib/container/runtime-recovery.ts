@@ -24,7 +24,6 @@ export type RuntimeRecoveryDeps = {
     sessionId: string,
     client: ContainerClient,
     containerSessionId: string,
-    agentSlug: string,
   ) => Promise<void>
   syncAgentStatus?: () => Promise<void>
   // One-session connection_closed. Omitted = every mid-turn session on the agent.
@@ -259,7 +258,7 @@ async function resubscribeSessions(
   for (const sessionId of sessionIds) {
     if (deps.isStopping() || deps.isSubscribed(sessionId)) continue
     try {
-      await deps.subscribeToSession(sessionId, client, sessionId, deps.agentId)
+      await deps.subscribeToSession(sessionId, client, sessionId)
     } catch (error) {
       captureException(error, {
         tags: { area: 'container', op: 'runtime.resubscribe' },
@@ -277,7 +276,9 @@ async function deliverCoalescedMessages(
 ): Promise<void> {
   for (const message of messages) {
     try {
-      await client.sendMessage(sessionId, message.text, message.uuid, { shouldQuery: true })
+      // An append coalesced during recovery stays an append: it must not
+      // become a turn of its own now.
+      await client.sendMessage(sessionId, message.text, message.uuid, { shouldQuery: message.shouldQuery ?? true })
     } catch (error) {
       captureException(error, {
         tags: { area: 'container', op: 'runtime.recovery.deliverCoalesced' },
@@ -303,7 +304,7 @@ async function resumeSessions(
     if (!deps.isSessionRecovering(sessionId)) continue
     try {
       if (!deps.isSubscribed(sessionId)) {
-        await deps.subscribeToSession(sessionId, client, sessionId, deps.agentId)
+        await deps.subscribeToSession(sessionId, client, sessionId)
       }
       await client.sendMessage(sessionId, plan.resumePrompt, randomUUID(), { shouldQuery: true })
       const coalesced = deps.takeCoalescedUserMessages(sessionId)

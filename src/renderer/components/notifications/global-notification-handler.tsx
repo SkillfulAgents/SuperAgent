@@ -1,3 +1,6 @@
+import { collaborationEventSchema } from '@shared/lib/agent-members-schema'
+import { resolveRouteAgentId } from '@renderer/hooks/use-agents'
+import type { ApiAgent } from '@shared/lib/types/api'
 /**
  * Global Notification Handler
  *
@@ -10,7 +13,7 @@
  * - Scheduled task updates - updates task list
  */
 
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl, isElectron } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
@@ -24,9 +27,13 @@ import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
 import {
   applyDashboardRuntimeStatus,
+  applySessionActivityStatus,
   invalidateAgentArtifacts,
+  invalidateAgentWidgets,
   markDashboardScreenshotReady,
+  patchAgentWidget,
   updateAgentRuntimeCache,
+  type SessionStatusPatch,
 } from '@renderer/lib/agent-cache'
 import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
 import {
@@ -39,8 +46,42 @@ import {
   supportsDeclarativeWebPush,
   revalidatePushSubscription,
 } from '@renderer/lib/push-notifications'
-import { isNotificationTypeEnabled as isTypeEnabledInPreferences } from '@shared/lib/notifications/notification-preferences'
+import {
+  isNotificationTypeEnabled as isTypeEnabledInPreferences,
+  USER_ACTIONABLE_NOTIFICATION_TYPES,
+} from '@shared/lib/notifications/notification-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
+
+// Queries whose fetch runs an LLM completion server-side. Everything else is
+// refetched wholesale after the stream comes back from a fatal close.
+const EXPENSIVE_QUERY_KEYS = new Set<unknown>([
+  'agent-template-publish-info',
+  'agent-template-pr-info',
+  'skill-publish-info',
+  'skill-pr-info',
+])
+
+export function isRefetchableAfterOutage(query: { queryKey: readonly unknown[] }): boolean {
+  return !EXPENSIVE_QUERY_KEYS.has(query.queryKey[0])
+}
+
+// Optimistic status echo per session lifecycle event. Deliberately exhaustive
+// with NO fallback: an event type added to the lifecycle case group without a
+// row here gets invalidations but no echo, forcing its semantics to be decided
+// explicitly — a wrong optimistic stamp is worse than none. Idle/error also
+// clear the awaiting flag: turn teardown resets it server-side WITHOUT
+// broadcasting session_input_provided, so an idle echo that left it cached
+// would strand the orange dot until the refetch.
+const SESSION_LIFECYCLE_ECHO = {
+  session_active: { isActive: true },
+  // Awaiting implies active server-side (the projection is
+  // `state.isActive && …`), so assert both.
+  session_awaiting_input: { isActive: true, isAwaitingInput: true },
+  session_input_provided: { isAwaitingInput: false },
+  session_idle: { isActive: false, isAwaitingInput: false },
+  session_error: { isActive: false, isAwaitingInput: false },
+} satisfies Record<string, SessionStatusPatch>
 
 function isNotificationTypeEnabled(
   settings: UserSettingsData | undefined,
@@ -56,13 +97,15 @@ function isNotificationTypeEnabled(
 export function GlobalNotificationHandler() {
   useRenderTracker('GlobalNotificationHandler')
   const queryClient = useQueryClient()
-  const { view } = useRouteLocation()
+  const { view, selectedAgentSlug } = useRouteLocation()
   const navigate = useNavigate()
   const selectedSessionId = view.kind === 'session' ? view.id : null
   const { data: unreadData } = useUnreadNotificationCount()
   const { data: platformUnreadData } = usePlatformUnreadCount()
   const { data: userSettings } = useUserSettings()
   const { canAccessAgent } = useUser()
+  const selectedAgentRef = useRef(selectedAgentSlug)
+  selectedAgentRef.current = selectedAgentSlug
   // Use refs to avoid recreating EventSource when reactive values change
   const selectedSessionIdRef = useRef(selectedSessionId)
   selectedSessionIdRef.current = selectedSessionId
@@ -70,6 +113,12 @@ export function GlobalNotificationHandler() {
   userSettingsRef.current = userSettings
   const canAccessAgentRef = useRef(canAccessAgent)
   canAccessAgentRef.current = canAccessAgent
+  const [reconnectKey, setReconnectKey] = useState(0)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reconnectAttemptRef = useRef(0)
+  const wasDeadRef = useRef(false)
+  const hasConnectedRef = useRef(false)
+  const streamRef = useRef<EventSource | null>(null)
 
   // Sync dock badge count with unread notifications (macOS Electron only)
   useEffect(() => {
@@ -205,12 +254,42 @@ export function GlobalNotificationHandler() {
     const baseUrl = getApiBaseUrl()
     const url = `${baseUrl}/api/notifications/stream`
     const es = new EventSource(url)
+    streamRef.current = es
 
     es.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
 
         switch (data.type) {
+          case 'agent_members_changed':
+          case 'agent_access_revoked': {
+            const parsed = collaborationEventSchema.safeParse(data)
+            if (!parsed.success) break
+            const change = parsed.data
+            if (change.type === 'agent_access_revoked') {
+              const activeSlug = selectedAgentRef.current
+              const activeId = resolveRouteAgentId(activeSlug ?? undefined, queryClient.getQueryData<ApiAgent[]>(['agents']))
+              if (activeId === change.agentSlug) void navigate({ to: '/' })
+              // Don't retain a revoked roster while refetches are in flight.
+              queryClient.setQueryData(['agent-members', change.agentSlug], [])
+              queryClient.setQueryData<Record<string, unknown>>(['my-agent-roles'], (roles) => {
+                if (!roles) return roles
+                const remaining = { ...roles }
+                delete remaining[change.agentSlug]
+                return remaining
+              })
+              const revokedQueries = { predicate: (query: { queryKey: readonly unknown[] }) =>
+                query.queryKey.includes(change.agentSlug) || (!!activeSlug && activeId === change.agentSlug && query.queryKey.includes(activeSlug)) }
+              void queryClient.cancelQueries(revokedQueries).then(() => queryClient.removeQueries(revokedQueries))
+            } else {
+              queryClient.invalidateQueries({ queryKey: ['agent-members', change.agentSlug] })
+              queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates', change.agentSlug] })
+            }
+            queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+          }
+
           case 'platform_notifications_changed': {
             // A platform notification INSERT arrived over Realtime — refresh
             // the proxy-live inbox + badge (there is no local copy to update).
@@ -281,6 +360,23 @@ export function GlobalNotificationHandler() {
             // 2. User's notification settings allow this type
             // 3. App not active OR not viewing the notification's session
             if (typeEnabled && !suppressedByActiveView) {
+              // Optimistic raise of the unread dot for the user-actionable
+              // types that set it server-side — the mirror of the already-
+              // optimistic clear (clearSessionUnreadInCache). Only here: the
+              // suppressed branch below marks the record read instead, and
+              // for disabled types the server-side gate creates no record.
+              // The sessions refetch invalidated above confirms; the agent
+              // rollup is confirmed by the accompanying session lifecycle
+              // event's ['agents'] invalidation (or the 60s poll).
+              if (
+                notificationType
+                && (USER_ACTIONABLE_NOTIFICATION_TYPES as readonly string[]).includes(notificationType)
+                && agentSlug && notificationSessionId
+              ) {
+                applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
+                  hasUnreadNotifications: true,
+                })
+              }
               const { title, body } = data as { title: string; body: string }
               // Validate actions at the SSE boundary. A malicious / buggy
               // broadcaster can't inject a 1000-button notification with
@@ -329,6 +425,18 @@ export function GlobalNotificationHandler() {
                 .then((res) => {
                   if (res.ok) {
                     queryClient.invalidateQueries({ queryKey: ['notifications'] })
+                    // The unconditional ['sessions'] invalidation at the top of
+                    // this case refetches the row the server committed BEFORE
+                    // broadcasting — with hasUnreadNotifications still true, so
+                    // a dot lands on the very session the user is watching. Now
+                    // that the record is read, take the dot back off and
+                    // refetch the corrected lists.
+                    if (agentSlug && notificationSessionId) {
+                      applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
+                        hasUnreadNotifications: false,
+                      })
+                      queryClient.invalidateQueries({ queryKey: ['sessions', agentSlug] })
+                    }
                   }
                 })
                 .catch(() => {
@@ -346,6 +454,18 @@ export function GlobalNotificationHandler() {
             // Session state changed - update sessions list in sidebar
             // Scope invalidation to the specific agent to avoid flashing "working" on other agents
             const eventAgentSlug = data.agentSlug as string | undefined
+            const eventSessionId = data.sessionId as string | undefined
+            // Optimistic echo for the status flip: the invalidations below
+            // trigger refetches of very different cost (session list, agent
+            // detail, full agents list), so without this the session row, the
+            // header pill, and the agent row flip seconds apart as each
+            // refetch lands. Patch every cached projection first; the
+            // refetches stay authoritative.
+            const statusPatch =
+              SESSION_LIFECYCLE_ECHO[data.type as keyof typeof SESSION_LIFECYCLE_ECHO]
+            if (statusPatch && eventAgentSlug && eventSessionId) {
+              applySessionActivityStatus(queryClient, eventAgentSlug, eventSessionId, statusPatch)
+            }
             if (eventAgentSlug) {
               queryClient.invalidateQueries({ queryKey: ['sessions', eventAgentSlug] })
             } else {
@@ -395,6 +515,48 @@ export function GlobalNotificationHandler() {
             const dashboardSlug = data.dashboardSlug as string | undefined
             if (agentSlug && dashboardSlug) {
               markDashboardScreenshotReady(queryClient, agentSlug, dashboardSlug)
+            }
+            break
+          }
+
+          case 'widget_refresh_started': {
+            const agentSlug = data.agentSlug as string | undefined
+            const widgetSlug = data.widgetSlug as string | undefined
+            if (agentSlug && widgetSlug) {
+              patchAgentWidget(queryClient, agentSlug, widgetSlug, { refreshing: true })
+            }
+            break
+          }
+
+          case 'widget_snapshot_ready': {
+            // The event carries the new snapshot identity, so patch the cards
+            // in place (the iframe URL keys on htmlHash) and refetch the
+            // listing quietly for anything else that changed.
+            const agentSlug = data.agentSlug as string | undefined
+            const widgetSlug = data.widgetSlug as string | undefined
+            if (agentSlug && widgetSlug) {
+              const error = typeof data.error === 'string' ? data.error : null
+              patchAgentWidget(queryClient, agentSlug, widgetSlug, {
+                refreshing: false,
+                isStale: false,
+                lastError: error,
+                ...(typeof data.htmlHash === 'string' ? { htmlHash: data.htmlHash, hasHtml: true } : {}),
+                ...(typeof data.generatedAt === 'string' ? { generatedAt: data.generatedAt } : {}),
+                validUntil: typeof data.validUntil === 'string' ? data.validUntil : null,
+              })
+              invalidateAgentWidgets(queryClient, agentSlug)
+            }
+            break
+          }
+
+          case 'widget_refresh_failed': {
+            const agentSlug = data.agentSlug as string | undefined
+            const widgetSlug = data.widgetSlug as string | undefined
+            if (agentSlug && widgetSlug) {
+              patchAgentWidget(queryClient, agentSlug, widgetSlug, {
+                refreshing: false,
+                lastError: typeof data.error === 'string' ? data.error : 'Refresh failed',
+              })
             }
             break
           }
@@ -461,6 +623,7 @@ export function GlobalNotificationHandler() {
           }
 
           case 'webhook_trigger_created':
+          case 'webhook_trigger_updated':
           case 'webhook_trigger_cancelled': {
             const agentSlug = data.agentSlug as string | undefined
             if (agentSlug) {
@@ -491,21 +654,52 @@ export function GlobalNotificationHandler() {
       }
     }
 
-    // Catch up anything missed while the stream was down, including the
-    // window before the first successful connect.
+    // Agents and roles cover the window before the first connect. Rosters are
+    // already loading on mount; only refresh them after a gap.
     es.onopen = () => {
+      const isReconnect = hasConnectedRef.current || wasDeadRef.current
+      hasConnectedRef.current = true
+      reconnectAttemptRef.current = 0
+      if (wasDeadRef.current) {
+        // The dead window can be arbitrarily long, and every family this
+        // stream feeds may have moved in it. Refetch what is mounted.
+        wasDeadRef.current = false
+        queryClient.invalidateQueries({ predicate: isRefetchableAfterOutage })
+        return
+      }
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+      if (isReconnect) {
+        queryClient.invalidateQueries({ queryKey: ['agent-members'] })
+        queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates'] })
+      }
     }
 
     es.onerror = () => {
-      // EventSource will auto-reconnect; onopen above catches up.
+      // Network errors reconnect in the browser. Fatal close is the watcher.
     }
 
+    const disposeLiveness = watchStreamLiveness(es, () => {
+      if (streamRef.current !== es) return
+      es.close()
+      wasDeadRef.current = true
+      const delay = reconnectDelayMs(reconnectAttemptRef.current)
+      reconnectAttemptRef.current += 1
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null
+        if (streamRef.current !== es) return
+        setReconnectKey((k) => k + 1)
+      }, delay)
+    })
+
     return () => {
+      disposeLiveness()
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+      if (streamRef.current === es) streamRef.current = null
       es.close()
     }
-  }, [queryClient, navigate])
+  }, [queryClient, navigate, reconnectKey])
 
   return null
 }

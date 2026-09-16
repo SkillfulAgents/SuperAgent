@@ -16,6 +16,7 @@ import { searchRemoteMcpServicesTool } from './tools/search-remote-mcp-services'
 import {
   scheduleTaskTool,
   listScheduledTasksTool,
+  updateScheduledTaskTool,
   cancelScheduledTaskTool,
   pauseScheduledTaskTool,
   resumeScheduledTaskTool,
@@ -24,6 +25,7 @@ import { scheduleResumeTool } from './tools/schedule-resume'
 import {
   getAvailableTriggersTool,
   listTriggersTool,
+  updateTriggerTool,
   setupTriggerTool,
   cancelTriggerTool,
   createWebhookEndpointTool,
@@ -41,6 +43,9 @@ import { createDashboardTool } from './tools/create-dashboard'
 import { startDashboardTool } from './tools/start-dashboard'
 import { listDashboardsTool } from './tools/list-dashboards'
 import { getDashboardLogsTool } from './tools/get-dashboard-logs'
+import { createWidgetTool } from './tools/create-widget'
+import { refreshWidgetTool } from './tools/refresh-widget'
+import { listWidgetsTool } from './tools/list-widgets'
 import { listAgentsTool } from './tools/agents/list-agents'
 import { createAgentTool } from './tools/agents/create-agent'
 import { makeInvokeAgentTool } from './tools/agents/invoke-agent'
@@ -79,13 +84,14 @@ export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTar
     tools: [
       requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool,
       createRequestRemoteMcpTool(getProcess), searchRemoteMcpServicesTool,
-      scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, cancelScheduledTaskTool,
+      scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, updateScheduledTaskTool,
+      cancelScheduledTaskTool,
       pauseScheduledTaskTool, resumeScheduledTaskTool,
       deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeComposioTriggers ? [getAvailableTriggersTool, setupTriggerTool] : []),
       ...(includeComposioTriggers || includeWebhookEndpoints
-        ? [listTriggersTool, cancelTriggerTool]
+        ? [listTriggersTool, updateTriggerTool, cancelTriggerTool]
         : []),
       ...(includeWebhookEndpoints
         ? [createWebhookEndpointTool, updateWebhookEndpointTool, inspectWebhookEventsTool]
@@ -121,6 +127,14 @@ export function createDashboardsMcpServer() {
     name: 'dashboards',
     version: '1.0.0',
     tools: [createDashboardTool, startDashboardTool, listDashboardsTool, getDashboardLogsTool],
+  })
+}
+
+export function createWidgetsMcpServer() {
+  return createSdkMcpServer({
+    name: 'widgets',
+    version: '1.0.0',
+    tools: [createWidgetTool, refreshWidgetTool, listWidgetsTool],
   })
 }
 

@@ -39,9 +39,10 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ app: {} }),
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: { getClient: () => ({ fetch: vi.fn() }) },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ getClient: () => ({ fetch: vi.fn() }) }) }
+})
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: { broadcastGlobal: vi.fn() },

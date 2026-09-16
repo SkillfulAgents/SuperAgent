@@ -1,8 +1,9 @@
 import crypto from 'node:crypto'
-import { and, asc, eq, gt, lt } from 'drizzle-orm'
+import { and, asc, eq, exists, gt, lt, sql } from 'drizzle-orm'
 import { captureException } from '@shared/lib/error-reporting'
 import { db } from '@shared/lib/db'
-import { authSession, mobileDevice, mobilePairingToken } from '@shared/lib/db/schema'
+import { batch, changesOf } from '@shared/lib/db/batch'
+import { apnsDevices, authSession, mobileDevice, mobilePairingToken } from '@shared/lib/db/schema'
 import { DEFAULT_AUTH_SETTINGS, getSettings } from '@shared/lib/config/settings'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import {
@@ -280,20 +281,21 @@ export function listMobileDevices(userId: string): MobileDevice[] {
 
 /** Revoke an entire mobile device family, including every access session. */
 export async function revokeMobileDevice(userId: string, deviceId: string): Promise<boolean> {
-  const deleted = db.transaction((tx) => {
-    const owned = tx
-      .select({ id: mobileDevice.id })
-      .from(mobileDevice)
-      .where(and(eq(mobileDevice.id, deviceId), eq(mobileDevice.userId, userId)))
-      .get()
-    if (!owned) return false
-    // Explicit deletion keeps revocation correct even on SQLite builds that do
-    // not enforce foreign-key cascades, while the schema FK remains the backstop.
-    tx.delete(authSession).where(eq(authSession.deviceId, deviceId)).run()
-    tx.delete(mobileDevice).where(eq(mobileDevice.id, deviceId)).run()
-    return true
-  })
-  if (!deleted) return false
+  // Ownership is a condition on every statement rather than a read up front:
+  // the child rows go only while the device belongs to the caller, and the
+  // device delete's own change count is the answer. Explicit child deletion
+  // keeps revocation correct even on SQLite builds that do not enforce
+  // foreign-key cascades, while the schema FK remains the backstop.
+  const owned = exists(
+    db.select({ one: sql`1` }).from(mobileDevice)
+      .where(and(eq(mobileDevice.id, deviceId), eq(mobileDevice.userId, userId))),
+  )
+  const results = await batch([
+    db.delete(authSession).where(and(eq(authSession.deviceId, deviceId), owned)),
+    db.delete(apnsDevices).where(and(eq(apnsDevices.mobileDeviceId, deviceId), owned)),
+    db.delete(mobileDevice).where(and(eq(mobileDevice.id, deviceId), eq(mobileDevice.userId, userId))),
+  ])
+  if (changesOf(results[2]) === 0) return false
 
   await logAuditEvent({
     userId,

@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
 import agents from './routes/agents'
 import xAgent from './routes/x-agent'
@@ -23,12 +23,13 @@ import usage from './routes/usage'
 import remoteMcps from './routes/remote-mcps'
 import commonMcpServers from './routes/common-mcp-servers'
 import userSettingsRouter from './routes/user-settings'
+import profileRouter from './routes/profile'
 import homeGraph from './routes/home-graph'
 import homeCardHealth from './routes/home-card-health'
 import policies from './routes/policies'
 import runtimeStatusRouter from './routes/runtime-status'
 import firewallRouter from './routes/firewall'
-import sttRouter from './routes/stt'
+import voiceRouter from './routes/voice'
 import llmRouter from './routes/llm'
 import faviconRouter from './routes/favicon'
 import { getPolyfillJs } from './speech-recognition-polyfill'
@@ -44,6 +45,7 @@ import mobilePairing from './routes/mobile-pairing'
 import agentBootstrap from './routes/agent-bootstrap'
 import activityRouter from './routes/activity'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { WORKSPACE_UNAVAILABLE_HEADER } from '@shared/lib/workspace-unavailable-header'
 import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user as userTable } from '@shared/lib/db/schema'
@@ -52,6 +54,7 @@ import { getAuthSettings } from '@shared/lib/auth/auth-settings'
 import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
 import { armAbortSignal } from './middleware/arm-abort-signal'
+import { defaultCacheControl } from './middleware/default-cache-control'
 
 const app = new Hono()
 
@@ -64,7 +67,21 @@ app.use('*', armAbortSignal)
 
 // Enable CORS for all routes
 const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(',').map(o => o.trim()).filter(Boolean)
-app.use('*', cors(trustedOrigins?.length ? { origin: trustedOrigins } : undefined))
+app.use('*', cors({
+  ...(trustedOrigins?.length ? { origin: trustedOrigins } : {}),
+  // The packaged renderer is file:// calling loopback, so the cloud router's
+  // not-ready marker (relayed by cloud-proxy.ts) is only readable if exposed here.
+  exposeHeaders: [WORKSPACE_UNAVAILABLE_HEADER],
+}))
+
+// Uncacheable unless a route opts in — see the middleware for why an absent
+// Cache-Control is the wrong default behind a CDN. Scoped to '*' rather than
+// '/api/*' because the authorized mounts that sit outside /api (the Platform SSO
+// launcher on /auth, the cloud proxy on /cloud) need the default just as much,
+// and a default that only covers most of the surface is how this bug got here.
+// Routes that set their own header — including the static web build's — are
+// left untouched.
+app.use('*', defaultCacheControl)
 
 // Local mode: localhost IP restriction for all API endpoints (except container-facing endpoints)
 if (!isAuthMode()) {
@@ -182,13 +199,16 @@ if (isAuthMode()) {
   })
 }
 
-// Public static assets (no auth)
-app.get('/api/stt/speech-recognition-polyfill.js', (c) => {
+// Public static assets (no auth). The polyfill is also served at its old
+// /api/stt path: dashboards and pages that embedded the URL keep working.
+const servePolyfill = (c: Context) => {
   return c.body(getPolyfillJs(), 200, {
     'Content-Type': 'application/javascript; charset=utf-8',
     'Cache-Control': 'public, max-age=3600',
   })
-})
+}
+app.get('/api/voice/speech-recognition-polyfill.js', servePolyfill)
+app.get('/api/stt/speech-recognition-polyfill.js', servePolyfill)
 app.get('/api/llm/anthropic-polyfill.js', (c) => {
   return c.body(getLlmPolyfillJs(), 200, {
     'Content-Type': 'application/javascript; charset=utf-8',
@@ -228,6 +248,7 @@ app.route('/api/usage', usage)
 app.route('/api/remote-mcps', remoteMcps)
 app.route('/api/common-mcp-servers', commonMcpServers)
 app.route('/api/user-settings', userSettingsRouter)
+app.route('/api/profile', profileRouter)
 app.route('/api/home-graph', homeGraph)
 app.route('/api/home-card-health', homeCardHealth)
 app.route('/api/policies', policies)
@@ -242,7 +263,11 @@ if (isAuthMode()) {
   // Platform "Open Cloud Agents" link can target a stable deployment path.
   app.route('/auth', platformSsoStart)
 }
-app.route('/api/stt', sttRouter)
+app.route('/api/voice', voiceRouter)
+// Legacy prefix: the polyfill is cached for an hour in browsers and fetches
+// its token from the prefix it was built with, and third-party dashboards
+// may have the old paths baked in. Same router, same handlers.
+app.route('/api/stt', voiceRouter)
 app.route('/api/llm', llmRouter)
 app.route('/api/favicon', faviconRouter)
 app.route('/api/debug', debugRouter)

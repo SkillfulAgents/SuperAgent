@@ -5,6 +5,7 @@ import { and, desc, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 
 import { getRequestUserId } from './request-context'
@@ -41,6 +42,8 @@ export interface Attribution {
   applyTo(headers: Headers): void
   bearerToken(): string
   getKey(): string
+  /** Acting member id for org-scoped tokens; null in opaque-access-key mode. */
+  actingMemberId(): string | null
 }
 
 class PlatformAttribution implements Attribution {
@@ -63,6 +66,10 @@ class PlatformAttribution implements Attribution {
   getKey(): string {
     if (!this.orgScoped) return 'access_key'
     return this.memberId ? `member:${this.memberId}` : 'org'
+  }
+
+  actingMemberId(): string | null {
+    return this.orgScoped ? this.memberId : null
   }
 }
 
@@ -107,8 +114,23 @@ export const attribution = {
   fromResourceCreator(ownerUserId: string | null): Attribution | null {
     return ownerUserId ? buildAttribution(getPlatformAccountIdForUserId(ownerUserId)) : null
   },
+  // For callers that already hold a member id (e.g. the recorded minting member).
+  fromMemberId(memberId: string): Attribution | null {
+    return buildAttribution(memberId)
+  },
   current(): Attribution | null {
     return attributionContext.getStore()?.auth ?? fromCurrentRequest()
+  },
+  // Container cold start: ambient scope, else the agent owner, else the stored
+  // member. Same fallback chain as trigger minting (SUP-765); null only when
+  // nothing resolves, so callers never bake a bare org token by accident (SUP-805).
+  forAgent(agentSlug: string): Attribution | null {
+    const ambient = attributionContext.getStore()?.auth ?? fromCurrentRequest()
+    if (ambient) return ambient
+    const ownerUserId = getAgentOwnerUserId(agentSlug)
+    return buildAttribution(
+      ownerUserId ? resolveMemberIdForUserId(ownerUserId) : getStoredPlatformMemberId(),
+    )
   },
   requiresActingMember,
 } as const

@@ -1,0 +1,56 @@
+# API perf budgets under simulated NFS latency (see perf/README.md).
+#
+# Runs alone on its own runner with a single worker and serial tests: the
+# suite asserts wall-clock, so it must never share a machine with the
+# parallel unit-test job. Kept lean on purpose — add scenarios, not fixtures.
+name: Perf
+
+on:
+  push:
+    branches: [main]
+  # Every PR, whatever its base: stacked PRs must get the gate too.
+  pull_request:
+
+concurrency:
+  # Per PR; per commit on main so back-to-back merges each keep their status.
+  group: perf-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  api-perf:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `shell: bash` matters: it is what makes the step run with `pipefail`,
+      # so vitest's exit code survives the pipe into tee. The default shell
+      # would report tee's status and the gate could never go red.
+      - name: Run perf suite
+        shell: bash
+        run: npm run test:perf 2>&1 | tee perf-results.txt
+
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results
+          path: |
+            perf-results.txt
+            perf-results.jsonl
+          retention-days: 30

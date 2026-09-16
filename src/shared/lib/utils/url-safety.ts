@@ -128,9 +128,21 @@ export function tryParseUrl(input: string, base?: string | URL): URL | null {
   }
 }
 
+/**
+ * Loopback MCP servers are allowed for a user running one locally — but only
+ * where "locally" is demonstrable: the Electron main process, a mock E2E run,
+ * or a live harness that explicitly opts in. The harness switch exists for
+ * `e2e/live/*` runs that drive the REAL container from the web dev server
+ * against a mock MCP on this machine (the mock container path is E2E_MOCK).
+ * It is an exact-value check, like the others: env vars are strings, so a
+ * presence test would also open this up for `...=0` or `E2E_MOCK=false`.
+ * Never set it on a deployment.
+ */
 function allowsLocalhostMcpException(hostname: string): boolean {
   const isElectron = process.type === 'browser'
-  return Boolean((isElectron || process.env.E2E_MOCK) && isLocalhostHost(hostname))
+  const e2eMock = process.env.E2E_MOCK === 'true'
+  const liveHarness = process.env.SUPERAGENT_UNSAFE_ALLOW_LOOPBACK_MCP === '1'
+  return (isElectron || e2eMock || liveHarness) && isLocalhostHost(hostname)
 }
 
 export interface DiscoveryHostPolicy {

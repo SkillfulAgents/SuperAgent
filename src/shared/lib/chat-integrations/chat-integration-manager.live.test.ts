@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 //
 //   SLACK_LIVE=1 SLACK_LIVE_CONFIG=/path/slack-config.json \
 //   npx vitest run --disableConsoleIntercept \
-//     src/shared/lib/chat-integrations/chat-integration-manager.live.test.ts
+//     src/shared/lib/agent-integrations/agent-integration-manager.live.test.ts
 //
 // The service layer is mocked (no real DB writes); the connector, socket, and
 // Slack workspace are real. Validates the exact production failure paths:
@@ -59,7 +59,7 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
   },
 }))
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
 import {
   listStartupChatIntegrations,
   getChatIntegration,
@@ -86,7 +86,7 @@ interface ManagerTestSurface {
   enqueueMessage(integrationId: string, message: IncomingMessage): void
 }
 
-const mgr = chatIntegrationManager as unknown as ManagerTestSurface
+const mgr = agentIntegrationManager as unknown as ManagerTestSurface
 
 function liveRow(status: 'active' | 'error'): ChatIntegration {
   const config = readFileSync(process.env.SLACK_LIVE_CONFIG!, 'utf8')

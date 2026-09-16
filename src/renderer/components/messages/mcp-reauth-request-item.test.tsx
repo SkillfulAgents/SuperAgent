@@ -4,10 +4,19 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { McpReauthRequestItem } from './mcp-reauth-request-item'
 
+vi.mock('./remote-mcp-request-item', () => ({
+  RemoteMcpRequestItem: ({ url, replacement }: { url: string; replacement: { requestId: string; onCancel: () => void } }) => (
+    <div data-testid="mcp-replacement-picker" data-url={url} data-request-id={replacement.requestId}>
+      <button onClick={replacement.onCancel}>Cancel replacement</button>
+    </div>
+  ),
+}))
+
 const mockInitiateOAuth = vi.fn()
 const mockApiFetch = vi.fn()
 const mockNavigate = vi.fn()
 const mockClose = vi.fn()
+const mockDismiss = vi.fn()
 let oauthComplete: ((result: { success: boolean; error?: string }) => void) | null = null
 let mockCanManage = true
 
@@ -28,6 +37,10 @@ vi.mock('@renderer/lib/api', () => ({
 
 vi.mock('@renderer/lib/oauth-popup', () => ({
   prepareOAuthPopup: () => ({ navigate: mockNavigate, close: mockClose }),
+}))
+
+vi.mock('@renderer/lib/reauth-dismiss', () => ({
+  dismissReauthRequest: (...args: unknown[]) => mockDismiss(...args),
 }))
 
 function renderItem(overrides: Partial<React.ComponentProps<typeof McpReauthRequestItem>> = {}) {
@@ -52,6 +65,7 @@ function renderItem(overrides: Partial<React.ComponentProps<typeof McpReauthRequ
 describe('McpReauthRequestItem', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockDismiss.mockResolvedValue(undefined)
     oauthComplete = null
     mockCanManage = true
   })
@@ -99,14 +113,49 @@ describe('McpReauthRequestItem', () => {
     renderItem({ readOnly: true })
 
     expect(screen.queryByTestId('mcp-reauth-reconnect-btn')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('mcp-reauth-dismiss-btn')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('mcp-reauth-replace-btn')).not.toBeInTheDocument()
     expect(screen.getByText('Waiting for reconnection')).toBeInTheDocument()
   })
 
-  it('shows a non-actionable card to a member who cannot manage the MCP', () => {
+  it('lets a non-owner open the replacement picker and cancel back to the recovery card', async () => {
     mockCanManage = false
     renderItem()
 
     expect(screen.queryByTestId('mcp-reauth-reconnect-btn')).not.toBeInTheDocument()
-    expect(screen.getByText(/Only the connection owner or an administrator/)).toBeInTheDocument()
+    expect(screen.getByTestId('mcp-reauth-dismiss-btn')).toBeInTheDocument()
+    expect(screen.getByText(/Replace it with a connection you own/)).toBeInTheDocument()
+    mockApiFetch.mockResolvedValueOnce(new Response(JSON.stringify({ url: 'https://my-mcp.example/mcp' })))
+    fireEvent.click(screen.getByTestId('mcp-reauth-replace-btn'))
+    expect(await screen.findByTestId('mcp-replacement-picker')).toHaveAttribute('data-url', 'https://my-mcp.example/mcp')
+    expect(screen.getByTestId('mcp-replacement-picker')).toHaveAttribute('data-request-id', 'proxy-1')
+    fireEvent.click(screen.getByText('Cancel replacement'))
+    expect(screen.getByTestId('mcp-reauth-dismiss-btn')).toBeInTheDocument()
+    expect(mockInitiateOAuth).not.toHaveBeenCalled()
+  })
+
+  it('dismisses the parked request and closes the card', async () => {
+    mockCanManage = false
+    const props = renderItem()
+
+    fireEvent.click(screen.getByTestId('mcp-reauth-dismiss-btn'))
+
+    await waitFor(() => expect(mockDismiss).toHaveBeenCalledWith({
+      agentSlug: 'agent-1',
+      requestId: 'proxy-1',
+      reason: undefined,
+    }))
+    await waitFor(() => expect(props.onComplete).toHaveBeenCalledOnce())
+  })
+
+  it('keeps the card open when the dismissal fails', async () => {
+    mockCanManage = false
+    mockDismiss.mockRejectedValue(new Error('Request not found'))
+    const props = renderItem()
+
+    fireEvent.click(screen.getByTestId('mcp-reauth-dismiss-btn'))
+
+    expect(await screen.findByText(/Request not found/)).toBeInTheDocument()
+    expect(props.onComplete).not.toHaveBeenCalled()
   })
 })

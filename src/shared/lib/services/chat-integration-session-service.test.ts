@@ -25,6 +25,7 @@ import {
   createChatIntegrationSession,
   getChatIntegrationSession,
   getChatIntegrationSessionById,
+  getChatIntegrationSessionBySessionId,
   touchChatIntegrationSession,
   archiveChatIntegrationSession,
   resolveActiveSession,
@@ -51,6 +52,35 @@ describe('chat-integration-session-service', () => {
   afterEach(async () => {
     testSqlite?.close()
     await fs.promises.rm(testDir, { recursive: true, force: true })
+  })
+
+  describe('getChatIntegrationSessionBySessionId', () => {
+    // A session id is unique only within an agent. If two agents' integrations
+    // each have a chat session with the same id, the lookup must return the
+    // one owned by the asking agent — otherwise an approval card for one agent
+    // is routed into a different agent's channel.
+    it('returns the asking agent’s session, not another agent’s same-id session', () => {
+      const otherIntegrationId = createChatIntegration({
+        agentSlug: 'other-agent',
+        provider: 'telegram',
+        config: { botToken: 'other-token' },
+      })
+      createChatIntegrationSession({ integrationId, externalChatId: 'chat-mine', sessionId: 'shared-session' })
+      createChatIntegrationSession({ integrationId: otherIntegrationId, externalChatId: 'chat-theirs', sessionId: 'shared-session' })
+
+      const mine = getChatIntegrationSessionBySessionId('test-agent', 'shared-session')
+      expect(mine?.externalChatId).toBe('chat-mine')
+      expect(mine?.integrationId).toBe(integrationId)
+
+      const theirs = getChatIntegrationSessionBySessionId('other-agent', 'shared-session')
+      expect(theirs?.externalChatId).toBe('chat-theirs')
+      expect(theirs?.integrationId).toBe(otherIntegrationId)
+    })
+
+    it('returns null when the id belongs to a different agent', () => {
+      createChatIntegrationSession({ integrationId, externalChatId: 'chat-1', sessionId: 'sess-1' })
+      expect(getChatIntegrationSessionBySessionId('some-stranger', 'sess-1')).toBeNull()
+    })
   })
 
   describe('touchChatIntegrationSession', () => {

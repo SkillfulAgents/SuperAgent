@@ -199,10 +199,18 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
     id: 'claude-fable-5',
     label: 'Fable 5',
     family: 'fable',
-    isLatest: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
     pricing: pricingFor('claude-fable-5'),
+  },
+  {
+    id: 'claude-fable-5-1',
+    label: 'Fable 5.1',
+    family: 'fable',
+    isLatest: true,
+    icon: ICON,
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-fable-5-1'),
   },
 ]
 
@@ -267,10 +275,18 @@ export const BEDROCK_CATALOG: ModelDefinition[] = [
     id: 'us.anthropic.claude-fable-5',
     label: 'Fable 5',
     family: 'fable',
-    isLatest: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
     pricing: pricingFor('claude-fable-5'),
+  },
+  {
+    id: 'us.anthropic.claude-fable-5-1',
+    label: 'Fable 5.1',
+    family: 'fable',
+    isLatest: true,
+    icon: ICON,
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-fable-5-1'),
   },
 ]
 
@@ -438,9 +454,13 @@ const PLATFORM_RESPONSES_WEB = { supportsWebSearch: true, supportsWebFetch: fals
  *
  * The `meta` icon key follows the one-brand-icon-per-vendor convention the
  * catalog test enforces; the mark lives at `public/model-icons/meta.svg`.
+ *
+ * Two families, one per billing tier, so the picker shows two version rows
+ * ("Muse Spark" and "Muse Spark Contributor") the way it does for Opus and
+ * Fable, rather than one flat row per release. Each family is also a bare
+ * alias (`muse`, `muse-contributor`) that rides upgrades to its isLatest id.
  */
 const MUSE_SPARK_SHARED = {
-  family: 'muse',
   icon: 'meta',
   supportedEfforts: NON_CLAUDE_EFFORTS,
   supportsWebSearch: false,
@@ -449,39 +469,63 @@ const MUSE_SPARK_SHARED = {
   contextWindow: 1_000_000,
 } as const
 
-/** Standard-tier rates, identical across muse-spark 1.1 and 1.2. */
-const MUSE_SPARK_STANDARD_PRICING = { inputPerMtok: 1.25, outputPerMtok: 4.25 } as const
+/** Standard-tier rates, identical across muse-spark 1.1, 1.2, and 1.3. */
+const MUSE_SPARK_STANDARD = {
+  ...MUSE_SPARK_SHARED,
+  family: 'muse',
+  pricing: { inputPerMtok: 1.25, outputPerMtok: 4.25 },
+} as const
+
+/**
+ * Meta's discounted tier, ~12x cheaper in exchange for data use: Meta uses
+ * Contributor prompts and outputs to improve its products, and has not
+ * clarified whether that is training-only. Anything touching customer data,
+ * PII, or secrets belongs on the standard tier — which is what
+ * `dataUsedForProductImprovement` puts in front of the user at pick time.
+ */
+const MUSE_SPARK_CONTRIBUTOR = {
+  ...MUSE_SPARK_SHARED,
+  family: 'muse-contributor',
+  pricing: { inputPerMtok: 0.1, outputPerMtok: 0.2 },
+  dataUsedForProductImprovement: true,
+} as const
 
 const MUSE_SPARK_MODELS: ModelDefinition[] = [
   {
-    ...MUSE_SPARK_SHARED,
+    ...MUSE_SPARK_STANDARD,
     id: 'muse-spark-1.1',
     label: 'Muse Spark 1.1',
     blurb: 'Meta, served via Platform',
-    pricing: MUSE_SPARK_STANDARD_PRICING,
   },
   {
     // Bare id matches the platform proxy's muse-spark-* → meta route.
-    ...MUSE_SPARK_SHARED,
+    ...MUSE_SPARK_STANDARD,
     id: 'muse-spark-1.2',
     label: 'Muse Spark 1.2',
+    blurb: 'Meta, served via Platform',
+  },
+  {
+    ...MUSE_SPARK_STANDARD,
+    id: 'muse-spark-1.3',
+    label: 'Muse Spark 1.3',
     blurb: 'Meta flagship, served via Platform',
     isLatest: true,
     isDefault: true,
-    pricing: MUSE_SPARK_STANDARD_PRICING,
+  },
+  // Labels carry the full family name so the picker's version chips strip to
+  // the bare version ("1.3"), matching the standard row beside them.
+  {
+    ...MUSE_SPARK_CONTRIBUTOR,
+    id: 'muse-spark-1.2-contributor',
+    label: 'Muse Spark Contributor 1.2',
+    blurb: 'Meta contributor tier, served via Platform',
   },
   {
-    // Meta's discounted tier, ~12x cheaper in exchange for data use: Meta uses
-    // Contributor prompts and outputs to improve its products, and has not
-    // clarified whether that is training-only. Anything touching customer
-    // data, PII, or secrets belongs on the standard tier above — which is what
-    // `dataUsedForProductImprovement` puts in front of the user at pick time.
-    ...MUSE_SPARK_SHARED,
-    id: 'muse-spark-1.2-contributor',
-    label: 'Muse Spark 1.2c',
+    ...MUSE_SPARK_CONTRIBUTOR,
+    id: 'muse-spark-1.3-contributor',
+    label: 'Muse Spark Contributor 1.3',
     blurb: 'Meta contributor tier, served via Platform',
-    pricing: { inputPerMtok: 0.1, outputPerMtok: 0.2 },
-    dataUsedForProductImprovement: true,
+    isLatest: true,
   },
 ]
 
@@ -565,6 +609,22 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
+    // Not isLatest: the bare `gpt` alias stays on Sol so alias users don't jump 2x in price.
+    id: 'gpt-6-astra',
+    label: 'GPT-6 Astra',
+    blurb: 'OpenAI frontier, served via Platform',
+    family: 'gpt',
+    icon: 'openai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: { inputPerMtok: 10, outputPerMtok: 50, speedMultipliers: GPT_SPEED_MULTIPLIERS },
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6-astra).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
     // Bare id matches the platform proxy's grok-* → xai-responses route.
     id: 'grok-4.6',
     label: 'Grok 4.6',
@@ -624,9 +684,58 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportsImageInput: true,
   },
   ...MUSE_SPARK_MODELS,
+  {
+    // Bare id matches the platform proxy's glm-5.3-flash → cloudflare route.
+    id: 'glm-5.3-flash',
+    label: 'GLM-5.3 Flash',
+    blurb: 'Z.AI GLM, served via Platform',
+    family: 'glm',
+    isLatest: true,
+    isDefault: true,
+    icon: 'zai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    contextWindow: 1_048_576,
+    // Cloudflare Workers AI list rates (2026-08-26). Cache write is unpublished,
+    // so cacheCreation mirrors input — same convention as Fireworks/Meta.
+    pricing: {
+      inputPerMtok: 0.15,
+      outputPerMtok: 0.5,
+      cacheCreationPerMtok: 0.15,
+      cacheReadPerMtok: 0.03,
+    },
+  },
+  {
+    // Bare id matches the platform proxy's deepseek-* → fireworks route.
+    id: 'deepseek-v4.1-flash',
+    label: 'DeepSeek V4.1 Flash',
+    blurb: 'DeepSeek, served via Platform',
+    family: 'deepseek',
+    isLatest: true,
+    isDefault: true,
+    icon: 'deepseek',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    // Fireworks' Anthropic-compatible endpoint takes function tools only — the
+    // proxy strips Anthropic's server tools, so neither search nor fetch runs.
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    // Fireworks-reported context length for deepseek-v4p1-flash (1040k).
+    contextWindow: 1_040_000,
+    // Fireworks serverless rates (2026-09-11). Cache write is unpublished, so
+    // cacheCreation mirrors input — same convention as Fireworks/Meta.
+    pricing: {
+      inputPerMtok: 0.22,
+      outputPerMtok: 0.66,
+      cacheCreationPerMtok: 0.22,
+      cacheReadPerMtok: 0.007,
+    },
+  },
 ]
 
-/** Platform — bare Claude models plus the GPT/Grok models the proxy serves. */
+/** Platform — bare Claude models plus the GPT/Grok/Kimi/Muse/GLM/DeepSeek models the proxy serves. */
 export const PLATFORM_CATALOG: ModelDefinition[] = [
   ...withPlatformClaudeSpeeds(CLAUDE_BARE_CATALOG),
   ...PLATFORM_EXTRA_MODELS,

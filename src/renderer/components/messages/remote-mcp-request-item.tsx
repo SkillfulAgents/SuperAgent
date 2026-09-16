@@ -1,5 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { warnIfLiveRefreshFailed } from '@renderer/lib/connection-live-refresh'
 
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
@@ -7,6 +8,7 @@ import {
   Plus,
 } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { sameMcpEndpoint } from '@shared/lib/mcp/endpoint'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -17,7 +19,9 @@ import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 import { cn } from '@shared/lib/utils/cn'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
+import { useInitiateMcpOAuth, useMcpOAuthRedirectUris } from '@renderer/hooks/use-remote-mcps'
+import { McpSetupGuide } from '@renderer/components/connections/mcp-setup-guide'
+import { McpAdvancedClientFields } from '@renderer/components/connections/mcp-advanced-client-fields'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { type RemoteMcpServer, getMcpServiceKey, McpSourceIcon, McpServerCard } from './mcp-server-card'
@@ -29,11 +33,18 @@ interface RemoteMcpRequestItemProps {
   name?: string
   reason?: string
   authHint?: 'oauth' | 'bearer'
-  sessionId: string
+  /** Prefill for the Advanced section, supplied by the agent. */
+  clientId?: string
+  clientName?: string
   agentSlug: string
   readOnly?: boolean
   onComplete: () => void
 }
+
+type RemoteMcpRequestProps = RemoteMcpRequestItemProps & (
+  | { sessionId: string; replacement?: never }
+  | { sessionId?: string; replacement: { requestId: string; onCancel: () => void } }
+)
 
 type RequestStatus = 'pending' | 'submitting' | 'provided' | 'declined' | 'registering' | 'oauth_pending'
 
@@ -43,21 +54,31 @@ export function RemoteMcpRequestItem({
   name,
   reason,
   authHint,
+  clientId,
+  clientName,
   sessionId,
   agentSlug,
   readOnly,
   onComplete,
-}: RemoteMcpRequestItemProps) {
+  replacement,
+}: RemoteMcpRequestProps) {
   const queryClient = useQueryClient()
   const initiateOAuth = useInitiateMcpOAuth()
   const { track } = useAnalyticsTracking()
   const mcpSlug = COMMON_MCP_SERVERS.find((cs) => cs.url === url)?.slug || ''
+  const { data: redirectUris } = useMcpOAuthRedirectUris()
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
   const [selectedMcpIds, setSelectedMcpIds] = useState<Set<string>>(new Set())
   const [newName, setNewName] = useState(name || '')
   const [newUrl, setNewUrl] = useState(url)
   const [showTokenInput, setShowTokenInput] = useState(authHint === 'bearer')
+  // Advanced OAuth client overrides. Seeded from what the agent passed, then
+  // owned by the user — an agent that fetched an app ID from a provider console
+  // should not have to be right for the user to correct it.
+  const [advClientId, setAdvClientId] = useState(clientId || '')
+  const [advClientName, setAdvClientName] = useState(clientName || '')
+  const [advClientSecret, setAdvClientSecret] = useState('')
   const [bearerToken, setBearerToken] = useState('')
   // Bearer-server re-auth: which stale server is getting a replacement token
   const [reauthMcpId, setReauthMcpId] = useState<string | null>(null)
@@ -69,6 +90,16 @@ export function RemoteMcpRequestItem({
   const [menuOpenMcpId, setMenuOpenMcpId] = useState<string | null>(null)
   const [policyEditorMcp, setPolicyEditorMcp] = useState<{ id: string; name: string; tools: Array<{ name: string; description?: string }> } | null>(null)
   const targetUrl = newUrl.trim() || url
+  const isReplacing = !!replacement
+  const needsReplacementUrl = isReplacing && !url
+  const validTargetUrl = useMemo(() => {
+    try {
+      const parsed = new URL(targetUrl)
+      return parsed.protocol === 'https:' || parsed.protocol === 'http:'
+    } catch {
+      return false
+    }
+  }, [targetUrl])
 
   // Fetch existing remote MCP servers
   const { data, isLoading, refetch } = useQuery<{ servers: RemoteMcpServer[] }>({
@@ -80,15 +111,22 @@ export function RemoteMcpRequestItem({
     },
   })
 
-  const servers = useMemo(() => Array.isArray(data?.servers) ? data.servers : [], [data])
+  // Replacement must keep the original endpoint. Filter every selection path,
+  // including the picker and submitted IDs, using the API's compatibility rule.
+  const servers = useMemo(() => {
+    const ownedServers = Array.isArray(data?.servers) ? data.servers : []
+    return isReplacing
+      ? ownedServers.filter((server) => sameMcpEndpoint(server.url, url || targetUrl))
+      : ownedServers
+  }, [data, isReplacing, url, targetUrl])
   const matchingServer = useMemo(
     () => servers.find((server) => server.url === targetUrl) || null,
     [servers, targetUrl]
   )
   const targetServiceKey = useMemo(() => getMcpServiceKey(targetUrl), [targetUrl])
   const targetServiceServers = useMemo(
-    () => servers.filter((server) => getMcpServiceKey(server.url) === targetServiceKey),
-    [servers, targetServiceKey]
+    () => isReplacing ? servers : servers.filter((server) => getMcpServiceKey(server.url) === targetServiceKey),
+    [servers, targetServiceKey, isReplacing]
   )
   const primarySelectedMcpId = selectedMcpIds.values().next().value as string | undefined
   const activeMcpId = primarySelectedMcpId || matchingServer?.id || targetServiceServers[0]?.id || null
@@ -104,10 +142,12 @@ export function RemoteMcpRequestItem({
     [selectedServer, targetServiceKey]
   )
   const displayedServiceServers = useMemo(
-    () => servers.filter((server) => getMcpServiceKey(server.url) === selectedServiceKey),
-    [selectedServiceKey, servers]
+    () => isReplacing ? servers : servers.filter((server) => getMcpServiceKey(server.url) === selectedServiceKey),
+    [selectedServiceKey, servers, isReplacing]
   )
   const connectCardSlug = COMMON_MCP_SERVERS.find((server) => server.url === targetUrl)?.slug || mcpSlug
+  // Provider-side setup the user has to do before this server can connect at all.
+  const setupGuide = COMMON_MCP_SERVERS.find((server) => server.url === targetUrl)?.setup
   // Only active servers can be provided — a non-active server (e.g. expired
   // OAuth) would be dropped from the container env and the grant becomes a
   // silent no-op. Those servers get a Reconnect affordance instead.
@@ -173,21 +213,25 @@ export function RemoteMcpRequestItem({
   // servers can share the same URL (multiple accounts), so a URL match after
   // OAuth could select a sibling instead of the server that was reconnected.
   const reconnectMcpIdRef = useRef<string | null>(null)
+  const oauthTargetUrlRef = useRef(targetUrl)
+  const [oauthState, setOAuthState] = useState<string>()
 
   // Handle OAuth completion from Electron IPC, postMessage, BroadcastChannel, or storage fallback.
-  const handleOAuthComplete = useCallback((success: boolean, errorMessage?: string) => {
+  const handleOAuthComplete = useCallback((success: boolean, errorMessage?: string, completedMcpId?: string) => {
     if (success) {
       setError(null)
       // Refetch servers to find the reconnected or newly created one
       refetch().then(({ data: refreshedData }) => {
         const refreshedServers = Array.isArray(refreshedData?.servers) ? refreshedData.servers : []
-        const reconnectedId = reconnectMcpIdRef.current
+        const reconnectedId = reconnectMcpIdRef.current ?? completedMcpId
         reconnectMcpIdRef.current = null
         const completedServer = reconnectedId
           ? refreshedServers.find((s) => s.id === reconnectedId && s.status === 'active')
           : refreshedServers.find((s) => s.url === targetUrl && s.status === 'active')
-        if (completedServer) {
-          setSelectedMcpIds((prev) => new Set(prev).add(completedServer.id))
+        if (completedServer && sameMcpEndpoint(completedServer.url, oauthTargetUrlRef.current)) {
+          setSelectedMcpIds((prev) => new Set(replacement ? [] : prev).add(completedServer.id))
+        } else {
+          setError('The connected MCP does not match the requested endpoint or is unavailable. Please try again.')
         }
         setStatus('pending')
       }).catch(() => {
@@ -197,32 +241,44 @@ export function RemoteMcpRequestItem({
       setError(errorMessage || 'OAuth authorization failed')
       setStatus('pending')
     }
-  }, [refetch, targetUrl])
+  }, [refetch, targetUrl, replacement])
 
-  useMcpOAuthListener(status === 'oauth_pending', ({ success, error: oauthError }) => {
-    handleOAuthComplete(success, oauthError)
-  })
+  useMcpOAuthListener(status === 'oauth_pending', ({ success, error: oauthError, mcpId }) => {
+    handleOAuthComplete(success, oauthError, mcpId)
+  }, oauthState)
 
   const startOAuthFlow = async (
     popup: ReturnType<typeof prepareOAuthPopup>,
     // Pass { mcpId } to re-authenticate an existing server instead of registering a new one.
-    params?: { mcpId: string }
+    params?: { mcpId: string; name?: never; url?: never } | { mcpId?: never; name: string; url: string }
   ) => {
     reconnectMcpIdRef.current = params?.mcpId ?? null
+    const connectionUrl = params?.url ?? targetUrl
+    oauthTargetUrlRef.current = params?.mcpId
+      ? servers.find((server) => server.id === params.mcpId)?.url ?? connectionUrl
+      : connectionUrl
     try {
       const isElectron = !!window.electronAPI
       const result = await initiateOAuth.mutateAsync(
-        params
+        params?.mcpId
           ? { mcpId: params.mcpId, electron: isElectron }
-          : { name: newName.trim() || url, url: targetUrl, electron: isElectron }
+          : {
+              name: (params?.name ?? newName).trim() || connectionUrl,
+              url: connectionUrl,
+              electron: isElectron,
+              clientId: advClientId.trim() || undefined,
+              clientSecret: advClientSecret.trim() || undefined,
+              clientName: advClientName.trim() || undefined,
+            }
       )
 
-      if (result.redirectUrl) {
-        await popup.navigate(result.redirectUrl)
+      if (result.redirectUrl && result.state) {
+        setOAuthState(result.state)
         setStatus('oauth_pending')
+        await popup.navigate(result.redirectUrl)
       } else {
         popup.close()
-        setError('OAuth initiation did not return a redirect URL')
+        setError('OAuth initiation did not return a redirect URL and state')
         setStatus('pending')
       }
     } catch (oauthErr: unknown) {
@@ -265,7 +321,7 @@ export function RemoteMcpRequestItem({
       }
       queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
       await refetch()
-      setSelectedMcpIds((prev) => new Set(prev).add(mcpId))
+      setSelectedMcpIds((prev) => new Set(replacement ? [] : prev).add(mcpId))
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Reconnect failed')
     } finally {
@@ -299,7 +355,7 @@ export function RemoteMcpRequestItem({
       }
       queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
       await refetch()
-      setSelectedMcpIds((prev) => new Set(prev).add(mcpId))
+      setSelectedMcpIds((prev) => new Set(replacement ? [] : prev).add(mcpId))
       setReauthMcpId(null)
       setReauthToken('')
     } catch (err: unknown) {
@@ -310,6 +366,7 @@ export function RemoteMcpRequestItem({
   }
 
   const handleRegisterNew = async () => {
+    if (!validTargetUrl) return
     setStatus('registering')
     setError(null)
     track('mcp_added', { url: targetUrl, authType: authHint || (bearerToken ? 'bearer' : 'none'), location: 'session' })
@@ -392,7 +449,7 @@ export function RemoteMcpRequestItem({
     const popup = prepareOAuthPopup()
 
     if (authHint === 'oauth') {
-      await startOAuthFlow(popup)
+      await startOAuthFlow(popup, { name: nameToUse, url: resolvedTargetUrl })
       return
     }
 
@@ -412,7 +469,7 @@ export function RemoteMcpRequestItem({
 
       if (!response.ok) {
         if (responseData.needsOAuth) {
-          await startOAuthFlow(popup)
+          await startOAuthFlow(popup, { name: nameToUse, url: resolvedTargetUrl })
           return
         }
         if (responseData.needsAuth) {
@@ -451,7 +508,9 @@ export function RemoteMcpRequestItem({
 
     try {
       const response = await apiFetch(
-        `/api/agents/${agentSlug}/sessions/${sessionId}/provide-remote-mcp`,
+        replacement
+          ? `/api/agents/${agentSlug}/reauth-request/${replacement.requestId}/replace-mcp`
+          : `/api/agents/${agentSlug}/sessions/${sessionId}/provide-remote-mcp`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -467,6 +526,11 @@ export function RemoteMcpRequestItem({
         throw new Error(data.error || 'Failed to provide MCP access')
       }
 
+      if (replacement) {
+        warnIfLiveRefreshFailed(await response.json().catch(() => ({})))
+        queryClient.invalidateQueries({ queryKey: ['mcp-agents'] })
+        queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
+      }
       setStatus('provided')
       // Bare prefix: agentSlug here is the session's display-slug route form, but the
       // agent-home Connections card keys on the canonical id — a targeted key misses it.
@@ -599,7 +663,9 @@ export function RemoteMcpRequestItem({
   return (
     <RequestItemShell
       title={reason || `Connect MCP server: ${name || url}`}
-      subtitle="The MCP server will be connected to this agent."
+      subtitle={replacement
+        ? 'Choose or connect an MCP you own. This replaces the connection for this agent. Active sessions will be interrupted and told to use the new connection.'
+        : 'The MCP server will be connected to this agent.'}
       theme="blue"
       sessionId={sessionId}
       agentSlug={agentSlug}
@@ -610,6 +676,22 @@ export function RemoteMcpRequestItem({
       data-testid={isCompleted ? 'remote-mcp-request-completed' : 'remote-mcp-request'}
       data-status={isCompleted ? status : undefined}
     >
+      {needsReplacementUrl && (
+        <Input
+          type="url"
+          aria-label="MCP server URL"
+          placeholder="Enter your MCP server URL"
+          value={newUrl}
+          onChange={(event) => {
+            setNewUrl(event.target.value)
+            setSelectedMcpIds(new Set())
+            hasAutoSelected.current = false
+            setError(null)
+          }}
+          disabled={status !== 'pending'}
+          className="mt-3"
+        />
+      )}
       <div className="mt-3">
         {status === 'oauth_pending' ? (
           <div className="flex items-center gap-3 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
@@ -643,6 +725,7 @@ export function RemoteMcpRequestItem({
                         if (next.has(server.id)) {
                           next.delete(server.id)
                         } else {
+                          if (replacement) next.clear()
                           next.add(server.id)
                         }
                         return next
@@ -690,6 +773,9 @@ export function RemoteMcpRequestItem({
           </div>
         ) : (
           <div className="space-y-2">
+            {setupGuide && (
+              <McpSetupGuide guide={setupGuide} redirectUri={redirectUris?.preferred} />
+            )}
             <div className="flex items-center gap-3 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
                 <McpSourceIcon slug={connectCardSlug} />
@@ -706,7 +792,7 @@ export function RemoteMcpRequestItem({
               size="xs"
               onClick={handleRegisterNew}
               loading={status === 'registering'}
-              disabled={status !== 'pending'}
+              disabled={!validTargetUrl || status !== 'pending'}
               className="shrink-0 bg-foreground text-background hover:bg-foreground/90"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -721,6 +807,24 @@ export function RemoteMcpRequestItem({
                 placeholder="Bearer token"
                 className="h-8 text-sm"
                 disabled={status !== 'pending'}
+              />
+            )}
+            {authHint !== 'bearer' && (
+              <McpAdvancedClientFields
+                values={{
+                  clientName: advClientName,
+                  clientId: advClientId,
+                  clientSecret: advClientSecret,
+                }}
+                onChange={(next) => {
+                  setAdvClientName(next.clientName)
+                  setAdvClientId(next.clientId)
+                  setAdvClientSecret(next.clientSecret)
+                }}
+                defaultOpen={setupGuide?.requiresClientId || !!clientId}
+                disabled={status !== 'pending'}
+                variant="compact"
+                testIdPrefix="mcp-request"
               />
             )}
           </div>
@@ -771,13 +875,19 @@ export function RemoteMcpRequestItem({
       {/* Action buttons */}
       {!selectedServer && !matchingServer && status !== 'oauth_pending' ? (
         <RequestItemActions>
-          <DeclineButton
-            onDecline={handleDecline}
-            disabled={status !== 'pending' && status !== 'registering'}
-            label="Deny"
-            showIcon={false}
-            className="border-border text-foreground hover:bg-muted"
-          />
+          {replacement ? (
+            <Button size="xs" variant="outline" onClick={replacement.onCancel} disabled={status === 'submitting'}>
+              Cancel
+            </Button>
+          ) : (
+            <DeclineButton
+              onDecline={handleDecline}
+              disabled={status !== 'pending' && status !== 'registering'}
+              label="Deny"
+              showIcon={false}
+              className="border-border text-foreground hover:bg-muted"
+            />
+          )}
         </RequestItemActions>
       ) : null}
 
@@ -799,13 +909,19 @@ export function RemoteMcpRequestItem({
               ) : null}
             </div>
             <RequestItemActions inline>
-              <DeclineButton
-                onDecline={handleDecline}
-                disabled={status !== 'pending' && status !== 'oauth_pending'}
-                label="Deny"
-                showIcon={false}
-                className="border-border text-foreground hover:bg-muted"
-              />
+              {replacement ? (
+                <Button size="xs" variant="outline" onClick={replacement.onCancel} disabled={status === 'submitting'}>
+                  Cancel
+                </Button>
+              ) : (
+                <DeclineButton
+                  onDecline={handleDecline}
+                  disabled={status !== 'pending' && status !== 'oauth_pending'}
+                  label="Deny"
+                  showIcon={false}
+                  className="border-border text-foreground hover:bg-muted"
+                />
+              )}
 
               <Button
                 onClick={handleProvide}
@@ -814,7 +930,7 @@ export function RemoteMcpRequestItem({
                 size="xs"
                 className="bg-blue-600 hover:bg-blue-700 text-white"
               >
-                Allow Access{selectedMcpIdsForProvide.length > 1 ? ` (${selectedMcpIdsForProvide.length})` : ''}
+                {replacement ? 'Replace connection' : `Allow Access${selectedMcpIdsForProvide.length > 1 ? ` (${selectedMcpIdsForProvide.length})` : ''}`}
               </Button>
             </RequestItemActions>
           </div>

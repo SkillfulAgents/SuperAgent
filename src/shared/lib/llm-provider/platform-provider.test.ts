@@ -3,14 +3,27 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // Stub everything with side effects: attribution pulls in the DB, auth-service
 // reads settings storage, config resolves the proxy URL from the environment.
 const currentAttribution = vi.fn()
+const forAgentAttribution = vi.fn()
+const requiresActingMember = vi.fn(() => false)
+const captureMessage = vi.fn()
+const platformAuthStatus = vi.fn()
 vi.mock('@shared/lib/platform-attribution', () => ({
-  attribution: { current: () => currentAttribution() },
+  attribution: {
+    current: () => currentAttribution(),
+    forAgent: (slug: string) => forAgentAttribution(slug),
+    requiresActingMember: () => requiresActingMember(),
+  },
+}))
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureMessage: (...args: unknown[]) => captureMessage(...args),
 }))
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => 'platform-token',
+  getPlatformAuthStatus: () => platformAuthStatus(),
 }))
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'https://proxy.example/v1',
+  getPlatformBaseUrl: () => 'https://platform.example.com',
 }))
 vi.mock('../config/settings', () => ({
   getSettings: () => ({}),
@@ -22,7 +35,42 @@ import { PlatformLlmProvider, sanitizeAgentName } from './platform-provider'
 const provider = new PlatformLlmProvider()
 
 beforeEach(() => {
-  currentAttribution.mockReturnValue(null)
+  currentAttribution.mockReset().mockReturnValue(null)
+  forAgentAttribution.mockReset().mockReturnValue(null)
+  requiresActingMember.mockReset().mockReturnValue(false)
+  captureMessage.mockReset()
+  platformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_123' })
+})
+
+describe('getContainerEnvVars auth token (cold start)', () => {
+  it('bakes the agent-resolved attribution token when an identity is provided', () => {
+    forAgentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_owner' })
+    const env = provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' })
+    expect(forAgentAttribution).toHaveBeenCalledWith('abc123')
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('org-jwt::sub_owner')
+  })
+
+  it('uses the ambient attribution when no identity is provided', () => {
+    currentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_ambient' })
+    expect(provider.getContainerEnvVars().ANTHROPIC_AUTH_TOKEN).toBe('org-jwt::sub_ambient')
+    expect(forAgentAttribution).not.toHaveBeenCalled()
+  })
+
+  it('reports and falls back to the bare token when an org JWT resolves no member', () => {
+    requiresActingMember.mockReturnValue(true)
+    const env = provider.getContainerEnvVars({ id: 'abc123' })
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
+    expect(captureMessage).toHaveBeenCalledWith(
+      'platform container env built without acting member',
+      expect.objectContaining({ tags: { area: 'platform-attribution', op: 'container.env.no_member' } }),
+    )
+  })
+
+  it('does not report the fallback for an opaque access key', () => {
+    requiresActingMember.mockReturnValue(false)
+    expect(provider.getContainerEnvVars({ id: 'abc123' }).ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
+    expect(captureMessage).not.toHaveBeenCalled()
+  })
 })
 
 describe('PlatformLlmProvider — tool search', () => {
@@ -56,6 +104,67 @@ describe('getContainerEnvVars agent identity', () => {
   it('flattens control characters out of the name', () => {
     const env = provider.getContainerEnvVars({ id: 'abc123', name: 'Multi\nLine\tBot' })
     expect(env.SUPERAGENT_AGENT_NAME).toBe('Multi Line Bot')
+  })
+})
+
+describe('presentationForTurnError', () => {
+  const SPEND_CAP = 'A spend cap for this workspace was reached. It resets within 30 days.'
+  const INSUFFICIENT = 'API Error: 402 insufficient balance — top up to continue.'
+
+  it('returns warning markdown for a workspace spend cap, linking the connected org billing page', () => {
+    const parsed = provider.presentationForTurnError(
+      429,
+      'A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.',
+      'rate_limit',
+    )
+    expect(parsed).toEqual({
+      severity: 'warning',
+      icon: 'circle-dollar-sign',
+      message:
+        '**Spend Limit Reached:** A spend cap for this workspace was reached. It resets within 30 days. [Raise spend limit in the admin dashboard](https://platform.example.com/dashboard/organizations/org_123?tab=billing)',
+    })
+  })
+
+  it('drops the billing link and paywall href when the platform is disconnected', () => {
+    platformAuthStatus.mockReturnValue({ connected: false, orgId: null })
+    expect(provider.presentationForTurnError(429, SPEND_CAP, 'rate_limit')?.message).not.toContain('](')
+    expect(provider.presentationForTurnError(402, INSUFFICIENT, 'unknown')).not.toHaveProperty('href')
+  })
+
+  it('attaches the org billing page as the paywall href', () => {
+    expect(provider.presentationForTurnError(402, INSUFFICIENT, 'unknown')?.href).toBe(
+      'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
+    )
+  })
+
+  it('falls back to the generic banner for a non-spend 429', () => {
+    const parsed = provider.presentationForTurnError(429, 'Rate limit exceeded. Slow down and retry shortly.', 'rate_limit')
+    expect(parsed?.severity).toBe('error')
+    expect(parsed?.message).toContain('**LLM Provider Error:**')
+  })
+
+  it('attaches a recognized class even when the SDK code is generic', () => {
+    const parsed = provider.presentationForTurnError(429, SPEND_CAP, 'unknown')
+    expect(parsed?.message).toContain('**Spend Limit Reached:**')
+  })
+
+  it('attaches the generic banner when the SDK code marks a provider error', () => {
+    const parsed = provider.presentationForTurnError(500, 'Overloaded', 'server_error')
+    expect(parsed?.message).toContain('**LLM Provider Error:**')
+  })
+
+  it('returns null for an unrecognized error with a non-provider SDK code', () => {
+    expect(provider.presentationForTurnError(undefined, 'Output too long', 'max_output_tokens')).toBeNull()
+    expect(provider.presentationForTurnError(undefined, 'Output too long', null)).toBeNull()
+  })
+
+  it('does not let a recognized class claim a max_output_tokens failure', () => {
+    expect(provider.presentationForTurnError(undefined, SPEND_CAP, 'max_output_tokens')).toBeNull()
+  })
+
+  it('does not let a recognized class claim a turn that failed without an API error', () => {
+    expect(provider.presentationForTurnError(undefined, INSUFFICIENT, null)).toBeNull()
+    expect(provider.presentationForTurnError(undefined, INSUFFICIENT, undefined)).toBeNull()
   })
 })
 

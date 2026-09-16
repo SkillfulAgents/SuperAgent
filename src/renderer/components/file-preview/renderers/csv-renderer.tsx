@@ -11,6 +11,7 @@ import { useFilePreview } from '@renderer/context/file-preview-context'
 interface CsvRendererProps {
   url: string
   filePath: string
+  agentSlug: string
   commentsEnabled?: boolean
 }
 
@@ -100,17 +101,17 @@ const CsvTable = memo(function CsvTable({ rows, columnLabels, commentsByCell, on
   )
 })
 
-export function CsvRenderer({ url, filePath, commentsEnabled = true }: CsvRendererProps) {
+export function CsvRenderer({ url, filePath, agentSlug, commentsEnabled = true }: CsvRendererProps) {
   const [view, setView] = useState<'table' | 'raw'>('table')
   const [cellTarget, setCellTarget] = useState<CellTarget | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const { comments } = useFilePreview()
+  const { commentsFor } = useFilePreview()
 
   // The context Map preserves untouched per-file arrays across unrelated
   // mutations, so keying the memo on this file's array (not the whole Map)
   // keeps the table from re-rendering when another file's comments change.
-  const fileComments = comments.get(filePath)
+  const fileComments = commentsFor(filePath, agentSlug)
   const commentsByCell = useMemo(() => {
     const map = new Map<string, number[]>()
     fileComments?.forEach((c, i) => {
@@ -221,7 +222,7 @@ export function CsvRenderer({ url, filePath, commentsEnabled = true }: CsvRender
       </div>
 
       {view === 'raw' ? (
-        <TextRenderer url={url} filePath={filePath} commentsEnabled={commentsEnabled} />
+        <TextRenderer url={url} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
       ) : (
         <>
           <CsvTable
@@ -259,6 +260,7 @@ export function CsvRenderer({ url, filePath, commentsEnabled = true }: CsvRender
             },
           }}
           filePath={filePath}
+          agentSlug={agentSlug}
           onClose={() => setCellTarget(null)}
         />
       )}

@@ -62,3 +62,6 @@ scripts/.scope-labels.json
 
 # AI-generated planning artifacts (superpowers skill output) — keep local, don't track
 docs/superpowers/
+# perf suite output (npm run test:perf)
+perf-results.jsonl
+perf-results.txt

@@ -6,7 +6,11 @@
  */
 
 import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/container/types'
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { SessionUsage } from '@shared/lib/types/agent'
+import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
+
+export type { ApiAgentWidget }
 
 // ============================================================================
 // Agent API Types
@@ -35,6 +39,8 @@ export interface ApiAgent {
   sessionCount?: number
   lastActivityAt?: Date | null
   dashboards?: ApiAgentDashboard[]
+  /** Home-screen widgets (see @shared/lib/widgets/widget-schema). */
+  widgets?: ApiAgentWidget[]
   /** Opt-in expansion from GET /api/agents?include_latest_visible_session_tail=true. */
   latestVisibleSession?: ApiLatestVisibleSession | null
   /** Attention on visible sessions other than latestVisibleSession. Null means unavailable. */
@@ -46,6 +52,8 @@ export interface ApiAgentTemplateInstallResult extends ApiAgent {
   hasOnboarding?: boolean
   /** Optional root PROMPT.md contents to prefill on the new agent's home page. */
   templatePrompt?: string
+  /** Optional `first_prompt` from the onboarding skill frontmatter. */
+  onboardingFirstPrompt?: string
 }
 
 export interface ApiAgentDashboard {
@@ -133,6 +141,13 @@ export interface ApiSession {
   // Present when another agent created this session through x-agent.
   invokedByAgentSlug?: string
   invokedByAgentName?: string
+  // Automatic widget repairs also appear in the inbound invocation history.
+  isWidgetRepair?: boolean
+  widgetRepairSlug?: string
+  // Present when this session was forked from another. Name resolves from the
+  // parent's metadata on the single-session GET; undefined when the parent is gone.
+  forkedFromSessionId?: string
+  forkedFromSessionName?: string
   // Last effort level used on this session (seeds the composer selector)
   effort?: EffortLevel
   // Last processing speed used on this session (seeds the composer selector)
@@ -166,6 +181,8 @@ export interface ApiToolCall {
     totalTokens?: number
     totalToolUseCount?: number
   }
+  /** The runtime's task id for a Bash call run in the background. */
+  backgroundTaskId?: string
 }
 
 /**
@@ -179,6 +196,7 @@ export interface ApiMessageContent {
  * Message response from API
  */
 export interface ApiMessageSender {
+  image?: string | null
   id: string
   name: string
   email: string
@@ -193,12 +211,16 @@ export interface ApiMessage {
   sender?: ApiMessageSender
   /** SDK error code when assistant message failed due to LLM provider error */
   apiError?: string
+  /** Provider-authored copy for the apiError (severity, icon, markdown + CTA link). */
+  errorPresentation?: ProviderErrorPresentation
   /**
    * User message delivered mid-turn (queued/steering input). It does NOT end
    * the turn it appears in — turn-boundary logic (elapsed times, running tool
    * detection) must skip it.
    */
   queued?: boolean
+  /** Copied into this session by a fork. The thread draws the fork point after the last one. */
+  forked?: boolean
   /**
    * Summarized extended-thinking blocks persisted in the session transcript,
    * in order. Absent when the turn had no thinking or the transcript predates
@@ -215,10 +237,8 @@ export interface ApiMessage {
   }
 }
 
-/**
- * SDK error codes that indicate an external LLM provider issue
- * (as opposed to application-level errors like max_output_tokens).
- */
+// SDK codes split: NON_UPSTREAM = not an API error; PROVIDER = upstream with a generic banner; the
+// rest of the enum is upstream, provider-facing only with a presentation. api.test.ts pins the enum.
 export const PROVIDER_ERROR_CODES = new Set([
   'authentication_failed',
   'billing_error',
@@ -226,6 +246,25 @@ export const PROVIDER_ERROR_CODES = new Set([
   'invalid_request',
   'server_error',
 ])
+
+export const NON_UPSTREAM_ERROR_CODES = new Set(['max_output_tokens'])
+
+// Upstream = any code not in NON_UPSTREAM (so `unknown`, `overloaded`, … count).
+// Null = the turn failed for a non-API reason (container died, tool failure).
+export function isUpstreamApiErrorCode(apiErrorCode: string | null | undefined): apiErrorCode is string {
+  return typeof apiErrorCode === 'string' && !NON_UPSTREAM_ERROR_CODES.has(apiErrorCode)
+}
+
+// The server only attaches a presentation when the active provider recognized
+// the error, so its presence outranks a generic SDK code (the CLI tags some
+// upstream denials, e.g. a 402, as `unknown`).
+export function isProviderFacingError(
+  apiErrorCode: string | null | undefined,
+  presentation?: ProviderErrorPresentation | null,
+): boolean {
+  if (presentation) return true
+  return typeof apiErrorCode === 'string' && PROVIDER_ERROR_CODES.has(apiErrorCode)
+}
 
 /**
  * Compact boundary marker in API response
@@ -237,6 +276,7 @@ export interface ApiCompactBoundary {
   trigger: string
   preTokens?: number
   createdAt: Date
+  forked?: boolean
 }
 
 /**
@@ -247,6 +287,7 @@ export interface ApiMemoryRecall {
   type: 'memory_recall'
   memoryPaths: string[]
   createdAt: Date
+  forked?: boolean
 }
 
 /**
@@ -259,6 +300,7 @@ export interface ApiInformational {
   content: string
   level?: string
   createdAt: Date
+  forked?: boolean
 }
 
 /**

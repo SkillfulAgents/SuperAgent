@@ -38,6 +38,8 @@ describe('familyDisplayName', () => {
     expect(familyDisplayName('sonnet')).toBe('Sonnet')
     expect(familyDisplayName('gpt')).toBe('GPT')
     expect(familyDisplayName('glm')).toBe('GLM')
+    expect(familyDisplayName('muse')).toBe('Muse Spark')
+    expect(familyDisplayName('muse-contributor')).toBe('Muse Spark Contributor')
   })
 })
 
@@ -212,6 +214,35 @@ describe('ModelFamilyList', () => {
     expect(onPick).toHaveBeenLastCalledWith('gpt-5.6-luna')
   })
 
+  it('renders the Muse Spark tiers as two lineage rows with version chips', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    // Mirrors the platform catalog: authored oldest→newest per family.
+    const museCatalog: ModelDefinition[] = [
+      { id: 'muse-spark-1.2', label: 'Muse Spark 1.2', family: 'muse', icon: 'meta', supportedEfforts: STD },
+      { id: 'muse-spark-1.3', label: 'Muse Spark 1.3', family: 'muse', isLatest: true, isDefault: true, icon: 'meta', supportedEfforts: STD },
+      { id: 'muse-spark-1.2-contributor', label: 'Muse Spark Contributor 1.2', family: 'muse-contributor', icon: 'meta', supportedEfforts: STD, dataUsedForProductImprovement: true },
+      { id: 'muse-spark-1.3-contributor', label: 'Muse Spark Contributor 1.3', family: 'muse-contributor', isLatest: true, icon: 'meta', supportedEfforts: STD, dataUsedForProductImprovement: true },
+    ]
+    render(<ModelFamilyList catalog={museCatalog} value="muse-spark-1.3" onPick={onPick} />)
+    // One row per tier…
+    const standard = screen.getByTestId('model-family-muse')
+    const contributor = screen.getByTestId('model-family-muse-contributor')
+    expect(standard).toHaveTextContent('Muse Spark')
+    expect(contributor).toHaveTextContent('Muse Spark Contributor')
+    // …each with bare-version chips: the family name is stripped from both.
+    expect(screen.getByTestId('model-pinned-muse-spark-1.3')).toHaveTextContent('1.3')
+    expect(screen.getByTestId('model-pinned-muse-spark-1.2')).toHaveTextContent('1.2')
+    expect(screen.getByTestId('model-pinned-muse-spark-1.3-contributor')).toHaveTextContent('1.3')
+    expect(screen.getByTestId('model-pinned-muse-spark-1.2-contributor')).toHaveTextContent('1.2')
+    expect(screen.getByTestId('model-pinned-muse-spark-1.3-contributor')).not.toHaveTextContent('Contributor')
+    // Each row picks its own tier's latest; chips pin a version.
+    await user.click(contributor)
+    expect(onPick).toHaveBeenLastCalledWith('muse-spark-1.3-contributor')
+    await user.click(screen.getByTestId('model-pinned-muse-spark-1.2'))
+    expect(onPick).toHaveBeenLastCalledWith('muse-spark-1.2')
+  })
+
   it('offers a per-family "latest" alias row in settings mode', async () => {
     const user = userEvent.setup()
     const onPick = vi.fn()
@@ -361,8 +392,9 @@ describe('ModelFamilyList', () => {
       },
       {
         id: 'muse-spark-1.2-contributor',
-        label: 'Muse Spark 1.2c',
-        family: 'muse',
+        label: 'Muse Spark Contributor 1.2',
+        family: 'muse-contributor',
+        isLatest: true,
         icon: 'meta',
         supportedEfforts: STD,
         dataUsedForProductImprovement: true,

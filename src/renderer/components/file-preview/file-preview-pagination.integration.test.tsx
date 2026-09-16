@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { FilePreviewProvider, useFilePreview } from '@renderer/context/file-preview-context'
 import { FilePreviewTrayContent } from './file-preview-tray-content'
@@ -13,6 +14,9 @@ vi.mock('@renderer/router/use-route-location', () => ({
 }))
 
 vi.mock('./file-tab-bar', () => ({ FileTabBar: () => null }))
+// The tray reads the file's size over HEAD; jsdom has no server to answer, and
+// the size is not what this test is about.
+vi.mock('@renderer/hooks/use-file-size', () => ({ useFileSize: () => ({ data: null }) }))
 vi.mock('./comments/comment-bar', () => ({ CommentBar: () => null }))
 vi.mock('react-pdf', () => ({
   pdfjs: { GlobalWorkerOptions: {} },
@@ -61,9 +65,11 @@ function PreviewHarness() {
 describe('PDF preview pagination integration', () => {
   it('rerenders the visible PDF page after clicking next', async () => {
     render(
-      <FilePreviewProvider sessionId="test-session">
-        <PreviewHarness />
-      </FilePreviewProvider>,
+      <QueryClientProvider client={new QueryClient()}>
+        <FilePreviewProvider sessionId="test-session">
+          <PreviewHarness />
+        </FilePreviewProvider>
+      </QueryClientProvider>,
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Open PDF' }))

@@ -9,26 +9,22 @@
 
 import { captureException } from '@shared/lib/error-reporting'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
-import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { runWithOptionalUser, attribution } from '@shared/lib/platform-attribution'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
-import { db } from '@shared/lib/db'
-import { connectedAccounts } from '@shared/lib/db/schema'
-import { eq } from 'drizzle-orm'
 import {
   getDistinctPlatformMemberIdsForActiveTriggers,
   getWebhookTriggersByComposioId,
   markTriggerFired,
   markTriggerFailed,
-  resolvePlatformMemberForCandidates,
+  resolveTriggerPrincipal,
+  getConnectedAccountOwnerUserId,
 } from '@shared/lib/services/webhook-trigger-service'
 import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-service'
 import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
-import { registerSession } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import {
@@ -41,17 +37,6 @@ import {
   webhookEnvelopeSchema,
   CUSTOM_WEBHOOK_TRIGGER_TYPE,
 } from '@shared/lib/services/webhook-endpoint-schema'
-
-function resolveConnectedAccountOwner(connectedAccountId: string | null): string | null {
-  if (!connectedAccountId) return null
-  const rows = db
-    .select({ userId: connectedAccounts.userId })
-    .from(connectedAccounts)
-    .where(eq(connectedAccounts.id, connectedAccountId))
-    .limit(1)
-    .all()
-  return rows[0]?.userId ?? null
-}
 
 /**
  * Custom-endpoint events carry a request envelope from the public ingest
@@ -327,12 +312,10 @@ class TriggerManager {
     // creator has no platform member (SUP-226). If neither resolves to a
     // platform member (e.g. opaque-key / single-user mode), keep the prior
     // best-effort attribution (creator, else owner).
-    const candidates = [
-      trigger.createdByUserId,
-      resolveConnectedAccountOwner(trigger.connectedAccountId),
-    ]
-    const resolved = resolvePlatformMemberForCandidates(candidates)
-    const ownerUserId = resolved?.userId ?? candidates.find((c) => c) ?? null
+    const ownerUserId =
+      resolveTriggerPrincipal(trigger)?.userId ??
+      trigger.createdByUserId ??
+      getConnectedAccountOwnerUserId(trigger.connectedAccountId)
     await runWithOptionalUser(ownerUserId, () => this.spawnSessionInner(trigger, events))
   }
 
@@ -353,7 +336,8 @@ class TriggerManager {
     const prompt = composeTriggerPrompt(trigger, events)
 
     // Start agent session
-    const client = await containerManager.ensureRunning(trigger.agentSlug)
+    const actor = agentRegistry.get(trigger.agentSlug)
+    await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(trigger.agentSlug)
 
     // Model/effort/speed preference order: trigger override > agent default > global default.
@@ -364,7 +348,7 @@ class TriggerManager {
       agentPrefs,
       models,
     )
-    const containerSession = await client.createSession({
+    const containerSession = await actor.sessions.create({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: prompt,
       model: resolved.model,
@@ -378,7 +362,7 @@ class TriggerManager {
     const sessionId = containerSession.id
     const sessionName = trigger.name || `Webhook: ${trigger.triggerType}`
 
-    await registerSession(trigger.agentSlug, sessionId, sessionName, {
+    await actor.sessions.register(sessionId, sessionName, {
       isWebhookExecution: true,
       webhookTriggerId: trigger.id,
       webhookTriggerName: trigger.name || undefined,
@@ -386,13 +370,9 @@ class TriggerManager {
       automationStatus: 'running',
     })
 
-    await messagePersister.subscribeToSession(
-      sessionId,
-      client,
-      sessionId,
-      trigger.agentSlug
-    )
-    messagePersister.markSessionActive(sessionId, trigger.agentSlug)
+    // createSession already started the turn; replay may finish it during attachment.
+    actor.sessions.markActive(sessionId)
+    await actor.sessions.subscribeStream(sessionId, sessionId)
 
     // Update trigger tracking
     await markTriggerFired(trigger.id, sessionId)

@@ -3,14 +3,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MessageInput } from './message-input'
+import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { useDraft } from '@renderer/context/drafts-context'
 import { useEffect } from 'react'
 import { setMarkdownComposerSelection } from './markdown-composer-editor'
+import { pendingAttachmentDropKey, type PendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
+import type { DataTransferResult } from '@renderer/lib/file-utils'
 
 // Mock hooks
 const mockSendMessage = {
   mutateAsync: vi.fn().mockResolvedValue({ success: true, uuid: 'server-uuid-1', queued: false }),
+  mutate: vi.fn(),
   isPending: false,
 }
 const mockUploadFile = { mutateAsync: vi.fn().mockResolvedValue({ path: '/tmp/file' }) }
@@ -25,7 +29,9 @@ const mockCreateSecret = {
   isPending: false,
 }
 
+const mockMessages: any[] = []
 vi.mock('@renderer/hooks/use-messages', () => ({
+  useMessages: () => ({ data: mockMessages }),
   useSendMessage: () => mockSendMessage,
   useUploadFile: () => mockUploadFile,
   useUploadFolder: () => mockUploadFolder,
@@ -36,8 +42,51 @@ vi.mock('@renderer/hooks/use-secrets', () => ({
   useCreateSecret: () => mockCreateSecret,
 }))
 
+// Voice mode: offered per test, and its mic/reader loop stubbed out.
+let mockCanUseVoiceMode = false
+// A dictation in progress, over the real hook's idle state.
+let mockDictating = false
+vi.mock('@renderer/hooks/use-voice-input', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@renderer/hooks/use-voice-input')>()
+  return {
+    ...original,
+    useCanUseVoiceMode: () => mockCanUseVoiceMode,
+    useVoiceInput: (...args: Parameters<typeof original.useVoiceInput>) => {
+      const real = original.useVoiceInput(...args)
+      return mockDictating ? { ...real, isRecording: true } : real
+    },
+  }
+})
+const mockVoice = { phase: 'listening' as 'listening' | 'thinking' | 'speaking', working: false }
+const mockUseVoiceMode = vi.fn()
+vi.mock('@renderer/hooks/use-voice-mode', () => ({
+  useVoiceMode: (args: unknown) => mockUseVoiceMode(args) ?? ({
+    phase: mockVoice.phase,
+    working: mockVoice.working,
+    hold: { allowed: mockVoice.phase !== 'listening', delayMs: 700 },
+    capabilities: { speechSpeed: true, spokenTranscript: false },
+    utterance: '',
+    error: null,
+    clearError: vi.fn(),
+    pressMic: vi.fn(),
+    getAnalyser: () => null,
+  }),
+}))
+const mockUseHoldSound = vi.fn()
+vi.mock('@renderer/hooks/use-hold-sound', () => ({
+  useHoldSound: (args: unknown) => mockUseHoldSound(args),
+}))
+const mockUserVoiceSettings: { ttsSpeed?: number; holdSound?: boolean } = {}
+const mockUpdateUserSettings = vi.fn()
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: { voice: mockUserVoiceSettings } }),
+  useUpdateUserSettings: () => ({ mutate: mockUpdateUserSettings }),
+}))
+
 const mockStreamState = {
   isActive: false,
+  isWaitingBackground: false,
+  backgroundTasks: [] as Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }>,
   slashCommands: [] as Array<{ name: string; description: string; argumentHint: string }>,
 }
 
@@ -93,7 +142,10 @@ describe('MessageInput', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockStreamState.isActive = false
+    mockStreamState.isWaitingBackground = false
+    mockStreamState.backgroundTasks = []
     mockStreamState.slashCommands = []
+    mockMessages.length = 0
     mockSendMessage.isPending = false
     mockIsOnline = true
     mockRuntimeStatus.data.runtimeReadiness.status = 'READY'
@@ -104,6 +156,149 @@ describe('MessageInput', () => {
       key: 'GitHub Token',
       envVar: 'GITHUB_TOKEN',
       hasValue: true,
+    })
+  })
+
+  describe('voice mode', () => {
+    it('is offered only when the provider can both hear and speak', () => {
+      mockCanUseVoiceMode = false
+      const { unmount } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('voice-mode-button')).not.toBeInTheDocument()
+      unmount()
+      mockCanUseVoiceMode = true
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByTestId('voice-mode-button')).toBeInTheDocument()
+    })
+
+    it('pauses behind a request card rather than ending, and resumes after it', async () => {
+      mockCanUseVoiceMode = true
+      const { rerender } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }))
+      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
+
+      // The agent asks for something: the column hides the composer behind the card.
+      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" suspended />)
+      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: true }))
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }))
+      expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
+      // No "exited" notice: the person did not leave.
+      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
+
+      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: false }))
+      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
+
+      // Leave properly, so the deferred exit notice lands here and not in the next test.
+      await userEvent.click(screen.getByTestId('voice-mode-exit'))
+      await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledTimes(2))
+    })
+
+    it('cannot be entered while a dictation is still recording', () => {
+      mockCanUseVoiceMode = true
+      mockDictating = true
+      try {
+        renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+        expect(screen.getByTestId('voice-mode-button')).toBeDisabled()
+      } finally {
+        mockDictating = false
+      }
+    })
+
+    it('enters and leaves with a notice the agent reads on its next turn, never a turn of its own', async () => {
+      mockCanUseVoiceMode = true
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(mockSendMessage.mutate).toHaveBeenCalledWith({
+        sessionId: 's-1',
+        agentSlug: 'agent-1',
+        content: VOICE_MODE_ENTERED_MESSAGE,
+        shouldQuery: false,
+      }, expect.anything())
+      expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
+      expect(screen.queryByTestId('message-input')).not.toBeInTheDocument()
+
+      await userEvent.click(screen.getByTestId('voice-mode-exit'))
+      expect(screen.getByTestId('message-input')).toBeInTheDocument()
+      await waitFor(() =>
+        expect(mockSendMessage.mutate).toHaveBeenLastCalledWith({
+          sessionId: 's-1',
+          agentSlug: 'agent-1',
+          content: VOICE_MODE_EXITED_MESSAGE,
+          shouldQuery: false,
+        }, expect.anything()),
+      )
+      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(2)
+    })
+
+    it('shows the reading speed and hold sound under the mic, written to the person\'s settings', async () => {
+      mockCanUseVoiceMode = true
+      mockUserVoiceSettings.ttsSpeed = 1.2
+      delete mockUserVoiceSettings.holdSound
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('voice-mode-controls')).not.toBeInTheDocument()
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(screen.getByTestId('voice-mode-speed')).toHaveTextContent('1.2×')
+      const hold = screen.getByTestId('voice-mode-hold-sound')
+      expect(hold).toHaveAttribute('aria-pressed', 'true')
+      await userEvent.click(hold)
+      // Written as a function of the settings at write time, so two quick
+      // clicks toggle twice rather than both writing "off".
+      const patch = mockUpdateUserSettings.mock.calls.at(-1)?.[0] as (current: { voice?: { holdSound?: boolean } }) => unknown
+      expect(patch({ voice: { holdSound: true } })).toEqual({ voice: { holdSound: false } })
+      expect(patch({ voice: { holdSound: false } })).toEqual({ voice: { holdSound: true } })
+      expect(patch({})).toEqual({ voice: { holdSound: false } })
+    })
+
+    it('plays the hold sound while the agent has the floor, unless muted', async () => {
+      mockCanUseVoiceMode = true
+      delete mockUserVoiceSettings.holdSound
+      mockVoice.phase = 'thinking'
+      mockVoice.working = true
+      const { unmount } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: false, agentTurn: true, working: true, delayMs: 700, speaking: false })
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: true, working: true, delayMs: 700, speaking: false })
+      unmount()
+
+      mockUserVoiceSettings.holdSound = false
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: false, agentTurn: true, working: true, delayMs: 700, speaking: false })
+      expect(screen.getByTestId('voice-mode-hold-sound')).toHaveAttribute('aria-pressed', 'false')
+      mockVoice.phase = 'listening'
+      mockVoice.working = false
+    })
+
+    it('uses Live playback and working state for music and exposes only its hold control', async () => {
+      mockCanUseVoiceMode = true
+      delete mockUserVoiceSettings.holdSound
+      const live = {
+        hold: { allowed: true, delayMs: 700 }, capabilities: { speechSpeed: false, spokenTranscript: true },
+        engine: 'openai-live', phase: 'thinking', speechActive: true, working: true, utterance: '', error: null,
+        clearError: vi.fn(), pressMic: vi.fn(), getAnalyser: () => null,
+      }
+      mockUseVoiceMode.mockReturnValue(live)
+      const { rerender } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(screen.queryByTestId('voice-mode-speed')).not.toBeInTheDocument()
+      expect(screen.getByTestId('voice-mode-hold-sound')).toBeInTheDocument()
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: true, working: true, delayMs: 700, speaking: true })
+      mockUseVoiceMode.mockReturnValue({ ...live, working: false, hold: { allowed: false, delayMs: 700 } })
+      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: false, working: false, delayMs: 700, speaking: true })
+      mockUseVoiceMode.mockReset()
+    })
+
+    it('tells the agent when the session is left while voice mode is on', async () => {
+      mockCanUseVoiceMode = true
+      const { unmount } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      unmount()
+      await waitFor(() =>
+        expect(mockSendMessage.mutate).toHaveBeenLastCalledWith(expect.objectContaining({ content: VOICE_MODE_EXITED_MESSAGE }), expect.anything()),
+      )
     })
   })
 
@@ -455,6 +650,101 @@ describe('MessageInput', () => {
     expect(mockInterruptSession.mutateAsync).toHaveBeenCalledWith({
       sessionId: 's-1',
       agentSlug: 'agent-1',
+      scope: 'turn',
+    })
+    expect(screen.queryByTestId('stop-session-dialog')).not.toBeInTheDocument()
+  })
+
+  describe('stopping with background tasks running', () => {
+    const bashLaunch = {
+      id: 'msg-bash',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-bash',
+        name: 'Bash',
+        input: { command: 'sleep 10 && echo done', run_in_background: true },
+        result: 'Command running in background with ID: bg_1. Output is being written to /tmp/x.',
+      }],
+      createdAt: new Date(),
+    }
+
+    beforeEach(() => {
+      mockStreamState.isActive = true
+      mockStreamState.backgroundTasks = [{ taskId: 'bg_1', startedAt: Date.now() - 2000 }]
+      mockMessages.push(bashLaunch)
+    })
+
+    it('asks before stopping, naming the running tasks', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+
+      await user.click(screen.getByTestId('stop-button'))
+
+      expect(mockInterruptSession.mutateAsync).not.toHaveBeenCalled()
+      const dialog = await screen.findByTestId('stop-session-dialog')
+      expect(dialog).toHaveTextContent('Stop the background task too?')
+      expect(screen.getByTestId('stop-session-dialog-tasks')).toHaveTextContent('sleep 10 && echo done')
+    })
+
+    it('stops only the response when the user keeps the tasks', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+
+      await user.click(screen.getByTestId('stop-button'))
+      await user.click(await screen.findByTestId('stop-session-keep-tasks'))
+
+      expect(mockInterruptSession.mutateAsync).toHaveBeenCalledWith({
+        sessionId: 's-1',
+        agentSlug: 'agent-1',
+        scope: 'turn',
+      })
+    })
+
+    it('stops everything when the user says so', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+
+      await user.click(screen.getByTestId('stop-button'))
+      await user.click(await screen.findByTestId('stop-session-everything'))
+
+      expect(mockInterruptSession.mutateAsync).toHaveBeenCalledWith({
+        sessionId: 's-1',
+        agentSlug: 'agent-1',
+        scope: 'all',
+      })
+    })
+
+    it('cancelling stops nothing', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+
+      await user.click(screen.getByTestId('stop-button'))
+      await user.click(await screen.findByTestId('stop-session-cancel'))
+
+      expect(mockInterruptSession.mutateAsync).not.toHaveBeenCalled()
+      await waitFor(() => {
+        expect(screen.queryByTestId('stop-session-dialog')).not.toBeInTheDocument()
+      })
+    })
+
+    it('offers only a full stop once the response has ended and tasks remain', async () => {
+      // Waiting on background work: there is no response left to stop by itself.
+      mockStreamState.isWaitingBackground = true
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+
+      await user.click(screen.getByTestId('stop-button'))
+
+      const dialog = await screen.findByTestId('stop-session-dialog')
+      expect(dialog).toHaveTextContent('Stop the background task?')
+      expect(screen.queryByTestId('stop-session-keep-tasks')).not.toBeInTheDocument()
+      await user.click(screen.getByTestId('stop-session-everything'))
+      expect(mockInterruptSession.mutateAsync).toHaveBeenCalledWith({
+        sessionId: 's-1',
+        agentSlug: 'agent-1',
+        scope: 'all',
+      })
     })
   })
 
@@ -1000,6 +1290,31 @@ describe('MessageInput', () => {
       useEffect(() => { setDraft(value) }, [setDraft, value])
       return null
     }
+
+    function AttachmentDropSeeder({ sessionId, value }: { sessionId: string; value: DataTransferResult }) {
+      const [, setPending] = useDraft<PendingAttachmentDrop>(pendingAttachmentDropKey(`session:${sessionId}`))
+      useEffect(() => { setPending({ items: value, droppedAt: Date.now() }) }, [setPending, value])
+      return null
+    }
+
+    it('drains sidebar-dropped files into the current session composer', async () => {
+      const file = new File(['dropped'], 'dropped.txt', { type: 'text/plain' })
+      const value = { files: [{ file }], folders: [] }
+      renderWithProviders(
+        <>
+          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+          <AttachmentDropSeeder sessionId="s-1" value={value} />
+        </>
+      )
+
+      await waitFor(() => {
+        expect(mockUploadFile.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+          sessionId: 's-1',
+          agentSlug: 'agent-1',
+          file,
+        }))
+      })
+    })
 
     it('restores the draft when re-mounted in the same provider', async () => {
       const { rerender } = renderWithProviders(

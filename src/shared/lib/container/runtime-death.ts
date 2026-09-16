@@ -4,6 +4,8 @@ export type RuntimeFatalKind = 'oom_sigkill' | null
 export type CoalescedUserMessage = {
   uuid: string
   text: string
+  /** False for a transcript-only append (a voice-mode notice): delivered without starting a turn. */
+  shouldQuery?: false
 }
 
 // Reason vocabularies and prompt text are runtime-specific and live with each

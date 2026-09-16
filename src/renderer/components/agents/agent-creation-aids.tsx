@@ -16,7 +16,7 @@ import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { ImportAgentDialog } from '@renderer/components/agents/import-agent-dialog'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import { captureRendererException } from '@renderer/lib/error-reporting'
-import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
+import type { VoiceAgentConfig } from '@renderer/lib/voice/contracts/voice-agent'
 import type { ApiAgentTemplateInstallResult } from '@shared/lib/types/api'
 
 export type ImportResult = ApiAgentTemplateInstallResult
@@ -80,7 +80,7 @@ export function AgentCreationAids({
   const startVoiceAgent = useCallback(async () => {
     onAidOpened?.()
     try {
-      const res = await apiFetch('/api/stt/voice-agent-prompt?name=create-agent')
+      const res = await apiFetch('/api/voice/voice-agent-prompt?name=create-agent')
       if (!res.ok) throw new Error('Failed to load voice agent prompt')
       const { prompt } = (await res.json()) as { prompt: string }
       setVoiceAgentConfig({

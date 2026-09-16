@@ -19,6 +19,10 @@ const mocks = vi.hoisted(() => ({
   },
   agentStatus: 'running' as 'running' | 'stopped',
   invokedByAgentSlug: undefined as string | undefined,
+  isWidgetRepair: false,
+  sessionIsActive: true,
+  forkedFromSessionId: undefined as string | undefined,
+  forkedFromSessionName: undefined as string | undefined,
 }))
 
 const agent: ApiAgent = {
@@ -47,6 +51,10 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
       name: 'Test Session',
       agentSlug: 'test-agent',
       invokedByAgentSlug: mocks.invokedByAgentSlug,
+      isWidgetRepair: mocks.isWidgetRepair,
+      isActive: mocks.sessionIsActive,
+      forkedFromSessionId: mocks.forkedFromSessionId,
+      forkedFromSessionName: mocks.forkedFromSessionName,
     },
   }),
 }))
@@ -92,11 +100,13 @@ vi.mock('@renderer/components/sessions/session-context-menu', () => ({
     sessionId,
     sessionName,
     agentSlug,
+    activity,
     children,
   }: {
     sessionId: string
     sessionName: string
     agentSlug: string
+    activity: { isActive: boolean; isAwaitingInput: boolean; isStreaming: boolean }
     children: ReactNode
   }) => (
     <span
@@ -104,6 +114,7 @@ vi.mock('@renderer/components/sessions/session-context-menu', () => ({
       data-session-id={sessionId}
       data-session-name={sessionName}
       data-agent-slug={agentSlug}
+      data-is-active={String(activity.isActive || activity.isStreaming)}
     >
       {children}
     </span>
@@ -135,6 +146,10 @@ describe('AgentHeader breadcrumbs', () => {
     mocks.routeView = { kind: 'session', id: 'session-1' }
     mocks.agentStatus = 'running'
     mocks.invokedByAgentSlug = undefined
+    mocks.isWidgetRepair = false
+    mocks.sessionIsActive = true
+    mocks.forkedFromSessionId = undefined
+    mocks.forkedFromSessionName = undefined
     vi.clearAllMocks()
   })
 
@@ -161,7 +176,37 @@ describe('AgentHeader breadcrumbs', () => {
     expect(sessionMenu).toHaveAttribute('data-session-id', 'session-1')
     expect(sessionMenu).toHaveAttribute('data-session-name', 'Test Session')
     expect(sessionMenu).toHaveAttribute('data-agent-slug', 'test-agent')
+    expect(sessionMenu).toHaveAttribute('data-is-active', 'true')
     expect(sessionMenu).toContainElement(screen.getByTestId('session-breadcrumb'))
+  })
+
+  it('leaves Fork enabled when the session is idle', () => {
+    mocks.sessionIsActive = false
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+    expect(screen.getByTestId('session-breadcrumb-context-menu')).toHaveAttribute('data-is-active', 'false')
+  })
+
+  it('disables Fork when the session is streaming even if isActive is false', () => {
+    mocks.sessionIsActive = false
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        isStreaming
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+    expect(screen.getByTestId('session-breadcrumb-context-menu')).toHaveAttribute('data-is-active', 'true')
   })
 
   it('inserts Called from Other Agents as the parent crumb for x-agent sessions', () => {
@@ -182,6 +227,71 @@ describe('AgentHeader breadcrumbs', () => {
     expect(parentCrumb).toHaveTextContent('Called from Other Agents')
     expect(trail).toContainElement(parentCrumb)
     expect(trail).toContainElement(screen.getByTestId('session-breadcrumb'))
+  })
+
+  it('uses the inbound history breadcrumb for widget repairs without a caller agent', () => {
+    mocks.isWidgetRepair = true
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+
+    expect(screen.getByTestId('inbound-x-agent-breadcrumb')).toHaveTextContent('Called from Other Agents')
+  })
+
+  it('marks a forked session with an icon that opens a link to the source on hover', () => {
+    mocks.forkedFromSessionId = 'source-1'
+    mocks.forkedFromSessionName = 'Pricing'
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+
+    const indicator = screen.getByTestId('forked-from-indicator')
+    expect(screen.queryByTestId('forked-from-popover')).toBeNull()
+    fireEvent.pointerEnter(indicator, { pointerType: 'mouse' })
+    expect(screen.getByTestId('forked-from-popover')).toHaveTextContent('Branched from Pricing')
+    expect(screen.getByTestId('forked-from-link')).toHaveTextContent('Pricing')
+  })
+
+  it('opens the fork popover on click and names a deleted source without a link', () => {
+    mocks.forkedFromSessionId = 'source-1'
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('forked-from-indicator'))
+    expect(screen.getByTestId('forked-from-popover')).toHaveTextContent('Branched from a deleted conversation')
+    expect(screen.queryByTestId('forked-from-link')).toBeNull()
+  })
+
+  it('shows no fork icon for a session that is not a fork', () => {
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+    expect(screen.queryByTestId('forked-from-indicator')).toBeNull()
   })
 
   it('clips and hover-scrolls the complete breadcrumb trail as one unit', () => {

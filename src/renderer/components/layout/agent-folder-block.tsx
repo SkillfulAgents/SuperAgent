@@ -1,7 +1,12 @@
 import React, { useState } from 'react'
 import { ChevronRight, Folder, FolderPlus, Pencil, Trash2 } from 'lucide-react'
 import { useSortable } from '@dnd-kit/sortable'
-import { useDroppable } from '@dnd-kit/core'
+import {
+  defaultDropAnimation,
+  useDroppable,
+  type DropAnimation,
+  type DropAnimationKeyframeResolver,
+} from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
 import { cn } from '@shared/lib/utils/cn'
 import {
@@ -101,8 +106,10 @@ const FolderHeader = React.memo(function FolderHeader({
   onDelete: () => void
 }) {
   // Styled like a section label rather than as a row of the list: small muted
-  // text, no icon. The member count sits at the right and yields to the
-  // expand/collapse chevron on hover.
+  // text, no icon. The member count sits at the right only while the folder is
+  // collapsed — the rows themselves say how many there are once it is open —
+  // and yields to the expand/collapse chevron on hover. The slot keeps its
+  // size either way so the chevron lands in the same spot.
   const header = (
         <SidebarMenuButton
           onClick={onToggle}
@@ -115,12 +122,14 @@ const FolderHeader = React.memo(function FolderHeader({
         >
           <span className="truncate">{folder.name}</span>
           <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-            <span
-              className="text-[11px] tabular-nums text-muted-foreground/70 group-hover/folder-header:hidden"
-              data-testid={`agent-folder-count-${folder.id}`}
-            >
-              {agentCount}
-            </span>
+            {isCollapsed && (
+              <span
+                className="text-[11px] tabular-nums text-muted-foreground/70 group-hover/folder-header:hidden"
+                data-testid={`agent-folder-count-${folder.id}`}
+              >
+                {agentCount}
+              </span>
+            )}
             <ChevronRight
               aria-hidden
               data-testid={`agent-folder-chevron-${folder.id}`}
@@ -343,6 +352,30 @@ export function AgentFolderBlock({
         </div>
     </li>
   )
+}
+
+/**
+ * Where the overlay flies once released. The default keyframes aim at the
+ * dropped row's post-drop rect — but a row filed into a COLLAPSED folder sits
+ * in the folder's `hidden` body, and a hidden node measures 0×0 at the
+ * viewport origin, so the overlay would fly to the window's top-left corner.
+ * A landing spot with no visible rect gets a fade-out in place instead.
+ */
+export const overlayDropKeyframes: DropAnimationKeyframeResolver = (params) => {
+  const { width, height } = params.active.rect
+  if (!width && !height) {
+    const transform = CSS.Transform.toString(params.transform.initial)
+    return [
+      { transform, opacity: 1 },
+      { transform, opacity: 0 },
+    ]
+  }
+  return defaultDropAnimation.keyframes(params)
+}
+
+export const agentDropAnimation: DropAnimation = {
+  ...defaultDropAnimation,
+  keyframes: overlayDropKeyframes,
 }
 
 /** The row that follows the cursor during a drag. */

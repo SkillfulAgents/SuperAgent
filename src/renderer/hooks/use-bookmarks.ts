@@ -1,12 +1,8 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import type { Bookmark } from '@shared/lib/utils/bookmarks'
 
-export interface Bookmark {
-  name: string
-  link?: string
-  file?: string
-  folder?: string
-}
+export type { Bookmark }
 
 export function useBookmarks(agentSlug: string | null) {
   return useQuery<Bookmark[]>({

@@ -9,7 +9,7 @@ Initially, we will introduce these in two places:
     - Voice agent interviews user for feedback, outputs a prompt back to main agent to imptove
 
 ## Technical Integration
-We have existing integrations with STT providers in the platform (OpenAI, Deepgram). Both of these services offer S2S capabilities (OpenAI via Realtime, Deepgram via Voice Agent). We should extend the SttProvider classes to expose agent capabilities. These should be able to handle arbitrary system prompt, get an output type (prompt, agent name + prompt etc) and optionally receive additional tools to be exposed to the agent.
+We have existing integrations with STT providers in the platform (OpenAI, Deepgram). Both of these services offer S2S capabilities (OpenAI via Realtime, Deepgram via Voice Agent). We should extend the VoiceProvider classes to expose agent capabilities. These should be able to handle arbitrary system prompt, get an output type (prompt, agent name + prompt etc) and optionally receive additional tools to be exposed to the agent.
 
 In the UI, we should also create a generic Voice Agent component, which will render a nice speech indication (to show when user is talking and when agent is responding) + have pause / stop / restart capabilities.
 
@@ -126,13 +126,13 @@ Token minting: can use the existing Deepgram token endpoint (`POST /v1/auth/gran
 
 ## Proposed Interface: Voice Agent Adapter
 
-### Extending BaseSttProvider (server-side, `src/shared/lib/stt/`)
+### Extending BaseVoiceProvider (server-side, `src/shared/lib/voice/`)
 
 Add optional voice agent support to the existing provider base class:
 
 ```typescript
-// In stt-provider.ts — add to BaseSttProvider
-abstract class BaseSttProvider {
+// In stt-provider.ts — add to BaseVoiceProvider
+abstract class BaseVoiceProvider {
   // ... existing STT methods ...
 
   /** Whether this provider supports Voice Agent (S2S) sessions */
@@ -152,8 +152,8 @@ OpenAI overrides `mintVoiceAgentToken` to call `POST /v1/realtime/client_secrets
 ### New API Route
 
 ```
-GET /api/stt/voice-agent-token?provider=[deepgram|openai]
-  Returns: { provider: SttProvider; token: string }
+GET /api/voice/voice-agent-token?provider=[deepgram|openai]
+  Returns: { provider: VoiceProvider; token: string }
   Purpose: Get ephemeral token for Voice Agent WebSocket connection
 ```
 
@@ -239,13 +239,13 @@ The platform proxy (`apps/proxy`, Cloudflare Worker) is HTTP-only — it cannot 
 
 **Approach:** Same pattern as current STT — mint an ephemeral Deepgram token via the existing platform proxy (`POST /v1/deepgram/auth/grant`), then connect directly to Deepgram's WebSocket endpoint with that token. The proxy is only used for token minting, not for the voice session itself.
 
-The `PlatformSttProvider.mintVoiceAgentToken()` implementation can reuse the existing `mintEphemeralToken()` since the same Deepgram token works for both STT and Voice Agent endpoints.
+The `PlatformVoiceProvider.mintVoiceAgentToken()` implementation can reuse the existing `mintEphemeralToken()` since the same Deepgram token works for both STT and Voice Agent endpoints.
 
 ### Factory
 
 ```typescript
 // In voice-agent.ts
-export function createVoiceAgentAdapter(provider: SttProvider): VoiceAgentAdapter {
+export function createVoiceAgentAdapter(provider: VoiceProvider): VoiceAgentAdapter {
   switch (provider) {
     case 'deepgram':
     case 'platform':

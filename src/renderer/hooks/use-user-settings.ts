@@ -1,8 +1,8 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
+import type { UserSettingsData, UserSettingsWrite } from '@shared/lib/services/user-settings-service'
 
-export type { UserSettingsData }
+export type { UserSettingsData, UserSettingsWrite }
 
 const USER_SETTINGS_QUERY_KEY = ['user-settings']
 
@@ -31,8 +31,8 @@ export function useUserSettings() {
  * write that was still in flight.
  */
 export type UserSettingsPatch =
-  | Partial<UserSettingsData>
-  | ((current: UserSettingsData) => Partial<UserSettingsData>)
+  | UserSettingsWrite
+  | ((current: UserSettingsData) => UserSettingsWrite)
 
 export function useUpdateUserSettings() {
   const queryClient = useQueryClient()

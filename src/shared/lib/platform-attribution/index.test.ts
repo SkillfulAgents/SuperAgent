@@ -10,6 +10,11 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getStoredPlatformMemberId: () => mockGetStoredPlatformMemberId(),
 }))
 
+const mockGetAgentOwnerUserId = vi.fn((_slug: string): string | null => null)
+vi.mock('@shared/lib/services/agent-owner', () => ({
+  getAgentOwnerUserId: (slug: string) => mockGetAgentOwnerUserId(slug),
+}))
+
 vi.mock('@shared/lib/db', () => {
   const chainable = {
     select: () => chainable,
@@ -150,6 +155,57 @@ describe('attribution.current', () => {
 
   it('returns null when neither scope is active', () => {
     expect(attribution.current()).toBeNull()
+  })
+})
+
+describe('attribution.forAgent (container cold start)', () => {
+  beforeEach(() => {
+    mockGetAgentOwnerUserId.mockReturnValue(null)
+    mockGetStoredPlatformMemberId.mockReturnValue(null)
+  })
+
+  it('prefers the ambient request user over the agent owner', async () => {
+    mockGetAgentOwnerUserId.mockReturnValue('user_owner')
+    await runWithRequestUser('user_request', () => {
+      attribution.forAgent('agent_a')
+      expect(mockGetAgentOwnerUserId).not.toHaveBeenCalled()
+    })
+  })
+
+  it('prefers an explicit runWithAttribution scope', async () => {
+    const scoped = attribution.fromUserId('user_scoped')!
+    await runWithAttribution(scoped, () => {
+      expect(attribution.forAgent('agent_a')).toBe(scoped)
+    })
+  })
+
+  it('falls back to the agent owner when no scope is active', () => {
+    mockGetAgentOwnerUserId.mockReturnValue('user_owner')
+    const auth = attribution.forAgent('agent_a')
+    expect(mockGetAgentOwnerUserId).toHaveBeenCalledWith('agent_a')
+    expect(auth?.bearerToken()).toBe(`${ORG_TOKEN}::sub_user_123`)
+  })
+
+  it('falls back to the stored member when the agent has no owner', () => {
+    mockGetStoredPlatformMemberId.mockReturnValue('sub_settings_789')
+    expect(attribution.forAgent('agent_a')?.bearerToken()).toBe(`${ORG_TOKEN}::sub_settings_789`)
+  })
+
+  it('falls back to the stored member when the owner has no platform account', () => {
+    mockGetAgentOwnerUserId.mockReturnValue('user_orphan')
+    mockDbAll.mockReturnValue([])
+    mockGetStoredPlatformMemberId.mockReturnValue('sub_settings_789')
+    expect(attribution.forAgent('agent_a')?.bearerToken()).toBe(`${ORG_TOKEN}::sub_settings_789`)
+  })
+
+  it('returns null for an org token when nothing in the chain resolves a member', () => {
+    mockDbAll.mockReturnValue([])
+    expect(attribution.forAgent('agent_a')).toBeNull()
+  })
+
+  it('returns a member-less attribution for an opaque access key', () => {
+    mockGetPlatformAccessToken.mockReturnValue(ACCESS_KEY)
+    expect(attribution.forAgent('agent_a')?.bearerToken()).toBe(ACCESS_KEY)
   })
 })
 

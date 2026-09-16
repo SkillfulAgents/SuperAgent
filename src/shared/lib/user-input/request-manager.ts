@@ -156,10 +156,29 @@ export class UserInputRequestManager {
     return this.resolve(id, outcome)
   }
 
+  /**
+   * A request scoped to exactly this (agent, session). Session id is unique
+   * only WITHIN an agent — two agents can legitimately hold the same id (an
+   * import/clone gives each its own copy) — so every session-scoped read and
+   * sweep here must match the agent too, or one agent's turn boundary settles
+   * another's parked request. Agent-scoped reviews (no sessionId) never match.
+   */
+  private isForSession(
+    request: PendingUserInputRequest,
+    agentSlug: string,
+    sessionId: string,
+  ): boolean {
+    return request.scope.agentSlug === agentSlug && request.scope.sessionId === sessionId
+  }
+
   /** Mirror of the turn-boundary `pendingInputRequests.clear()` — stream store only. */
-  clearSessionStreamRequests(sessionId: string, outcome: UserInputRequestOutcome): void {
+  clearSessionStreamRequests(
+    agentSlug: string,
+    sessionId: string,
+    outcome: UserInputRequestOutcome,
+  ): void {
     for (const request of [...this.requests.values()]) {
-      if (request.scope.sessionId !== sessionId) continue
+      if (!this.isForSession(request, agentSlug, sessionId)) continue
       if (storeForKind(request.kind) !== 'stream') continue
       this.resolve(request.id, outcome)
     }
@@ -184,9 +203,13 @@ export class UserInputRequestManager {
   }
 
   /** Mirror of `streamingStates.delete` — every session-scoped entry dies with the state. */
-  dropSessionRequests(sessionId: string, outcome: UserInputRequestOutcome = 'invalidated'): void {
+  dropSessionRequests(
+    agentSlug: string,
+    sessionId: string,
+    outcome: UserInputRequestOutcome = 'invalidated',
+  ): void {
     for (const request of [...this.requests.values()]) {
-      if (request.scope.sessionId !== sessionId) continue
+      if (!this.isForSession(request, agentSlug, sessionId)) continue
       this.resolve(request.id, outcome)
     }
   }
@@ -252,8 +275,8 @@ export class UserInputRequestManager {
     return undefined
   }
 
-  getOpenRequestsForSession(sessionId: string): PendingUserInputRequest[] {
-    return [...this.requests.values()].filter((r) => r.scope.sessionId === sessionId)
+  getOpenRequestsForSession(agentSlug: string, sessionId: string): PendingUserInputRequest[] {
+    return [...this.requests.values()].filter((r) => this.isForSession(r, agentSlug, sessionId))
   }
 
   /** Every open request of a store, across all scopes (e.g. shutdown sweeps). */
@@ -297,9 +320,13 @@ export class UserInputRequestManager {
     })
   }
 
-  getStoreIdsForSession(sessionId: string, store: UserInputRequestStore): string[] {
+  getStoreIdsForSession(
+    agentSlug: string,
+    sessionId: string,
+    store: UserInputRequestStore,
+  ): string[] {
     return [...this.requests.values()]
-      .filter((r) => r.scope.sessionId === sessionId && storeForKind(r.kind) === store)
+      .filter((r) => this.isForSession(r, agentSlug, sessionId) && storeForKind(r.kind) === store)
       .map((r) => r.id)
   }
 
@@ -314,15 +341,11 @@ export class UserInputRequestManager {
    * "awaiting input" — the persister recomputes it after every registry
    * transition and broadcasts on the edges.
    */
-  isSessionAwaiting(sessionId: string, agentSlug?: string): boolean {
+  isSessionAwaiting(agentSlug: string, sessionId: string): boolean {
     for (const request of this.requests.values()) {
       if (!this.isRealWait(request)) continue
-      if (request.scope.sessionId === sessionId) return true
-      if (
-        agentSlug !== undefined &&
-        request.scope.sessionId === undefined &&
-        request.scope.agentSlug === agentSlug
-      ) {
+      if (this.isForSession(request, agentSlug, sessionId)) return true
+      if (request.scope.sessionId === undefined && request.scope.agentSlug === agentSlug) {
         return true
       }
     }

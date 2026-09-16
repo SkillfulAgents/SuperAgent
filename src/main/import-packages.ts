@@ -35,12 +35,12 @@ export async function classifyImportPackage(filePath: string): Promise<Classifie
       const cap = skillFirst ? SKILL_MAX_COMPRESSED_SIZE : MAX_COMPRESSED_SIZE
       return { ...base, error: `File too large (${formatMb(stat.size)}, max ${cap / 1024 / 1024}MB)` }
     }
-    const buffer = await fs.promises.readFile(filePath)
-
     // Each attempt returns a final result (classified) or a diagnostic string
     // meaning "not this kind — try the other".
     const asTemplate = async (): Promise<ClassifiedImportPackage | string> => {
-      const result = await validateAgentTemplate(buffer)
+      // Validated straight from disk — the (up to 500MB) file is never read
+      // into memory just to answer "agent or skill?".
+      const result = await validateAgentTemplate({ filePath })
       if (!result.valid) return result.error ?? 'Invalid agent template'
       return { ...base, kind: 'agent-template', name: result.agentName ?? null }
     }
@@ -49,10 +49,10 @@ export async function classifyImportPackage(filePath: string): Promise<Classifie
       // skill, so the full zip walk would be wasted work. A diagnostic (not a
       // hard error) so an oversized agent template renamed .skill still
       // classifies by its content.
-      if (buffer.length > SKILL_MAX_COMPRESSED_SIZE) {
-        return `Skill packages are limited to ${SKILL_MAX_COMPRESSED_SIZE / 1024 / 1024}MB (this file is ${formatMb(buffer.length)})`
+      if (stat.size > SKILL_MAX_COMPRESSED_SIZE) {
+        return `Skill packages are limited to ${SKILL_MAX_COMPRESSED_SIZE / 1024 / 1024}MB (this file is ${formatMb(stat.size)})`
       }
-      const result = await validateSkillZip(buffer)
+      const result = await validateSkillZip(await fs.promises.readFile(filePath))
       if (!result.valid) return result.error ?? 'Invalid skill package'
       return { ...base, kind: 'skill', name: result.skillName ?? null }
     }

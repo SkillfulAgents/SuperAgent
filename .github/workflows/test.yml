@@ -3,8 +3,9 @@ name: Tests
 on:
   push:
     branches: [main]
+  # Every PR, whatever its base: a stacked PR must get the full suite too,
+  # not only the one at the bottom of the stack that targets main.
   pull_request:
-    branches: [main]
 
 jobs:
   unit-tests:
@@ -33,8 +34,16 @@ jobs:
       - name: Run lint
         run: npm run lint
 
+      # vitest.config.ts switches to CI reporters when GITHUB_ACTIONS is set:
+      # dot output, a GitHub annotation per failure, and the JSON report the
+      # next step turns into a run-page summary. A red run names the failing
+      # tests without expanding this step's log at all.
       - name: Run unit tests with coverage
         run: npx vitest run --coverage
+
+      - name: Unit test summary
+        if: always()
+        run: npx tsx scripts/summarize-vitest-failures.ts
 
       - name: Coverage summary
         if: always()
@@ -165,6 +174,7 @@ jobs:
         run: npm run test:e2e:wizard
 
       - name: Run Playwright E2E suites
+        id: web_e2e
         if: ${{ success() || steps.wizard_e2e.outcome == 'failure' }}
         env:
           PORT: '3000'
@@ -174,11 +184,81 @@ jobs:
           PLAYWRIGHT_HTML_REPORT: playwright-report/web
         run: npm run test:e2e
 
+      # Own server + fresh data dir: the graph canvas gestures need a board
+      # that holds only this spec's agents and a layout no sibling worker is
+      # re-solving mid-gesture (the previous shared-server arrangement was the
+      # suite's top flake source).
+      - name: Run graph E2E suite
+        if: ${{ success() || steps.wizard_e2e.outcome == 'failure' || steps.web_e2e.outcome == 'failure' }}
+        env:
+          PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/graph
+          PLAYWRIGHT_OUTPUT_DIR: test-results/graph
+          PLAYWRIGHT_HTML_REPORT: playwright-report/graph
+        run: npm run test:e2e:graph
+
       - name: Upload Playwright artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-playwright-artifacts
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # WebKit-engine regression suite on real macOS. Safari-class scroll and
+  # compositing bugs never reproduce in Chromium — and macOS WebKit runs on
+  # Apple's compositor, which is where the async-scroll rollbacks that kill
+  # live-edge following actually live. Starts with the follow regression
+  # (safari-follow.spec.ts); add future Safari-compatibility cases to the
+  # web-webkit Playwright project. Repeats because this bug class is
+  # probabilistic per run (~50% pre-fix): three repeats with retries off
+  # catch a regression with ~88% confidence per push. (Retries stay off —
+  # each retry would give a probabilistic failure another chance to pass.)
+  e2e-webkit-macos:
+    runs-on: blacksmith-6vcpu-macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild native modules
+        run: npm rebuild better-sqlite3
+
+      - name: Install Playwright WebKit
+        run: npx playwright install webkit
+
+      - name: Run WebKit regression suite
+        env:
+          PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/webkit
+          PLAYWRIGHT_OUTPUT_DIR: test-results/webkit
+          PLAYWRIGHT_HTML_REPORT: playwright-report/webkit
+          # Serial: repeats of one timing-sensitive scroll test must not share
+          # the box with each other.
+          PLAYWRIGHT_WORKERS: '1'
+        run: E2E_MOCK=true npx playwright test --project=web-webkit --repeat-each=3 --retries=0
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-webkit-artifacts
           path: |
             test-results/
             playwright-report/

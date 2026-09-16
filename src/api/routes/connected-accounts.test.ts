@@ -133,7 +133,7 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   cancelTriggersForConnectedAccount: (...args: unknown[]) => mockCancelTriggersForConnectedAccount(...args),
 }))
 
-vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
+vi.mock('@shared/lib/services/connection-sync-service', () => ({
   findAgentsAssignedConnectedAccount: (...args: unknown[]) =>
     mockFindAgentsAssignedConnectedAccount(...args),
   syncAgentsAssignedConnectedAccount: (...args: unknown[]) =>

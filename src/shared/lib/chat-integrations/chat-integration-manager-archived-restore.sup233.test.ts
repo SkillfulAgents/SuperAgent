@@ -43,9 +43,10 @@ vi.mock('@shared/lib/platform-attribution', () => ({
   runWithOptionalUser: (_userId: string | undefined, fn: () => unknown) => fn(),
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: { ensureRunning: vi.fn() },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ ensureRunning: vi.fn() }) }
+})
 
 vi.mock('@shared/lib/services/session-service', () => ({
   registerSession: vi.fn(),
@@ -86,6 +87,10 @@ import {
   listActiveChatIntegrationSessions,
 } from '@shared/lib/services/chat-integration-session-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+
+// The registry attaches the real stores; these tests drive the persister alone.
+messagePersister.attachSessionStores((slug) => createLocalSessionStore(slug))
 
 describe('SUP-233 reconnect restore ignores archived sessions', () => {
   beforeEach(() => {
@@ -139,7 +144,7 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
     // Drives connectIntegration -> restore loop.
     await chatIntegrationManager.addIntegration(integrationId)
 
-    const subscribedSessionIds = addSSEClient.mock.calls.map((c) => c[0])
+    const subscribedSessionIds = addSSEClient.mock.calls.map((c) => c[1])
     expect(subscribedSessionIds).toContain('active-agent-session')
     expect(subscribedSessionIds).not.toContain('archived-agent-session')
   })

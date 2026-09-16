@@ -428,6 +428,115 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(true)
   })
 
+  it('getInfoFromRuntime keeps the proxy when the VM is still PENDING', async () => {
+    const client = newClient()
+    await client.start()
+    const port = (await client.getInfoFromRuntime()).port
+    responses.getState = 'PENDING'
+    sendMock.mockClear()
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'running', port })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+  })
+
+  it('start() finishes health wait when getInfo flaps PENDING after RUNNING', async () => {
+    let healthFails = 1
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      if (healthFails > 0) {
+        healthFails -= 1
+        throw new Error('connect ECONNREFUSED 127.0.0.1')
+      }
+      return { ok: true } as Response
+    }))
+    let gets = 0
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') return { microvmId: 'mvm-1', endpoint: 'ep.lambda-microvm.aws' }
+      if (cmd.type === 'Get') {
+        gets += 1
+        // waitForRunning sees RUNNING; the next getInfo (health miss) is PENDING.
+        return { state: gets === 1 ? 'RUNNING' : 'PENDING' }
+      }
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    const info = await newClient().start()
+    expect(info.status).toBe('running')
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+  })
+
+  it('getInfoFromRuntime does not treat PENDING as running before the generation has been RUNNING', async () => {
+    const client = newClient()
+    responses.getState = 'PENDING'
+    const startP = client.start()
+    await vi.waitFor(() => expect(sendMock.mock.calls.some((c) => c[0].type === 'Get')).toBe(true))
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+
+    responses.getState = 'RUNNING'
+    expect((await startP).status).toBe('running')
+  })
+
+  it('start() replaces a PENDING generation after it had already been RUNNING', async () => {
+    const client = newClient()
+    await client.start()
+    let gets = 0
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') return { microvmId: 'mvm-2', endpoint: 'ep.lambda-microvm.aws' }
+      if (cmd.type === 'Get') {
+        gets += 1
+        return { state: gets === 1 ? 'PENDING' : 'RUNNING' }
+      }
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    sendMock.mockClear()
+    await client.start()
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(true)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(true)
+  })
+
+  it('getInfoFromRuntime reports stopped when local state is dropped during Get', async () => {
+    const client = newClient()
+    await client.start()
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Get') {
+        await client.stop()
+        return { state: 'PENDING' }
+      }
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+  })
+
+  it('getInfoFromRuntime fail-closes on an unrecognized state', async () => {
+    const client = newClient()
+    await client.start()
+    vi.mocked(captureException).mockClear()
+    sendMock.mockClear()
+    responses.getState = 'WEIRD'
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+    expect(captureException).toHaveBeenCalled()
+
+    responses.getState = 'RUNNING'
+    sendMock.mockClear()
+    await client.start()
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(true)
+  })
+
+  it('getInfoFromRuntime fail-closes when GetMicrovm omits state', async () => {
+    const client = newClient()
+    await client.start()
+    vi.mocked(captureException).mockClear()
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Get') return {}
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+    expect(captureException).toHaveBeenCalled()
+  })
+
   it('getInfoFromRuntime keeps last known running state on a transient (non-NotFound) error', async () => {
     const client = newClient()
     await client.start()
@@ -503,6 +612,56 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     await client.stop()
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Suspend')).toBe(false)
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+  })
+
+  // ---- base port cache sync (start/stop are fully overridden here, so the
+  // cache must be kept in sync by hand — a stale entry after auto-sleep
+  // terminate sent the first post-idle request to a dead loopback port) ----
+
+  it('start() primes the port cache: requests hit the proxy port with no runtime inspect', async () => {
+    const client = newClient()
+    const info = await client.start()
+    sendMock.mockClear()
+    vi.mocked(fetch).mockClear()
+
+    await client.fetch('/health')
+
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).toBe(`http://127.0.0.1:${info.port}/health`)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Get')).toBe(false)
+  })
+
+  it('stop() clears the cached port so the next request re-resolves instead of hitting the dead proxy', async () => {
+    const client = newClient()
+    await client.start()
+    await client.fetch('/health')
+    await client.stop()
+
+    // With a stale cache this would "succeed" against the terminated
+    // generation's loopback port; it must re-resolve and see the agent gone.
+    await expect(client.fetch('/health')).rejects.toThrow('Container is not running')
+  })
+
+  it('stopSync() clears the cached port like stop()', async () => {
+    const client = newClient()
+    await client.start()
+    await client.fetch('/health')
+    client.stopSync()
+
+    await expect(client.fetch('/health')).rejects.toThrow('Container is not running')
+  })
+
+  it('a restart re-primes the cache with the new generation proxy port', async () => {
+    const client = newClient()
+    await client.start()
+    await client.stop()
+    const second = await client.start()
+
+    sendMock.mockClear()
+    vi.mocked(fetch).mockClear()
+    await client.fetch('/health')
+
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).toBe(`http://127.0.0.1:${second.port}/health`)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Get')).toBe(false)
   })
 
   it('start is a no-op when the agent is already running', async () => {
@@ -745,6 +904,71 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
 
     await expect(client.createSession({ initialMessage: 'hi' })).rejects.toThrow(/boom/)
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+    expect(superCreate).toHaveBeenCalledTimes(1)
+    superCreate.mockRestore()
+  })
+
+  it('createSession replaces a live generation on a CLI launch failure (structured errorClass)', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+
+    let runCount = 0
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') {
+        runCount++
+        responses.getState = 'RUNNING'
+        return { microvmId: `mvm-launchfail-${runCount}`, endpoint: 'ep.lambda-microvm.aws' }
+      }
+      if (cmd.type === 'Get') return { state: responses.getState ?? 'RUNNING' }
+      if (cmd.type === 'Terminate') return {}
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    // The VM stays RUNNING throughout — the launch-failure path must replace
+    // it anyway, unlike the unreachable path which requires a dead generation.
+    responses.getState = 'RUNNING'
+
+    const superCreate = vi.spyOn(BaseContainerClient.prototype, 'createSession')
+    superCreate
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Failed to create session: spawn failed [executable_launch_failed ENOENT]'), {
+          containerErrorClass: 'executable_launch_failed',
+          containerErrorCode: 'ENOENT',
+        }),
+      )
+      .mockResolvedValueOnce({ id: 'sess-fresh' } as never)
+
+    await expect(client.createSession({ initialMessage: 'hi' })).resolves.toEqual({ id: 'sess-fresh' })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(true)
+    expect(runCount).toBe(1)
+    expect(superCreate).toHaveBeenCalledTimes(2)
+    expect(addErrorBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ reason: 'executable_launch_failed' }),
+      }),
+    )
+    superCreate.mockRestore()
+  })
+
+  it('createSession does not replace on a launch-failure-shaped message without the structured errorClass', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+    responses.getState = 'RUNNING'
+
+    const superCreate = vi
+      .spyOn(BaseContainerClient.prototype, 'createSession')
+      .mockRejectedValue(
+        new Error(
+          'Failed to create session: Claude Code native binary at /app/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude exists but failed to launch.',
+        ),
+      )
+
+    await expect(client.createSession({ initialMessage: 'hi' })).rejects.toThrow(/failed to launch/)
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
     expect(superCreate).toHaveBeenCalledTimes(1)
     superCreate.mockRestore()

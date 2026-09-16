@@ -1,13 +1,10 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { apiFetch } from '@renderer/lib/api'
-import {
-  createVoiceAgentAdapter,
-  type VoiceAgentAdapter,
-  type VoiceAgentConfig,
-  type VoiceAgentEvent,
-  type SttProvider,
-} from '@renderer/lib/voice-agent'
-import { acquireMicStream, float32ToInt16 } from '@renderer/lib/stt'
+import { createVoiceAgentAdapter } from '@renderer/lib/voice/registry/voice-agent'
+import { type VoiceAgentAdapter, type VoiceAgentConfig, type VoiceAgentEvent } from '@renderer/lib/voice/contracts/voice-agent'
+import { acquireMicStream, startAudioCapture, type AudioCaptureHandle } from '@renderer/lib/voice/shared/audio-capture'
+import { pcm16ToFloat32 } from '@renderer/lib/voice/shared/pcm'
+import { resolveSttProtocol, type VoiceTokenResponse } from '@shared/lib/voice/stt-protocol'
 
 export type VoiceAgentState = 'idle' | 'connecting' | 'active' | 'error'
 export type SpeakingState = 'none' | 'user' | 'agent'
@@ -17,10 +14,7 @@ export interface VoiceAgentTranscriptEntry {
   text: string
 }
 
-interface VoiceAgentCredentials {
-  provider: SttProvider
-  token: string
-}
+type VoiceAgentCredentials = VoiceTokenResponse
 
 interface UseVoiceAgentOptions {
   config: VoiceAgentConfig
@@ -39,7 +33,7 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
   const adapterRef = useRef<VoiceAgentAdapter | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
-  const processorRef = useRef<ScriptProcessorNode | null>(null)
+  const captureRef = useRef<AudioCaptureHandle | null>(null)
   const playbackContextRef = useRef<AudioContext | null>(null)
   const playbackAnalyserRef = useRef<AnalyserNode | null>(null)
   const nextPlaybackTimeRef = useRef(0)
@@ -60,10 +54,9 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
   onErrorRef.current = onError
 
   const cleanupAudio = useCallback(() => {
-    processorRef.current?.disconnect()
-    processorRef.current = null
-
-    audioContextRef.current?.close()
+    // The capture owns its context and closes it.
+    captureRef.current?.cleanup()
+    captureRef.current = null
     audioContextRef.current = null
 
     streamRef.current?.getTracks().forEach(t => t.stop())
@@ -224,15 +217,16 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
 
     try {
       // 1. Get Voice Agent token
-      const credRes = await apiFetch('/api/stt/voice-agent-token')
+      const credRes = await apiFetch('/api/voice/voice-agent-token')
       const credData: VoiceAgentCredentials | { error: string } = await credRes.json()
       if (!credRes.ok) {
         throw new Error(('error' in credData ? credData.error : null) || 'Failed to get Voice Agent credentials')
       }
-      const { provider, token } = credData as VoiceAgentCredentials
+      const credentials = credData as VoiceAgentCredentials
+      const { provider, token } = credentials
 
       // 2. Create adapter
-      const adapter = createVoiceAgentAdapter(provider)
+      const adapter = createVoiceAgentAdapter(resolveSttProtocol(credentials), provider)
       adapterRef.current = adapter
       adapter.onEvent(handleEvent)
 
@@ -241,35 +235,24 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
 
       // 4. Set up audio capture (AudioContext resamples to the provider rate;
       // the getUserMedia sampleRate constraint is a no-op — see acquireMicStream)
-      const sampleRate = adapter.inputSampleRate
       const stream = await acquireMicStream()
       streamRef.current = stream
 
-      const audioContext = new AudioContext({ sampleRate })
-      if (audioContext.state === 'suspended') {
-        await audioContext.resume()
-      }
-      audioContextRef.current = audioContext
-
-      const source = audioContext.createMediaStreamSource(stream)
-
-      // Set up analyser for visualization
-      const analyser = audioContext.createAnalyser()
-      analyser.fftSize = 256
-      analyser.smoothingTimeConstant = 0.6
-      source.connect(analyser)
-      analyserRef.current = analyser
-
-      // Set up processor to pipe audio to adapter
-      const processor = audioContext.createScriptProcessor(2048, 1, 1)
-      processor.onaudioprocess = (e) => {
-        if (mutedRef.current) return
-        const float32 = e.inputBuffer.getChannelData(0)
-        adapter.sendAudio(float32ToInt16(float32).buffer as ArrayBuffer)
-      }
-      processorRef.current = processor
-      source.connect(processor)
-      processor.connect(audioContext.destination)
+      // Captured at the provider's input rate. Muting drops chunks here
+      // rather than pausing the graph, so unmuting is instant.
+      const capture = await startAudioCapture(
+        {
+          sampleRate: adapter.inputSampleRate,
+          sendAudio: (chunk) => {
+            if (!mutedRef.current) adapter.sendAudio(chunk)
+          },
+        },
+        stream,
+        { withAnalyser: true },
+      )
+      captureRef.current = capture
+      audioContextRef.current = capture.audioContext
+      analyserRef.current = capture.analyser
 
       // 5. Set up audio playback context with an analyser for visualization
       const playbackCtx = new AudioContext({ sampleRate: adapter.outputSampleRate })
@@ -279,9 +262,9 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
       // Guard against race condition: if stop() was called while we were
       // awaiting, clean up everything we just created to avoid leaked resources
       if ((stateRef.current as VoiceAgentState) !== 'connecting') {
-        processor.disconnect()
-        audioContext.close()
-        stream.getTracks().forEach(t => t.stop())
+        capture.cleanup()
+        captureRef.current = null
+        audioContextRef.current = null
         playbackContextRef.current?.close()
         playbackContextRef.current = null
         playbackAnalyserRef.current = null
@@ -338,16 +321,6 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
     isActive: state === 'active',
     isConnecting: state === 'connecting',
   }
-}
-
-/** Convert Int16 PCM audio buffer to Float32 samples for Web Audio playback */
-function pcm16ToFloat32(buffer: ArrayBuffer): Float32Array {
-  const int16 = new Int16Array(buffer)
-  const float32 = new Float32Array(int16.length)
-  for (let i = 0; i < int16.length; i++) {
-    float32[i] = int16[i] / 0x8000
-  }
-  return float32
 }
 
 /** Build an AnalyserNode for visualizing agent audio playback and wire it to the context destination. */

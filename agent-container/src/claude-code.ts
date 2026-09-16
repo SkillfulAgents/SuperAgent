@@ -1,15 +1,28 @@
-import { query, startup, Options, Query, WarmQuery, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  startup,
+  Options,
+  Query,
+  WarmQuery,
+  SDKMessage,
+  SDKUserMessage,
+  McpServerConfig,
+  McpSetServersResult,
+} from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { EffortLevel, SpeedLevel } from './types';
-import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createAgentsMcpServer, createChatMcpServer, createWebMcpServer } from './mcp-server';
+import { gamutPluginDir } from './gamut-plugin';
+import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createWidgetsMcpServer, createAgentsMcpServer, createChatMcpServer, createWebMcpServer } from './mcp-server';
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
 import { fileHooks, resolveToolFilePath } from './file-hooks';
+import { elapsedTimeNote } from './elapsed-time-note';
+import { promptDate } from './prompt-date';
 
 /**
  * `Query` plus the `cancel_async_message` control request, which drops a queued
@@ -56,12 +69,13 @@ import {
 import { createCapabilityGateHook, CAPABILITY_REVIEW_HOOK_TIMEOUT_S } from './capability-gate-hook';
 import {
   buildModelSubagentDefinitions,
+  type ModelContextWindows,
   type SubagentModelDefinition,
 } from './subagent-model-catalog';
 import { mergeCanonicalSlashCommands } from './slash-commands';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
-// Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
+// Keep in sync with SYSTEM_MESSAGE_PREFIX in src/shared/lib/utils/system-message.ts
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 
 // Upper bound on how long a message waits for freshly (re)connected remote MCP
@@ -135,11 +149,17 @@ function parseRemoteMcps(): RemoteMcpConfig[] {
   }
 }
 
-function runtimeConnectionConfigSnapshot(): string {
-  return JSON.stringify([
-    process.env.CONNECTED_ACCOUNTS || '{}',
-    process.env.REMOTE_MCPS || '[]',
-  ])
+// The two runtime connection projections are tracked separately because they
+// take different paths into a live query: connected accounts only reach the
+// model through the system prompt (baked at query creation, so a change needs
+// a re-query), while remote MCP servers can be swapped into the running query
+// with Query.setMcpServers(). Unset and serialized-empty are the same thing.
+function connectedAccountsSnapshot(): string {
+  return process.env.CONNECTED_ACCOUNTS || '{}';
+}
+
+function remoteMcpsSnapshot(): string {
+  return process.env.REMOTE_MCPS || '[]';
 }
 
 /**
@@ -236,13 +256,28 @@ export function stillQueuedFromReceipt(receipt: unknown): string[] {
   return parsed.data.still_queued ?? [];
 }
 
+// 'turn' ends the foreground turn and spares background tasks; 'all' tears the
+// query down and re-creates it, which kills every background task with it.
+export type InterruptScope = 'turn' | 'all';
+
 export interface InterruptOutcome {
   interrupted: boolean;
   // Uuids of queued user messages that died with this interrupt — never picked
   // up by the agent. The same uuids are also emitted on the message stream as
   // synthetic `command_lifecycle` frames with state 'discarded'.
   discardedUuids: string[];
+  // True when the CLI process survived the interrupt: background tasks it was
+  // running are still running. False when the query was re-created — every
+  // background task died with the old process.
+  processKept: boolean;
 }
+
+// How long Query.interrupt() gets to answer with its receipt.
+const INTERRUPT_RECEIPT_TIMEOUT_MS = 2000;
+// After the receipt, how long the aborted turn's result gets to arrive before
+// a soft interrupt gives up and restarts the query.
+const INTERRUPT_RESULT_TIMEOUT_MS = 5000;
+const RECEIPT_TIMEOUT = Symbol('interrupt receipt timeout');
 
 // An error result with no human-readable text anywhere gets the resume-failure
 // fallback copy. `result` counts as text: the modern error shape (is_error:true
@@ -273,6 +308,10 @@ export function isComputerUseHost(): boolean {
  */
 export interface SystemPromptVars {
   CLAUDE_CONFIG_DIR: string;
+  todayWeekday: string;
+  todayDate: string;
+  timeZone: string;
+  utcOffset: string;
   webSearchToolName: string;
   webFetchToolName: string;
   subagentsEnabled: boolean;
@@ -291,7 +330,20 @@ export interface SystemPromptVars {
   remoteMcps: RemoteMcpView[];
   hasEnvVars: boolean;
   envVars: string[];
+  hasMounts: boolean;
+  mountPathsJoined: string;
   userInstructions: string;
+}
+
+const mountsEnvSchema = z.array(z.string().min(1));
+
+function parseMountPaths(raw: string | undefined): string[] {
+  if (!raw) return [];
+  try {
+    return mountsEnvSchema.parse(JSON.parse(raw));
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -319,8 +371,14 @@ export function buildSystemPromptVars(
   const remoteMcps = remoteMcpViews();
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
+  const mountPaths = parseMountPaths(process.env.SUPERAGENT_MOUNTS);
+  const today = promptDate();
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
+    todayWeekday: today.weekday,
+    todayDate: today.date,
+    timeZone: today.timeZone,
+    utcOffset: today.utcOffset,
     webSearchToolName: webSearchProvider ? 'mcp__web__web_search' : 'WebSearch',
     webFetchToolName: webFetchProvider ? 'mcp__web__web_fetch' : 'WebFetch',
     // Blocked subagents must not be advertised anywhere in the prompt; review
@@ -340,6 +398,10 @@ export function buildSystemPromptVars(
     remoteMcps,
     hasEnvVars: envVars.length > 0,
     envVars,
+    hasMounts: mountPaths.length > 0,
+    // Each path is rendered as a JSON string literal. A folder name is user
+    // bytes, and a raw newline or `#` in it would read as prompt structure.
+    mountPathsJoined: mountPaths.map((p) => JSON.stringify(p)).join(', '),
     userInstructions,
   };
 }
@@ -447,6 +509,7 @@ export interface ClaudeCodeProcessOptions {
   browserModel?: string;
   dashboardBuilderModel?: string;
   subagentModels?: SubagentModelDefinition[];
+  modelContextWindows?: ModelContextWindows;
   webSearchProvider?: string;
   webFetchProvider?: string;
   maxOutputTokens?: number;
@@ -467,11 +530,14 @@ export class ClaudeCodeProcess extends EventEmitter {
   private sessionId: string;
   private workingDirectory: string;
   private claudeSessionId: string | null;
-  private systemPrompt: string;
+  private systemPrompt = '';
+  // Local calendar day the prompt (and any subprocess spawned from it) reads as today.
+  private promptRenderedOn = '';
   private model: string | undefined;
   private browserModel: string | undefined;
   private dashboardBuilderModel: string | undefined;
   private subagentModels: SubagentModelDefinition[];
+  private modelContextWindows: ModelContextWindows;
   private webSearchProvider: string | undefined;
   private webFetchProvider: string | undefined;
   private maxOutputTokens: number | undefined;
@@ -484,9 +550,16 @@ export class ClaudeCodeProcess extends EventEmitter {
   private capabilityPolicies: AgentCapabilityPolicies | undefined;
   // Connection metadata is mutable at runtime when Agent Settings changes.
   // The SDK snapshots MCP servers, allowed tool patterns, and the system prompt
-  // when query() is created, so the next user message must refresh a stale
-  // query before it is delivered.
-  private runtimeConnectionSnapshot = '';
+  // when query() is created. A connected-accounts change must therefore
+  // refresh a stale query before the next message is delivered; a remote-MCP
+  // change is pushed into the live query instead (see applyRemoteMcpServers).
+  private connectedAccountsSnapshot = '';
+  private remoteMcpsSnapshot = '';
+  // The in-process (SDK) MCP servers handed to the live query. Kept so a
+  // dynamic setMcpServers() call can name the same instances: the SDK leaves
+  // an already-registered SDK server untouched, but disconnects any it does
+  // not see in the map.
+  private sdkMcpServerConfigs: Record<string, McpServerConfig> | null = null;
   // Session-scoped review grants ("Allow for this session"). Scoped to the
   // SESSION, not the process: they must survive idle-eviction + resume (the
   // session-manager persists them via the 'capability-grant' event), or the
@@ -532,6 +605,28 @@ export class ClaudeCodeProcess extends EventEmitter {
   private lastTurnInformationals: SDKMessage[] = [];
   private lastResultMessage: SDKMessage | null = null;
   private lastSessionState: string | null = null;
+  // Whether the CLI is between turns, for interruptTurn. `lastSessionState`
+  // alone stopped being enough with CLI 2.1.269: while a background subagent
+  // is live the CLI emits NO session_state_changed:idle after the lead turn's
+  // result (the sdk272-bg-subagent-* fixtures), so a Stop pressed then used
+  // to look like a live turn — the soft path sent an interrupt nobody
+  // answered with a result and fell back to the restart, killing the very
+  // background agent perTaskStopAffordance exists to spare. A main-thread
+  // `result` ends the foreground turn; a send, a running/requires_action
+  // state or foreground model output (assistant / stream_event without a
+  // parent_tool_use_id — the completion wake turn arrives with no state
+  // event at all) starts one.
+  private foregroundTurnEnded = false;
+  // Sends the CLI has not answered with a result yet. A queued follow-up is
+  // dequeued the instant the previous result lands, before it produces any
+  // frame of its own, so "result seen" alone would make a Stop in that gap a
+  // no-op. Results name the sends they answered (user_message_uuids; a whole
+  // coalesced batch) — subtract those, and treat a result without them as
+  // having answered everything.
+  private pendingSends = 0;
+  // Protocol capabilities the CLI advertised on system/init (SDK feature
+  // detection — see Options.perTaskStopAffordance and interruptTurn).
+  private cliCapabilities = new Set<string>();
   // Pre-spawned CLI subprocess from prewarm(), waiting for a prompt. Claimed
   // (once) by the next createQuery; see prewarm() for why the handle lives on
   // the process rather than in a detached pool.
@@ -551,6 +646,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.browserModel = options.browserModel;
     this.dashboardBuilderModel = options.dashboardBuilderModel;
     this.subagentModels = options.subagentModels ?? [];
+    this.modelContextWindows = options.modelContextWindows ?? {};
     this.webSearchProvider = options.webSearchProvider;
     this.webFetchProvider = options.webFetchProvider;
     this.maxOutputTokens = options.maxOutputTokens;
@@ -565,26 +661,111 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.availableEnvVars = options.availableEnvVars;
     this.userSystemPrompt = options.userSystemPrompt;
     this.modelPromptHints = options.modelPromptHints;
+    this.refreshSystemPrompt();
+  }
+
+  /**
+   * Regenerate the system prompt from the current runtime env. The live query
+   * keeps the prompt it was created with; every query creation re-renders so
+   * the date line reads the day the subprocess starts.
+   */
+  private refreshSystemPrompt(): void {
+    this.promptRenderedOn = promptDate().date;
     this.systemPrompt = generateSystemPrompt(
-      options.availableEnvVars,
-      options.userSystemPrompt,
-      options.modelPromptHints,
-      options.webSearchProvider,
-      options.webFetchProvider,
-      options.capabilityPolicies,
+      this.availableEnvVars,
+      this.userSystemPrompt,
+      this.modelPromptHints,
+      this.webSearchProvider,
+      this.webFetchProvider,
+      this.capabilityPolicies,
       this.subagentModels,
     );
   }
 
   /**
-   * Interrupt and restart the query after MCP approval.
-   * Called by request_remote_mcp tool after user approval. The env var REMOTE_MCPS
-   * is already updated by the host. We can't inject tools into the running query
-   * mid-stream, so we interrupt the current query and restart. The new query
-   * picks up the MCP server from the env var, and we send a continuation message
-   * so the model proceeds with the original request using the newly available tools.
+   * Push the current REMOTE_MCPS projection into the live query without a
+   * re-query: Query.setMcpServers() replaces the CLI's dynamic MCP set in
+   * place, connecting servers that are new and disconnecting ones that are
+   * gone, while the turn (and any tool call that is mid-flight) stays alive.
+   *
+   * The map handed over is the FULL set — every in-process SDK server plus
+   * every remote server — because the SDK treats the call as a replace:
+   * an SDK server missing from the map is disconnected, and the CLI drops
+   * dynamic process servers it no longer sees. The start-time servers passed
+   * via --mcp-config count as dynamic on the CLI side, so this is safe to
+   * call on a query that already has remote servers (verified on 0.3.257:
+   * they report scope 'dynamic' and are re-added, not duplicated).
+   *
+   * Throws when there is no live query or the CLI rejects the control
+   * request (older CLI) — callers fall back to the interrupt + re-query path.
    */
-  addRemoteMcpServer(name: string): void {
+  private async applyRemoteMcpServers(): Promise<McpSetServersResult> {
+    const queryInstance = this.queryInstance;
+    if (!queryInstance || !this.sdkMcpServerConfigs) {
+      throw new Error('No live query to apply remote MCP servers to');
+    }
+    const remoteMcpConfigs = this.buildRemoteMcpServers();
+    const result = await queryInstance.setMcpServers({
+      ...this.sdkMcpServerConfigs,
+      ...remoteMcpConfigs,
+    });
+    // The live query now matches the projection, so the next send must not
+    // treat it as stale. The prompt still lists the old server set until the
+    // next query creation; the tool result (and the host's projection) name
+    // the new tools, and ToolSearch finds them by name.
+    this.remoteMcpsSnapshot = remoteMcpsSnapshot();
+    this.refreshSystemPrompt();
+    const errors = Object.entries(result.errors ?? {});
+    console.log(
+      `[Session ${this.sessionId}] Applied remote MCP servers in place: added=[${result.added.join(', ')}] removed=[${result.removed.join(', ')}]` +
+        (errors.length ? ` errors=${JSON.stringify(result.errors)}` : ''),
+    );
+    return result;
+  }
+
+  /**
+   * Make an approved remote MCP server's tools available to the running query.
+   * Called by the request_remote_mcp tool after user approval; the host has
+   * already written the server into REMOTE_MCPS. The server is hot-added with
+   * setMcpServers() so the tool result that names its tools lands in the same
+   * turn and the model carries on — no interrupt, no "Stopped" marker, no
+   * continuation message.
+   *
+   * Resolves once the server is connected. Rejects when the server was
+   * registered but failed to connect (the tool reports that to the model
+   * instead of claiming the tools exist). When the CLI has no dynamic MCP
+   * support at all, falls back to the interrupt + re-query path and resolves
+   * immediately — the re-query picks the server up from the env var.
+   */
+  async addRemoteMcpServer(name: string): Promise<void> {
+    const sanitizedName = sanitizeMcpName(name);
+    if (this.queryInstance && this.isProcessing && !this.stopping) {
+      let result: McpSetServersResult;
+      try {
+        result = await this.applyRemoteMcpServers();
+      } catch (err) {
+        console.warn(`[Session ${this.sessionId}] Dynamic MCP set failed for "${sanitizedName}", falling back to re-query:`, err);
+        this.restartForRemoteMcp(name);
+        return;
+      }
+      const error = result.errors?.[sanitizedName];
+      if (error) {
+        throw new Error(`MCP server "${sanitizedName}" was registered but failed to connect: ${error}`);
+      }
+      console.log(`[Session ${this.sessionId}] MCP server "${sanitizedName}" hot-added to the live query`);
+      return;
+    }
+    this.restartForRemoteMcp(name);
+  }
+
+  /**
+   * Legacy path: interrupt and restart the query so it is rebuilt with the
+   * server from REMOTE_MCPS, then send a continuation so the model proceeds
+   * with the original request. Only reached when the live query cannot take a
+   * dynamic MCP set (older CLI, or no query running). Leaves the interrupt
+   * marker in the transcript that the hot path avoids.
+   */
+  private restartForRemoteMcp(name: string): void {
     const sanitizedName = sanitizeMcpName(name);
     console.log(`[ClaudeCodeProcess] MCP server "${sanitizedName}" approved, scheduling interrupt to inject tools`);
 
@@ -731,10 +912,38 @@ export class ClaudeCodeProcess extends EventEmitter {
     return this.warmHandle !== null;
   }
 
+  private contextWindowForModel(model: string | undefined): number | undefined {
+    return model ? this.modelContextWindows[model] : undefined;
+  }
+
+  /**
+   * The in-process MCP servers for one query. Fresh instances per query (the
+   * MCP protocol allows one transport per server instance), remembered on the
+   * process so applyRemoteMcpServers can hand the SAME instances back to
+   * setMcpServers — which skips servers it already has registered.
+   */
+  private buildSdkMcpServers(browserMcpTools: ReturnType<typeof createBrowserTools>): Record<string, McpServerConfig> {
+    const servers: Record<string, McpServerConfig> = {
+      'user-input': createUserInputMcpServer(() => this),
+      'browser': createBrowserMcpServer(browserMcpTools),
+      'dashboards': createDashboardsMcpServer(),
+      'widgets': createWidgetsMcpServer(),
+      'agents': createAgentsMcpServer(() => this.sessionId),
+      'chat': createChatMcpServer(() => this.sessionId),
+      ...((this.webSearchProvider || this.webFetchProvider)
+        ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
+        : {}),
+      ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer() } : {}),
+    };
+    this.sdkMcpServerConfigs = servers;
+    return servers;
+  }
+
   private buildQueryOptions(): Options {
     const remoteMcpConfigs = this.buildRemoteMcpServers();
     const remoteMcpToolPatterns = Object.keys(remoteMcpConfigs).map(name => `mcp__${name}__*`);
-    this.runtimeConnectionSnapshot = runtimeConnectionConfigSnapshot();
+    this.connectedAccountsSnapshot = connectedAccountsSnapshot();
+    this.remoteMcpsSnapshot = remoteMcpsSnapshot();
 
     // Browser tools are bound per-session via a getter read on every request:
     // this.sessionId changes when the query (re)starts, and a module-global id
@@ -747,12 +956,33 @@ export class ClaudeCodeProcess extends EventEmitter {
     // stripped from the query (and the system prompt stops advertising it)
     // rather than denied call-by-call. Review-tier gating happens in canUseTool.
     const capabilityTools = applyCapabilityPolicies(this.capabilityPolicies, {
-      allowedTools: ['Skill', 'Task', 'Agent', ...remoteMcpToolPatterns],
+      allowedTools: [
+        'Skill', 'Task', 'Agent',
+        // CLI 2.1.233+ registers the task-tracking tools by default only on
+        // older models (Claude 3.x, Opus 4.0-4.7, Sonnet 4.0-4.6, Haiku 4.5);
+        // elsewhere they must be listed here (SDK 0.3.268 changelog). Our
+        // task-list UI (derive-task-list.ts) and existing agent workflows
+        // depend on them, so opt in on every model. Verified live on
+        // claude-opus-4-8 with SDK 0.3.272: listing them here registers all
+        // four; the CLAUDE_CODE_ENABLE_TODO_TOOLS env var is the CLI-side
+        // equivalent and is no longer needed.
+        'TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate',
+        ...remoteMcpToolPatterns,
+      ],
       disallowedTools: [
         'TaskOutput', 'Monitor', 'DesignSync',
         'CronCreate', 'CronDelete', 'CronList',
         'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
         'EnterWorktree', 'ExitWorktree',
+        // CLI 2.1.257+ registers ListAgents: it discovers "other local Claude
+        // sessions on this machine", which inside the container means this
+        // agent's other sessions — cross-session messaging we neither want nor
+        // surface. SendMessage stays: it is how a spawned subagent is continued.
+        'ListAgents',
+        // Only meaningful under the CLI's bundled code-review skill, which
+        // `disableBundledSkills` (below) removes — without it the tool is dead
+        // weight in every session's tool list.
+        'ReportFindings',
         // Suppress native WebSearch only when a host vendor is active; it's replaced by mcp__web__web_search.
         ...(this.webSearchProvider ? ['WebSearch'] : []),
         // Same for native WebFetch → mcp__web__web_fetch when a host fetch vendor is active.
@@ -765,9 +995,21 @@ export class ClaudeCodeProcess extends EventEmitter {
       cwd: this.workingDirectory,
       abortController: this.abortController!,
       resume: this.claudeSessionId || undefined,
+      // A fresh session runs under the id we already hold (tempSessionId /
+      // the prewarm uuid) instead of one the CLI mints at init. That is what
+      // lets GAMUT_SESSION_ID below be correct from the first tool call: the
+      // env is fixed when the query is created, before init reports an id.
+      // Mutually exclusive with `resume` per the SDK contract.
+      ...(!this.claudeSessionId && { sessionId: this.sessionId }),
       permissionMode: 'bypassPermissions',
       includePartialMessages: true,
       agentProgressSummaries: true,
+      // The host renders a stop control per background task (wired to
+      // stopTask below), so a user interrupt only aborts the foreground turn
+      // and spares running background agents, Bash tasks and workflows.
+      // Without this declaration the CLI fails closed and kills them all on
+      // every interrupt. See interrupt().
+      perTaskStopAffordance: true,
       // Expose the dynamic-workflows `Workflow` tool. In headless/SDK mode the
       // feature is hidden unless explicitly opted in (there is no interactive
       // /config to record consent, so the SDK defaults it OFF). There is no
@@ -775,8 +1017,26 @@ export class ClaudeCodeProcess extends EventEmitter {
       // the `settings` flag layer (`enableWorkflows` is a Settings field, not a
       // top-level Option). Without it the model can't see a Workflow tool at all
       // and falls back to simulating with Agent subagents.
-      settings: { enableWorkflows: capabilityTools.enableWorkflows },
+      settings: {
+        enableWorkflows: capabilityTools.enableWorkflows,
+        // Drop every skill and workflow that ships inside the CLI (dataviz,
+        // claude-api, code-review, loop, batch, ...). They are developer-
+        // workflow skills that fire on their own — `dataviz` on any chart or
+        // dashboard, `claude-api` on any mention of Claude — and pull guidance
+        // that competes with ours into context. A per-skill denylist would
+        // silently admit whatever the next SDK bump adds, so opt out of the
+        // whole set. The one we want, `deep-research`, is vendored in the
+        // Gamut plugin (`plugins` below); plugin skills and agent-created
+        // skills under /workspace/.claude/skills are unaffected by this flag.
+        disableBundledSkills: true,
+      },
       settingSources: ['user', 'project'],
+      // The image-baked Gamut plugin: the dashboards + widgets skills and the
+      // vendored deep-research workflow. The CLI discovers skills only under
+      // $CLAUDE_CONFIG_DIR and inside plugins, so this is what makes them
+      // visible to the model (see gamut-plugin.ts). We own every MCP
+      // connection ourselves, so the plugin's MCP discovery is skipped.
+      plugins: [{ type: 'local', path: gamutPluginDir(), skipMcpDiscovery: true }],
       allowedTools: capabilityTools.allowedTools,
       disallowedTools: capabilityTools.disallowedTools,
       // Request summarized thinking so reasoning text streams to the UI. Without an
@@ -805,6 +1065,12 @@ export class ClaudeCodeProcess extends EventEmitter {
         // server.ts announces this capability on WebSocket connect — keep the two
         // in sync. See message-persister.ts.
         CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
+        // The id of the session this process IS, inherited by every Bash
+        // child. /opt/gamut/bin/list-sessions.py and read-session.py use it
+        // to keep the agent from "finding" the conversation it is currently
+        // in and reading it back as prior work (seen live). Pinned after the
+        // customEnvVars spread so an agent-set value cannot mask it.
+        GAMUT_SESSION_ID: this.claudeSessionId || this.sessionId,
         // CLI 2.1.212+ moves MCP tool calls that run >2min to a background
         // task. Our blocking user-input tools (request_user_input et al.)
         // legitimately block far longer than that waiting on a human, and
@@ -822,26 +1088,20 @@ export class ClaudeCodeProcess extends EventEmitter {
         // self-updated. Pinned like the other vars here: customEnvVars is
         // spread above, so an agent cannot turn this back on.
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-        // CLI 2.1.233+ stops registering TaskCreate/TaskGet/TaskList/TaskUpdate
-        // on newer models (opus >=4.8, sonnet/fable/mythos >=5). Our task-list
-        // UI (derive-task-list.ts) and existing agent workflows depend on those
-        // tools, so opt back in on every model. This is the CLI's only lever
-        // that works for us: its other re-enable path is a server-side feature
-        // flag, which NONESSENTIAL_TRAFFIC above blocks from ever reaching us.
-        CLAUDE_CODE_ENABLE_TODO_TOOLS: 'true',
         // Explicit maxOutputTokens setting takes precedence over custom env var
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
+        // Tell the SDK the real context window for non-Claude models (it
+        // assumes 200k for unknown ids and auto-compacts against that — 40% of
+        // grok's 500k, 19% of gpt-5.x's 1.05M). The SDK only honors this env
+        // var for non-claude-* models, so it never affects Claude sessions. A
+        // user-set custom env var (spread above) deliberately wins.
+        ...(this.contextWindowForModel(this.model) &&
+          !this.customEnvVars?.CLAUDE_CODE_MAX_CONTEXT_TOKENS && {
+            CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(this.contextWindowForModel(this.model)),
+          }),
       }), this.speed),
       mcpServers: {
-        'user-input': createUserInputMcpServer(() => this),
-        'browser': createBrowserMcpServer(browserMcpTools),
-        'dashboards': createDashboardsMcpServer(),
-        'agents': createAgentsMcpServer(() => this.sessionId),
-        'chat': createChatMcpServer(() => this.sessionId),
-        ...((this.webSearchProvider || this.webFetchProvider)
-          ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
-          : {}),
-        ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer() } : {}),
+        ...this.buildSdkMcpServers(browserMcpTools),
         ...remoteMcpConfigs,
       },
       agents: {
@@ -971,6 +1231,19 @@ export class ClaudeCodeProcess extends EventEmitter {
         return { behavior: 'allow' as const, updatedInput: toolInput };
       },
       hooks: {
+        // The transcript the CLI hands the hook does not yet hold this prompt,
+        // so its newest entry is the end of the previous exchange.
+        UserPromptSubmit: [
+          {
+            hooks: [
+              async (input) => {
+                const note = await elapsedTimeNote(input.transcript_path);
+                if (!note) return {};
+                return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit' as const, additionalContext: note } };
+              },
+            ],
+          },
+        ],
         PreToolUse: [
           {
             matcher: 'mcp__user-input__.*',
@@ -1125,7 +1398,14 @@ export class ClaudeCodeProcess extends EventEmitter {
           },
         ],
       },
-      systemPrompt: this.systemPrompt,
+      // Object form with `snapshot: false`: SDK 0.3.267+ records a custom
+      // prompt on the conversation's first request and replays that record on
+      // every later launch/resume until compaction (a bare string follows
+      // that default). Our prompt is regenerated and the query restarted when
+      // connected accounts, remote MCPs, capability policies or the date
+      // change (refreshSystemPrompt / sendMessage), so it must render fresh
+      // on every launch or those refreshes are silently ignored.
+      systemPrompt: { type: 'custom', prompt: this.systemPrompt, snapshot: false },
     };
   }
 
@@ -1136,13 +1416,27 @@ export class ClaudeCodeProcess extends EventEmitter {
     // New query generation: a stale processMessages loop from a previous
     // query must not clobber this one's state when it finally unwinds.
     this.queryGeneration++;
+    // A parked subprocess baked in the prompt of the day it was spawned. Past
+    // a midnight its date line is wrong, and the CLI's own date-change notice
+    // carries the date but not the weekday — spawn cold instead.
+    if (this.warmHandle && this.promptRenderedOn !== promptDate().date) {
+      console.log(`[Session ${this.sessionId}] Discarding pre-warmed subprocess rendered on ${this.promptRenderedOn}`);
+      this.warmHandle.close();
+      this.warmHandle = null;
+    }
     // A pre-warmed subprocess was spawned with prewarm()'s AbortController
     // already baked into its options; replacing it here would leave that
     // subprocess with no way to be aborted.
     if (!this.warmHandle) {
       this.abortController = new AbortController();
+      this.refreshSystemPrompt();
     }
     this.messageQueue = new MessageQueue();
+    // Turn bookkeeping is per process: a replacement query starts with no
+    // turn and no unanswered sends (a resumed turn re-sends through
+    // sendMessage and counts itself again).
+    this.foregroundTurnEnded = false;
+    this.pendingSends = 0;
     this.queryInstance = this.createQuery();
     this.isReady = true;
     // Background tasks are process-local and die with the old process; the
@@ -1202,6 +1496,11 @@ export class ClaudeCodeProcess extends EventEmitter {
           }
           console.log(`[Session ${this.sessionId}] Captured Claude session ID:`, this.claudeSessionId);
           this.emit('claude-session-id', this.claudeSessionId);
+          this.cliCapabilities = new Set(
+            Array.isArray(message.capabilities)
+              ? message.capabilities.filter((name): name is string => typeof name === 'string')
+              : [],
+          );
           // The init list owns the executable names. supportedCommands adds
           // descriptions/hints, but skill entries may use display titles there.
           const canonicalCommandNames = Array.isArray(message.slash_commands)
@@ -1301,20 +1600,13 @@ export class ClaudeCodeProcess extends EventEmitter {
     const effort = options?.effort;
     const speed = options?.speed;
     const model = options?.model;
-    const runtimeConnectionConfigChanged =
-      runtimeConnectionConfigSnapshot() !== this.runtimeConnectionSnapshot;
-    if (runtimeConnectionConfigChanged) {
+    const connectedAccountsChanged =
+      connectedAccountsSnapshot() !== this.connectedAccountsSnapshot;
+    const remoteMcpsChanged = remoteMcpsSnapshot() !== this.remoteMcpsSnapshot;
+    if (connectedAccountsChanged || remoteMcpsChanged) {
       // The prompt's connected-account and remote-MCP sections are generated
       // from runtime env metadata, so refresh them alongside the query config.
-      this.systemPrompt = generateSystemPrompt(
-        this.availableEnvVars,
-        this.userSystemPrompt,
-        this.modelPromptHints,
-        this.webSearchProvider,
-        this.webFetchProvider,
-        this.capabilityPolicies,
-        this.subagentModels,
-      );
+      this.refreshSystemPrompt();
     }
 
     // Treat undefined stored effort as 'high' so pre-existing sessions (created before
@@ -1331,6 +1623,11 @@ export class ClaudeCodeProcess extends EventEmitter {
     // compare ids directly. Switching between two pinned versions of a family
     // (e.g. opus-4-6 -> opus-4-7) is now a real, intentional switch.
     const modelChanged = model !== undefined && model !== this.model;
+    // CLAUDE_CODE_MAX_CONTEXT_TOKENS is baked into the query env, so a switch
+    // that changes the catalog window (e.g. claude → grok) can't use dynamic
+    // setModel — the new model would run against the old window.
+    const contextWindowChanged =
+      modelChanged && this.contextWindowForModel(model) !== this.contextWindowForModel(this.model);
 
     // Capability policies follow the host's CURRENT settings, refreshed on
     // every message so a long-lived session tracks settings changes. Review
@@ -1364,6 +1661,11 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.model = model;
     }
 
+    // Whether the query was rebuilt on this send. A rebuild re-reads REMOTE_MCPS
+    // itself, so a pending remote-MCP change rides along and only needs the
+    // handshake gate below; otherwise it is applied to the live query in place.
+    let queryRebuilt = false;
+
     if (this.stopping || !this.messageQueue || !this.isReady) {
       // Cold session, or a stop in flight (queue closed but not yet nulled —
       // pushing would throw and lose the message): wait the stop out, then
@@ -1373,26 +1675,33 @@ export class ClaudeCodeProcess extends EventEmitter {
         await this.currentStop.catch(() => undefined);
       }
       await this.restart();
+      queryRebuilt = true;
     } else if (
       effortChanged ||
       speedChanged ||
       capabilityBlockChanged ||
-      runtimeConnectionConfigChanged
+      connectedAccountsChanged ||
+      contextWindowChanged
     ) {
       // Effort can only be set at query creation time — the SDK has no setEffort
       // facility — so any effort change forces an interrupt + re-query. Speed
       // lives in the query env (ANTHROPIC_CUSTOM_HEADERS), which is likewise
       // baked at query creation. The new model (if also changed) is picked up by
       // the same restart. A capability block boundary flip re-queries for the
-      // same reason: the tool lists and system prompt only apply at query creation.
+      // same reason: the tool lists and system prompt only apply at query
+      // creation — and so does a connected-accounts change, which reaches the
+      // model through the prompt alone.
       const reasons: string[] = [];
       if (effortChanged) reasons.push(`effort ${currentEffort} -> ${effort}`);
       if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');
-      if (runtimeConnectionConfigChanged) reasons.push('runtime connection configuration changed');
+      if (connectedAccountsChanged) reasons.push('connected accounts changed');
+      if (remoteMcpsChanged) reasons.push('remote MCP servers changed');
+      if (contextWindowChanged) reasons.push('model context window changed');
       if (modelChanged) reasons.push(`model -> ${this.model}`);
       console.log(`[Session ${this.sessionId}] Restarting query (${reasons.join(', ')})`);
       await this.interrupt();
+      queryRebuilt = true;
     } else if (modelChanged && this.queryInstance) {
       // Model-only change — use the SDK's dynamic setModel() so the running query
       // is reused and only subsequent turns are served by the new model. No
@@ -1405,14 +1714,31 @@ export class ClaudeCodeProcess extends EventEmitter {
         // the conservative restart path so the new model still takes effect.
         console.warn(`[Session ${this.sessionId}] setModel failed, falling back to restart:`, err);
         await this.interrupt();
+        queryRebuilt = true;
       }
     }
 
-    // Deliberately outside the branch chain above: BOTH the cold-session
-    // restart() and the interrupt() re-query rebuild the query with the new
-    // connection set, so both race the handshake. Effort- or speed-only
-    // re-queries pay nothing because the runtime connection set is unchanged.
-    if (runtimeConnectionConfigChanged) {
+    if (remoteMcpsChanged && !queryRebuilt) {
+      // Agent Settings assigned or removed a remote MCP while the query is
+      // live: swap the server set in place. setMcpServers() returns once the
+      // new servers have finished their handshake (or failed), so there is no
+      // half-connected window to gate on. Only a CLI without the control
+      // request sends us down the re-query path.
+      console.log(`[Session ${this.sessionId}] Applying remote MCP change to the live query`);
+      try {
+        await this.applyRemoteMcpServers();
+      } catch (err) {
+        console.warn(`[Session ${this.sessionId}] Dynamic MCP set failed, falling back to re-query:`, err);
+        await this.interrupt();
+        queryRebuilt = true;
+      }
+    }
+
+    // BOTH the cold-session restart() and the interrupt() re-query rebuild the
+    // query with the new connection set and race its handshake, so a rebuilt
+    // query with a changed remote-MCP set waits here. Effort- or speed-only
+    // re-queries pay nothing because the remote MCP set is unchanged.
+    if (remoteMcpsChanged && queryRebuilt) {
       await this.waitForRemoteMcpsReady();
     }
 
@@ -1440,6 +1766,15 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
     console.log(`[Session ${this.sessionId}] Sending message (userMessageCount=${this.userMessageCount}):`, content.substring(0, 100));
     this.messageQueue!.push(message);
+    // A turn is about to start; until the CLI says otherwise the session is
+    // no longer known-idle (interruptTurn reads this to decide whether there
+    // is a foreground turn to abort, and a Stop in the send→running window
+    // must still reach it).
+    if (shouldQuery !== false) {
+      this.lastSessionState = null;
+      this.foregroundTurnEnded = false;
+      this.pendingSends++;
+    }
     // Every send path must reach the session's settlement tracker — including
     // internal ones that bypass SessionManager.sendMessage (the MCP-injection
     // continuation in addRemoteMcpServer). Without this, a send landing while
@@ -1601,15 +1936,27 @@ export class ClaudeCodeProcess extends EventEmitter {
 
   /** Record the frames a late-joining WebSocket subscriber must not miss. */
   private trackForLateJoinReplay(message: SDKMessage): void {
-    const msg = message as { type: string; subtype?: string; state?: string };
+    const msg = message as {
+      type: string;
+      subtype?: string;
+      state?: string;
+      parent_tool_use_id?: string | null;
+      user_message_uuids?: unknown;
+    };
     if (msg.type === 'system' && msg.subtype === 'informational') {
       this.currentTurnInformationals.push(message);
     } else if (msg.type === 'result') {
       this.lastResultMessage = message;
       this.lastTurnInformationals = this.currentTurnInformationals;
       this.currentTurnInformationals = [];
+      this.foregroundTurnEnded = true;
+      const answered = Array.isArray(msg.user_message_uuids) ? msg.user_message_uuids.length : this.pendingSends;
+      this.pendingSends = Math.max(0, this.pendingSends - answered);
     } else if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
       this.lastSessionState = msg.state ?? null;
+      if (msg.state !== 'idle') this.foregroundTurnEnded = false;
+    } else if ((msg.type === 'assistant' || msg.type === 'stream_event') && !msg.parent_tool_use_id) {
+      this.foregroundTurnEnded = false;
     }
   }
 
@@ -1641,14 +1988,170 @@ export class ClaudeCodeProcess extends EventEmitter {
     ].map((m) => ({ ...(m as Record<string, unknown>), replayed: true }));
   }
 
-  async interrupt(): Promise<InterruptOutcome> {
-    console.log(`[Session ${this.sessionId}] Interrupting current query`);
+  /**
+   * Stop what the session is doing.
+   *
+   * scope 'turn' — the user's Stop button. Sends only the SDK `interrupt`
+   * control request and keeps the CLI process: the foreground turn ends, and
+   * because the query declared `perTaskStopAffordance`, running background
+   * tasks (backgrounded Bash, background subagents, workflows) are spared.
+   * Falls back to the restart below when the CLI cannot be trusted to honor
+   * that (no `interrupt_receipt_v1` capability, receipt timeout, or no result
+   * for the aborted turn), so an old runtime keeps today's kill-everything
+   * behavior rather than leaving orphans the host cannot see.
+   *
+   * scope 'all' — a full stop, and every deliberate re-query (MCP injection,
+   * effort/speed change): aborts the query and re-creates it with `resume`.
+   * The abort closes stdio and signals the CLI, so background tasks die with
+   * it; the SessionManager hears `query-start` and resets its bookkeeping.
+   */
+  async interrupt(options?: { scope?: InterruptScope }): Promise<InterruptOutcome> {
+    const scope = options?.scope ?? 'all';
+    console.log(`[Session ${this.sessionId}] Interrupting current query (scope=${scope})`);
 
     if (this.stopping || !this.abortController || !this.isProcessing) {
       console.log(`[Session ${this.sessionId}] Nothing to interrupt`);
-      return { interrupted: false, discardedUuids: [] };
+      return { interrupted: false, discardedUuids: [], processKept: true };
     }
 
+    if (scope === 'turn') {
+      // Queued messages the soft path already cancelled stay cancelled when it
+      // falls back: the restart cannot find them again, so it reports these.
+      const discardedUuids: string[] = [];
+      const outcome = await this.interruptTurn(discardedUuids);
+      if (outcome) return outcome;
+      console.warn(`[Session ${this.sessionId}] Soft interrupt unavailable — restarting the query instead`);
+      return this.restartQuery(discardedUuids);
+    }
+
+    return this.restartQuery();
+  }
+
+  /**
+   * The soft path of interrupt(): abort the foreground turn in place. Resolves
+   * null when the CLI gave no proof the turn ended — the caller then restarts.
+   * Queued messages cancelled along the way are pushed onto `discardedUuids`,
+   * which the caller owns, so a fallback still reports them.
+   */
+  private async interruptTurn(discardedUuids: string[]): Promise<InterruptOutcome | null> {
+    if (!this.queryInstance) return null;
+    if (!this.cliCapabilities.has('interrupt_receipt_v1')) {
+      console.warn(`[Session ${this.sessionId}] CLI does not advertise interrupt_receipt_v1`);
+      return null;
+    }
+    // Between turns there is no foreground turn to abort: after the turn-end
+    // `idle` (which the CLI emits while backgrounded Bash is still running),
+    // or after the lead turn's result while a background subagent is live
+    // (CLI 2.1.269+ emits no idle then — see foregroundTurnEnded). Stop is
+    // then a no-op for the turn; the caller stops tasks one by one. Sending
+    // the interrupt anyway would get a receipt but never a result, and the
+    // fallback restart would kill the background work.
+    if (this.lastSessionState === 'idle' || (this.foregroundTurnEnded && this.pendingSends === 0)) {
+      console.log(`[Session ${this.sessionId}] No foreground turn to interrupt`);
+      return { interrupted: false, discardedUuids: [], processKept: true };
+    }
+
+    // Listen for the aborted turn's result before asking, so it cannot slip
+    // past between the receipt and the wait below.
+    const turnResult = this.waitForTurnResult(INTERRUPT_RESULT_TIMEOUT_MS);
+    let receipt: unknown;
+    try {
+      receipt = await Promise.race([
+        this.queryInstance.interrupt(),
+        new Promise<typeof RECEIPT_TIMEOUT>((resolve) =>
+          setTimeout(() => resolve(RECEIPT_TIMEOUT), INTERRUPT_RECEIPT_TIMEOUT_MS)),
+      ]);
+    } catch (error) {
+      console.warn(`[Session ${this.sessionId}] Graceful interrupt failed:`, error);
+      turnResult.cancel();
+      return null;
+    }
+    if (receipt === RECEIPT_TIMEOUT) {
+      console.warn(`[Session ${this.sessionId}] Interrupt receipt timed out`);
+      turnResult.cancel();
+      return null;
+    }
+
+    // Same Stop semantics as the restart path: queued messages die with the
+    // turn. still_queued names the ones the CLI holds; the local buffer holds
+    // the ones it never pulled.
+    for (const uuid of stillQueuedFromReceipt(receipt)) {
+      const cancelled = await this.cancelQueuedMessage(uuid as UUID);
+      if (cancelled) discardedUuids.push(uuid);
+    }
+    for (const message of this.messageQueue?.drain() ?? []) {
+      if (message.uuid) discardedUuids.push(message.uuid);
+    }
+
+    // The receipt is written before the aborted turn's result. Wait for that
+    // result so the host sees the turn end before the interrupt call returns,
+    // and so a CLI that acknowledged but never stopped gets the restart.
+    if (!(await turnResult.promise)) {
+      console.warn(`[Session ${this.sessionId}] No result after interrupt receipt`);
+      return null;
+    }
+
+    for (const uuid of discardedUuids) this.emitDiscarded(uuid);
+    console.log(`[Session ${this.sessionId}] Turn interrupted; process kept`);
+    return { interrupted: true, discardedUuids, processKept: true };
+  }
+
+  private waitForTurnResult(timeoutMs: number): { promise: Promise<boolean>; cancel: () => void } {
+    let cleanup = () => {};
+    const promise = new Promise<boolean>((resolve) => {
+      const onMessage = (message: unknown) => {
+        if ((message as { type?: string })?.type === 'result') {
+          cleanup();
+          resolve(true);
+        }
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve(false);
+      }, timeoutMs);
+      cleanup = () => {
+        clearTimeout(timer);
+        this.off('message', onMessage);
+      };
+      this.on('message', onMessage);
+    });
+    return { promise, cancel: () => cleanup() };
+  }
+
+  // Downstream (persister → SSE → renderer) learns each dead uuid through the
+  // exact same pipeline as real SDK frames and can rescue the message text
+  // deterministically instead of racing a refetch.
+  private emitDiscarded(uuid: string): void {
+    this.emit('message', {
+      type: 'command_lifecycle',
+      command_uuid: uuid,
+      state: 'discarded',
+      session_id: this.claudeSessionId || this.sessionId,
+    });
+  }
+
+  /**
+   * Stop one background task (backgrounded Bash, background subagent or
+   * workflow) by the id the SDK reports in task_started / task_notification.
+   * The CLI answers with a task_notification of status 'stopped', which
+   * retires the task downstream. false = no live query to ask.
+   */
+  async stopTask(taskId: string): Promise<boolean> {
+    if (this.stopping || !this.queryInstance) return false;
+    if (typeof this.queryInstance.stopTask !== 'function') {
+      console.warn(`[Session ${this.sessionId}] stopTask unavailable in this SDK build`);
+      return false;
+    }
+    console.log(`[Session ${this.sessionId}] Stopping background task ${taskId}`);
+    await this.queryInstance.stopTask(taskId);
+    return true;
+  }
+
+  /**
+   * The abort-and-re-create path of interrupt(). `alreadyDiscarded` names the
+   * queued messages a soft attempt cancelled before it gave up.
+   */
+  private async restartQuery(alreadyDiscarded: string[] = []): Promise<InterruptOutcome> {
     // Ask the SDK which async messages are still queued BEFORE killing the
     // query — after the abort the stream just stops and that knowledge is
     // gone (queued command_lifecycle frames never resolve; see the
@@ -1656,19 +2159,19 @@ export class ClaudeCodeProcess extends EventEmitter {
     // messages would survive a graceful interrupt and run — our Stop
     // semantics kill them, so cancel each one while the query is still alive
     // and report it as discarded.
-    const discardedUuids: string[] = [];
+    const discardedUuids: string[] = [...alreadyDiscarded];
     if (this.queryInstance) {
       try {
         const receipt = await Promise.race([
           this.queryInstance.interrupt(),
-          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 2000)),
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), INTERRUPT_RECEIPT_TIMEOUT_MS)),
         ]);
         for (const uuid of stillQueuedFromReceipt(receipt)) {
           // Reuses the two-layer cancel; false = already dequeued for
           // execution, in which case the abort below kills it mid-turn and
           // its user message has already materialized — not "discarded".
           const cancelled = await this.cancelQueuedMessage(uuid as UUID);
-          if (cancelled) discardedUuids.push(uuid);
+          if (cancelled && !discardedUuids.includes(uuid)) discardedUuids.push(uuid);
         }
       } catch (error) {
         // Old CLI without the interrupt control request, or a query already
@@ -1681,11 +2184,11 @@ export class ClaudeCodeProcess extends EventEmitter {
     // Messages still buffered locally (never handed to the SDK) die when the
     // queue is replaced below.
     for (const message of this.messageQueue?.drain() ?? []) {
-      if (message.uuid) discardedUuids.push(message.uuid);
+      if (message.uuid && !discardedUuids.includes(message.uuid)) discardedUuids.push(message.uuid);
     }
 
     // Abort the current query
-    this.abortController.abort();
+    this.abortController!.abort();
 
     // Wait for the current processing to stop
     await new Promise<void>((resolve) => {
@@ -1703,17 +2206,8 @@ export class ClaudeCodeProcess extends EventEmitter {
     });
 
     // The SDK's own terminal lifecycle frames died with the query, so emit
-    // them ourselves: downstream (persister → SSE → renderer) learns each
-    // dead uuid through the exact same pipeline as real SDK frames and can
-    // rescue the message text deterministically instead of racing a refetch.
-    for (const uuid of discardedUuids) {
-      this.emit('message', {
-        type: 'command_lifecycle',
-        command_uuid: uuid,
-        state: 'discarded',
-        session_id: this.claudeSessionId || this.sessionId,
-      });
-    }
+    // them ourselves.
+    for (const uuid of discardedUuids) this.emitDiscarded(uuid);
 
     // A stop()/dispose() may have raced in while we were waiting above — the
     // teardown wins: restarting here would revive a subprocess for a session
@@ -1721,7 +2215,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     // reaper. The abort already landed, so the turn is dead either way.
     if (this.stopping) {
       console.log(`[Session ${this.sessionId}] Stop raced the interrupt — not restarting query`);
-      return { interrupted: true, discardedUuids };
+      return { interrupted: true, discardedUuids, processKept: false };
     }
 
     // Restart the query with resume to continue the session
@@ -1729,6 +2223,6 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.initializeQuery();
     this.processingDone = this.processMessages();
 
-    return { interrupted: true, discardedUuids };
+    return { interrupted: true, discardedUuids, processKept: false };
   }
 }

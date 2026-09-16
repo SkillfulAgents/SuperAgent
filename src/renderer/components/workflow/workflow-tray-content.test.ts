@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { overlayLiveStatus, progressSummary, workflowProgressSegments } from './workflow-tray-content'
+import { overlayLiveStatus, phaseModels, progressSummary, workflowProgressSegments } from './workflow-tray-content'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 
 function node(over: Partial<WorkflowAgentNode>): WorkflowAgentNode {
@@ -14,6 +14,7 @@ function node(over: Partial<WorkflowAgentNode>): WorkflowAgentNode {
     toolCount: 0,
     tokens: 0,
     durationMs: null,
+    model: null,
     ...over,
   }
 }
@@ -72,6 +73,36 @@ describe('overlayLiveStatus', () => {
       a: { status: 'running', result: null, tokens: 500, toolCount: 3, lastTool: 'Bash sleep 40' },
     })
     expect(out[0]).toMatchObject({ tokens: 500, toolCount: 3, lastTool: 'Bash sleep 40' })
+  })
+})
+
+describe('overlayLiveStatus — labels', () => {
+  it('prefers the wire label over the disk re-join (which can degrade to "agent N")', () => {
+    const out = overlayLiveStatus([node({ label: 'agent 1' })], {
+      a: { status: 'running', result: null, label: 'qualify:closera' },
+    })
+    expect(out[0].label).toBe('qualify:closera')
+  })
+
+  it('keeps the disk label when the wire carries none (reload of a finished run)', () => {
+    const out = overlayLiveStatus([node({ label: 'qualify:moda' })], { a: { status: 'done', result: null } })
+    expect(out[0].label).toBe('qualify:moda')
+  })
+})
+
+describe('phaseModels', () => {
+  it('lists distinct model labels in first-seen order, skipping unknowns', () => {
+    const agents = [
+      node({ model: 'claude-haiku-4-5-20251001' }),
+      node({ model: null }),
+      node({ model: 'haiku-4-5' }), // meta.json slug form of the same model
+      node({ model: 'claude-sonnet-5' }),
+    ]
+    expect(phaseModels(agents)).toEqual(['Haiku 4.5', 'Sonnet 5'])
+  })
+
+  it('is empty when no agent has a known model', () => {
+    expect(phaseModels([node({}), node({})])).toEqual([])
   })
 })
 

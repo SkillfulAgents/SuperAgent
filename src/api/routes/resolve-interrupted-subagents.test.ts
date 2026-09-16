@@ -1,3 +1,4 @@
+import path from 'path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { TransformedItem, TransformedMessage } from '@shared/lib/utils/message-transform'
 
@@ -8,17 +9,37 @@ import type { TransformedItem, TransformedMessage } from '@shared/lib/utils/mess
 const mockReaddir = vi.fn()
 const mockReadFile = vi.fn()
 
+// The tests answer a listing with file names; the agent's file operations
+// list with dirents, so the names are dressed as regular files here.
+async function readdirAsDirents(...args: unknown[]) {
+  const names = (await mockReaddir(...args)) as string[]
+  return names.map((name) => ({
+    name,
+    isFile: () => true,
+    isDirectory: () => false,
+    isSymbolicLink: () => false,
+  }))
+}
+
 vi.mock('fs', () => ({
   default: {
     promises: {
-      readdir: (...args: unknown[]) => mockReaddir(...args),
+      readdir: readdirAsDirents,
       readFile: (...args: unknown[]) => mockReadFile(...args),
     },
   },
   promises: {
-    readdir: (...args: unknown[]) => mockReaddir(...args),
+    readdir: readdirAsDirents,
     readFile: (...args: unknown[]) => mockReadFile(...args),
   },
+}))
+
+// This suite mocks `fs` wholesale, so the real-path containment check, which
+// walks the real filesystem, cannot run here; it has its own real-directory
+// test beside the transcript operations.
+vi.mock('@shared/lib/utils/path-safety', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/utils/path-safety')>()),
+  isRealPathWithinDir: () => true,
 }))
 
 vi.mock('@shared/lib/utils/file-storage', () => ({
@@ -27,7 +48,7 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
   getSessionJsonlPath: vi.fn(),
   readFileOrNull: vi.fn(),
   readJsonlFile: vi.fn(),
-  getAgentWorkspaceDir: vi.fn(),
+  getAgentWorkspaceDir: () => '/mock',
 }))
 
 // Stub every heavy dependency that `agents.ts` imports so the module loads
@@ -36,7 +57,10 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   listAgentsWithStatus: vi.fn(), createAgent: vi.fn(), getAgentWithStatus: vi.fn(),
   getAgent: vi.fn(), updateAgent: vi.fn(), deleteAgent: vi.fn(), agentExists: vi.fn(),
 }))
-vi.mock('@shared/lib/container/container-manager', () => ({ containerManager: {} }))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({}) }
+})
 vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: {} }))
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
@@ -245,7 +269,7 @@ describe('resolveInterruptedSubagents', () => {
     await resolveInterruptedSubagents(items, 'my-agent', 'sess-42')
 
     // getAgentSessionsDir returns '/mock/sessions', so the path should be:
-    expect(mockReaddir).toHaveBeenCalledWith('/mock/sessions/sess-42/subagents')
+    expect(mockReaddir).toHaveBeenCalledWith('/mock/.claude/projects/-workspace/sess-42/subagents', { withFileTypes: true })
   })
 
   // --------------------------------------------------------------------------
@@ -327,10 +351,12 @@ describe('resolveInterruptedSubagents', () => {
 
     await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
 
-    // readFile should NOT have been called for the already-resolved agent
-    const readFileCalls = mockReadFile.mock.calls.map((c: unknown[]) => c[0] as string)
-    expect(readFileCalls.some((p: string) => p.includes('already-resolved'))).toBe(false)
+    // The already-resolved call keeps its own outcome: the sidecar that names
+    // it must not overwrite a completed subagent with a cancelled one.
+    expect(resolvedTc.subagent).toEqual({ agentId: 'already-resolved', status: 'completed' })
     expect(unresolvedTc.subagent).toEqual({ agentId: 'new-one', status: 'cancelled' })
+    // Its sidecar was not read at all: only the unresolved one's was.
+    expect(mockReadFile.mock.calls.map(([file]) => path.basename(String(file)))).toEqual(['agent-new-one.meta.json'])
   })
 
   // --------------------------------------------------------------------------

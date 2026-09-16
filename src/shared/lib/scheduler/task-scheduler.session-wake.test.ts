@@ -19,11 +19,21 @@ const mockCreateSession = vi.fn()
 const mockSendMessage = vi.fn()
 const mockEnsureRunning = vi.fn()
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
-  },
-}))
+// The actor reaches the container client through getClient after start();
+// hand back whatever ensureRunning last resolved to.
+let mockClient: unknown
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning: async (...args: unknown[]) => {
+        mockClient = await mockEnsureRunning(...args)
+        return mockClient
+      },
+      getClient: () => mockClient,
+    }),
+  }
+})
 
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: () => ({
@@ -47,6 +57,11 @@ const mockBroadcastSessionUpdate = vi.fn()
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
+    withSessionSend: async (agentSlug: string, sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
+      mockMarkSessionActive(agentSlug, sessionId)
+      try { return await send() }
+      catch (error) { mockMarkSessionIdle(agentSlug, sessionId); throw error }
+    },
     subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
     markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
     markSessionIdle: (...args: unknown[]) => mockMarkSessionIdle(...args),
@@ -206,7 +221,7 @@ describe('TaskScheduler session wake (resume) branch', () => {
     expect(typeof uuid).toBe('string')
     expect(options).toEqual({ shouldQuery: true })
 
-    expect(mockMarkSessionActive).toHaveBeenCalledWith('sleeping-session-1', 'agent-one')
+    expect(mockMarkSessionActive).toHaveBeenCalledWith('agent-one', 'sleeping-session-1')
     expect(mockMarkTaskExecuted).toHaveBeenCalledWith('wake-task-1', 'sleeping-session-1')
   })
 
@@ -216,12 +231,7 @@ describe('TaskScheduler session wake (resume) branch', () => {
 
     await taskScheduler.triggerExecution()
 
-    expect(mockSubscribeToSession).toHaveBeenCalledWith(
-      'sleeping-session-1',
-      expect.anything(),
-      'sleeping-session-1',
-      'agent-one'
-    )
+    expect(mockSubscribeToSession).toHaveBeenCalledWith('agent-one', 'sleeping-session-1', expect.anything(), 'sleeping-session-1')
   })
 
   it('does not re-subscribe an already-subscribed session', async () => {
@@ -239,7 +249,7 @@ describe('TaskScheduler session wake (resume) branch', () => {
 
     await taskScheduler.triggerExecution()
 
-    expect(mockCancelAwaitingInput).toHaveBeenCalledWith('sleeping-session-1', 'agent-one')
+    expect(mockCancelAwaitingInput).toHaveBeenCalledWith('agent-one', 'sleeping-session-1')
     expect(mockCancelAwaitingInput.mock.invocationCallOrder[0]).toBeLessThan(
       mockSendMessage.mock.invocationCallOrder[0]
     )
@@ -251,7 +261,7 @@ describe('TaskScheduler session wake (resume) branch', () => {
     await taskScheduler.triggerExecution()
 
     expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
-      'agent-one',
+      expect.objectContaining({ slug: 'agent-one' }),
       'sleeping-session-1',
       {
         lastWake: {
@@ -336,7 +346,7 @@ describe('TaskScheduler session wake (resume) branch', () => {
     expect(mockMarkTaskExecuted).not.toHaveBeenCalled()
     // The optimistic active flag is reverted — a failed delivery must not
     // leave the session looking busy until the retry lands.
-    expect(mockMarkSessionIdle).toHaveBeenCalledWith('sleeping-session-1')
+    expect(mockMarkSessionIdle).toHaveBeenCalledWith('agent-one', 'sleeping-session-1')
   })
 
   it('fails a wake once it has been retrying past the retry window', async () => {

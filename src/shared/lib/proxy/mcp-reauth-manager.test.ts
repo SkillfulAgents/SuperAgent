@@ -10,6 +10,8 @@ vi.mock('@shared/lib/container/message-persister', () => ({
 
 import { MCP_REAUTH_TIMEOUT_MS, McpReauthManager } from './mcp-reauth-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { isReauthDismissed } from './reauth-dismissal'
+import { getReplacementMcpId } from './mcp-replacement'
 
 const DETAILS = {
   agentSlug: 'agent-1',
@@ -110,5 +112,45 @@ describe('McpReauthManager', () => {
 
     await rejection
     expect(userInputRequestManager.getOpenRequestsForStore('review')).toHaveLength(0)
+  })
+
+  it('clears the card and the parked request when a user dismisses it', async () => {
+    const promise = manager.requestReauth(DETAILS)
+    const [request] = userInputRequestManager.getAgentScopedRequests('agent-1')
+    const rejection = promise.catch((error: unknown) => error)
+
+    expect(manager.dismiss(request.id, 'agent-1', 'not my server')).toBe(true)
+
+    const error = await rejection
+    expect(isReauthDismissed(error)).toBe(true)
+    expect((error as Error).message).toContain('not my server')
+    expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(0)
+    expect(userInputRequestManager.stats.recentResolutions.at(-1)?.outcome).toBe('cancelled')
+  })
+
+  it('releases replaced calls for this agent while preserving another agent’s wait', async () => {
+    const first = manager.requestReauth(DETAILS).catch(getReplacementMcpId)
+    const second = manager.requestReauth(DETAILS).catch(getReplacementMcpId)
+    const other = manager.requestReauth({ ...DETAILS, agentSlug: 'agent-2' })
+    const [request] = userInputRequestManager.getAgentScopedRequests('agent-1')
+    expect(manager.replaceMcp(request.id, 'agent-2', 'new-mcp')).toBe(false)
+    expect(manager.replaceMcp(request.id, 'agent-1', 'new-mcp')).toBe(true)
+    expect(await Promise.all([first, second])).toEqual(['new-mcp', 'new-mcp'])
+    expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(0)
+    expect(userInputRequestManager.getAgentScopedRequests('agent-2')).toHaveLength(1)
+    expect(userInputRequestManager.getRecentResolution(request.id)?.outcome).toBe('answered')
+    manager.completeMcp('mcp-1')
+    await expect(other).resolves.toBeUndefined()
+  })
+
+  it('refuses a dismissal aimed at another agent', async () => {
+    const promise = manager.requestReauth(DETAILS)
+    const [request] = userInputRequestManager.getAgentScopedRequests('agent-1')
+
+    expect(manager.dismiss(request.id, 'agent-2')).toBe(false)
+    expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
+
+    manager.completeMcp('mcp-1')
+    await expect(promise).resolves.toBeUndefined()
   })
 })

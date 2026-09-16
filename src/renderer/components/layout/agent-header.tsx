@@ -20,10 +20,12 @@ import { useDashboardHeader } from '@renderer/context/dashboard-header-context'
 import { DashboardHeaderActions } from '@renderer/components/dashboards/dashboard-header-actions'
 import type { ContainerStatus } from '@shared/lib/container/types'
 import { ScrollAwareNavTitle } from './scroll-aware-title'
+import { ForkedFromIndicator } from './forked-from-indicator'
 
 interface AgentHeaderProps {
   slug: string
   isViewOnly: boolean
+  isStreaming?: boolean
   startAgent: ReturnType<typeof useStartAgent>
   stopAgent: ReturnType<typeof useStopAgent>
 }
@@ -44,7 +46,7 @@ function BreadcrumbSeparator() {
  * active styling is route-derived (`data-status`) and survives a cold reload
  * with no hand-computed leaf flag.
  */
-export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHeaderProps) {
+export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent, stopAgent }: AgentHeaderProps) {
   const { view } = useRouteLocation()
   const sessionId = view.kind === 'session' ? view.id : null
   const scheduledTaskId = view.kind === 'task' ? view.id : null
@@ -170,7 +172,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
             </>
           )
         })()}
-        {sessionId && session?.invokedByAgentSlug && (
+        {sessionId && (session?.invokedByAgentSlug || session?.isWidgetRepair) && (
           <>
             <BreadcrumbSeparator />
             <AppLink
@@ -191,6 +193,11 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
               sessionId={sessionId}
               sessionName={session?.name || 'Session'}
               agentSlug={slug}
+              activity={{
+                isActive: !!session?.isActive,
+                isAwaitingInput: !!session?.isAwaitingInput,
+                isStreaming,
+              }}
             >
               <span
                 className="text-sm font-light text-foreground cursor-context-menu app-no-drag"
@@ -199,6 +206,13 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
                 {session?.name || 'Loading...'}
               </span>
             </SessionContextMenu>
+            {session?.forkedFromSessionId && (
+              <ForkedFromIndicator
+                agentSlug={slug}
+                sourceSessionId={session.forkedFromSessionId}
+                sourceSessionName={session.forkedFromSessionName}
+              />
+            )}
           </>
         )}
         {dashboardSlug && (

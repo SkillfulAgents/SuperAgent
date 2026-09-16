@@ -830,6 +830,56 @@ describe('oauth', () => {
       const url = new URL(result!.authorizationUrl)
       expect(url.searchParams.get('client_id')).toBe('stored-client-id')
     })
+
+    it('sends the http redirect, not the app scheme, when a client ID is supplied', async () => {
+      setupDiscoveryMocks()
+
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([{ oauthClientId: null, oauthClientSecret: null }])
+      mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
+      // Desktop candidate order: custom app scheme first, http loopback second.
+      const result = await initiateOAuthFlow(
+        'mcp-1',
+        'https://mcp.example.com/mcp',
+        ['superagent://mcp-oauth-callback', 'http://localhost:47891/api/remote-mcps/oauth-callback'],
+        true,
+        undefined,
+        'supplied-client-id'
+      )
+
+      expect(result).not.toBeNull()
+      const url = new URL(result!.authorizationUrl)
+      expect(url.searchParams.get('client_id')).toBe('supplied-client-id')
+      // A hand-registered client_id can only have been paired with an http(s)
+      // redirect in the provider's console, so the app scheme must not be sent.
+      expect(url.searchParams.get('redirect_uri')).toBe(
+        'http://localhost:47891/api/remote-mcps/oauth-callback'
+      )
+    })
+
+    it('keeps the app scheme when a client ID is supplied and no http candidate exists', async () => {
+      setupDiscoveryMocks()
+
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([{ oauthClientId: null, oauthClientSecret: null }])
+      mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
+      const result = await initiateOAuthFlow(
+        'mcp-1',
+        'https://mcp.example.com/mcp',
+        ['superagent://mcp-oauth-callback'],
+        true,
+        undefined,
+        'supplied-client-id'
+      )
+
+      expect(result).not.toBeNull()
+      const url = new URL(result!.authorizationUrl)
+      expect(url.searchParams.get('redirect_uri')).toBe('superagent://mcp-oauth-callback')
+    })
   })
 
   // =========================================================================
@@ -1013,6 +1063,8 @@ describe('oauth', () => {
       mockFetch.mockResolvedValueOnce(
         new Response(JSON.stringify({ client_id: 'dyn-scheme' }), { status: 201 })
       )
+      // Authorize probe: scheme is also accepted at authorize.
+      mockFetch.mockResolvedValueOnce(new Response('ok', { status: 200 }))
 
       const result = await initiateNewServerOAuth(
         'https://mcp.example.com/mcp',
@@ -1031,6 +1083,92 @@ describe('oauth', () => {
         ([reqUrl]) => reqUrl === 'https://auth.example.com/register'
       )
       expect(registerCalls).toHaveLength(1)
+    })
+
+    it.each([
+      {
+        rejection: 'a 4xx response body',
+        response: () =>
+          new Response('Invalid redirect URI.', {
+            status: 400,
+            headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+          }),
+      },
+      {
+        rejection: 'a redirect error parameter',
+        response: () =>
+          new Response(null, {
+            status: 302,
+            headers: {
+              Location:
+                'superagent://mcp-oauth-callback?error=invalid_redirect_uri',
+            },
+          }),
+      },
+    ])(
+      'falls back to the http loopback when authorize rejects the scheme via $rejection',
+      async ({ response }) => {
+        setupNewServerDcrDiscovery()
+        mockFetch.mockResolvedValueOnce(
+          new Response(JSON.stringify({ client_id: 'dyn-scheme' }), { status: 201 })
+        )
+        mockFetch.mockResolvedValueOnce(response())
+        mockFetch.mockResolvedValueOnce(
+          new Response(JSON.stringify({ client_id: 'dyn-loopback' }), { status: 201 })
+        )
+
+        const loopback = 'http://localhost:47891/api/remote-mcps/oauth-callback'
+        const result = await initiateNewServerOAuth(
+          'https://mcp.example.com/mcp',
+          'Canva',
+          ['superagent://mcp-oauth-callback', loopback],
+          true,
+          'user-1'
+        )
+
+        expect(result).not.toBeNull()
+        const url = new URL(result!.authorizationUrl)
+        expect(url.searchParams.get('redirect_uri')).toBe(loopback)
+        expect(url.searchParams.get('client_id')).toBe('dyn-loopback')
+
+        const registerCalls = mockFetch.mock.calls.filter(
+          ([reqUrl]) => reqUrl === 'https://auth.example.com/register'
+        )
+        expect(registerCalls).toHaveLength(2)
+        const authorizeProbes = mockFetch.mock.calls.filter(
+          ([reqUrl]) =>
+            typeof reqUrl === 'string' &&
+            reqUrl.startsWith('https://auth.example.com/authorize')
+        )
+        expect(authorizeProbes).toHaveLength(1)
+        const probed = new URL(authorizeProbes[0][0] as string)
+        expect(probed.searchParams.get('redirect_uri')).toBe(
+          'superagent://mcp-oauth-callback'
+        )
+        expect(probed.searchParams.get('client_id')).toBe('dyn-scheme')
+        expect(probed.searchParams.get('resource')).toBe('https://mcp.example.com')
+      }
+    )
+
+    it('keeps the custom scheme when the authorize probe is inconclusive', async () => {
+      setupNewServerDcrDiscovery()
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ client_id: 'dyn-scheme' }), { status: 201 })
+      )
+      mockFetch.mockRejectedValueOnce(new Error('network down'))
+
+      const result = await initiateNewServerOAuth(
+        'https://mcp.example.com/mcp',
+        'Flaky AS',
+        ['superagent://mcp-oauth-callback', 'http://localhost:47891/api/remote-mcps/oauth-callback'],
+        true,
+        'user-1'
+      )
+
+      expect(result).not.toBeNull()
+      const url = new URL(result!.authorizationUrl)
+      expect(url.searchParams.get('redirect_uri')).toBe('superagent://mcp-oauth-callback')
+      expect(url.searchParams.get('client_id')).toBe('dyn-scheme')
     })
 
     it('uses provided clientId/clientSecret without dynamic registration', async () => {
@@ -1263,6 +1401,7 @@ describe('oauth', () => {
       mockFetch.mockResolvedValueOnce(
         new Response(JSON.stringify({ client_id: 'dyn-scheme' }), { status: 201 })
       )
+      mockFetch.mockResolvedValueOnce(new Response('ok', { status: 200 }))
 
       const initiated = await initiateNewServerOAuth(
         'https://mcp.example.com/mcp',

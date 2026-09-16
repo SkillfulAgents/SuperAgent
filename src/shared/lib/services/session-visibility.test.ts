@@ -24,6 +24,10 @@ describe('isHiddenAutomatedSession', () => {
     expect(isHiddenAutomatedSession({ invokedByAgentSlug: 'caller-agent', promotedToInteractive: true })).toBe(false)
   })
 
+  it('does not hide a forked session (forks are user sessions, not automation)', () => {
+    expect(isHiddenAutomatedSession({ name: 'Pricing (fork)', forkedFromSessionId: 'src-1' })).toBe(false)
+  })
+
   it('is false when automation flags are explicitly false', () => {
     expect(
       isHiddenAutomatedSession({

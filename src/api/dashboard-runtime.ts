@@ -222,6 +222,28 @@ function getSetCookieValues(headers: Headers): string[] {
 }
 
 /** Copy upstream headers while applying browser-visible dashboard scoping. */
+/**
+ * Force a proxied dashboard response into the requesting browser's cache only.
+ * Artifact assets are served under an AgentRead-authorized path but keep the
+ * extensions a CDN caches by default (.js, .css, .png), so passing an upstream
+ * `public` directive through would let a shared cache hand one agent's dashboard
+ * to whoever asks next. Upstream freshness is preserved — only its audience is
+ * narrowed; an upstream that said nothing gets revalidated every time, because a
+ * dashboard is rebuilt in place under unchanging asset names.
+ */
+function privatizeCacheControl(upstreamValue: string | null): string {
+  if (!upstreamValue?.trim()) return 'private, no-cache'
+  const directives = upstreamValue
+    .split(',')
+    .map(directive => directive.trim())
+    .filter(directive => directive && directive.toLowerCase() !== 'public' && directive.toLowerCase() !== 'private')
+  // A bare `public` leaves nothing behind, and `private` alone states no
+  // freshness at all — which a browser answers by inventing its own from
+  // Last-Modified, reusing a bundle the agent has since rebuilt in place.
+  if (directives.length === 0) return 'private, no-cache'
+  return ['private', ...directives].join(', ')
+}
+
 export function dashboardResponseHeaders(
   upstream: Headers,
   basePath: string,
@@ -242,13 +264,17 @@ export function dashboardResponseHeaders(
     headers.append('set-cookie', rewriteDashboardCookiePath(cookie, basePath))
   }
 
+  headers.set('cache-control', privatizeCacheControl(upstream.get('cache-control')))
+
   if (options?.transformedHtml) {
     // fetch transparently decodes upstream bodies; all representation metadata
     // must describe the injected bytes rather than the dashboard's old body.
     headers.delete('content-encoding')
     headers.delete('content-length')
     headers.delete('etag')
-    headers.set('cache-control', 'no-cache')
+    // The injected HTML is not the upstream body, so no upstream freshness
+    // claim applies to it.
+    headers.set('cache-control', 'private, no-cache')
   }
 
   return headers

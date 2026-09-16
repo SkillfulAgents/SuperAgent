@@ -1,7 +1,13 @@
 export const DEFAULT_ACTIVITY_DAYS = 14
 export const MIN_ACTIVITY_DAYS = 7
 export const MAX_ACTIVITY_DAYS = 30
-export const DEFAULT_CRON_ACTIVITY_SLOTS = 18
+/**
+ * Cron slots track the daily window so the two spark charts render the same
+ * number of bars — they sit side by side in the same rows, and mismatched slot
+ * counts made them read as two different components. Note the unit differs:
+ * this is N scheduled runs (however far back the schedule reaches), not N days.
+ */
+export const DEFAULT_CRON_ACTIVITY_SLOTS = DEFAULT_ACTIVITY_DAYS
 
 export type ActivityOutcome = 'succeeded' | 'failed'
 

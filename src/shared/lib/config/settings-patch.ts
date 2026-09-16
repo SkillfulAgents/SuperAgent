@@ -1,3 +1,4 @@
+import { VOICE_PROVIDERS } from '../voice/provider-types'
 import { z } from 'zod'
 import type {
   ApiKeySettings,
@@ -77,6 +78,7 @@ export const appSettingsPatchSchema = z.object({
   warmStartOnType: z.boolean(),
   autoResumeOnUnexpectedDeath: z.boolean(),
   autoDeleteInactiveDays: z.number(),
+  apiLogAutoDeleteDays: z.number().int().nonnegative(),
   setupCompleted: z.boolean(),
   accountProvider: z.enum(['composio', 'nango']),
   hostBrowserProvider: z.enum(['chrome', 'browserbase', 'platform']).nullable(),
@@ -168,7 +170,9 @@ const authSettingsPatchSchema = z.object({
 }).partial().strict()
 
 const voiceSettingsPatchSchema = z.object({
-  sttProvider: z.enum(['deepgram', 'openai', 'platform']),
+  sttProvider: z.enum(VOICE_PROVIDERS),
+  // An id from the provider's catalogue; the route checks it against the provider.
+  ttsVoice: z.string().min(1),
 }).partial().strict()
 
 const computerUseGrantSchema = z.object({

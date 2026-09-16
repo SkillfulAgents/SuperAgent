@@ -43,11 +43,18 @@ vi.mock('@shared/lib/platform-attribution', () => ({
   runWithOptionalUser: (_userId: string | undefined, fn: () => unknown) => fn(),
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: vi.fn(),
-  },
+// Manager-shaped mock behind the container host: the actor reaches an agent's
+// runtime through containerHost.runtime(slug), and the adapter forwards each
+// runtime method here with the slug prepended.
+const containerManager = vi.hoisted(() => ({
+  ensureRunning: vi.fn(),
+  // The actor reaches the client through getClient after start().
+  getClient: () => mockContainerClient,
 }))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock(containerManager) }
+})
 
 vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: vi.fn().mockResolvedValue(true),
@@ -87,6 +94,7 @@ vi.mock('./slack-connector', async (importOriginal) => {
       static generateSystemPrompt = actual.SlackConnector.generateSystemPrompt
       static classifyChatId = actual.SlackConnector.classifyChatId
       constructor() {
+        Object.defineProperty(mockConnector, 'constructor', { value: new.target, configurable: true })
         return mockConnector
       }
     },
@@ -101,6 +109,7 @@ vi.mock('./imessage-connector', async (importOriginal) => {
       static generateSystemPrompt = actual.IMessageConnector.generateSystemPrompt
       static classifyChatId = actual.IMessageConnector.classifyChatId
       constructor() {
+        Object.defineProperty(mockConnector, 'constructor', { value: new.target, configurable: true })
         return mockConnector
       }
     },
@@ -115,6 +124,7 @@ vi.mock('./telegram-connector', async (importOriginal) => {
       static generateSystemPrompt = actual.TelegramConnector.generateSystemPrompt
       static classifyChatId = actual.TelegramConnector.classifyChatId
       constructor() {
+        Object.defineProperty(mockConnector, 'constructor', { value: new.target, configurable: true })
         return mockConnector
       }
     },
@@ -132,7 +142,6 @@ import {
 } from './telegram-connector'
 import { buildIMessageSystemPrompt, classifyIMessageChat } from './imessage-connector'
 import { createChatIntegration } from '@shared/lib/services/chat-integration-service'
-import { containerManager } from '@shared/lib/container/container-manager'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 
 class PromptTestContainerClient extends MockContainerClient {
@@ -392,9 +401,8 @@ describe('chat session system prompt wiring', () => {
   })
 
   it('fails closed through the manager when a connector has no classifier', async () => {
-    const connectorClassSpy = vi.spyOn(chatIntegrationManager, 'getConnectorClass').mockResolvedValue({
-      generateSystemPrompt: TelegramConnector.generateSystemPrompt,
-    })
+    const original = TelegramConnector.classifyChatId
+    TelegramConnector.classifyChatId = undefined as never
     try {
       const args = await startSession('telegram', {
         chatId: '-1001234567890',
@@ -403,7 +411,7 @@ describe('chat session system prompt wiring', () => {
       })
       expect(args.initialMessage).toBe('hey')
     } finally {
-      connectorClassSpy.mockRestore()
+      TelegramConnector.classifyChatId = original
     }
   })
 })
