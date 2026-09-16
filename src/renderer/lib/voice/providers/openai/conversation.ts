@@ -34,7 +34,7 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
           ? { type: 'cancel' } : { type: 'submit', text: request.text })
         return result.accepted
       },
-    }, context.history)
+    }, context.history, context.agentSlug)
   }
 
   get analyser() { return this.conversation.analyser }

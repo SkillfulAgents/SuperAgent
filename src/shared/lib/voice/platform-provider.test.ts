@@ -58,6 +58,16 @@ describe('PlatformVoiceProvider', () => {
     expect(provider.getConversationEngine()).toBe('openai-live')
   })
 
+  it('passes agent context through the platform Live session instructions', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ session: { id: 'live_1' }, transport: { sdp: 'answer' } })))
+    await provider.createLiveSession('offer', [], {
+      name: 'Ada', instructions: 'Speak in Spanish.', capabilityPolicies: { subagents: 'allow', workflows: 'block' },
+    })
+    expect(lastCall().url).toBe('https://proxy.test/v1/openai/live/sessions')
+    expect(lastCall().body.session.instructions).toContain('Speak in Spanish.')
+    expect(lastCall().body.session.instructions).toContain('workflows: disabled')
+  })
+
   it('transcribes through the proxy', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ text: 'hello' })))
     await expect(provider.transcribe(Buffer.from([1, 2]), 'audio/ogg')).resolves.toBe('hello')
