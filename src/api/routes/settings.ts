@@ -516,6 +516,11 @@ settings.put(
 
       updateSettings(newSettings)
 
+      // A new auto-sleep timeout applies to the containers already up.
+      if (body.app?.autoSleepTimeoutMinutes !== undefined) {
+        containerHost.rearmIdleAlarms()
+      }
+
       // If account provider settings changed, re-register providers
       if (body.apiKeys?.nangoSecretKey !== undefined || body.app?.accountProvider !== undefined) {
         try {

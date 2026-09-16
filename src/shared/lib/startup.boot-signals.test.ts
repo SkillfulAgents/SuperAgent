@@ -34,7 +34,6 @@ const EXPECTED_MARKERS = [
   '[ContainerHost] Starting health monitor',
   '[TaskScheduler] Scheduler started',
   '[AgentIntegrationManager] Started',
-  '[AutoSleepMonitor] Monitor started',
   '[SessionAutoDeleteMonitor] Monitor started',
   '[AccountSync] Service started',
   '[PlatformService] Started',

@@ -107,9 +107,6 @@ vi.mock('./scheduler/platform-notifications-manager', () => ({
 vi.mock('./agent-integrations/agent-integration-manager', () => ({
   agentIntegrationManager: { start: () => chatIntegrationStart(), stop: vi.fn() },
 }))
-vi.mock('./scheduler/auto-sleep-monitor', () => ({
-  autoSleepMonitor: { start: () => Promise.resolve(), stop: vi.fn() },
-}))
 vi.mock('./scheduler/session-auto-delete-monitor', () => ({
   sessionAutoDeleteMonitor: { start: () => Promise.resolve(), stop: vi.fn() },
 }))

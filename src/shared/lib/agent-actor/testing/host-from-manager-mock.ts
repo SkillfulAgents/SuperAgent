@@ -17,8 +17,13 @@
  *   })
  *
  * Only methods present on the mock are forwarded; anything else is undefined,
- * exactly as it was on the partial manager mock.
+ * exactly as it was on the partial manager mock — except the runtime's
+ * activity clock (`keepAlive`, `noteSessionActivity`, `lastActivityAt`,
+ * `idleSince`), which every runtime has and which the actor marks on every
+ * session write.
  */
+
+import { ActivityClock } from '@shared/lib/container/activity-clock'
 
 type AnyFn = (...args: unknown[]) => unknown
 type ManagerShapedMock = Record<string, unknown>
@@ -34,9 +39,10 @@ const PER_AGENT_METHODS = [
   'restartContainer',
   'syncAgentStatus',
   'getHealthWarnings',
-  'getContainerStartTime',
   'keepAlive',
-  'getLastKeepAlive',
+  'noteSessionActivity',
+  'lastActivityAt',
+  'idleSince',
   'handleUnexpectedDeath',
 ] as const
 
@@ -62,6 +68,7 @@ const HOST_METHODS = [
   'stopHealthMonitor',
   'stopAll',
   'stopAllSync',
+  'rearmIdleAlarms',
   'workspaceHostPath',
   'agentHostPath',
 ] as const
@@ -78,7 +85,20 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
   const runtimeFor = (slug: string): Record<string, unknown> => {
     let runtime = runtimes.get(slug)
     if (runtime) return runtime
-    runtime = { slug, hasClient: () => true, isStopping: () => false, isStarting: () => false }
+    // Every real runtime carries its activity clock, and every session write
+    // the actor makes marks it; a manager-shaped mock predates the clock, so
+    // the runtime gets a real one unless the mock spells its own.
+    const activity = new ActivityClock()
+    runtime = {
+      slug,
+      hasClient: () => true,
+      isStopping: () => false,
+      isStarting: () => false,
+      keepAlive: () => activity.keepAlive(),
+      noteSessionActivity: (at?: number) => activity.sessionActivity(at),
+      lastActivityAt: () => activity.lastActivityAt(),
+      idleSince: () => activity.lastActivityAt() ?? null,
+    }
     for (const name of PER_AGENT_METHODS) {
       const fn = manager[name]
       if (typeof fn === 'function') {
@@ -110,6 +130,8 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
   // The registry attaches the agents' workspaces when it is created; a mock
   // host has no runtimes that would read them, so it only has to accept them.
   if (typeof host.attachAgentWorkspaces !== 'function') host.attachAgentWorkspaces = () => {}
+  // A mock host has no alarms to re-arm; it only has to accept the call.
+  if (typeof host.rearmIdleAlarms !== 'function') host.rearmIdleAlarms = () => {}
   // `onBeforeContainerStop` is a property the app assigns; share it with the mock.
   Object.defineProperty(host, 'onBeforeContainerStop', {
     get: () => manager.onBeforeContainerStop,

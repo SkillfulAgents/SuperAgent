@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { WebSocket } from 'ws'
 import type { PendingUserInputRequest, UserInputRequestOutcome } from '@shared/lib/user-input/request-schema'
 import { createAgentRegistry } from './registry'
-import type { LocalActorDeps } from './local-agent-actor'
+import type { LocalActorDeps, LocalAgentActor } from './local-agent-actor'
 
 // The singleton registry wires the real manager, persister, and input
 // registries. These tests build their own registry from fakes, so the real
@@ -102,6 +102,9 @@ function fakeDeps() {
     getClient: vi.fn().mockReturnValue(client),
     ensureRunning: vi.fn().mockResolvedValue(client),
     getCachedInfo: vi.fn().mockReturnValue({ status: 'running', port: 4321 }),
+    keepAlive: vi.fn(),
+    noteSessionActivity: vi.fn(),
+    idleSince: vi.fn<() => number | null>().mockReturnValue(null),
   })
   const runtimes = new Map<string, ReturnType<typeof fakeRuntime>>()
   const containerHost = {
@@ -137,9 +140,13 @@ function fakeDeps() {
   }
   const appendAssistantEntry = vi.fn()
   const recordSessionActivity = vi.fn()
+  const messagePersister = {
+    attachSessionStores: vi.fn(),
+    markSessionIdle: vi.fn(),
+  }
   const deps = {
     containerHost,
-    messagePersister: { attachSessionStores: vi.fn() },
+    messagePersister,
     userInputRequestManager: inputManager,
     reviewManager,
     computerUsePermissionManager: {},
@@ -157,6 +164,7 @@ function fakeDeps() {
   return {
     deps: deps as unknown as LocalActorDeps,
     containerHost,
+    messagePersister,
     runtimes,
     client,
     reviewManager,
@@ -381,6 +389,33 @@ describe('createAgentRegistry', () => {
       expect(fake.recordSessionActivity).toHaveBeenCalledWith(store, 's1')
       actor.sessions.recordActivity('s1', 1234)
       expect(fake.recordSessionActivity).toHaveBeenCalledWith(store, 's1', 1234)
+    })
+  })
+
+  describe('container.idleSince is the actor\'s own clock', () => {
+    it('is answered by this agent\'s runtime', () => {
+      fake.containerHost.runtime('a').idleSince.mockReturnValue(1_000)
+      const registry = createAgentRegistry(fake.deps)
+      expect(registry.get('a').container.idleSince()).toBe(1_000)
+      expect(registry.get('b').container.idleSince()).toBeNull()
+    })
+
+    it('hears of every session write through the store and marks the runtime', () => {
+      const registry = createAgentRegistry(fake.deps)
+      const actor = registry.get('a') as LocalAgentActor
+      actor.store.onActivity?.(5_000)
+      expect(fake.runtimes.get('a')?.noteSessionActivity).toHaveBeenCalledWith(5_000)
+      // Another agent's store marks another agent's runtime.
+      ;(registry.get('b') as LocalAgentActor).store.onActivity?.(6_000)
+      expect(fake.runtimes.get('b')?.noteSessionActivity).toHaveBeenCalledWith(6_000)
+      expect(fake.runtimes.get('a')?.noteSessionActivity).toHaveBeenCalledTimes(1)
+    })
+
+    it('sessions.markIdle marks the runtime before the session goes idle', () => {
+      const actor = createAgentRegistry(fake.deps).get('a')
+      actor.sessions.markIdle('s1')
+      expect(fake.runtimes.get('a')?.noteSessionActivity).toHaveBeenCalledTimes(1)
+      expect(fake.messagePersister.markSessionIdle).toHaveBeenCalledWith('a', 's1')
     })
   })
 
