@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser-use feature tested: agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported the result with HTTP 200 status.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully with Gamut application displaying the sidebar with available agents including \"QA-20260916-214813-patu\"",
+    "Step 2: Clicked on \"QA-20260916-214813-patu\" agent in the sidebar — Agent page loaded successfully, showing the chat interface with message input field, agent configuration, triggers, connections, and skills panels on the right side",
+    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered into the textbox and sent using the send button, triggering agent execution",
+    "Step 4: Waited for agent to complete task (within 3-minute timeout) — Agent finished working in 8 seconds after making 3 tool calls and consuming 148,082 tokens",
+    "Step 5: Verified response mentions \"Example Domain\" — Agent successfully returned response: \"The page title is \"Example Domain\" (HTTP 200). Browser closed.\" confirming the browser tool executed correctly and retrieved the correct page title"
+  ],
+  "bugs": [],
+  "durationMs": 76992,
+  "sessionId": "87d3f780-24c9-4a8e-9012-04f90d5f62f2",
+  "cost": {
+    "inputTokens": 410,
+    "outputTokens": 12497,
+    "cacheCreationTokens": 86845,
+    "cacheReadTokens": 1275882,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.299039
+  }
+}
