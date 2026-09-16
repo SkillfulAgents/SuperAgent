@@ -1,10 +1,1 @@
-{
-  "src/api/index.ts": 1,
-  "src/api/middleware/auth-enforcement.ts": 2,
-  "src/api/middleware/auth.ts": 1,
-  "src/api/routes/admin-users.ts": 7,
-  "src/api/routes/mcp-reauth.ts": 2,
-  "src/api/routes/policies.ts": 2,
-  "src/api/routes/profile.ts": 1,
-  "src/api/routes/settings.ts": 1
-}
+{}

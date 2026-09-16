@@ -35,7 +35,7 @@ profile.get('/images/:filename', async (c) => {
   const filename = avatarFilenameSchema.safeParse(c.req.param('filename'))
   if (!filename.success) return c.notFound()
   // Only check existence so the avatar index covers the entire lookup.
-  const activeAvatar = db.select({ exists: sql`1` }).from(user)
+  const activeAvatar = await db.select({ exists: sql`1` }).from(user)
     .where(eq(user.avatarOverride, `/api/profile/images/${filename.data}`)).limit(1).get()
   if (!activeAvatar) return c.notFound()
   try {

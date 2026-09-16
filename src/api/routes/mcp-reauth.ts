@@ -16,22 +16,22 @@ import { AgentUser, getAgentId } from '../middleware/auth'
 const mcpReauth = new Hono()
 const replacementSchema = z.object({ remoteMcpIds: z.array(z.string().min(1)).length(1) })
 
-function loadRequestedMcp(requestId: string, agentSlug: string) {
+async function loadRequestedMcp(requestId: string, agentSlug: string) {
   // The actor only hands back this agent's requests; another agent's reads as absent.
   const request = agentRegistry.get(agentSlug).inputs.get(requestId)
   if (request?.kind !== 'mcp_reauth_required' || !request.payload.mcpId) return null
-  return db.select({ mapping: agentRemoteMcps, mcp: remoteMcpServers })
+  return (await db.select({ mapping: agentRemoteMcps, mcp: remoteMcpServers })
     .from(agentRemoteMcps).innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
     .where(and(eq(agentRemoteMcps.agentSlug, agentSlug), eq(remoteMcpServers.id, request.payload.mcpId)))
-    .get() ?? null
+    .get()) ?? null
 }
 
 // Prefill from the caller's own connection or the public catalog. Never expose
 // another owner's custom URL, which may contain credentials in its query string.
-mcpReauth.get('/:id/reauth-request/:requestId/replace-mcp', AgentUser(), (c) => {
-  const current = loadRequestedMcp(c.req.param('requestId'), getAgentId(c))
+mcpReauth.get('/:id/reauth-request/:requestId/replace-mcp', AgentUser(), async (c) => {
+  const current = await loadRequestedMcp(c.req.param('requestId'), getAgentId(c))
   if (!current) return c.json({ error: 'Reconnection request is no longer available' }, 404)
-  const ownMcps = db.select().from(remoteMcpServers).where(ownerScope(c, remoteMcpServers.userId)).all()
+  const ownMcps = await db.select().from(remoteMcpServers).where(ownerScope(c, remoteMcpServers.userId)).all()
   const ownMatch = ownMcps.find((mcp) => mcp.id !== current.mcp.id && sameMcpEndpoint(mcp.url, current.mcp.url))
   const catalogMatch = COMMON_MCP_SERVERS.find((mcp) => sameMcpEndpoint(mcp.url, current.mcp.url))
   const url = ownMatch?.url ?? catalogMatch?.url ?? (isOwnedByCaller(c, current.mcp) ? current.mcp.url : '')
@@ -45,7 +45,7 @@ mcpReauth.post('/:id/reauth-request/:requestId/replace-mcp', AgentUser(), async 
   if (!parsed.success) return c.json({ error: 'Select one replacement MCP connection' }, 400)
 
   try {
-    const current = loadRequestedMcp(requestId, agentSlug)
+    const current = await loadRequestedMcp(requestId, agentSlug)
     if (!current) return c.json({ error: 'Reconnection request is no longer available' }, 404)
     const replacementId = parsed.data.remoteMcpIds[0]
     const replacement = await db.select().from(remoteMcpServers).where(and(
@@ -57,7 +57,7 @@ mcpReauth.post('/:id/reauth-request/:requestId/replace-mcp', AgentUser(), async 
     }
     if (replacement.status !== 'active') return c.json({ error: 'Reconnect the replacement MCP before granting access' }, 409)
     // The read above yielded; make sure the card did not settle meanwhile.
-    if (!loadRequestedMcp(requestId, agentSlug)) return c.json({ error: 'Reconnection request is no longer available' }, 404)
+    if (!(await loadRequestedMcp(requestId, agentSlug))) return c.json({ error: 'Reconnection request is no longer available' }, 404)
 
     // The write claims the original mapping: the replacement is assigned only
     // while it still exists, and deleting it is what makes this request the
