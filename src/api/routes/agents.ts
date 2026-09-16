@@ -12,6 +12,7 @@ import { zValidator } from '@hono/zod-validator'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import accountReauth from './account-reauth'
 import mcpReauth from './mcp-reauth'
+import { agentMemoryRoutes } from './agent-memories'
 import { getLlmPolyfillJs } from '../llm-polyfill'
 import {
   dashboardMountPath,
@@ -7344,6 +7345,7 @@ const MAX_DISMISS_REASON_LENGTH = 500
 
 agents.route('/', accountReauth)
 agents.route('/', mcpReauth)
+agents.route('/', agentMemoryRoutes)
 
 // POST /api/agents/:id/reauth-request/:requestId/dismiss - Give up on a parked
 // re-authentication card.

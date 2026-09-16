@@ -1,3 +1,4 @@
+export { MemoryError, MAX_MEMORY_BYTES } from './memory-schema'
 export { agentRegistry } from './registry'
 export { containerHost, type ContainerHost } from './host'
 export { agentCatalog } from './agent-catalog'
@@ -42,6 +43,7 @@ export type {
   McpReauthOps,
   MediaBlob,
   MessageOps,
+  MemoryOps,
   OpenFile,
   SubagentRef,
   OpenWebSocketInit,

@@ -17,6 +17,7 @@ import type {
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import { WebSocket } from 'ws'
+import { createMemoryOps } from './memory-ops'
 import { createLocalSessionStore } from './local-session-store'
 import { transcriptPath, type SessionStore } from './session-store'
 import type {
@@ -29,6 +30,7 @@ import type {
   InputOps,
   McpReauthOps,
   MessageOps,
+  MemoryOps,
   ReviewOps,
   SessionOps,
   UsageOps,
@@ -66,9 +68,9 @@ export interface LocalActorDeps {
 /**
  * An agent whose container and files are managed by this process.
  *
- * Every method is a passthrough: one actor method, one underlying call, with
- * the agent's session store supplied where the call reads or edits stored
- * sessions and the slug where it addresses in-memory state. The ops are
+ * Runtime methods delegate with the agent's store or slug. Storage
+ * capabilities such as memories compose operations over this actor's files.
+ * The ops are
  * closures rather than class methods so a caller may destructure them
  * (`const { send } = actor.messages`).
  */
@@ -79,6 +81,7 @@ export class LocalAgentActor implements AgentActor {
   readonly inputs: InputOps
   readonly usage: UsageOps
   readonly files: FileOps
+  readonly memories: MemoryOps
   readonly config: ConfigOps
   /** Where this agent's sessions are: the files, the config documents, the transcripts directory. */
   readonly store: SessionStore
@@ -92,6 +95,7 @@ export class LocalAgentActor implements AgentActor {
       onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
     })
     this.files = this.store.files
+    this.memories = createMemoryOps(this.files)
     this.config = this.store.config
     this.container = createContainerOps(slug, deps)
     this.sessions = createSessionOps(slug, this.store, deps)

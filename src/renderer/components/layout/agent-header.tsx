@@ -54,6 +54,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
   const inboundXAgentOpen = view.kind === 'inboundXAgent'
   const completedTasksOpen = view.kind === 'completedTasks'
   const apiLogsOpen = view.kind === 'apiLogs'
+  const memoriesOpen = view.kind === 'memories'
   const secretsOpen = view.kind === 'secrets'
   const xAgentPermissionsOpen = view.kind === 'xAgentPermissions'
   const connectionsOpen = view.kind === 'connections'
@@ -230,6 +231,12 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
           <>
             <BreadcrumbSeparator />
             <span className="text-sm font-light text-foreground">API Logs</span>
+          </>
+        )}
+        {memoriesOpen && (
+          <>
+            <BreadcrumbSeparator />
+            <span className="text-sm font-light text-foreground">Memories</span>
           </>
         )}
         {secretsOpen && (

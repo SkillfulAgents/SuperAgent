@@ -39,6 +39,13 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
             }}
             testId="home-x-agent-permissions-open-page"
           />
+          <ExtrasButton
+            label="Memories"
+            onClick={() => {
+              void navigate({ to: '/agents/$slug/memories', params: { slug: agentSlug } })
+            }}
+            testId="home-memories-open-page"
+          />
           <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
           <ExtrasButton
             label="Agent Directory"

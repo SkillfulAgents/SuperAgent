@@ -2,14 +2,14 @@
  * Agent actor — the single entry point for everything that acts on one agent.
  *
  * `agentRegistry.get(slug)` returns an `AgentActor`: a handle with typed method
- * groups (`container`, `sessions`, `messages`, `inputs`, `files`). Consumers
+ * groups (`container`, `sessions`, `messages`, `inputs`, `files`, `memories`). Consumers
  * outside `src/shared/lib/container/**` and this package talk to an agent only
  * through this handle; the container manager, message persister, and the
  * input/review/permission registries are internal to it.
  *
- * Every method here is a one-to-one passthrough to the underlying call. The
- * comment on each method names that call. Where a route composes several
- * calls today it composes the same actor methods; nothing is folded together.
+ * Runtime methods delegate to the underlying call named by their comments.
+ * Storage capabilities own their agent-scoped behavior, including memory
+ * validation and save serialization; callers do not need the storage layout.
  *
  * Two methods are synchronous snapshots of in-memory state —
  * `container.status()` and `sessions.activity()` — alongside the other
@@ -46,6 +46,7 @@ import type {
 import type { MediaRef } from '@shared/lib/services/session-media'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import type { ConfigDoc, ConfigDocId } from './config-schema'
+import type { AgentMemoryDocument, AgentMemoryEntry } from '@shared/lib/types/memory'
 import type {
   AutomationStatusResult,
   ListSessionsOptions,
@@ -90,7 +91,18 @@ export interface AgentActor {
   readonly inputs: InputOps
   readonly usage: UsageOps
   readonly files: FileOps
+  readonly memories: MemoryOps
   readonly config: ConfigOps
+}
+
+/** The agent's persistent memories. Paths are relative to its memory directory. */
+export interface MemoryOps {
+  /** All Markdown memories, including the index; an absent directory is empty. */
+  list(): Promise<AgentMemoryEntry[]>
+  /** One complete memory and its revision; absent files raise MemoryError. */
+  read(path: string): Promise<AgentMemoryDocument>
+  /** Validate and save an existing memory if its revision still matches. */
+  save(path: string, content: string, revision: string): Promise<AgentMemoryDocument>
 }
 
 /** Where an agent's workspace lives. */

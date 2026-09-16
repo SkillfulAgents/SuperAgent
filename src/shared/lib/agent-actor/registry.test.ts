@@ -201,6 +201,25 @@ describe('createAgentRegistry', () => {
     expect(fake.containerHost.runtime).not.toHaveBeenCalled()
   })
 
+
+  it('binds memory operations to each actor without starting a container', async () => {
+    const registry = createAgentRegistry(fake.deps)
+    const a = registry.get('a')
+    const b = registry.get('b')
+    const resolveA = vi.spyOn(a.files, 'resolve').mockResolvedValue(null)
+    const resolveB = vi.spyOn(b.files, 'resolve').mockResolvedValue(null)
+    const { list, read, save } = a.memories
+    expect(await list()).toEqual([])
+    expect(resolveA).toHaveBeenCalledWith('.claude/projects/-workspace/memory')
+    expect(resolveB).not.toHaveBeenCalled()
+    await expect(read('missing.md')).rejects.toMatchObject({ status: 404 })
+    await expect(save('missing.md', 'draft', 'revision')).rejects.toMatchObject({ status: 404 })
+    expect(await b.memories.list()).toEqual([])
+    expect(resolveB).toHaveBeenCalledTimes(1)
+    expect(a.memories).toBe(registry.get('a').memories)
+    expect(a.memories).not.toBe(b.memories)
+    expect(fake.containerHost.runtime).not.toHaveBeenCalled()
+  })
   it('gives the container host a way into each agent workspace through the actors', async () => {
     const registry = createAgentRegistry(fake.deps)
     expect(fake.containerHost.attachAgentWorkspaces).toHaveBeenCalledTimes(1)
