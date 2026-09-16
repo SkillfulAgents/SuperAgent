@@ -484,5 +484,13 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1789518638375,
     "hash": "6906152608f597f14f944a084192ab955682842dd8244813398b250388a3df3c"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `slack_thread_state` (\n\t`integration_id` text PRIMARY KEY NOT NULL,\n\t`bot_user_id` text NOT NULL,\n\t`active_threads` text NOT NULL,\n\tFOREIGN KEY (`integration_id`) REFERENCES `chat_integrations`(`id`) ON UPDATE no action ON DELETE cascade\n);\n"
+    ],
+    "bps": true,
+    "folderMillis": 1789574400000,
+    "hash": "0d2efc5a8980924af6cee3527d6a3271144086f77256dff2907f499b7e61e02c"
   }
 ]
