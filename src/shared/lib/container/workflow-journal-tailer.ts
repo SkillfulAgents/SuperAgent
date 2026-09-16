@@ -1,5 +1,4 @@
-import * as path from 'path'
-import { promises as fs } from 'fs'
+import type { FileOps } from '@shared/lib/agent-actor/types'
 import { JournalLineSchema, displayAgentResult } from '../workflows/workflow-schemas'
 
 /**
@@ -16,8 +15,9 @@ export interface WorkflowAgentUpdate {
 
 /**
  * A dynamic workflow's internal agents emit nothing on the SDK wire — their
- * lifecycle is written only to `journal.jsonl` on disk. This host-side tailer
- * cheaply polls that one local file while the workflow runs and pushes a
+ * lifecycle is written only to `journal.jsonl` in the workspace. This
+ * host-side tailer cheaply polls that one small file through the agent's
+ * file operations while the workflow runs and pushes a
  * `workflow_agent_updated` SSE per new `started`/`result` line, so the drawer +
  * working indicator update live without the renderer polling an HTTP route.
  *
@@ -28,26 +28,17 @@ export class WorkflowJournalTailer {
   private timer: ReturnType<typeof setInterval> | null = null
   private polling = false
   private readonly seen = new Set<string>()
-  private readonly journalPath: string
 
   constructor(
     private readonly opts: {
-      sessionsDir: string
-      sessionId: string
+      files: FileOps
+      /** Workspace path of the run's `journal.jsonl`. */
+      journalPath: string
       runId: string
       emit: (update: WorkflowAgentUpdate) => void
       intervalMs?: number
     }
-  ) {
-    this.journalPath = path.join(
-      opts.sessionsDir,
-      opts.sessionId,
-      'subagents',
-      'workflows',
-      opts.runId,
-      'journal.jsonl'
-    )
-  }
+  ) {}
 
   start(): void {
     if (this.timer) return
@@ -75,11 +66,12 @@ export class WorkflowJournalTailer {
     try {
       let raw: string
       try {
-        raw = await fs.readFile(this.journalPath, 'utf8')
+        const bytes = await this.opts.files.getDoc(this.opts.journalPath)
+        if (bytes === null) return // journal not written yet (agent just launched) — try again next tick
+        raw = Buffer.from(bytes).toString('utf8')
       } catch {
-        return // journal not written yet (agent just launched) — try again next tick
+        return
       }
-      if (typeof raw !== 'string') return
       for (const line of raw.split('\n')) {
         const trimmed = line.trim()
         if (!trimmed) continue

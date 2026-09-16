@@ -194,20 +194,20 @@ describe('TaskScheduler duplicate execution guard', () => {
 
     expect(mockGetSessionForScheduledExecution).toHaveBeenNthCalledWith(
       1,
-      'agent-one',
+      expect.objectContaining({ slug: 'agent-one' }),
       'task-1',
       scheduledExecutionAt,
     )
     expect(mockGetSessionForScheduledExecution).toHaveBeenNthCalledWith(
       2,
-      'agent-one',
+      expect.objectContaining({ slug: 'agent-one' }),
       'task-1',
       scheduledExecutionAt,
     )
     expect(mockCreateSession).toHaveBeenCalledTimes(1)
     expect(mockEnsureRunning).toHaveBeenCalledTimes(1)
     expect(mockRegisterSession).toHaveBeenCalledWith(
-      'agent-one',
+      expect.objectContaining({ slug: 'agent-one' }),
       'container-session-1',
       'Daily report',
       expect.objectContaining({

@@ -15,19 +15,22 @@ const FIXTURE_ROOT = path.join(
 const SID = 'd63a9cbc-2f5e-44dd-8017-231ac99bef35'
 const RUN = 'wf_818f758a-c17'
 
-// Auth is a passthrough; getAgentSessionsDir points at the real fixture so the
-// routes read genuine on-disk workflow artifacts (readJsonlFile stays real).
-const mockSessionsDir = { value: FIXTURE_ROOT }
+// Auth is a passthrough; the fixture is the agent's workspace and its
+// transcripts directory at once, so the routes read genuine on-disk workflow
+// artifacts through the agent's file operations.
 vi.mock('../middleware/auth', () => ({
   AgentRead: () => async (_c: unknown, next: () => Promise<void>) => next(),
 }))
+vi.mock('@shared/lib/agent-actor/session-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/agent-actor/session-store')>()),
+  CLI_TRANSCRIPTS_DIR: '',
+}))
+const workspaceRoot = { value: FIXTURE_ROOT }
 vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@shared/lib/utils/file-storage')>()
   return {
     ...actual,
-    getAgentSessionsDir: () => mockSessionsDir.value,
-    // The sessions directory sits inside the workspace; the real-path check is anchored there.
-    getAgentWorkspaceDir: () => path.dirname(mockSessionsDir.value),
+    getAgentWorkspaceDir: () => workspaceRoot.value,
   }
 })
 
@@ -101,8 +104,8 @@ describe('workflow agent-messages route', () => {
     )
     await fs.promises.writeFile(path.join(runDir, 'agent-bigagent.jsonl'), lines.join('\n'))
 
-    const previousDir = mockSessionsDir.value
-    mockSessionsDir.value = tmpRoot
+    const previousDir = workspaceRoot.value
+    workspaceRoot.value = tmpRoot
     try {
       const res = await get(
         `/api/agents/my-agent/sessions/${SID}/workflows/${RUN}/agents/bigagent/messages`
@@ -113,7 +116,7 @@ describe('workflow agent-messages route', () => {
       expect(body[0].content.text).toContain('entry 0')
       expect(body[799].content.text).toContain('entry 799')
     } finally {
-      mockSessionsDir.value = previousDir
+      workspaceRoot.value = previousDir
       await fs.promises.rm(tmpRoot, { recursive: true, force: true })
     }
   })

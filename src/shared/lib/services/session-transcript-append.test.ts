@@ -4,6 +4,7 @@ import * as path from 'path'
 import * as os from 'os'
 
 import { appendInformationalEntry } from './session-transcript-append'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
 describe('appendInformationalEntry', () => {
   let testDir: string
@@ -44,7 +45,7 @@ describe('appendInformationalEntry', () => {
   }
 
   it('creates the file (and parent dirs) when the transcript does not exist yet', async () => {
-    await appendInformationalEntry('test-agent', 'sess-1', {
+    await appendInformationalEntry(createLocalSessionStore('test-agent'), 'sess-1', {
       uuid: 'info-1',
       content: 'prompt blocked',
       level: 'warning',
@@ -67,7 +68,7 @@ describe('appendInformationalEntry', () => {
     await fs.promises.mkdir(sessionsDir, { recursive: true })
     await fs.promises.writeFile(jsonlPath('sess-1'), '')
 
-    await appendInformationalEntry('test-agent', 'sess-1', { uuid: 'info-1', content: 'note' })
+    await appendInformationalEntry(createLocalSessionStore('test-agent'), 'sess-1', { uuid: 'info-1', content: 'note' })
     expect((await readLines('sess-1')).length).toBe(1)
   })
 
@@ -75,7 +76,7 @@ describe('appendInformationalEntry', () => {
     await fs.promises.mkdir(sessionsDir, { recursive: true })
     await fs.promises.writeFile(jsonlPath('sess-1'), transcriptLine('other-uuid') + '\n')
 
-    await appendInformationalEntry('test-agent', 'sess-1', { uuid: 'info-1', content: 'note' })
+    await appendInformationalEntry(createLocalSessionStore('test-agent'), 'sess-1', { uuid: 'info-1', content: 'note' })
 
     const lines = await readLines('sess-1')
     expect(lines.length).toBe(2)
@@ -87,7 +88,7 @@ describe('appendInformationalEntry', () => {
     const original = transcriptLine('info-1') + '\n'
     await fs.promises.writeFile(jsonlPath('sess-1'), original)
 
-    await appendInformationalEntry('test-agent', 'sess-1', { uuid: 'info-1', content: 'dupe' })
+    await appendInformationalEntry(createLocalSessionStore('test-agent'), 'sess-1', { uuid: 'info-1', content: 'dupe' })
 
     expect(await fs.promises.readFile(jsonlPath('sess-1'), 'utf-8')).toBe(original)
   })
@@ -99,7 +100,7 @@ describe('appendInformationalEntry', () => {
       transcriptLine('old-entry', 1_200_000) + '\n' + transcriptLine('info-1') + '\n'
     await fs.promises.writeFile(jsonlPath('sess-1'), content)
 
-    await appendInformationalEntry('test-agent', 'sess-1', { uuid: 'info-1', content: 'dupe' })
+    await appendInformationalEntry(createLocalSessionStore('test-agent'), 'sess-1', { uuid: 'info-1', content: 'dupe' })
 
     expect((await readLines('sess-1')).length).toBe(2)
   })
@@ -115,7 +116,7 @@ describe('appendInformationalEntry', () => {
       transcriptLine('info-1') + '\n' + transcriptLine('padding-entry', 1_500_000) + '\n'
     await fs.promises.writeFile(jsonlPath('sess-1'), content)
 
-    await appendInformationalEntry('test-agent', 'sess-1', { uuid: 'info-1', content: 'dupe' })
+    await appendInformationalEntry(createLocalSessionStore('test-agent'), 'sess-1', { uuid: 'info-1', content: 'dupe' })
 
     const lines = await readLines('sess-1')
     expect(lines.length).toBe(3)

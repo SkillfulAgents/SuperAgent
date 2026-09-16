@@ -9,7 +9,7 @@ import {
 import { Loader2 } from 'lucide-react'
 import { VoiceAgent } from '@renderer/components/ui/voice-agent'
 import { apiFetch } from '@renderer/lib/api'
-import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
+import type { VoiceAgentConfig } from '@renderer/lib/voice/contracts/voice-agent'
 import type { ApiMessage } from '@shared/lib/types/api'
 
 interface VoiceAgentFeedbackDialogProps {

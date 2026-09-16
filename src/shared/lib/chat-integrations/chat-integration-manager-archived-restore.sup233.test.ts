@@ -87,6 +87,10 @@ import {
   listActiveChatIntegrationSessions,
 } from '@shared/lib/services/chat-integration-session-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+
+// The registry attaches the real stores; these tests drive the persister alone.
+messagePersister.attachSessionStores((slug) => createLocalSessionStore(slug))
 
 describe('SUP-233 reconnect restore ignores archived sessions', () => {
   beforeEach(() => {

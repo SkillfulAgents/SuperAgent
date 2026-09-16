@@ -20,9 +20,11 @@ import {
 } from '@shared/lib/services/notification-service'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { getAgent } from '@shared/lib/services/agent-service'
+import { getAgentRecord } from '@shared/lib/services/agent-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
+import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { getNotificationChannels } from './channels'
 import { isNotificationTypeEnabled } from './notification-preferences'
 import type { NotificationEvent } from './notification-event'
@@ -51,8 +53,8 @@ class NotificationManager {
    */
   private async getAgentDisplayName(agentSlug: string): Promise<string> {
     try {
-      const agent = await getAgent(agentSlug)
-      return agent?.frontmatter?.name || agentSlug
+      const agent = await getAgentRecord(agentSlug)
+      return agent?.name || agentSlug
     } catch {
       return agentSlug
     }
@@ -235,16 +237,21 @@ class NotificationManager {
       title: `${displayName} finished`,
       body: {
         fallback: fallbackBody,
+        // The summarizer is a host-direct proxy call fired from the container
+        // event stream, outside any request scope. Attribute it to the agent
+        // owner. The owner lookup is a DB read, so it stays inside the guard.
         resolve: async () => {
           try {
-            return await buildSessionCompleteBody({
-              sessionId,
-              agentSlug,
-              responseText: options.responseText,
-              responseTranscriptEndOffset:
-                await options.responseTranscriptEndOffset,
-              fallbackBody,
-            })
+            return await runWithOptionalUser(getAgentOwnerUserId(agentSlug), async () =>
+              buildSessionCompleteBody({
+                sessionId,
+                agentSlug,
+                responseText: options.responseText,
+                responseTranscriptEndOffset:
+                  await options.responseTranscriptEndOffset,
+                fallbackBody,
+              }),
+            )
           } catch (error) {
             // Body enrichment must never turn a successful session into a lost
             // notification. The helper is defensive too; this is the last guard.

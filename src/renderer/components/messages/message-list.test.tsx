@@ -152,6 +152,13 @@ vi.mock('./informational-item', () => ({
   ),
 }))
 
+// The line's own copy and link are covered in fork-boundary.test.tsx; here only
+// its placement in the list matters.
+vi.mock('./fork-boundary', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./fork-boundary')>()),
+  ForkBoundaryItem: () => <div data-testid="fork-boundary" />,
+}))
+
 vi.mock('./message-context-menu', () => ({
   MessageContextMenu: ({ children }: any) => <>{children}</>,
 }))
@@ -451,6 +458,33 @@ describe('MessageList', () => {
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
     expect(screen.getByText('Compacted')).toBeInTheDocument()
+  })
+
+  it('draws the fork line after the copied history, or at the end of a fresh fork', () => {
+    const copied = [
+      createUserMessage({ content: { text: 'copied question' }, forked: true }),
+      createAssistantMessage({ content: { text: 'copied answer' }, forked: true }),
+    ]
+    mockMessagesData.data = [...copied, createUserMessage({ content: { text: 'fresh question' } })]
+    const { unmount } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+    const line = screen.getByTestId('fork-boundary')
+    expect(line.compareDocumentPosition(screen.getByText('copied answer')) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+    expect(line.compareDocumentPosition(screen.getByText('fresh question')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    unmount()
+
+    // Fresh fork: the line closes the copied history, and the first message
+    // typed into the fork sits below it while it is still a pending ghost.
+    mockMessagesData.data = copied
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'pm-1', uuid: 'pm-1', text: 'typed into the fork', sentAt: Date.now() }]}
+      />
+    )
+    const trailing = screen.getByTestId('fork-boundary')
+    expect(trailing.compareDocumentPosition(screen.getByText('copied answer')) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+    expect(trailing.compareDocumentPosition(screen.getByText('typed into the fork')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('shows pending user message optimistically', () => {

@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
+import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
 import * as path from 'path'
 import { promises as fs } from 'fs'
 import type { ContainerClient, StreamMessage } from './types'
@@ -179,6 +180,8 @@ async function replayTracked(fixtureName: string): Promise<{
 
   vi.resetModules()
   const { messagePersister } = await import('./message-persister')
+  // The registry attaches the real stores; this test drives the persister alone.
+  messagePersister.attachSessionStores(createInMemorySessionStore)
   const { client, send } = createReplayClient()
 
   const sseEvents: Array<Record<string, unknown>> = []

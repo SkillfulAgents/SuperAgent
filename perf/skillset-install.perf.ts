@@ -36,6 +36,12 @@ describe('skillset install', () => {
     extractZip = await buildExtractZip()
     ;({ installAgentFromSkillset } = await import('@shared/lib/services/agent-template-service'))
     ;({ getSkillsetRepoDir } = await import('@shared/lib/services/skillset-service'))
+    // The install records the agent in the catalog table. Opening the
+    // database and running its migrations is a process-lifetime cost that
+    // startup pays long before any install; pay it here, unmeasured, as the
+    // home profiles do.
+    const { sqlite } = await import('@shared/lib/db')
+    sqlite.prepare('select 1').get()
   })
 
   afterAll(async () => {

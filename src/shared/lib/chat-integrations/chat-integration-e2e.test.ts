@@ -348,6 +348,26 @@ describe('Chat integration E2E', () => {
       expect(fresh).toBeDefined()
     })
 
+    it('answers a reply to an agent-initiated message whose session the container never had', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      // An outbound send maps the chat to a host-only session.
+      const phantomSessionId = await chatIntegrationManager.ensureSession(integrationId, 'chat-1')
+
+      mockConnector.simulateIncomingMessage('Yes, go ahead', 'chat-1', 'user-1')
+      const replies = () => [
+        ...mockConnector.sentMessages.map((m) => m.message.text ?? ''),
+        ...mockConnector.finalizedMessages.map((m) => m.finalText),
+      ]
+      await waitForCondition(() => replies().some((t) => t.includes('This is a mock response')), 3000)
+
+      expect(MockContainerClient.createSessionCalls.map((c) => c.initialMessage)).toEqual(['Yes, go ahead'])
+      const rows = listChatIntegrationSessions(integrationId).filter((r) => r.externalChatId === 'chat-1')
+      expect(rows.find((r) => r.sessionId === phantomSessionId)?.archivedAt).toBeTruthy()
+      expect(rows.find((r) => r.sessionId !== phantomSessionId && !r.archivedAt)).toBeDefined()
+    })
+
     it('does NOT rotate the session on a transient (non-session-gone) error', async () => {
       const integrationId = createTestIntegration()
       await chatIntegrationManager.addIntegration(integrationId)

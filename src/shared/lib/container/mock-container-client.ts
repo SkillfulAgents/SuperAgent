@@ -3528,6 +3528,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     sessionId: string,
     callback: (message: StreamMessage) => void
   ): { unsubscribe: () => void; ready: Promise<void> } {
+    // The real container refuses a stream for a session it does not have, so the
+    // attach fails before any send. Resolving here hid the stuck-chat regression.
+    if (!this.sessions.has(sessionId)) {
+      return { unsubscribe: () => {}, ready: Promise.reject(new Error('Session not found')) }
+    }
     let callbacks = this.streamCallbacks.get(sessionId)
     if (!callbacks) {
       callbacks = new Set()

@@ -157,6 +157,11 @@ export class ContainerHost {
     return false
   }
 
+  /** The auto-sleep timeout changed: every runtime re-arms its idle alarm against the new value. */
+  rearmIdleAlarms(): void {
+    for (const runtime of this.runtimes.values()) runtime.idleAlarm.schedule()
+  }
+
   // Get list of running agent slugs (uses cached status)
   getRunningAgentIds(): string[] {
     const running: string[] = []

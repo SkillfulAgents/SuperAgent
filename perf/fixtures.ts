@@ -70,7 +70,13 @@ function prng(seed: number): () => number {
   }
 }
 
-const BASE_TIME = Date.UTC(2026, 0, 1)
+/**
+ * The clock every fixture date hangs off. The harness pins `Date.now` to it
+ * while the app runs, so what the fixtures say about age holds whenever the
+ * suite runs: a registration minutes before it is a new session, not an
+ * orphaned one the listing would drop and prune.
+ */
+export const BASE_TIME = Date.UTC(2026, 0, 1)
 
 function transcriptLines(sessionId: string, turns: number, rand: () => number): string {
   const lines: string[] = []
@@ -145,9 +151,11 @@ export async function seedDataDir(dataDir: string, profile: SeedProfile): Promis
 
     for (let m = 0; m < profile.metadataOnlyPerAgent; m++) {
       const id = `${slug}-pending${m}`
-      // Older than every transcript so it never becomes "latest" (keeps the
-      // latest-session tail read on a real transcript).
-      metadata[id] = { name: `Pending ${m}`, createdAt: new Date(BASE_TIME - 86_400_000 * (m + 1)).toISOString() }
+      // Registered minutes before the pinned clock, so it is still a new
+      // session and not an orphan; older than every transcript so it never
+      // becomes "latest" (keeps the latest-session tail read on a real
+      // transcript).
+      metadata[id] = { name: `Pending ${m}`, createdAt: new Date(BASE_TIME - 600_000 * (m + 1)).toISOString() }
     }
 
     for (let e = 0; e < profile.sdkArtifactsPerAgent; e++) {

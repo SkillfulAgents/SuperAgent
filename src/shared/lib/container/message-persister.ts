@@ -94,13 +94,11 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
 import { unwrapComputerRun } from '@shared/lib/computer-use/computer-run'
-import { getAgentSessionsDir, getSessionJsonlPath } from '@shared/lib/utils/file-storage'
+import { sessionFilePath, transcriptPath, type SessionStore } from '@shared/lib/agent-actor/session-store'
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
 import { WorkflowJournalTailer } from './workflow-journal-tailer'
 import { SubagentCapture } from './subagent-capture'
-import * as fs from 'fs'
-import * as path from 'path'
 import { randomUUID } from 'crypto'
 // Per-subagent streaming state (supports multiple concurrent background agents)
 interface SubagentStreamingState {
@@ -445,6 +443,10 @@ class MessagePersister {
   private lastFatalByAgent: Map<string, RuntimeFatalKind> = new Map()
   // Dev-only capture for building fixture replay tests
   private capture: SubagentCapture | null = SubagentCapture.fromEnv()
+  // Where each agent's transcripts are, attached by the agent registry: the
+  // persister stats, appends to and tails transcripts, and reaches them only
+  // through the agent's session store, never by a path of its own.
+  private sessionStores: ((agentSlug: string) => SessionStore) | null = null
 
   // In-flight subscribe promises, keyed by sessionId. Concurrent
   // subscribeToSession() calls for the same session share the underlying
@@ -704,8 +706,8 @@ class MessagePersister {
     this.subscriptions.set(ctx.key, unsubscribe)
 
     if (this.capture) {
-      const subagentsDir = path.join(getAgentSessionsDir(agentSlug), sessionId, 'subagents')
-      await this.capture.snapshotSubagentsDir(sessionId, subagentsDir, 'subscribe')
+      const store = this.storeOf(agentSlug)
+      await this.capture.snapshotSubagentsDir(sessionId, store.files, sessionFilePath(store, sessionId, 'subagents'), 'subscribe')
       await this.capture.recordNote(sessionId, 'subscribe', { agentSlug, containerSessionId })
     }
 
@@ -723,7 +725,7 @@ class MessagePersister {
   private resolveStreamReleasePolicy(ctx: SessionCtx): void {
     const { agentSlug, sessionId } = ctx
     const stateRef = this.streamingStates.get(ctx.key)
-    void getSessionMetadata(agentSlug, sessionId)
+    void getSessionMetadata(this.storeOf(agentSlug), sessionId)
       .then((meta) => {
         // A resubscribe replaced the state and kicked off its own resolution.
         const current = this.streamingStates.get(ctx.key)
@@ -851,7 +853,7 @@ class MessagePersister {
         ) {
           const outputArrived = state.outputGeneration !== before.outputGeneration
           if ((before.isActive || !outputArrived) && state.provisionalActivity === activity && activity) {
-            revertSessionActivity(agentSlug, sessionId, activity)
+            revertSessionActivity(this.storeOf(agentSlug), sessionId, activity)
             state.provisionalActivity = null
           }
           if (before.isActive) {
@@ -955,7 +957,7 @@ class MessagePersister {
     // The send never happened, so the recency it was credited with is undone
     // too (a no-op if a frame has arrived since — then the turn was real).
     if (state.provisionalActivity && state.agentSlug) {
-      revertSessionActivity(state.agentSlug, sessionId, state.provisionalActivity)
+      revertSessionActivity(this.storeOf(state.agentSlug), sessionId, state.provisionalActivity)
     }
     state.provisionalActivity = null
     this.finalizeIdle(agentSlug, sessionId, state)
@@ -1657,6 +1659,22 @@ class MessagePersister {
     }
   }
 
+  /**
+   * Hand the persister the way to an agent's session store. Called once by
+   * the agent registry when it is created, so every transcript the persister
+   * touches is the one the agent's actor reads.
+   */
+  attachSessionStores(resolve: (agentSlug: string) => SessionStore): void {
+    this.sessionStores = resolve
+  }
+
+  private storeOf(agentSlug: string): SessionStore {
+    if (!this.sessionStores) {
+      throw new Error(`No session store for agent ${agentSlug}: the agent registry has not attached them`)
+    }
+    return this.sessionStores(agentSlug)
+  }
+
   // Public method to broadcast session metadata updates (e.g., name change)
   broadcastSessionUpdate(agentSlug: string, sessionId: string): void {
     this.broadcastToSSE(agentSlug, sessionId, { type: 'session_updated' })
@@ -1678,9 +1696,8 @@ class MessagePersister {
     sessionId: string,
   ): Promise<number | null> {
     try {
-      return (await fs.promises.stat(
-        getSessionJsonlPath(agentSlug, sessionId),
-      )).size
+      const store = this.storeOf(agentSlug)
+      return (await store.files.stat(transcriptPath(store, sessionId)))?.size ?? null
     } catch {
       return null
     }
@@ -1691,8 +1708,9 @@ class MessagePersister {
   private refreshSessionActivityFromDisk(agentSlug: string, sessionId: string): void {
     void (async () => {
       try {
-        const stat = await fs.promises.stat(getSessionJsonlPath(agentSlug, sessionId))
-        if (stat) recordSessionActivity(agentSlug, sessionId, stat.mtimeMs)
+        const store = this.storeOf(agentSlug)
+        const stat = await store.files.stat(transcriptPath(store, sessionId))
+        if (stat) recordSessionActivity(store, sessionId, stat.mtimeMs)
       } catch {
         // Missing or unreadable: the TTL reconciliation repairs it.
       }
@@ -1745,8 +1763,10 @@ class MessagePersister {
       }
       this.streamingStates.set(sessionKeyOf(agentSlug, sessionId), state)
       if (this.capture) {
-        const subagentsDir = path.join(getAgentSessionsDir(agentSlug), sessionId, 'subagents')
-        this.capture.snapshotSubagentsDir(sessionId, subagentsDir, 'state-created').catch(() => {})
+        const store = this.storeOf(agentSlug)
+        this.capture
+          .snapshotSubagentsDir(sessionId, store.files, sessionFilePath(store, sessionId, 'subagents'), 'state-created')
+          .catch(() => {})
         this.capture.recordNote(sessionId, 'state_created', { agentSlug }).catch(() => {})
       }
     }
@@ -1806,7 +1826,7 @@ class MessagePersister {
     // Provisional until the container answers: markSessionIdle reverts it if
     // the send never got there.
     if (state.agentSlug) {
-      state.provisionalActivity = recordProvisionalSessionActivity(state.agentSlug, sessionId, Date.now())
+      state.provisionalActivity = recordProvisionalSessionActivity(this.storeOf(state.agentSlug), sessionId, Date.now())
     }
 
     // Broadcast to session-specific clients. queuedMidTurn tells the app this is a
@@ -1994,10 +2014,10 @@ class MessagePersister {
   // automations surface in session lists instead of accruing unread rows
   // nothing displays.
   async promoteAutomatedSession(agentSlug: string, sessionId: string): Promise<void> {
-    const meta = await getSessionMetadata(agentSlug, sessionId)
+    const meta = await getSessionMetadata(this.storeOf(agentSlug), sessionId)
     if (!isHiddenAutomatedSession(meta)) return
 
-    await updateSessionMetadata(agentSlug, sessionId, {
+    await updateSessionMetadata(this.storeOf(agentSlug), sessionId, {
       promotedToInteractive: true,
     })
 
@@ -2045,7 +2065,7 @@ class MessagePersister {
     // once: 'not-automation' is cached for the rest of the subscription.
     if (!state.agentSlug || state.notAutomationSession) return
     const agentSlug = state.agentSlug
-    void finalizeAutomationStatus(agentSlug, sessionId, automationStatus)
+    void finalizeAutomationStatus(this.storeOf(agentSlug), sessionId, automationStatus)
       .then((result) => {
         if (result === 'not-automation') state.notAutomationSession = true
       })
@@ -2079,7 +2099,14 @@ class MessagePersister {
       console.warn(`[MessagePersister] Dropping informational banner for ${sessionId}: no agent slug`)
       return
     }
-    void appendInformationalEntry(state.agentSlug, sessionId, {
+    let store: SessionStore
+    try {
+      store = this.storeOf(state.agentSlug)
+    } catch (error) {
+      console.error('[MessagePersister] Failed to persist informational banner:', error)
+      return
+    }
+    void appendInformationalEntry(store, sessionId, {
       uuid: content.uuid || randomUUID(),
       content: text,
       level: content.level,
@@ -2247,7 +2274,7 @@ class MessagePersister {
       !content.replayed &&
       (content.type === 'assistant' || content.type === 'user' || content.type === 'result')
     ) {
-      recordSessionActivity(state.agentSlug, sessionId, message.timestamp)
+      recordSessionActivity(this.storeOf(state.agentSlug), sessionId, message.timestamp)
       // The turn is real; the optimistic send record no longer needs undoing.
       state.provisionalActivity = null
     }
@@ -3541,9 +3568,10 @@ class MessagePersister {
   private startWorkflowTailer(agentSlug: string, sessionId: string, runId: string): void {
     const key = `${sessionKeyOf(agentSlug, sessionId)}::${runId}` as const
     if (this.workflowTailers.has(key)) return
+    const store = this.storeOf(agentSlug)
     const tailer = new WorkflowJournalTailer({
-      sessionsDir: getAgentSessionsDir(agentSlug),
-      sessionId,
+      files: store.files,
+      journalPath: sessionFilePath(store, sessionId, 'subagents', 'workflows', runId, 'journal.jsonl'),
       runId,
       emit: (update) => this.broadcastToSSE(agentSlug, sessionId, update),
     })
@@ -4217,7 +4245,7 @@ class MessagePersister {
       try {
         // Resolve timezone: agent tool override > agent owner's timezone
         timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
-        const sessionOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+        const sessionOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
         taskId = await createScheduledTask({
           agentSlug,
           scheduleType: input.scheduleType,
@@ -4324,7 +4352,7 @@ class MessagePersister {
       let timezone: string | undefined
       try {
         timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
-        const sessionOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+        const sessionOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
         ;({ taskId, replaced } = await createSessionWake({
           agentSlug,
           scheduleExpression,
@@ -4926,7 +4954,7 @@ ${continuation}`
         // 2. Save to SQLite (store the local account ID for app-level lookups)
         let triggerId: string
         try {
-          const triggerOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+          const triggerOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
           triggerId = await createWebhookTrigger({
             agentSlug,
             composioTriggerId,
@@ -4987,7 +5015,7 @@ ${continuation}`
    * ignore the member suffix entirely).
    */
   private async resolvePlatformMemberForSession(agentSlug: string, sessionId: string): Promise<string> {
-    const ownerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+    const ownerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
     const resolved = resolvePlatformMemberForCandidates([ownerId])
     return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
   }
@@ -5045,7 +5073,7 @@ ${continuation}`
         // 2. Save the local trigger row (rollback the mint on failure)
         let triggerId: string
         try {
-          const triggerOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+          const triggerOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
           triggerId = await createWebhookTrigger({
             agentSlug,
             kind: 'custom',
@@ -6053,7 +6081,7 @@ ${continuation}`
 
         // Persist to session metadata (fire-and-forget)
         if (state.agentSlug) {
-          updateSessionMetadata(state.agentSlug, sessionId, { lastUsage }).catch((err) => {
+          updateSessionMetadata(this.storeOf(state.agentSlug), sessionId, { lastUsage }).catch((err) => {
             console.error('[MessagePersister] Failed to persist lastUsage:', err)
           })
         }

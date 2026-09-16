@@ -12,7 +12,10 @@ import {
   type MediaRefBlock,
 } from './session-media'
 import { getSessionMessagesPage, getSessionMessagesDelta } from './session-service'
+import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
+import { transcriptPath } from '@shared/lib/agent-actor/session-store'
 import type { JsonlEntry } from '@shared/lib/types/agent'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff])
@@ -76,6 +79,9 @@ describe('session-media', () => {
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
 
+  /** The test directory as a workspace: transcripts are read through file operations, never by host path. */
+  const files = () => new LocalFileOps(() => testDir)
+
   /** Write entries as JSONL and return the path plus each row's byte offset. */
   async function writeJsonl(entries: object[]): Promise<{ file: string; offsets: number[] }> {
     const file = path.join(testDir, 'transcript.jsonl')
@@ -116,7 +122,7 @@ describe('session-media', () => {
 
   describe('ref minting', () => {
     it('replaces a tool-result image with a ref that resolves to the same bytes', async () => {
-      const { entry, file } = await stripRow(
+      const { entry } = await stripRow(
         [toolResultEntry('u-1', 'tool-1', [{ type: 'text', text: 'here' }, imageBlock(BIG_PNG)])],
         0
       )
@@ -132,7 +138,7 @@ describe('session-media', () => {
         .message.content[0]!.content
       expect(inner[0]).toEqual({ type: 'text', text: 'here' })
 
-      const blob = await openMediaBlob(file, decodeMediaRef(refs[0]!.id)!)
+      const blob = await openMediaBlob(files(), 'transcript.jsonl', decodeMediaRef(refs[0]!.id)!)
       expect(blob).toBeDefined()
       expect(blob!.mimeType).toBe('image/png')
       expect(blob!.bytes).toBe(BIG_PNG.length)
@@ -150,7 +156,7 @@ describe('session-media', () => {
     })
 
     it('gives repeated copies of one image distinct spans', async () => {
-      const { entry, file } = await stripRow(
+      const { entry } = await stripRow(
         [toolResultEntry('u-1', 'tool-1', [imageBlock(BIG_PNG), imageBlock(BIG_PNG)])],
         0
       )
@@ -161,13 +167,13 @@ describe('session-media', () => {
       expect(second.s).toBeGreaterThan(first.s)
       // Both still serve the image.
       for (const ref of [first, second]) {
-        const blob = await openMediaBlob(file, ref)
+        const blob = await openMediaBlob(files(), 'transcript.jsonl', ref)
         expect((await collectStream(blob!.stream)).equals(BIG_PNG)).toBe(true)
       }
     })
 
     it('handles the MCP image shape and non-png types', async () => {
-      const { entry, file } = await stripRow(
+      const { entry } = await stripRow(
         [
           toolResultEntry('u-1', 'tool-1', [
             { type: 'image', data: BIG_JPEG.toString('base64'), mimeType: 'image/jpeg' },
@@ -178,7 +184,7 @@ describe('session-media', () => {
       const refs = refsIn(entry)
       expect(refs).toHaveLength(1)
       expect(refs[0]!.mimeType).toBe('image/jpeg')
-      const blob = await openMediaBlob(file, decodeMediaRef(refs[0]!.id)!)
+      const blob = await openMediaBlob(files(), 'transcript.jsonl', decodeMediaRef(refs[0]!.id)!)
       expect(blob!.mimeType).toBe('image/jpeg')
       expect((await collectStream(blob!.stream)).equals(BIG_JPEG)).toBe(true)
     })
@@ -214,7 +220,7 @@ describe('session-media', () => {
     })
 
     it('addresses a row that is not the first in the file', async () => {
-      const { entry, file } = await stripRow(
+      const { entry } = await stripRow(
         [
           assistantWithToolUse('a-0', 'tool-0'),
           toolResultEntry('u-0', 'tool-0', [imageBlock(BIG_JPEG, 'image/jpeg')]),
@@ -224,7 +230,7 @@ describe('session-media', () => {
       )
       const refs = refsIn(entry)
       expect(refs).toHaveLength(1)
-      const blob = await openMediaBlob(file, decodeMediaRef(refs[0]!.id)!)
+      const blob = await openMediaBlob(files(), 'transcript.jsonl', decodeMediaRef(refs[0]!.id)!)
       expect((await collectStream(blob!.stream)).equals(BIG_PNG)).toBe(true)
     })
   })
@@ -242,7 +248,7 @@ describe('session-media', () => {
       const { id, file } = await mintOne()
       const original = await fs.promises.readFile(file)
       await fs.promises.writeFile(file, Buffer.concat([Buffer.from('{"type":"x"}\n'), original]))
-      expect(await openMediaBlob(file, decodeMediaRef(id)!)).toBeUndefined()
+      expect(await openMediaBlob(files(), 'transcript.jsonl', decodeMediaRef(id)!)).toBeUndefined()
     })
 
     it('rejects a ref whose payload survived but whose row is now a different one', async () => {
@@ -261,20 +267,20 @@ describe('session-media', () => {
       expect(rewritten.subarray(ref.s, ref.s + 8).toString('latin1')).toBe(
         raw.subarray(ref.s, ref.s + 8).toString('latin1')
       )
-      expect(await openMediaBlob(file, ref)).toBeUndefined()
+      expect(await openMediaBlob(files(), 'transcript.jsonl', ref)).toBeUndefined()
     })
 
     it('rejects a ref whose row was deleted', async () => {
       const { id, file } = await mintOne()
       await fs.promises.writeFile(file, '{"type":"system","uuid":"s-1"}\n')
-      expect(await openMediaBlob(file, decodeMediaRef(id)!)).toBeUndefined()
+      expect(await openMediaBlob(files(), 'transcript.jsonl', decodeMediaRef(id)!)).toBeUndefined()
     })
 
     it('rejects a span that is not a quote-delimited payload', async () => {
-      const { id, file } = await mintOne()
+      const { id } = await mintOne()
       const ref = decodeMediaRef(id)!
-      expect(await openMediaBlob(file, { ...ref, s: ref.s + 4 })).toBeUndefined()
-      expect(await openMediaBlob(file, { ...ref, l: ref.l - 4 })).toBeUndefined()
+      expect(await openMediaBlob(files(), 'transcript.jsonl', { ...ref, s: ref.s + 4 })).toBeUndefined()
+      expect(await openMediaBlob(files(), 'transcript.jsonl', { ...ref, l: ref.l - 4 })).toBeUndefined()
     })
 
     it('rejects a span whose content is not an image', async () => {
@@ -288,33 +294,33 @@ describe('session-media', () => {
       const raw = await fs.promises.readFile(file)
       const at = raw.indexOf(text, 0, 'latin1')
       const ref = decodeMediaRef(refsIn(entry)[0]!.id)!
-      expect(await openMediaBlob(file, { ...ref, s: at, l: text.length })).toBeUndefined()
+      expect(await openMediaBlob(files(), 'transcript.jsonl', { ...ref, s: at, l: text.length })).toBeUndefined()
     })
 
     it('rejects malformed and out-of-range refs', async () => {
-      const { id, file } = await mintOne()
+      const { id } = await mintOne()
       expect(decodeMediaRef('not-base64url!!')).toBeUndefined()
       expect(decodeMediaRef(Buffer.from('{"v":2}').toString('base64url'))).toBeUndefined()
       expect(decodeMediaRef(Buffer.from('not json').toString('base64url'))).toBeUndefined()
       const ref = decodeMediaRef(id)!
-      expect(await openMediaBlob(file, { ...ref, s: 10 ** 9 })).toBeUndefined()
-      expect(await openMediaBlob(file, { ...ref, o: 10 ** 9 })).toBeUndefined()
+      expect(await openMediaBlob(files(), 'transcript.jsonl', { ...ref, s: 10 ** 9 })).toBeUndefined()
+      expect(await openMediaBlob(files(), 'transcript.jsonl', { ...ref, o: 10 ** 9 })).toBeUndefined()
     })
 
     it('takes the served type from the bytes, not from the ref', async () => {
       // The ref carries no type at all — a caller cannot dictate how bytes are
       // interpreted, which is what keeps forged spans harmless.
-      const { entry, file } = await stripRow(
+      const { entry } = await stripRow(
         [toolResultEntry('u-1', 'tool-1', [imageBlock(BIG_JPEG, 'image/png')])],
         0
       )
-      const blob = await openMediaBlob(file, decodeMediaRef(refsIn(entry)[0]!.id)!)
+      const blob = await openMediaBlob(files(), 'transcript.jsonl', decodeMediaRef(refsIn(entry)[0]!.id)!)
       expect(blob!.mimeType).toBe('image/jpeg')
     })
 
     it('returns undefined for a missing transcript', async () => {
       const ref = { v: 1 as const, u: 'u-1', o: 10, s: 20, l: 40, h: 'abc' }
-      expect(await openMediaBlob(path.join(testDir, 'gone.jsonl'), ref)).toBeUndefined()
+      expect(await openMediaBlob(files(), 'gone.jsonl', ref)).toBeUndefined()
     })
 
     it('round-trips a ref through its encoding', () => {
@@ -349,7 +355,7 @@ describe('session-media', () => {
       // The same base64 inside a text block is not a quote-delimited field of
       // its own; minting there yields a ref that fails its own validation.
       const image = fakeImage(PNG_MAGIC, 30 * 1024, 0xcd)
-      const { entry, file } = await stripRow(
+      const { entry } = await stripRow(
         [
           toolResultEntry('u-1', 'tool-1', [
             { type: 'text', text: `copy=${image.toString('base64')};end` },
@@ -360,7 +366,7 @@ describe('session-media', () => {
       )
       const refs = refsIn(entry)
       expect(refs).toHaveLength(1)
-      const blob = await openMediaBlob(file, decodeMediaRef(refs[0]!.id)!)
+      const blob = await openMediaBlob(files(), 'transcript.jsonl', decodeMediaRef(refs[0]!.id)!)
       expect(blob).toBeDefined()
       expect((await collectStream(blob!.stream)).equals(image)).toBe(true)
     })
@@ -380,13 +386,13 @@ describe('session-media', () => {
       const rewritten = JSON.stringify(toolResultEntry('u-1', 'tool-1', [imageBlock(second)]))
       await fs.promises.writeFile(file, rewritten + '\n')
 
-      expect(await openMediaBlob(file, refFirst)).toBeUndefined()
+      expect(await openMediaBlob(files(), 'transcript.jsonl', refFirst)).toBeUndefined()
     })
 
     it('reports an exact integer size for unpadded base64', async () => {
       const image = fakeImage(PNG_MAGIC, 20 * 1024, 0x33)
       const unpadded = image.toString('base64').replace(/=+$/, '')
-      const { entry, file } = await stripRow(
+      const { entry } = await stripRow(
         [
           toolResultEntry('u-1', 'tool-1', [
             { type: 'image', source: { type: 'base64', media_type: 'image/png', data: unpadded } },
@@ -397,7 +403,7 @@ describe('session-media', () => {
       const refs = refsIn(entry)
       expect(refs).toHaveLength(1)
       expect(Number.isInteger(refs[0]!.bytes)).toBe(true)
-      const blob = await openMediaBlob(file, decodeMediaRef(refs[0]!.id)!)
+      const blob = await openMediaBlob(files(), 'transcript.jsonl', decodeMediaRef(refs[0]!.id)!)
       expect(Number.isInteger(blob!.bytes)).toBe(true)
       const served = await collectStream(blob!.stream)
       // The advertised length is what a Content-Length header promises.
@@ -437,7 +443,7 @@ describe('session-media', () => {
         file,
         JSON.stringify(toolResultEntry('u-1', 'tool-1', [imageBlock(second, 'image/bmp')])) + '\n'
       )
-      expect(await openMediaBlob(file, refFirst)).toBeUndefined()
+      expect(await openMediaBlob(files(), 'transcript.jsonl', refFirst)).toBeUndefined()
     })
 
     it('leaves a payload with a malformed base64 length inline', async () => {
@@ -458,7 +464,7 @@ describe('session-media', () => {
     })
 
     it('tears down the source and its handle when the consumer gives up', async () => {
-      const { entry, file } = await stripRow(
+      const { entry } = await stripRow(
         [toolResultEntry('u-1', 'tool-1', [imageBlock(BIG_PNG)])],
         0
       )
@@ -471,7 +477,7 @@ describe('session-media', () => {
           handles.push(handle)
           return handle
         })
-      const blob = await openMediaBlob(file, decodeMediaRef(refsIn(entry)[0]!.id)!)
+      const blob = await openMediaBlob(files(), 'transcript.jsonl', decodeMediaRef(refsIn(entry)[0]!.id)!)
       spy.mockRestore()
       expect(blob).toBeDefined()
 
@@ -491,7 +497,7 @@ describe('session-media', () => {
     it('surfaces storage failures instead of calling the media gone', async () => {
       // EIO says nothing about whether the image still exists; answering 410
       // would strand the client on a placeholder it never retries.
-      const { entry, file } = await stripRow(
+      const { entry } = await stripRow(
         [toolResultEntry('u-1', 'tool-1', [imageBlock(BIG_PNG)])],
         0
       )
@@ -502,7 +508,7 @@ describe('session-media', () => {
         error.code = 'EIO'
         throw error
       })
-      await expect(openMediaBlob(file, ref)).rejects.toThrow(/simulated I\/O failure/)
+      await expect(openMediaBlob(files(), 'transcript.jsonl', ref)).rejects.toThrow(/simulated I\/O failure/)
       spy.mockRestore()
       expect(realOpen).toBeDefined()
     })
@@ -510,7 +516,7 @@ describe('session-media', () => {
     it('serves normally when reads come back short of the requested length', async () => {
       // Positional reads may legally return fewer bytes than asked for before
       // EOF; that is not a truncated transcript.
-      const { entry, file } = await stripRow(
+      const { entry } = await stripRow(
         [toolResultEntry('u-1', 'tool-1', [imageBlock(BIG_PNG)])],
         0
       )
@@ -527,7 +533,7 @@ describe('session-media', () => {
             realRead(buf, off, len <= 128 ? 1 : len, pos)) as typeof handle.read
           return handle
         })
-      const blob = await openMediaBlob(file, ref)
+      const blob = await openMediaBlob(files(), 'transcript.jsonl', ref)
       spy.mockRestore()
       expect(blob).toBeDefined()
       expect((await collectStream(blob!.stream)).equals(BIG_PNG)).toBe(true)
@@ -630,10 +636,11 @@ describe('session-media', () => {
     ]
 
     it('serves inline base64 by default and refs on request', async () => {
-      const file = await createSession('agent-1', 'session-1', transcript)
+      await createSession('agent-1', 'session-1', transcript)
+      const store = createLocalSessionStore('agent-1')
 
-      const inline = await getSessionMessagesPage('agent-1', 'session-1', { limit: 50 })
-      const ref = await getSessionMessagesPage('agent-1', 'session-1', { limit: 50, media: 'ref' })
+      const inline = await getSessionMessagesPage(store, 'session-1', { limit: 50 })
+      const ref = await getSessionMessagesPage(store, 'session-1', { limit: 50, media: 'ref' })
 
       // Same items either way — only the image blocks differ.
       expect(ref.messages.map((m) => m.id)).toEqual(inline.messages.map((m) => m.id))
@@ -645,14 +652,15 @@ describe('session-media', () => {
         .toolCalls[0]!.result as Array<{ type: string; id: string }>
       const block = result.find((b) => b.type === 'media_ref')!
       expect(block).toBeDefined()
-      const blob = await openMediaBlob(file, decodeMediaRef(block.id)!)
+      const blob = await openMediaBlob(store.files, transcriptPath(store, 'session-1'), decodeMediaRef(block.id)!)
       expect((await collectStream(blob!.stream)).equals(BIG_PNG)).toBe(true)
     })
 
     it('serves refs on the delta path too, where live screenshots arrive', async () => {
-      const file = await createSession('agent-1', 'session-2', transcript)
+      await createSession('agent-1', 'session-2', transcript)
+      const store = createLocalSessionStore('agent-1')
 
-      const delta = await getSessionMessagesDelta('agent-1', 'session-2', {
+      const delta = await getSessionMessagesDelta(store, 'session-2', {
         after: 'u-0',
         media: 'ref',
       })
@@ -660,14 +668,14 @@ describe('session-media', () => {
       expect(serialized).not.toContain(BIG_PNG.toString('base64'))
       expect(serialized).toContain('media_ref')
 
-      const inlineDelta = await getSessionMessagesDelta('agent-1', 'session-2', { after: 'u-0' })
+      const inlineDelta = await getSessionMessagesDelta(store, 'session-2', { after: 'u-0' })
       expect(delta.messages.map((m) => m.id)).toEqual(inlineDelta.messages.map((m) => m.id))
       expect(JSON.stringify(inlineDelta)).toContain(BIG_PNG.toString('base64'))
 
       const result = (delta.messages.find((m) => m.type === 'assistant') as { toolCalls: Array<{ result: unknown }> })
         .toolCalls[0]!.result as Array<{ type: string; id: string }>
       const block = result.find((b) => b.type === 'media_ref')!
-      const blob = await openMediaBlob(file, decodeMediaRef(block.id)!)
+      const blob = await openMediaBlob(store.files, transcriptPath(store, 'session-2'), decodeMediaRef(block.id)!)
       expect((await collectStream(blob!.stream)).equals(BIG_PNG)).toBe(true)
     })
 
@@ -680,9 +688,10 @@ describe('session-media', () => {
         timestamp: '2026-01-01T00:00:00.000Z',
         message: { role: 'user', content: `filler ${i}` },
       }))
-      const file = await createSession('agent-1', 'session-3', [...transcript, ...filler])
+      await createSession('agent-1', 'session-3', [...transcript, ...filler])
+      const store = createLocalSessionStore('agent-1')
 
-      const page = await getSessionMessagesPage('agent-1', 'session-3', {
+      const page = await getSessionMessagesPage(store, 'session-3', {
         limit: 10,
         cursor: 'f-5',
         media: 'ref',
@@ -694,7 +703,7 @@ describe('session-media', () => {
       const result = assistant!.toolCalls[0]!.result as Array<{ type: string; id: string }>
       const block = result.find((b) => b.type === 'media_ref')!
       expect(block).toBeDefined()
-      const blob = await openMediaBlob(file, decodeMediaRef(block.id)!)
+      const blob = await openMediaBlob(store.files, transcriptPath(store, 'session-3'), decodeMediaRef(block.id)!)
       expect((await collectStream(blob!.stream)).equals(BIG_PNG)).toBe(true)
     })
   })
@@ -710,12 +719,12 @@ describe('session-media', () => {
     }
 
     it('replaces a tool-result PDF with a ref that serves application/pdf', async () => {
-      const { entry, file } = await stripRow([toolResultEntry('u1', 't1', [documentBlock(BIG_PDF)])], 0)
+      const { entry } = await stripRow([toolResultEntry('u1', 't1', [documentBlock(BIG_PDF)])], 0)
       const [ref] = refsIn(entry)
       expect(ref).toMatchObject({ type: 'media_ref', mimeType: 'application/pdf', bytes: BIG_PDF.length })
       expect(ref!.width).toBeUndefined()
       expect(ref!.height).toBeUndefined()
-      const blob = await openMediaBlob(file, decodeMediaRef(ref!.id)!)
+      const blob = await openMediaBlob(files(), 'transcript.jsonl', decodeMediaRef(ref!.id)!)
       expect(blob!.mimeType).toBe('application/pdf')
       expect(blob!.bytes).toBe(BIG_PDF.length)
       expect((await collectStream(blob!.stream)).equals(BIG_PDF)).toBe(true)

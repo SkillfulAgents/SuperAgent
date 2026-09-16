@@ -194,6 +194,10 @@ vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }))
 // Import after every mock is registered.
 import agents from './agents'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+
+// The registry attaches the real stores; these tests drive the persister alone.
+messagePersister.attachSessionStores((slug) => createLocalSessionStore(slug))
 import { registerSession, sessionExists } from '@shared/lib/services/session-service'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
 
@@ -278,8 +282,8 @@ beforeEach(async () => {
 
   // Both sessions are created the way the product creates them, so whatever
   // bookkeeping a real session gets is in place before the attack runs.
-  await registerSession(VICTIM, victimSession, 'Victim session')
-  await registerSession(ATTACKER, attackerSession, 'Attacker session')
+  await registerSession(createLocalSessionStore(VICTIM), victimSession, 'Victim session')
+  await registerSession(createLocalSessionStore(ATTACKER), attackerSession, 'Attacker session')
   writeTranscript(VICTIM, victimSession)
   writeTranscript(ATTACKER, attackerSession)
 
@@ -347,7 +351,7 @@ describe('a session id from another agent cannot drive that agent’s live sessi
   it('delete', async () => {
     const res = await app().request(url(ATTACKER, victimSession), { method: 'DELETE' })
     expect(res.status).toBe(404)
-    expect(await sessionExists(VICTIM, victimSession)).toBe(true)
+    expect(await sessionExists(createLocalSessionStore(VICTIM), victimSession)).toBe(true)
     expectVictimUntouched()
   })
 
@@ -389,7 +393,7 @@ describe('a forged transcript does not buy access to another agent’s live sess
 
   it('delete leaves the victim’s real transcript on disk', async () => {
     await app().request(url(ATTACKER, victimSession), { method: 'DELETE' })
-    expect(await sessionExists(VICTIM, victimSession)).toBe(true)
+    expect(await sessionExists(createLocalSessionStore(VICTIM), victimSession)).toBe(true)
     expectVictimUntouched()
   })
 })
@@ -432,7 +436,7 @@ describe('a symlink forged in the attacker’s workspace resolves to the victim�
   it('delete refuses the id and leaves the victim’s real transcript', async () => {
     const res = await app().request(url(ATTACKER, victimSession), { method: 'DELETE' })
     expect(res.status).toBe(404)
-    expect(await sessionExists(VICTIM, victimSession)).toBe(true)
+    expect(await sessionExists(createLocalSessionStore(VICTIM), victimSession)).toBe(true)
     expectVictimUntouched()
   })
 
@@ -440,7 +444,7 @@ describe('a symlink forged in the attacker’s workspace resolves to the victim�
     // The metadata makes sessionIsKnown pass (it is satisfied by a metadata
     // entry alone), so only the media route's realpath guard stands between the
     // request and openMediaBlob following the link into the victim's transcript.
-    await registerSession(ATTACKER, victimSession, 'Forged')
+    await registerSession(createLocalSessionStore(ATTACKER), victimSession, 'Forged')
     const res = await app().request(url(ATTACKER, victimSession, '/media/anyref'), { method: 'GET' })
     expect(res.status).toBe(404)
     expectVictimUntouched()

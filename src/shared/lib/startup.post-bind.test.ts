@@ -26,6 +26,16 @@ vi.mock('./auth/mode', () => ({
 vi.mock('./auth/clear-pending-approval-bans', () => ({
   clearPendingApprovalBans: () => clearPendingApprovalBans(),
 }))
+// Which agents exist is settled when the database is opened (the data
+// migration imports the directories); startup itself never touches the
+// catalog. Any use of it here is a regression.
+vi.mock('./agent-actor/agent-catalog', () => ({
+  agentCatalog: new Proxy({}, {
+    get(_target, property) {
+      throw new Error(`startup used agentCatalog.${String(property)}`)
+    },
+  }),
+}))
 vi.mock('./services/agent-service', () => ({
   listAgents: () => listAgents(),
 }))
@@ -96,9 +106,6 @@ vi.mock('./scheduler/platform-notifications-manager', () => ({
 }))
 vi.mock('./agent-integrations/agent-integration-manager', () => ({
   agentIntegrationManager: { start: () => chatIntegrationStart(), stop: vi.fn() },
-}))
-vi.mock('./scheduler/auto-sleep-monitor', () => ({
-  autoSleepMonitor: { start: () => Promise.resolve(), stop: vi.fn() },
 }))
 vi.mock('./scheduler/session-auto-delete-monitor', () => ({
   sessionAutoDeleteMonitor: { start: () => Promise.resolve(), stop: vi.fn() },

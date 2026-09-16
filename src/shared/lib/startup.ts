@@ -11,7 +11,6 @@ import { platformNotificationsManager } from './scheduler/platform-notifications
 import { agentIntegrationManager } from './agent-integrations/agent-integration-manager'
 import { captureException } from './error-reporting'
 import { registerAllAccountProviders } from './account-providers/register'
-import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { apiLogAutoDeleteMonitor } from './scheduler/api-log-auto-delete-monitor'
 import { accountSyncService } from './scheduler/account-sync-service'
@@ -240,11 +239,6 @@ async function initializeServicesInner() {
     })
   }
 
-  // Start auto-sleep monitor
-  autoSleepMonitor.start().catch((error) => {
-    console.error('Failed to start auto-sleep monitor:', error)
-  })
-
   // Start session auto-delete monitor (deferred — waits before first check)
   sessionAutoDeleteMonitor.start().catch((error) => {
     console.error('Failed to start session auto-delete monitor:', error)
@@ -291,7 +285,6 @@ export async function shutdownServices() {
   taskScheduler.stop()
   triggerManager.stop()
   platformNotificationsManager.stop()
-  autoSleepMonitor.stop()
   sessionAutoDeleteMonitor.stop()
   apiLogAutoDeleteMonitor.stop()
   accountSyncService.stop()

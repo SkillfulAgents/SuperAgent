@@ -17,7 +17,7 @@ vi.mock('@shared/lib/services/chat-integration-service', async (importOriginal) 
 
 vi.mock('@shared/lib/services/agent-service', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@shared/lib/services/agent-service')>()),
-  getAgent: vi.fn(),
+  getAgentRecord: vi.fn(),
 }))
 
 vi.mock('@shared/lib/error-reporting', async (importOriginal) => ({
@@ -26,7 +26,7 @@ vi.mock('@shared/lib/error-reporting', async (importOriginal) => ({
 }))
 
 import { getChatIntegration } from '@shared/lib/services/chat-integration-service'
-import { getAgent } from '@shared/lib/services/agent-service'
+import { getAgentRecord } from '@shared/lib/services/agent-service'
 import { chatIntegrationManager } from './chat-integration-manager'
 
 const INT = 'int-contact-card'
@@ -51,7 +51,7 @@ function mockIntegration(provider: string, name?: string | null): void {
 }
 
 function mockAgent(): void {
-  vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Ada', description: 'Triages inbox' } } as never)
+  vi.mocked(getAgentRecord).mockResolvedValue({ name: 'Ada', description: 'Triages inbox' } as never)
 }
 
 describe('integrationCreated', () => {
@@ -89,7 +89,7 @@ describe('integrationCreated', () => {
   it('returns quietly when the agent is gone', async () => {
     mockIntegration('imessage')
     registerConnector()
-    vi.mocked(getAgent).mockResolvedValue(null as never)
+    vi.mocked(getAgentRecord).mockResolvedValue(null as never)
 
     await chatIntegrationManager.integrationCreated(INT)
 
@@ -129,7 +129,7 @@ describe('integrationCreated', () => {
   it('strips path characters out of the agent name before it becomes a filename', async () => {
     mockIntegration('imessage')
     registerConnector()
-    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Sales/Support "bot"' } } as never)
+    vi.mocked(getAgentRecord).mockResolvedValue({ name: 'Sales/Support "bot"' } as never)
 
     await chatIntegrationManager.integrationCreated(INT)
 

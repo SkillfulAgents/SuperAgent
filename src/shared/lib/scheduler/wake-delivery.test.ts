@@ -134,7 +134,7 @@ describe('deliverSessionWake', () => {
     expect(content.startsWith('[SYSTEM] ')).toBe(true)
     expect(options).toEqual({ shouldQuery: true })
     expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
-      'agent-one',
+      expect.objectContaining({ slug: 'agent-one' }),
       'sleeping-session-1',
       { lastWake: { taskId: 'wake-task-1', executionAt: wakeExecutionAt.toISOString() } }
     )

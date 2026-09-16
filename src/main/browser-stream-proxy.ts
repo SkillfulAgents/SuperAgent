@@ -9,8 +9,7 @@ import type { IncomingMessage } from 'http'
 import type { Duplex } from 'stream'
 import type { ServerType } from '@hono/node-server'
 import { WebSocketServer, WebSocket } from 'ws'
-import { agentRegistry } from '@shared/lib/agent-actor'
-import { resolveAgentId } from '@shared/lib/utils/file-storage'
+import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
@@ -33,7 +32,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
     // before any ACL check or container lookup. This WS upgrade bypasses the Hono
     // /:id/* ResolveAgent middleware, so it must resolve itself. Stash the resolved
     // id for the connection handler below.
-    resolveAgentId(match[1]).then((agentSlug) => {
+    agentCatalog.resolve(match[1]).then((agentSlug) => {
       if (!agentSlug) {
         socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
         socket.destroy()

@@ -1,5 +1,5 @@
 import agentMembers, { agentMembersBatch } from './agent-members'
-import { notifyAgentMembersChanged } from '@shared/lib/services/agent-members-service'
+import { notifyAgentMembersChanged, changeMemberRole, removeMember } from '@shared/lib/services/agent-members-service'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
@@ -27,6 +27,7 @@ import {
   createAgent,
   getAgentWithStatus,
   getAgent,
+  getAgentRecord,
   updateAgent,
   deleteAgent,
   agentExists,
@@ -1340,20 +1341,10 @@ agents.get('/', async (c) => {
         .select({ agentSlug: agentAcl.agentSlug })
         .from(agentAcl)
         .where(eq(agentAcl.userId, userId))
-      const agentLimit = pLimit(10)
-      const agents = await Promise.all(
-        rows.map((r) => agentLimit(() => getAgentWithStatus(
-          r.agentSlug,
-          { includeSummary: false },
-        )))
-      )
-      agentList = agents.filter((a): a is ApiAgent => a !== null)
-      // The ACL query has no ORDER BY, so rows arrive in index-scan order — i.e.
-      // by agentSlug, which is now an opaque random id (it used to embed the name,
-      // so the scan was incidentally name-ish). Sort newest-first to match the
-      // non-auth listAgentsWithStatus() ordering, so a freshly created agent lands
-      // at the top of the sidebar (the client's applyAgentOrder floats new agents up).
-      agentList.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      // One catalog query for the visible slugs, newest first like the
+      // non-auth listing, so a freshly created agent lands at the top of the
+      // sidebar (the client's applyAgentOrder floats new agents up).
+      agentList = await listAgentsWithStatus({ slugs: rows.map((r) => r.agentSlug) })
     } else {
       agentList = await listAgentsWithStatus()
     }
@@ -1640,40 +1631,11 @@ agents.patch('/:id/access/:userId', AgentAdmin(), async (c) => {
       return c.json({ error: 'Invalid role. Must be owner, user, or viewer' }, 400)
     }
 
-    // Transaction to prevent TOCTOU race on last-owner check
-    // Note: better-sqlite3 transactions are synchronous — no async/await inside
-    const error = db.transaction((tx) => {
-      const [currentAcl] = tx
-        .select({ role: agentAcl.role })
-        .from(agentAcl)
-        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
-        .limit(1)
-        .all()
-
-      if (!currentAcl) return 'User does not have access to this agent'
-
-      if (currentAcl.role === 'owner' && role !== 'owner') {
-        const [{ ownerCount }] = tx
-          .select({ ownerCount: count() })
-          .from(agentAcl)
-          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
-          .all()
-        if (ownerCount <= 1) return 'Cannot change role: agent must have at least one owner'
-      }
-
-      tx
-        .update(agentAcl)
-        .set({ role })
-        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
-        .run()
-
-      return null
-    })
-
-    if (error) {
-      const status = error.includes('does not have access') ? 404 : 400
-      return c.json({ error }, status)
-    }
+    // The last-owner guard is part of the update statement, so there is no
+    // read-then-decide window for a concurrent demotion to slip through.
+    const outcome = await changeMemberRole(slug, targetUserId, role)
+    if (outcome === 'not-a-member') return c.json({ error: 'User does not have access to this agent' }, 404)
+    if (outcome === 'last-owner') return c.json({ error: 'Cannot change role: agent must have at least one owner' }, 400)
     notifyAgentMembersChanged(slug)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'changed', details: { targetUserId: targetUserId, role } })
     return c.json({ ok: true })
@@ -1689,39 +1651,11 @@ agents.delete('/:id/access/:userId', AgentAdmin(), async (c) => {
     const slug = getAgentId(c)
     const targetUserId = c.req.param('userId')
 
-    // Transaction to prevent TOCTOU race on last-owner check
-    // Note: better-sqlite3 transactions are synchronous — no async/await inside
-    const error = db.transaction((tx) => {
-      const [currentAcl] = tx
-        .select({ role: agentAcl.role })
-        .from(agentAcl)
-        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
-        .limit(1)
-        .all()
-
-      if (!currentAcl) return 'User does not have access to this agent'
-
-      if (currentAcl.role === 'owner') {
-        const [{ ownerCount }] = tx
-          .select({ ownerCount: count() })
-          .from(agentAcl)
-          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
-          .all()
-        if (ownerCount <= 1) return 'Cannot remove access: agent must have at least one owner'
-      }
-
-      tx
-        .delete(agentAcl)
-        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
-        .run()
-
-      return null
-    })
-
-    if (error) {
-      const status = error.includes('does not have access') ? 404 : 400
-      return c.json({ error }, status)
-    }
+    // The last-owner guard is part of the delete statement, so two concurrent
+    // revokes leave exactly one owner.
+    const outcome = await removeMember(slug, targetUserId)
+    if (outcome === 'not-a-member') return c.json({ error: 'User does not have access to this agent' }, 404)
+    if (outcome === 'last-owner') return c.json({ error: 'Cannot remove access: agent must have at least one owner' }, 400)
     notifyAgentMembersChanged(slug, targetUserId)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId } })
     return c.body(null, 204)
@@ -1737,36 +1671,9 @@ agents.post('/:id/leave', AgentRead(), async (c) => {
     const slug = getAgentId(c)
     const userId = getCurrentUserId(c)
 
-    const error = db.transaction((tx) => {
-      const [currentAcl] = tx
-        .select({ role: agentAcl.role })
-        .from(agentAcl)
-        .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, slug)))
-        .limit(1)
-        .all()
-
-      if (!currentAcl) return 'You do not have access to this agent'
-
-      if (currentAcl.role === 'owner') {
-        const [{ ownerCount }] = tx
-          .select({ ownerCount: count() })
-          .from(agentAcl)
-          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
-          .all()
-        if (ownerCount <= 1) return 'Cannot leave: you are the only owner'
-      }
-
-      tx
-        .delete(agentAcl)
-        .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, slug)))
-        .run()
-
-      return null
-    })
-
-    if (error) {
-      return c.json({ error }, 400)
-    }
+    const outcome = await removeMember(slug, userId)
+    if (outcome === 'not-a-member') return c.json({ error: 'You do not have access to this agent' }, 400)
+    if (outcome === 'last-owner') return c.json({ error: 'Cannot leave: you are the only owner' }, 400)
     notifyAgentMembersChanged(slug, userId)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId: userId } })
     return c.body(null, 204)
@@ -2500,7 +2407,7 @@ agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
     // media read answers with a 410.
     if (
       !(await actor.sessions.isKnown(sessionId)) ||
-      !actor.sessions.fileRealPathWithinAgent(sessionId)
+      !(await actor.sessions.fileRealPathWithinAgent(sessionId))
     ) {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
@@ -7036,7 +6943,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
   const basePath = `/api/agents/${agentSlug}`
   // For the dispatch-consent dialog: resolved at render time so the wrapper
   // never needs a client-side agent-info fetch (removed by the fast-path work).
-  const agentName = (await getAgent(agentSlug))?.frontmatter.name ?? null
+  const agentName = (await getAgentRecord(agentSlug))?.name ?? null
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -7730,8 +7637,8 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   const nameMap = new Map<string, string>()
   for (const targetSlug of targetSlugs) {
     if (visibleTargets && !visibleTargets.has(targetSlug)) continue
-    const target = await getAgent(targetSlug)
-    if (target) nameMap.set(targetSlug, target.frontmatter.name)
+    const target = await getAgentRecord(targetSlug)
+    if (target) nameMap.set(targetSlug, target.name)
   }
   return c.json({
     policies: rows
@@ -7752,7 +7659,7 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
 // edits never race through the whole-list replacement endpoint below.
 agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   const slug = getAgentId(c)
-  const callerAgent = await getAgent(slug)
+  const callerAgent = await getAgentRecord(slug)
   if (!callerAgent) {
     return c.json({ error: 'Agent not found' }, 404)
   }
@@ -7775,7 +7682,7 @@ agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
     return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
   }
   if (targetSlug !== null) {
-    const targetAgent = await getAgent(targetSlug)
+    const targetAgent = await getAgentRecord(targetSlug)
     if (!targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
       return c.json({ error: 'Agent not found' }, 404)
     }
@@ -7794,7 +7701,7 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   const slug = getAgentId(c)
   // AgentAdmin checks role but not existence (and is a no-op in non-auth mode);
   // assert here so a typo'd slug doesn't write phantom rows that nothing references.
-  const callerAgent = await getAgent(slug)
+  const callerAgent = await getAgentRecord(slug)
   if (!callerAgent) {
     return c.json({ error: 'Agent not found' }, 404)
   }
@@ -7809,7 +7716,7 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
       return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
     }
   }
-  replacePoliciesForCaller(slug, parsed.data.policies)
+  await replacePoliciesForCaller(slug, parsed.data.policies)
   return c.json({ ok: true })
 })
 
@@ -7828,7 +7735,7 @@ agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
   // target must also be VISIBLE to the caller (same anti-topology-leak rule
   // the GET route enforces) — and an invisible target returns the SAME 404 as
   // a nonexistent one, so this can't be used as an agent-existence oracle.
-  const [callerAgent, targetAgent] = await Promise.all([getAgent(slug), getAgent(targetSlug)])
+  const [callerAgent, targetAgent] = await Promise.all([getAgentRecord(slug), getAgentRecord(targetSlug)])
   if (!callerAgent || !targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
     return c.json({ error: 'Agent not found' }, 404)
   }

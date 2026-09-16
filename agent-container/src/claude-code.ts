@@ -605,6 +605,25 @@ export class ClaudeCodeProcess extends EventEmitter {
   private lastTurnInformationals: SDKMessage[] = [];
   private lastResultMessage: SDKMessage | null = null;
   private lastSessionState: string | null = null;
+  // Whether the CLI is between turns, for interruptTurn. `lastSessionState`
+  // alone stopped being enough with CLI 2.1.269: while a background subagent
+  // is live the CLI emits NO session_state_changed:idle after the lead turn's
+  // result (the sdk272-bg-subagent-* fixtures), so a Stop pressed then used
+  // to look like a live turn — the soft path sent an interrupt nobody
+  // answered with a result and fell back to the restart, killing the very
+  // background agent perTaskStopAffordance exists to spare. A main-thread
+  // `result` ends the foreground turn; a send, a running/requires_action
+  // state or foreground model output (assistant / stream_event without a
+  // parent_tool_use_id — the completion wake turn arrives with no state
+  // event at all) starts one.
+  private foregroundTurnEnded = false;
+  // Sends the CLI has not answered with a result yet. A queued follow-up is
+  // dequeued the instant the previous result lands, before it produces any
+  // frame of its own, so "result seen" alone would make a Stop in that gap a
+  // no-op. Results name the sends they answered (user_message_uuids; a whole
+  // coalesced batch) — subtract those, and treat a result without them as
+  // having answered everything.
+  private pendingSends = 0;
   // Protocol capabilities the CLI advertised on system/init (SDK feature
   // detection — see Options.perTaskStopAffordance and interruptTurn).
   private cliCapabilities = new Set<string>();
@@ -937,7 +956,19 @@ export class ClaudeCodeProcess extends EventEmitter {
     // stripped from the query (and the system prompt stops advertising it)
     // rather than denied call-by-call. Review-tier gating happens in canUseTool.
     const capabilityTools = applyCapabilityPolicies(this.capabilityPolicies, {
-      allowedTools: ['Skill', 'Task', 'Agent', ...remoteMcpToolPatterns],
+      allowedTools: [
+        'Skill', 'Task', 'Agent',
+        // CLI 2.1.233+ registers the task-tracking tools by default only on
+        // older models (Claude 3.x, Opus 4.0-4.7, Sonnet 4.0-4.6, Haiku 4.5);
+        // elsewhere they must be listed here (SDK 0.3.268 changelog). Our
+        // task-list UI (derive-task-list.ts) and existing agent workflows
+        // depend on them, so opt in on every model. Verified live on
+        // claude-opus-4-8 with SDK 0.3.272: listing them here registers all
+        // four; the CLAUDE_CODE_ENABLE_TODO_TOOLS env var is the CLI-side
+        // equivalent and is no longer needed.
+        'TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate',
+        ...remoteMcpToolPatterns,
+      ],
       disallowedTools: [
         'TaskOutput', 'Monitor', 'DesignSync',
         'CronCreate', 'CronDelete', 'CronList',
@@ -1057,13 +1088,6 @@ export class ClaudeCodeProcess extends EventEmitter {
         // self-updated. Pinned like the other vars here: customEnvVars is
         // spread above, so an agent cannot turn this back on.
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-        // CLI 2.1.233+ stops registering TaskCreate/TaskGet/TaskList/TaskUpdate
-        // on newer models (opus >=4.8, sonnet/fable/mythos >=5). Our task-list
-        // UI (derive-task-list.ts) and existing agent workflows depend on those
-        // tools, so opt back in on every model. This is the CLI's only lever
-        // that works for us: its other re-enable path is a server-side feature
-        // flag, which NONESSENTIAL_TRAFFIC above blocks from ever reaching us.
-        CLAUDE_CODE_ENABLE_TODO_TOOLS: 'true',
         // Explicit maxOutputTokens setting takes precedence over custom env var
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
         // Tell the SDK the real context window for non-Claude models (it
@@ -1374,7 +1398,14 @@ export class ClaudeCodeProcess extends EventEmitter {
           },
         ],
       },
-      systemPrompt: this.systemPrompt,
+      // Object form with `snapshot: false`: SDK 0.3.267+ records a custom
+      // prompt on the conversation's first request and replays that record on
+      // every later launch/resume until compaction (a bare string follows
+      // that default). Our prompt is regenerated and the query restarted when
+      // connected accounts, remote MCPs, capability policies or the date
+      // change (refreshSystemPrompt / sendMessage), so it must render fresh
+      // on every launch or those refreshes are silently ignored.
+      systemPrompt: { type: 'custom', prompt: this.systemPrompt, snapshot: false },
     };
   }
 
@@ -1401,6 +1432,11 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.refreshSystemPrompt();
     }
     this.messageQueue = new MessageQueue();
+    // Turn bookkeeping is per process: a replacement query starts with no
+    // turn and no unanswered sends (a resumed turn re-sends through
+    // sendMessage and counts itself again).
+    this.foregroundTurnEnded = false;
+    this.pendingSends = 0;
     this.queryInstance = this.createQuery();
     this.isReady = true;
     // Background tasks are process-local and die with the old process; the
@@ -1734,7 +1770,11 @@ export class ClaudeCodeProcess extends EventEmitter {
     // no longer known-idle (interruptTurn reads this to decide whether there
     // is a foreground turn to abort, and a Stop in the send→running window
     // must still reach it).
-    if (shouldQuery !== false) this.lastSessionState = null;
+    if (shouldQuery !== false) {
+      this.lastSessionState = null;
+      this.foregroundTurnEnded = false;
+      this.pendingSends++;
+    }
     // Every send path must reach the session's settlement tracker — including
     // internal ones that bypass SessionManager.sendMessage (the MCP-injection
     // continuation in addRemoteMcpServer). Without this, a send landing while
@@ -1896,15 +1936,27 @@ export class ClaudeCodeProcess extends EventEmitter {
 
   /** Record the frames a late-joining WebSocket subscriber must not miss. */
   private trackForLateJoinReplay(message: SDKMessage): void {
-    const msg = message as { type: string; subtype?: string; state?: string };
+    const msg = message as {
+      type: string;
+      subtype?: string;
+      state?: string;
+      parent_tool_use_id?: string | null;
+      user_message_uuids?: unknown;
+    };
     if (msg.type === 'system' && msg.subtype === 'informational') {
       this.currentTurnInformationals.push(message);
     } else if (msg.type === 'result') {
       this.lastResultMessage = message;
       this.lastTurnInformationals = this.currentTurnInformationals;
       this.currentTurnInformationals = [];
+      this.foregroundTurnEnded = true;
+      const answered = Array.isArray(msg.user_message_uuids) ? msg.user_message_uuids.length : this.pendingSends;
+      this.pendingSends = Math.max(0, this.pendingSends - answered);
     } else if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
       this.lastSessionState = msg.state ?? null;
+      if (msg.state !== 'idle') this.foregroundTurnEnded = false;
+    } else if ((msg.type === 'assistant' || msg.type === 'stream_event') && !msg.parent_tool_use_id) {
+      this.foregroundTurnEnded = false;
     }
   }
 
@@ -1987,10 +2039,14 @@ export class ClaudeCodeProcess extends EventEmitter {
       console.warn(`[Session ${this.sessionId}] CLI does not advertise interrupt_receipt_v1`);
       return null;
     }
-    // Between turns (the turn-end `idle` — which the CLI also emits while
-    // background work is still running) there is no foreground turn to abort.
-    // Stop is then a no-op for the turn; the caller stops tasks one by one.
-    if (this.lastSessionState === 'idle') {
+    // Between turns there is no foreground turn to abort: after the turn-end
+    // `idle` (which the CLI emits while backgrounded Bash is still running),
+    // or after the lead turn's result while a background subagent is live
+    // (CLI 2.1.269+ emits no idle then — see foregroundTurnEnded). Stop is
+    // then a no-op for the turn; the caller stops tasks one by one. Sending
+    // the interrupt anyway would get a receipt but never a result, and the
+    // fallback restart would kill the background work.
+    if (this.lastSessionState === 'idle' || (this.foregroundTurnEnded && this.pendingSends === 0)) {
       console.log(`[Session ${this.sessionId}] No foreground turn to interrupt`);
       return { interrupted: false, discardedUuids: [], processKept: true };
     }

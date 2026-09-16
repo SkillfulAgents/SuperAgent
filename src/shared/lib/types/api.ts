@@ -219,6 +219,8 @@ export interface ApiMessage {
    * detection) must skip it.
    */
   queued?: boolean
+  /** Copied into this session by a fork. The thread draws the fork point after the last one. */
+  forked?: boolean
   /**
    * Summarized extended-thinking blocks persisted in the session transcript,
    * in order. Absent when the turn had no thinking or the transcript predates
@@ -274,6 +276,7 @@ export interface ApiCompactBoundary {
   trigger: string
   preTokens?: number
   createdAt: Date
+  forked?: boolean
 }
 
 /**
@@ -284,6 +287,7 @@ export interface ApiMemoryRecall {
   type: 'memory_recall'
   memoryPaths: string[]
   createdAt: Date
+  forked?: boolean
 }
 
 /**
@@ -296,6 +300,7 @@ export interface ApiInformational {
   content: string
   level?: string
   createdAt: Date
+  forked?: boolean
 }
 
 /**

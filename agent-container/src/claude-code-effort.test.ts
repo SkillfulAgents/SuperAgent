@@ -457,9 +457,9 @@ describe('ClaudeCodeProcess model prompt hints', () => {
 
     await process.start()
     expect(calls).toHaveLength(1)
-    expect(calls[0].options.systemPrompt).toContain('## Model-Specific Instructions')
-    expect(calls[0].options.systemPrompt).toContain('- Use exact ToolSearch names.')
-    expect(calls[0].options.systemPrompt).toContain('- Do not send pages as an empty string.')
+    expect(calls[0].options.systemPrompt.prompt).toContain('## Model-Specific Instructions')
+    expect(calls[0].options.systemPrompt.prompt).toContain('- Use exact ToolSearch names.')
+    expect(calls[0].options.systemPrompt.prompt).toContain('- Do not send pages as an empty string.')
   })
 })
 

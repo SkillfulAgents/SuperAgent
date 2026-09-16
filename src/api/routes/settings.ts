@@ -67,11 +67,13 @@ import {
   chatIntegrations,
   chatIntegrationSessions,
   chatIntegrationAccess,
+  slackThreadState,
   remoteMcpServers,
   agentRemoteMcps,
   mcpAuditLog,
   mcpToolPolicies,
   agentAcl,
+  agents,
   messageAuthor,
   xAgentPolicies,
   apiScopePolicies,
@@ -167,7 +169,11 @@ async function serveUploadedModelIcon(c: Context) {
  * Ordered children-before-parents so deletes succeed regardless of FK-cascade
  * state. Better Auth tables (user, session, account, verification) are
  * intentionally excluded — a factory reset clears app/agent data but does NOT
- * delete user accounts.
+ * delete user accounts. The data-migration ledger is excluded too, like
+ * drizzle's own: it records which one-time moves this database has been
+ * through, and a reset database is an empty one, not a legacy one. Re-running
+ * those moves after a reset would pull back whatever state the reset did not
+ * delete.
  *
  * Keep this reconciled with the per-agent set in agent-cleanup-service.ts. The
  * test in factory-reset.sup206.test.ts enumerates the schema dynamically and
@@ -183,12 +189,15 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   agentAcl,
   xAgentPolicies,
   webhookTriggers,
+  // the agent catalog itself, once the per-agent rows above are gone
+  agents,
   notifications,
   sessionUnreadMarks,
   scheduledTasks,
-  // chat integrations (access + sessions cascade from integrations)
+  // chat integrations (access + sessions + Slack state cascade from integrations)
   chatIntegrationAccess,
   chatIntegrationSessions,
+  slackThreadState,
   chatIntegrations,
   // connected accounts + dependents (api scope policies + agent mappings cascade)
   agentConnectedAccounts,
@@ -508,6 +517,11 @@ settings.put(
       }
 
       updateSettings(newSettings)
+
+      // A new auto-sleep timeout applies to the containers already up.
+      if (body.app?.autoSleepTimeoutMinutes !== undefined) {
+        containerHost.rearmIdleAlarms()
+      }
 
       // If account provider settings changed, re-register providers
       if (body.apiKeys?.nangoSecretKey !== undefined || body.app?.accountProvider !== undefined) {

@@ -7,7 +7,7 @@
  */
 
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
-import { getAgent } from '../services/agent-service'
+import { getAgentRecord } from '../services/agent-service'
 import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
 import { displaySlug } from '../utils/file-storage'
 import { sanitizeUploadFilename } from '../utils/path-safety'
@@ -105,11 +105,11 @@ export function buildIMessageSystemPrompt(message: SystemPromptContext): string 
 export class IMessageConnector extends ChatAgentIntegration {
   /** Introduce this identity once at setup, never on boot or reconnect. */
   async onCreated(integration: AgentIntegrationRecord): Promise<void> {
-    const agent = await getAgent(integration.agentSlug)
+    const agent = await getAgentRecord(integration.agentSlug)
     if (!agent) return
-    const name = integration.name?.trim() || agent.frontmatter.name
-    const card = buildAgentContactCard({ slug: integration.agentSlug, name, description: agent.frontmatter.description,
-      appUrl: resolveAgentWebUrl(displaySlug(agent.frontmatter.name, integration.agentSlug)) })
+    const name = integration.name?.trim() || agent.name
+    const card = buildAgentContactCard({ slug: integration.agentSlug, name, description: agent.description,
+      appUrl: resolveAgentWebUrl(displaySlug(agent.name, integration.agentSlug)) })
     await this.sendFile('', card, `${sanitizeUploadFilename(name)}.vcf`, "Save me as a contact so I'm not just a number. Text me anytime.")
   }
 

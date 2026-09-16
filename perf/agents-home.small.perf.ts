@@ -13,13 +13,20 @@ import { defineHomeScenarios } from './home-scenarios'
 //
 // Every workspace read goes through the actor's file operations, which cost
 // exactly what the plain reads they replace cost: an existence probe is a
-// stat where it used to be an access call, and nothing is added. These are
-// main's counts.
+// stat where it used to be an access call, and nothing is added.
+//
+// The agent listing itself reads no workspace: which agents exist and what
+// they are called comes from the `agents` table. The per-agent CLAUDE.md
+// read, the agents-directory listing and its existence probe that every
+// listing used to pay are gone (7 ops here: 5 reads, 1 readdir, 1 probe),
+// and resolving the `:id` of a session route no longer stats the agent's
+// directory (1 op). These counts were re-pinned when that landed; a return
+// to the old counts is a regression.
 defineHomeScenarios('small', {
-  agentsCold: { totalOps: 317, ops: { stat: 285 }, wallMs: 240 },
-  agentsWarm: { totalOps: 52, ops: { stat: 25 }, wallMs: 160 },
-  homeCold: { totalOps: 352, ops: { stat: 290 }, wallMs: 370 },
-  homeWarm: { totalOps: 87, ops: { stat: 30 }, wallMs: 260 },
-  sessionsPage: { totalOps: 3, ops: { stat: 2 }, wallMs: 70 },
-  sessionsNotable: { totalOps: 1, ops: { stat: 1 }, wallMs: 40 },
+  agentsCold: { totalOps: 310, ops: { stat: 285 }, wallMs: 240 },
+  agentsWarm: { totalOps: 45, ops: { stat: 25 }, wallMs: 160 },
+  homeCold: { totalOps: 345, ops: { stat: 290 }, wallMs: 370 },
+  homeWarm: { totalOps: 80, ops: { stat: 30 }, wallMs: 260 },
+  sessionsPage: { totalOps: 2, ops: { stat: 1 }, wallMs: 70 },
+  sessionsNotable: { totalOps: 0, ops: { stat: 0 }, wallMs: 40 },
 })

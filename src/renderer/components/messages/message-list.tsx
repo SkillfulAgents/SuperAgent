@@ -24,6 +24,7 @@ import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
 import { InformationalItem } from './informational-item'
 import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
+import { ForkBoundaryItem, forkBoundaryIndex } from './fork-boundary'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, ChevronRight, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
@@ -902,6 +903,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     activeSubagents,
   })
 
+  // The fork line goes after the last copied message; the length means it
+  // closes the thread (a fresh fork). Computed on the window so it lands
+  // where the reader is, and hidden with the history when scrolled out.
+  const forkBoundaryAt = useMemo(() => forkBoundaryIndex(windowedMessages), [windowedMessages])
+
   // Drop expansion state for turns that no longer exist after edits/refetches.
   useEffect(() => {
     const validIds = new Set(completedTurns.map((turn) => turn.id))
@@ -1271,6 +1277,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                   }
                 />
               )}
+              {index === forkBoundaryAt && (
+                <ForkBoundaryItem sessionId={sessionId} agentSlug={agentSlug} />
+              )}
               {timeFlagState.messageIds.has(item.id) && (
                 <SessionTimeFlag date={new Date(item.createdAt)} />
               )}
@@ -1278,6 +1287,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             </Fragment>
           )
         })}
+
+        {/* A fresh fork has nothing after the copied history yet, so its line
+            closes it. Before the ghosts and streaming output: the first message
+            sent in the fork belongs below the line from the moment it is typed,
+            and the compacting indicator further down keeps Fork & Summarize in
+            order (fork first, then compact). */}
+        {forkBoundaryAt === windowedMessages.length && (
+          <ForkBoundaryItem sessionId={sessionId} agentSlug={agentSlug} />
+        )}
 
         {/* Turn-starting ghosts (sent while idle) — the next turn belongs to
             them, so they render before any streaming content. Queued ghosts

@@ -9,6 +9,8 @@
  * `RuntimeHost`.
  */
 import { createContainerClient } from './client-factory'
+import { ActivityClock } from './activity-clock'
+import { IdleAlarm } from './idle-alarm'
 import type {
   ContainerClient,
   ContainerConfig,
@@ -82,8 +84,23 @@ export class ContainerRuntime {
   private client: ContainerClient | null = null
   /** Cached container status - avoids repeated docker inspect calls */
   private cached: CachedContainerStatus | null = null
-  private startedAt: number | undefined
-  private lastKeepAlive: number | undefined
+  /**
+   * When this container was last busy: its start, the last keep-alive, the
+   * last session activity. Every mark re-arms the idle alarm; nothing here
+   * touches the filesystem.
+   */
+  private readonly activity = new ActivityClock()
+  /**
+   * Puts the container to sleep once it has been idle for the auto-sleep
+   * timeout. Armed from the marks above, cancelled when the container stops
+   * or the runtime is dropped; the host re-arms it when the timeout changes.
+   */
+  readonly idleAlarm = new IdleAlarm({
+    timeoutMs: () => (getSettings().app?.autoSleepTimeoutMinutes ?? 30) * 60_000,
+    lastActivityAt: () => this.sleepableSince(),
+    isBusy: () => this.isBusy(),
+    sleep: () => this.sleepIdle(),
+  })
   /** Cached health warnings */
   private healthWarnings: HealthCheckResult[] = []
   /** Being stopped — skip health checks, sync, and connection error recovery */
@@ -219,12 +236,22 @@ export class ContainerRuntime {
       status: 'stopped',
     })
     const client = this.getClient()
-    const startPromise = this.doStartContainer(client)
+    await this.trackStart(this.doStartContainer(client))
+  }
+
+  /**
+   * Hold a start as the in-flight one until it settles, then arm the idle
+   * alarm: a mark made while the start was in flight (the start's own, or a
+   * session write) could not arm it, since the alarm is inert during a start.
+   * A start that failed leaves the container not running, so arming is a no-op.
+   */
+  private async trackStart(startPromise: Promise<ContainerClient>): Promise<void> {
     this.starting = startPromise
     try {
       await startPromise
     } finally {
       this.starting = null
+      this.idleAlarm.schedule()
     }
   }
 
@@ -253,8 +280,8 @@ export class ContainerRuntime {
    */
   markAsStopped(): void {
     this.updateCachedStatus('stopped', null)
-    this.startedAt = undefined
-    this.lastKeepAlive = undefined
+    this.activity.reset()
+    this.idleAlarm.cancel()
   }
 
   /**
@@ -358,10 +385,20 @@ export class ContainerRuntime {
 
     this.updateCachedStatus(info.status, info.port)
 
-    // Host restart clears in-memory start times. Floor the idle clock at
-    // rediscovery so zero-session warm containers are still reaped.
-    if (info.status === 'running' && this.startedAt === undefined) {
-      this.startedAt = Date.now()
+    if (info.status === 'running') {
+      // Host restart clears in-memory start times. Floor the idle clock at
+      // rediscovery so zero-session warm containers are still reaped.
+      if (!this.activity.hasStarted()) this.activity.started()
+      // Arm from the last mark whether or not the clock was floored just now:
+      // an alarm that fired while a sync (or a transient inspect failure)
+      // reported the container stopped found nothing to sleep and disarmed,
+      // and the marks it would have re-armed from are still on the clock.
+      this.idleAlarm.schedule()
+    } else {
+      // Nothing to sleep while the container is not observed running. The
+      // marks stay: if the report was a transient failure, the next running
+      // sync arms from them again rather than from a fresh floor.
+      this.idleAlarm.cancel()
     }
 
     // Broadcast if status changed (e.g., container was stopped externally)
@@ -459,13 +496,7 @@ export class ContainerRuntime {
       this.assertNotStopping('start')
       if (this.starting) return this.starting
 
-      const startPromise = this.doStartContainer(client)
-      this.starting = startPromise
-      try {
-        await startPromise
-      } finally {
-        this.starting = null
-      }
+      await this.trackStart(this.doStartContainer(client))
     }
 
     return client
@@ -639,9 +670,10 @@ export class ContainerRuntime {
     const info = startedInfo ?? await client.getInfoFromRuntime()
     this.updateCachedStatus(info.status, info.port)
 
-    // Record start time so auto-sleep monitor doesn't immediately
-    // sleep the container based on stale session activity timestamps
-    this.startedAt = Date.now()
+    // The start is the first mark on the idle clock: it floors stale session
+    // timestamps from before the previous sleep. The alarm is armed by
+    // trackStart once this start is no longer in flight.
+    this.activity.started()
 
     // Broadcast agent status change globally
     messagePersister.broadcastGlobal({
@@ -653,18 +685,73 @@ export class ContainerRuntime {
     return client
   }
 
-  // Get the time the container was started (used by auto-sleep monitor)
-  getContainerStartTime(): number | undefined {
-    return this.startedAt
-  }
-
   // Record a keep-alive ping (e.g. from an open dashboard) to prevent auto-sleep
   keepAlive(): void {
-    this.lastKeepAlive = Date.now()
+    this.activity.keepAlive()
+    this.idleAlarm.schedule()
   }
 
-  getLastKeepAlive(): number | undefined {
-    return this.lastKeepAlive
+  /**
+   * A session of this agent was sent to or written to at `at` (epoch ms).
+   * The actor's session store reports every such write here, so the idle
+   * clock follows the sessions without anyone re-reading their metadata.
+   */
+  noteSessionActivity(at: number = Date.now()): void {
+    this.activity.sessionActivity(at)
+    this.idleAlarm.schedule()
+  }
+
+  /**
+   * When this container was last busy — the latest of its start, the last
+   * keep-alive and the last session activity — or undefined when none has
+   * been recorded since it was last stopped or dropped.
+   */
+  lastActivityAt(): number | undefined {
+    return this.activity.lastActivityAt()
+  }
+
+  /**
+   * When this container last stopped being busy, or null while a session is
+   * active or awaiting input, or while there is nothing to put to sleep: no
+   * mark on the clock, or a container that is not running. What the idle
+   * alarm decides on; see `ContainerOps.idleSince`.
+   */
+  idleSince(): number | null {
+    return this.isBusy() ? null : (this.sleepableSince() ?? null)
+  }
+
+  /**
+   * The clock as the alarm sees it: the last mark while the container is
+   * running and neither starting nor stopping, otherwise nothing. A session
+   * of a stopped agent is still written to (a message deleted, a transcript
+   * appended), and that marks the clock, but it must not arm an alarm that
+   * would stop a container that is not there — or, worse, one that a later
+   * start is in the middle of bringing up.
+   */
+  private sleepableSince(): number | undefined {
+    if (this.starting || this.stopping || this.getCachedInfo().status !== 'running') return undefined
+    return this.activity.lastActivityAt()
+  }
+
+  private isBusy(): boolean {
+    return (
+      messagePersister.hasActiveSessionsForAgent(this.slug) ||
+      messagePersister.hasSessionsAwaitingInputForAgent(this.slug)
+    )
+  }
+
+  /** What the idle alarm runs: stop without ever force-stopping the shared VM. */
+  private async sleepIdle(): Promise<void> {
+    const timeoutMinutes = getSettings().app?.autoSleepTimeoutMinutes ?? 30
+    console.log(`[ContainerRuntime] Agent ${this.slug} idle for >${timeoutMinutes}m, stopping...`)
+    await this.stopContainer({
+      stopTimeoutMs: 60_000,
+      killTimeoutMs: 30_000,
+      // Never force-stop the shared VM to reclaim one idle container — it would
+      // kill every running agent. If stop+kill time out, leave it running; the
+      // alarm retries.
+      escalateToForceStop: false,
+    })
   }
 
   /**
@@ -675,8 +762,8 @@ export class ContainerRuntime {
     this.disposed = true
     this.client = null
     this.cached = null
-    this.startedAt = undefined
-    this.lastKeepAlive = undefined
+    this.activity.reset()
+    this.idleAlarm.cancel()
     this.healthWarnings = []
     this.stopping = false
     this.starting = null

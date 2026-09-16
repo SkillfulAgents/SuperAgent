@@ -95,7 +95,7 @@ describe('openWidgetRepairSession', () => {
     expect(created.initialMessage).toContain(ERROR)
     expect(created.initialMessage).toContain('TypeError: ...')
     expect(created.initialMessage).toContain('widgets` skill')
-    expect(mocks.registerSession).toHaveBeenCalledWith(AGENT, 'session-new', 'Invoked to fix widget', {
+    expect(mocks.registerSession).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT }), 'session-new', 'Invoked to fix widget', {
       isWidgetRepair: true,
       widgetRepairSlug: 'weather',
       automationStatus: 'running',

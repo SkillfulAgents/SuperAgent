@@ -227,6 +227,14 @@ describe('account reauthentication replacement', () => {
     expect(mappedAccounts('shared-agent')).toEqual(['mine'])
   })
 
+  it('concurrent replacements grant exactly one new account; the loser gets the 409', async () => {
+    account('second', 'member')
+    const request = park()
+    const responses = await Promise.all([replace(request.id, ['mine']), replace(request.id, ['second'])])
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 409])
+    expect(mappedAccounts('shared-agent')).toHaveLength(1)
+  })
+
   it('preserves single-user mode behavior without an account owner restriction', async () => {
     authMode = false
     const request = park()

@@ -25,10 +25,10 @@ import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import {
   createAgent,
   listAgents,
-  getAgent,
+  getAgentRecord,
 } from '@shared/lib/services/agent-service'
-import { resolveAgentId, displaySlug } from '@shared/lib/utils/file-storage'
-import { agentRegistry } from '@shared/lib/agent-actor'
+import { displaySlug } from '@shared/lib/utils/file-storage'
+import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   evaluate as evaluatePolicy,
@@ -132,8 +132,8 @@ async function deleteMessageAuthorBestEffort(messageUuid: string): Promise<void>
 
 async function getAgentDisplayNameBestEffort(agentSlug: string): Promise<string> {
   try {
-    const agent = await getAgent(agentSlug)
-    return agent?.frontmatter.name || agentSlug
+    const agent = await getAgentRecord(agentSlug)
+    return agent?.name || agentSlug
   } catch (error) {
     // Human-readable naming is cosmetic and must not gate agent invocation.
     console.warn('[x-agent] failed to resolve caller display name; using slug', {
@@ -251,11 +251,11 @@ xAgent.post('/list', async (c) => {
     .filter((a) => a.slug !== callerSlug)
     .filter((a) => (visible ? visible.has(a.slug) : true))
     .map((a) => ({
-      // Project the decorative display slug for the model; resolveAgentId tolerates
+      // Project the decorative display slug for the model; the catalog tolerates
       // it (and the bare id / legacy form) on the way back in via invoke/get-*.
-      slug: displaySlug(a.frontmatter.name, a.slug),
-      name: a.frontmatter.name,
-      description: a.frontmatter.description,
+      slug: displaySlug(a.name, a.slug),
+      name: a.name,
+      description: a.description,
     }))
   return c.json({ agents: filtered })
 })
@@ -323,17 +323,17 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
 
   // Resolve the model-supplied display slug to the canonical id and rebind, so
   // every downstream ACL / policy / fs use below keys on the id, not the prefix.
-  const targetSlug = await resolveAgentId(rawTargetSlug)
+  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
   if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
-  const target = await getAgent(targetSlug)
+  const target = await getAgentRecord(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
 
   if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
     return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
   }
 
-  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.frontmatter.name)
+  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.name)
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
@@ -570,17 +570,17 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
   const { slug: rawTargetSlug, sessionId, sync, limit, fullTranscript } = c.req.valid('json')
 
   // Resolve the model-supplied display slug to the canonical id and rebind.
-  const targetSlug = await resolveAgentId(rawTargetSlug)
+  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
   if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
-  const target = await getAgent(targetSlug)
+  const target = await getAgentRecord(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
 
   if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
     return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
   }
 
-  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.frontmatter.name)
+  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.name)
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
@@ -669,7 +669,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   const { slug: rawTargetSlug, prompt, sessionId: existingSessionId, sync, _callerSessionId } = c.req.valid('json')
 
   // Resolve display slug → canonical id so ACL / policy / runtime all use ids.
-  const targetSlug = await resolveAgentId(rawTargetSlug)
+  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
   if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
   if (targetSlug === callerSlug) {
@@ -699,7 +699,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     ? await getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
     : undefined
 
-  const target = await getAgent(targetSlug)
+  const target = await getAgentRecord(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
 
   if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'user'))) {
@@ -710,7 +710,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     callerSlug,
     'invoke',
     targetSlug,
-    target.frontmatter.name,
+    target.name,
     prompt.slice(0, 200),
   )
   if (!policy.allowed) {

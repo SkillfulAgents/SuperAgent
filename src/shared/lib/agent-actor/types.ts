@@ -93,19 +93,56 @@ export interface AgentActor {
   readonly config: ConfigOps
 }
 
+/** Where an agent's workspace lives. */
+export interface AgentPlacement {
+  /** 'local' for a directory under the agents data directory; a provider name otherwise. */
+  runtime: string
+  /** The provider's handle for a workspace held elsewhere; null for a local one. */
+  workspaceHandle: string | null
+}
+
+/** One agent as the catalog knows it: identity and placement, never contents. */
+export interface AgentRecord {
+  slug: AgentSlug
+  name: string
+  description?: string
+  createdAt: Date
+  placement: AgentPlacement
+}
+
+export interface AgentIdentityChanges {
+  name?: string
+  /** Null clears the description. */
+  description?: string | null
+}
+
 /**
- * Which agents exist. Host level, like `ContainerHost`: an actor is about one
- * agent, this is about the set, and creating or removing an agent is an
- * operation on the set. Reading or writing an agent's contents goes through
- * its actor.
+ * Which agents exist and what they are called. Host level, like
+ * `ContainerHost`: an actor is about one agent, this is about the set, and
+ * creating or removing an agent is an operation on the set. Reading or
+ * writing an agent's contents goes through its actor.
+ *
+ * The catalog is the authority for an agent's name and description. The
+ * agent's `CLAUDE.md` carries a frontmatter projection of them, written by
+ * the host, so the agent still sees who it is and exports still carry it.
  */
 export interface AgentCatalog {
-  /** Every agent id on this host. Not filtered for validity; callers check what they need. */
+  /** Every agent slug on this host, newest first. */
   list(): Promise<AgentSlug[]>
+  /** Every agent, newest first. */
+  records(): Promise<AgentRecord[]>
+  /** The agent for a slug, or null when there is no such agent. */
+  get(slug: AgentSlug): Promise<AgentRecord | null>
+  /** The agents for these slugs, newest first; unknown slugs are skipped. */
+  getMany(slugs: AgentSlug[]): Promise<AgentRecord[]>
   exists(slug: AgentSlug): Promise<boolean>
-  /** A fresh, unused agent id. Nothing is created until the actor writes to it. */
+  /** A fresh, unused agent slug. Nothing exists until `insert` records it. */
   mint(): Promise<AgentSlug>
-  /** The agent id for a display slug or an id, or null when there is no such agent. */
+  /** Record a new local agent. The caller has written its workspace already. */
+  insert(record: { slug: AgentSlug; name: string; description?: string; createdAt: Date }): Promise<AgentRecord>
+  /** Change an agent's name or description; null when there is no such agent. */
+  update(slug: AgentSlug, changes: AgentIdentityChanges): Promise<AgentRecord | null>
+  /** The agent slug for a display slug or a slug, or null when there is no such agent. */
   resolve(input: string): Promise<AgentSlug | null>
   /** Remove an agent and everything it owns. The caller stops its container first. */
   remove(slug: AgentSlug): Promise<void>
@@ -126,10 +163,22 @@ export interface ContainerOps {
   syncStatus(): Promise<ContainerInfo>
   /** `containerManager.getHealthWarnings` */
   health(): HealthCheckResult[]
-  /** `containerManager.getContainerStartTime` */
-  startedAt(): number | undefined
-  /** `containerManager.getLastKeepAlive` */
-  lastKeepAliveAt(): number | undefined
+  /**
+   * When this agent last stopped being busy, as epoch ms, or `null` while it
+   * is busy or its idleness is unknown. Busy is any session active or
+   * awaiting input. Otherwise it is the latest of the container start, the
+   * last `keepAlive()` and the last session activity (a message sent, a frame
+   * received, a transcript write), and `null` when none has been recorded
+   * since the container last stopped.
+   *
+   * The actor puts itself to sleep: each of those events re-arms its own
+   * alarm for the auto-sleep timeout, and the alarm sleeps the container
+   * once `idleSince() !== null && now - idleSince() > timeout`. A local actor
+   * uses a timer on the runtime; a remote one uses its host's alarm. This op
+   * is the clock the alarm reads, answered from memory, exposed so a status
+   * view or a fallback sweep can read it too.
+   */
+  idleSince(): number | null
   /** `client.getStats` */
   stats(): Promise<ContainerStats | null>
   /** `client.getInfo` — queries the runtime; prefer `status()` unless freshness matters. */
@@ -213,9 +262,9 @@ export interface SessionOps {
   finalizeAutomationStatus(sessionId: string, status: 'succeeded' | 'failed'): Promise<AutomationStatusResult>
   /** `ensureSessionsDirectory` */
   ensureDirectory(): Promise<void>
-  /** `sessionFileRealPathWithinAgent` */
-  fileRealPathWithinAgent(sessionId: string): boolean
-  /** `loadSessionUsageTotals` (usage-service) over this session's transcript files. */
+  /** `sessionFileRealPathWithinAgent` — the transcript's real location is inside the workspace, links followed. */
+  fileRealPathWithinAgent(sessionId: string): Promise<boolean>
+  /** `loadSessionUsageTotals` (usage-service) over this session's transcript and the files beside it. */
   usage(sessionId: string, options?: Pick<CommonLoadOptions, 'providerId'>): Promise<SessionUsageTotals>
   /** `getSessionsByScheduledTask` */
   byScheduledTask(scheduledTaskId: string): Promise<SessionInfo[]>
@@ -361,7 +410,7 @@ export interface MessageOps {
   /** `appendInformationalEntry` (session-transcript-append) */
   appendInformational(sessionId: string, entry: { uuid: string; content: string; level?: string }): Promise<void>
   /** `appendAssistantEntry` (session-transcript-append) — an assistant message delivered out of band, recorded so the transcript shows it. */
-  appendAssistant(sessionId: string, text: string): void
+  appendAssistant(sessionId: string, text: string): Promise<void>
   /** `streamJsonlFile` over the transcript — every raw entry, in order. */
   rawEntries(sessionId: string): AsyncIterable<unknown>
   /** The transcript file's bytes for the debug view, or null when there is no transcript. */
@@ -478,9 +527,9 @@ export interface McpReauthOps {
   replace(entryId: string, replacementMcpId: string): boolean
 }
 
-/** Model usage read from this agent's Claude data directory — usage-service. */
+/** Model usage read from this agent's transcripts — usage-service. */
 export interface UsageOps {
-  /** `loadDailyUsageData` with this agent's `claudePath`. */
+  /** `loadDailyUsageData` over every transcript the CLI wrote for this agent. */
   daily(options?: CommonLoadOptions): Promise<DailyUsageData[]>
 }
 
@@ -517,6 +566,11 @@ export interface FileStat {
    * where it lands. Absent from a store that keeps no modes.
    */
   mode?: number
+  /**
+   * When the file was created, where the store records that. Absent from a
+   * store that does not, and 0 on a filesystem that reports no birth time.
+   */
+  birthtimeMs?: number
 }
 
 /** A closed byte range: both ends inclusive, as in an HTTP Range header. */
@@ -531,6 +585,14 @@ export interface WriteOptions {
    * container must be able to read `.env`), anything else ignores it.
    */
   mode?: number
+  /**
+   * For `write`: flush the file to disk before returning, as `putDoc` always
+   * does. Off by default, because bulk content (an import of a thousand
+   * files) was never flushed and a flush per file is what makes it slow; on
+   * for the rewrite of a file that must survive a crash. A store that is
+   * durable on return ignores it.
+   */
+  flush?: boolean
 }
 
 /**
@@ -546,12 +608,15 @@ export interface ConfigOps {
   put<K extends ConfigDocId>(id: K, doc: ConfigDoc<K>): Promise<void>
   /**
    * Read-modify-write, serialized per document: no two updates interleave,
-   * and for a document another process also writes, neither do theirs.
+   * and for a document another process also writes, neither do theirs. A
+   * mutator that returns null, or the document it was given, leaves the file
+   * untouched; the result is the document as it stands afterwards, null when
+   * there is none.
    */
   update<K extends ConfigDocId>(
     id: K,
-    mutate: (current: ConfigDoc<K> | null) => ConfigDoc<K> | Promise<ConfigDoc<K>>,
-  ): Promise<ConfigDoc<K>>
+    mutate: (current: ConfigDoc<K> | null) => ConfigDoc<K> | null | Promise<ConfigDoc<K> | null>,
+  ): Promise<ConfigDoc<K> | null>
 }
 
 /**
@@ -588,4 +653,44 @@ export interface FileOps {
   delete(path: string, options?: { recursive?: boolean }): Promise<void>
   /** Create a directory and any missing parents. */
   mkdir(path: string): Promise<void>
+  /**
+   * Add bytes to the end of a file, creating it and its parents when absent.
+   * One append is one write: two appends never interleave their bytes. A
+   * directory → `not-a-file`.
+   */
+  append(path: string, bytes: Uint8Array | string): Promise<void>
+  /**
+   * Open a file for reads at byte offsets: what a transcript reader that
+   * pages backward from the end, or serves one span out of the middle, needs
+   * beyond a single ranged `read`. Absent → `not-found`; a directory →
+   * `not-a-file`. The caller closes it.
+   */
+  open(path: string): Promise<OpenFile>
+}
+
+/**
+ * A file opened for reads at byte offsets. The file may grow while it is
+ * open (the agent appends to its transcript): `size` answers the size now,
+ * and a read past the end delivers what is there.
+ */
+export interface OpenFile {
+  /** The file's size now. */
+  size(): Promise<number>
+  /**
+   * Up to `length` bytes from `offset`; fewer only when the file ends first.
+   * `signal` is observed before every read the fill takes: one logical read
+   * can take several physical ones on the filesystems where short reads
+   * happen, each a round trip a caller that gave up must not pay for.
+   */
+  readAt(offset: number, length: number, signal?: AbortSignal): Promise<Uint8Array>
+  /**
+   * The bytes as a stream: the whole file, or from `start` to `end` (both
+   * inclusive) or to the end of the file when `end` is omitted; a range past
+   * the end stops at the end. The last use of the handle: the open is
+   * released when the stream ends, so a caller that hands the stream on (an
+   * HTTP response) has nothing left to close.
+   */
+  stream(range?: { start: number; end?: number }): ReadableStream<Uint8Array>
+  /** Release what the open holds. Safe to call more than once, and after `stream`. */
+  close(): Promise<void>
 }
