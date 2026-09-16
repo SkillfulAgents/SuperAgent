@@ -1,4 +1,4 @@
-import { prepareSpeechAudioOutput } from './audio-output'
+import { prepareSpeechAudioOutput, type SpeechAudioOutput } from './audio-output'
 import { pcm16ToFloat32 } from '@renderer/lib/stt'
 import type { TtsAdapter, TtsEvent, TtsVoiceOptions } from '@renderer/lib/tts'
 import { SpeechSegmenter, type SpeechSegment } from './speech-segmenter'
@@ -118,6 +118,7 @@ export class SpeechPlayer {
   private readonly finishOnIdleClose: boolean
 
   private ctx: AudioContext | null = null
+  private output: SpeechAudioOutput | null = null
   /** Output volume, so playback can be ducked while the person talks over it. */
   private gain: GainNode | null = null
   private volume = 1
@@ -188,6 +189,7 @@ export class SpeechPlayer {
     this.gain = ctx.createGain()
     this.gain.gain.value = this.volume
     const output = prepareSpeechAudioOutput(ctx)
+    this.output = output
     this.gain.connect(output.destination)
     void output.ready.catch(error => { if (!this.isTerminal) this.fail(error) })
     // A context created outside a user gesture may start suspended. A
@@ -287,6 +289,7 @@ export class SpeechPlayer {
       clearTimeout(this.doneTimer)
       this.doneTimer = null
     }
+    this.output?.pause()
     void this.ctx.suspend()
     this.setStatus('paused')
   }
@@ -294,6 +297,7 @@ export class SpeechPlayer {
   resume(): void {
     if (this._status !== 'paused' || !this.ctx) return
     void this.ctx.resume()
+    void this.output?.resume().catch(error => { if (!this.isTerminal) this.fail(error) })
     // The pause is not the synthesizer's silence.
     this.lastSynthesisAt = Date.now()
     this.setStatus('speaking')
@@ -574,6 +578,8 @@ export class SpeechPlayer {
       this.pumpTimer = null
     }
     this.adapter.close()
+    this.output?.pause()
+    this.output = null
     if (this.ctx) {
       void this.ctx.close()
       this.ctx = null

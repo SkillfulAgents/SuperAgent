@@ -42,8 +42,18 @@ test('OpenAI read-aloud plays, pauses, resumes, and stops through the standard c
   expect(calls[0].text).toContain('mock response')
   await reply.getByTestId('read-aloud-pause').click()
   await expect(controls).toHaveAttribute('data-status', 'paused')
+  if (test.info().project.name === 'web-webkit') {
+    await expect.poll(() => page.evaluate(() => [...document.querySelectorAll('audio')].some(audio =>
+      audio.srcObject instanceof MediaStream && audio.paused && audio.muted,
+    ))).toBe(true)
+  }
   await reply.getByTestId('read-aloud-resume').click()
   await expect(controls).toHaveAttribute('data-status', 'speaking')
+  if (test.info().project.name === 'web-webkit') {
+    await expect.poll(() => page.evaluate(() => [...document.querySelectorAll('audio')].some(audio =>
+      audio.srcObject instanceof MediaStream && !audio.paused && !audio.muted,
+    ))).toBe(true)
+  }
   await reply.getByTestId('read-aloud-stop').click()
   await expect(reply.getByTestId('read-aloud-stop')).toHaveCount(0)
   await expect(reply.locator('[data-spoken-word]')).toHaveCount(0)

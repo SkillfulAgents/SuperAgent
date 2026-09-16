@@ -1,6 +1,8 @@
-interface SpeechAudioOutput {
+export interface SpeechAudioOutput {
   destination: AudioNode
   ready: Promise<void>
+  pause(): void
+  resume(): Promise<void>
 }
 
 const outputs = new WeakMap<AudioContext, SpeechAudioOutput>()
@@ -16,7 +18,10 @@ export function prepareSpeechAudioOutput(ctx: AudioContext): SpeechAudioOutput {
   if (existing) return existing
   const safari = typeof navigator !== 'undefined' && /Version\/[\d.]+.*Safari\//.test(navigator.userAgent)
   if (!safari) {
-    const output = { destination: ctx.destination, ready: Promise.resolve() }
+    const output: SpeechAudioOutput = {
+      destination: ctx.destination, ready: Promise.resolve(),
+      pause: () => {}, resume: () => Promise.resolve(),
+    }
     outputs.set(ctx, output)
     return output
   }
@@ -30,11 +35,18 @@ export function prepareSpeechAudioOutput(ctx: AudioContext): SpeechAudioOutput {
   audio.hidden = true
   document.body.append(audio)
   let disposed = false
+  let playGeneration = 0
+  const pause = () => {
+    ++playGeneration
+    // Silence the media sink before freezing its upstream Web Audio clock.
+    audio.muted = true
+    audio.pause()
+  }
   const dispose = () => {
     if (disposed) return
     disposed = true
     ctx.removeEventListener('statechange', onStateChange)
-    audio.pause()
+    pause()
     audio.srcObject = null
     destination.stream.getTracks().forEach(track => track.stop())
     audio.remove()
@@ -42,16 +54,23 @@ export function prepareSpeechAudioOutput(ctx: AudioContext): SpeechAudioOutput {
   }
   const onStateChange = () => { if (ctx.state === 'closed') dispose() }
   ctx.addEventListener('statechange', onStateChange)
-  let ready: Promise<void>
-  try { ready = audio.play() } catch (error) { ready = Promise.reject(error) }
-  ready = ready.catch(() => {
-    if (disposed) return
-    throw new Error('Audio playback was blocked by Safari. Allow audio for this site, then try Read aloud again.')
-  })
+  const resume = (): Promise<void> => {
+    if (disposed) return Promise.resolve()
+    const generation = ++playGeneration
+    audio.muted = false
+    let playing: Promise<void>
+    try { playing = audio.play() } catch (error) { playing = Promise.reject(error) }
+    return playing.catch(() => {
+      // Pausing/closing can abort a pending play; it is not an autoplay denial.
+      if (disposed || generation !== playGeneration) return
+      throw new Error('Audio playback was blocked by Safari. Allow audio for this site, then try Read aloud again.')
+    })
+  }
+  const ready = resume()
   // Credentials may still be loading; the player observes this same rejection
   // when it adopts the context. Avoid an unhandled rejection in the meantime.
   void ready.catch(() => {})
-  const output = { destination, ready }
+  const output = { destination, ready, pause, resume }
   outputs.set(ctx, output)
   return output
 }

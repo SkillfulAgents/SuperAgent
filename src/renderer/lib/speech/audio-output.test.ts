@@ -43,6 +43,40 @@ describe('speech output routing', () => {
     expect(audio.srcObject).toBeNull()
     expect(audio.isConnected).toBe(false)
   })
+  it('pauses the media sink immediately and resumes the same stream', async () => {
+    const { ctx, audio, play, pause, stop, destination, close } = setup()
+    const output = prepareSpeechAudioOutput(ctx)
+    await output.ready
+    output.pause()
+    expect(audio.muted).toBe(true)
+    expect(pause).toHaveBeenCalledOnce()
+    expect(stop).not.toHaveBeenCalled()
+    await output.resume()
+    expect(audio.muted).toBe(false)
+    expect(audio.srcObject).toBe(destination.stream)
+    expect(play).toHaveBeenCalledTimes(2)
+    close()
+  })
+  it('ignores an interrupted play even if a newer resume is already in progress', async () => {
+    const { ctx, play, close } = setup()
+    let reject!: (error: Error) => void
+    play.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail }))
+    const output = prepareSpeechAudioOutput(ctx)
+    output.pause()
+    await output.resume()
+    reject(new DOMException('Paused', 'AbortError'))
+    await expect(output.ready).resolves.toBeUndefined()
+    close()
+  })
+  it('reports a rejected resume instead of silently advancing the reader', async () => {
+    const { ctx, play, close } = setup()
+    const output = prepareSpeechAudioOutput(ctx)
+    await output.ready
+    output.pause()
+    play.mockRejectedValue(new DOMException('Denied', 'NotAllowedError'))
+    await expect(output.resume()).rejects.toThrow('Audio playback was blocked by Safari')
+    close()
+  })
   it('surfaces autoplay denial when the player adopts the prepared output', async () => {
     const { ctx, play, close } = setup()
     play.mockRejectedValue(new DOMException('Denied', 'NotAllowedError'))
