@@ -281,6 +281,48 @@
       "when": 1788396615359,
       "tag": "0039_webhook_trigger_minted_by_member",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1789059097911,
+      "tag": "0040_user_avatar_override",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1789080776897,
+      "tag": "0041_user_avatar_lookup_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "6",
+      "when": 1789438768720,
+      "tag": "0042_agents",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "6",
+      "when": 1789495471204,
+      "tag": "0043_data_migrations",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "6",
+      "when": 1789518638375,
+      "tag": "0044_x_agent_policies_null_safe_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "6",
+      "when": 1789574400000,
+      "tag": "0045_slack_thread_state",
+      "breakpoints": true
     }
   ]
 }

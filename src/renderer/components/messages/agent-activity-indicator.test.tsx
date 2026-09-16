@@ -968,6 +968,36 @@ describe('AgentActivityIndicator', () => {
   })
 
   describe('subagent status', () => {
+    it('shows lifecycle-only subagents launched inside a Skill', () => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [{
+        parentToolId: 'nested-agent-tool',
+        agentId: 'nested-agent-id',
+        subagentType: 'code-reviewer',
+        description: 'Review the changes',
+        progressSummary: 'Inspecting tests',
+      }]
+      mockStreamState.completedSubagents = new Set()
+      mockMessages.push({
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'skill-tool',
+          name: 'Skill',
+          input: { skill: 'code-review' },
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getByText('code-reviewer')).toBeInTheDocument()
+      expect(screen.getByText('Review the changes')).toBeInTheDocument()
+      expect(screen.getByText('Inspecting tests')).toBeInTheDocument()
+    })
+
     const renderWithSubagent = (opts: { result?: unknown; subagentStatus?: string; completed?: boolean }) => {
       mockStreamState.isActive = true
       mockStreamState.activeStartTime = Date.now()

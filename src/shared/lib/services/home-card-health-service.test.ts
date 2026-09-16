@@ -31,8 +31,8 @@ describe('home-card-health-service', () => {
       migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations'),
     })
     mockReadSessionMetadata.mockReset()
-    mockReadSessionMetadata.mockImplementation(async (agentSlug: string) => (
-      agentSlug === 'agent-a'
+    mockReadSessionMetadata.mockImplementation(async (store: { slug: string }) => (
+      store.slug === 'agent-a'
         ? {
             'cron-success': {
               scheduledTaskId: 'cron-a',
@@ -154,7 +154,7 @@ describe('home-card-health-service', () => {
       failed: 0,
     })
     expect(mockReadSessionMetadata).toHaveBeenCalledTimes(1)
-    expect(mockReadSessionMetadata).toHaveBeenCalledWith('agent-a')
+    expect(mockReadSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-a' }))
     expect(result).not.toHaveProperty('accountLinks')
     expect(result).not.toHaveProperty('connectionById')
   })

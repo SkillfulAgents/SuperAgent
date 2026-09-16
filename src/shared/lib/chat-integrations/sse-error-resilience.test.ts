@@ -41,10 +41,6 @@ function createManagedConnector(overrides?: Partial<ManagedConnector>): ManagedC
       updatedAt: new Date(),
     } as ChatIntegration,
     chatId: 'chat-123',
-    sseUnsubscribe: null,
-    messageUnsubscribe: null,
-    interactiveUnsubscribe: null,
-    errorUnsubscribe: null,
     streamingState: {
       currentMessageId: null,
       accumulatedText: '',

@@ -108,8 +108,10 @@ vi.mock('os', () => ({
 }))
 
 const mockCaptureException = vi.fn()
+const mockCaptureMessage = vi.fn()
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
+  captureMessage: (...args: unknown[]) => mockCaptureMessage(...args),
   addErrorBreadcrumb: vi.fn(),
 }))
 
@@ -119,7 +121,10 @@ vi.mock('@shared/lib/error-reporting', () => ({
 
 import {
   checkAllRunnersAvailability,
+  classifyImageCheckOutput,
   clearRunnerAvailabilityCache,
+  IMAGE_CHECK_MARKER,
+  IMAGE_CHECK_TIMEOUT_MS,
   pullImage,
   PULL_STALL_TIMEOUT_MS,
   KILL_STALLED_PULL_TIMEOUT_MS,
@@ -473,7 +478,17 @@ describe('pullImage stall watchdog', () => {
     vi.clearAllMocks()
     vi.useFakeTimers()
     proc = new FakePullProc()
-    mockSpawnWithPath.mockReturnValue(proc)
+    // A successful pull is followed by the integrity-check container (a
+    // `run`); hand that spawn its own process that passes straight away.
+    mockSpawnWithPath.mockImplementation((_cli: string, args: string[]) => {
+      if (args[0] !== 'run') return proc
+      const check = new FakePullProc()
+      queueMicrotask(() => {
+        check.stdout.emit('data', Buffer.from(`${IMAGE_CHECK_MARKER} 139 package.json files checked, 0 damaged\n`))
+        check.emit('close', 0)
+      })
+      return check
+    })
     mockKillWSL2PullProcesses.mockResolvedValue(undefined)
   })
 
@@ -566,5 +581,197 @@ describe('pullImage stall watchdog', () => {
     await assertion
 
     expect(mockKillWSL2PullProcesses).not.toHaveBeenCalled()
+  })
+})
+
+// ============================================================================
+// pullImage integrity check — a pull verifies layer digests on download but
+// not the unpack; a file that lands truncated on a strained disk makes the
+// image fail every start until it is deleted by hand. Right after the pull a
+// throwaway container parses every package.json under /app/node_modules and
+// loads the boot-time modules; a damaged image is deleted and pulled once
+// more, a second damaged copy fails the pull with the damaged copy removed.
+// ============================================================================
+
+describe('classifyImageCheckOutput', () => {
+  it('reads the summary line', () => {
+    expect(classifyImageCheckOutput(`${IMAGE_CHECK_MARKER} 139 package.json files checked, 0 damaged`)).toBe('ok')
+    expect(classifyImageCheckOutput(`damaged /app/node_modules/hono/package.json\n${IMAGE_CHECK_MARKER} 139 package.json files checked, 1 damaged`)).toBe('damaged')
+  })
+
+  it('recognises the server crash signatures when node died before the summary', () => {
+    expect(classifyImageCheckOutput('Error: Invalid package config /app/node_modules/hono/package.json.\n  code: ERR_INVALID_PACKAGE_CONFIG')).toBe('damaged')
+    expect(classifyImageCheckOutput("Error: Cannot find module '/app/dist/server.js'")).toBe('damaged')
+    expect(classifyImageCheckOutput('/app/node_modules/hono/dist/cjs/index.js:412\n  foo(\n\nSyntaxError: Unexpected end of input')).toBe('damaged')
+  })
+
+  it('is inconclusive when the check could not run', () => {
+    expect(classifyImageCheckOutput('')).toBe('inconclusive')
+    expect(classifyImageCheckOutput('docker: Error response from daemon: dial unix /var/run/docker.sock: connect: no such file')).toBe('inconclusive')
+    expect(classifyImageCheckOutput('Error: unknown flag: --entrypoint')).toBe('inconclusive')
+    // A workspace file is user data, not image content.
+    expect(classifyImageCheckOutput('Error: Invalid package config /workspace/app/package.json.')).toBe('inconclusive')
+  })
+})
+
+describe('pullImage integrity check', () => {
+  class FakeProc extends EventEmitter {
+    stdout = new EventEmitter()
+    stderr = new EventEmitter()
+    kill = vi.fn()
+    constructor(public readonly args: string[]) {
+      super()
+    }
+  }
+
+  const IMAGE = 'ghcr.io/acme/agent:1.0.0'
+  const OK_LINE = `${IMAGE_CHECK_MARKER} 139 package.json files checked, 0 damaged\n`
+  const DAMAGED_LINES = `damaged /app/node_modules/hono/package.json\n${IMAGE_CHECK_MARKER} 139 package.json files checked, 1 damaged\n`
+
+  let spawned: FakeProc[]
+  // Scripted outcomes for successive integrity-check containers.
+  let checkScript: Array<'ok' | 'damaged' | 'silent' | 'hang'>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    spawned = []
+    checkScript = []
+    mockKillWSL2PullProcesses.mockResolvedValue(undefined)
+    mockSpawnWithPath.mockImplementation((_cli: string, args: string[]) => {
+      const proc = new FakeProc(args)
+      spawned.push(proc)
+      queueMicrotask(() => {
+        if (args[0] === 'pull') {
+          proc.emit('close', 0)
+        } else if (args[0] === 'run') {
+          const outcome = checkScript.shift() ?? 'ok'
+          if (outcome === 'ok') {
+            proc.stdout.emit('data', Buffer.from(OK_LINE))
+            proc.emit('close', 0)
+          } else if (outcome === 'damaged') {
+            proc.stdout.emit('data', Buffer.from(DAMAGED_LINES))
+            proc.emit('close', 1)
+          } else if (outcome === 'silent') {
+            proc.stderr.emit('data', Buffer.from('docker: Error response from daemon: something unrelated\n'))
+            proc.emit('close', 125)
+          }
+          // 'hang': never closes — the timeout has to settle it.
+        } else {
+          proc.emit('close', 0)
+        }
+      })
+      return proc
+    })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const argsOf = (procs: FakeProc[]) => procs.map((p) => p.args[0])
+  const checkProcs = () => spawned.filter((p) => p.args[0] === 'run')
+
+  it('runs the check in a throwaway container of the pulled image, without a shell in the way', async () => {
+    await pullImage('docker', IMAGE)
+
+    expect(argsOf(spawned)).toEqual(['pull', 'run'])
+    const [check] = checkProcs()
+    expect(check.args).toEqual([
+      'run', '--rm',
+      '-e', expect.stringMatching(/^IMAGE_CHECK=[A-Za-z0-9+/=]+$/),
+      '--entrypoint', 'node',
+      IMAGE,
+      '-e', "eval(Buffer.from(process.env.IMAGE_CHECK,'base64').toString())",
+    ])
+    // The script itself never touches a shell: it rides base64 in the env var.
+    const encoded = check.args[3].slice('IMAGE_CHECK='.length)
+    const script = Buffer.from(encoded, 'base64').toString('utf8')
+    expect(script).toContain("walk('/app/node_modules')")
+    expect(script).toContain("require('hono')")
+    expect(script).toContain("require.resolve('/app/dist/server.js')")
+    expect(mockCaptureMessage).not.toHaveBeenCalled()
+    expect(mockCaptureException).not.toHaveBeenCalled()
+  })
+
+  it('deletes a damaged image and pulls it again', async () => {
+    checkScript = ['damaged', 'ok']
+
+    await expect(pullImage('docker', IMAGE)).resolves.toBeUndefined()
+
+    expect(argsOf(spawned)).toEqual(['pull', 'run', 'rmi', 'pull', 'run'])
+    expect(spawned[2].args).toEqual(['rmi', '-f', IMAGE])
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      'Freshly pulled image is damaged; removing and pulling again',
+      expect.objectContaining({ level: 'warning' })
+    )
+    expect(mockCaptureException).not.toHaveBeenCalled()
+  })
+
+  it('fails the pull, with the damaged copy removed, when the second download is damaged too', async () => {
+    checkScript = ['damaged', 'damaged']
+
+    const failure = await pullImage('docker', IMAGE).then(
+      () => { throw new Error('expected the pull to fail') },
+      (err: Error) => err
+    )
+    expect(failure.message).toMatch(/downloaded damaged twice/)
+    // Marked so start()'s catch does not report the same failure twice.
+    expect(failure).toMatchObject({ sentryCaptured: true })
+
+    // No third pull, and the damaged copy does not linger to be mistaken for
+    // a working image by the caller's "did it appear concurrently?" re-check.
+    expect(argsOf(spawned)).toEqual(['pull', 'run', 'rmi', 'pull', 'run', 'rmi'])
+    expect(mockCaptureException).toHaveBeenCalledOnce()
+    expect(mockCaptureException.mock.calls[0][1]).toMatchObject({
+      tags: { component: 'container', operation: 'image-integrity' },
+    })
+  })
+
+  it('lets the pull succeed when the check cannot run at all', async () => {
+    checkScript = ['silent']
+
+    await expect(pullImage('docker', IMAGE)).resolves.toBeUndefined()
+
+    expect(argsOf(spawned)).toEqual(['pull', 'run'])
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      'Image integrity check inconclusive after pull',
+      expect.objectContaining({ level: 'info' })
+    )
+  })
+
+  it('kills a hung check after the timeout and treats it as inconclusive', async () => {
+    checkScript = ['hang']
+
+    const promise = pullImage('docker', IMAGE)
+    await vi.advanceTimersByTimeAsync(IMAGE_CHECK_TIMEOUT_MS + 1)
+    await expect(promise).resolves.toBeUndefined()
+
+    expect(checkProcs()[0].kill).toHaveBeenCalledWith('SIGKILL')
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      'Image integrity check inconclusive after pull',
+      expect.objectContaining({ extra: expect.objectContaining({ output: expect.stringContaining('timed out') }) })
+    )
+  })
+
+  it('uses `image delete` for the Apple runner, which has no rmi', async () => {
+    checkScript = ['damaged', 'ok']
+
+    await pullImage('apple-container', IMAGE)
+
+    const removal = spawned.find((p) => p.args[0] === 'image' && p.args[1] === 'delete')
+    expect(removal?.args).toEqual(['image', 'delete', '--force', IMAGE])
+  })
+
+  it('does not run the check when the pull itself failed', async () => {
+    mockSpawnWithPath.mockImplementation((_cli: string, args: string[]) => {
+      const proc = new FakeProc(args)
+      spawned.push(proc)
+      queueMicrotask(() => proc.emit('close', 1))
+      return proc
+    })
+
+    await expect(pullImage('docker', IMAGE)).rejects.toThrow(/Image pull failed/)
+    expect(argsOf(spawned)).toEqual(['pull'])
   })
 })

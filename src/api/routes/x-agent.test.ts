@@ -67,9 +67,22 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 const mockGetAgent = vi.fn()
 const mockListAgents = vi.fn()
 const mockCreateAgent = vi.fn()
+// The route reads identity from the catalog record; the fixtures below are
+// still written as CLAUDE.md-shaped agents and projected here.
+type AgentFixture = { slug: string; frontmatter: { name: string; description?: string; createdAt?: string } }
+const recordOf = (agent: AgentFixture | null | undefined) =>
+  agent
+    ? {
+        slug: agent.slug,
+        name: agent.frontmatter.name,
+        description: agent.frontmatter.description,
+        createdAt: new Date(agent.frontmatter.createdAt ?? 0),
+        placement: { runtime: 'local', workspaceHandle: null },
+      }
+    : null
 vi.mock('@shared/lib/services/agent-service', () => ({
-  getAgent: (...args: unknown[]) => mockGetAgent(...args),
-  listAgents: (...args: unknown[]) => mockListAgents(...args),
+  getAgentRecord: async (...args: unknown[]) => recordOf(await mockGetAgent(...args)),
+  listAgents: async (...args: unknown[]) => ((await mockListAgents(...args)) as AgentFixture[]).map(recordOf),
   createAgent: (...args: unknown[]) => mockCreateAgent(...args),
 }))
 
@@ -113,12 +126,23 @@ const mockEnsureRunning = vi.fn(async (..._args: unknown[]) => ({
   deleteSession: (...args: unknown[]) => mockDeleteSession(...args),
   fetch: (fetchPath: string, init?: RequestInit) => mockTargetFetch(fetchPath, init),
 }))
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
-    getClient: vi.fn(() => ({ fetch: (fetchPath: string, init?: RequestInit) => mockSourceFetch(fetchPath, init) })),
-  },
-}))
+// The actor reaches the container client through getClient after start();
+// hand back whatever ensureRunning last resolved to.
+let mockClient: unknown
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning: async (...args: unknown[]) => {
+        mockClient = await mockEnsureRunning(...args)
+        return mockClient
+      },
+      getClient: (slug: string) => slug === CALLER_SLUG
+        ? { fetch: (fetchPath: string, init?: RequestInit) => mockSourceFetch(fetchPath, init) }
+        : mockClient,
+    }),
+  }
+})
 
 // Message persister
 // Built by name, not by importing the class from the (wholesale-mocked) module:
@@ -153,6 +177,10 @@ const mockMarkSessionIdle = vi.fn()
 const mockBroadcastGlobal = vi.fn()
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
+    withSessionSend: async (agentSlug: string, sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
+      mockMarkSessionActive(agentSlug, sessionId)
+      return send()
+    },
     isSessionActive: (agentSlug?: string, sessionId?: string) => mockIsSessionActive(agentSlug, sessionId),
     isSessionAwaitingInput: (agentSlug: string, sessionId?: string,) => mockIsSessionAwaitingInput(agentSlug, sessionId),
     waitForIdle: (...args: unknown[]) => mockWaitForIdle(...args),
@@ -283,11 +311,16 @@ function deliveredFileTranscript(
   ]
 }
 
+async function seedAgentRows(slugs: string[]) {
+  await testDb.insert(schema.agents).values(
+    slugs.map((slug) => ({ slug, name: slug, createdAt: new Date(), runtime: 'local' })),
+  )
+}
+
 beforeEach(async () => {
   testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xagent-test-'))
-  // Point the data dir at testDir so the REAL resolveAgentId (not mocked) finds
-  // agent folders on disk. Caller/target are seeded as bare folders matching the
-  // legacy-style test slugs (resolveAgentId returns them via exact-folder match).
+  // Point the data dir at testDir so workspace writes land there. Caller/target
+  // are seeded as bare folders matching the legacy-style test slugs.
   prevDataDir = process.env.SUPERAGENT_DATA_DIR
   process.env.SUPERAGENT_DATA_DIR = testDir
   await fs.promises.mkdir(path.join(testDir, 'agents', CALLER_SLUG), { recursive: true })
@@ -297,6 +330,8 @@ beforeEach(async () => {
   testDb = drizzle(testSqlite, { schema })
   const migrationsFolder = path.join(process.cwd(), 'src/shared/lib/db/migrations')
   migrate(testDb, { migrationsFolder })
+  // The catalog (which agents exist, and slug resolution) is the agents table.
+  await seedAgentRows([CALLER_SLUG, TARGET_SLUG])
 
   // Seed users + caller token (proxyTokens has unique constraint on agentSlug)
   await testDb.insert(schema.user).values([
@@ -539,8 +574,8 @@ describe('/invoke', () => {
     reviewDecisions.push('allow')
     const callerSessionId = 'caller-session-invoked'
     // Mark the calling session as having been invoked by some other agent
-    mockGetSessionMetadata.mockImplementation(async (slug: unknown, sessionId: unknown) => {
-      if (slug === CALLER_SLUG && sessionId === callerSessionId) {
+    mockGetSessionMetadata.mockImplementation(async (store: unknown, sessionId: unknown) => {
+      if ((store as { slug: string }).slug === CALLER_SLUG && sessionId === callerSessionId) {
         return { name: 'invoked', createdAt: new Date().toISOString(), invokedByAgentSlug: 'some-other-agent' }
       }
       return null
@@ -561,8 +596,8 @@ describe('/invoke', () => {
   it('allows invoke when calling session was NOT invoked by another agent', async () => {
     reviewDecisions.push('allow')
     const callerSessionId = 'caller-session-normal'
-    mockGetSessionMetadata.mockImplementation(async (slug: unknown, sessionId: unknown) => {
-      if (slug === CALLER_SLUG && sessionId === callerSessionId) {
+    mockGetSessionMetadata.mockImplementation(async (store: unknown, sessionId: unknown) => {
+      if ((store as { slug: string }).slug === CALLER_SLUG && sessionId === callerSessionId) {
         return { name: 'normal', createdAt: new Date().toISOString() } // no invokedByAgentSlug
       }
       return null
@@ -609,7 +644,7 @@ describe('/invoke', () => {
     // with another agent's session of the same id.
     expect(mockMarkSessionActive).toHaveBeenCalledWith(TARGET_SLUG, 'new-sess-id')
     expect(mockRegisterSession).toHaveBeenCalledWith(
-      TARGET_SLUG,
+      expect.objectContaining({ slug: TARGET_SLUG }),
       'new-sess-id',
       expect.any(String),
       expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
@@ -776,7 +811,7 @@ describe('/invoke', () => {
 
     expect(res.status).toBe(200)
     expect(mockRegisterSession).toHaveBeenCalledWith(
-      TARGET_SLUG,
+      expect.objectContaining({ slug: TARGET_SLUG }),
       'new-sess-id',
       'Invoked by Business Analyst Agent',
       expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
@@ -801,7 +836,7 @@ describe('/invoke', () => {
 
     expect(res.status).toBe(200)
     expect(mockRegisterSession).toHaveBeenCalledWith(
-      TARGET_SLUG,
+      expect.objectContaining({ slug: TARGET_SLUG }),
       'new-sess-id',
       `Invoked by ${CALLER_SLUG}`,
       expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
@@ -856,7 +891,7 @@ describe('/invoke', () => {
       }),
     ])
     expect(mockRegisterSession).toHaveBeenCalledWith(
-      TARGET_SLUG,
+      expect.objectContaining({ slug: TARGET_SLUG }),
       'new-sess-id',
       expect.any(String),
       expect.objectContaining({ createdByUserId: OTHER_USER_ID }),
@@ -889,7 +924,7 @@ describe('/invoke', () => {
       expect.objectContaining({ userId: OTHER_USER_ID }),
     ])
     expect(mockRegisterSession).toHaveBeenCalledWith(
-      TARGET_SLUG,
+      expect.objectContaining({ slug: TARGET_SLUG }),
       'new-sess-id',
       expect.any(String),
       expect.objectContaining({ createdByUserId: OTHER_USER_ID }),
@@ -916,7 +951,7 @@ describe('/invoke', () => {
       expect.objectContaining({ userId: OWNER_USER_ID }),
     ])
     expect(mockRegisterSession).toHaveBeenCalledWith(
-      TARGET_SLUG,
+      expect.objectContaining({ slug: TARGET_SLUG }),
       'new-sess-id',
       expect.any(String),
       expect.objectContaining({ createdByUserId: OWNER_USER_ID }),
@@ -947,7 +982,7 @@ describe('/invoke', () => {
       .where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
     expect(targetAuthors).toEqual([])
     expect(mockRegisterSession).toHaveBeenCalledWith(
-      TARGET_SLUG,
+      expect.objectContaining({ slug: TARGET_SLUG }),
       'new-sess-id',
       expect.any(String),
       { invokedByAgentSlug: CALLER_SLUG },
@@ -1013,7 +1048,7 @@ describe('/invoke', () => {
     expect(res.status).toBe(404)
     // Checked against the TARGET, whose container the session would be driven
     // on — not the caller, who never owns it either way.
-    expect(mockSessionIsKnown).toHaveBeenCalledWith(TARGET_SLUG, 'third-agent-session')
+    expect(mockSessionIsKnown).toHaveBeenCalledWith(expect.objectContaining({ slug: TARGET_SLUG }), 'third-agent-session')
     expect(mockSubscribeToSession).not.toHaveBeenCalled()
     expect(mockMarkSessionActive).not.toHaveBeenCalled()
     expect(mockSendMessage).not.toHaveBeenCalled()
@@ -1468,7 +1503,7 @@ describe('/invoke', () => {
       _callerSessionId: 'fresh-session',
     })
     expect(res.status).toBe(200)
-    expect(mockGetSessionMetadata).toHaveBeenCalledWith(CALLER_SLUG, 'fresh-session')
+    expect(mockGetSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: CALLER_SLUG }), 'fresh-session')
   })
 
   it('proceeds with invoke when _callerSessionId is omitted (no metadata lookup)', async () => {
@@ -1898,7 +1933,7 @@ describe('/get-transcript', () => {
     })
 
     expect(res.status).toBe(404)
-    expect(mockSessionIsKnown).toHaveBeenCalledWith(TARGET_SLUG, 'third-agent-session')
+    expect(mockSessionIsKnown).toHaveBeenCalledWith(expect.objectContaining({ slug: TARGET_SLUG }), 'third-agent-session')
     expect(mockIsSessionActive).not.toHaveBeenCalled()
     expect(mockIsSessionAwaitingInput).not.toHaveBeenCalled()
     expect(mockWaitForIdle).not.toHaveBeenCalled()
@@ -2403,6 +2438,7 @@ describe('display-slug resolution', () => {
 
   beforeEach(async () => {
     await fs.promises.mkdir(path.join(testDir, 'agents', TARGET_ID), { recursive: true })
+    await seedAgentRows([TARGET_ID])
     mockGetAgent.mockResolvedValue({
       slug: TARGET_ID,
       frontmatter: { name: 'Pretty Target', createdAt: '2024-01-01' },
@@ -2426,7 +2462,7 @@ describe('display-slug resolution', () => {
     const res = await authedFetch('/x-agent/invoke', { slug: DISPLAY_SLUG, prompt: 'hello' })
     expect(res.status).toBe(200)
     expect(mockRegisterSession).toHaveBeenCalledWith(
-      TARGET_ID,
+      expect.objectContaining({ slug: TARGET_ID }),
       expect.any(String),
       expect.any(String),
       expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
@@ -2453,7 +2489,7 @@ describe('display-slug resolution', () => {
     mockListSessions.mockResolvedValue([])
     const res = await authedFetch('/x-agent/get-sessions', { slug: DISPLAY_SLUG })
     expect(res.status).toBe(200)
-    expect(mockListSessions).toHaveBeenCalledWith(TARGET_ID)
+    expect(mockListSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: TARGET_ID }))
   })
 
   it('returns 404 for a well-formed display slug whose id does not exist', async () => {

@@ -15,6 +15,12 @@ interface ServiceInfo {
   description: string
 }
 
+// Services that exist only through Gamut's Composio; the host sets this env at container start.
+const GAMUT_PLATFORM_ACCOUNTS: ServiceInfo[] = [
+  { slug: 'twitter', displayName: 'X', category: 'Social Media', description: 'Posts, timelines, and direct messages' },
+  { slug: 'plaid', displayName: 'Plaid', category: 'Finance', description: 'Bank accounts, balances, and transactions' },
+]
+
 export const SERVICES: ServiceInfo[] = [
   // Google Workspace
   { slug: 'gmail', displayName: 'Gmail', category: 'Google Workspace', description: 'Google email service' },
@@ -71,6 +77,7 @@ export const SERVICES: ServiceInfo[] = [
   { slug: 'calendly', displayName: 'Calendly', category: 'Scheduling & Forms', description: 'Scheduling and appointments' },
   { slug: 'typeform', displayName: 'Typeform', category: 'Scheduling & Forms', description: 'Forms and surveys' },
 ]
+if (process.env.COMPOSIO_PLATFORM_MODE === 'true') SERVICES.push(...GAMUT_PLATFORM_ACCOUNTS)
 
 export const searchConnectedAccountServicesTool = tool(
   'search_connected_account_services',

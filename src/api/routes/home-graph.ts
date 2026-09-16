@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { buildHomeGraph } from '@shared/lib/services/home-graph-service'
-import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
+import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { getHomeAgentScope } from './home-agent-scope'
 
 const homeGraph = new Hono()
@@ -19,7 +19,7 @@ homeGraph.get('/', async (c) => {
     const graph = await buildHomeGraph({
       agentSlugs,
       userId,
-      isIntegrationConnected: (id) => chatIntegrationManager.isIntegrationConnected(id),
+      isIntegrationConnected: (id) => agentIntegrationManager.isIntegrationConnected(id),
     })
     return c.json(graph)
   } catch (error) {

@@ -1,4 +1,4 @@
-import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
+import type { SessionStore } from '@shared/lib/agent-actor/session-store'
 
 export const SESSION_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000
 
@@ -28,23 +28,24 @@ export interface SessionSummaryCacheSlot {
   pending: Map<string, { activityAtMs?: number; deleted?: true }>
 }
 
-// Key by the resolved sessions directory rather than slug: tests and embedded
-// deployments can change SUPERAGENT_DATA_DIR in-process, and two roots must
-// never share cached state merely because their agent slugs match.
+// Keyed by the store's storage identity rather than the slug: tests and
+// embedded deployments can change the data directory in-process, and two
+// workspaces must never share cached state merely because their agent slugs
+// match.
 const sessionSummaryCache = new Map<string, SessionSummaryCacheSlot>()
 
-export function getSessionSummaryCacheSlot(sessionsDir: string): SessionSummaryCacheSlot {
-  let slot = sessionSummaryCache.get(sessionsDir)
+export function getSessionSummaryCacheSlot(store: SessionStore): SessionSummaryCacheSlot {
+  let slot = sessionSummaryCache.get(store.key)
   if (!slot) {
     slot = { revision: 0, pending: new Map() }
-    sessionSummaryCache.set(sessionsDir, slot)
+    sessionSummaryCache.set(store.key, slot)
   }
   return slot
 }
 
-/** Force the next summary read to reconcile ownership and filesystem state. */
-export function invalidateSessionSummaryCache(agentSlug: string): void {
-  const slot = sessionSummaryCache.get(getAgentSessionsDir(agentSlug))
+/** Force the next summary read to reconcile the session set from the transcripts directory. */
+export function invalidateSessionSummaryCache(store: SessionStore): void {
+  const slot = sessionSummaryCache.get(store.key)
   if (!slot) return
   slot.revision++
   slot.value = undefined
@@ -62,15 +63,20 @@ export function invalidateSessionSummaryCache(agentSlug: string): void {
  * (a send is recorded before the CLI appends the user entry). Every rebuild
  * folds pending in and clears it, so nothing is lost and nothing accumulates
  * beyond one entry per session.
+ *
+ * The store's owner hears of the write too (`store.onActivity`): this is the
+ * one funnel every session write passes, so it is where the agent's idle
+ * clock is kept current.
  */
 export function recordSessionActivity(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   activityAt: Date | number = Date.now(),
 ): void {
   const activityAtMs = activityAt instanceof Date ? activityAt.getTime() : activityAt
   if (!Number.isFinite(activityAtMs)) return
-  const slot = getSessionSummaryCacheSlot(getAgentSessionsDir(agentSlug))
+  store.onActivity?.(activityAtMs)
+  const slot = getSessionSummaryCacheSlot(store)
 
   const cached = slot.value?.activityBySession.get(sessionId)
   if (cached !== undefined) {
@@ -97,15 +103,15 @@ export interface SessionActivityMark {
  * {@link revertSessionActivity} if the send fails.
  */
 export function recordProvisionalSessionActivity(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   activityAt: Date | number = Date.now(),
 ): SessionActivityMark {
   const recordedAtMs = activityAt instanceof Date ? activityAt.getTime() : activityAt
-  const slot = getSessionSummaryCacheSlot(getAgentSessionsDir(agentSlug))
+  const slot = getSessionSummaryCacheSlot(store)
   const cached = slot.value?.activityBySession.get(sessionId)
   const previous = cached ? { mtimeMs: cached.mtimeMs, size: cached.size } : null
-  recordSessionActivity(agentSlug, sessionId, recordedAtMs)
+  recordSessionActivity(store, sessionId, recordedAtMs)
   return { recordedAtMs, previous }
 }
 
@@ -115,11 +121,11 @@ export function recordProvisionalSessionActivity(
  * late rollback can never erase real activity.
  */
 export function revertSessionActivity(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   mark: SessionActivityMark,
 ): void {
-  const slot = sessionSummaryCache.get(getAgentSessionsDir(agentSlug))
+  const slot = sessionSummaryCache.get(store.key)
   if (!slot) return
 
   const pending = slot.pending.get(sessionId)

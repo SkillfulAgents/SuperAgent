@@ -27,6 +27,7 @@ const mockAC = {
   dialogAccept: vi.fn(),
   dialogCancel: vi.fn(),
   shutdown: vi.fn(),
+  bridgeSend: vi.fn(),
 }
 
 vi.mock('@skillful-agents/agent-computer', () => ({
@@ -56,6 +57,9 @@ vi.mock('@skillful-agents/agent-computer', () => ({
     dialogAccept = mockAC.dialogAccept
     dialogCancel = mockAC.dialogCancel
     shutdown = mockAC.shutdown
+    // The real AC keeps its JSON-RPC bridge as a private field; the executor
+    // reaches it for methods the SDK has no wrapper for.
+    bridge = { send: mockAC.bridgeSend }
   },
   formatOutput: vi.fn((val: unknown) => JSON.stringify(val)),
 }))
@@ -138,8 +142,38 @@ describe('executeComputerUseCommand', () => {
       await expect(executeComputerUseCommand('click', { ref: '@b1' })).rejects.toThrow('Element not found')
     })
 
-    it('throws for unknown method', async () => {
-      await expect(executeComputerUseCommand('nonexistent', {})).rejects.toThrow('Unknown computer use method')
+    it('rejects a method name that cannot be a daemon method instead of forwarding it', async () => {
+      await expect(executeComputerUseCommand('Not a method!', {})).rejects.toThrow('Unknown computer use method')
+      expect(mockAC.bridgeSend).not.toHaveBeenCalled()
+    })
+
+    it('rejects a computer_run without a command', async () => {
+      await expect(executeComputerUseCommand('run', {})).rejects.toThrow('Unknown computer use method: run')
+      expect(mockAC.bridgeSend).not.toHaveBeenCalled()
+    })
+  })
+
+  // ─── Escape hatch: methods the SDK has no wrapper for ─────────────
+
+  describe('raw daemon methods', () => {
+    it('forwards a method without an SDK wrapper straight to the bridge', async () => {
+      mockAC.bridgeSend.mockResolvedValue({ ok: true, text: 'clip' })
+      const result = await executeComputerUseCommand('clipboard_read', {})
+      expect(mockAC.bridgeSend).toHaveBeenCalledWith('clipboard_read', {})
+      expect(result).toContain('clip')
+    })
+
+    it('unwraps computer_run into the inner command before dispatch', async () => {
+      mockAC.bridgeSend.mockResolvedValue({ ok: true })
+      await executeComputerUseCommand('run', { command: 'drag', args: { from: '@b1', to: '@b2' } })
+      expect(mockAC.bridgeSend).toHaveBeenCalledWith('drag', { from: '@b1', to: '@b2' })
+    })
+
+    it('routes an unwrapped computer_run to the SDK wrapper when one exists', async () => {
+      mockAC.windows.mockResolvedValue({ windows: [] })
+      await executeComputerUseCommand('run', { command: 'windows' })
+      expect(mockAC.windows).toHaveBeenCalled()
+      expect(mockAC.bridgeSend).not.toHaveBeenCalled()
     })
   })
 

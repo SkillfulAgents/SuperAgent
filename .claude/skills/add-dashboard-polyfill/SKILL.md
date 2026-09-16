@@ -131,15 +131,15 @@ Register this BEFORE the router mounts (to avoid auth middleware).
 
 Three places to update:
 
-**a. Full reference doc** — `agent-container/skills/dashboards/<API_NAME>.md`
+**a. Full reference doc** — `agent-container/plugin/skills/dashboards/<API_NAME>.md`
 
-Include: quick start, properties, methods, events, error codes, 2-3 practical examples. Call out that it's a web standard (if applicable) so agents can search for more examples online. This file is copied into containers via the Dockerfile's `COPY skills/ /home/claude/.claude/skills/`.
+Include: quick start, properties, methods, events, error codes, 2-3 practical examples. Call out that it's a web standard (if applicable) so agents can search for more examples online. This file reaches containers through the Gamut plugin (`agent-container/plugin/`, baked into `/opt/gamut/plugin` by the Dockerfile).
 
-**b. Skill file** — `agent-container/skills/dashboards/SKILL.md`
+**b. Skill file** — `agent-container/plugin/skills/dashboards/SKILL.md`
 
 Add a bullet under the "Built-in APIs" section:
 ```markdown
-- **<API Name>** — Brief description. See `~/.claude/skills/dashboards/<API_NAME>.md` for docs.
+- **<API Name>** — Brief description. See `/opt/gamut/plugin/skills/dashboards/<API_NAME>.md` for docs.
 ```
 
 **c. Dashboard builder prompt** — `agent-container/src/dashboard-builder-agent-prompt.md`
@@ -233,8 +233,8 @@ test.describe('...', () => {
 
 - [ ] `src/api/<name>-polyfill.ts` — polyfill implementation with `getPolyfillJs()` export
 - [ ] `src/api/routes/agents.ts` — import and add to the injection `<script>` tag
-- [ ] `agent-container/skills/dashboards/<API_NAME>.md` — full reference doc
-- [ ] `agent-container/skills/dashboards/SKILL.md` — bullet under "Built-in APIs"
+- [ ] `agent-container/plugin/skills/dashboards/<API_NAME>.md` — full reference doc
+- [ ] `agent-container/plugin/skills/dashboards/SKILL.md` — bullet under "Built-in APIs"
 - [ ] `agent-container/src/dashboard-builder-agent-prompt.md` — section under "Built-in APIs"
 - [ ] `src/api/<name>-polyfill.test.ts` — unit tests (jsdom environment)
 - [ ] `src/api/routes/artifact-polyfill-injection.test.ts` — update if injection logic changes

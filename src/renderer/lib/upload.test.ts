@@ -2,9 +2,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('./env', () => ({ getApiBaseUrl: () => '' }))
-vi.mock('./api', () => ({ handleUnauthorizedResponse: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('./api', () => ({
+  handleUnauthorizedResponse: vi.fn().mockResolvedValue(undefined),
+  handleWorkspaceUnavailableResponse: vi.fn(),
+}))
 
-import { handleUnauthorizedResponse } from './api'
+import { handleUnauthorizedResponse, handleWorkspaceUnavailableResponse } from './api'
 import { uploadFileChunked, UploadStalledError, UPLOAD_CHUNK_SIZE, UPLOAD_STALL_MS } from './upload'
 
 // Minimal XHR double: records sends, lets a test drive progress/load/error/abort.
@@ -16,16 +19,23 @@ class FakeXHR {
   onabort: null | (() => void) = null
   status = 0
   responseText = ''
+  responseHeaders: Record<string, string> = {}
   withCredentials = false
   aborted = false
   body: FormData | null = null
   open = vi.fn()
   setRequestHeader = vi.fn()
+  getResponseHeader(name: string) { return this.responseHeaders[name.toLowerCase()] ?? null }
   send(body: FormData) { this.body = body; FakeXHR.instances.push(this) }
   abort() { this.aborted = true; this.onabort?.() }
   // helpers
   progress(loaded: number, total: number) { this.upload.onprogress?.({ lengthComputable: true, loaded, total }) }
-  respond(status: number, json: unknown) { this.status = status; this.responseText = JSON.stringify(json); this.onload?.() }
+  respond(status: number, json: unknown, headers: Record<string, string> = {}) {
+    this.status = status
+    this.responseText = JSON.stringify(json)
+    this.responseHeaders = headers
+    this.onload?.()
+  }
 }
 
 function file(size: number, name = 'f.bin'): File {
@@ -127,5 +137,14 @@ describe('uploadFileChunked (XHR transport)', () => {
     FakeXHR.instances[0].respond(401, { error: 'expired' })
     await expect(p).rejects.toThrow('expired')
     expect(handleUnauthorizedResponse).toHaveBeenCalledWith(401, '/api/x')
+  })
+
+  it('hands the response headers to handleWorkspaceUnavailableResponse before reading the body', async () => {
+    const p = uploadFileChunked({ url: '/api/x', file: file(10) })
+    FakeXHR.instances[0].respond(503, { error: 'deployment_unavailable' }, { 'x-workspace-unavailable': 'sleeping' })
+    await expect(p).rejects.toThrow('deployment_unavailable')
+    const [url, getHeader] = vi.mocked(handleWorkspaceUnavailableResponse).mock.lastCall!
+    expect(url).toBe('/api/x')
+    expect(getHeader('x-workspace-unavailable')).toBe('sleeping')
   })
 })

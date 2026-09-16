@@ -98,17 +98,23 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('AgentFolderBlock', () => {
-  it('shows the folder name and how many agents it holds', () => {
-    renderBlock()
+  it('shows the folder name, and how many agents it holds only while collapsed', () => {
+    // Expanded, the rows underneath already say how many there are, so the
+    // header drops the count; collapsed, the count is the only hint.
+    renderBlock({ isCollapsed: true })
     const row = screen.getByTestId('agent-folder-f1')
     expect(row).toHaveTextContent('Work')
-    expect(row).toHaveTextContent('2')
+    expect(screen.getByTestId('agent-folder-count-f1')).toHaveTextContent('2')
+    cleanup()
+    renderBlock({ isCollapsed: false })
+    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
+    expect(screen.queryByTestId('agent-folder-count-f1')).not.toBeInTheDocument()
   })
 
   it('reveals the chevron only on hover, in the count’s slot', () => {
     // The header reads as a section label at rest (name + count, no icon);
     // hovering swaps the count for the expand/collapse affordance.
-    renderBlock()
+    renderBlock({ isCollapsed: true })
     expect(screen.getByTestId('agent-folder-count-f1').className).toContain(
       'group-hover/folder-header:hidden'
     )
@@ -354,10 +360,10 @@ describe('AgentFolderBlock — the default folder', () => {
   }
 
   it('renders like any folder header', () => {
-    renderRoot()
+    renderRoot({ isCollapsed: true })
     const row = screen.getByTestId('agent-folder-root')
     expect(row).toHaveTextContent('Your Agents')
-    expect(row).toHaveTextContent('2')
+    expect(screen.getByTestId('agent-folder-count-root')).toHaveTextContent('2')
   })
 
   it('offers no rename or delete — it is the fallback bucket', () => {

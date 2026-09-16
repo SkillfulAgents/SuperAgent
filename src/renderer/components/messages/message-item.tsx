@@ -25,8 +25,9 @@ import { useRenderTracker } from '@renderer/lib/perf'
 import { createMarkdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
-import { countSpokenWords, rehypeSpokenWords } from '@renderer/lib/speech/spoken-words'
-import { readAloud, useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
+import { countSpokenWords, rehypeSpokenWords } from '@renderer/lib/voice/shared/speech/spoken-words'
+import { readAloud } from '@renderer/lib/voice/services/read-aloud'
+import { useIsReadAloudAvailable, useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
 import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'
 
@@ -422,7 +423,8 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // "Read aloud" lives in the message's context menu, so an idle reply
   // carries no row for it; the controls appear under it only while it reads.
   const ttsConfigured = useIsTtsConfigured()
-  const readAloudMenu = canReadAloud && ttsConfigured
+  const readAloudAvailable = useIsReadAloudAvailable()
+  const readAloudMenu = canReadAloud && ttsConfigured && readAloudAvailable
     ? {
         active: isThisBeingRead,
         onToggle: () => {
@@ -459,7 +461,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
     return null
   }
 
-  // Row kinds (the voice-mode boundary) own the whole row: no avatar column,
+  // System notice rows own the whole row: no avatar column,
   // no bubble width, drawn edge to edge like a compact boundary.
   if (CustomUserRender && userKind?.chrome === 'row' && hasText) {
     return <CustomUserRender text={text} message={message} renderMarkdown={renderMarkdown} />

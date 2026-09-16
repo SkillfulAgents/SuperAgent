@@ -13,6 +13,7 @@ import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { DeclineButton } from './decline-button'
 import { RequestItemActions } from './request-item-actions'
 import { RequestItemShell } from './request-item-shell'
+import { RemoteMcpRequestItem } from './remote-mcp-request-item'
 
 interface McpReauthRequestItemProps {
   proxyRequestId: string
@@ -39,6 +40,8 @@ export function McpReauthRequestItem({
   const initiateOAuth = useInitiateMcpOAuth()
   const { data: canManage } = useCanManageRemoteMcp(mcpId)
   const [pending, setPending] = useState(false)
+  const [loadingReplacement, setLoadingReplacement] = useState(false)
+  const [replacementUrl, setReplacementUrl] = useState<string | null>(null)
   const [dismissing, setDismissing] = useState(false)
   const [bearerToken, setBearerToken] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -141,11 +144,42 @@ export function McpReauthRequestItem({
     }
   }
 
+  const replace = async () => {
+    setLoadingReplacement(true)
+    setError(null)
+    try {
+      const response = await apiFetch(`/api/agents/${agentSlug}/reauth-request/${proxyRequestId}/replace-mcp`)
+      if (!response.ok) throw new Error(await parseError(response, 'Failed to load replacement connections'))
+      const data = await response.json() as { url?: string }
+      setReplacementUrl(data.url ?? '')
+    } catch (replacementError) {
+      setError(replacementError instanceof Error ? replacementError.message : 'Failed to load replacement connections')
+    } finally {
+      setLoadingReplacement(false)
+    }
+  }
+
+  if (replacementUrl !== null && !readOnly) {
+    return (
+      <RemoteMcpRequestItem
+        toolUseId={proxyRequestId}
+        url={replacementUrl}
+        name={mcpName}
+        reason={`Replace ${mcpName} connection`}
+        authHint={authType === 'none' ? undefined : authType}
+        sessionId={sessionId}
+        agentSlug={agentSlug}
+        replacement={{ requestId: proxyRequestId, onCancel: () => setReplacementUrl(null) }}
+        onComplete={onComplete}
+      />
+    )
+  }
+
   return (
     <RequestItemShell
       title={`This request needs ${mcpName}, which requires re-authentication.`}
       subtitle={canManage === false
-        ? 'Only the connection owner or an administrator can reconnect it. Dismiss to let the agent move on without it.'
+        ? 'Replace it with a connection you own to continue, or dismiss this request.'
         : 'Reconnect to continue. The original MCP request will resume automatically.'}
       icon={<ServiceIcon slug={serviceSlug} fallback="mcp" className="h-4 w-4" />}
       theme="orange"
@@ -171,16 +205,27 @@ export function McpReauthRequestItem({
         <RequestItemActions>
           <DeclineButton
             onDecline={(reason) => { void dismiss(reason) }}
-            disabled={pending || dismissing}
+            disabled={pending || dismissing || loadingReplacement}
             label="Dismiss"
             data-testid="mcp-reauth-dismiss-btn"
           />
+          <Button
+            type="button"
+            size="xs"
+            variant={canReconnect ? 'outline' : 'default'}
+            onClick={() => void replace()}
+            loading={loadingReplacement}
+            disabled={pending || dismissing || loadingReplacement}
+            data-testid="mcp-reauth-replace-btn"
+          >
+            Replace connection
+          </Button>
           {canReconnect && (
             <Button
               type="button"
               size="xs"
               onClick={() => void reconnect()}
-              disabled={pending || dismissing || (authType === 'bearer' && !bearerToken.trim())}
+              disabled={pending || dismissing || loadingReplacement || (authType === 'bearer' && !bearerToken.trim())}
               data-testid="mcp-reauth-reconnect-btn"
             >
               {pending ? (

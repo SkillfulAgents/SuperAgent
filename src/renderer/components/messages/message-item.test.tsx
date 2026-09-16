@@ -77,6 +77,7 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
 // switches so these tests need neither a QueryClient nor an audio stack.
 const readAloudState = {
   configured: false,
+  available: true,
   activeId: null as string | null,
   status: 'speaking' as 'speaking' | 'paused' | 'connecting',
   error: null as string | null,
@@ -92,6 +93,7 @@ vi.mock('@renderer/hooks/use-voice-input', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-read-aloud', () => ({
+  useIsReadAloudAvailable: () => readAloudState.available,
   useIsBeingRead: (id: string) => readAloudState.activeId === id,
   useReadAloud: (id: string) => ({
     status: readAloudState.activeId === id ? readAloudState.status : 'idle',
@@ -103,6 +105,8 @@ vi.mock('@renderer/hooks/use-read-aloud', () => ({
   }),
   useSpokenWordHighlight: () => {},
   useIsVoiceReading: () => false,
+}))
+vi.mock('@renderer/lib/voice/services/read-aloud', () => ({
   readAloud: {
     restart: vi.fn(),
     getPlayer: () => null,
@@ -290,6 +294,17 @@ describe('MessageItem', () => {
       expect(item).toHaveAttribute('data-active', 'false')
       item.click()
       expect(readAloudState.speak).toHaveBeenCalledWith(msg.id, 'Hello **there**.')
+    })
+
+    it('hides "Read aloud" while a Live conversation owns the speaker', () => {
+      readAloudState.configured = true
+      readAloudState.available = false
+      try {
+        render(<MessageItem message={createAssistantMessage({ content: { text: 'Hello.' } })} />)
+        expect(screen.queryByTestId('context-read-aloud')).toBeNull()
+      } finally {
+        readAloudState.available = true
+      }
     })
 
     it('offers "Stop reading" in the menu while this reply is being read', () => {

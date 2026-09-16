@@ -8,20 +8,25 @@
  * the current auth state. github's default returns true; platform checks
  * orgId against the connected platform auth.
  *
+ * Installed skills and template metadata live in an agent's workspace, so
+ * they are read and removed through the agent actor's `files`; the paths
+ * here are workspace paths.
+ *
  * Typical callers:
  *  - `savePlatformAuth` on org switch / disconnect — eager full sweep
  *  - metadata readers on access — lazy backstop
  */
 
-import fs from 'fs'
-import path from 'path'
 import { mutateSettings } from '@shared/lib/config/settings'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import {
-  getAgentsDir,
-  getAgentWorkspaceDir,
-  readFileOrNull,
-} from '@shared/lib/utils/file-storage'
+  agentCatalog,
+  agentRegistry,
+  joinWorkspacePath,
+  WorkspaceFileError,
+  type FileEntry,
+  type FileOps,
+} from '@shared/lib/agent-actor'
 import { captureException } from '@shared/lib/error-reporting'
 import type {
   InstalledAgentMetadata,
@@ -29,18 +34,11 @@ import type {
   SkillsetConfig,
 } from '@shared/lib/types/skillset'
 
-export interface InstalledSkillLocation {
-  agentSlug: string
-  skillDirName: string
-  skillDir: string
-  metaPath: string
-}
-
-export interface InstalledTemplateLocation {
-  agentSlug: string
-  workspaceDir: string
-  metaPath: string
-}
+/** Where an agent's installed skills live, relative to its workspace root. */
+const SKILLS_WORKSPACE_DIR = '.claude/skills'
+const SKILL_METADATA_FILE = '.skillset-metadata.json'
+/** The agent-template metadata file, at the workspace root. */
+const TEMPLATE_METADATA_PATH = '.skillset-agent-metadata.json'
 
 /**
  * Filter out SkillsetConfig entries that are no longer valid for the current
@@ -68,15 +66,6 @@ export function reconcileSkillsetConfigsForCurrentAuth(): { removed: number } {
   return { removed }
 }
 
-function readInstalledSkillMetaRaw(metaPath: string): unknown {
-  const raw = fs.readFileSync(metaPath, 'utf-8')
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return null
-  }
-}
-
 function providerCheckInstalled(meta: unknown): boolean {
   if (!meta || typeof meta !== 'object') return true
   const m = meta as Partial<Pick<InstalledSkillMetadata | InstalledAgentMetadata,
@@ -91,16 +80,18 @@ function providerCheckInstalled(meta: unknown): boolean {
 
 /**
  * Lazy-cleanup helper for skill metadata readers. Given a parsed metadata
- * object and its location, delete the skill directory if the provider says
- * the record is no longer valid. Returns true if a cleanup happened.
+ * object and the skill directory's workspace path, delete the directory if
+ * the provider says the record is no longer valid. Returns true if a cleanup
+ * happened.
  */
 export async function pruneInstalledSkillIfInvalid(
   meta: unknown,
+  files: FileOps,
   skillDir: string,
 ): Promise<boolean> {
   if (providerCheckInstalled(meta)) return false
   try {
-    await fs.promises.rm(skillDir, { recursive: true, force: true })
+    await files.delete(skillDir, { recursive: true })
   } catch (error) {
     captureException(error, { tags: { area: 'skillset-reconcile', op: 'rm-skill' } })
   }
@@ -108,19 +99,50 @@ export async function pruneInstalledSkillIfInvalid(
 }
 
 /**
- * Lazy-cleanup helper for agent-template metadata readers.
+ * Lazy-cleanup helper for agent-template metadata readers: `metaPath` is the
+ * metadata file's workspace path.
  */
 export async function pruneInstalledTemplateIfInvalid(
   meta: unknown,
+  files: FileOps,
   metaPath: string,
 ): Promise<boolean> {
   if (providerCheckInstalled(meta)) return false
   try {
-    await fs.promises.unlink(metaPath)
+    await files.delete(metaPath)
   } catch (error) {
     captureException(error, { tags: { area: 'skillset-reconcile', op: 'unlink-template' } })
   }
   return true
+}
+
+/** A workspace file parsed as JSON, or null when it is absent, not a file, or not JSON. */
+async function readWorkspaceJson(files: FileOps, workspacePath: string): Promise<unknown | null> {
+  let bytes: Uint8Array | null
+  try {
+    bytes = await files.getDoc(workspacePath)
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return null
+    throw error
+  }
+  if (!bytes) return null
+  try {
+    return JSON.parse(Buffer.from(bytes).toString('utf-8'))
+  } catch {
+    return null
+  }
+}
+
+/** The entries of an agent's skills directory; none when it does not exist or cannot be read. */
+async function listSkillDirs(files: FileOps, agentSlug: string): Promise<FileEntry[]> {
+  try {
+    return await files.list(SKILLS_WORKSPACE_DIR)
+  } catch (error) {
+    if (!(error instanceof WorkspaceFileError)) {
+      captureException(error, { tags: { area: 'skillset-reconcile', op: 'list-skills' }, extra: { agentSlug } })
+    }
+    return []
+  }
 }
 
 /**
@@ -132,51 +154,33 @@ export async function reconcileInstalledForCurrentAuth(): Promise<{ skillsRemove
   let skillsRemoved = 0
   let templatesRemoved = 0
 
-  const agentsRoot = getAgentsDir()
-  let agentEntries: fs.Dirent[]
+  let agents: string[]
   try {
-    agentEntries = await fs.promises.readdir(agentsRoot, { withFileTypes: true })
+    agents = await agentCatalog.list()
   } catch {
     return { skillsRemoved, templatesRemoved }
   }
 
-  for (const agent of agentEntries) {
-    if (!agent.isDirectory()) continue
-    const workspaceDir = getAgentWorkspaceDir(agent.name)
+  for (const agentSlug of agents) {
+    const files = agentRegistry.get(agentSlug).files
 
     // Installed skills
-    const skillsDir = path.join(workspaceDir, '.claude', 'skills')
-    let skillDirs: fs.Dirent[]
-    try {
-      skillDirs = await fs.promises.readdir(skillsDir, { withFileTypes: true })
-    } catch {
-      skillDirs = []
-    }
-    for (const skill of skillDirs) {
-      if (!skill.isDirectory()) continue
-      const metaPath = path.join(skillsDir, skill.name, '.skillset-metadata.json')
-      const raw = await readFileOrNull(metaPath)
-      if (!raw) continue
-      let parsed: unknown
-      try { parsed = JSON.parse(raw) } catch { continue }
-      const removed = await pruneInstalledSkillIfInvalid(parsed, path.join(skillsDir, skill.name))
+    for (const skill of await listSkillDirs(files, agentSlug)) {
+      if (skill.kind !== 'directory') continue
+      const parsed = await readWorkspaceJson(files, joinWorkspacePath(skill.path, SKILL_METADATA_FILE))
+      if (parsed === null) continue
+      const removed = await pruneInstalledSkillIfInvalid(parsed, files, skill.path)
       if (removed) skillsRemoved += 1
     }
 
     // Agent template metadata
-    const templateMetaPath = path.join(workspaceDir, '.skillset-agent-metadata.json')
-    const raw = await readFileOrNull(templateMetaPath)
-    if (!raw) continue
-    let parsed: unknown
-    try { parsed = JSON.parse(raw) } catch { continue }
-    const removed = await pruneInstalledTemplateIfInvalid(parsed, templateMetaPath)
+    const parsed = await readWorkspaceJson(files, TEMPLATE_METADATA_PATH)
+    if (parsed === null) continue
+    const removed = await pruneInstalledTemplateIfInvalid(parsed, files, TEMPLATE_METADATA_PATH)
     if (removed) templatesRemoved += 1
   }
 
   return { skillsRemoved, templatesRemoved }
 }
-
-// Re-export for tests
-export { readInstalledSkillMetaRaw as __readInstalledSkillMetaRaw }
 
 export type { SkillsetConfig }

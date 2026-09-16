@@ -350,43 +350,34 @@ describe('policies routes', () => {
   })
 
   // =========================================================================
-  // Transaction atomicity
+  // Batch atomicity
   // =========================================================================
-  describe('PUT uses transaction for atomicity', () => {
-    it('scope PUT deletes then inserts within a transaction', async () => {
+  describe('PUT replaces the set in one batch', () => {
+    it('scope PUT runs the delete and the inserts inside one atomic unit', async () => {
+      // On better-sqlite3 a batch is a transaction; the statements are built
+      // first and executed, in order, only once the unit has begun.
       const operations: string[] = []
-      const mockTransaction = vi.fn((fn: () => void) => {
-        operations.push('transaction_start')
-        fn()
-        operations.push('transaction_end')
+      const mockTransaction = vi.fn((fn: () => unknown) => {
+        operations.push('batch_start')
+        const result = fn()
+        operations.push('batch_end')
+        return result
       })
-      // Override db.transaction for this test
       const { db } = await import('@shared/lib/db')
       const origTransaction = db.transaction
       db.transaction = mockTransaction as typeof db.transaction
-      mockDeleteWhere.mockImplementation(() => {
-        operations.push('delete')
-        return { run: mockDeleteRun }
-      })
-      mockInsertValues.mockImplementation(() => {
-        operations.push('insert')
-        return { run: vi.fn() }
-      })
+      mockDeleteWhere.mockImplementation(() => ({ run: () => operations.push('delete') }))
+      mockInsertValues.mockImplementation(() => ({ run: () => operations.push('insert') }))
 
       await makeRequest(app, '/api/policies/scope/acc-1', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          policies: [{ scope: 'test', decision: 'allow' }],
+          policies: [{ scope: 'test', decision: 'allow' }, { scope: 'other', decision: 'block' }],
         }),
       })
 
-      expect(operations).toEqual([
-        'transaction_start',
-        'delete',
-        'insert',
-        'transaction_end',
-      ])
+      expect(operations).toEqual(['batch_start', 'delete', 'insert', 'insert', 'batch_end'])
       db.transaction = origTransaction
     })
   })

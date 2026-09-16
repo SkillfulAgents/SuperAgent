@@ -1,6 +1,7 @@
 import webPush from 'web-push'
 import { eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { batch } from '@shared/lib/db/batch'
 import { pushSubscriptions, pushVapidKeys } from '@shared/lib/db/schema'
 
 const VAPID_ROW_ID = 1
@@ -30,25 +31,24 @@ export function getVapidKeys(): VapidKeyPair | null {
  * are minting a fresh pair while subscription rows somehow still exist (e.g.
  * a restored/partial backup), those rows are undeliverable and get dropped.
  */
-export function getOrCreateVapidKeys(): VapidKeyPair {
+export async function getOrCreateVapidKeys(): Promise<VapidKeyPair> {
   const existing = getVapidKeys()
   if (existing) {
     return existing
   }
 
   const generated = webPush.generateVAPIDKeys()
-  db.transaction((tx) => {
-    tx.delete(pushSubscriptions).run()
-    tx.insert(pushVapidKeys)
+  await batch([
+    db.delete(pushSubscriptions),
+    db.insert(pushVapidKeys)
       .values({
         id: VAPID_ROW_ID,
         publicKey: generated.publicKey,
         privateKey: generated.privateKey,
         createdAt: new Date(),
       })
-      .onConflictDoNothing()
-      .run()
-  })
+      .onConflictDoNothing(),
+  ])
 
   // Re-read instead of trusting `generated`: under a concurrent first-use
   // race the row that won the insert is the pair the subscriber was given.

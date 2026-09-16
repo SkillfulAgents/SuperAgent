@@ -364,37 +364,10 @@ export function buildGraph(input: {
   const editablePolicyCallers = (key: string): string[] =>
     (permissionCallersByPair.get(key) ?? []).filter((slug) => roles.canAdmin(slug))
 
-  // Merge invocations onto unordered pairs (A→B and B→A are visually one
-  // line), then draw one activity edge per communicating pair…
-  const activityByPair = new Map<string, number>()
-  for (const inv of topology.invocations) {
-    if (inv.caller === inv.target) continue
-    if (!agentSlugSet.has(inv.caller) || !agentSlugSet.has(inv.target)) continue
-    const key = pairKey(inv.caller, inv.target)
-    activityByPair.set(key, (activityByPair.get(key) ?? 0) + inv.count)
-  }
-  for (const [key, weight] of [...activityByPair].sort(([a], [b]) => a.localeCompare(b))) {
-    const [a, b] = key.split('|')
-    const editable = editablePolicyCallers(key)
-    edges.push({
-      id: `${nodeId.agent(a)}=${nodeId.agent(b)}`,
-      source: nodeId.agent(a),
-      target: nodeId.agent(b),
-      variant: 'activity',
-      weight,
-      // Activity is history — deleting the edge only revokes the standing
-      // permission (when one the user can edit exists); the line stays.
-      deletable: editable.length > 0,
-      policyAgentSlug: editable[0],
-      policyCallers: editable,
-    })
-  }
-
-  // …and one idle permission edge per permitted-but-silent pair. Any
-  // recorded activity supersedes the permission line: both would occupy the
-  // same straight segment and double-draw.
+  // One edge per permitted pair (A→B and B→A are visually one line). An
+  // agent↔agent edge is a relationship the user configured, nothing more:
+  // the graph does not count how often it was used.
   for (const key of [...permissionCallersByPair.keys()].sort((a, b) => a.localeCompare(b))) {
-    if (activityByPair.has(key)) continue
     const [a, b] = key.split('|')
     const editable = editablePolicyCallers(key)
     edges.push({
@@ -409,6 +382,26 @@ export function buildGraph(input: {
   }
 
   return { nodes, edges }
+}
+
+/**
+ * The geometry saved for an edge: under its id, or under the id an earlier
+ * build gave the same agent pair. Agent↔agent edges used to be two kinds, a
+ * permission line (`a~b`) that a recorded invocation turned into an activity
+ * line (`a=b`), and a route or anchor the user dragged was saved under
+ * whichever id the pair had at the time. There is one kind now, so a pair's
+ * saved geometry is looked up under both; the next drag saves it under the
+ * current id, and the persist prunes the old one.
+ */
+export function savedEdgeGeometryFor<T>(
+  saved: Record<string, T> | undefined,
+  edge: Pick<GraphEdgeSpec, 'id' | 'variant'>,
+): T | undefined {
+  if (!saved) return undefined
+  const own = saved[edge.id]
+  if (own !== undefined) return own
+  if (edge.variant !== 'permission') return undefined
+  return saved[edge.id.replace('~', '=')]
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────

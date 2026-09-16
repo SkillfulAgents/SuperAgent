@@ -14,6 +14,7 @@ export const user = sqliteTable('user', {
   email: text('email').notNull().unique(),
   emailVerified: integer('email_verified', { mode: 'boolean' }).default(false).notNull(),
   image: text('image'),
+  avatarOverride: text('avatar_override'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' })
     .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
     .notNull(),
@@ -27,7 +28,9 @@ export const user = sqliteTable('user', {
   banReason: text('ban_reason'),
   banExpires: integer('ban_expires', { mode: 'timestamp_ms' }),
   mustChangePassword: integer('must_change_password', { mode: 'boolean' }).default(false),
-})
+}, (table) => ({
+  avatarOverrideIdx: index('user_avatar_override_idx').on(table.avatarOverride),
+}))
 
 /**
  * Stable installed-mobile-device identity. Access sessions rotate underneath
@@ -479,6 +482,30 @@ export const mcpAuditLog = sqliteTable('mcp_audit_log', {
   mcpAgentIdx: index('mcp_audit_log_mcp_agent_idx').on(table.remoteMcpId, table.agentSlug),
 }))
 
+// Data migrations - the ledger of one-time data moves that have run against
+// this database (see data-migrations/). Keyed by sequence number, never by
+// app version: a database that is lost re-runs every one of them.
+export const dataMigrations = sqliteTable('data_migrations', {
+  id: integer('id').primaryKey(),
+  name: text('name').notNull(),
+  appliedAt: integer('applied_at', { mode: 'timestamp_ms' }).notNull(),
+})
+
+// Agents - which agents exist and what they are called. The row is the
+// authority for name and description; the agent's CLAUDE.md keeps a
+// frontmatter projection of them that the host writes on create and rename.
+// Placement says where the workspace lives: `runtime` is 'local' for a
+// directory under the agents data directory, and `workspace_handle` is the
+// provider's handle for a workspace held elsewhere (null for a local one).
+export const agents = sqliteTable('agents', {
+  slug: text('slug').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  runtime: text('runtime').notNull().default('local'),
+  workspaceHandle: text('workspace_handle'),
+})
+
 // Agent ACLs - maps users to agents with roles (auth mode only)
 export const agentAcl = sqliteTable('agent_acl', {
   id: text('id').primaryKey(),
@@ -541,6 +568,11 @@ export const xAgentPolicies = sqliteTable('x_agent_policies', {
   // Unique per (caller, target, operation). NULL targetAgentSlug counts as a distinct value in SQLite.
   callerTargetOpUnique: uniqueIndex('x_agent_policies_unique')
     .on(table.callerAgentSlug, table.targetAgentSlug, table.operation),
+  // The same key with NULL folded to '', so a global (null-target) policy is
+  // one row too and setPolicy can upsert against it (ON CONFLICT needs an
+  // index the NULL-distinct one above cannot provide).
+  callerTargetOpNullSafeUnique: uniqueIndex('x_agent_policies_null_safe_unique')
+    .on(table.callerAgentSlug, sql`coalesce(target_agent_slug, '')`, table.operation),
   callerSlugIdx: index('x_agent_policies_caller_idx').on(table.callerAgentSlug),
 }))
 
@@ -662,6 +694,16 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   integrationIdIdx: index('chat_integration_sessions_integration_id_idx').on(table.integrationId),
 }))
 
+// Slack participation is independent of session routing: multiple threads can
+// share one channel session. Keep the bounded, least-recently-used thread list
+// across connector recreation, scoped to the installation and bot identity.
+export const slackThreadState = sqliteTable('slack_thread_state', {
+  integrationId: text('integration_id').primaryKey()
+    .references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  botUserId: text('bot_user_id').notNull(),
+  activeThreads: text('active_threads', { mode: 'json' }).$type<string[]>().notNull(),
+})
+
 export const chatIntegrationAccess = sqliteTable('chat_integration_access', {
   id: text('id').primaryKey(),
   integrationId: text('integration_id').notNull()
@@ -724,6 +766,9 @@ export type AgentRemoteMcp = typeof agentRemoteMcps.$inferSelect
 export type NewAgentRemoteMcp = typeof agentRemoteMcps.$inferInsert
 export type McpAuditLogEntry = typeof mcpAuditLog.$inferSelect
 export type NewMcpAuditLogEntry = typeof mcpAuditLog.$inferInsert
+export type DataMigrationRow = typeof dataMigrations.$inferSelect
+export type AgentRow = typeof agents.$inferSelect
+export type NewAgentRow = typeof agents.$inferInsert
 export type AgentAcl = typeof agentAcl.$inferSelect
 export type NewAgentAcl = typeof agentAcl.$inferInsert
 export type UserSettingsRow = typeof userSettings.$inferSelect

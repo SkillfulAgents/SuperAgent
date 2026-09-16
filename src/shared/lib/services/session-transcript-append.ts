@@ -1,6 +1,6 @@
-import * as fs from 'fs'
-import * as path from 'path'
-import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
+import { randomUUID } from 'crypto'
+import { isAbsentFile } from '@shared/lib/agent-actor/jsonl-files'
+import { transcriptPath, type SessionStore } from '@shared/lib/agent-actor/session-store'
 import type { JsonlSystemEntry } from '@shared/lib/types/agent'
 import { recordSessionActivity } from './session-summary-cache'
 
@@ -16,30 +16,23 @@ import { recordSessionActivity } from './session-summary-cache'
 const DEDUP_SCAN_WINDOW_BYTES = 1024 * 1024
 
 /**
- * Read up to the last `maxBytes` bytes of a file as UTF-8. Returns null when
- * the file is missing or unreadable (mirrors the readFile().catch(null) it
- * replaces). A window boundary can split a multi-byte character, but the scan
- * only searches for an ASCII-quoted uuid, so that never affects the match.
+ * Read up to the last `maxBytes` bytes of a transcript as UTF-8. Returns null
+ * when the file is missing or unreadable. A window boundary can split a
+ * multi-byte character, but the scan only searches for an ASCII-quoted uuid,
+ * so that never affects the match.
  */
-async function readFileTail(filePath: string, maxBytes: number): Promise<string | null> {
+async function readTranscriptTail(store: SessionStore, jsonlPath: string, maxBytes: number): Promise<string | null> {
   try {
-    const handle = await fs.promises.open(filePath, 'r')
+    const file = await store.files.open(jsonlPath)
     try {
-      const { size } = await handle.stat()
+      const size = await file.size()
       const start = Math.max(0, size - maxBytes)
-      const length = size - start
-      const buf = Buffer.alloc(length)
-      let offset = 0
-      while (offset < length) {
-        const { bytesRead } = await handle.read(buf, offset, length - offset, start + offset)
-        if (bytesRead === 0) break
-        offset += bytesRead
-      }
-      return buf.subarray(0, offset).toString('utf-8')
+      return Buffer.from(await file.readAt(start, size - start)).toString('utf-8')
     } finally {
-      await handle.close()
+      await file.close()
     }
-  } catch {
+  } catch (error) {
+    if (isAbsentFile(error)) return null
     return null
   }
 }
@@ -56,16 +49,16 @@ async function readFileTail(filePath: string, maxBytes: number): Promise<string 
  * session-service with explicit factories keep working unchanged.
  */
 export async function appendInformationalEntry(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   entry: { uuid: string; content: string; level?: string }
 ): Promise<void> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const jsonlPath = transcriptPath(store, sessionId)
   // Idempotent by uuid: some hook shapes (continue:false) make the CLI persist
   // the banner itself with the streamed uuid, and the container's late-join
   // replay can deliver the same frame twice — never write a duplicate line.
   // Duplicates land near-in-time, so scanning the tail window is sufficient.
-  const existing = await readFileTail(jsonlPath, DEDUP_SCAN_WINDOW_BYTES)
+  const existing = await readTranscriptTail(store, jsonlPath, DEDUP_SCAN_WINDOW_BYTES)
   if (existing?.includes(`"${entry.uuid}"`)) return
   const jsonlEntry: JsonlSystemEntry = {
     uuid: entry.uuid,
@@ -76,7 +69,25 @@ export async function appendInformationalEntry(
     isMeta: false,
     timestamp: new Date().toISOString(),
   }
-  await fs.promises.mkdir(path.dirname(jsonlPath), { recursive: true })
-  await fs.promises.appendFile(jsonlPath, JSON.stringify(jsonlEntry) + '\n', 'utf-8')
-  recordSessionActivity(agentSlug, sessionId)
+  await store.files.append(jsonlPath, JSON.stringify(jsonlEntry) + '\n')
+  recordSessionActivity(store, sessionId)
+}
+
+/**
+ * Record an assistant message that reached the user out of band (a chat
+ * notification the container never produced) so the transcript shows what was
+ * said. The caller awaits it: it is answering a webhook and must not lose the
+ * line to a dropped promise. Does not record activity; the caller does, since
+ * it also has a path that goes through the container.
+ */
+export async function appendAssistantEntry(store: SessionStore, sessionId: string, text: string): Promise<void> {
+  const entry = {
+    type: 'assistant',
+    message: { content: [{ type: 'text', text }] },
+    uuid: randomUUID(),
+    parentUuid: null,
+    sessionId,
+    timestamp: new Date().toISOString(),
+  }
+  await store.files.append(transcriptPath(store, sessionId), JSON.stringify(entry) + '\n')
 }

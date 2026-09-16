@@ -1,7 +1,7 @@
 import { SessionChatColumn } from './session-chat-column'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
-import { CalendarClock, GitFork, Split, Zap } from 'lucide-react'
+import { CalendarClock, GitFork, Wrench, Zap } from 'lucide-react'
 import { SessionProvenanceBanner } from './session-provenance-banner'
 import { useEffect } from 'react'
 import { useSession, useSetSessionMarkedUnread, useClearSessionUnread } from '@renderer/hooks/use-sessions'
@@ -130,6 +130,20 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
           }}
         />
       )}
+      {session?.isWidgetRepair && (
+        <SessionProvenanceBanner
+          icon={Wrench}
+          text={<>Invoked to fix widget{session.widgetRepairSlug ? `: ${session.widgetRepairSlug}` : ''}</>}
+          back={{
+            label: 'Back',
+            onClick: () => {
+              void navigate({ to: '/agents/$slug/called-from-agents', params: { slug: agentSlug } })
+            },
+            testId: 'widget-repair-session-back-button',
+          }}
+          testId="widget-repair-session-banner"
+        />
+      )}
       {session?.invokedByAgentSlug && (
         <SessionProvenanceBanner
           icon={GitFork}
@@ -142,29 +156,6 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
             testId: 'x-agent-session-back-button',
           }}
           testId="x-agent-session-banner"
-        />
-      )}
-      {session?.forkedFromSessionId && (
-        <SessionProvenanceBanner
-          icon={Split}
-          text={
-            session.forkedFromSessionName
-              ? <>Forked from &quot;{session.forkedFromSessionName}&quot;</>
-              : <>Forked from a deleted session</>
-          }
-          back={
-            session.forkedFromSessionName
-              ? {
-                  label: 'Back',
-                  onClick: () => {
-                    const sourceId = session.forkedFromSessionId!
-                    void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: sourceId } })
-                  },
-                  testId: 'fork-session-back-button',
-                }
-              : undefined
-          }
-          testId="fork-session-banner"
         />
       )}
 

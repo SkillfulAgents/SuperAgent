@@ -137,6 +137,25 @@ BAZ=qux`
 })
 
 describe('serialize → parse round trip', () => {
+  it.each(['QA_COMPLEX', 'QA Complex'])('preserves hashes after escaped quotes and the display name %s', (key) => {
+    const values = [
+      'qa "quote" #hash \\slash\nline2',
+      '"quoted"#literal',
+      'ends with \\',
+      'backslashes \\\\" and #literal',
+      "single 'quote' #literal",
+      '#entire value',
+    ]
+    for (const value of values) {
+      let secret = { key, envVar: 'QA_COMPLEX', value }
+      for (let cycle = 0; cycle < 3; cycle++) {
+        const parsed = parseEnvFile(serializeEnvFile([secret])).get(secret.envVar)
+        expect(parsed).toEqual({ value, comment: key === secret.envVar ? undefined : key })
+        secret = { ...secret, value: parsed!.value }
+      }
+    }
+  })
+
   it('values with quotes/JSON/backslashes/newlines survive repeated cycles unchanged', () => {
     // Regression: parseEnvFile used to strip quotes WITHOUT unescaping, so a
     // value containing `"` gained an escape level on every read-modify-write —
@@ -387,6 +406,19 @@ describe('secrets service integration', () => {
   })
 
   describe('setSecret', () => {
+    it('preserves a complex secret through unrelated creates, edits and deletes', async () => {
+      const secret = { key: 'QA Complex', envVar: 'QA_COMPLEX', value: 'qa "quote" #hash \\slash\nline2' }
+      await setSecret('test-agent', secret)
+      await setSecret('test-agent', { key: 'Unrelated', envVar: 'UNRELATED', value: 'other' })
+      expect(await getSecret('test-agent', secret.envVar)).toEqual(secret)
+
+      expect(await updateSecret('test-agent', 'UNRELATED', { value: 'edited' })).toMatchObject({ status: 'updated' })
+      expect(await getSecret('test-agent', secret.envVar)).toEqual(secret)
+
+      expect(await deleteSecret('test-agent', 'UNRELATED')).toBe(true)
+      expect(await listSecrets('test-agent')).toEqual([secret])
+    })
+
     it('creates .env file and adds secret', async () => {
       await setSecret('test-agent', {
         key: 'New Key',

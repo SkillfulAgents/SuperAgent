@@ -7,6 +7,11 @@ export interface Provider {
   description: string
   composioSlug?: string
   nangoSlug?: string
+  /**
+   * Exists only through Gamut's Composio (a custom auth config on Gamut's own
+   * developer app), so it is hidden on a local Composio key.
+   */
+  platformOnly?: true
 }
 
 export const SUPPORTED_PROVIDERS: Provider[] = [
@@ -289,6 +294,14 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     composioSlug: 'instagram',
     nangoSlug: 'instagram',
   },
+  {
+    slug: 'twitter',
+    displayName: 'X',
+    icon: 'at-sign',
+    description: 'Posts, timelines, and direct messages',
+    composioSlug: 'twitter',
+    platformOnly: true,
+  },
 
   // Finance
   {
@@ -314,6 +327,15 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     description: 'Accounting software',
     composioSlug: 'xero',
     nangoSlug: 'xero',
+  },
+  {
+    slug: 'plaid',
+    displayName: 'Plaid',
+    icon: 'landmark',
+    description: 'Bank accounts, balances, and transactions',
+    // Plaid Link is not OAuth: the platform's toolkit bridge hosts it as a custom toolkit.
+    composioSlug: 'custom_plaid',
+    platformOnly: true,
   },
 
   // Marketing

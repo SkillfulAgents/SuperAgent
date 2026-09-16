@@ -250,6 +250,61 @@ describe('scheduled-task-service session wakes', () => {
       expect(pending).toHaveLength(1)
     })
 
+    it('a concurrent replacement reports the wake it actually displaced', async () => {
+      const params = {
+        agentSlug: 'test-agent',
+        scheduleExpression: 'at now + 1 hour',
+        note: 'Wake',
+        sessionId: 'session-abc',
+      }
+      const [first, second] = await Promise.all([createSessionWake(params), createSessionWake(params)])
+
+      expect(first.replaced).toBeNull()
+      expect(second.replaced?.id).toBe(first.taskId)
+      const pending = await listPendingWakesByAgent('test-agent')
+      expect(pending.map((wake) => wake.id)).toEqual([second.taskId])
+    })
+
+    it('a burst of six replacements all succeed, each displacing the previous one', async () => {
+      const params = {
+        agentSlug: 'test-agent',
+        scheduleExpression: 'at now + 1 hour',
+        note: 'Wake',
+        sessionId: 'session-abc',
+      }
+      const results = await Promise.all(Array.from({ length: 6 }, () => createSessionWake(params)))
+
+      expect(results.map((r) => r.replaced?.id ?? null)).toEqual([null, ...results.slice(0, 5).map((r) => r.taskId)])
+      const pending = await listPendingWakesByAgent('test-agent')
+      expect(pending.map((wake) => wake.id)).toEqual([results[5].taskId])
+    })
+
+    it('a replace racing a cancel leaves at most one pending wake, never two', async () => {
+      const first = await createSessionWake({
+        agentSlug: 'test-agent',
+        scheduleExpression: 'at now + 24 hours',
+        note: 'Original wake',
+        sessionId: 'session-abc',
+      })
+
+      const [replaced] = await Promise.all([
+        createSessionWake({
+          agentSlug: 'test-agent',
+          scheduleExpression: 'at now + 48 hours',
+          note: 'Replacement wake',
+          sessionId: 'session-abc',
+        }),
+        cancelPendingWakeForSession('test-agent', 'session-abc'),
+      ])
+
+      // The cancel+insert pair is one batch, so whichever order the two land
+      // in, the original is cancelled and the session never holds two wakes.
+      expect((await getScheduledTask(first.taskId))!.status).toBe('cancelled')
+      const pending = await listPendingWakesByAgent('test-agent')
+      expect(pending.length).toBeLessThanOrEqual(1)
+      if (pending.length === 1) expect(pending[0].id).toBe(replaced.taskId)
+    })
+
     it('does not treat cancelled or executed wakes as replaceable', async () => {
       const first = await createSessionWake({
         agentSlug: 'test-agent',

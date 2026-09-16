@@ -133,6 +133,52 @@ async function resolveMicrosoftDisplayName(
   }
 }
 
+// Plaid is POST-only JSON; the bridge injects client_id/secret/access_token.
+async function plaidPost(
+  makeApiCall: MakeApiCallFn,
+  connectionId: string,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
+  const response = await makeApiCall({
+    providerConnectionId: connectionId,
+    toolkitSlug: 'plaid',
+    targetUrl: `https://production.plaid.com${path}`,
+    method: 'POST',
+    headers: new Headers({ 'Content-Type': 'application/json' }),
+    body: new TextEncoder().encode(JSON.stringify(body)).buffer as ArrayBuffer,
+  })
+  if (!response.ok) return null
+  const data = await response.json()
+  return isRecord(data) ? data : null
+}
+
+// Name a Plaid Item after its bank, e.g. "Chase". Prefers the name on the Item
+// and falls back to the institution lookup for Items that only carry the id.
+async function resolvePlaidDisplayName(
+  makeApiCall: MakeApiCallFn,
+  connectionId: string,
+): Promise<string | null> {
+  try {
+    const itemData = await plaidPost(makeApiCall, connectionId, '/item/get', {})
+    const item = itemData?.item
+    if (!isRecord(item)) return null
+    if (typeof item.institution_name === 'string' && item.institution_name) return item.institution_name
+    if (typeof item.institution_id !== 'string' || !item.institution_id) return null
+
+    const instData = await plaidPost(makeApiCall, connectionId, '/institutions/get_by_id', {
+      institution_id: item.institution_id,
+      country_codes: ['US'],
+    })
+    const institution = instData?.institution
+    if (!isRecord(institution)) return null
+    return typeof institution.name === 'string' && institution.name ? institution.name : null
+  } catch (error) {
+    console.warn('Could not fetch Plaid institution for display name:', error)
+    return null
+  }
+}
+
 export async function resolveDisplayName(
   makeApiCall: MakeApiCallFn,
   connectionId: string,
@@ -147,6 +193,9 @@ export async function resolveDisplayName(
   } else if (MICROSOFT_TOOLKITS.includes(slug)) {
     const email = await resolveMicrosoftDisplayName(makeApiCall, connectionId, slug)
     if (email) return email
+  } else if (slug === 'plaid') {
+    const institution = await resolvePlaidDisplayName(makeApiCall, connectionId)
+    if (institution) return institution
   }
 
   return fallbackName

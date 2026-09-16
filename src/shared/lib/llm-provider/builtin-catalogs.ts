@@ -707,9 +707,35 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
       cacheReadPerMtok: 0.03,
     },
   },
+  {
+    // Bare id matches the platform proxy's deepseek-* → fireworks route.
+    id: 'deepseek-v4.1-flash',
+    label: 'DeepSeek V4.1 Flash',
+    blurb: 'DeepSeek, served via Platform',
+    family: 'deepseek',
+    isLatest: true,
+    isDefault: true,
+    icon: 'deepseek',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    // Fireworks' Anthropic-compatible endpoint takes function tools only — the
+    // proxy strips Anthropic's server tools, so neither search nor fetch runs.
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    // Fireworks-reported context length for deepseek-v4p1-flash (1040k).
+    contextWindow: 1_040_000,
+    // Fireworks serverless rates (2026-09-11). Cache write is unpublished, so
+    // cacheCreation mirrors input — same convention as Fireworks/Meta.
+    pricing: {
+      inputPerMtok: 0.22,
+      outputPerMtok: 0.66,
+      cacheCreationPerMtok: 0.22,
+      cacheReadPerMtok: 0.007,
+    },
+  },
 ]
 
-/** Platform — bare Claude models plus the GPT/Grok/Kimi/Muse/GLM models the proxy serves. */
+/** Platform — bare Claude models plus the GPT/Grok/Kimi/Muse/GLM/DeepSeek models the proxy serves. */
 export const PLATFORM_CATALOG: ModelDefinition[] = [
   ...withPlatformClaudeSpeeds(CLAUDE_BARE_CATALOG),
   ...PLATFORM_EXTRA_MODELS,

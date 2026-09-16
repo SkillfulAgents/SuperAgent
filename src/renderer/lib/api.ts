@@ -1,12 +1,16 @@
 import { getApiBaseUrl } from './env'
 import { hasInteractiveLogin, isAuthMode } from './auth-mode'
 import { reportCloudSessionRejected } from './cloud-session'
+import { addRendererBreadcrumb } from './error-reporting'
+import { WORKSPACE_UNAVAILABLE_HEADER, WorkspaceUnavailableError } from './workspace-unavailable'
 
 /**
  * Fetch wrapper that prepends the API base URL.
  * In web mode, this is empty (same-origin).
  * In Electron, this is http://localhost:{port} where port is dynamically assigned.
  *
+ * Rejects with `WorkspaceUnavailableError` when the cloud router answered for a
+ * workspace that is not ready (see `handleWorkspaceUnavailableResponse`).
  * In auth mode, automatically signs out on 401 responses (expired session).
  */
 export async function apiFetch(
@@ -15,8 +19,23 @@ export async function apiFetch(
 ): Promise<Response> {
   const baseUrl = getApiBaseUrl()
   const response = await fetch(`${baseUrl}${path}`, init)
+  handleWorkspaceUnavailableResponse(path, (name) => response.headers.get(name))
   await handleUnauthorizedResponse(response.status, path)
   return response
+}
+
+// A sleeping / waking cloud workspace answers every request with the router's
+// not-ready reply. That is one condition, not one failure per caller, so it is
+// classified here — before any hook can turn the body into an Error of its own
+// — and left as a breadcrumb rather than an event (see error-reporting.ts).
+export function handleWorkspaceUnavailableResponse(
+  path: string,
+  getHeader: (name: string) => string | null,
+): void {
+  const state = getHeader(WORKSPACE_UNAVAILABLE_HEADER)
+  if (!state) return
+  addRendererBreadcrumb('cloud-workspace', 'workspace unavailable', { path, state })
+  throw new WorkspaceUnavailableError(state)
 }
 
 // A 401 means three different things depending on what we're talking to, so
@@ -149,8 +168,8 @@ export class HttpError extends Error {
 
 /**
  * Loader-only fetch: returns parsed JSON, throwing `HttpError` on a non-2xx
- * response. The existing data hooks stay on `apiFetch` (which never throws and
- * renders its own inline loading/empty states); loaders need a throw to gate
+ * response. The existing data hooks stay on `apiFetch` (which returns non-2xx
+ * responses for the hook to render inline); loaders need a throw to gate
  * access before the route renders.
  */
 export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {

@@ -1981,3 +1981,36 @@ describe('replayed duplicate entries (resume history replay)', () => {
     expect(result).toHaveLength(2)
   })
 })
+
+describe('fork stamp', () => {
+  it('flags a copied line as forked and leaves an unstamped line unflagged', () => {
+    const copied = createUserMessage('u1', 'before the fork', '2026-01-24T10:00:00.000Z', {
+      forkedFrom: { sessionId: 'src-1', messageUuid: 'old-u1' },
+    })
+    const fresh = createUserMessage('u2', 'after the fork', '2026-01-24T10:05:00.000Z')
+
+    const result = transformMessages([copied, fresh])
+
+    expect(asMessage(result[0]).forked).toBe(true)
+    expect(asMessage(result[1])).not.toHaveProperty('forked')
+  })
+
+  it('flags a copied compaction boundary too, so a fork made right after compacting ends on it', () => {
+    const copied = createUserMessage('u1', 'before', '2026-01-24T10:00:00.000Z', {
+      forkedFrom: { sessionId: 'src-1', messageUuid: 'old-u1' },
+    })
+    const copiedBoundary: JsonlSystemEntry = {
+      uuid: 'cb-1',
+      type: 'system',
+      subtype: 'compact_boundary',
+      content: '',
+      isMeta: false,
+      timestamp: '2026-01-24T10:01:00.000Z',
+      forkedFrom: { sessionId: 'src-1', messageUuid: 'old-cb-1' },
+    }
+
+    const result = transformMessages([copied, copiedBoundary])
+
+    expect(result[1]).toMatchObject({ type: 'compact_boundary', forked: true })
+  })
+})

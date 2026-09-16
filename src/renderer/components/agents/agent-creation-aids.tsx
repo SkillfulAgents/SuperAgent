@@ -16,7 +16,7 @@ import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { ImportAgentDialog } from '@renderer/components/agents/import-agent-dialog'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import { captureRendererException } from '@renderer/lib/error-reporting'
-import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
+import type { VoiceAgentConfig } from '@renderer/lib/voice/contracts/voice-agent'
 import type { ApiAgentTemplateInstallResult } from '@shared/lib/types/api'
 
 export type ImportResult = ApiAgentTemplateInstallResult

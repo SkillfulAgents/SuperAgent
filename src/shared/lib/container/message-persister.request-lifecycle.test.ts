@@ -150,16 +150,23 @@ vi.mock('@shared/lib/db/schema', () => ({
   },
 }))
 const mockContainerClientFetch = vi.fn<MockFn>(() => Promise.resolve({ ok: true }))
-vi.mock('./container-manager', () => ({
-  containerManager: {
-    getClient: () => ({
-      fetch: (...args: unknown[]) => mockContainerClientFetch(...args),
+vi.mock('./container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: () => ({
+        fetch: (...args: unknown[]) => mockContainerClientFetch(...args),
+      }),
     }),
-  },
-}))
+  }
+})
 
 // Import after mocks are set up
 import { messagePersister } from './message-persister'
+import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
+
+// The registry attaches the real stores; these tests drive the persister alone.
+messagePersister.attachSessionStores(createInMemorySessionStore)
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 

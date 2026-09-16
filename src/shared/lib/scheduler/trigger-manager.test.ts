@@ -9,11 +9,21 @@ const mockEnsureRunning = vi.fn().mockResolvedValue({
   createSession: mockCreateSession,
 })
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
-  },
-}))
+// The actor reaches the container client through getClient after start();
+// hand back whatever ensureRunning last resolved to.
+let mockClient: unknown
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning: async (...args: unknown[]) => {
+        mockClient = await mockEnsureRunning(...args)
+        return mockClient
+      },
+      getClient: () => mockClient,
+    }),
+  }
+})
 
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'http://localhost:3000',
@@ -198,7 +208,7 @@ describe('TriggerManager', () => {
       // Verify trigger was marked as fired
       expect(mockMarkTriggerFired).toHaveBeenCalledWith('trigger_1', 'session_123')
       expect(mockRegisterSession).toHaveBeenCalledWith(
-        'test-agent',
+        expect.objectContaining({ slug: 'test-agent' }),
         'session_123',
         'Email Handler',
         expect.objectContaining({
@@ -246,7 +256,7 @@ describe('TriggerManager', () => {
       expect(prompt).toContain('Event 2:')
       expect(prompt).toContain('Event 3:')
       expect(mockRegisterSession).toHaveBeenCalledWith(
-        'test-agent',
+        expect.objectContaining({ slug: 'test-agent' }),
         'session_123',
         'Batch Test',
         expect.objectContaining({

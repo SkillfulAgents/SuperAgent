@@ -115,7 +115,7 @@ export function normalizeXAgentAttachmentPaths(paths: string[]): string[] {
 }
 
 export async function removeTransferredAttachments(
-  targetClient: ContainerClient,
+  targetClient: Pick<ContainerClient, 'fetch'>,
   targetDirectory: string,
 ): Promise<void> {
   const response = await targetClient.fetch(xAgentWorkspaceFileRoute(targetDirectory, 'delete'), { method: 'DELETE' })
@@ -125,8 +125,8 @@ export async function removeTransferredAttachments(
 }
 
 export async function transferXAgentAttachments(input: {
-  sourceClient: ContainerClient
-  targetClient: ContainerClient
+  sourceClient: Pick<ContainerClient, 'fetch'>
+  targetClient: Pick<ContainerClient, 'fetch'>
   sourcePaths: string[]
   signal?: AbortSignal
   transferId?: string

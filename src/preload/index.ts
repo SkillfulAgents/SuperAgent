@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // MCP OAuth callback handling - receives result from main process after token exchange
   onMcpOAuthCallback: (callback: (params: {
+    state?: string
     success: boolean
     mcpId?: string | null
     error?: string | null
@@ -478,7 +479,7 @@ declare global {
       desktopProtocol?: string
       onOAuthCallback: (callback: (params: OAuthCallbackParams) => void) => () => void
       removeOAuthCallback: () => void
-      onMcpOAuthCallback: (callback: (params: { success: boolean; mcpId?: string | null; error?: string | null }) => void) => () => void
+      onMcpOAuthCallback: (callback: (params: { state?: string; success: boolean; mcpId?: string | null; error?: string | null }) => void) => () => void
       removeMcpOAuthCallback: () => void
       onPlatformAuthCallback: (callback: (params: { success: boolean; email?: string | null; error?: string | null }) => void) => () => void
       removePlatformAuthCallback: () => void
