@@ -14,6 +14,12 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
+const mockOpenExternal = vi.hoisted(() => vi.fn())
+const mockInvalidateAccounts = vi.hoisted(() => vi.fn())
+vi.mock('@renderer/lib/open-external', () => ({
+  openExternalUrl: (...args: unknown[]) => mockOpenExternal(...args),
+}))
+
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({
   useConnectedAccountsByToolkit: vi.fn(() => ({
     data: {
@@ -32,7 +38,7 @@ vi.mock('@renderer/hooks/use-connected-accounts', () => ({
     isLoading: false,
     refetch: vi.fn(),
   })),
-  useInvalidateConnectedAccounts: vi.fn(() => vi.fn()),
+  useInvalidateConnectedAccounts: () => mockInvalidateAccounts,
   useRenameConnectedAccount: vi.fn(() => ({
     mutateAsync: vi.fn(),
     isPending: false,
@@ -293,6 +299,47 @@ describe('ConnectedAccountRequestItem', () => {
   it('shows add new account button', () => {
     renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
     expect(screen.getByText('Add New Account')).toBeInTheDocument()
+  })
+
+  // Shopify is installed from its App Store listing, so this card opens the listing
+  // instead of starting a grant, and picks the new store up when the user returns.
+  it('opens the App Store listing for Shopify and refreshes on return', async () => {
+    const refetch = vi.fn()
+    vi.mocked(useConnectedAccountsByToolkit).mockReturnValue({
+      data: { accounts: [] },
+      isLoading: false,
+      refetch,
+    } as any)
+    mockInvalidateAccounts.mockClear()
+
+    const user = userEvent.setup()
+    const { unmount } = renderWithProviders(
+      <ConnectedAccountRequestItem {...defaultProps} toolkit="shopify" />,
+    )
+
+    // Returning without having opened the listing must not refresh anything.
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(mockInvalidateAccounts).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: /Connect/ }))
+
+    expect(mockOpenExternal).toHaveBeenCalledWith('https://apps.shopify.com/gamut')
+    expect(mockApiFetch).not.toHaveBeenCalledWith(
+      '/api/connected-accounts/initiate',
+      expect.anything(),
+    )
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    // One refresh for the return, however many events it arrives as, and the
+    // query it invalidates is the only fetch.
+    await waitFor(() => expect(mockInvalidateAccounts).toHaveBeenCalledTimes(1))
+    expect(refetch).not.toHaveBeenCalled()
+    unmount()
   })
 
   it('does not auto-select expired accounts and shows reconnect button', () => {

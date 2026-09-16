@@ -1,5 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { openExternalUrl } from '@renderer/lib/open-external'
+import { SHOPIFY_APP_INSTALL_URL } from '@shared/lib/account-providers/shopify'
 import { warnIfLiveRefreshFailed } from '@renderer/lib/connection-live-refresh'
 import { useQueryClient } from '@tanstack/react-query'
 import { formatDistanceToNow } from 'date-fns'
@@ -108,6 +110,27 @@ export function ConnectedAccountRequestItem({
       hasAutoSelected.current = true
     }
   }, [accounts, selectedAccountIds.size])
+
+  // The App Store install finishes outside this window: the connection is made in
+  // Connections, not here, so there is no callback to listen for. Refresh once the
+  // user returns, which is the only moment the new store can matter to this card.
+  const awaitingInstall = useRef(false)
+  useEffect(() => {
+    if (toolkit !== 'shopify') return
+    const onReturn = () => {
+      if (!awaitingInstall.current || document.hidden) return
+      awaitingInstall.current = false
+      // Invalidating refetches the active query; a second refetch would only
+      // cancel and restart the first.
+      invalidateConnectedAccounts()
+    }
+    window.addEventListener('focus', onReturn)
+    document.addEventListener('visibilitychange', onReturn)
+    return () => {
+      window.removeEventListener('focus', onReturn)
+      document.removeEventListener('visibilitychange', onReturn)
+    }
+  }, [toolkit, invalidateConnectedAccounts])
 
   // Listen for OAuth callback messages (both IPC in Electron and postMessage in web)
   useEffect(() => {
@@ -219,6 +242,14 @@ export function ConnectedAccountRequestItem({
   }, [accounts, replacement])
 
   const handleConnectNew = async () => {
+    // A Shopify store is connected by installing Gamut from its App Store listing.
+    // Shopify hands the store back to Connections, and the connect runs there, so
+    // this card learns about the new account when the user comes back to it.
+    if (toolkit === 'shopify') {
+      awaitingInstall.current = true
+      void openExternalUrl(SHOPIFY_APP_INSTALL_URL)
+      return
+    }
     setStatus('connecting')
     setError(null)
     track('account_added', { slug: toolkit, location: 'session' })
@@ -754,19 +785,22 @@ function AccountOption({
             className="w-32 p-1"
             onClick={(e) => e.stopPropagation()}
           >
-            <Button
-              size="xs"
-              variant="ghost"
-              className="w-full justify-start gap-2 text-foreground hover:bg-muted"
-              onClick={(e) => {
-                e.stopPropagation()
-                setMenuOpen(false)
-                onStartEdit()
-              }}
-            >
-              <Pencil className="h-3.5 w-3.5" />
-              Rename
-            </Button>
+            {/* A Shopify connection is named after its store. */}
+            {account.toolkitSlug !== 'shopify' && (
+              <Button
+                size="xs"
+                variant="ghost"
+                className="w-full justify-start gap-2 text-foreground hover:bg-muted"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setMenuOpen(false)
+                  onStartEdit()
+                }}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                Rename
+              </Button>
+            )}
             <Button
               size="xs"
               variant="ghost"

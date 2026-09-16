@@ -290,6 +290,15 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     nangoSlug: 'instagram',
   },
 
+  // E-commerce
+  {
+    slug: 'shopify',
+    displayName: 'Shopify',
+    icon: 'shopping-bag',
+    description: 'Online store: products, orders, customers',
+    composioSlug: 'shopify',
+  },
+
   // Finance
   {
     slug: 'stripe',

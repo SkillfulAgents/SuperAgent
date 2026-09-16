@@ -2,7 +2,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { screen } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
-import { ConnectionsTab } from './connections-tab'
+import { ConnectionsHeaderActions, ConnectionsTab } from './connections-tab'
+
+const router = vi.hoisted(() => ({ navigate: vi.fn(), search: {} as Record<string, string> }))
+const shopifyAccounts = vi.hoisted(() => [] as Array<Record<string, string>>)
 
 const mockUseConnectionActivityStats = vi.fn()
 vi.mock('@renderer/hooks/use-activity-stats', () => ({
@@ -25,7 +28,7 @@ vi.mock('@renderer/hooks/use-connected-accounts', () => ({
       status: 'active',
       createdAt: '2026-07-01T00:00:00.000Z',
       updatedAt: '2026-07-01T00:00:00.000Z',
-    }] },
+    }, ...shopifyAccounts] },
     isLoading: false,
   }),
   useTriggerCountsPerAccount: () => ({ data: {} }),
@@ -63,13 +66,13 @@ vi.mock('@renderer/components/connections/connection-agent-count', () => ({
 }))
 
 vi.mock('@renderer/components/connections/connections-list', () => ({
-  NewIntegrationButton: () => null,
+  NewIntegrationButton: ({ shop }: { shop?: string }) => <div data-testid="new-integration" data-shop={shop ?? ''} />,
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
-  useNavigate: () => vi.fn(),
-  useSearch: () => ({}),
+  useNavigate: () => router.navigate,
+  useSearch: () => router.search,
 }))
 
 describe('global Connections activity charts', () => {
@@ -120,5 +123,32 @@ describe('global Connections activity charts', () => {
     expect(screen.getByText('Docs MCP')).toBeInTheDocument()
     expect(screen.queryByRole('img', { name: /activity/i })).not.toBeInTheDocument()
     expect(screen.queryByTestId('activity-chart-skeleton')).not.toBeInTheDocument()
+  })
+})
+
+describe('Shopify handoff to Connections', () => {
+  const SHOP = 'gamut-dev.myshopify.com'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    router.search = { shop: SHOP }
+    shopifyAccounts.length = 0
+  })
+
+  it('opens the directory for a store that is not connected yet', () => {
+    renderWithProviders(<ConnectionsHeaderActions />)
+
+    expect(screen.getByTestId('new-integration')).toHaveAttribute('data-shop', SHOP)
+    expect(router.navigate).not.toHaveBeenCalled()
+  })
+
+  it('opens the existing account instead of starting a second grant for a connected store', () => {
+    shopifyAccounts.push({ id: 'shop-acc', toolkitSlug: 'shopify', displayName: SHOP, status: 'active' })
+    renderWithProviders(<ConnectionsHeaderActions />)
+
+    expect(screen.getByTestId('new-integration')).toHaveAttribute('data-shop', '')
+    const { search, replace } = router.navigate.mock.calls[0][0]
+    expect(search({ shop: SHOP, connectionView: 'logs' })).toEqual({ shop: undefined, detail: 'account-shop-acc', connectionView: undefined })
+    expect(replace).toBe(true)
   })
 })

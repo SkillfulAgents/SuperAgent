@@ -1,5 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { openExternalUrl } from '@renderer/lib/open-external'
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
@@ -17,6 +18,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { cn } from '@shared/lib/utils/cn'
+import { SHOPIFY_APP_INSTALL_URL } from '@shared/lib/account-providers/shopify'
 import {
   Select,
   SelectContent,
@@ -177,22 +179,28 @@ interface IntegrationDirectoryDialogProps {
   initialTab?: DirectoryTab
   onApiConnected?: (connection: NewApiConnection) => void
   onMcpConnected?: (connection: NewMcpConnection) => void
+  /** A Shopify store that was just installed: filter to Shopify and connect it. */
+  shop?: string
 }
 
-export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'all', onApiConnected, onMcpConnected }: IntegrationDirectoryDialogProps) {
+export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'all', onApiConnected, onMcpConnected, shop }: IntegrationDirectoryDialogProps) {
   const [tab, setTab] = useState<DirectoryTab>(initialTab)
   const [filter, setFilter] = useState('')
   const prevOpen = useRef(open)
+  const prevShop = useRef(shop)
 
   // Reset only when the dialog transitions from closed → open, not when the
-  // `initialTab` prop identity churns mid-session.
+  // `initialTab` prop identity churns mid-session. A store arriving while the
+  // dialog is already open filters to Shopify too, since the user did not type
+  // the filter that is there.
   useEffect(() => {
-    if (open && !prevOpen.current) {
+    if (open && (!prevOpen.current || (shop && shop !== prevShop.current))) {
       setTab(initialTab)
-      setFilter('')
+      setFilter(shop ? 'Shopify' : '')
     }
     prevOpen.current = open
-  }, [open, initialTab])
+    prevShop.current = shop
+  }, [open, initialTab, shop])
 
   // The query survives a tab switch — CrossDirectoryHint hands it to the All
   // tab, and clearing it there would throw away what the user just typed.
@@ -245,10 +253,11 @@ export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'a
               onApiConnected={handleApiConnected}
               onMcpConnected={handleMcpConnected}
               fallbackClose={close}
+              shop={shop}
             />
           </TabsContent>
           <TabsContent value="apis" className="mt-0">
-            <ApisPanel filter={filter} onConnected={handleApiConnected} fallbackClose={close} onSeeAll={seeAllForFilter} />
+            <ApisPanel filter={filter} onConnected={handleApiConnected} fallbackClose={close} onSeeAll={seeAllForFilter} shop={shop} />
           </TabsContent>
           <TabsContent value="mcps" className="mt-0">
             <McpsPanel filter={filter} onConnected={handleMcpConnected} fallbackClose={close} onSeeAll={seeAllForFilter} />
@@ -263,17 +272,18 @@ export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'a
 
 // Renders both directories in one scroll area. Each panel keeps its own
 // connect/OAuth state; only the section chrome and scrolling move up here.
-function AllPanel({ filter, onApiConnected, onMcpConnected, fallbackClose }: {
+function AllPanel({ filter, onApiConnected, onMcpConnected, fallbackClose, shop }: {
   filter: string
   onApiConnected: (connection: NewApiConnection) => void
   onMcpConnected: (connection: NewMcpConnection) => void
   fallbackClose: () => void
+  shop?: string
 }) {
   // Both sections always render, each carrying its own empty state, so a search
   // shows what each directory has to say rather than silently dropping one.
   return (
     <div className="max-h-[50vh] overflow-y-auto pr-1 space-y-5">
-      <ApisPanel embedded filter={filter} onConnected={onApiConnected} fallbackClose={fallbackClose} />
+      <ApisPanel embedded filter={filter} onConnected={onApiConnected} fallbackClose={fallbackClose} shop={shop} />
       <McpsPanel embedded filter={filter} onConnected={onMcpConnected} fallbackClose={fallbackClose} />
       {!filter.trim() && (
         <DirectoryFooterNote>
@@ -286,7 +296,7 @@ function AllPanel({ filter, onApiConnected, onMcpConnected, fallbackClose }: {
 
 // --- APIs panel ---
 
-function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSeeAll }: { filter: string; onConnected: (connection: NewApiConnection) => void; fallbackClose: () => void; embedded?: boolean; onSeeAll?: () => void }) {
+function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSeeAll, shop }: { filter: string; onConnected: (connection: NewApiConnection) => void; fallbackClose: () => void; embedded?: boolean; onSeeAll?: () => void; shop?: string }) {
   const { data: providersData, isLoading } = useProviders()
   const initiateConnection = useInitiateConnection()
   const invalidateAccounts = useInvalidateConnectedAccounts()
@@ -375,6 +385,12 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
   const mcpMatchCount = useMemo(() => filterMcpServers(filter).length, [filter])
 
   const handleConnect = async (slug: string) => {
+    // Shopify is installed from its App Store listing, and Shopify hands the store
+    // back through platform. There is no grant to wait for here.
+    if (slug === 'shopify' && !shop) {
+      void openExternalUrl(SHOPIFY_APP_INSTALL_URL)
+      return
+    }
     setConnecting(slug)
     setError(null)
     const popup = prepareOAuthPopup()
@@ -385,6 +401,7 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
         providerSlug: slug,
         electron: isElectron,
         location: 'connections_tab',
+        shop: slug === 'shopify' ? shop : undefined,
       })
       await popup.navigate(result.redirectUrl)
     } catch (err) {

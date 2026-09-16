@@ -19,10 +19,7 @@ const BrowserTab = lazyRouteComponent(() => import('./browser-tab'), 'BrowserTab
 const SkillsetsTab = lazyRouteComponent(() => import('./skillsets-tab'), 'SkillsetsTab')
 const UsageTab = lazyRouteComponent(() => import('./usage-tab'), 'UsageTab')
 const ConnectionsTab = lazyRouteComponent(() => import('./connections-tab'), 'ConnectionsTab')
-const NewIntegrationButton = lazyRouteComponent(
-  () => import('@renderer/components/connections/connections-list'),
-  'NewIntegrationButton',
-)
+const ConnectionsHeaderActions = lazyRouteComponent(() => import('./connections-tab'), 'ConnectionsHeaderActions')
 const LlmTab = lazyRouteComponent(() => import('./llm-tab'), 'LlmTab')
 const UsersTab = lazyRouteComponent(() => import('./users-tab'), 'UsersTab')
 const AuthTab = lazyRouteComponent(() => import('./auth-tab'), 'AuthTab')
@@ -124,7 +121,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
       label: 'Connections',
       icon: <Blocks className="h-4 w-4" />,
       render: () => deferredTab(<ConnectionsTab />),
-      headerActions: <Suspense fallback={null}><NewIntegrationButton /></Suspense>,
+      headerActions: <Suspense fallback={null}><ConnectionsHeaderActions /></Suspense>,
     },
     ...(showAdminSettings
       ? [

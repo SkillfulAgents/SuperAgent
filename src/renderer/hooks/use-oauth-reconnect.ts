@@ -59,6 +59,11 @@ export function useOAuthReconnect() {
 
       let reconnectSucceeded = false
 
+      // A Shopify grant is saved under the store the merchant authorized on
+      // Composio's page, which may not be this account. Reporting that as a
+      // reconnect would close the card while this account stays lapsed.
+      const savedThisAccount = (savedId?: string) => !savedId || savedId === accountId
+
       if (window.electronAPI) {
         reconnectSucceeded = await new Promise<boolean>((resolve) => {
           let settled = false
@@ -101,7 +106,8 @@ export function useOAuthReconnect() {
                     reconnectAccountId: accountId,
                   }),
                 })
-                resolve(completeRes.ok)
+                const saved = completeRes.ok ? await completeRes.json().catch(() => null) : null
+                resolve(completeRes.ok && savedThisAccount(saved?.account?.id))
               } catch {
                 resolve(false)
               }
@@ -126,7 +132,7 @@ export function useOAuthReconnect() {
           function handleMessage(event: MessageEvent) {
             if (event.origin !== window.location.origin) return
             if (event.data?.type === 'oauth-callback') {
-              if (settle()) resolve(event.data?.success === true)
+              if (settle()) resolve(event.data?.success === true && savedThisAccount(event.data?.accountId))
             }
           }
           abortReconnectRef.current = () => {

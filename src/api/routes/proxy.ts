@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
+import { isShopifyGraphqlPath } from '@shared/lib/account-providers/shopify'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { agentRegistry } from '@shared/lib/agent-actor'
@@ -241,6 +242,36 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       },
       403
     )
+  }
+
+  // A Shopify account is one store, and any other myshopify.com host is someone
+  // else's store: the token goes to the store it was issued for or nowhere.
+  if (account.toolkitSlug === 'shopify' && targetHost.toLowerCase() !== account.displayName) {
+    const error = `This connection is for ${account.displayName}`
+    await logAuditEntry({
+      agentSlug,
+      accountId,
+      toolkit: account.toolkitSlug,
+      targetHost,
+      targetPath,
+      method: c.req.method,
+      errorMessage: error,
+    })
+    return c.json({ error }, 403)
+  }
+
+  if (account.toolkitSlug === 'shopify' && (c.req.method !== 'POST' || !isShopifyGraphqlPath('/' + targetPath))) {
+    const error = 'Shopify calls must use the GraphQL Admin API (POST /admin/api/<version>/graphql.json)'
+    await logAuditEntry({
+      agentSlug,
+      accountId,
+      toolkit: account.toolkitSlug,
+      targetHost,
+      targetPath,
+      method: c.req.method,
+      errorMessage: error,
+    })
+    return c.json({ error }, 403)
   }
 
   // 3.5 Policy enforcement

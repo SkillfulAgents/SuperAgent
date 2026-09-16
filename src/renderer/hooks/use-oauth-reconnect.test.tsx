@@ -78,6 +78,50 @@ describe('useOAuthReconnect', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['pending-user-requests'] })
   })
 
+  // Shopify saves the grant under the store the merchant authorized. When that is a
+  // different account, this one is still lapsed and the card must stay open.
+  it('returns false when the grant was saved under another account', async () => {
+    mockApiFetch
+      .mockResolvedValueOnce(new Response(JSON.stringify({ redirectUrl: 'https://oauth.test' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ account: { id: 'other-account' } }), { status: 200 }))
+    const { result } = renderHook(() => useOAuthReconnect(), { wrapper })
+
+    let reconnectPromise!: Promise<boolean>
+    await act(async () => {
+      reconnectPromise = result.current.reconnect('account-1', 'shopify')
+    })
+    await waitFor(() => expect(oauthCallback).toBeTypeOf('function'))
+
+    await act(async () => {
+      oauthCallback?.({ connectionId: 'connection-new', toolkit: 'shopify' })
+    })
+
+    await expect(reconnectPromise).resolves.toBe(false)
+  })
+
+  // Same rule on the web host, where the callback carries the saved account id.
+  it('returns false on the web when the grant was saved under another account', async () => {
+    window.electronAPI = undefined
+    mockApiFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ redirectUrl: 'https://oauth.test' }), { status: 200 }),
+    )
+    const { result } = renderHook(() => useOAuthReconnect(), { wrapper })
+
+    let reconnectPromise!: Promise<boolean>
+    await act(async () => {
+      reconnectPromise = result.current.reconnect('account-1', 'shopify')
+    })
+
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent('message', {
+        origin: window.location.origin,
+        data: { type: 'oauth-callback', success: true, accountId: 'other-account' },
+      }))
+    })
+
+    await expect(reconnectPromise).resolves.toBe(false)
+  })
+
   it('returns false and leaves the request pending when OAuth completion fails', async () => {
     mockApiFetch
       .mockResolvedValueOnce(new Response(JSON.stringify({ redirectUrl: 'https://oauth.test' }), { status: 200 }))

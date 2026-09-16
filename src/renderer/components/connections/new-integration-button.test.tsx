@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useState } from 'react'
 import { screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { NewIntegrationButton } from './connections-list'
 import { OAUTH_ABORT_DELAY_MS } from '@renderer/hooks/use-delayed-oauth-abort'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
+import { SHOPIFY_APP_INSTALL_URL } from '@shared/lib/account-providers/shopify'
 
 const MOCK_ACCOUNT_ID = 'new-account-123'
 const MOCK_MCP_ID = 'new-mcp-123'
@@ -29,6 +31,11 @@ vi.mock('@shared/lib/account-providers', () => ({
     slug,
     displayName: slug.charAt(0).toUpperCase() + slug.slice(1),
   }),
+}))
+
+const mockOpenExternal = vi.hoisted(() => vi.fn())
+vi.mock('@renderer/lib/open-external', () => ({
+  openExternalUrl: (...args: unknown[]) => mockOpenExternal(...args),
 }))
 
 vi.mock('@renderer/hooks/use-mcp-oauth-listener', () => ({
@@ -373,5 +380,74 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
 
     await userEvent.click(screen.getByTestId('tool-policy-save'))
     await waitFor(() => expect(lastToolPoliciesPutBody).toEqual({ policies: [] }))
+  })
+})
+
+describe('NewIntegrationButton — Shopify', () => {
+  // One directory listing both services, so the Shopify-only filter is provable.
+  function mockDirectory() {
+    window.electronAPI = undefined
+    const base = mockApiFetch.getMockImplementation()!
+    mockApiFetch.mockImplementation(async (url: string, opts?: { method?: string; body?: string }) => {
+      if (url === '/api/providers') {
+        return {
+          ok: true,
+          json: async () => ({
+            providers: [
+              { slug: 'slack', displayName: 'Slack', description: 'Team communication' },
+              { slug: 'shopify', displayName: 'Shopify', description: 'Online store' },
+            ],
+          }),
+        }
+      }
+      return base(url, opts)
+    })
+  }
+
+  // Shopify installs start at the App Store listing: there is no grant to wait for,
+  // so the directory must not enter its connecting state.
+  it('opens the App Store listing instead of calling initiate', async () => {
+    mockDirectory()
+
+    renderWithProviders(<NewIntegrationButton />)
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+    await waitFor(() => expect(screen.getByTestId('directory-connect-api-shopify')).toBeInTheDocument())
+    await userEvent.click(screen.getByTestId('directory-connect-api-shopify'))
+
+    expect(mockOpenExternal).toHaveBeenCalledWith(SHOPIFY_APP_INSTALL_URL)
+    // The regression was a stuck connecting state that disabled every tile.
+    expect(screen.getByTestId('directory-connect-api-shopify')).toBeEnabled()
+    expect(mockApiFetch).not.toHaveBeenCalledWith(
+      '/api/connected-accounts/initiate',
+      expect.anything(),
+    )
+  })
+
+  it('opens filtered to Shopify when a store arrives after mount, and connects it', async () => {
+    mockDirectory()
+
+    // The store arrives after the button mounts, as it does once the account list loads.
+    function Arrival() {
+      const [shop, setShop] = useState<string>()
+      return (
+        <>
+          <button onClick={() => setShop('gamut-dev.myshopify.com')}>arrive</button>
+          <NewIntegrationButton shop={shop} />
+        </>
+      )
+    }
+    renderWithProviders(<Arrival />)
+    expect(screen.queryByTestId('directory-connect-api-shopify')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByText('arrive'))
+
+    await waitFor(() => expect(screen.getByTestId('directory-connect-api-shopify')).toBeInTheDocument())
+    expect(screen.queryByTestId('directory-connect-api-slack')).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByTestId('directory-connect-api-shopify'))
+
+    await waitFor(() => {
+      const initiate = mockApiFetch.mock.calls.find(([url]) => url === '/api/connected-accounts/initiate')
+      expect(JSON.parse(initiate![1].body)).toMatchObject({ providerSlug: 'shopify', shop: 'gamut-dev.myshopify.com' })
+    })
   })
 })
