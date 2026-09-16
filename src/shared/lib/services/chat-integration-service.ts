@@ -6,8 +6,10 @@ import { eq, and, inArray, count } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { chatIntegrations, chatIntegrationSessions } from '@shared/lib/db/schema'
 import type { ChatIntegration, NewChatIntegration } from '@shared/lib/db/schema'
-import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
-import { mergeChatIntegrationConfig } from '@shared/lib/chat-integrations/config-schema'
+import type { AgentIntegrationProvider } from '@shared/lib/agent-integrations/provider-types'
+import { parseTaskJson } from '../task-manager-integrations/schemas'
+import { linearConfigSchema } from '../task-manager-integrations/linear/config'
+import { CHAT_PROVIDERS, mergeChatIntegrationConfig } from '@shared/lib/chat-integrations/config-schema'
 import { captureException } from '@shared/lib/error-reporting'
 
 export type { ChatIntegration, NewChatIntegration }
@@ -26,7 +28,7 @@ export class DuplicateBotTokenError extends Error {
 
 export interface CreateChatIntegrationParams {
   agentSlug: string
-  provider: ChatProvider
+  provider: AgentIntegrationProvider
   name?: string
   config: Record<string, unknown>
   showToolCalls?: boolean
@@ -89,6 +91,10 @@ export function createChatIntegration(params: CreateChatIntegrationParams): stri
 
 /** Extract the unique key for duplicate detection: botToken for Telegram/Slack, phoneNumber for iMessage. */
 function extractUniqueKey(provider: string, config: Record<string, unknown>): string | null {
+  if (provider === 'linear') {
+    const identity = config.identity as { workspaceId?: string; appUserId?: string } | undefined
+    return identity?.workspaceId && identity.appUserId ? `${identity.workspaceId}:${identity.appUserId}` : null
+  }
   if (provider === 'imessage') {
     const phone = (config as { phoneNumber?: unknown }).phoneNumber
     return typeof phone === 'string' && phone.length > 0 ? phone : null
@@ -106,11 +112,10 @@ function findIntegrationByUniqueKey(
   const rows = db.select().from(chatIntegrations)
     .where(eq(chatIntegrations.provider, provider as ChatIntegration['provider']))
     .all()
-  const field = provider === 'imessage' ? 'phoneNumber' : 'botToken'
   for (const row of rows) {
     if (excludeId && row.id === excludeId) continue
     const cfg = safeParseConfig(row)
-    if (cfg && typeof (cfg as any)[field] === 'string' && (cfg as any)[field] === key) {
+    if (cfg && extractUniqueKey(provider, cfg) === key) {
       return row
     }
   }
@@ -227,6 +232,7 @@ export function listChatIntegrationsByAgents(
   const results = db.select().from(chatIntegrations)
     .where(and(
       inArray(chatIntegrations.agentSlug, agentSlugs),
+      inArray(chatIntegrations.provider, [...CHAT_PROVIDERS]),
       options?.allStatuses ? undefined : eq(chatIntegrations.status, 'active'),
     ))
     .all()
@@ -251,7 +257,9 @@ export function updateChatIntegration(id: string, params: UpdateChatIntegrationP
     const current = getChatIntegration(id)
     if (!current) return false
 
-    nextConfig = mergeChatIntegrationConfig(current.provider, current.config, params.config)
+    nextConfig = current.provider === 'linear'
+      ? linearConfigSchema.parse({ ...parseTaskJson(linearConfigSchema, current.config), ...params.config })
+      : mergeChatIntegrationConfig(current.provider, current.config, params.config)
     const currentConfig = safeParseConfig(current)
     const currentToken = currentConfig
       ? extractUniqueKey(current.provider, currentConfig)

@@ -25,6 +25,12 @@ describe('IntegrationStatusCard', () => {
     expect(screen.getByLabelText(expectedSwitch)).toBeInTheDocument()
   })
 
+  it('shows reconnect needed instead of offering to resume revoked credentials', () => {
+    render(<IntegrationStatusCard integration={makeIntegration({ status: 'disconnected', hasCredentials: false, reconnectRequired: true })} connected={false} />)
+    expect(screen.getByText('Reconnect needed')).toBeInTheDocument()
+    expect(screen.getByRole('switch')).toBeDisabled()
+  })
+
   it('pauses when toggled off', async () => {
     const user = userEvent.setup()
     render(<IntegrationStatusCard integration={makeIntegration({ status: 'active' })} connected />)

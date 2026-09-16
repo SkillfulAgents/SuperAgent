@@ -1,3 +1,4 @@
+import { LinearSetupForm } from './linear-setup'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import { ChatIntegrationSetupForm } from './chat-integration-setup-form'
 import type { IntegrationSetupProvider } from './setup-types'
@@ -11,4 +12,5 @@ export const integrationSetupProviders: readonly IntegrationSetupProvider[] = [
   chatProvider('telegram', 'Telegram'),
   chatProvider('slack', 'Slack'),
   chatProvider('imessage', 'iMessage'),
+  { slug: 'linear', label: 'Linear', managementAccess: 'owner', Setup: LinearSetupForm },
 ]

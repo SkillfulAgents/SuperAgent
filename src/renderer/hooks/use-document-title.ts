@@ -141,7 +141,7 @@ function titleForAgentView(view: AgentView, input: DocumentTitleInput): string {
     case 'completedTasks':
       return joinView(agentTitle, 'Completed One-time Tasks')
     case 'chat':
-      return joinView(agentTitle, 'Remote Chat')
+      return joinView(agentTitle, 'Integration')
     case 'dashboard':
       return joinView(agentTitle, cleanTitlePart(input.dashboardName) ?? humanizeIdentifier(view.slug) ?? 'Dashboard')
     case 'apiLogs':

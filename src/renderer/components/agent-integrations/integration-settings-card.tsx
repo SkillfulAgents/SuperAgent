@@ -1,8 +1,9 @@
 import { isPublicChatIntegration } from '@shared/lib/chat-integrations/public'
+import { isPublicLinearIntegration } from '@shared/lib/task-manager-integrations/linear/public'
 import { useUpdateAgentIntegration, useSetRequireApproval } from '@renderer/hooks/use-agent-integrations'
 import { ToggleRow, SessionTimeoutSelect } from './integration-settings-controls'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
-import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
+import { integrationSupports, type PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 
 export function IntegrationSettingsCard({ integration, canManageAccess }: {
   integration: PublicAgentIntegration
@@ -12,21 +13,19 @@ export function IntegrationSettingsCard({ integration, canManageAccess }: {
   const updateIntegration = useUpdateAgentIntegration()
   const setRequireApproval = useSetRequireApproval()
 
-  if (!isPublicChatIntegration(integration)) return null
-
   return (
     <DetailCard label="Integration Settings">
       {/* -mx-4 cancels the card's px-4 so rows span edge-to-edge with full-width dividers. */}
       <div className="-mx-4 divide-y divide-border/50">
-        <SessionTimeoutSelect
+        {isPublicChatIntegration(integration) && integrationSupports(integration, 'session_timeout') && <SessionTimeoutSelect
           id={`timeout-${integration.id}`}
           value={integration.sessionTimeout ?? null}
           onCommit={(hours) => updateIntegration.mutate({ id: integration.id, sessionTimeout: hours })}
           disabled={updateIntegration.isPending}
           description="Idle time before context resets."
           layout="inline"
-        />
-        <ToggleRow
+        />}
+        {isPublicChatIntegration(integration) && integrationSupports(integration, 'tool_activity') && <ToggleRow
           label="Show tool activity"
           helperText="See the agent work in the conversation."
           checked={!!integration.showToolCalls}
@@ -34,8 +33,15 @@ export function IntegrationSettingsCard({ integration, canManageAccess }: {
           onCheckedChange={(checked) =>
             updateIntegration.mutate({ id: integration.id, showToolCalls: checked })
           }
-        />
-        {canManageAccess && integration.provider === 'telegram' && (
+        />}
+        {isPublicLinearIntegration(integration) && <ToggleRow
+          label="Run on status changes"
+          helperText="Start work when an involved issue changes status."
+          checked={!!integration.settings.runOnStatusChange}
+          disabled={updateIntegration.isPending}
+          onCheckedChange={runOnStatusChange => updateIntegration.mutate({ id: integration.id, runOnStatusChange })}
+        />}
+        {canManageAccess && isPublicChatIntegration(integration) && integration.provider === 'telegram' && (
           <ToggleRow
             label="Require approval for new conversations"
             helperText={
@@ -52,7 +58,7 @@ export function IntegrationSettingsCard({ integration, canManageAccess }: {
             }
           />
         )}
-        {integration.provider === 'slack' && (() => {
+        {isPublicChatIntegration(integration) && integration.provider === 'slack' && (() => {
           const settings = integration.settings
           return (
             <>

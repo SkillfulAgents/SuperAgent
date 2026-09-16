@@ -24,6 +24,7 @@ import {
 import { useAgent, useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
+import { integrationSupports } from '@shared/lib/agent-integrations/public'
 import { formatProviderName } from '@shared/lib/agent-integrations/presentation'
 import { chatFallbackTitle } from './chat-inbox-model'
 import { ConversationHistorySection } from './conversation-history-section'
@@ -50,7 +51,7 @@ export function AgentIntegrationView({ integrationId, agentSlug, chatSessionId, 
   const updateIntegration = useUpdateAgentIntegration()
   const navigate = useNavigate()
   const { canUseAgent, canAdminAgent } = useUser()
-  const canManage = canUseAgent(agentSlug)
+  const canManage = integration?.managementAccess === 'owner' ? canAdminAgent(agentSlug) : canUseAgent(agentSlug)
   // Access decisions and the make-public toggle are owner-only (server enforces too).
   const canManageAccess = canAdminAgent(agentSlug)
 
@@ -60,14 +61,14 @@ export function AgentIntegrationView({ integrationId, agentSlug, chatSessionId, 
   // next message starts fresh. Its target: the conversation being viewed when
   // one is open (`?session=`), else the most recently active live one - the
   // right chat for the common single-chat bot, and the confirm dialog names it
-  // so multi-chat integrations never reset the wrong person by surprise.
+  // so multi-integrations never reset the wrong person by surprise.
   const liveSessions = (sessions ?? []).filter((s) => s.archivedAt == null)
   const openLive = chatSessionId ? liveSessions.find((s) => s.sessionId === chatSessionId) : undefined
   const mostRecentLive = liveSessions.length > 0
     ? liveSessions.reduce((a, b) => (new Date(a.updatedAt) >= new Date(b.updatedAt) ? a : b))
     : undefined
   const targetSession = openLive ?? mostRecentLive
-  const showNewConversation = canManage && !!targetSession
+  const showNewConversation = canManage && !!targetSession && !!integration && integrationSupports(integration, 'reset_conversation')
 
   // Read inside the async clear .then() so navigating mid-clear doesn't yank
   // the user to a chat they've since moved away from.
@@ -119,7 +120,7 @@ export function AgentIntegrationView({ integrationId, agentSlug, chatSessionId, 
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin mr-2" />
-        Loading chat integration...
+        Loading integration...
       </div>
     )
   }
@@ -127,7 +128,7 @@ export function AgentIntegrationView({ integrationId, agentSlug, chatSessionId, 
   if (error || !integration) {
     return (
       <div className="flex-1 flex items-center justify-center text-destructive">
-        Failed to load chat integration
+        Failed to load integration
       </div>
     )
   }
@@ -138,7 +139,7 @@ export function AgentIntegrationView({ integrationId, agentSlug, chatSessionId, 
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin mr-2" />
-        Loading chat integration...
+        Loading integration...
       </div>
     )
   }
@@ -195,9 +196,9 @@ export function AgentIntegrationView({ integrationId, agentSlug, chatSessionId, 
               inputTestId="integration-name-input"
             />
             <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted px-2 py-1 text-xs">
-              <ServiceIcon slug={integration.provider} fallback="mcp" className="h-3.5 w-3.5 shrink-0" />
+              <ServiceIcon slug={integration.provider} fallback="mcp" className={`h-3.5 w-3.5 shrink-0 ${integration.provider === 'linear' ? 'dark:invert' : ''}`} />
               <span className="font-medium">{providerName}</span>
-              <span className="text-muted-foreground">Remote Chat</span>
+              <span className="text-muted-foreground">Integration</span>
             </span>
           </div>
         }

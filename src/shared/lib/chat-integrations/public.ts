@@ -37,7 +37,8 @@ export function isPublicChatIntegration(integration: PublicAgentIntegration): in
  * inside the process still receive the full row needed by connectors.
  */
 export function toPublicChatIntegration(integration: ChatIntegration): PublicChatIntegration {
-  const { config, ...publicFields } = integration
+  if (integration.provider === 'linear') throw new Error('Use the agent integration API for Linear')
+  const { config, provider, ...publicFields } = integration
   const parsed = typeof config === 'string'
     ? parseChatIntegrationConfig(integration.provider, config)
     : null
@@ -57,6 +58,7 @@ export function toPublicChatIntegration(integration: ChatIntegration): PublicCha
 
   return {
     ...publicFields,
+    provider,
     hasCredentials: parsed !== null,
     settings,
   }

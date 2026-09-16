@@ -27,7 +27,7 @@ test.describe('Chat integration connector page', () => {
     await appPage.waitForAgentsLoaded()
   })
 
-  test('Remote Chat card on agent-home lists a seeded integration and navigates to the chat view on click', async ({
+  test('External Integrations card on agent-home lists a seeded integration and navigates to the chat view on click', async ({
     page,
   }) => {
     const agentName = `Chat Overhaul ${Date.now()}`
@@ -39,9 +39,9 @@ test.describe('Chat integration connector page', () => {
     // Navigate to agent-home so React Query fetches the freshly-seeded integration.
     await page.goto(`/agents/${slug}`)
 
-    // The Remote Chat HomeCollapsible lists the integration row.
+    // The External Integrations HomeCollapsible lists the integration row.
     const mainContent = appPage.getMainContent()
-    await expect(mainContent.getByText('Remote Chat')).toBeVisible()
+    await expect(mainContent.getByText('External Integrations')).toBeVisible()
     await expect(mainContent.getByText('E2E Overhaul Bot')).toBeVisible({ timeout: 10000 })
 
     // Click the integration row - IntegrationRow renders role="button" when interactive.

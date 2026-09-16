@@ -361,6 +361,8 @@ export class AgentIntegrationManager {
     await actor.sessions.register(sessionId, policy.name)
     await actor.sessions.updateMetadata(sessionId, {
       ...policy.metadata,
+      isAgentIntegrationSession: true,
+      agentIntegrationId: integration.id,
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
     })
 
@@ -454,6 +456,11 @@ export class AgentIntegrationManager {
     conn.eventUnsubscribe = connector.onEvent(async event => {
       try {
         if (event.type === 'input') this.enqueueMessage(integration.id, event)
+        else if (event.type === 'cancel') {
+          const session = getIntegrationSession(integration.id, event.externalId)
+          if (session) await agentRegistry.get(integration.agentSlug).messages.interrupt(session.sessionId)
+          event.onInterrupted?.()
+        }
         else if (event.type === 'response') await this.handleInteractiveResponse(integration.id, event)
         else if (this.isAllowed(integration.id, event.externalId)) this.preWarmContainer(integration.agentSlug)
       } catch (error) {
@@ -959,6 +966,8 @@ export class AgentIntegrationManager {
     await actor.sessions.register(sessionId, policy.name)
     await actor.sessions.updateMetadata(sessionId, {
       ...policy.metadata,
+      isAgentIntegrationSession: true,
+      agentIntegrationId: integration.id,
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
     })
 
@@ -1265,6 +1274,7 @@ export class AgentIntegrationManager {
         reportError(new Error(`Resolve input failed: ${resolveResponse.status}`), 'resolve-input', { integrationId, toolUseId, status: resolveResponse.status })
       } else {
         actor.inputs.complete(undefined, toolUseId, 'answered')
+        event.onAnswered?.()
       }
     } catch (err) {
       console.error(`[AgentIntegrationManager] Failed to handle interactive response:`, err)

@@ -118,7 +118,7 @@ describe('AgentIntegration host contract', () => {
     await vi.waitFor(() => expect(state.send).toHaveBeenCalledWith('session-1', 'Object context: follow-up'))
     expect(state.create).toHaveBeenCalledOnce()
     expect(state.mappings.get('installation-a:object-7')?.sessionId).toBe('session-1')
-    expect(state.metadata).toHaveBeenCalledWith('session-1', {})
+    expect(state.metadata).toHaveBeenCalledWith('session-1', { isAgentIntegrationSession: true, agentIntegrationId: 'installation-a' })
     expect('sendMessage' in adapter).toBe(false)
     expect(adapter.prepareInput).toHaveBeenCalledTimes(2)
   })
@@ -232,7 +232,7 @@ describe('AgentIntegration host contract', () => {
 
     const sessionId = await manager.ensureSession('installation-a', 'object-7')
     expect(state.register).toHaveBeenCalledWith(sessionId, 'Object session')
-    expect(state.metadata).toHaveBeenCalledWith(sessionId, {})
+    expect(state.metadata).toHaveBeenCalledWith(sessionId, { isAgentIntegrationSession: true, agentIntegrationId: 'installation-a' })
     expect(await manager.ensureSession('installation-a', 'object-7')).toBe(sessionId)
     expect(state.register).toHaveBeenCalledOnce()
     expect(create).not.toHaveBeenCalled()

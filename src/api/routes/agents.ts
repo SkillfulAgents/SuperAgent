@@ -4599,7 +4599,7 @@ agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
     const slug = getAgentId(c)
     const status = c.req.query('status')
 
-    const integrations = listChatIntegrations(slug, status || undefined)
+    const integrations = listChatIntegrations(slug, status || undefined).filter(row => row.provider !== 'linear')
     // Enrich each row with the live transport state (the same isIntegrationConnected
     // the /status route reads) so the agent-home list derives "Listening" vs
     // "Connecting…" from the same source of truth as the connector page, instead

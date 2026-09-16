@@ -36,13 +36,15 @@ export interface IntegrationResponseEvent {
   type: 'response'
   externalId: string
   requestId: string
+  onAnswered?: () => void
   requestKind: 'input' | 'review'
   value: unknown
 }
 
 export type IntegrationEvent = IntegrationInputEvent | IntegrationResponseEvent | {
-  type: 'hint'
+  type: 'hint' | 'cancel'
   externalId: string
+  onInterrupted?: () => void
 }
 
 export interface IntegrationRoute {

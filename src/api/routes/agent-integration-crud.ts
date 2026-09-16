@@ -1,11 +1,11 @@
 /**
- * Chat Integrations API Routes
+ * Shared Agent Integration CRUD Routes
  *
- * CRUD endpoints for managing external chat integrations (Telegram, Slack).
- * Agent-scoped listing is in agents.ts under /api/agents/:id/chat-integrations.
+ * Shared management endpoints for all external integrations.
+ * Mounted at /api/agent-integrations with /api/chat-integrations as a legacy alias.
  */
 
-import { Hono } from 'hono'
+import { Hono, type MiddlewareHandler } from 'hono'
 import { z } from 'zod'
 import {
   getChatIntegration,
@@ -26,7 +26,10 @@ import type { ChatAccessStatus } from '@shared/lib/services/chat-integration-acc
 import { listChatIntegrationSessions, archiveChatIntegrationSession, getChatIntegrationSessionById, deleteChatIntegrationSessionsByIntegration } from '@shared/lib/services/chat-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema } from '@shared/lib/chat-integrations/config-schema'
+import { integrationSupports } from '@shared/lib/agent-integrations/public'
 import { toPublicAgentIntegration } from '@shared/lib/agent-integrations/serialization'
+import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
+import { updateLinearConfig } from '@shared/lib/task-manager-integrations/linear/store'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { Authenticated, AgentUser, EntityAgentRole, ResolveAgent, getAgentId } from '../middleware/auth'
@@ -48,6 +51,13 @@ const IntegrationAgentRole = EntityAgentRole({
   contextKey: 'chatIntegration',
   entityName: 'Chat integration',
 })
+
+// Chat management permits agent users; private OAuth app management needs an owner.
+// Run after the entity authorization so the common case uses its already-loaded row.
+const RequireProviderManagement: MiddlewareHandler = async (c, next) => {
+  const row = c.get('chatIntegration' as never) as NonNullable<ReturnType<typeof getChatIntegration>>
+  return row.provider === 'linear' ? IntegrationAgentRole('owner')(c, next) : next()
+}
 
 // GET /api/chat-integrations/:integrationId - Get a single integration
 chatIntegrationsRouter.get('/:integrationId', IntegrationAgentRole('viewer'), async (c) => {
@@ -256,7 +266,7 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
 })
 
 // PATCH /api/chat-integrations/:integrationId - Update an integration
-chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), async (c) => {
+chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), RequireProviderManagement, async (c) => {
   try {
     const id = c.req.param('integrationId')
     const body = await c.req.json()
@@ -264,6 +274,18 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     const parsedSpeed = speedOverrideSchema.safeParse(body.speed)
     if (!parsedSpeed.success) {
       return c.json({ error: `Invalid speed. Must be one of: ${SPEED_LEVELS.join(', ')}` }, 400)
+    }
+
+    const integration = c.get('chatIntegration' as never) as NonNullable<ReturnType<typeof getChatIntegration>>
+    if (integration.provider === 'linear') {
+      // Credentials only enter through the owner-authorized OAuth flow.
+      if (config !== undefined || showToolCalls !== undefined || sessionTimeout !== undefined) {
+        return c.json({ error: 'Unsupported integration setting' }, 400)
+      }
+      if (body.runOnStatusChange !== undefined) {
+        const enabled = z.boolean().parse(body.runOnStatusChange)
+        updateLinearConfig(id, latest => ({ ...latest, runOnStatusChange: enabled }))
+      }
     }
 
     // Step 1: Persist DB updates first (config, name, showToolCalls)
@@ -348,12 +370,16 @@ chatIntegrationsRouter.patch('/:integrationId/require-approval', IntegrationAgen
 })
 
 // DELETE /api/chat-integrations/:integrationId - Delete an integration
-chatIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), async (c) => {
+chatIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), RequireProviderManagement, async (c) => {
   try {
     const id = c.req.param('integrationId')
 
-    // Disconnect first
+    // Keep a failed cleanup paused so health checks cannot reconnect revoked credentials.
     await agentIntegrationManager.removeIntegration(id)
+    updateChatIntegrationStatus(id, 'paused')
+
+    const integration = getChatIntegration(id)
+    if (integration) await agentIntegrationRegistry.cleanup(integration)
 
     // Clean up session mappings
     deleteChatIntegrationSessionsByIntegration(id)
@@ -374,7 +400,7 @@ chatIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), a
 })
 
 // POST /api/chat-integrations/:integrationId/test - Test credentials without saving
-chatIntegrationsRouter.post('/:integrationId/test', IntegrationAgentRole('user'), async (c) => {
+chatIntegrationsRouter.post('/:integrationId/test', IntegrationAgentRole('user'), RequireProviderManagement, async (c) => {
   try {
     const integration = c.get('chatIntegration' as never) as Awaited<ReturnType<typeof getChatIntegration>>
     if (!integration) {
@@ -426,7 +452,7 @@ chatIntegrationsRouter.get('/:integrationId/sessions', IntegrationAgentRole('vie
 })
 
 // DELETE /api/chat-integrations/:integrationId/sessions/:sessionId - Clear a chat session
-chatIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', IntegrationAgentRole('user'), async (c) => {
+chatIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', IntegrationAgentRole('user'), RequireProviderManagement, async (c) => {
   try {
     const integrationId = c.req.param('integrationId')
     const sessionId = c.req.param('sessionId')
@@ -439,6 +465,9 @@ chatIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', Integration
     // Return 404 (not 403) so foreign session IDs are not enumerable.
     if (!session || session.integrationId !== integrationId) {
       return c.json({ error: 'Session not found' }, 404)
+    }
+    if (!integrationSupports(toPublicAgentIntegration(c.get('chatIntegration' as never) as NonNullable<ReturnType<typeof getChatIntegration>>), 'reset_conversation')) {
+      return c.json({ error: 'This integration keeps one session per work item' }, 400)
     }
     // Notify the manager to clean up SSE subscriptions
     agentIntegrationManager.clearSessionById(sessionId)

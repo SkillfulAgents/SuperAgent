@@ -9,5 +9,6 @@ export interface IntegrationSetupProps {
 export interface IntegrationSetupProvider {
   slug: string
   label: string
+  managementAccess?: 'user' | 'owner'
   Setup: ComponentType<IntegrationSetupProps>
 }

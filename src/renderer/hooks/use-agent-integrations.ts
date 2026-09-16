@@ -51,10 +51,10 @@ export function useAgentIntegrations(agentSlug: string | null, status?: string) 
     queryKey: agentIntegrationKeys.list(agentSlug, status),
     queryFn: async () => {
       const url = status
-        ? `/api/agents/${agentSlug}/chat-integrations?status=${status}`
-        : `/api/agents/${agentSlug}/chat-integrations`
+        ? `/api/agent-integrations/agents/${agentSlug}?status=${status}`
+        : `/api/agent-integrations/agents/${agentSlug}`
       const res = await apiFetch(url)
-      if (!res.ok) throw new Error('Failed to fetch chat integrations')
+      if (!res.ok) throw new Error('Failed to fetch agent integrations')
       return res.json()
     },
     enabled: !!agentSlug,
@@ -74,11 +74,15 @@ export function useAgentIntegration(id: string | null) {
   return useQuery<PublicAgentIntegration>({
     queryKey: agentIntegrationKeys.detail(id),
     queryFn: async () => {
-      const res = await apiFetch(`/api/chat-integrations/${id}`)
-      if (!res.ok) throw new Error('Failed to fetch chat integration')
+      const res = await apiFetch(`/api/agent-integrations/${id}`)
+      if (!res.ok) throw new Error('Failed to fetch agent integration')
       return res.json()
     },
     enabled: !!id,
+    // OAuth completes in another window; refresh Linear credentials and health
+    // after revocation or a background sync failure as well.
+    refetchInterval: query => query.state.data?.hasCredentials === false ? 2500 : query.state.data?.provider === 'linear' ? 30000 : false,
+    refetchIntervalInBackground: false,
   })
 }
 
@@ -92,7 +96,7 @@ export function useAgentIntegrationStatus(id: string | null) {
   }>({
     queryKey: agentIntegrationKeys.status(id),
     queryFn: async () => {
-      const res = await apiFetch(`/api/chat-integrations/${id}/status`)
+      const res = await apiFetch(`/api/agent-integrations/${id}/status`)
       if (!res.ok) throw new Error('Failed to fetch status')
       return res.json()
     },
@@ -117,8 +121,8 @@ export function useAgentIntegrationSessions(integrationId: string | null) {
   return useQuery<ChatIntegrationSession[]>({
     queryKey: agentIntegrationKeys.sessions(integrationId),
     queryFn: async () => {
-      const res = await apiFetch(`/api/chat-integrations/${integrationId}/sessions`)
-      if (!res.ok) throw new Error('Failed to fetch chat integration sessions')
+      const res = await apiFetch(`/api/agent-integrations/${integrationId}/sessions`)
+      if (!res.ok) throw new Error('Failed to fetch agent integration sessions')
       return res.json()
     },
     enabled: !!integrationId,
@@ -137,8 +141,8 @@ export function useAgentIntegrationAccess(integrationId: string | null, enabled 
   return useQuery<ChatIntegrationAccess[]>({
     queryKey: agentIntegrationKeys.access(integrationId ?? ''),
     queryFn: async () => {
-      const res = await apiFetch(`/api/chat-integrations/${integrationId}/access`)
-      if (!res.ok) throw new Error('Failed to fetch chat integration access')
+      const res = await apiFetch(`/api/agent-integrations/${integrationId}/access`)
+      if (!res.ok) throw new Error('Failed to fetch agent integration access')
       return res.json()
     },
     // The /access route is owner-gated; callers pass enabled=false for non-owners
@@ -169,7 +173,7 @@ export function useCreateAgentIntegration() {
       speed?: string | null
     }) => {
       const { agentSlug, ...body } = params
-      const res = await apiFetch(`/api/chat-integrations/${agentSlug}`, {
+      const res = await apiFetch(`/api/agent-integrations/${agentSlug}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -216,14 +220,15 @@ export function useUpdateAgentIntegration() {
       model?: string | null
       effort?: string | null
       speed?: string | null
+      runOnStatusChange?: boolean
       status?: 'active' | 'paused'
     }) => {
-      const res = await apiFetch(`/api/chat-integrations/${id}`, {
+      const res = await apiFetch(`/api/agent-integrations/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
       })
-      if (!res.ok) throw new Error('Failed to update chat integration')
+      if (!res.ok) throw new Error('Failed to update agent integration')
       return res.json() as Promise<PublicAgentIntegration>
     },
     onSuccess: (data) => {
@@ -242,8 +247,8 @@ export function useDeleteAgentIntegration() {
 
   return useMutation({
     mutationFn: async ({ id, agentSlug }: { id: string; agentSlug: string }) => {
-      const res = await apiFetch(`/api/chat-integrations/${id}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('Failed to delete chat integration')
+      const res = await apiFetch(`/api/agent-integrations/${id}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('Failed to delete agent integration')
       return { id, agentSlug }
     },
     onSuccess: (_, variables) => {
@@ -267,7 +272,7 @@ function useChatAccessAction(verb: ChatAccessVerb) {
 
   return useMutation({
     mutationFn: async ({ integrationId, accessId }: { integrationId: string; accessId: string }) => {
-      const res = await apiFetch(`/api/chat-integrations/${integrationId}/access/${accessId}/${verb}`, {
+      const res = await apiFetch(`/api/agent-integrations/${integrationId}/access/${accessId}/${verb}`, {
         method: 'POST',
       })
       if (!res.ok) throw new Error(`Failed to ${verb} access`)
@@ -291,7 +296,7 @@ export function useSetRequireApproval() {
   return useMutation({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ id, requireApproval }: { id: string; requireApproval: boolean }) => {
-      const res = await apiFetch(`/api/chat-integrations/${id}/require-approval`, {
+      const res = await apiFetch(`/api/agent-integrations/${id}/require-approval`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ requireApproval }),
@@ -316,7 +321,7 @@ export function useClearChatSession() {
   return useMutation({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ integrationId, sessionId }: { integrationId: string; sessionId: string }) => {
-      const res = await apiFetch(`/api/chat-integrations/${integrationId}/sessions/${sessionId}`, {
+      const res = await apiFetch(`/api/agent-integrations/${integrationId}/sessions/${sessionId}`, {
         method: 'DELETE',
       })
       if (!res.ok) throw new Error('Failed to clear session')
@@ -331,14 +336,14 @@ export function useClearChatSession() {
 
 // ── Test credentials mutation ───────────────────────────────────────────
 
-export function useTestChatIntegrationCredentials() {
+export function useTestAgentIntegrationCredentials() {
   return useMutation({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (params: {
       provider: ChatProvider
       config: Record<string, unknown>
     }) => {
-      const res = await apiFetch('/api/chat-integrations/test-credentials', {
+      const res = await apiFetch('/api/agent-integrations/test-credentials', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),

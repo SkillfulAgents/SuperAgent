@@ -27,6 +27,8 @@ vi.mock('@shared/lib/db', () => ({
 
 // IMPORTANT: do NOT mock '@shared/lib/db/schema' — we use the real table objects.
 
+vi.mock('@shared/lib/agent-integrations/cleanup', () => ({ cleanupIntegrationResources: vi.fn(async () => {}) }))
+
 // --- Heavy deps the route pulls in at import time / during factory-reset ----
 
 const mockClearSettingsCache = vi.fn()

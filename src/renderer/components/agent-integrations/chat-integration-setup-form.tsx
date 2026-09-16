@@ -20,7 +20,7 @@ import {
 } from '@renderer/components/ui/dialog'
 import {
   useCreateAgentIntegration,
-  useTestChatIntegrationCredentials,
+  useTestAgentIntegrationCredentials,
   AgentIntegrationApiError,
 } from '@renderer/hooks/use-agent-integrations'
 import { Loader2, CheckCircle, AlertCircle, Copy, Check, Eye, EyeOff } from 'lucide-react'
@@ -159,7 +159,7 @@ export function ChatIntegrationSetupForm({
   onClose: () => void
 }) {
   const createIntegration = useCreateAgentIntegration()
-  const testCredentials = useTestChatIntegrationCredentials()
+  const testCredentials = useTestAgentIntegrationCredentials()
 
   const [formData, setFormData] = useState<Record<string, string>>({})
   const [integrationName, setIntegrationName] = useState('')
@@ -239,7 +239,7 @@ export function ChatIntegrationSetupForm({
       <DialogHeader>
         <DialogTitle className="flex items-center gap-2 font-normal">
           <ServiceIcon slug={info.slug} fallback="mcp" className="h-5 w-5" />
-          Set up remote chat with {info.label}
+          Set up integration with {info.label}
         </DialogTitle>
       </DialogHeader>
 

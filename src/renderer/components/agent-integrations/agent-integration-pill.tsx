@@ -1,10 +1,16 @@
 import { Pause } from 'lucide-react'
-import { type AgentIntegrationState, AGENT_INTEGRATION_STATE_LABEL, AGENT_INTEGRATION_STATE_PILL } from '@shared/lib/agent-integrations/presentation'
+import {
+  type AgentIntegrationState,
+  AGENT_INTEGRATION_STATE_LABEL,
+  AGENT_INTEGRATION_STATE_PILL,
+} from '@shared/lib/agent-integrations/presentation'
 
 // Dot/icon treatment per state. Pulse marks the in-progress state (Connecting);
 // the settled live state (Listening) shows a steady dot - pulse = transitioning,
 // steady = up. Paused shows a pause glyph instead of a dot.
 const STATE_DOT: Record<AgentIntegrationState, { dot?: string; pulse?: boolean; pauseIcon?: boolean }> = {
+  reconnect_needed: { dot: 'bg-amber-500' },
+  disconnected: { dot: 'bg-muted-foreground' },
   paused: { pauseIcon: true },
   connecting: { dot: 'bg-green-500', pulse: true },
   working: { dot: 'bg-green-500' },
