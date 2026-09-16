@@ -1,17 +1,13 @@
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { BaseVoiceProvider } from './voice-provider'
-import { DEEPGRAM_TTS_VOICES } from './deepgram-voices'
-import type { TtsVoiceInfo } from './tts-preferences'
+import { OpenaiVoiceProvider } from './openai-provider'
+import { PLATFORM_VOICE_MESSAGES, type OpenaiVoiceMessages } from './openai-voice-messages'
 import type { ApiKeyStatus } from '../config/settings'
 
-export class PlatformVoiceProvider extends BaseVoiceProvider {
-  readonly id = 'platform' as const
-  readonly name = 'Platform'
-  // Not used — getApiKeyStatus/getEffectiveApiKey are both overridden to
-  // read the platform token instead of a settings-stored API key.
-  protected readonly settingsKeyField = 'deepgramApiKey' as const
-  protected readonly envVarName = 'PLATFORM_TOKEN'
+/** OpenAI voice through the platform proxy: same endpoints, platform token instead of a BYOK key. */
+export class PlatformVoiceProvider extends OpenaiVoiceProvider {
+  override readonly id = 'platform' as const
+  override readonly name = 'Platform'
 
   override getApiKeyStatus(): ApiKeyStatus {
     const token = getPlatformAccessToken()
@@ -23,94 +19,11 @@ export class PlatformVoiceProvider extends BaseVoiceProvider {
     return getPlatformAccessToken() ?? undefined
   }
 
-  async validateKey(platformToken: string): Promise<{ valid: boolean; error?: string }> {
-    try {
-      const base = getPlatformProxyBaseUrl()
-      // Validate by attempting a short-lived Deepgram token grant — the data-plane
-      // endpoint the proxy actually exposes. (Previously probed GET
-      // /v1/deepgram/projects, a Deepgram Management-API path the proxy now
-      // restricts; a successful grant proves the platform token has STT access.)
-      const res = await fetch(`${base}/v1/deepgram/auth/grant`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${platformToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ ttl_seconds: 60 }),
-      })
-      if (!res.ok) {
-        if (res.status === 401 || res.status === 403) {
-          return { valid: false, error: 'Platform authentication failed' }
-        }
-        return { valid: false, error: `Deepgram API error via proxy: ${res.status}` }
-      }
-      return { valid: true }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error'
-      return { valid: false, error: `Network error: ${message}` }
-    }
+  protected override apiBaseUrl(): string {
+    return `${getPlatformProxyBaseUrl()}/v1/openai`
   }
 
-  override supportsVoiceAgent(): boolean {
-    return true
-  }
-
-  override async mintVoiceAgentToken(platformToken: string): Promise<string> {
-    // Same Deepgram token works for both STT and Voice Agent endpoints
-    return this.mintEphemeralToken(platformToken)
-  }
-
-  override getTtsVoices(): readonly TtsVoiceInfo[] {
-    return DEEPGRAM_TTS_VOICES
-  }
-
-  override async mintTtsToken(platformToken: string): Promise<string> {
-    // Same Deepgram token works for the speak endpoint too
-    return this.mintEphemeralToken(platformToken)
-  }
-
-  override supportsTranscription(): boolean {
-    return true
-  }
-
-  override async transcribeAudio(platformToken: string, audioBuffer: Buffer, mimeType: string): Promise<string> {
-    const base = getPlatformProxyBaseUrl()
-    const res = await fetch(`${base}/v1/deepgram/listen?model=nova-3&smart_format=true`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${platformToken}`,
-        'Content-Type': mimeType,
-      },
-      body: new Uint8Array(audioBuffer),
-    })
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`Deepgram transcription via proxy failed (${res.status}): ${text}`)
-    }
-    const data = await res.json() as {
-      results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string }> }> }
-    }
-    return data.results?.channels?.[0]?.alternatives?.[0]?.transcript || ''
-  }
-
-  async mintEphemeralToken(platformToken: string): Promise<string> {
-    const base = getPlatformProxyBaseUrl()
-    const res = await fetch(`${base}/v1/deepgram/auth/grant`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${platformToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ ttl_seconds: 600 }),
-    })
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`Deepgram token grant via proxy failed (${res.status}): ${text}`)
-    }
-    const data = await res.json()
-    if (!data.access_token || typeof data.access_token !== 'string') {
-      throw new Error('Deepgram returned an unexpected response: missing access_token')
-    }
-    return data.access_token
+  protected override messages(): OpenaiVoiceMessages {
+    return PLATFORM_VOICE_MESSAGES
   }
 }

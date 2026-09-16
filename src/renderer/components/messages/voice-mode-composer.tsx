@@ -3,6 +3,8 @@ import { Mic, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { AttachmentPreview, type Attachment } from './attachment-preview'
+import { VoiceConversationPreview } from './voice-conversation-preview'
+import type { VoiceTranscriptEntry } from '@shared/lib/voice/conversation-types'
 import { cn } from '@shared/lib/utils'
 import type { VoiceModePhase } from '@renderer/hooks/use-voice-mode'
 
@@ -10,6 +12,8 @@ interface VoiceModeComposerProps {
   phase: VoiceModePhase
   /** What the person has said so far; shown while they are talking. */
   utterance: string
+  /** Spoken conversation subtitles for providers with separate voice output. */
+  transcript?: VoiceTranscriptEntry[]
   error: string | null
   onClearError: () => void
   onPressMic: () => void
@@ -43,6 +47,7 @@ const MIC_LABEL: Record<VoiceModePhase, string> = {
 export function VoiceModeComposer({
   phase,
   utterance,
+  transcript,
   error,
   onClearError,
   onPressMic,
@@ -73,13 +78,15 @@ export function VoiceModeComposer({
       {/* The transcript line and the indicator's margin above it add up to
           the gap under the mic, so the mic sits midway between the working
           indicator and the row of controls. */}
-      <div
-        className="mx-auto min-h-[1.25rem] max-w-md px-2 text-center text-sm italic text-muted-foreground"
-        data-testid="voice-mode-transcript"
-        aria-live="polite"
-      >
-        {phase === 'listening' ? utterance : ''}
-      </div>
+      {transcript ? <VoiceConversationPreview transcript={transcript} /> : (
+        <div
+          className="mx-auto min-h-[1.25rem] max-w-md px-2 text-center text-sm italic text-muted-foreground"
+          data-testid="voice-mode-transcript"
+          aria-live="polite"
+        >
+          {phase === 'listening' ? utterance : ''}
+        </div>
+      )}
       <div className="flex flex-col items-center gap-7">
         <VoiceMicButton phase={phase} getAnalyser={getAnalyser} onClick={onPressMic} />
         <div className="grid w-full grid-cols-[1fr_auto_1fr] items-center gap-4">

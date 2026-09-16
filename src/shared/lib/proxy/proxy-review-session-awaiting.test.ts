@@ -6,6 +6,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
+
+// The registry attaches the real stores; these tests drive the persister alone.
+messagePersister.attachSessionStores(createInMemorySessionStore)
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { ReviewManager } from './review-manager'
 

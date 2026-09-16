@@ -1,3 +1,4 @@
+import { mockChatIntegration } from './test-helpers'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
@@ -28,14 +29,15 @@ vi.mock('../db', () => ({
 }))
 
 vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  getChatIntegration: vi.fn(),
+  getChatIntegration: vi.fn(() => fakeIntegration()),
   listStartupChatIntegrations: vi.fn().mockReturnValue([]),
   updateChatIntegrationStatus: vi.fn(),
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: { ensureRunning: vi.fn() },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ ensureRunning: vi.fn() }) }
+})
 
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: { submitDecision: vi.fn() },
@@ -76,15 +78,12 @@ function fakeIntegration() {
 }
 
 function fakeConnector(): ChatClientConnector {
-  return {
+  return mockChatIntegration({
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn(),
-    onMessage: vi.fn().mockReturnValue(() => {}),
-    onInteractiveResponse: vi.fn().mockReturnValue(() => {}),
     onError: vi.fn().mockReturnValue(() => {}),
-    onTypingHint: vi.fn().mockReturnValue(() => {}),
-  } as unknown as ChatClientConnector
+  }) as unknown as ChatClientConnector
 }
 
 function seedIntegration(): void {

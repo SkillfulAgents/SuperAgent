@@ -8,6 +8,9 @@
 import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/container/types'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { SessionUsage } from '@shared/lib/types/agent'
+import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
+
+export type { ApiAgentWidget }
 
 // ============================================================================
 // Agent API Types
@@ -36,6 +39,8 @@ export interface ApiAgent {
   sessionCount?: number
   lastActivityAt?: Date | null
   dashboards?: ApiAgentDashboard[]
+  /** Home-screen widgets (see @shared/lib/widgets/widget-schema). */
+  widgets?: ApiAgentWidget[]
   /** Opt-in expansion from GET /api/agents?include_latest_visible_session_tail=true. */
   latestVisibleSession?: ApiLatestVisibleSession | null
   /** Attention on visible sessions other than latestVisibleSession. Null means unavailable. */
@@ -136,6 +141,9 @@ export interface ApiSession {
   // Present when another agent created this session through x-agent.
   invokedByAgentSlug?: string
   invokedByAgentName?: string
+  // Automatic widget repairs also appear in the inbound invocation history.
+  isWidgetRepair?: boolean
+  widgetRepairSlug?: string
   // Present when this session was forked from another. Name resolves from the
   // parent's metadata on the single-session GET; undefined when the parent is gone.
   forkedFromSessionId?: string
@@ -188,6 +196,7 @@ export interface ApiMessageContent {
  * Message response from API
  */
 export interface ApiMessageSender {
+  image?: string | null
   id: string
   name: string
   email: string
@@ -210,6 +219,8 @@ export interface ApiMessage {
    * detection) must skip it.
    */
   queued?: boolean
+  /** Copied into this session by a fork. The thread draws the fork point after the last one. */
+  forked?: boolean
   /**
    * Summarized extended-thinking blocks persisted in the session transcript,
    * in order. Absent when the turn had no thinking or the transcript predates
@@ -265,6 +276,7 @@ export interface ApiCompactBoundary {
   trigger: string
   preTokens?: number
   createdAt: Date
+  forked?: boolean
 }
 
 /**
@@ -275,6 +287,7 @@ export interface ApiMemoryRecall {
   type: 'memory_recall'
   memoryPaths: string[]
   createdAt: Date
+  forked?: boolean
 }
 
 /**
@@ -287,6 +300,7 @@ export interface ApiInformational {
   content: string
   level?: string
   createdAt: Date
+  forked?: boolean
 }
 
 /**

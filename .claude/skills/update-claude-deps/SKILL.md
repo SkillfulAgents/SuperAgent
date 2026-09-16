@@ -51,29 +51,41 @@ Review the current versions of Claude-related packages and create an upgrade pla
 
 ## Validation after upgrading
 
-1. **Container unit suite**: `cd agent-container && npx vitest run` — includes the settlement-tracker fixture replays (19 real captured SDK streams), which catch most protocol-shape regressions.
+1. **Container unit suite**: `cd agent-container && npx vitest run` — includes the settlement-tracker fixture replays (22 real captured SDK streams under `src/shared/lib/container/__fixtures__/`), which catch most protocol-shape regressions. The `sdk272-*` fixtures were captured with a scratch driver against the bare SDK (streaming input, `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`, `perTaskStopAffordance`), written in the same `{t, message: {content: <frame>}}` wrapper the host captures use; a new capture needs an entry in `FIXTURE_EXPECTATIONS` in `session-settlement.test.ts` (the discovery test fails otherwise).
 
 2. **Gated session-GC E2E suites** (MANDATORY on any `@anthropic-ai/claude-agent-sdk` / CLI bump — CI never runs these, and they guard CLI-behavior assumptions the idle-eviction reaper depends on):
    ```bash
    cd agent-container
    RUN_SESSION_GC_E2E=1 ANTHROPIC_API_KEY=... npx vitest run src/session-gc.e2e.test.ts
    RUN_SESSION_GC_E2E=1 ANTHROPIC_API_KEY=... npx vitest run src/session-gc-durability.e2e.test.ts
+   RUN_SESSION_GC_E2E=1 ANTHROPIC_API_KEY=... npx vitest run src/session-gc-background-stop.e2e.test.ts
    ```
-   - Run the two files **separately**, never in one vitest invocation: the pgrep zero-process assertions in each see the other worker's CLI subprocesses.
-   - Costs real API tokens (~$0.05, ~1.5 min total on haiku).
+   - Run the three files **separately**, never in one vitest invocation: the pgrep zero-process assertions in each see the other worker's CLI subprocesses.
+   - Costs real API tokens (~$0.08, ~2.5 min total on haiku).
    - What they hold in place, and what breaks silently if an SDK/CLI change violates it:
      - the CLI does NOT emit `session_state_changed:idle` between a finished turn and a queued follow-up (violation → the reaper kills queued messages);
-     - an interrupt yields a `result` + `idle` so the session settles (violation → every user Stop pins a ~250MB parked subprocess forever);
+     - an interrupt of a live turn yields a `result` + `idle` so the session settles (violation → every user Stop pins a ~250MB parked subprocess forever);
      - the CLI exits cleanly on stdin EOF, flushing its transcript (violation → eviction silently loses the latest turns / `shouldQuery:false` appends on the next `--resume`);
-     - `--resume` resumes in-place with the same session id, with prior context intact.
+     - `--resume` resumes in-place with the same session id, with prior context intact;
+     - (background-stop file) while a background SUBAGENT is live the CLI emits NO idle after the lead turn's result (CLI 2.1.269+; backgrounded Bash still gets the premature idle), the reaper leaves the session alone, a Stop (`scope: 'turn'`) then is a fast no-op that keeps the process and the subagent (`claude-code.ts foregroundTurnEnded` / `pendingSends` decide "no foreground turn" — an interrupt sent in that state gets a receipt but never a result, and the fallback restart would kill the subagent), and the completion wake still runs to a result + idle.
 
-3. **Task-tools escape hatch** (MANDATORY re-verify on any CLI bump): `claude-code.ts buildQueryOptions()` pins `CLAUDE_CODE_ENABLE_TODO_TOOLS: 'true'` in the subprocess env because CLI 2.1.233+ stops registering TaskCreate/TaskGet/TaskList/TaskUpdate on newer models (opus ≥4.8, sonnet/fable/mythos ≥5). The in-chat task-list UI (`derive-task-list.ts`) and existing agent workflows depend on those tools. This env var is an **undocumented escape hatch** — Anthropic can drop it in any release, and the failure is silent (tools just stop appearing; nothing errors). To re-verify: run the `claude-prompt-drift` skill's capture after the bump and confirm the superagent-axis `tools.md` still lists all four Task tools. If they've vanished, the CLI's only other re-enable path is a server-side feature flag that our `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` blocks — so escalate to a product decision (patch the gate, or retire the task-list UI's wire dependency) rather than shipping silently.
+3. **Task-tools opt-in** (MANDATORY re-verify on any CLI bump): `claude-code.ts buildQueryOptions()` lists TaskCreate/TaskGet/TaskList/TaskUpdate in `allowedTools` because CLI 2.1.233+ registers them by default only on older models (Claude 3.x, Opus 4.0–4.7, Sonnet 4.0–4.6, Haiku 4.5). Since 0.3.268 this is the documented path (SDK changelog: "elsewhere list them in `tools`/`allowedTools`"); the `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` env var is the documented CLI-side equivalent and works too (verified live on claude-opus-4-8 with 0.3.272: either path registers all four; TodoWrite is never registered alongside them). The in-chat task-list UI (`derive-task-list.ts`) and existing agent workflows depend on those tools, and the failure is silent (tools just stop appearing; nothing errors). To re-verify: run the `claude-prompt-drift` skill's capture after the bump and confirm the superagent-axis `tools.md` still lists all four Task tools. If they've vanished, try the env var as a fallback; if that is gone too, the CLI's only other re-enable path is a server-side feature flag that our `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` blocks — so escalate to a product decision (patch the gate, or retire the task-list UI's wire dependency) rather than shipping silently.
 
 4. If either E2E file fails, do not ship the bump — check the settlement tracker (`agent-container/src/session-settlement.ts`) and graceful-stop path (`claude-code.ts stop({graceful:true})`) against the new CLI's stream behavior.
+
+5. **Vendored bundled skill/workflow drift** (MANDATORY on any `@anthropic-ai/claude-agent-sdk` / CLI bump): `claude-code.ts buildQueryOptions()` sets `disableBundledSkills: true`, which strips every skill and workflow that ships inside the CLI, and the image-baked Gamut plugin (`agent-container/plugin/`, see its README) carries copies of the ones we keep — the `deep-research` workflow and the `workflow-authoring` skill (the Workflow tool's own prompt tells the model to load it; without it the model writes workflow scripts blind). Those copies no longer track upstream, so after `npm ci` in `agent-container/` run
+   ```bash
+   node .claude/skills/update-claude-deps/extract-bundled.mjs
+   ```
+   - exit 0 → no drift, nothing to do;
+   - exit 1 → it prints a unified diff per drifted entry against what is embedded in the new binary. Read the diff (prompt wording, vote thresholds, fetch budgets, schema changes, new script-API guidance), then adopt it with `--write` unless a change is clearly wrong for us — each file must stay identical to upstream apart from the entry's `patches` in the extractor's `VENDORED` table (mechanical one-line substitutions such as the `gamut:` workflow prefix), so any bigger local edit means forking under a new name instead;
+   - exit 2 → the extractor could not find or parse a chunk, could not resolve an identifier the prompt text interpolates (pin it under that entry's `constants`), or a patch no longer matches upstream. Fix the extractor (its header comment explains the expected shapes) rather than shipping blind.
+   While there, list what the new CLI bundles (`grep -a -o 'var i="[a-z-]*",e=i,' <binary>` for workflows; the `skills` array in a headless run's `system:init` message for skills) and decide whether anything new is worth vendoring the same way — `disableBundledSkills` hides all of it, so a useful addition is invisible until someone looks.
 
 ## Important notes
 
 - The Claude Code CLI ships inside `@anthropic-ai/claude-agent-sdk` as per-platform native-binary optional dependencies (`claude-agent-sdk-<os>-<arch>`); the Dockerfile symlinks the bundled binary onto PATH. There is no separate install.sh/npm CLI install to pin — bumping the SDK version bumps the CLI.
 - SDK and CLI versions track in lockstep by patch number (SDK 0.3.x ↔ CLI 2.1.x, e.g. 0.3.238 ↔ 2.1.238)
 - `DISABLE_AUTOUPDATER=1` is set in the Dockerfile to prevent runtime updates
+- Bundled CLI skills/workflows are disabled in agent sessions (`disableBundledSkills`); `deep-research` and `workflow-authoring` are vendored under `agent-container/plugin/` and checked for drift by `extract-bundled.mjs` in this skill's directory (validation step 5)
 - Do NOT run `npm build` — use typecheck + lint to verify changes

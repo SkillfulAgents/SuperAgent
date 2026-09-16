@@ -1,0 +1,13 @@
+{
+  "name": "My Widget",
+  "description": "A glanceable card",
+  "scripts": {
+    "widget": "bun run widget.ts"
+  },
+  "gamut": {
+    "widget": {
+      "size": "small",
+      "timeoutSeconds": 30
+    }
+  }
+}

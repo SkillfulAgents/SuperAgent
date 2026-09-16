@@ -2,6 +2,7 @@ import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import Database from 'better-sqlite3'
 import * as schema from './schema'
+import { runDataMigrations } from './data-migrations'
 import fs from 'fs'
 import path from 'path'
 import { getDatabasePath, getDataDir } from '@shared/lib/config/data-dir'
@@ -60,6 +61,22 @@ function initDb() {
     captureException(err, {
       tags: { component: 'database', operation: 'migrate' },
       extra: { dbPath, migrationsFolder: getMigrationsFolder() },
+      level: 'fatal',
+    })
+    throw err
+  }
+
+  // One-time data moves, after the schema is current and before anything
+  // reads: nothing observes a database that is missing one.
+  try {
+    const applied = runDataMigrations(_db)
+    if (applied.length > 0) {
+      console.log(`[database] Applied data migrations: ${applied.join(', ')}`)
+    }
+  } catch (err) {
+    captureException(err, {
+      tags: { component: 'database', operation: 'data-migrate' },
+      extra: { dbPath },
       level: 'fatal',
     })
     throw err

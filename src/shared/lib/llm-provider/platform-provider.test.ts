@@ -3,9 +3,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // Stub everything with side effects: attribution pulls in the DB, auth-service
 // reads settings storage, config resolves the proxy URL from the environment.
 const currentAttribution = vi.fn()
+const forAgentAttribution = vi.fn()
+const requiresActingMember = vi.fn(() => false)
+const captureMessage = vi.fn()
 const platformAuthStatus = vi.fn()
 vi.mock('@shared/lib/platform-attribution', () => ({
-  attribution: { current: () => currentAttribution() },
+  attribution: {
+    current: () => currentAttribution(),
+    forAgent: (slug: string) => forAgentAttribution(slug),
+    requiresActingMember: () => requiresActingMember(),
+  },
+}))
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureMessage: (...args: unknown[]) => captureMessage(...args),
 }))
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => 'platform-token',
@@ -25,8 +35,42 @@ import { PlatformLlmProvider, sanitizeAgentName } from './platform-provider'
 const provider = new PlatformLlmProvider()
 
 beforeEach(() => {
-  currentAttribution.mockReturnValue(null)
+  currentAttribution.mockReset().mockReturnValue(null)
+  forAgentAttribution.mockReset().mockReturnValue(null)
+  requiresActingMember.mockReset().mockReturnValue(false)
+  captureMessage.mockReset()
   platformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_123' })
+})
+
+describe('getContainerEnvVars auth token (cold start)', () => {
+  it('bakes the agent-resolved attribution token when an identity is provided', () => {
+    forAgentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_owner' })
+    const env = provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' })
+    expect(forAgentAttribution).toHaveBeenCalledWith('abc123')
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('org-jwt::sub_owner')
+  })
+
+  it('uses the ambient attribution when no identity is provided', () => {
+    currentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_ambient' })
+    expect(provider.getContainerEnvVars().ANTHROPIC_AUTH_TOKEN).toBe('org-jwt::sub_ambient')
+    expect(forAgentAttribution).not.toHaveBeenCalled()
+  })
+
+  it('reports and falls back to the bare token when an org JWT resolves no member', () => {
+    requiresActingMember.mockReturnValue(true)
+    const env = provider.getContainerEnvVars({ id: 'abc123' })
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
+    expect(captureMessage).toHaveBeenCalledWith(
+      'platform container env built without acting member',
+      expect.objectContaining({ tags: { area: 'platform-attribution', op: 'container.env.no_member' } }),
+    )
+  })
+
+  it('does not report the fallback for an opaque access key', () => {
+    requiresActingMember.mockReturnValue(false)
+    expect(provider.getContainerEnvVars({ id: 'abc123' }).ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
+    expect(captureMessage).not.toHaveBeenCalled()
+  })
 })
 
 describe('PlatformLlmProvider — tool search', () => {

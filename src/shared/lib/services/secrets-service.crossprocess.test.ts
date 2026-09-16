@@ -16,6 +16,11 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { updateEnvFileEntry } from '../../../../agent-container/src/env-file-store'
+// Imported statically: the service reaches the .env through the agent actor,
+// whose module graph is heavy, and a dynamic import inside the first test
+// counted against that test's timeout. The data dir is read per call, so the
+// per-test SUPERAGENT_DATA_DIR still applies.
+import { setSecret, listSecrets } from './secrets-service'
 
 let tmpDir: string
 
@@ -33,15 +38,10 @@ afterEach(() => {
   delete process.env.SUPERAGENT_DATA_DIR
 })
 
-async function importService() {
-  return import('./secrets-service')
-}
-
 describe('host setSecret ↔ container updateEnvFileEntry interop', () => {
   it('the provide-secret sequence (host write, then container write) keeps every secret', async () => {
     // The exact prod sequence that wiped the file: host merges the new secret
     // into .env, then the container's POST /env upserts the same key again.
-    const { setSecret, listSecrets } = await importService()
     await setSecret('agent', { envVar: 'SUPABASE_URL', key: 'SUPABASE_URL', value: 'https://x' })
     await setSecret('agent', { envVar: 'STRIPE_KEY', key: 'Stripe Key', value: 'sk-1' })
 
@@ -60,7 +60,6 @@ describe('host setSecret ↔ container updateEnvFileEntry interop', () => {
   })
 
   it('interleaved host and container writers never lose a key', { timeout: 30_000 }, async () => {
-    const { setSecret, listSecrets } = await importService()
     // Seed so the workspace dir + file exist before the storm.
     await setSecret('agent', { envVar: 'SEED', key: 'Seed Secret', value: 'seed' })
 
@@ -87,7 +86,6 @@ describe('host setSecret ↔ container updateEnvFileEntry interop', () => {
   })
 
   it('a container write between two host writes round-trips values with special characters', async () => {
-    const { setSecret, listSecrets } = await importService()
     await setSecret('agent', { envVar: 'JSONISH', key: 'JSONISH', value: '{"a": "b c", "n": 1}' })
 
     await updateEnvFileEntry(envPath('agent'), 'CONNECTED_ACCOUNTS', '{"github": [{"name": "x"}]}')

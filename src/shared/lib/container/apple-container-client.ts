@@ -425,17 +425,17 @@ export class AppleContainerClient extends BaseContainerClient {
 
       if (imagesToRemove.length === 0) return
 
-      console.log(`[ContainerManager] Removing ${imagesToRemove.length} old image(s):`, imagesToRemove)
+      console.log(`[ContainerClient] Removing ${imagesToRemove.length} old image(s):`, imagesToRemove)
       for (const img of imagesToRemove) {
         try {
           await execWithPath(`${cliCommand} image delete ${shellEscape(img)}`)
-          console.log(`[ContainerManager] Removed ${img}`)
+          console.log(`[ContainerClient] Removed ${img}`)
         } catch {
-          console.warn(`[ContainerManager] Could not remove ${img} (may be in use)`)
+          console.warn(`[ContainerClient] Could not remove ${img} (may be in use)`)
         }
       }
     } catch (error) {
-      console.warn('[ContainerManager] Failed to remove old images:', error)
+      console.warn('[ContainerClient] Failed to remove old images:', error)
     }
   }
 

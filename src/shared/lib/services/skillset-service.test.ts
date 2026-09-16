@@ -113,6 +113,29 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: vi.fn(() => undefined),
 }))
 
+// The service reaches an agent's skills tree through the agent actor's
+// `files`. The real registry drags the container layer in at import time,
+// which this suite has no use for; hand it the same `LocalFileOps` the real
+// actor uses, rooted at the temp data dir, so fixtures written to disk and
+// assertions read from disk keep meaning what they always did.
+vi.mock('@shared/lib/agent-actor', async () => {
+  const workspacePath = await import('@shared/lib/agent-actor/workspace-path')
+  const { createLocalFileOps } = await import('@shared/lib/agent-actor/local-file-ops')
+  const { directoryExists, getAgentDir, getAgentsDir, listDirectories } = await import('@shared/lib/utils/file-storage')
+  const { getAgentWorkspaceDir } = await import('@shared/lib/utils/file-storage')
+  return {
+    ...workspacePath,
+    // The agents this suite writes to disk are the agents that exist.
+    agentCatalog: {
+      list: () => listDirectories(getAgentsDir()),
+      exists: (slug: string) => directoryExists(getAgentDir(slug)),
+    },
+    agentRegistry: {
+      get: (slug: string) => ({ slug, files: createLocalFileOps(slug, { getAgentWorkspaceDir }) }),
+    },
+  }
+})
+
 import {
   contentHash,
   parseSkillFrontmatter,
@@ -3068,6 +3091,43 @@ metadata:
   })
 
   describe('skill zip round-trip', () => {
+    it('preserves binary assets through import, export and reimport', async () => {
+      const files: Record<string, Buffer> = {
+        'binary-skill/SKILL.md': Buffer.from(MINIMAL_SKILL_MD),
+        'binary-skill/assets/payload.bin': Buffer.from([0, 255, 254, 128, 13, 10, 70, 73, 76, 69]),
+        'binary-skill/assets/all-bytes.bin': Buffer.from(Array.from({ length: 256 }, (_, i) => i)),
+        'binary-skill/assets/empty.bin': Buffer.alloc(0),
+        'binary-skill/notes.txt': Buffer.from('Unicode: café 日本語\r\n'),
+      }
+      const sourceSlug = 'binary-source'
+      const targetSlug = 'binary-target'
+      for (const slug of [sourceSlug, targetSlug]) {
+        fs.mkdirSync(path.join(testDir, 'agents', slug, 'workspace'), { recursive: true })
+      }
+      const source = await importSkillFromZip(sourceSlug, await createZipBuffer(files))
+      const sourceDir = path.join(testDir, 'agents', sourceSlug, 'workspace', '.claude', 'skills', source.skillDir)
+      for (const [name, content] of Object.entries(files)) {
+        expect(fs.readFileSync(path.join(sourceDir, name.slice('binary-skill/'.length)))).toEqual(content)
+      }
+
+      const { zipBuffer } = await exportSkill(sourceSlug, source.skillDir)
+      const reader = await openZipFromBuffer(zipBuffer)
+      try {
+        for (const [name, content] of Object.entries(files)) {
+          const exportedName = source.skillDir + '/' + name.slice('binary-skill/'.length)
+          expect(await reader.readEntry(exportedName)).toEqual(content)
+        }
+      } finally {
+        reader.close()
+      }
+
+      const target = await importSkillFromZip(targetSlug, zipBuffer)
+      const targetDir = path.join(testDir, 'agents', targetSlug, 'workspace', '.claude', 'skills', target.skillDir)
+      for (const [name, content] of Object.entries(files)) {
+        expect(fs.readFileSync(path.join(targetDir, name.slice('binary-skill/'.length)))).toEqual(content)
+      }
+    })
+
     it('export then import preserves files', async () => {
       const agentSlug = 'roundtrip-agent'
       const agentDir = path.join(testDir, 'agents', agentSlug, 'workspace')

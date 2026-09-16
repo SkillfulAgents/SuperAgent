@@ -1,3 +1,4 @@
+import type { VoiceProvider } from '../voice/provider-types'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -66,7 +67,7 @@ export interface ApiKeySettings {
   exaApiKey?: string
 }
 
-export type VoiceProvider = 'deepgram' | 'openai' | 'platform'
+export type { VoiceProvider } from '../voice/provider-types'
 
 export interface VoiceSettings {
   sttProvider?: VoiceProvider

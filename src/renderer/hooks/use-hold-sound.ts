@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { readAloud } from './use-read-aloud'
-import { holdSound } from '@renderer/lib/speech/hold-sound'
+import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
 
 /** How often to check whether the reply is audible. */
 const POLL_MS = 200
@@ -20,6 +19,10 @@ interface UseHoldSoundArgs {
   agentTurn: boolean
   /** The turn has reached a tool call: the agent is working, and silence is expected. */
   working: boolean
+  /** Either participant is speaking, including short pauses inside speech. */
+  speaking?: boolean
+  /** Silence delay selected by the conversation adapter. */
+  delayMs?: number
 }
 
 /**
@@ -29,11 +32,13 @@ interface UseHoldSoundArgs {
  * silence runs long, so an opening sentence is spoken over nothing. Stops
  * the moment the reply is audible, or the floor returns to the person.
  */
-export function useHoldSound({ enabled, agentTurn, working }: UseHoldSoundArgs): void {
+export function useHoldSound({ enabled, agentTurn, working, speaking = false, delayMs }: UseHoldSoundArgs): void {
   // Read live by the poll, not an effect dependency: a change must not
   // restart the sound that is already playing.
   const workingRef = useRef(working)
   workingRef.current = working
+  const delayRef = useRef(delayMs)
+  delayRef.current = delayMs
 
   // Start the download when voice mode comes on, not on the first hold.
   useEffect(() => {
@@ -41,16 +46,16 @@ export function useHoldSound({ enabled, agentTurn, working }: UseHoldSoundArgs):
   }, [enabled])
 
   useEffect(() => {
+    if (speaking) {
+      // A fade, as before: the conversation cuts it hard only for the person's
+      // own voice, where any overlap is jarring.
+      holdSound.stop()
+      return
+    }
     if (!enabled || !agentTurn) return
-    let silentSince: number | null = Date.now()
+    const silentSince = Date.now()
     const check = () => {
-      if (readAloud.isAudible()) {
-        silentSince = null
-        holdSound.stop()
-        return
-      }
-      silentSince ??= Date.now()
-      const delay = workingRef.current ? HOLD_DELAY_MS : HOLD_DELAY_BEFORE_TOOLS_MS
+      const delay = delayRef.current ?? (workingRef.current ? HOLD_DELAY_MS : HOLD_DELAY_BEFORE_TOOLS_MS)
       if (Date.now() - silentSince >= delay) holdSound.start()
     }
     const timer = setInterval(check, POLL_MS)
@@ -58,5 +63,5 @@ export function useHoldSound({ enabled, agentTurn, working }: UseHoldSoundArgs):
       clearInterval(timer)
       holdSound.stop()
     }
-  }, [enabled, agentTurn])
+  }, [enabled, agentTurn, speaking])
 }

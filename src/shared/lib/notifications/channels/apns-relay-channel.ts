@@ -1,8 +1,8 @@
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getApnsRelayConfig } from '@shared/lib/config/settings'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { getAccessibleAgentSlugs } from '@shared/lib/services/notification-service'
-import { getSessionMetadata } from '@shared/lib/services/session-service'
 import {
   listDeliverableApnsDevices,
   deleteApnsDeviceById,
@@ -135,7 +135,7 @@ export class ApnsRelayChannel implements NotificationChannel {
    */
   private async getOriginDeviceId(event: NotificationEvent): Promise<string | null> {
     try {
-      const meta = await getSessionMetadata(event.agentSlug, event.sessionId)
+      const meta = await agentRegistry.get(event.agentSlug).sessions.metadata(event.sessionId)
       if (!meta) return null
       if (meta.alertDeviceId !== undefined) return meta.alertDeviceId
       return meta.createdByDeviceId ?? null

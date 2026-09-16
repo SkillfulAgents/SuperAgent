@@ -126,6 +126,11 @@ export interface SessionMetadata {
   // X-Agent: present when this session was created by another agent invoking this one.
   // Such sessions are hidden as automated until promoted for human input.
   invokedByAgentSlug?: string
+  // Widget repair: the platform opened this session because the artifact's
+  // widget refresh script failed. Automated (hidden) like a cron run, and the
+  // slug doubles as the per-widget dedupe key.
+  isWidgetRepair?: boolean
+  widgetRepairSlug?: string
   // Dashboard dispatch: present when the session was started from a dashboard's
   // dispatch confirmation dialog. Provenance only — a human clicked Dispatch,
   // so these sessions stay interactive (never hidden as automated).
@@ -206,6 +211,17 @@ export interface JsonlMessageEntry {
   // Set on synthetic user entries derived from queued_command attachments
   // (messages delivered mid-turn) — see normalizeQueuedCommandEntry.
   isQueuedCommand?: boolean
+  forkedFrom?: JsonlForkStamp
+}
+
+/**
+ * Stamped by the SDK on every line copied into a forked session (messages,
+ * system entries, attachments alike): the source session and the line's uuid
+ * there. Absent on lines written after the fork.
+ */
+export interface JsonlForkStamp {
+  sessionId: string
+  messageUuid: string
 }
 
 /**
@@ -226,6 +242,7 @@ export interface JsonlSystemEntry {
   // Severity for `informational` entries (host-persisted loop banners, e.g. a
   // hook blocking a prompt). Mirrors the SDK's informational message `level`.
   level?: string
+  forkedFrom?: JsonlForkStamp
 }
 
 /**
@@ -248,6 +265,7 @@ export interface JsonlAttachmentEntry {
     commandMode?: string
     isMeta?: boolean
   }
+  forkedFrom?: JsonlForkStamp
 }
 
 /**

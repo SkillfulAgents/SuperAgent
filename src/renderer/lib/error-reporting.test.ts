@@ -38,6 +38,18 @@ describe('renderer error reporting facade', () => {
     expect(options.beforeSend({ id: 'event' })).toBeNull()
   })
 
+  it('drops WorkspaceUnavailableError events but keeps other exceptions', async () => {
+    const { WorkspaceUnavailableError } = await import('./workspace-unavailable')
+    reporting.initRendererErrorReporting()
+
+    await vi.waitFor(() => expect(sentry.init).toHaveBeenCalledOnce())
+    const { beforeSend } = sentry.init.mock.calls[0][0]
+
+    expect(beforeSend({ id: 'event' }, { originalException: new WorkspaceUnavailableError('sleeping') })).toBeNull()
+    expect(beforeSend({ id: 'event' }, { originalException: new Error('deployment_unavailable') })).toEqual({ id: 'event' })
+    expect(beforeSend({ id: 'event' }, {})).toEqual({ id: 'event' })
+  })
+
   it('forwards user identity and caught exceptions without changing their context', async () => {
     const error = new Error('boom')
     const context = { tags: { source: 'test' }, extra: { attempt: 2 } }

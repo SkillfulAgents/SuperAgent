@@ -148,7 +148,7 @@ test.describe('Cmd-hold sidebar navigation hints', () => {
 
     await holdModifierForHints(page)
     try {
-      const badge = getAgentItem(page, agent).locator(HINT_BADGES)
+      const badge = page.locator('[data-sidebar="menu-button"]').filter({ has: getAgentItem(page, agent) }).locator(HINT_BADGES)
       await expect(badge).toBeVisible()
       const digit = hintNumber(await badge.getAttribute('data-testid'))
 
@@ -173,7 +173,7 @@ test.describe('Cmd-hold sidebar navigation hints', () => {
 
     await holdModifierForHints(page)
     try {
-      const agentBadge = getAgentItem(page, agent).locator(HINT_BADGES)
+      const agentBadge = page.locator('[data-sidebar="menu-button"]').filter({ has: getAgentItem(page, agent) }).locator(HINT_BADGES)
       await expect(agentBadge).toBeVisible()
       const agentDigit = hintNumber(await agentBadge.getAttribute('data-testid'))
 

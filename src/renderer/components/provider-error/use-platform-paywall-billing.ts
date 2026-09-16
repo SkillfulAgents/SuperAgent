@@ -91,7 +91,7 @@ function useBillingRefresh(active: boolean, blocked: boolean): void {
 // `billingHref` is the provider-resolved CTA link (presentation.href).
 // A live 402 ignores a leftover `allowed` snapshot from a previous recovery.
 // A persisted 402 (switch session after a top-up) trusts the current snapshot.
-// `active` is false once the card is dismissed: no refresh signals after that.
+// `active` gates refresh signals while the card is mounted.
 export function usePlatformPaywallBilling(
   flagFrom402: boolean | undefined,
   billingHref: string | null,

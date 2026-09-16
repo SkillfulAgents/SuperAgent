@@ -120,28 +120,37 @@ describe('SessionView x-agent provenance', () => {
   })
 })
 
-describe('SessionView fork provenance', () => {
+describe('SessionView widget repair provenance', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.session = {
+      id: 'repair-session',
+      agentSlug: 'target-agent',
+      name: 'Invoked to fix widget',
+      isWidgetRepair: true,
+      widgetRepairSlug: 'weather',
+    }
+    mocks.clearUnread.mockReturnValue(false)
   })
 
-  it('shows Forked from with a Back link to the source', () => {
+  it('identifies the widget and returns to the invocation history', () => {
+    render(<SessionView agentSlug="target-agent" sessionId="repair-session" />)
+
+    expect(screen.getByTestId('widget-repair-session-banner')).toHaveTextContent('Invoked to fix widget: weather')
+    expect(screen.queryByTestId('x-agent-session-banner')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('widget-repair-session-back-button'))
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/called-from-agents',
+      params: { slug: 'target-agent' },
+    })
+  })
+})
+
+describe('SessionView fork provenance', () => {
+  it('draws no header bar for a fork; the thread marks the fork point instead', () => {
     mocks.session = { id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)', forkedFromSessionId: 'src-1', forkedFromSessionName: 'Pricing' }
     render(<SessionView agentSlug="agent-a" sessionId="fork-1" />)
 
-    expect(screen.getByTestId('fork-session-banner')).toHaveTextContent('Forked from "Pricing"')
-    fireEvent.click(screen.getByTestId('fork-session-back-button'))
-    expect(mocks.navigate).toHaveBeenCalledWith({
-      to: '/agents/$slug/sessions/$sessionId',
-      params: { slug: 'agent-a', sessionId: 'src-1' },
-    })
-  })
-
-  it('degrades to plain text without a Back link when the source is gone', () => {
-    mocks.session = { id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)', forkedFromSessionId: 'src-1' }
-    render(<SessionView agentSlug="agent-a" sessionId="fork-1" />)
-
-    expect(screen.getByTestId('fork-session-banner')).toHaveTextContent('Forked from a deleted session')
-    expect(screen.queryByTestId('fork-session-back-button')).toBeNull()
+    expect(screen.queryByTestId('fork-session-banner')).toBeNull()
   })
 })

@@ -14,6 +14,7 @@ import {
 } from './account-reauth-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { isReauthDismissed } from './reauth-dismissal'
+import { getReplacementAccountId } from './account-replacement'
 
 const DETAILS = {
   agentSlug: 'agent-1',
@@ -148,6 +149,24 @@ describe('AccountReauthManager', () => {
 
     manager.completeAccount('account-1')
     await expect(promise).resolves.toBeUndefined()
+  })
+
+  it('releases all calls for a replacement while leaving other agents pending', async () => {
+    const first = manager.requestReauth(DETAILS).catch(getReplacementAccountId)
+    const second = manager.requestReauth(DETAILS).catch(getReplacementAccountId)
+    const otherAgent = manager.requestReauth({ ...DETAILS, agentSlug: 'agent-2' })
+    const [request] = userInputRequestManager.getAgentScopedRequests('agent-1')
+
+    expect(manager.replaceAccount(request.id, 'agent-2', 'replacement')).toBe(false)
+    expect(manager.replaceAccount(request.id, 'agent-1', 'replacement')).toBe(true)
+    expect(await Promise.all([first, second])).toEqual(['replacement', 'replacement'])
+    expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(0)
+    expect(userInputRequestManager.getAgentScopedRequests('agent-2')).toHaveLength(1)
+    expect(userInputRequestManager.getRecentResolution(request.id)?.outcome).toBe('answered')
+    expect(manager.replaceAccount(request.id, 'agent-1', 'another')).toBe(false)
+
+    manager.completeAccount(DETAILS.accountId)
+    await expect(otherAgent).resolves.toBeUndefined()
   })
 
   it('reports an unknown request id as not dismissed', () => {

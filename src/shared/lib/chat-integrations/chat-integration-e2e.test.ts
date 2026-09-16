@@ -40,12 +40,18 @@ vi.mock('@shared/lib/platform-attribution', () => ({
   runWithOptionalUser: (_userId: string | undefined, fn: () => any) => fn(),
 }))
 
-// Mock the container manager — returns our mock client
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: vi.fn(),
-  },
+// Manager-shaped mock behind the container host — returns our mock client. The
+// actor reaches an agent's runtime through containerHost.runtime(slug), and the
+// adapter forwards each runtime method here with the slug prepended.
+const containerManager = vi.hoisted(() => ({
+  ensureRunning: vi.fn(),
+  // The actor reaches the client through getClient after start().
+  getClient: () => mockContainerClient,
 }))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock(containerManager) }
+})
 
 // Mock agent service
 vi.mock('@shared/lib/services/agent-service', () => ({
@@ -104,6 +110,7 @@ vi.mock('./telegram-connector', async (importOriginal) => {
       static generateSystemPrompt = actual.TelegramConnector.generateSystemPrompt
       static classifyChatId = actual.TelegramConnector.classifyChatId
       constructor() {
+        Object.defineProperty(mockConnector, 'constructor', { value: new.target, configurable: true })
         return mockConnector
       }
     },
@@ -116,7 +123,6 @@ import { chatIntegrationManager } from './chat-integration-manager'
 import { createChatIntegration, getChatIntegration } from '@shared/lib/services/chat-integration-service'
 import { listChatIntegrationSessions } from '@shared/lib/services/chat-integration-session-service'
 import { approveChatAccess, revokeChatAccess } from '@shared/lib/services/chat-integration-access-service'
-import { containerManager } from '@shared/lib/container/container-manager'
 import { MockContainerClient, UserInputRequestScenario } from '@shared/lib/container/mock-container-client'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 
@@ -340,6 +346,26 @@ describe('Chat integration E2E', () => {
       const fresh = rows.find((r) => r.sessionId !== deadSessionId && !r.archivedAt)
       expect(dead?.archivedAt).toBeTruthy()
       expect(fresh).toBeDefined()
+    })
+
+    it('answers a reply to an agent-initiated message whose session the container never had', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      // An outbound send maps the chat to a host-only session.
+      const phantomSessionId = await chatIntegrationManager.ensureSession(integrationId, 'chat-1')
+
+      mockConnector.simulateIncomingMessage('Yes, go ahead', 'chat-1', 'user-1')
+      const replies = () => [
+        ...mockConnector.sentMessages.map((m) => m.message.text ?? ''),
+        ...mockConnector.finalizedMessages.map((m) => m.finalText),
+      ]
+      await waitForCondition(() => replies().some((t) => t.includes('This is a mock response')), 3000)
+
+      expect(MockContainerClient.createSessionCalls.map((c) => c.initialMessage)).toEqual(['Yes, go ahead'])
+      const rows = listChatIntegrationSessions(integrationId).filter((r) => r.externalChatId === 'chat-1')
+      expect(rows.find((r) => r.sessionId === phantomSessionId)?.archivedAt).toBeTruthy()
+      expect(rows.find((r) => r.sessionId !== phantomSessionId && !r.archivedAt)).toBeDefined()
     })
 
     it('does NOT rotate the session on a transient (non-session-gone) error', async () => {

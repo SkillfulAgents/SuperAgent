@@ -97,10 +97,13 @@ export function useMarkSessionNotificationsRead() {
       if (!res.ok) throw new Error('Failed to mark session notifications as read')
       return res.json()
     },
-    onSuccess: () => {
+    onSuccess: (_, sessionId) => {
       queryClient.invalidateQueries({ queryKey: ['notifications'] })
       // Also invalidate sessions so the sidebar's unread dot disappears
       queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      // The tab title reads the session detail, which has a separate cache key.
+      // Refresh it too so a read notification stays cleared when the tab hides.
+      queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
     },
   })
 }

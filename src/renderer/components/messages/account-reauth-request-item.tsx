@@ -9,6 +9,7 @@ import { getProvider } from '@shared/lib/account-providers/service-catalog'
 import { DeclineButton } from './decline-button'
 import { RequestItemActions } from './request-item-actions'
 import { RequestItemShell } from './request-item-shell'
+import { ConnectedAccountRequestItem } from './connected-account-request-item'
 
 interface AccountReauthRequestItemProps {
   proxyRequestId: string
@@ -31,6 +32,7 @@ export function AccountReauthRequestItem({
   readOnly,
   onComplete,
 }: AccountReauthRequestItemProps) {
+  const [replacing, setReplacing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [dismissing, setDismissing] = useState(false)
   const { reconnect, pendingAccountId } = useOAuthReconnect()
@@ -41,9 +43,7 @@ export function AccountReauthRequestItem({
   const statusLabel = accountStatus === 'expired' ? 'expired' : 'been revoked'
   const ownsAccount = connectedAccounts?.accounts.some((account) => account.id === accountId)
   const canReconnect = !readOnly && ownsAccount === true
-  // Reconnecting is the owner's alone, but the card blocks every session of the
-  // agent — so anyone looking at it needs a way out, or a shared credential
-  // nobody present can fix wedges the agent until the request times out.
+  // Members can supply their own replacement without modifying the owner's credentials.
   const canDismiss = !readOnly
 
   const handleReconnect = async () => {
@@ -69,11 +69,25 @@ export function AccountReauthRequestItem({
     }
   }
 
+  if (replacing && !readOnly) {
+    return (
+      <ConnectedAccountRequestItem
+        toolUseId={proxyRequestId}
+        toolkit={toolkit}
+        reason={`Replace ${providerName} connection`}
+        sessionId={sessionId}
+        agentSlug={agentSlug}
+        replacement={{ requestId: proxyRequestId, onCancel: () => setReplacing(false) }}
+        onComplete={onComplete}
+      />
+    )
+  }
+
   return (
     <RequestItemShell
       title={`This request needs ${providerName} access that has ${statusLabel}.`}
       subtitle={ownsAccount === false
-        ? 'Only the connection owner can reconnect it. Dismiss to let the agent move on without it.'
+        ? 'Replace it with an account you own to continue, or dismiss this request.'
         : 'Reconnect to continue. The original request will resume automatically.'}
       icon={<ServiceIcon slug={toolkit} fallback="oauth" className="h-4 w-4" />}
       theme="orange"
@@ -93,6 +107,16 @@ export function AccountReauthRequestItem({
             label="Dismiss"
             data-testid="account-reauth-dismiss-btn"
           />
+          <Button
+            type="button"
+            size="xs"
+            variant={canReconnect ? 'outline' : 'default'}
+            onClick={() => setReplacing(true)}
+            disabled={isReconnecting || dismissing}
+            data-testid="account-reauth-replace-btn"
+          >
+            Replace connection
+          </Button>
           {canReconnect && (
             <Button
               type="button"

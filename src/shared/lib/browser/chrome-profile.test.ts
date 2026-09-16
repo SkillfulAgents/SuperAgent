@@ -2,7 +2,10 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
+import { InMemoryFileOps } from '@shared/lib/agent-actor/testing/in-memory-file-ops'
 import { copyChromeProfileData } from './chrome-profile'
+import { workspaceProfileDestination } from './seed-browser-profile'
 
 const ORIGINAL_PLATFORM = process.platform
 
@@ -52,6 +55,39 @@ describe('copyChromeProfileData', () => {
       .toBe('session-data')
     expect(fs.existsSync(path.join(destination, 'History'))).toBe(false)
     expect(fs.existsSync(path.join(destination, 'Cache'))).toBe(false)
+  })
+
+  it('syncs into an agent workspace through its file operations, keeping what the agent changed', async () => {
+    const profileDir = createProfile()
+    const files = new InMemoryFileOps()
+    const decode = async (path: string) => new TextDecoder().decode((await files.getDoc(path)) ?? new Uint8Array())
+
+    expect(await copyChromeProfileData('Default', workspaceProfileDestination(files, '.browser-profile'))).toBe(true)
+    expect(await decode('.browser-profile/Cookies')).toBe('source-cookie')
+    expect(await decode('.browser-profile/Local Storage/leveldb/000001.ldb')).toBe('local-data')
+    expect(await files.stat('.browser-profile/History')).toBeNull()
+    expect(await files.stat('.browser-profile/.superagent-profile-sync.json')).toMatchObject({ kind: 'file' })
+
+    // An unchanged source leaves the agent's own edits alone; a changed one replaces them.
+    await files.putDoc('.browser-profile/Cookies', 'agent-session-cookie')
+    await copyChromeProfileData('Default', workspaceProfileDestination(files, '.browser-profile'))
+    expect(await decode('.browser-profile/Cookies')).toBe('agent-session-cookie')
+
+    fs.writeFileSync(path.join(profileDir, 'Cookies'), 'new-and-longer-source-cookie')
+    await copyChromeProfileData('Default', workspaceProfileDestination(files, '.browser-profile'))
+    expect(await decode('.browser-profile/Cookies')).toBe('new-and-longer-source-cookie')
+  })
+
+  it('a source file that vanished after fingerprinting does not fail a workspace sync, local or not', async () => {
+    // A workspace that is not a directory on this machine streams the source
+    // and meets the stat's own ENOENT; a local one meets the contract's not-found.
+    const remote = workspaceProfileDestination(new InMemoryFileOps(), '.browser-profile')
+    await expect(remote.copyFile(path.join(testHome, 'gone', 'Cookies-journal'), 'Cookies-journal')).resolves.toBeUndefined()
+
+    const localRoot = path.join(testHome, 'local-workspace')
+    const local = workspaceProfileDestination(new LocalFileOps(() => localRoot), '.browser-profile')
+    await expect(local.copyFile(path.join(testHome, 'gone', 'Cookies-journal'), 'Cookies-journal')).resolves.toBeUndefined()
+    expect(fs.existsSync(path.join(localRoot, '.browser-profile', 'Cookies-journal'))).toBe(false)
   })
 
   it('returns false when the selected source profile does not exist', async () => {

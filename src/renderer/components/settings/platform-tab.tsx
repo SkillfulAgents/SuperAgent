@@ -8,6 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Progress } from '@renderer/components/ui/progress'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { RequestError } from '@renderer/components/messages/request-error'
+import { OAuthFlowCancel } from '@renderer/components/connections/oauth-flow-cancel'
 import { ProfileSection } from './profile-section'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformConnect, useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
@@ -392,10 +393,12 @@ function AccessKeyInput({ onClose }: { onClose: () => void }) {
 interface NotConnectedEmptyStateProps {
   readOnly: boolean
   isLaunching: boolean
+  canCancel: boolean
   onConnect: () => void
+  onCancel: () => void
 }
 
-function NotConnectedEmptyState({ readOnly, isLaunching, onConnect }: NotConnectedEmptyStateProps) {
+function NotConnectedEmptyState({ readOnly, isLaunching, canCancel, onConnect, onCancel }: NotConnectedEmptyStateProps) {
   const [showKeyInput, setShowKeyInput] = useState(false)
 
   return (
@@ -422,6 +425,7 @@ function NotConnectedEmptyState({ readOnly, isLaunching, onConnect }: NotConnect
                 <Button size="sm" variant="outline" onClick={() => setShowKeyInput(true)}>
                   Add access key
                 </Button>
+                <OAuthFlowCancel visible={canCancel} onCancel={onCancel} testId="platform-cancel-connect" />
               </div>
             )}
           </div>
@@ -434,11 +438,13 @@ function NotConnectedEmptyState({ readOnly, isLaunching, onConnect }: NotConnect
 interface ReconnectRowProps {
   readOnly: boolean
   isLaunching: boolean
+  canCancel: boolean
   connectLabel: string
   onReconnect: () => void
+  onCancel: () => void
 }
 
-function ReconnectRow({ readOnly, isLaunching, connectLabel, onReconnect }: ReconnectRowProps) {
+function ReconnectRow({ readOnly, isLaunching, canCancel, connectLabel, onReconnect, onCancel }: ReconnectRowProps) {
   const [showInput, setShowInput] = useState(false)
 
   if (showInput) {
@@ -478,6 +484,7 @@ function ReconnectRow({ readOnly, isLaunching, connectLabel, onReconnect }: Reco
               Add key
             </Button>
           )}
+          <OAuthFlowCancel visible={canCancel} onCancel={onCancel} testId="platform-cancel-reconnect" />
         </div>
       </div>
     </div>
@@ -496,6 +503,8 @@ function formatTimestamp(value: string | null): string {
 export function PlatformTab({ readOnly = false }: PlatformTabProps) {
   const {
     handleConnect,
+    cancelConnect,
+    canCancel,
     isLaunching,
     error,
     message,
@@ -598,7 +607,9 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
           <NotConnectedEmptyState
             readOnly={readOnly}
             isLaunching={isLaunching}
+            canCancel={canCancel}
             onConnect={handleConnect}
+            onCancel={cancelConnect}
           />
         )}
       </div>
@@ -625,8 +636,10 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
           <ReconnectRow
             readOnly={readOnly}
             isLaunching={isLaunching}
+            canCancel={canCancel}
             connectLabel={connectLabel}
             onReconnect={handleConnect}
+            onCancel={cancelConnect}
           />
         </div>
       )}

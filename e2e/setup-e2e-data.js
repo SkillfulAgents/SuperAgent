@@ -29,7 +29,9 @@ for (const file of ['superagent.db', 'superagent.db-wal', 'superagent.db-shm']) 
   try { fs.unlinkSync(path.join(resolvedDir, file)) } catch { /* may not exist */ }
 }
 
-// Remove agents directory
+// Remove agents directory. The database above is removed with it, so the
+// data migration that imports agent directories runs again at the next
+// launch and finds nothing; every E2E agent is created through the API.
 try { fs.rmSync(path.join(resolvedDir, 'agents'), { recursive: true }) } catch { /* may not exist */ }
 
 // Seed a fake skillset on disk so /discoverable-skills returns content

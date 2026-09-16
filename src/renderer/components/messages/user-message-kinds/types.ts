@@ -1,7 +1,7 @@
 import type { ComponentType, ReactNode } from 'react'
 import type { ApiMessage } from '@shared/lib/types/api'
 
-export type UserMessageKind = 'system' | 'voice-mode' | 'interrupt' | 'compact' | 'slash' | 'plain'
+export type UserMessageKind = 'system' | 'connection-replacement' | 'voice-mode' | 'interrupt' | 'compact' | 'slash' | 'plain'
 
 export interface UserMessageRenderProps {
   /** Bubble text after the structured blocks (sender, files, folders) are peeled. */

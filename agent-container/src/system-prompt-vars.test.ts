@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { buildSystemPromptVars, generateSystemPrompt } from './claude-code'
@@ -93,15 +93,31 @@ describe('generateSystemPrompt rendering', () => {
     // its procedural API details now live in the on-demand guide.
     expect(out.includes('## Built-in media generation')).toBe(webhook)
     expect(out.includes('/opt/gamut/docs/media-generation.md')).toBe(webhook)
-    // Spending the user's money is an approval rule, so the cost confirmation
-    // and the no-invented-slugs rule stay in the prompt even though the API
-    // procedure moved out.
+    expect(out.includes('## Built-in lead enrichment')).toBe(webhook)
+    expect(out.includes('/opt/gamut/docs/lead-enrichment.md')).toBe(webhook)
+    // Approval rules stay in the prompt; API procedure lives in the guide.
     expect(out.includes('cost from that model')).toBe(webhook)
     expect(out.includes('Never invent a model slug')).toBe(webhook)
+    expect(out.includes('Phone reveal, email waterfall, and Apollo CRM writes are blocked')).toBe(webhook)
+    expect(out).not.toContain('v1/replicate')
+    expect(out).not.toContain('v1/apollo')
     expect(out.includes('## Built-in X reads')).toBe(webhook)
-    expect(out.includes('/opt/gamut/docs/x.md')).toBe(webhook)
+    expect(out.includes('/opt/gamut/docs/x.md')).toBe(webhook || composio)
     expect(out.includes('Never invent an X endpoint')).toBe(webhook)
     expect(out.includes('$0.01 per person')).toBe(webhook)
+    expect(out.includes('## Built-in Deepgram audio')).toBe(webhook)
+    // The X connected account needs Gamut's Composio, so it follows the composio gate.
+    expect(out.includes('## X through a connected account')).toBe(composio)
+    expect(out.includes('$0.200')).toBe(composio)
+    expect(out.includes('public reads included')).toBe(composio)
+    expect(out.includes('/opt/gamut/docs/deepgram.md')).toBe(webhook)
+    expect(out.includes('Never invent a Deepgram endpoint')).toBe(webhook)
+    expect(out.includes('Before long recordings')).toBe(webhook)
+    expect(out.includes('## Built-in Exa search')).toBe(webhook)
+    expect(out.includes('/opt/gamut/docs/exa.md')).toBe(webhook)
+    expect(out.includes('Prefer the normal web-search tool')).toBe(webhook)
+    expect(out).not.toContain('v1/deepgram')
+    expect(out).not.toContain('v1/exa')
     expect(out).not.toContain('v1/replicate')
     expect(out).not.toContain('v1/x')
     expect(out).not.toContain('ANTHROPIC_AUTH_TOKEN')
@@ -127,6 +143,22 @@ describe('generateSystemPrompt rendering', () => {
     expect(guide).not.toContain('Available models')
   })
 
+  it('teaches the match-then-enrich Apollo contract in the guide', () => {
+    const guide = readFileSync(join(__dirname, '..', 'docs', 'lead-enrichment.md'), 'utf8')
+
+    expect(guide).toContain('/v1/apollo')
+    expect(guide).toContain('POST "$ANTHROPIC_BASE_URL/v1/apollo/people/match"')
+    expect(guide).toContain('GET /organizations/enrich?domain=')
+    expect(guide).toContain('POST /people/bulk_match')
+    expect(guide).toContain('POST /organizations/bulk_enrich')
+    expect(guide).toContain('POST /mixed_people/api_search')
+    expect(guide).toContain('reveal_phone_number')
+    expect(guide).toContain('run_waterfall_phone')
+    expect(guide).toContain('run_waterfall_email')
+    expect(guide).toContain('/contacts')
+    expect(guide).toContain('at most 10')
+  })
+
   it('teaches the X read contract in the guide', () => {
     const guide = readFileSync(join(__dirname, '..', 'docs', 'x.md'), 'utf8')
     expect(guide).toContain('/2/tweets/search/recent')
@@ -135,6 +167,40 @@ describe('generateSystemPrompt rendering', () => {
     expect(guide).toContain('7 days')
     expect(guide).toContain('followers')
     expect(guide).toContain('Never print either environment variable')
+  })
+
+  it('teaches the X connected-account contract in the guide', () => {
+    const guide = readFileSync(join(__dirname, '..', 'docs', 'x.md'), 'utf8')
+    expect(guide).toContain('$PROXY_BASE_URL/<account_id>/api.x.com')
+    expect(guide).toContain('`POST /2/tweets`')
+    expect(guide).toContain('$0.200')
+    expect(guide).toContain('512 KB')
+    expect(guide).toContain('/2/media/upload/{id}/append')
+    expect(guide).toContain('`402`')
+    expect(guide).toContain('Never print either environment variable')
+  })
+
+  it('teaches the Deepgram proxy contract in the guide', () => {
+    const guide = readFileSync(join(__dirname, '..', 'docs', 'deepgram.md'), 'utf8')
+    expect(guide).toContain('$ANTHROPIC_BASE_URL/v1/deepgram')
+    for (const endpoint of ['/listen', '/speak', '/read', '/auth/grant']) {
+      expect(guide).toContain(`\`${endpoint}\``)
+    }
+    expect(guide).toContain('Never print either environment variable')
+    expect(guide).toContain('WebSocket transcription is not supported through this proxy')
+    expect(guide).toContain('`callback` and `callback_method` are not supported')
+  })
+
+  it('teaches Exa script usage and bounded search fallback in the guide', () => {
+    const guide = readFileSync(join(__dirname, '..', 'docs', 'exa.md'), 'utf8')
+    expect(guide).toContain('$ANTHROPIC_BASE_URL/v1/exa')
+    expect(guide).toContain('`/search`')
+    expect(guide).toContain('`/contents`')
+    expect(guide).toContain('Prefer the normal web-search tool')
+    expect(guide).toContain('An empty result set is not a broken tool')
+    expect(guide).toContain('Do not use Exa to bypass a denied permission')
+    expect(guide).toContain('Never print either environment variable')
+    expect(guide).toContain('`costDollars.total`')
   })
 
   it('references every image-owned capability guide and keeps its source file present', () => {
@@ -147,10 +213,13 @@ describe('generateSystemPrompt rendering', () => {
       'scheduling-and-resuming.md',
       'webhooks.md',
       'media-generation.md',
+      'lead-enrichment.md',
       'chat-integrations.md',
       'browser-use.md',
       'computer-use.md',
       'x.md',
+      'deepgram.md',
+      'exa.md',
     ]
 
     for (const guide of guides) {
@@ -239,7 +308,7 @@ describe('generateSystemPrompt rendering', () => {
       expect(out).toContain('`dashboards` skill')
       expect(out).not.toContain('building-dashboards.md')
     }
-    expect(existsSync(join(__dirname, '..', 'skills', 'dashboards', 'SKILL.md'))).toBe(true)
+    expect(existsSync(join(__dirname, '..', 'plugin', 'skills', 'dashboards', 'SKILL.md'))).toBe(true)
   })
 
   // Every relative link inside the shipped docs resolves to a shipped file.
@@ -271,7 +340,23 @@ describe('generateSystemPrompt rendering', () => {
 
     const promptSlugs = [...line!.matchAll(/`([a-z_0-9]+)`/g)].map(match => match[1])
     expect(new Set(promptSlugs).size, 'prompt lists a slug twice').toBe(promptSlugs.length)
+    expect(promptSlugs).not.toContain('twitter')
+    expect(promptSlugs).not.toContain('plaid')
     expect(promptSlugs.sort()).toEqual(SERVICES.map(service => service.slug).sort())
+  })
+
+  // The catalog reads the env at import, so platform mode needs a fresh import.
+  it('lists X and Plaid in both the prompt and the catalog on Gamut\'s Composio', async () => {
+    process.env.COMPOSIO_PLATFORM_MODE = 'true'
+    vi.resetModules()
+    const { SERVICES: platformServices } = await import('./tools/search-connected-account-services')
+    const line = generateSystemPrompt()
+      .split('\n')
+      .find(candidate => candidate.startsWith('**Supported services include:**'))
+    const promptSlugs = [...line!.matchAll(/`([a-z_0-9]+)`/g)].map(match => match[1])
+    expect(promptSlugs).toContain('twitter')
+    expect(promptSlugs).toContain('plaid')
+    expect(promptSlugs.sort()).toEqual(platformServices.map(service => service.slug).sort())
   })
 
   // The FAQ used to carry its own copy of the toolkit list, which drifted

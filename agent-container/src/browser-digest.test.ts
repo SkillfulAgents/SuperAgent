@@ -83,7 +83,7 @@ describe('formatFillReadback', () => {
   it('warns on divergence (maxlength truncation, reformatting, rejection)', () => {
     const msg = formatFillReadback('x'.repeat(100), 'x'.repeat(75))
     expect(msg).toContain('⚠')
-    expect(msg).toContain('differs from the requested')
+    expect(msg).toContain('differs from the')
   })
 
   it('says so when the value cannot be read back', () => {
@@ -117,5 +117,16 @@ describe('parseScrollInfo / formatScrollDigest', () => {
     expect(formatScrollDigest({ y: 0, viewportHeight: 800, pageHeight: 5400 })).toContain('(top of page)')
     expect(formatScrollDigest({ y: 4600, viewportHeight: 800, pageHeight: 5400 })).toContain('(bottom of page)')
     expect(formatScrollDigest(null)).toBe('')
+  })
+})
+
+describe('formatFillReadback states values only', () => {
+  it('names both values on divergence and asserts no cause', () => {
+    const msg = formatFillReadback('speakeasy', 'Reels')
+    expect(msg).toContain('⚠ Field value is now "Reels"')
+    expect(msg).toContain('"speakeasy" you sent')
+    for (const claim of ['reformatted', 'truncated', 'rejected', 'browser_type']) {
+      expect(msg).not.toContain(claim)
+    }
   })
 })
