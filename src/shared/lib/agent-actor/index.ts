@@ -24,6 +24,7 @@ export {
   type WorkspaceFileErrorCode,
 } from './workspace-path'
 export type {
+  AccountReauthOps,
   AgentActor,
   AgentCatalog,
   AgentIdentityChanges,

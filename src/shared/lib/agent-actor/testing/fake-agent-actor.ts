@@ -47,7 +47,7 @@ type DeepPartial<T> = { [K in keyof T]?: T[K] extends Fn ? T[K] : T[K] extends o
 export type FakeActorOverrides = DeepPartial<Omit<AgentActor, 'slug'>>
 
 /** The input sub-groups; anything else accessed on `inputs` is a method. */
-const INPUT_GROUPS = new Set(['reviews', 'computerUse', 'mcpReauth'])
+const INPUT_GROUPS = new Set(['reviews', 'computerUse', 'mcpReauth', 'accountReauth'])
 
 function fakeGroup(overrides: Record<string, unknown> = {}, nested: Set<string> = new Set()): Record<string, unknown> {
   const members = new Map<string, unknown>(Object.entries(overrides))

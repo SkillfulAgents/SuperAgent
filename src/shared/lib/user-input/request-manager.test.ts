@@ -1,6 +1,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type { AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
+import { AgentInputRequests } from './agent-input-requests'
 import { UserInputRequestManager } from './request-manager'
 import type { PendingUserInputRequestInput } from './request-schema'
+
+/** The actors' stores without the actors: one per slug, created on first use, as the registry would. */
+function inMemoryStores(manager: UserInputRequestManager): AgentStoreDirectory<AgentInputRequests> {
+  const stores = new Map<string, AgentInputRequests>()
+  return {
+    get: (slug) => {
+      let store = stores.get(slug)
+      if (!store) {
+        store = new AgentInputRequests(slug, manager)
+        stores.set(slug, store)
+      }
+      return store
+    },
+    peek: (slug) => stores.get(slug),
+    all: () => [...stores.values()],
+  }
+}
 
 function secretRequest(overrides: Partial<PendingUserInputRequestInput> = {}): PendingUserInputRequestInput {
   return {
@@ -15,9 +34,12 @@ function secretRequest(overrides: Partial<PendingUserInputRequestInput> = {}): P
 
 describe('UserInputRequestManager', () => {
   let manager: UserInputRequestManager
+  let agents: AgentStoreDirectory<AgentInputRequests>
 
   beforeEach(() => {
     manager = new UserInputRequestManager()
+    agents = inMemoryStores(manager)
+    manager.attachAgents(agents)
   })
 
   afterEach(() => {
@@ -480,6 +502,41 @@ describe('UserInputRequestManager', () => {
     })
   })
 
+  describe('routing', () => {
+    it('registers into the store of the agent the scope names and finds it again by id alone', () => {
+      manager.register(secretRequest())
+      expect(agents.peek('agent-a')!.getOpenRequest('tool-1')?.id).toBe('tool-1')
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.claimRequest('tool-1')?.id).toBe('tool-1')
+      expect(manager.resolve('tool-1', 'answered')?.id).toBe('tool-1')
+      expect(manager.getOpenRequest('tool-1')).toBeNull()
+      expect(manager.getRecentResolution('tool-1')?.outcome).toBe('answered')
+    })
+
+    it('drops an envelope that names no agent: there is no store for it', () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      expect(manager.register(secretRequest({ scope: { sessionId: 'session-1' } }))).toBeNull()
+      expect(manager.stats.open).toBe(0)
+      expect(consoleError).toHaveBeenCalledTimes(1)
+    })
+
+    it('a read for an agent nothing has registered under finds nothing and creates no store', () => {
+      expect(manager.getOpenRequestsForSession('agent-z', 'session-1')).toEqual([])
+      expect(manager.isSessionAwaiting('agent-z', 'session-1')).toBe(false)
+      expect(manager.getSnapshotForScope('agent-z')).toEqual([])
+      expect(agents.peek('agent-z')).toBeUndefined()
+    })
+
+    it('sweeps that span agents reach every store', () => {
+      manager.register(secretRequest({ id: 'a-1', parentToolUseId: 'task-1' }))
+      manager.register(secretRequest({ id: 'b-1', scope: { agentSlug: 'agent-b', sessionId: 's' }, parentToolUseId: 'task-1' }))
+      manager.register({ id: 'r-1', kind: 'proxy_review', scope: { agentSlug: 'agent-b' }, blocking: true, payload: {} })
+      expect(manager.getOpenRequestsForStore('review').map((r) => r.id)).toEqual(['r-1'])
+      expect(manager.resolveRequestsByParent('task-1').map((r) => r.id).sort()).toEqual(['a-1', 'b-1'])
+      expect(manager.stats.open).toBe(1)
+    })
+  })
+
   describe('shadow diagnostics', () => {
     it('verifyReviewSettlerParity accepts settlers backed by open review entries', () => {
       manager.register({
@@ -489,7 +546,7 @@ describe('UserInputRequestManager', () => {
         blocking: true,
         payload: { toolkit: 'slack' },
       })
-      manager.verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-1'] })
+      agents.get('agent-a').verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-1'] })
       expect(manager.stats.mismatches).toBe(0)
     })
 
@@ -503,7 +560,7 @@ describe('UserInputRequestManager', () => {
         blocking: true,
         payload: { toolkit: 'slack' },
       })
-      manager.verifyReviewSettlerParity({ context: 'test', settlerIds: [] })
+      agents.get('agent-a').verifyReviewSettlerParity({ context: 'test', settlerIds: [] })
       expect(manager.stats.mismatches).toBe(0)
     })
 
@@ -511,7 +568,7 @@ describe('UserInputRequestManager', () => {
       // A settler without a registry entry is a parked proxied call no sweep
       // can ever reach.
       expect(() =>
-        manager.verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-orphan'] }),
+        agents.get('agent-a').verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-orphan'] }),
       ).toThrow(/shadow mismatch/)
       expect(manager.stats.mismatches).toBe(1)
     })

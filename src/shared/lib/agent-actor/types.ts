@@ -5,11 +5,17 @@
  * groups (`container`, `sessions`, `messages`, `inputs`, `files`, `memories`). Consumers
  * outside `src/shared/lib/container/**` and this package talk to an agent only
  * through this handle; the container manager, message persister, and the
- * input/review/permission registries are internal to it.
+ * input/review/permission stores are internal to it.
  *
  * Runtime methods delegate to the underlying call named by their comments.
  * Storage capabilities own their agent-scoped behavior, including memory
  * validation and save serialization; callers do not need the storage layout.
+ *
+ * The `inputs` group is the actor's own state: its pending user-input
+ * requests, the reviews and re-auth waits parked on them, and its
+ * computer-use grants live on the handle and are released when the registry
+ * evicts it. The process-wide managers of those names are routers over the
+ * actors' stores, for callers that hold an id or a slug but no handle.
  *
  * Two methods are synchronous snapshots of in-memory state —
  * `container.status()` and `sessions.activity()` — alongside the other
@@ -58,8 +64,9 @@ import type {
   PendingUserInputRequestInput,
   UserInputRequestOutcome,
 } from '@shared/lib/user-input/request-schema'
-import type { SettledUserInputRequest } from '@shared/lib/user-input/request-manager'
+import type { SettledUserInputRequest } from '@shared/lib/user-input/agent-input-requests'
 import type { ReviewDetails } from '@shared/lib/proxy/review-manager'
+import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import type { ComputerUsePermissionLevel, PermissionGrantType } from '@shared/lib/computer-use/types'
@@ -77,9 +84,14 @@ export interface AgentRegistry {
    * agent": a cross-agent read that wants all agents iterates the agent list.
    */
   running(): AgentActor[]
-  /** Drop the handle and forget its container runtime. Does not stop the container. */
+  /**
+   * Drop the handle and forget its container runtime, releasing everything
+   * the handle owns: parked reviews and re-auth waits are rejected, open
+   * input requests are settled as invalidated, in-memory grants and the
+   * summary cache are gone. Does not stop the container.
+   */
   evict(slug: AgentSlug): void
-  /** Drop every handle and forget every runtime. Does not stop containers. */
+  /** `evict` for every handle. Does not stop containers. */
   evictAll(): void
 }
 
@@ -445,30 +457,31 @@ export interface MessageOps {
 }
 
 export interface InputOps {
-  // Open requests — userInputRequestManager, scoped to this agent. `register`
-  // stamps this agent onto the request's scope, and every id-addressed method
-  // treats a request registered for another agent as not found (null, false,
-  // or a no-op), so a handle cannot see or settle another agent's requests.
+  // Open requests — the agent's own `AgentInputRequests` store, owned by the
+  // actor and released with it. `register` stamps this agent onto the
+  // request's scope, and an id-addressed method can only find a request this
+  // agent holds: another agent's request is not found (null, false, or a
+  // no-op) because it is not here, not because a filter hid it.
 
-  /** `userInputRequestManager.register` with `scope.agentSlug` set to this agent. */
+  /** `AgentInputRequests.register` with `scope.agentSlug` set to this agent. */
   register(input: PendingUserInputRequestInput): PendingUserInputRequest | null
-  /** `userInputRequestManager.getOpenRequestsForSession` */
+  /** `AgentInputRequests.getOpenRequestsForSession` */
   open(sessionId: string): PendingUserInputRequest[]
-  /** `userInputRequestManager.getOpenRequestsForAgent` */
+  /** `AgentInputRequests.getOpenRequests` — session-scoped and agent-scoped entries. */
   openForAgent(): PendingUserInputRequest[]
-  /** `userInputRequestManager.getOpenRequest` */
+  /** `AgentInputRequests.getOpenRequest` */
   get(id: string): PendingUserInputRequest | null
-  /** `userInputRequestManager.claimRequest` */
+  /** `AgentInputRequests.claimRequest` */
   claim(id: string): PendingUserInputRequest | null
-  /** `userInputRequestManager.releaseClaim` */
+  /** `AgentInputRequests.releaseClaim` */
   releaseClaim(id: string): void
-  /** `userInputRequestManager.resolve` */
+  /** `AgentInputRequests.resolve` */
   resolve(id: string, outcome: UserInputRequestOutcome): PendingUserInputRequest | null
-  /** `userInputRequestManager.getRecentResolution` */
+  /** `AgentInputRequests.getRecentResolution` */
   recentResolution(id: string): SettledUserInputRequest | undefined
-  /** `userInputRequestManager.getSnapshotForScope` */
+  /** `AgentInputRequests.getSnapshotForScope` */
   snapshot(sessionId?: string): PendingUserInputRequest[]
-  /** `userInputRequestManager.enrichOpenRequestPayload` */
+  /** `AgentInputRequests.enrichOpenRequestPayload` */
   enrich(id: string, kind: PendingUserInputRequest['kind'], enrichment: Record<string, unknown>): boolean
 
   // Settlement — messagePersister.
@@ -485,25 +498,26 @@ export interface InputOps {
   readonly reviews: ReviewOps
   readonly computerUse: ComputerUseOps
   readonly mcpReauth: McpReauthOps
+  readonly accountReauth: AccountReauthOps
 }
 
-/** Proxy scope reviews — reviewManager, scoped to this agent. */
+/** Proxy scope reviews — the agent's own `AgentReviews`, owned by the actor. */
 export interface ReviewOps {
-  /** `reviewManager.getPendingReviewsForAgent` */
+  /** `AgentReviews.pending` */
   pending(): Array<{ id: string; displayText: string } & ReviewDetails>
-  /** `reviewManager.submitDecision` with this agent as the expected owner. */
+  /** `AgentReviews.submit` — only a review this agent holds can be found. */
   submit(id: string, decision: 'allow' | 'deny'): boolean
-  /** `reviewManager.denyAllForAgent` */
+  /** `AgentReviews.denyAll` */
   denyAll(): void
-  /** `reviewManager.resolveMatchingPending` */
+  /** `AgentReviews.resolveMatching` */
   resolveMatching(scope: string, decision: 'allow' | 'deny'): void
-  /** `reviewManager.resolveMatchingPendingByLabel` */
+  /** `AgentReviews.resolveMatchingByLabel` */
   resolveMatchingByLabel(label: ScopeLabel, decision: 'allow' | 'deny'): void
-  /** `reviewManager.resolveMatchingXAgentByOperation` */
+  /** `AgentReviews.resolveMatchingXAgent` */
   resolveMatchingXAgent(operation: 'list' | 'read' | 'invoke' | 'create', decision: 'allow' | 'deny'): void
-  /** `reviewManager.requestReview` with `agentSlug` set to this agent. */
+  /** `AgentReviews.request` — the review is this agent's. */
   request(details: Omit<ReviewDetails, 'agentSlug'>, signal?: AbortSignal): Promise<'allow' | 'deny'>
-  /** `reviewManager.requestXAgentReview` with this agent as the caller. */
+  /** `AgentReviews.requestXAgent` with this agent as the caller. */
   requestXAgent(
     targetAgentSlug: string,
     targetAgentName: string,
@@ -513,32 +527,42 @@ export interface ReviewOps {
   ): Promise<'allow' | 'deny'>
 }
 
-/** Computer-use permission grants — computerUsePermissionManager, scoped to this agent. */
+/** Computer-use permission grants and the grabbed app — the agent's own `AgentComputerUse`, owned by the actor. */
 export interface ComputerUseOps {
-  /** `computerUsePermissionManager.getGrabbedApp` */
+  /** `AgentComputerUse.grabbed` */
   grabbedApp(): string | undefined
-  /** `computerUsePermissionManager.setGrabbedApp` */
+  /** `AgentComputerUse.setGrabbed` */
   setGrabbedApp(appName: string): void
-  /** `computerUsePermissionManager.clearGrabbedApp` */
+  /** `AgentComputerUse.clearGrabbed` */
   clearGrabbedApp(): void
-  /** `computerUsePermissionManager.grantPermission` */
+  /** `AgentComputerUse.grant` */
   grant(level: ComputerUsePermissionLevel, grantType: PermissionGrantType, appName?: string): void
-  /** `computerUsePermissionManager.consumeOnceGrant` */
+  /** `AgentComputerUse.consumeOnce` */
   consumeOnce(level: ComputerUsePermissionLevel, appName?: string): void
-  /** `computerUsePermissionManager.revokeGrant` */
+  /** `AgentComputerUse.revoke` */
   revokeGrant(level: ComputerUsePermissionLevel, appName?: string): void
   /** `messagePersister.clearPendingComputerUseRequest` */
   clearPending(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): void
 }
 
-/** Remote MCP re-authentication prompts — mcpReauthManager, scoped to this agent. */
+/** Remote MCP re-authentication prompts — the agent's own `AgentReauthWaits`, owned by the actor. */
 export interface McpReauthOps {
-  /** `mcpReauthManager.requestReauth` with `agentSlug` set to this agent. */
+  /** `AgentReauthWaits.request` — the wait is this agent's. */
   request(details: Omit<McpReauthDetails, 'agentSlug'>, signal?: AbortSignal): Promise<void>
-  /** `mcpReauthManager.dismiss` */
+  /** `AgentReauthWaits.dismiss` — false when this agent holds no such card. */
   dismiss(entryId: string, reason?: string): boolean
-  /** `mcpReauthManager.replaceMcp` with this agent as the expected owner — settle the wait with a different connection. */
+  /** `AgentReauthWaits.replace` — settle the wait with a different connection. */
   replace(entryId: string, replacementMcpId: string): boolean
+}
+
+/** Connected-account re-authentication prompts — the agent's own `AgentReauthWaits`, owned by the actor. */
+export interface AccountReauthOps {
+  /** `AgentReauthWaits.request` — the wait is this agent's. */
+  request(details: Omit<AccountReauthDetails, 'agentSlug'>, signal?: AbortSignal): Promise<void>
+  /** `AgentReauthWaits.dismiss` — false when this agent holds no such card. */
+  dismiss(entryId: string, reason?: string): boolean
+  /** `AgentReauthWaits.replace` — release only this agent's calls; other agents still use the old account. */
+  replace(entryId: string, replacementAccountId: string): boolean
 }
 
 /** Model usage read from this agent's transcripts — usage-service. */

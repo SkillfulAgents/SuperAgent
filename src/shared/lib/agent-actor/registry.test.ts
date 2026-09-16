@@ -1,24 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { WebSocket } from 'ws'
 import type { PendingUserInputRequest, UserInputRequestOutcome } from '@shared/lib/user-input/request-schema'
+import { getSessionSummaryCacheSlot } from '@shared/lib/services/session-summary-cache'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { ReviewManager } from '@shared/lib/proxy/review-manager'
+import { AccountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
+import { McpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
+import { ComputerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { createAgentRegistry } from './registry'
 import type { LocalActorDeps, LocalAgentActor } from './local-agent-actor'
 
-// The singleton registry wires the real manager, persister, and input
-// registries. These tests build their own registry from fakes, so the real
-// modules are stubbed to keep the import side-effect free.
+// The singleton registry wires the real host and persister. These tests build
+// their own registry from fakes, so those modules are stubbed to keep the
+// import side-effect free. The per-agent stores (input requests, reviews,
+// re-auth waits, computer-use grants) and the routers over them are real:
+// they are the actor's own and are what the tests below exercise.
 vi.mock('@shared/lib/container/container-host', () => ({ containerHost: { attachAgentWorkspaces: () => {} } }))
 vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: { attachSessionStores: () => {} } }))
-vi.mock('@shared/lib/user-input/request-manager', () => ({ userInputRequestManager: {} }))
-vi.mock('@shared/lib/proxy/review-manager', () => ({ reviewManager: {} }))
-vi.mock('@shared/lib/computer-use/permission-manager', () => ({ computerUsePermissionManager: {} }))
-vi.mock('@shared/lib/proxy/mcp-reauth-manager', () => ({ mcpReauthManager: {} }))
+vi.mock('@shared/lib/config/settings', () => ({ getSettings: () => ({}), mutateSettings: vi.fn() }))
 vi.mock('@shared/lib/services/session-service', () => ({}))
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: vi.fn(),
   appendAssistantEntry: vi.fn(),
 }))
-vi.mock('@shared/lib/services/session-summary-cache', () => ({ recordSessionActivity: vi.fn() }))
+vi.mock('@shared/lib/services/session-summary-cache', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/session-summary-cache')>()),
+  recordSessionActivity: vi.fn(),
+}))
 vi.mock('./local-transcript-ops', () => ({
   listSubagents: vi.fn(),
   readSubagentTranscript: vi.fn(),
@@ -49,44 +57,33 @@ type FakeRequest = {
   payload: Record<string, unknown>
 }
 
-/** Enough of UserInputRequestManager to exercise the actor's ownership guard. */
-function fakeInputManager() {
-  const requests = new Map<string, FakeRequest>()
-  const claimed = new Set<string>()
-  const settled: Array<{ id: string; kind: FakeRequest['kind']; scope: FakeRequest['scope']; outcome: unknown }> = []
+/**
+ * The routers the registry attaches to. The user-input router is the module
+ * singleton: the review router's owner lookup goes through it, so the one the
+ * actors report to must be the one it consults. Spied, so a test can see what
+ * the stores reported and what the registry attached.
+ */
+function routers() {
+  const inputManager = userInputRequestManager
+  vi.spyOn(inputManager, 'report')
+  vi.spyOn(inputManager, 'attachAgents')
+  const reviewManager = new ReviewManager()
+  vi.spyOn(reviewManager, 'attachAgents')
+  const accountReauthManager = new AccountReauthManager()
+  vi.spyOn(accountReauthManager, 'attachAgents')
+  const mcpReauthManager = new McpReauthManager()
+  vi.spyOn(mcpReauthManager, 'attachAgents')
+  const computerUsePermissionManager = new ComputerUsePermissionManager()
+  vi.spyOn(computerUsePermissionManager, 'attachAgents')
   return {
-    requests,
-    claimed,
-    register: vi.fn((input: FakeRequest) => {
-      requests.set(input.id, input)
-      return input
-    }),
-    getOpenRequest: vi.fn((id: string) => requests.get(id) ?? null),
-    claimRequest: vi.fn((id: string) => {
-      const request = requests.get(id)
-      if (!request || claimed.has(id)) return null
-      claimed.add(id)
-      return request
-    }),
-    releaseClaim: vi.fn((id: string) => {
-      claimed.delete(id)
-    }),
-    resolve: vi.fn((id: string, outcome: unknown) => {
-      const request = requests.get(id)
-      if (!request) return null
-      requests.delete(id)
-      claimed.delete(id)
-      settled.push({ id, kind: request.kind, scope: request.scope, outcome })
-      return request
-    }),
-    getRecentResolution: vi.fn((id: string) => settled.find((entry) => entry.id === id)),
-    enrichOpenRequestPayload: vi.fn((id: string, kind: FakeRequest['kind'], enrichment: Record<string, unknown>) => {
-      const request = requests.get(id)
-      if (!request || request.kind !== kind) return false
-      Object.assign(request.payload, enrichment)
-      return true
-    }),
-    getOpenRequestsForAgent: vi.fn((slug: string) => [...requests.values()].filter((r) => r.scope.agentSlug === slug)),
+    inputManager: inputManager as typeof inputManager & {
+      report: ReturnType<typeof vi.fn>
+      attachAgents: ReturnType<typeof vi.fn>
+    },
+    reviewManager,
+    accountReauthManager,
+    mcpReauthManager,
+    computerUsePermissionManager,
   }
 }
 
@@ -121,10 +118,8 @@ function fakeDeps() {
     clearRuntimes: vi.fn(),
     attachAgentWorkspaces: vi.fn(),
   }
-  const reviewManager = {
-    requestReview: vi.fn().mockResolvedValue('allow'),
-  }
-  const inputManager = fakeInputManager()
+  const { inputManager, reviewManager, accountReauthManager, mcpReauthManager, computerUsePermissionManager } =
+    routers()
   const loadDailyUsageData = vi.fn().mockResolvedValue([])
   const loadSessionUsageTotals = vi.fn().mockResolvedValue({ totalCost: 0, totalTokens: 0, priceMissing: false })
   const syncAgentConnectionEnvironment = vi.fn().mockResolvedValue(true)
@@ -143,14 +138,16 @@ function fakeDeps() {
   const messagePersister = {
     attachSessionStores: vi.fn(),
     markSessionIdle: vi.fn(),
+    syncAgentSessionsAwaiting: vi.fn(),
   }
   const deps = {
     containerHost,
     messagePersister,
     userInputRequestManager: inputManager,
     reviewManager,
-    computerUsePermissionManager: {},
-    mcpReauthManager: {},
+    accountReauthManager,
+    computerUsePermissionManager,
+    mcpReauthManager,
     sessionService: {},
     transcripts,
     appendInformationalEntry: vi.fn(),
@@ -184,6 +181,8 @@ describe('createAgentRegistry', () => {
   let fake: ReturnType<typeof fakeDeps>
 
   beforeEach(() => {
+    vi.restoreAllMocks()
+    userInputRequestManager.reset()
     fake = fakeDeps()
     vi.mocked(WebSocket).mockClear()
   })
@@ -369,7 +368,7 @@ describe('createAgentRegistry', () => {
       expect(store.transcriptsDir).toBe('.claude/projects/-workspace')
     })
 
-    it('inputs.reviews.request stamps the actor\'s slug onto the review', async () => {
+    it('inputs.reviews.request parks the review on the actor\'s own store under its slug', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       const details = {
         accountId: 'acct',
@@ -379,9 +378,15 @@ describe('createAgentRegistry', () => {
         matchedScopes: ['read'],
         scopeDescriptions: {},
       }
-      await expect(actor.inputs.reviews.request(details)).resolves.toBe('allow')
-      // Only the arguments given are forwarded — no trailing `undefined` for an omitted signal.
-      expect(fake.reviewManager.requestReview).toHaveBeenCalledWith({ ...details, agentSlug: 'a' })
+      const decision = actor.inputs.reviews.request(details)
+      const [open] = actor.inputs.openForAgent()
+      expect(open).toMatchObject({ kind: 'proxy_review', scope: { agentSlug: 'a' }, payload: { ...details, agentSlug: 'a' } })
+      expect(actor.inputs.reviews.pending().map((r) => r.id)).toEqual([open.id])
+      // The transition reached the router, which is how the wire hears of it.
+      expect(fake.inputManager.report).toHaveBeenCalledWith(expect.objectContaining({ type: 'created', request: open }))
+      expect(actor.inputs.reviews.submit(open.id, 'allow')).toBe(true)
+      await expect(decision).resolves.toBe('allow')
+      expect(fake.messagePersister.syncAgentSessionsAwaiting).toHaveBeenCalledWith('a')
     })
 
     it('transcript-adjacent reads bind the session store and forward the rest', async () => {
@@ -438,41 +443,42 @@ describe('createAgentRegistry', () => {
     })
   })
 
-  describe('inputs are scoped to the handle\'s agent', () => {
+  describe('inputs are the handle\'s own', () => {
     const request = (id: string, agentSlug: string): FakeRequest => ({
       id,
       kind: 'question' as PendingUserInputRequest['kind'],
       scope: { agentSlug, sessionId: 's' },
       payload: {},
     })
+    const register = (registry: ReturnType<typeof createAgentRegistry>, slug: string, id: string) =>
+      registry.get(slug).inputs.register({ ...request(id, slug), blocking: true } as never)
 
-    it('register stamps this agent onto the scope, whatever the caller wrote', () => {
+    it('register stamps this agent onto the scope, whatever the caller wrote, and reports the transition', () => {
       const actor = createAgentRegistry(fake.deps).get('a')
-      actor.inputs.register(request('r1', 'b') as never)
-      expect(fake.inputManager.register).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'r1', scope: { agentSlug: 'a', sessionId: 's' } }),
-      )
+      const stored = actor.inputs.register({ ...request('r1', 'b'), blocking: true } as never)
+      expect(stored).toMatchObject({ id: 'r1', scope: { agentSlug: 'a', sessionId: 's' } })
+      expect(actor.inputs.open('s').map((r) => r.id)).toEqual(['r1'])
+      expect(fake.inputManager.report).toHaveBeenCalledWith({ type: 'created', request: stored })
     })
 
     it('another agent\'s request is not found: get, claim, enrich and resolve miss and leave it untouched', () => {
       const registry = createAgentRegistry(fake.deps)
-      fake.inputManager.requests.set('rb', request('rb', 'b'))
+      const stored = register(registry, 'b', 'rb')
       const a = registry.get('a').inputs
 
       expect(a.get('rb')).toBeNull()
       expect(a.claim('rb')).toBeNull()
       expect(a.enrich('rb', 'question' as PendingUserInputRequest['kind'], { note: 1 })).toBe(false)
       expect(a.resolve('rb', outcome)).toBeNull()
+      expect(a.snapshot()).toEqual([])
 
-      expect(fake.inputManager.claimRequest).not.toHaveBeenCalled()
-      expect(fake.inputManager.enrichOpenRequestPayload).not.toHaveBeenCalled()
-      expect(fake.inputManager.resolve).not.toHaveBeenCalled()
-      expect(fake.inputManager.requests.get('rb')).toEqual(request('rb', 'b'))
+      expect(registry.get('b').inputs.get('rb')).toBe(stored)
+      expect(stored!.payload).toEqual({})
     })
 
     it('the owning agent can still see, claim, settle and read back its own request', () => {
       const registry = createAgentRegistry(fake.deps)
-      fake.inputManager.requests.set('rb', request('rb', 'b'))
+      register(registry, 'b', 'rb')
       const b = registry.get('b').inputs
 
       expect(b.get('rb')?.id).toBe('rb')
@@ -480,20 +486,130 @@ describe('createAgentRegistry', () => {
       expect(b.enrich('rb', 'question' as PendingUserInputRequest['kind'], { note: 1 })).toBe(true)
       expect(b.resolve('rb', outcome)?.id).toBe('rb')
       expect(b.recentResolution('rb')?.id).toBe('rb')
-      // The settled record is scoped too: another agent cannot read it back.
+      // The settled record is the owner's too: another agent cannot read it back.
       expect(registry.get('a').inputs.recentResolution('rb')).toBeUndefined()
     })
 
     it('releaseClaim only drops a claim this agent could have taken', () => {
       const registry = createAgentRegistry(fake.deps)
-      fake.inputManager.requests.set('rb', request('rb', 'b'))
+      register(registry, 'b', 'rb')
       expect(registry.get('b').inputs.claim('rb')?.id).toBe('rb')
 
       registry.get('a').inputs.releaseClaim('rb')
-      expect(fake.inputManager.claimed.has('rb')).toBe(true)
+      expect(registry.get('b').inputs.claim('rb')).toBeNull()
 
       registry.get('b').inputs.releaseClaim('rb')
-      expect(fake.inputManager.claimed.has('rb')).toBe(false)
+      expect(registry.get('b').inputs.claim('rb')?.id).toBe('rb')
+    })
+  })
+
+  describe('the registry attaches the routers to the handles\' stores', () => {
+    it('gives every router a directory that reads through the handles and creates none of its own', () => {
+      const registry = createAgentRegistry(fake.deps)
+      for (const router of [
+        fake.inputManager,
+        fake.reviewManager,
+        fake.deps.accountReauthManager,
+        fake.deps.mcpReauthManager,
+        fake.deps.computerUsePermissionManager,
+      ]) {
+        expect(router.attachAgents).toHaveBeenCalledTimes(1)
+      }
+      const directory = fake.inputManager.attachAgents.mock.calls[0]![0] as {
+        get: (slug: string) => unknown
+        peek: (slug: string) => unknown
+        all: () => unknown[]
+      }
+      expect(directory.all()).toEqual([])
+      expect(directory.peek('a')).toBeUndefined()
+      // A router creating the first handle is a first use: the persister gets its stores then.
+      expect(fake.messagePersister.attachSessionStores).not.toHaveBeenCalled()
+      const store = directory.get('a')
+      expect(fake.messagePersister.attachSessionStores).toHaveBeenCalledTimes(1)
+      expect(store).toBe((registry.get('a') as LocalAgentActor).state.inputRequests)
+      expect(directory.peek('a')).toBe(store)
+      expect(directory.all()).toEqual([store])
+      registry.evict('a')
+      expect(directory.all()).toEqual([])
+    })
+  })
+
+  describe('evict releases everything the handle owns', () => {
+    const reviewDetails = {
+      accountId: 'acct',
+      toolkit: 'gmail',
+      method: 'GET',
+      targetPath: '/messages',
+      matchedScopes: ['read'],
+      scopeDescriptions: {},
+    }
+
+    it('settles every open request, rejects every parked call, and forgets the grants and the summary', async () => {
+      const registry = createAgentRegistry(fake.deps)
+      const actor = registry.get('a') as LocalAgentActor
+
+      // Plant state of every kind the actor owns.
+      actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's' }, blocking: true, payload: {} } as never)
+      const review = actor.inputs.reviews.request(reviewDetails)
+      const account = actor.inputs.accountReauth.request({ accountId: 'acct', toolkit: 'gmail', accountStatus: 'expired' })
+      const mcp = actor.inputs.mcpReauth.request({ mcpId: 'm1', mcpName: 'Cal', authType: 'oauth' })
+      actor.inputs.computerUse.grant('use_host_shell', 'once')
+      actor.inputs.computerUse.setGrabbedApp('Calculator')
+      getSessionSummaryCacheSlot(actor.store).revision = 7
+      expect(actor.inputs.openForAgent()).toHaveLength(4)
+      fake.inputManager.report.mockClear()
+
+      registry.evict('a')
+
+      await expect(review).rejects.toThrow('Review timeout')
+      await expect(account).rejects.toThrow(/no longer held by this process/)
+      await expect(mcp).rejects.toThrow(/no longer held by this process/)
+      // Every settlement went out as a transition, so the wire and the index heard of it.
+      const resolved = fake.inputManager.report.mock.calls
+        .map(([transition]) => transition as { type: string; request: { id: string; kind: string }; outcome?: string })
+        .filter((t) => t.type === 'resolved')
+      expect(resolved.map((t) => t.request.kind).sort()).toEqual([
+        'account_reauth_required',
+        'mcp_reauth_required',
+        'proxy_review',
+        'question',
+      ])
+      expect(resolved.find((t) => t.request.id === 'q1')?.outcome).toBe('invalidated')
+      expect(fake.messagePersister.syncAgentSessionsAwaiting).toHaveBeenCalledWith('a')
+      expect(fake.containerHost.dropRuntime).toHaveBeenCalledWith('a')
+
+      // Nothing survives into the next handle for the slug.
+      const fresh = registry.get('a') as LocalAgentActor
+      expect(fresh).not.toBe(actor)
+      expect(fresh.inputs.openForAgent()).toEqual([])
+      expect(fresh.inputs.reviews.pending()).toEqual([])
+      expect(fresh.inputs.recentResolution('q1')).toBeUndefined()
+      expect(fresh.inputs.computerUse.grabbedApp()).toBeUndefined()
+      expect(fresh.state.computerUse.activeGrants()).toEqual([])
+      expect(fresh.state.accountReauth.openEntryIds()).toEqual([])
+      expect(fresh.state.mcpReauth.openEntryIds()).toEqual([])
+      expect(getSessionSummaryCacheSlot(fresh.store).revision).toBe(0)
+      // And the old handle holds nothing either.
+      expect(actor.inputs.openForAgent()).toEqual([])
+      expect(actor.state.reviews.settlerIds()).toEqual([])
+    })
+
+    it('evictAll evicts every handle the same way', async () => {
+      const registry = createAgentRegistry(fake.deps)
+      const a = registry.get('a')
+      const b = registry.get('b')
+      const reviewA = a.inputs.reviews.request(reviewDetails)
+      const reviewB = b.inputs.reviews.request(reviewDetails)
+
+      registry.evictAll()
+
+      await expect(reviewA).rejects.toThrow('Review timeout')
+      await expect(reviewB).rejects.toThrow('Review timeout')
+      // The host forgets the runtimes its own way (a starting one is kept).
+      expect(fake.containerHost.dropRuntime).not.toHaveBeenCalled()
+      expect(fake.containerHost.clearRuntimes).toHaveBeenCalledTimes(1)
+      expect(registry.peek('a')).toBeUndefined()
+      expect(registry.peek('b')).toBeUndefined()
     })
   })
 })

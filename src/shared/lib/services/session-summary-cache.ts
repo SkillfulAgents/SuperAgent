@@ -1,51 +1,27 @@
 import type { SessionStore } from '@shared/lib/agent-actor/session-store'
+import type { SessionActivityEntry, SessionSummaryCacheSlot } from './session-summary-slot'
+
+export type {
+  SessionActivityEntry,
+  SessionSummaryCache,
+  SessionSummaryCacheSlot,
+  SessionSummaryCacheValue,
+} from './session-summary-slot'
 
 export const SESSION_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000
 
 /**
- * What one transcript stat contributed to the summary. Kept per session so
- * consumers that list sessions (not just count them) can apply the same rules
- * a fresh stat would — empty unregistered files are SDK artifacts, createdAt
- * falls back to birthtime — without touching the transcript again.
+ * The store's summary slot: the store holds it (see `SessionSummaryCache`),
+ * bound to its storage identity, so two stores over different storage never
+ * share one and a store whose storage moved starts fresh.
  */
-export interface SessionActivityEntry {
-  mtimeMs: number
-  birthtimeMs: number
-  size: number
-}
-
-export interface SessionSummaryCacheValue {
-  directoryMtimeMs: number | null
-  builtAtMs: number
-  revision: number
-  activityBySession: Map<string, SessionActivityEntry>
-}
-
-export interface SessionSummaryCacheSlot {
-  value?: SessionSummaryCacheValue
-  loading?: Promise<SessionSummaryCacheValue>
-  revision: number
-  pending: Map<string, { activityAtMs?: number; deleted?: true }>
-}
-
-// Keyed by the store's storage identity rather than the slug: tests and
-// embedded deployments can change the data directory in-process, and two
-// workspaces must never share cached state merely because their agent slugs
-// match.
-const sessionSummaryCache = new Map<string, SessionSummaryCacheSlot>()
-
 export function getSessionSummaryCacheSlot(store: SessionStore): SessionSummaryCacheSlot {
-  let slot = sessionSummaryCache.get(store.key)
-  if (!slot) {
-    slot = { revision: 0, pending: new Map() }
-    sessionSummaryCache.set(store.key, slot)
-  }
-  return slot
+  return store.summaryCache.slotFor(store.key)
 }
 
 /** Force the next summary read to reconcile the session set from the transcripts directory. */
 export function invalidateSessionSummaryCache(store: SessionStore): void {
-  const slot = sessionSummaryCache.get(store.key)
+  const slot = store.summaryCache.peek(store.key)
   if (!slot) return
   slot.revision++
   slot.value = undefined
@@ -125,7 +101,7 @@ export function revertSessionActivity(
   sessionId: string,
   mark: SessionActivityMark,
 ): void {
-  const slot = sessionSummaryCache.get(store.key)
+  const slot = store.summaryCache.peek(store.key)
   if (!slot) return
 
   const pending = slot.pending.get(sessionId)

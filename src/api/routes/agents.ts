@@ -143,7 +143,6 @@ import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, d
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
-import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
@@ -7382,7 +7381,7 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
     }
 
     const dismissed = open.kind === 'account_reauth_required'
-      ? accountReauthManager.dismiss(requestId, slug, reason)
+      ? agentRegistry.get(slug).inputs.accountReauth.dismiss(requestId, reason)
       : agentRegistry.get(slug).inputs.mcpReauth.dismiss(requestId, reason)
 
     // An open envelope whose parked group is already gone (every waiter

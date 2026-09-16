@@ -5,7 +5,6 @@ import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
 import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
@@ -159,8 +158,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
 
   const holdForReauth = async (status: 'expired' | 'revoked'): Promise<ReauthResult> => {
     try {
-      await accountReauthManager.requestReauth({
-        agentSlug,
+      await agentRegistry.get(agentSlug).inputs.accountReauth.request({
         accountId,
         toolkit: account!.toolkitSlug,
         accountStatus: status,

@@ -740,6 +740,7 @@ import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, 
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { AgentInputRequests } from '@shared/lib/user-input/agent-input-requests'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { listUserSecrets, setSecret, updateSecret, deleteSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
@@ -5463,18 +5464,26 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     expect(userInputRequestManager.getOpenRequest('tool-gate-auto-x')).not.toBeNull()
   })
 
-  it('a request with no agent in scope is unattributable and decidable by nobody', async () => {
-    parkOpen('tool-gate-noagent', 'secret', 'sess-1', {}, null)
+  it('a request with no agent in scope is unattributable: refused at registration, decidable by nobody', async () => {
+    // Every request lives on the store of the actor its scope names, so one
+    // that names no agent has nowhere to live: the router drops it (logged,
+    // never thrown) rather than park something no route could ever decide.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      parkOpen('tool-gate-noagent', 'secret', 'sess-1', {}, null)
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('without an agent'))
+    } finally {
+      consoleError.mockRestore()
+    }
+    expect(userInputRequestManager.getOpenRequest('tool-gate-noagent')).toBeNull()
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
       toolUseId: 'tool-gate-noagent',
       secretName: 'K',
       decline: true,
     })
-    // No actor owns it, so no route can see it; it stays parked, undecided.
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ success: true, alreadySettled: true })
     expect(mockContainerFetch).not.toHaveBeenCalled()
-    expect(userInputRequestManager.getOpenRequest('tool-gate-noagent')).not.toBeNull()
   })
 
   it("does not disclose a settled outcome to another agent's route", async () => {
@@ -6687,8 +6696,9 @@ describe('GET /api/agents (enriched summary)', () => {
   it('keeps the latest tail but returns null when attention computation fails', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
+    // The route reads the agent's open requests from its actor's own store.
     const attentionRead = vi
-      .spyOn(userInputRequestManager, 'getOpenRequestsForAgent')
+      .spyOn(AgentInputRequests.prototype, 'getOpenRequests')
       .mockImplementationOnce(() => {
         throw new Error('attention unavailable')
       })

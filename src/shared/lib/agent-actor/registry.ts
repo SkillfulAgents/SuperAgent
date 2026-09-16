@@ -2,6 +2,7 @@ import { containerHost } from '@shared/lib/container/container-host'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
+import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import * as sessionService from '@shared/lib/services/session-service'
@@ -16,17 +17,21 @@ import {
 } from '@shared/lib/container/connection-runtime-sync'
 import { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
+import type { AgentState } from './agent-state'
+import type { AgentStoreDirectory } from './store-directory'
 import type { AgentActor, AgentRegistry, AgentSlug } from './types'
 
 /**
- * Build a registry whose handles delegate to `deps`. A handle is cheap and is
- * created on first `get`; the container state behind it is the agent's
- * `ContainerRuntime`, held by the container host and created on first use.
+ * Build a registry whose handles delegate to `deps`. A handle is created on
+ * first `get` and holds the agent's in-memory state (see `AgentState`); the
+ * container state behind it is the agent's `ContainerRuntime`, held by the
+ * container host and created on first use. Evicting a handle releases both.
  *
  * The registry also hands the message persister the way to each agent's
  * session store: the persister is inside the actor and cannot ask the
  * registry, and the store it stats and appends to must be the one the
- * agent's actor reads.
+ * agent's actor reads. In the same way it hands the user-input, review,
+ * re-auth and computer-use routers the way to each actor's stores.
  */
 export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
   const handles = new Map<AgentSlug, LocalAgentActor>()
@@ -38,6 +43,14 @@ export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
       handles.set(slug, actor)
     }
     return actor
+  }
+
+  const evict = (slug: AgentSlug): void => {
+    // Release what the handle owns while its runtime still exists: settling
+    // a parked request may still want to recompute the agent's awaiting state.
+    handles.get(slug)?.dispose()
+    deps.containerHost.dropRuntime(slug)
+    handles.delete(slug)
   }
 
   // The container layer reaches an agent's workspace only through its actor;
@@ -61,6 +74,28 @@ export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
     deps.messagePersister.attachSessionStores?.((slug) => get(slug).store)
   }
 
+  // The routers over the actors' stores get the same: one directory each,
+  // reading through the handles, so nothing is stored anywhere but on them.
+  // A router creating a handle is a first use like any other, so the
+  // persister is attached then too. A test double may not carry the port;
+  // the real routers do.
+  const directory = <T>(pick: (state: AgentState) => T): AgentStoreDirectory<T> => ({
+    get: (slug) => {
+      attach()
+      return pick(get(slug).state)
+    },
+    peek: (slug) => {
+      const actor = handles.get(slug)
+      return actor ? pick(actor.state) : undefined
+    },
+    all: () => [...handles.values()].map((actor) => pick(actor.state)),
+  })
+  deps.userInputRequestManager.attachAgents?.(directory((state) => state.inputRequests))
+  deps.reviewManager.attachAgents?.(directory((state) => state.reviews))
+  deps.accountReauthManager.attachAgents?.(directory((state) => state.accountReauth))
+  deps.mcpReauthManager.attachAgents?.(directory((state) => state.mcpReauth))
+  deps.computerUsePermissionManager.attachAgents?.(directory((state) => state.computerUse))
+
   return {
     get: (slug): AgentActor => {
       attach()
@@ -71,13 +106,14 @@ export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
       attach()
       return deps.containerHost.getRunningAgentIds().map(get)
     },
-    evict: (slug) => {
-      deps.containerHost.dropRuntime(slug)
-      handles.delete(slug)
-    },
+    evict,
     evictAll: () => {
-      deps.containerHost.clearRuntimes()
+      // Release every handle first, while the runtimes still exist, then let
+      // the host forget the runtimes its own way: one whose container is
+      // starting is kept, so the start still lands somewhere the host knows.
+      for (const actor of handles.values()) actor.dispose()
       handles.clear()
+      deps.containerHost.clearRuntimes()
     },
   }
 }
@@ -98,6 +134,9 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   },
   get reviewManager() {
     return reviewManager
+  },
+  get accountReauthManager() {
+    return accountReauthManager
   },
   get computerUsePermissionManager() {
     return computerUsePermissionManager
