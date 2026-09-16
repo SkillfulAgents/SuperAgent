@@ -18,6 +18,7 @@ import { and, desc, eq, isNull, ne, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf } from '@shared/lib/db/batch'
 import { xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
+import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 
 // ============================================================================
 // Zod schemas (boundary validation per CLAUDE.md)
@@ -88,13 +89,28 @@ const MAX_SET_POLICY_ATTEMPTS = 5
  * Set a policy row and report exactly what it displaced: whether a row was
  * created and the decision it replaced. The graph's drawn edges rely on that
  * to decide whether to refresh, so it cannot be a guess from a read next to
- * the write. Each attempt is a compare-and-set: update only while the row
- * still holds the decision that was read, or insert only while no row holds
- * the key (the NULL-safe unique index from migration 0044 makes a global,
- * null-target key conflict too). Zero changes means another writer got in
- * first; read again and swap against what they left.
+ * the write.
+ *
+ * Calls for the same key are serialized within this process, so a burst of
+ * edits to one edge lands in arrival order with every call succeeding, as
+ * the old transaction gave. Against another process the write is still a
+ * compare-and-set: update only while the row holds the decision that was
+ * read, or insert only while no row holds the key (the NULL-safe unique
+ * index from migration 0044 makes a global, null-target key conflict too);
+ * zero changes means read again and swap against what the other writer left.
  */
-export async function setPolicy(
+export function setPolicy(
+  callerSlug: string,
+  operation: XAgentOperation,
+  targetSlug: string | null,
+  decision: XAgentDecision,
+): Promise<{ created: boolean; previousDecision: XAgentDecision | null }> {
+  return serializeByKey(`x-agent-policy:${callerSlug}\u0000${operation}\u0000${targetSlug ?? ''}`, () =>
+    compareAndSetPolicy(callerSlug, operation, targetSlug, decision),
+  )
+}
+
+async function compareAndSetPolicy(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string | null,

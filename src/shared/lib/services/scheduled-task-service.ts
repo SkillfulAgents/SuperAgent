@@ -11,6 +11,7 @@ import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shar
 import { eq, and, lte, inArray, isNotNull, isNull, desc } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
 import { trackServerEvent } from '../analytics/server-analytics'
+import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 
 // Re-export the ScheduledTask type for external use
 export type { ScheduledTask, NewScheduledTask }
@@ -135,7 +136,19 @@ function isPendingWakeConflict(error: unknown): boolean {
     && error.message.includes('resume_session_id')
 }
 
-export async function createSessionWake(
+export function createSessionWake(
+  params: CreateSessionWakeParams
+): Promise<{ taskId: string; replaced: ScheduledTask | null }> {
+  // Wakes for one session are serialized within this process, so a burst of
+  // replacements lands in arrival order with every call succeeding, each
+  // reporting the wake it displaced. The batch below still guards against
+  // another process through the partial unique index.
+  return serializeByKey(`session-wake:${params.agentSlug}\u0000${params.sessionId}`, () =>
+    replaceSessionWake(params),
+  )
+}
+
+async function replaceSessionWake(
   params: CreateSessionWakeParams
 ): Promise<{ taskId: string; replaced: ScheduledTask | null }> {
   // Throws on unparseable/past expressions — before existing state is touched.

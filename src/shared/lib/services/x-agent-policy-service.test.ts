@@ -224,6 +224,14 @@ describe('x-agent-policy-service', () => {
       ])
     })
 
+    it('a burst of six writes to one key all succeed, in arrival order', async () => {
+      const decisions = ['allow', 'block', 'review', 'allow', 'block', 'review'] as const
+      const results = await Promise.all(decisions.map((decision) => setPolicy('alice', 'invoke', 'bob', decision)))
+      expect(results.map((r) => r.previousDecision)).toEqual([null, 'allow', 'block', 'review', 'allow', 'block'])
+      expect(getPolicy('alice', 'invoke', 'bob')?.decision).toBe('review')
+      expect(listPoliciesForCaller('alice')).toHaveLength(1)
+    })
+
     it('restoring allow reports the block it actually overwrote', async () => {
       await setPolicy('alice', 'invoke', 'bob', 'allow')
       const results = await Promise.all([

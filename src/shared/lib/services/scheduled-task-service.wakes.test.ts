@@ -265,6 +265,20 @@ describe('scheduled-task-service session wakes', () => {
       expect(pending.map((wake) => wake.id)).toEqual([second.taskId])
     })
 
+    it('a burst of six replacements all succeed, each displacing the previous one', async () => {
+      const params = {
+        agentSlug: 'test-agent',
+        scheduleExpression: 'at now + 1 hour',
+        note: 'Wake',
+        sessionId: 'session-abc',
+      }
+      const results = await Promise.all(Array.from({ length: 6 }, () => createSessionWake(params)))
+
+      expect(results.map((r) => r.replaced?.id ?? null)).toEqual([null, ...results.slice(0, 5).map((r) => r.taskId)])
+      const pending = await listPendingWakesByAgent('test-agent')
+      expect(pending.map((wake) => wake.id)).toEqual([results[5].taskId])
+    })
+
     it('a replace racing a cancel leaves at most one pending wake, never two', async () => {
       const first = await createSessionWake({
         agentSlug: 'test-agent',
