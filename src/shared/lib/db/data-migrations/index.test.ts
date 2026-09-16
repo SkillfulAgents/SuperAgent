@@ -74,22 +74,32 @@ describe('runDataMigrations', () => {
     expect(db.select().from(schema.agents).all().map((row) => row.slug)).toEqual(['from-first'])
   })
 
-  it('rolls a failing migration back with its ledger entry and leaves later ones unapplied', () => {
+  it('records nothing for a failing migration, leaves later ones unapplied, and re-runs it on the next boot', () => {
+    // There is no transaction around run + ledger row, so the contract is on
+    // the migration: it must be idempotent, and what it wrote before failing
+    // is visible to its next attempt.
     const log: string[] = []
-    const failing: DataMigration = {
+    let attempts = 0
+    const flaky: DataMigration = {
       id: 2,
-      name: 'failing',
+      name: 'flaky',
       run(tx) {
-        tx.insert(schema.agents).values({ slug: 'half-written', name: 'Half', createdAt: new Date() }).run()
-        throw new Error('migration failed')
+        attempts++
+        tx.insert(schema.agents).values({ slug: 'from-flaky', name: 'Flaky', createdAt: new Date() }).onConflictDoNothing().run()
+        if (attempts === 1) throw new Error('migration failed')
       },
     }
+    const migrations = [migration(1, 'first', log), flaky, migration(3, 'third', log)]
 
-    expect(() => runDataMigrations(db, [migration(1, 'first', log), failing, migration(3, 'third', log)])).toThrow('migration failed')
-
+    expect(() => runDataMigrations(db, migrations)).toThrow('migration failed')
     expect(ledger()).toEqual([[1, 'first']])
-    expect(db.select().from(schema.agents).all().map((row) => row.slug)).toEqual(['from-first'])
     expect(log).toEqual(['first'])
+    expect(db.select().from(schema.agents).all().map((row) => row.slug)).toEqual(['from-first', 'from-flaky'])
+
+    expect(runDataMigrations(db, migrations)).toEqual([2, 3])
+    expect(attempts).toBe(2)
+    expect(ledger()).toEqual([[1, 'first'], [2, 'flaky'], [3, 'third']])
+    expect(db.select().from(schema.agents).all().map((row) => row.slug)).toEqual(['from-first', 'from-flaky', 'from-third'])
   })
 
   it('refuses a list that reuses an id', () => {

@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PNG } from 'pngjs'
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
 import { user } from '@shared/lib/db/schema'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { avatarOverrideSchema, MAX_AVATAR_BYTES } from '@shared/lib/user-profile-schema'
@@ -71,17 +72,34 @@ export async function setAvatar(userId: string, input: Buffer | null): Promise<s
   }
   let previous: string | null
   try {
-    // The read + swap is atomic even when two windows upload at the same time.
-    previous = db.transaction((tx) => {
-      const found = tx.select({ avatar: user.avatarOverride }).from(user).where(eq(user.id, userId)).get()
-      if (!found) throw new Error('User no longer exists')
-      tx.update(user).set({ avatarOverride: reference, updatedAt: new Date() }).where(eq(user.id, userId)).run()
-      return found.avatar
-    })
+    previous = await swapAvatarReference(userId, reference)
   } catch (error) {
     await removeStoredAvatar(reference)
     throw error
   }
   await removeStoredAvatar(previous)
   return reference
+}
+
+const MAX_SWAP_ATTEMPTS = 5
+
+/**
+ * Compare-and-set the override and return what it replaced. Two windows
+ * uploading at the same time each swap against the value they read, so each
+ * unlinks exactly the file it displaced and neither orphans the other's.
+ * Zero changes means the value moved under us (read again) or the user is
+ * gone (throw; the caller unlinks the file it just wrote).
+ */
+async function swapAvatarReference(userId: string, reference: string | null): Promise<string | null> {
+  for (let attempt = 0; attempt < MAX_SWAP_ATTEMPTS; attempt++) {
+    const found = await db.select({ avatar: user.avatarOverride }).from(user).where(eq(user.id, userId)).get()
+    if (!found) throw new Error('User no longer exists')
+    const unchanged = found.avatar === null ? isNull(user.avatarOverride) : eq(user.avatarOverride, found.avatar)
+    const result = await db.update(user)
+      .set({ avatarOverride: reference, updatedAt: new Date() })
+      .where(and(eq(user.id, userId), unchanged))
+      .run()
+    if (changesOf(result) > 0) return found.avatar
+  }
+  throw new Error('Profile photo changed concurrently; try again')
 }

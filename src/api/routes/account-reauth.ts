@@ -1,7 +1,8 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, exists, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { ownerScope } from '@shared/lib/auth/ownership'
@@ -24,46 +25,58 @@ accountReauth.post('/:id/reauth-request/:requestId/replace-account', AgentUser()
   if (!parsed.success) return c.json({ error: 'Select one replacement account' }, 400)
 
   try {
-    // Keep validation and the mapping swap synchronous and atomic: a timeout,
-    // dismissal, or owner reconnect cannot settle the card between them.
-    const result = db.transaction((tx) => {
-      // The actor only hands back this agent's requests; another agent's reads as absent.
-      const request = agentRegistry.get(slug).inputs.get(requestId)
-      if (request?.kind !== 'account_reauth_required') {
-        return { error: 'Reconnection request is no longer available', status: 404 as const }
-      }
-      const previousAccountId = request.payload.accountId
-      if (!previousAccountId || !request.payload.toolkit) {
-        return { error: 'Invalid reconnection request', status: 409 as const }
-      }
-      const accountId = parsed.data.accountIds[0]
-      const replacement = tx.select().from(connectedAccounts).where(and(
-        eq(connectedAccounts.id, accountId),
-        ownerScope(c, connectedAccounts.userId),
-      )).get()
-      if (!replacement) return { error: 'Account not found', status: 404 as const }
-      if (replacement.toolkitSlug !== request.payload.toolkit || accountId === previousAccountId) {
-        return { error: 'Choose a different account for the same service', status: 400 as const }
-      }
-      if (replacement.status !== 'active') {
-        return { error: 'Reconnect the replacement account before granting access', status: 409 as const }
-      }
-      const mapping = tx.select().from(agentConnectedAccounts).where(and(
-        eq(agentConnectedAccounts.agentSlug, slug),
-        eq(agentConnectedAccounts.connectedAccountId, previousAccountId),
-      )).get()
-      if (!mapping) return { error: 'The original account is no longer assigned to this agent', status: 409 as const }
+    // The actor only hands back this agent's requests; another agent's reads as absent.
+    const request = agentRegistry.get(slug).inputs.get(requestId)
+    if (request?.kind !== 'account_reauth_required') {
+      return c.json({ error: 'Reconnection request is no longer available' }, 404)
+    }
+    const previousAccountId = request.payload.accountId
+    if (!previousAccountId || !request.payload.toolkit) {
+      return c.json({ error: 'Invalid reconnection request' }, 409)
+    }
+    const accountId = parsed.data.accountIds[0]
+    const replacement = await db.select().from(connectedAccounts).where(and(
+      eq(connectedAccounts.id, accountId),
+      ownerScope(c, connectedAccounts.userId),
+    )).get()
+    if (!replacement) return c.json({ error: 'Account not found' }, 404)
+    if (replacement.toolkitSlug !== request.payload.toolkit || accountId === previousAccountId) {
+      return c.json({ error: 'Choose a different account for the same service' }, 400)
+    }
+    if (replacement.status !== 'active') {
+      return c.json({ error: 'Reconnect the replacement account before granting access' }, 409)
+    }
+    const mapping = await db.select().from(agentConnectedAccounts).where(and(
+      eq(agentConnectedAccounts.agentSlug, slug),
+      eq(agentConnectedAccounts.connectedAccountId, previousAccountId),
+    )).get()
+    if (!mapping) return c.json({ error: 'The original account is no longer assigned to this agent' }, 409)
+    // The reads above yielded; make sure the card did not settle meanwhile.
+    if (agentRegistry.get(slug).inputs.get(requestId)?.kind !== 'account_reauth_required') {
+      return c.json({ error: 'Reconnection request is no longer available' }, 404)
+    }
 
-      tx.insert(agentConnectedAccounts).values({
+    // The write claims the original mapping. The replacement is assigned only
+    // while that mapping still exists, and deleting it is what makes this
+    // request the winner: a concurrent replacement, unassign or reconnect
+    // that consumed it first leaves this batch with zero changes, and the
+    // caller gets the same 409 the base code gave the loser.
+    const originalStillAssigned = exists(
+      db.select({ one: sql`1` }).from(agentConnectedAccounts).where(eq(agentConnectedAccounts.id, mapping.id)),
+    )
+    const [, unlinked] = await batch([
+      insertWhere(agentConnectedAccounts, {
         id: crypto.randomUUID(),
         agentSlug: slug,
         connectedAccountId: accountId,
         createdAt: new Date(),
-      }).onConflictDoNothing().run()
-      tx.delete(agentConnectedAccounts).where(eq(agentConnectedAccounts.id, mapping.id)).run()
-      return { accountId, previousAccountId, toolkit: request.payload.toolkit }
-    })
-    if ('error' in result) return c.json({ error: result.error }, result.status)
+      }, originalStillAssigned).onConflictDoNothing(),
+      db.delete(agentConnectedAccounts).where(eq(agentConnectedAccounts.id, mapping.id)),
+    ])
+    if (changesOf(unlinked) === 0) {
+      return c.json({ error: 'The original account is no longer assigned to this agent' }, 409)
+    }
+    const result = { accountId, previousAccountId, toolkit: request.payload.toolkit }
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: result.previousAccountId, action: 'unassigned', details: { agentSlug: slug } })
     logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: result.accountId, action: 'assigned', details: { agentSlug: slug } })

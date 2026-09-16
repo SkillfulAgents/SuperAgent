@@ -200,6 +200,14 @@ describe('MCP connection replacement', () => {
     expect(mapped('shared-agent')).toEqual(['mine'])
   })
 
+  it('concurrent replacements grant exactly one new MCP; the loser gets the 404', async () => {
+    mcp('second', 'member')
+    const request = park()
+    const responses = await Promise.all([replace(request.id, ['mine']), replace(request.id, ['second'])])
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 404])
+    expect(mapped('shared-agent')).toHaveLength(1)
+  })
+
   it('rolls back the mapping swap if unlink fails', async () => {
     sqlite.exec(`CREATE TRIGGER fail_unlink BEFORE DELETE ON agent_remote_mcps BEGIN SELECT RAISE(ABORT, 'test unlink failure'); END;`)
     const request = park()
