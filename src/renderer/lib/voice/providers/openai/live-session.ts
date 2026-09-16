@@ -103,7 +103,6 @@ export class OpenAILiveConversation {
         if (this.closed) return
         const stream = new MediaStream([track])
         audio.srcObject = stream
-        audio.muted = this.paused
         void audio.play().catch(() => this.events.onError('Audio playback was blocked. Press the microphone to enable it.'))
         this.outputAnalyser = this.context!.createAnalyser()
         this.outputAnalyser.fftSize = 2048
@@ -215,9 +214,8 @@ export class OpenAILiveConversation {
     let speaking = false
     return setInterval(() => {
       const rms = sampleRms(analyser, buffer)
-      if (!this.paused && rms > threshold) lastSound = Date.now()
-      if (this.paused) lastSound = -Infinity
-      const next = !this.paused && Date.now() - lastSound < LIVE_SPEECH_RELEASE_MS
+      if (rms > threshold) lastSound = Date.now()
+      const next = Date.now() - lastSound < LIVE_SPEECH_RELEASE_MS
       if (next !== speaking) { speaking = next; onChange(next) }
     }, AUDIO_METER_MS)
   }
@@ -238,15 +236,15 @@ export class OpenAILiveConversation {
     })
   }
 
+  // A request card closes the mic only: the reply keeps playing, as chained speech reads its text to the end.
   setPaused(paused: boolean) {
     this.paused = paused
     if (paused) this.clearInputSpeech()
     this.bridge.setPaused(paused)
     this.microphone?.getTracks().forEach((track) => { track.enabled = !paused })
-    if (this.audio) this.audio.muted = paused
     this.send({ type: paused ? 'session.input_audio.mute' : 'session.input_audio.unmute' })
     this.send({ type: 'session.instructions.append', delegation_id: null, content: paused
-      ? 'The user is answering a request card in the application. Wait silently; do not delegate until the application resumes.'
+      ? 'The user is answering a request card in the application. Finish what you are saying, then wait; do not delegate until the application resumes.'
       : 'The application is ready for voice conversation. Continue listening and responding normally.' })
   }
 
