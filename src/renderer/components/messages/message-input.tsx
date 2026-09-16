@@ -15,7 +15,7 @@ import { VoiceModeControls, useHoldSoundPreference } from './voice-mode-controls
 import { useVoiceMode } from '@renderer/hooks/use-voice-mode'
 import { useHoldSound } from '@renderer/hooks/use-hold-sound'
 import { readAloud } from '@renderer/lib/voice/services/read-aloud'
-import { clearVoiceModeRequest, isVoiceModeRequested, setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
+import { clearVoiceModeRequest, isVoiceModeRequested, registerVoiceModeExit, setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { ComposerActionButton } from './composer-action-button'
@@ -323,6 +323,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     track('voice_mode_entered', { origin: 'session' })
   }, [track])
   const exitVoiceMode = useCallback(() => setVoiceModeOn(false), [])
+  useEffect(() => registerVoiceModeExit(sessionId, exitVoiceMode), [sessionId, exitVoiceMode])
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const trackRef = useRef(track)
   trackRef.current = track
