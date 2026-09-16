@@ -56,6 +56,36 @@
         "local-rules/no-agent-internals-outside-actor": "off",
         "local-rules/agent-actor-escape-hatch-tally": "off"
       }
+    },
+    {
+      "files": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx"],
+      "excludedFiles": ["src/renderer/lib/voice/**", "**/*.test.ts", "**/*.test.tsx"],
+      "rules": {
+        "no-restricted-imports": ["error", { "patterns": [{
+          "group": ["@renderer/lib/voice/providers/**", "**/voice/providers/**"],
+          "message": "Import voice implementations through lib/voice/registry; consume contracts elsewhere."
+        }] }]
+      }
+    },
+    {
+      "files": ["src/renderer/lib/voice/**/*.ts"],
+      "excludedFiles": ["**/*.test.ts"],
+      "rules": {
+        "no-restricted-imports": ["error", { "patterns": [
+          { "group": ["@renderer/hooks/**", "**/hooks/**", "react", "react-dom", "react-dom/**"], "message": "Voice services and providers must not depend on React hooks." },
+          { "group": ["@renderer/lib/voice/providers/**", "**/providers/**"], "message": "Import voice implementations through lib/voice/registry; consume contracts elsewhere." }
+        ] }]
+      }
+    },
+    {
+      "files": ["src/renderer/lib/voice/providers/**/*.ts", "src/renderer/lib/voice/registry/**/*.ts"],
+      "excludedFiles": ["**/*.test.ts"],
+      "rules": {
+        "no-restricted-imports": ["error", { "patterns": [{
+          "group": ["@renderer/hooks/**", "**/hooks/**", "react", "react-dom", "react-dom/**"],
+          "message": "Voice services and providers must not depend on React hooks."
+        }] }]
+      }
     }
   ],
   "settings": {

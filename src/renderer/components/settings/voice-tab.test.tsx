@@ -53,9 +53,9 @@ vi.mock('@renderer/hooks/use-voice-input', () => ({
   useVoiceInput: () => ({ state: 'idle', isRecording: false, isConnecting: false, isFinalizing: false, error: null, clearError: vi.fn(), isSupported: false, analyserRef: { current: null }, startRecording: vi.fn(), stopRecording: vi.fn() }),
 }))
 const readAloudRestart = vi.fn()
+vi.mock('@renderer/lib/voice/shared/read-aloud', () => ({ readAloud: { restart: () => readAloudRestart() } }))
 vi.mock('@renderer/hooks/use-read-aloud', () => ({
   useReadAloud: () => ({ status: 'idle', isActive: false, toggle: vi.fn(), error: null }),
-  readAloud: { restart: () => readAloudRestart() },
 }))
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: { connected: false } }),

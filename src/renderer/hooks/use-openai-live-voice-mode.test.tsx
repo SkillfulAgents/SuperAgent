@@ -19,10 +19,10 @@ const mocks = vi.hoisted(() => ({
   interrupt: vi.fn(async () => ({})),
   instances: [] as Array<{ callbacks: Callbacks; close: ReturnType<typeof vi.fn>; updateReply: ReturnType<typeof vi.fn>; setPaused: ReturnType<typeof vi.fn>; pressMic: ReturnType<typeof vi.fn> }>,
 }))
-vi.mock('@renderer/lib/speech/hold-sound', () => ({ holdSound: { stopImmediately: mocks.stopMusic, stop: mocks.fadeMusic } }))
+vi.mock('@renderer/lib/voice/shared/speech/hold-sound', () => ({ holdSound: { stopImmediately: mocks.stopMusic, stop: mocks.fadeMusic } }))
 vi.mock('./use-message-stream', () => ({ useMessageStream: () => mocks.stream }))
 vi.mock('./use-messages', () => ({ useInterruptSession: () => ({ mutateAsync: mocks.interrupt }) }))
-vi.mock('@renderer/lib/voice-conversation-openai', () => ({
+vi.mock('@renderer/lib/voice/providers/openai/live-session', () => ({
   OpenAILiveConversation: class {
     analyser = null
     close = vi.fn()

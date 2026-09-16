@@ -115,6 +115,7 @@ test('Live stops read-aloud and reserves audio until the call exits', async ({ p
   if (process.env.VOICE_REVIEW_SCREENSHOTS) {
     for (const colorScheme of ['light', 'dark'] as const) {
       await page.emulateMedia({ colorScheme })
+      await expect.poll(() => page.locator('html').evaluate(node => node.classList.contains('dark'))).toBe(colorScheme === 'dark')
       await page.screenshot({ path: `${process.env.VOICE_REVIEW_SCREENSHOTS}/live-audio-owner-${colorScheme}.png`, animations: 'disabled' })
     }
   }

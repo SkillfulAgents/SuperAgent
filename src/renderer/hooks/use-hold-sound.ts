@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { holdSound } from '@renderer/lib/speech/hold-sound'
+import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
 
 /** How often to check whether the reply is audible. */
 const POLL_MS = 200
