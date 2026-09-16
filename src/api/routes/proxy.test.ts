@@ -24,6 +24,11 @@ const mockAccountProvider = {
   getConnection: (...args: unknown[]) => mockGetConnection(...args),
 }
 
+const mockIsPlatformComposioActive = vi.fn(() => true)
+vi.mock('@shared/lib/composio/client', () => ({
+  isPlatformComposioActive: () => mockIsPlatformComposioActive(),
+}))
+
 vi.mock('@shared/lib/account-providers', () => ({
   getAccountProviderByName: () => mockAccountProvider,
 }))
@@ -998,6 +1003,15 @@ describe('proxy route', () => {
           account: {
             id: 'acc-123',
             toolkitSlug: 'gmail',
+            providerConnectionId: 'comp-old',
+            providerName: 'composio',
+            status: 'active',
+          },
+        }])
+        .mockResolvedValueOnce([{
+          account: {
+            id: 'acc-123',
+            toolkitSlug: 'gmail',
             providerConnectionId: 'comp-new',
             providerName: 'composio',
             status: 'active',
@@ -1017,10 +1031,162 @@ describe('proxy route', () => {
       expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
         accountStatus: 'expired',
       }), expect.any(AbortSignal))
+      // Expiry is scoped to the connection that failed, not the account alone.
+      expect(mockDbUpdateWhere).toHaveBeenCalledWith(
+        expect.arrayContaining([expect.objectContaining({ val: 'comp-old' })]),
+      )
       expect(mockMakeApiCall).toHaveBeenCalledTimes(2)
       expect(mockMakeApiCall.mock.calls[1][0]).toEqual(expect.objectContaining({
         providerConnectionId: 'comp-new',
       }))
+    })
+
+    const accountRow = (toolkitSlug: string, providerConnectionId: string, status = 'active', providerName = 'composio') => [{
+      account: { id: 'acc-123', toolkitSlug, providerConnectionId, providerName, status },
+    }]
+
+    it('re-authenticates and retries once when the platform hop answers 401 for any Composio account', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+      mockInnerJoin.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit
+        .mockResolvedValueOnce(accountRow('gmail', 'comp-old'))
+        .mockResolvedValueOnce(accountRow('gmail', 'comp-old'))
+        .mockResolvedValueOnce(accountRow('gmail', 'comp-new'))
+      mockIsHostAllowed.mockReturnValue(true)
+      mockMakeApiCall
+        .mockResolvedValueOnce(new Response('{"error":"Invalid Credentials"}', { status: 401 }))
+        .mockResolvedValueOnce(new Response('{"data":{}}', { status: 200 }))
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } },
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
+        accountStatus: 'expired',
+      }), expect.any(AbortSignal))
+      expect(mockMakeApiCall).toHaveBeenCalledTimes(2)
+      expect(mockMakeApiCall.mock.calls[1][0]).toEqual(expect.objectContaining({
+        providerConnectionId: 'comp-new',
+      }))
+    })
+
+    it('retries once and returns the second 401 without another reconnect', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+      mockInnerJoin.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit
+        .mockResolvedValueOnce(accountRow('gmail', 'comp-old'))
+        .mockResolvedValueOnce(accountRow('gmail', 'comp-old'))
+        .mockResolvedValueOnce(accountRow('gmail', 'comp-new'))
+      mockIsHostAllowed.mockReturnValue(true)
+      mockMakeApiCall
+        .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+        .mockResolvedValueOnce(new Response('{"title":"Unauthorized"}', { status: 401 }))
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } },
+      )
+
+      expect(res.status).toBe(401)
+      expect(await res.json()).toEqual({ title: 'Unauthorized' })
+      expect(mockRequestReauth).toHaveBeenCalledTimes(1)
+      expect(mockMakeApiCall).toHaveBeenCalledTimes(2)
+    })
+
+    it('retries on a connection another call already reconnected, without a prompt', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+      mockInnerJoin.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit
+        .mockResolvedValueOnce(accountRow('gmail', 'comp-old'))
+        .mockResolvedValueOnce(accountRow('gmail', 'comp-new'))
+      mockIsHostAllowed.mockReturnValue(true)
+      mockMakeApiCall
+        .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+        .mockResolvedValueOnce(new Response('{"data":{}}', { status: 200 }))
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } },
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockRequestReauth).not.toHaveBeenCalled()
+      expect(mockDbUpdateSet).not.toHaveBeenCalled()
+      expect(mockMakeApiCall.mock.calls[1][0]).toEqual(expect.objectContaining({
+        providerConnectionId: 'comp-new',
+      }))
+    })
+
+    it('holds for reconnect when the replaced connection is not active', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+      mockInnerJoin.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit
+        .mockResolvedValueOnce(accountRow('gmail', 'comp-old'))
+        .mockResolvedValueOnce(accountRow('gmail', 'comp-new', 'expired'))
+        .mockResolvedValueOnce(accountRow('gmail', 'comp-newer'))
+      mockIsHostAllowed.mockReturnValue(true)
+      mockMakeApiCall
+        .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+        .mockResolvedValueOnce(new Response('{"data":{}}', { status: 200 }))
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } },
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockRequestReauth).toHaveBeenCalledTimes(1)
+      expect(mockMakeApiCall.mock.calls[1][0]).toEqual(expect.objectContaining({
+        providerConnectionId: 'comp-newer',
+      }))
+    })
+
+    it('returns an upstream 401 as-is on a local Composio key', async () => {
+      mockIsPlatformComposioActive.mockReturnValueOnce(false)
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+      mockInnerJoin.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue(accountRow('gmail', 'comp-123'))
+      mockIsHostAllowed.mockReturnValue(true)
+      mockMakeApiCall.mockResolvedValueOnce(new Response('{}', { status: 401 }))
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } },
+      )
+
+      expect(res.status).toBe(401)
+      expect(mockRequestReauth).not.toHaveBeenCalled()
+    })
+
+    it('returns an upstream 401 as-is for a Nango account, which never takes the hop', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+      mockInnerJoin.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue(accountRow('shopify', 'nango-123', 'active', 'nango'))
+      mockIsHostAllowed.mockReturnValue(true)
+      mockMakeApiCall.mockResolvedValueOnce(new Response('{}', { status: 401 }))
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/example.myshopify.com/admin/api/orders.json',
+        { headers: { Authorization: 'Bearer synth_valid' } },
+      )
+
+      expect(res.status).toBe(401)
+      expect(mockRequestReauth).not.toHaveBeenCalled()
+      expect(mockMakeApiCall).toHaveBeenCalledTimes(1)
     })
   })
 })
