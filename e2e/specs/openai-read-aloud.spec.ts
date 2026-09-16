@@ -31,6 +31,12 @@ test('OpenAI read-aloud plays, pauses, resumes, and stops through the standard c
   await page.getByRole('menuitem', { name: 'Read aloud' }).click()
   const controls = reply.getByTestId('read-aloud-controls')
   await expect(controls).toHaveAttribute('data-status', 'speaking')
+  if (test.info().project.name === 'web-webkit') {
+    // Assert that the Safari media sink itself is playing, not just the word cursor.
+    await expect.poll(() => page.evaluate(() => [...document.querySelectorAll('audio')].some(audio =>
+      audio.srcObject instanceof MediaStream && !audio.paused && audio.readyState >= 2 && audio.currentTime > 0,
+    ))).toBe(true)
+  }
   await expect.poll(() => calls.length).toBeGreaterThan(0)
   expect(calls[0]).toMatchObject({ provider: 'openai', voice: 'marin', speed: 1 })
   expect(calls[0].text).toContain('mock response')
@@ -42,6 +48,7 @@ test('OpenAI read-aloud plays, pauses, resumes, and stops through the standard c
   await expect(reply.getByTestId('read-aloud-stop')).toHaveCount(0)
   await expect(reply.locator('[data-spoken-word]')).toHaveCount(0)
   await expect(reply.getByTestId('read-aloud-error')).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() => [...document.querySelectorAll('audio')].filter(audio => audio.srcObject instanceof MediaStream).length)).toBe(0)
 })
 
 test('Live stops read-aloud and reserves audio until the call exits', async ({ page, request }) => {
@@ -50,7 +57,7 @@ test('Live stops read-aloud and reserves audio until the call exits', async ({ p
     handle: 'test-live-session', transport: { type: 'webrtc', sdp: 'mock-answer' }, expiresAt: Date.now() + 3600000,
   } }))
   await page.route('**/api/voice/live/session/*', route => route.fulfill({ json: { closed: true } }))
-  await page.addInitScript(() => {
+  const installLiveMocks = () => {
     navigator.mediaDevices.getUserMedia = async () => new AudioContext().createMediaStreamDestination().stream
     class Channel {
       readyState = 'open'
@@ -72,7 +79,7 @@ test('Live stops read-aloud and reserves audio until the call exits', async ({ p
       addTrack() {}
       close() {}
     } as unknown as typeof RTCPeerConnection
-  })
+  }
   if (process.env.VOICE_REVIEW_SCREENSHOTS) {
     const configured = await request.put('/api/settings', { data: { apiKeys: { anthropicApiKey: 'sk-ant-e2e-mock-key' } } })
     expect(configured.ok()).toBe(true)
@@ -85,6 +92,9 @@ test('Live stops read-aloud and reserves audio until the call exits', async ({ p
   await reply.click({ button: 'right' })
   await page.getByRole('menuitem', { name: 'Read aloud' }).click()
   await expect(reply.getByTestId('read-aloud-controls')).toHaveAttribute('data-status', 'speaking')
+  await page.evaluate(installLiveMocks)
+  expect(await page.evaluate(() => navigator.mediaDevices.getUserMedia.toString())).toContain('createMediaStreamDestination')
+  expect(await page.evaluate(() => RTCPeerConnection.toString())).toContain('mock-offer')
   await page.getByTestId('voice-mode-button').click()
   await expect(page.getByTestId('voice-mode-composer')).toHaveAttribute('data-phase', 'listening')
   await expect(reply.getByTestId('read-aloud-controls')).toHaveCount(0)

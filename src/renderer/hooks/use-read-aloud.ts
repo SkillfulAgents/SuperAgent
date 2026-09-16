@@ -1,3 +1,4 @@
+import { prepareSpeechAudioOutput } from '@renderer/lib/speech/audio-output'
 import { useCallback, useEffect, useSyncExternalStore, type RefObject } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import type { TtsSession } from '@shared/lib/voice/tts-types'
@@ -78,6 +79,7 @@ function createUnlockedAudioContext(): AudioContext | null {
   if (typeof AudioContext === 'undefined') return null
   const ctx = new AudioContext()
   if (ctx.state === 'suspended') ctx.resume().catch(() => {})
+  prepareSpeechAudioOutput(ctx)
   return ctx
 }
 

@@ -1,3 +1,4 @@
+import { prepareSpeechAudioOutput } from './audio-output'
 import { pcm16ToFloat32 } from '@renderer/lib/stt'
 import type { TtsAdapter, TtsEvent, TtsVoiceOptions } from '@renderer/lib/tts'
 import { SpeechSegmenter, type SpeechSegment } from './speech-segmenter'
@@ -186,7 +187,9 @@ export class SpeechPlayer {
     this.ctx = ctx
     this.gain = ctx.createGain()
     this.gain.gain.value = this.volume
-    this.gain.connect(ctx.destination)
+    const output = prepareSpeechAudioOutput(ctx)
+    this.gain.connect(output.destination)
+    void output.ready.catch(error => { if (!this.isTerminal) this.fail(error) })
     // A context created outside a user gesture may start suspended. A
     // refused resume is an error, not minutes of silent "speaking".
     if (ctx.state === 'suspended') {
