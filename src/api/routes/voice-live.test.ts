@@ -14,11 +14,12 @@ vi.mock('@shared/lib/config/settings', () => ({ getVoiceSettings: () => ({ sttPr
 vi.mock('@shared/lib/voice', () => ({
   getVoiceProvider: (id: string) => ({
     name: { openai: 'OpenAI', deepgram: 'Deepgram', platform: 'Platform' }[id],
-    getLiveConversation: () => id === 'openai'
+    getLiveConversation: () => (id === 'openai' || id === 'platform')
       ? { createLiveSession: mocks.create, mapLiveConversation: mocks.map, closeLiveSession: mocks.close }
       : mocks.alternateEnabled
         ? { createLiveSession: mocks.alternateCreate, mapLiveConversation: mocks.alternateMap, closeLiveSession: mocks.alternateClose }
         : null,
+    getEffectiveApiKey: () => 'session-token',
     getApiKeyStatus: () => ({ isConfigured: true }), supportsTts: () => true, getTtsVoices: () => OPENAI_TTS_VOICES, resolveTtsVoice: () => 'marin', supportsVoiceAgent: () => true, getConversationEngine: () => 'openai-live',
   }),
 }))
@@ -119,7 +120,7 @@ describe('Live voice routes', () => {
     expect(mocks.alternateMap).toHaveBeenCalledExactlyOnceWith({ kind: 'reply', text: 'Working...' }, expect.any(AbortSignal))
     mocks.providerName = 'openai'
     expect((await voice.request(`/live/session/${handle}`, { method: 'DELETE' })).status).toBe(200)
-    expect(mocks.alternateClose).toHaveBeenCalledExactlyOnceWith('other_session')
+    expect(mocks.alternateClose).toHaveBeenCalledExactlyOnceWith('other_session', 'session-token')
     expect(mocks.create).not.toHaveBeenCalled()
     expect(mocks.map).not.toHaveBeenCalled()
     expect(mocks.close).not.toHaveBeenCalled()
@@ -129,7 +130,20 @@ describe('Live voice routes', () => {
     expect((await request('/live/map', { kind: 'reply', text: 'a'.repeat(140000) })).status).toBe(413)
     expect(mocks.map).not.toHaveBeenCalled()
   })
-  it('binds cleanup to the initiating user and permits cleanup after switching providers', async () => {
+  it.each(['openai', 'platform'] as const)('creates, maps, and closes a Live session for %s', async (id) => {
+    mocks.providerName = id
+    mocks.map.mockResolvedValueOnce({ text: 'mapped' })
+    const creation = await request('/live/session', { sdp: 'offer', history: [] })
+    expect(creation.status).toBe(201)
+    const { handle } = await creation.json()
+    expect(await (await request('/live/map', { kind: 'reply', text: 'Working...' })).json()).toEqual({ text: 'mapped' })
+    expect((await voice.request(`/live/session/${handle}`, { method: 'DELETE' })).status).toBe(200)
+    expect(mocks.create).toHaveBeenCalledExactlyOnceWith('offer', [])
+    expect(mocks.map).toHaveBeenCalledExactlyOnceWith({ kind: 'reply', text: 'Working...' }, expect.any(AbortSignal))
+    expect(mocks.close).toHaveBeenCalledExactlyOnceWith('live_test', 'session-token')
+  })
+  it.each(['openai', 'platform'] as const)('binds cleanup to the initiating user for %s and permits cleanup after switching providers', async (id) => {
+    mocks.providerName = id
     const response = await request('/live/session', { sdp: 'offer', history: [] })
     expect(response.status).toBe(201)
     const { handle } = await response.json()
@@ -138,7 +152,7 @@ describe('Live voice routes', () => {
     expect(mocks.close).not.toHaveBeenCalled()
     mocks.user = 'alice'; mocks.providerName = 'deepgram'
     expect((await voice.request(`/live/session/${handle}`, { method: 'DELETE' })).status).toBe(200)
-    expect(mocks.close).toHaveBeenCalledExactlyOnceWith('live_test')
+    expect(mocks.close).toHaveBeenCalledExactlyOnceWith('live_test', 'session-token')
   })
   it('releases admission slots while a failed upstream hangup is retried', async () => {
     vi.useFakeTimers()

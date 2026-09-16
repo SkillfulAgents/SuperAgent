@@ -1,4 +1,6 @@
 import type { VoiceProvider } from '@shared/lib/config/settings'
+import type { SttProtocol } from '@shared/lib/voice/stt-protocol'
+import { voiceMessagesFor } from '@shared/lib/voice/openai-voice-messages'
 import { DeepgramVoiceAgentAdapter } from './voice-agent-deepgram'
 import { OpenAIVoiceAgentAdapter } from './voice-agent-openai'
 
@@ -64,14 +66,13 @@ export interface VoiceAgentAdapter {
 
 // --- Factory ---
 
-export function createVoiceAgentAdapter(provider: VoiceProvider): VoiceAgentAdapter {
-  switch (provider) {
+export function createVoiceAgentAdapter(protocol: SttProtocol, owner: VoiceProvider = 'openai'): VoiceAgentAdapter {
+  switch (protocol) {
     case 'deepgram':
       return new DeepgramVoiceAgentAdapter()
-    case 'openai':
-    case 'platform':
-      return new OpenAIVoiceAgentAdapter()
+    case 'openai-realtime':
+      return new OpenAIVoiceAgentAdapter(voiceMessagesFor(owner).quotaExceeded)
     default:
-      throw new Error(`Unknown Voice Agent provider: ${provider}`)
+      throw new Error(`Unknown Voice Agent protocol: ${protocol}`)
   }
 }

@@ -5,8 +5,8 @@ import {
   startAudioCapture,
   type AudioCaptureHandle,
   type SttAdapter,
-  type VoiceProvider,
 } from '@renderer/lib/stt'
+import type { VoiceTokenResponse } from '@shared/lib/voice/stt-protocol'
 
 export interface VoiceListenerEvents {
   /** The utterance heard so far (finals plus the interim tail), on every change. */
@@ -28,10 +28,7 @@ const FINALIZE_TIMEOUT_MS = 1_200
  */
 const MAX_RECONNECTS = 1
 
-interface SttCredentials {
-  provider: VoiceProvider
-  token: string
-}
+type SttCredentials = VoiceTokenResponse
 
 /**
  * A microphone that stays open. Unlike the composer's dictation (one
@@ -170,8 +167,8 @@ export class VoiceListener {
     const res = await apiFetch('/api/voice/token')
     const data: SttCredentials | { error: string } = await res.json()
     if (!res.ok) throw new Error(('error' in data ? data.error : null) || 'Failed to get speech-to-text credentials')
-    const { provider, token } = data as SttCredentials
-    const adapter = createSttAdapter(provider)
+    const { provider, protocol, token } = data as SttCredentials
+    const adapter = createSttAdapter(protocol, provider)
     adapter.onTranscript((event) => {
       if (this.adapter !== adapter) return
       // Words through a reconnected socket: the connection is good again.

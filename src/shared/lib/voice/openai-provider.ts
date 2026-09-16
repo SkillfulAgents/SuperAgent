@@ -8,6 +8,8 @@ import { getConfiguredLlmClient, createSummarizerText } from '../llm-provider/he
 import { resolveActiveProviderModel } from '../llm-provider'
 import { liveRequestSchema, type LiveConversationProvider, type LiveMappingInput, type LiveSessionAnswer, type VoiceHistory } from './live-types'
 import { LIVE_CONVERSATION_PROMPT, LIVE_REPLY_PROMPT, LIVE_REQUEST_PROMPT } from '../../prompts/voice-live'
+import { BYOK_VOICE_MESSAGES, type OpenaiVoiceMessages } from './openai-voice-messages'
+import type { SttProtocol } from './stt-protocol'
 
 const MIME_TO_EXT: Record<string, string> = {
   'audio/mpeg': 'mp3',
@@ -24,20 +26,7 @@ const MIME_TO_EXT: Record<string, string> = {
   'audio/amr': 'amr',
 }
 
-/** User-facing copy that differs by who owns the credential (BYOK key vs platform token). */
-export interface OpenaiVoiceMessages {
-  missingKey: string
-  authFailed: string
-  quotaExceeded: string
-  liveSessionHint: string
-}
-
-const BYOK_MESSAGES: OpenaiVoiceMessages = {
-  missingKey: 'Add your OpenAI API key in Settings > Voice.',
-  authFailed: 'OpenAI rejected the API key. Check your key and permissions in Settings > Voice.',
-  quotaExceeded: 'OpenAI API quota exceeded. Please check your OpenAI account balance and billing settings.',
-  liveSessionHint: 'Check your key, GPT-Live access, and billing.',
-}
+export type { OpenaiVoiceMessages }
 
 export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConversationProvider, TtsSynthesisProvider {
   readonly id: VoiceProvider = 'openai'
@@ -51,7 +40,15 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
   }
 
   protected messages(): OpenaiVoiceMessages {
-    return BYOK_MESSAGES
+    return BYOK_VOICE_MESSAGES
+  }
+
+  override getSttProtocol(): SttProtocol {
+    return 'openai-realtime'
+  }
+
+  protected override missingCredentialMessage(): string {
+    return this.messages().missingKey
   }
 
   override getTtsVoices() { return OPENAI_TTS_VOICES }
@@ -114,20 +111,21 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
       }),
     })
     if (!res.ok) {
-      throw new Error(`OpenAI Live session failed (${res.status}). ${this.messages().liveSessionHint}`)
+      void res.body?.cancel().catch(() => {})
+      throw new Error(this.failureMessage(res.status,
+        `${this.name} Live session failed (${res.status}). ${this.messages().liveSessionHint}`))
     }
     const answer = await res.json() as LiveSessionAnswer
-    if (!answer.session?.id || !answer.transport?.sdp) throw new Error('OpenAI Live returned an invalid session answer.')
+    if (!answer.session?.id || !answer.transport?.sdp) throw new Error(`${this.name} Live returned an invalid session answer.`)
     return { session: { id: answer.session.id }, transport: { type: 'webrtc', sdp: answer.transport.sdp } }
   }
 
-  async closeLiveSession(id: string): Promise<void> {
-    const apiKey = this.getEffectiveApiKey()
-    if (!apiKey) return
+  async closeLiveSession(id: string, apiKey = this.getEffectiveApiKey()): Promise<void> {
+    if (!apiKey) throw new Error(`Could not close ${this.name} Live session.`)
     const response = await fetch(`${this.apiBaseUrl()}/live/sessions/${encodeURIComponent(id)}/hangup`, {
       method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(5000),
     })
-    if (!response.ok && response.status !== 404) throw new Error('Could not close OpenAI Live session.')
+    if (!response.ok && response.status !== 404) throw new Error(`Could not close ${this.name} Live session.`)
   }
 
   /** Provider-owned translation using the app's configured summarizer. */
@@ -207,7 +205,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
     })
     if (!res.ok) {
       const text = await res.text()
-      throw new Error(`OpenAI transcription failed (${res.status}): ${text}`)
+      throw new Error(`${this.name} transcription failed (${res.status}): ${text}`)
     }
     const data = await res.json() as { text: string }
     return data.text
@@ -230,12 +228,12 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
       body: JSON.stringify(body),
     })
     if (!res.ok) {
-      const text = await res.text()
-      throw new Error(this.failureMessage(res.status, `OpenAI API error (${res.status}): ${text}`))
+      void res.body?.cancel().catch(() => {})
+      throw new Error(this.failureMessage(res.status, `${this.name} API error (${res.status}). Please try again.`))
     }
     const data = await res.json()
     if (!data.value || typeof data.value !== 'string') {
-      throw new Error('OpenAI returned an unexpected response: missing client secret value')
+      throw new Error(`${this.name} returned an unexpected response: missing client secret value`)
     }
     return data.value
   }

@@ -1,8 +1,10 @@
 // --- Types ---
 
 import type { VoiceProvider } from '@shared/lib/config/settings'
+import type { SttProtocol } from '@shared/lib/voice/stt-protocol'
+import { realtimeErrorMessage, voiceMessagesFor } from '@shared/lib/voice/openai-voice-messages'
 import { addRendererBreadcrumb } from './error-reporting'
-export type { VoiceProvider }
+export type { VoiceProvider, SttProtocol }
 
 const CONNECT_TIMEOUT_MS = 10_000
 
@@ -396,19 +398,6 @@ class DeepgramAdapter extends WebSocketSttAdapter {
   }
 }
 
-// --- OpenAI Adapter ---
-
-/** Map OpenAI Realtime error objects to user-friendly messages. */
-function friendlyRealtimeError(err: { code?: string; message?: string } | undefined): Error {
-  const code = err?.code || ''
-  const msg = err?.message || 'OpenAI Realtime error'
-  if (code === 'insufficient_quota' || code === 'billing_hard_limit_reached' ||
-      code === 'rate_limit_exceeded' || /quota|billing|insufficient/i.test(msg)) {
-    return new Error('OpenAI API quota exceeded. Please check your OpenAI account balance and billing settings.')
-  }
-  return new Error(msg)
-}
-
 export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)
   let binary = ''
@@ -417,6 +406,8 @@ export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   }
   return btoa(binary)
 }
+
+// --- OpenAI Adapter ---
 
 class OpenaiAdapter extends WebSocketSttAdapter {
   readonly sampleRate = 24000
@@ -429,6 +420,14 @@ class OpenaiAdapter extends WebSocketSttAdapter {
   private hasUncommittedAudio = false
   // A finalize() is waiting for the transcript of the buffer it committed.
   private finalizePending = false
+
+  constructor(private readonly quotaExceeded: string) {
+    super()
+  }
+
+  private friendlyRealtimeError(err: { code?: string; message?: string } | undefined): Error {
+    return new Error(realtimeErrorMessage(err, this.quotaExceeded))
+  }
 
   protected createSocket(token: string): WebSocket {
     const url = 'wss://api.openai.com/v1/realtime?intent=transcription'
@@ -523,7 +522,7 @@ class OpenaiAdapter extends WebSocketSttAdapter {
       case 'conversation.item.input_audio_transcription.failed':
         // The server heard the utterance but could not transcribe it (a model
         // the project may not use, a quota). Without this the words just vanish.
-        this.emitError(friendlyRealtimeError(data.error))
+        this.emitError(this.friendlyRealtimeError(data.error))
         if (this.isFinishing) this.completeFinish()
         break
       case 'error':
@@ -531,15 +530,15 @@ class OpenaiAdapter extends WebSocketSttAdapter {
         // the server's auto-commit) is benign — finish quietly instead of alarming
         // the user, who already has their transcript.
         if (this.isFinishing) {
-          this.noteError(friendlyRealtimeError(data.error))
+          this.noteError(this.friendlyRealtimeError(data.error))
           this.completeFinish()
         } else {
-          this.emitError(friendlyRealtimeError(data.error))
+          this.emitError(this.friendlyRealtimeError(data.error))
         }
         break
       case 'response.done':
         if (data.response?.status === 'failed') {
-          this.emitError(friendlyRealtimeError(data.response?.status_details?.error))
+          this.emitError(this.friendlyRealtimeError(data.response?.status_details?.error))
         }
         break
     }
@@ -548,15 +547,14 @@ class OpenaiAdapter extends WebSocketSttAdapter {
 
 // --- Factory ---
 
-export function createSttAdapter(provider: VoiceProvider): SttAdapter {
-  switch (provider) {
+export function createSttAdapter(protocol: SttProtocol, owner: VoiceProvider = 'openai'): SttAdapter {
+  switch (protocol) {
     case 'deepgram':
       return new DeepgramAdapter()
-    case 'openai':
-    case 'platform':
-      return new OpenaiAdapter()
+    case 'openai-realtime':
+      return new OpenaiAdapter(voiceMessagesFor(owner).quotaExceeded)
     default:
-      throw new Error(`Unknown voice provider: ${provider}`)
+      throw new Error(`Unknown STT protocol: ${protocol}`)
   }
 }
 

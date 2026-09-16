@@ -25,6 +25,7 @@ describe('PlatformVoiceProvider', () => {
   it('is configured only by the platform token, never by a stored OpenAI key', () => {
     expect(provider.getApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
     expect(provider.getEffectiveApiKey()).toBe('platform-token')
+    expect(provider.getSttProtocol()).toBe('openai-realtime')
     mocks.token = null
     expect(provider.getApiKeyStatus()).toEqual({ isConfigured: false, source: 'none' })
     expect(provider.getEffectiveApiKey()).toBeUndefined()
@@ -41,9 +42,9 @@ describe('PlatformVoiceProvider', () => {
 
   it('mints dictation and voice-agent client secrets through the proxy', async () => {
     fetchMock.mockImplementation(async () => new Response(JSON.stringify({ value: 'ek_1' })))
-    await expect(provider.getEphemeralToken()).resolves.toEqual({ provider: 'platform', token: 'ek_1' })
+    await expect(provider.getEphemeralToken()).resolves.toEqual({ provider: 'platform', token: 'ek_1', protocol: 'openai-realtime' })
     expect(lastCall()).toMatchObject({ url: 'https://proxy.test/v1/openai/realtime/client_secrets', body: { session: { type: 'transcription' } } })
-    await expect(provider.getVoiceAgentToken()).resolves.toEqual({ provider: 'platform', token: 'ek_1' })
+    await expect(provider.getVoiceAgentToken()).resolves.toEqual({ provider: 'platform', token: 'ek_1', protocol: 'openai-realtime' })
     expect(lastCall().body).toEqual({ session: { type: 'realtime' } })
   })
 
@@ -68,6 +69,9 @@ describe('PlatformVoiceProvider', () => {
   it('uses platform wording for missing connection, auth, and balance failures', async () => {
     mocks.token = null
     await expect(provider.synthesizeSpeech({ text: 'Hi', voice: 'marin', speed: 1 })).rejects.toThrow('Connect your platform account')
+    await expect(provider.getEphemeralToken()).rejects.toThrow('Connect your platform account')
+    await expect(provider.getVoiceAgentToken()).rejects.toThrow('Connect your platform account')
+    await expect(provider.getTtsConnection()).rejects.toThrow('Connect your platform account')
     mocks.token = 'platform-token'
     fetchMock.mockResolvedValueOnce(new Response('denied', { status: 403 }))
     await expect(provider.getEphemeralToken()).rejects.toThrow('Platform voice authentication failed')
@@ -75,13 +79,25 @@ describe('PlatformVoiceProvider', () => {
     await expect(provider.synthesizeSpeech({ text: 'Hi', voice: 'marin', speed: 1 })).rejects.toThrow('workspace balance')
     fetchMock.mockResolvedValueOnce(new Response('nope', { status: 500 }))
     await expect(provider.createLiveSession('offer', [])).rejects.toThrow('Check your platform voice access')
+    fetchMock.mockResolvedValueOnce(new Response('<html>gateway down</html>', { status: 502 }))
+    const mintError = await provider.getEphemeralToken().then(() => undefined, (err: unknown) => err)
+    expect(mintError).toBeInstanceOf(Error)
+    expect((mintError as Error).message).toMatch(/Platform API error \(502\)/)
+    expect((mintError as Error).message).not.toContain('gateway')
   })
 
-  it('validates the platform token by minting a short-lived client secret', async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ value: 'ek_probe' })))
-    await expect(provider.validateKey('platform-token')).resolves.toEqual({ valid: true })
-    expect(lastCall().body).toEqual({ expires_after: { anchor: 'created_at', seconds: 60 }, session: { type: 'transcription' } })
-    fetchMock.mockResolvedValueOnce(new Response('denied', { status: 401 }))
-    await expect(provider.validateKey('bad')).resolves.toMatchObject({ valid: false, error: expect.stringContaining('authentication failed') })
+  it('hangs up with the token captured at create after the platform token is gone', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ session: { id: 'live_1' }, transport: { sdp: 'answer' } })))
+    await provider.createLiveSession('offer', [])
+    mocks.token = null
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await provider.closeLiveSession('live_1', 'platform-token')
+    expect(lastCall().url).toBe('https://proxy.test/v1/openai/live/sessions/live_1/hangup')
+    expect(lastCall().headers.Authorization).toBe('Bearer platform-token')
+  })
+
+  it('does not treat a missing hangup credential as a successful close', async () => {
+    mocks.token = null
+    await expect(provider.closeLiveSession('live_1')).rejects.toThrow('Could not close Platform Live session')
   })
 })

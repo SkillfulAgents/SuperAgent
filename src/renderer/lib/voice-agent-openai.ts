@@ -1,5 +1,6 @@
 import type { VoiceAgentAdapter, VoiceAgentConfig, VoiceAgentEventCallback } from './voice-agent'
 import { arrayBufferToBase64 } from './stt'
+import { realtimeErrorMessage } from '@shared/lib/voice/openai-voice-messages'
 
 const CONNECT_TIMEOUT_MS = 10_000
 
@@ -10,6 +11,8 @@ export class OpenAIVoiceAgentAdapter implements VoiceAgentAdapter {
   private closed = false
   readonly inputSampleRate = 24000
   readonly outputSampleRate = 24000
+
+  constructor(private readonly quotaExceeded: string) {}
 
   async connect(token: string, config: VoiceAgentConfig): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -195,12 +198,12 @@ export class OpenAIVoiceAgentAdapter implements VoiceAgentAdapter {
         break
 
       case 'error':
-        this.eventCb?.({ type: 'error', message: friendlyRealtimeError(data.error) })
+        this.eventCb?.({ type: 'error', message: this.friendlyRealtimeError(data.error) })
         break
 
       case 'response.done':
         if (data.response?.status === 'failed') {
-          this.eventCb?.({ type: 'error', message: friendlyRealtimeError(data.response?.status_details?.error) })
+          this.eventCb?.({ type: 'error', message: this.friendlyRealtimeError(data.response?.status_details?.error) })
         }
         break
     }
@@ -243,15 +246,8 @@ export class OpenAIVoiceAgentAdapter implements VoiceAgentAdapter {
       this.ws.send(JSON.stringify(msg))
     }
   }
-}
 
-/** Map OpenAI Realtime error objects to user-friendly messages. */
-function friendlyRealtimeError(err: { code?: string; message?: string } | undefined): string {
-  const code = err?.code || ''
-  const msg = err?.message || 'OpenAI Realtime error'
-  if (code === 'insufficient_quota' || code === 'billing_hard_limit_reached' ||
-      code === 'rate_limit_exceeded' || /quota|billing|insufficient/i.test(msg)) {
-    return 'OpenAI API quota exceeded. Please check your OpenAI account balance and billing settings.'
+  private friendlyRealtimeError(err: { code?: string; message?: string } | undefined): string {
+    return realtimeErrorMessage(err, this.quotaExceeded)
   }
-  return msg
 }

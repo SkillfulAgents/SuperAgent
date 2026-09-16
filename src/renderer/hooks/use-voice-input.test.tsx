@@ -70,7 +70,7 @@ const stream = {
 } as unknown as MediaStream
 
 function arrange(adapter: FakeAdapter) {
-  api.apiFetch.mockResolvedValue({ ok: true, json: async () => ({ provider: 'openai', token: 'ephemeral' }) })
+  api.apiFetch.mockResolvedValue({ ok: true, json: async () => ({ provider: 'openai', protocol: 'openai-realtime', token: 'ephemeral' }) })
   stt.acquireMicStream.mockResolvedValue(stream)
   stt.createSttAdapter.mockReturnValue(adapter)
   stt.startAudioCapture.mockResolvedValue({

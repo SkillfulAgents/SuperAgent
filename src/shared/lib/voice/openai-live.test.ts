@@ -57,7 +57,17 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
 
   it('does not expose an upstream error body', async () => {
     fetchMock.mockResolvedValue(new Response('sensitive upstream body', { status: 403 }))
-    await expect(provider.createLiveSession('offer', [])).rejects.toThrow('GPT-Live access')
+    const err = await provider.createLiveSession('offer', []).then(() => undefined, (e: unknown) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toContain('rejected the API key')
+    expect((err as Error).message).not.toContain('sensitive')
+  })
+  it('uses the live-session hint for non-auth upstream failures', async () => {
+    fetchMock.mockResolvedValue(new Response('sensitive upstream body', { status: 500 }))
+    const err = await provider.createLiveSession('offer', []).then(() => undefined, (e: unknown) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toContain('GPT-Live access')
+    expect((err as Error).message).not.toContain('sensitive')
   })
   it('omits empty and whitespace-only turns from upstream history', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ session: { id: 'live_test' }, transport: { sdp: 'answer' } })))

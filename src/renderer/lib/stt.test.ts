@@ -149,7 +149,7 @@ describe('createSttAdapter', () => {
   })
 
   it('creates an openai adapter', () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     expect(adapter).toBeDefined()
     expect(adapter.sampleRate).toBe(24000)
   })
@@ -160,8 +160,8 @@ describe('createSttAdapter', () => {
     expect(adapter.sampleRate).toBeUndefined()
   })
 
-  it('throws for unknown provider', () => {
-    expect(() => createSttAdapter('unknown' as any)).toThrow('Unknown voice provider: unknown')
+  it('throws for unknown protocol', () => {
+    expect(() => createSttAdapter('unknown' as any)).toThrow('Unknown STT protocol: unknown')
   })
 })
 
@@ -372,7 +372,7 @@ describe('pre-connection audio buffering', () => {
   })
 
   it('openai: flushes buffered audio as append messages after the session config', async () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     const connectPromise = adapter.connect('token')
     const ws = FakeWebSocket.instances[0]
 
@@ -391,7 +391,7 @@ describe('pre-connection audio buffering', () => {
   })
 
   it('openai: deliberate close during connect does not surface an error', () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     const errors: Error[] = []
     adapter.onError((err) => errors.push(err))
     adapter.connect('token').catch(() => {})
@@ -528,7 +528,7 @@ describe('graceful finish', () => {
   })
 
   it('openai: finish during the handshake flushes appends, THEN commits, and resolves on completed', async () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     const connectPromise = adapter.connect('token')
     const ws = FakeWebSocket.instances[0]
 
@@ -554,7 +554,7 @@ describe('graceful finish', () => {
   })
 
   it('openai: finish resolves via the backstop timeout if no completion arrives', async () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     const connectPromise = adapter.connect('token')
     const ws = FakeWebSocket.instances[0]
     ws.simulateOpen()
@@ -572,7 +572,7 @@ describe('graceful finish', () => {
   })
 
   it('openai: finish with no uncommitted audio does NOT commit and completes immediately', async () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     const connectPromise = adapter.connect('token')
     const ws = FakeWebSocket.instances[0]
     ws.simulateOpen()
@@ -589,7 +589,7 @@ describe('graceful finish', () => {
   })
 
   it('openai: a server auto-commit clears pending audio so a later finish skips the commit', async () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     const connectPromise = adapter.connect('token')
     const ws = FakeWebSocket.instances[0]
     ws.simulateOpen()
@@ -607,7 +607,7 @@ describe('graceful finish', () => {
   })
 
   it('openai: a benign error while finishing is suppressed, not surfaced', async () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     const errors: Error[] = []
     adapter.onError((e) => errors.push(e))
     const connectPromise = adapter.connect('token')
@@ -626,7 +626,7 @@ describe('graceful finish', () => {
   })
 
   it('openai: a real error during normal streaming is still surfaced', async () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     const errors: Error[] = []
     adapter.onError((e) => errors.push(e))
     const connectPromise = adapter.connect('token')
@@ -638,6 +638,24 @@ describe('graceful finish', () => {
 
     expect(errors).toHaveLength(1)
     expect(errors[0].message).toBe('something broke')
+  })
+
+  it('openai: platform owner uses workspace-balance quota copy', async () => {
+    const adapter = createSttAdapter('openai-realtime', 'platform')
+    const errors: Error[] = []
+    adapter.onError((e) => errors.push(e))
+    const connectPromise = adapter.connect('token')
+    const ws = FakeWebSocket.instances[0]
+    ws.simulateOpen()
+    await connectPromise
+
+    ws.simulateMessage({
+      type: 'error',
+      error: { code: 'insufficient_quota', message: 'You exceeded your current quota' },
+    })
+
+    expect(errors[0].message).toContain('workspace balance')
+    expect(errors[0].message).not.toContain('OpenAI account')
   })
 })
 
@@ -686,7 +704,7 @@ describe('finalize', () => {
   })
 
   it('openai: commits the pending audio and reports finalized on its transcript', async () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     const connectPromise = adapter.connect('token')
     const ws = FakeWebSocket.instances[0]
     ws.simulateOpen()
@@ -706,7 +724,7 @@ describe('finalize', () => {
   })
 
   it('openai: with nothing to commit, finalize answers at once without a commit', async () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     const connectPromise = adapter.connect('token')
     const ws = FakeWebSocket.instances[0]
     ws.simulateOpen()
@@ -776,7 +794,7 @@ describe('session stats', () => {
   })
 
   it('openai: a failed transcription surfaces as an error instead of vanishing', async () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     const errors: Error[] = []
     adapter.onError((err) => errors.push(err))
     const connectPromise = adapter.connect('token')
@@ -796,7 +814,7 @@ describe('session stats', () => {
   })
 
   it('openai: an error swallowed while finishing still goes on the record', async () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     const errors: Error[] = []
     adapter.onError((err) => errors.push(err))
     const connectPromise = adapter.connect('token')

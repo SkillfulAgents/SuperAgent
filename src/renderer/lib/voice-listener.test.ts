@@ -84,7 +84,7 @@ describe('VoiceListener', () => {
     stt.acquireMicStream.mockClear()
     stt.startAudioCapture.mockClear()
     apiFetch.mockReset()
-    apiFetch.mockResolvedValue({ ok: true, json: async () => ({ provider: 'deepgram', token: 'jwt' }) })
+    apiFetch.mockResolvedValue({ ok: true, json: async () => ({ provider: 'deepgram', protocol: 'deepgram', token: 'jwt' }) })
   })
 
   afterEach(() => {

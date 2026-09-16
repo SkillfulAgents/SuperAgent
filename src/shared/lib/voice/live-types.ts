@@ -30,5 +30,5 @@ export interface LiveSessionAnswer {
 export interface LiveConversationProvider {
   createLiveSession(sdp: string, history: VoiceHistory): Promise<LiveSessionAnswer>
   mapLiveConversation(input: LiveMappingInput, signal?: AbortSignal): Promise<LiveRequest | { text: string }>
-  closeLiveSession(id: string): Promise<void>
+  closeLiveSession(id: string, apiKey?: string): Promise<void>
 }

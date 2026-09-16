@@ -55,7 +55,7 @@ function requireLiveConversation(c: Context<LimitedJsonBodyEnv>, operation: stri
   if (!conversation) return c.json({
     error: `${operation} not supported with current configured voice provider: ${provider.name}`,
   }, 400)
-  return conversation
+  return { provider, conversation }
 }
 
 function ttsError(c: Context<LimitedJsonBodyEnv>, error: unknown, fallback: string) {
@@ -69,8 +69,9 @@ const liveSessions = new LiveSessionRegistry()
 const pendingLiveStarts = new Map<string, number>()
 const liveSessionSchema = z.object({ sdp: z.string().min(1).max(64000), history: voiceHistorySchema })
 voice.post('/live/session', async (c) => {
-  const conversation = requireLiveConversation(c, 'Live session creation')
-  if (conversation instanceof Response) return conversation
+  const ready = requireLiveConversation(c, 'Live session creation')
+  if (ready instanceof Response) return ready
+  const { provider, conversation } = ready
   const parsed = liveSessionSchema.safeParse(c.get('limitedJsonBody'))
   if (!parsed.success) return c.json({ error: 'Invalid Live session request.' }, 400)
   const owner = getCurrentUserId(c)
@@ -80,8 +81,9 @@ voice.post('/live/session', async (c) => {
   }
   pendingLiveStarts.set(owner, pending + 1)
   try {
+    const apiKey = provider.getEffectiveApiKey()
     const answer = await conversation.createLiveSession(parsed.data.sdp, parsed.data.history)
-    const registered = liveSessions.add(owner, () => conversation.closeLiveSession(answer.session.id))
+    const registered = liveSessions.add(owner, () => conversation.closeLiveSession(answer.session.id, apiKey))
     if (c.req.raw.signal.aborted) {
       await liveSessions.release(registered.handle, owner)
       return c.json({ error: 'Voice connection request was cancelled.' }, 408)
@@ -101,12 +103,12 @@ voice.delete('/live/session/:handle', async (c) => {
   return c.json({ closed: result === 'closed', closing: result === 'closing' }, result === 'closed' ? 200 : 202)
 })
 voice.post('/live/map', async (c) => {
-  const conversation = requireLiveConversation(c, 'Live conversation mapping')
-  if (conversation instanceof Response) return conversation
+  const ready = requireLiveConversation(c, 'Live conversation mapping')
+  if (ready instanceof Response) return ready
   const parsed = liveMappingSchema.safeParse(c.get('limitedJsonBody'))
   if (!parsed.success) return c.json({ error: 'Invalid Live mapping request.' }, 400)
   try {
-    return c.json(await conversation.mapLiveConversation(parsed.data, c.req.raw.signal))
+    return c.json(await ready.conversation.mapLiveConversation(parsed.data, c.req.raw.signal))
   } catch {
     return c.json({ error: 'Voice mapping failed. Please try again.' }, 502)
   }
