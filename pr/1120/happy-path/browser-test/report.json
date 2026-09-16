@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser navigation test: Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Application loaded successfully, displaying the Gamut home page with agent list in sidebar.",
+    "Step 2: Found \"QA-20260916-214743-w7xi\" agent in sidebar and clicked it — Agent chat page opened successfully, URL changed to /agents/qa-20260916-214743-w7xi-iva44sq4dv.",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — Message successfully entered into textbox and visible in the input field.",
+    "Step 4: Clicked send button to submit message — Message sent successfully, page transitioned to session page showing \"Browser Navigation and Page Title Check\" session, agent status changed to \"working\".",
+    "Step 5: Waited 5 seconds for agent response — Agent completed work in 6 seconds, returned response: \"The page title is \"Example Domain\" (HTTP 200). Browser closed.\"",
+    "Step 6: Verified response mentions \"Example Domain\" — Response correctly contains \"Example Domain\" as the page title, confirming the browser navigation and page title extraction was successful. Took final screenshot showing the complete exchange."
+  ],
+  "bugs": [],
+  "durationMs": 132970,
+  "sessionId": "0fe3af1b-d619-4002-8975-4ef9a9738d48",
+  "cost": {
+    "inputTokens": 650,
+    "outputTokens": 12676,
+    "cacheCreationTokens": 93193,
+    "cacheReadTokens": 2134158,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.393937
+  }
+}
