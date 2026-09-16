@@ -67,6 +67,7 @@ import {
   chatIntegrations,
   chatIntegrationSessions,
   chatIntegrationAccess,
+  slackThreadState,
   remoteMcpServers,
   agentRemoteMcps,
   mcpAuditLog,
@@ -193,9 +194,10 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   notifications,
   sessionUnreadMarks,
   scheduledTasks,
-  // chat integrations (access + sessions cascade from integrations)
+  // chat integrations (access + sessions + Slack state cascade from integrations)
   chatIntegrationAccess,
   chatIntegrationSessions,
+  slackThreadState,
   chatIntegrations,
   // connected accounts + dependents (api scope policies + agent mappings cascade)
   agentConnectedAccounts,
