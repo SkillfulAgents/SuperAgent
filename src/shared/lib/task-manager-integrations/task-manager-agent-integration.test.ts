@@ -314,4 +314,49 @@ describe('task reply attachments', () => {
     expect(tasks.uploads).toHaveLength(1)
     expect(tasks.published.filter(item => item.publication.kind === 'response')).toHaveLength(1)
   })
+  it('ignores reviews from other sessions and resumes only its matching review before publishing the saved draft', async () => {
+    await tasks.accept(event('one')); const ctx = context()
+    await tasks.deliver(ctx, { type: 'turn-started' })
+    const request = { id: 'review', kind: 'proxy_review' as const, blocking: true, autoApproved: false,
+      scope: { agentSlug: 'agent', sessionId: 'another-session' }, payload: {} }
+    await tasks.deliver(ctx, { type: 'request', request })
+    await tasks.deliver(ctx, { type: 'request', request: { ...request, scope: { agentSlug: 'agent' } } })
+    expect(getTaskEvent(ctx.replyTarget!.eventId)?.status).toBe('running')
+    expect(tasks.published).toEqual([])
+    const draft = tasks.getTools(ctx).find(tool => tool.name === 'prepare_task_reply')!
+    await draft.execute({ body: 'Saved answer' })
+    await tasks.deliver(ctx, { type: 'request', request: { ...request, scope: { agentSlug: 'agent', sessionId: ctx.sessionId } } })
+    expect(getTaskEvent(ctx.replyTarget!.eventId)?.status).toBe('awaiting_input')
+    await tasks.deliver(ctx, { type: 'runtime', event: { type: 'user_request_resolved', requestId: 'other-review' } })
+    expect(getTaskEvent(ctx.replyTarget!.eventId)?.status).toBe('awaiting_input')
+    await tasks.deliver(ctx, { type: 'runtime', event: { type: 'user_request_resolved', requestId: 'review' } })
+    expect(tasks.getTools(ctx).length).toBeGreaterThan(0)
+    await tasks.deliver(ctx, { type: 'turn-completed', event: {} })
+    expect(getTaskEvent(ctx.replyTarget!.eventId)?.status).toBe('complete')
+    expect(tasks.published.at(-1)?.publication.body).toBe('Saved answer')
+  })
+  it('does not resurrect a failed run when a pending answer finishes late', async () => {
+    await tasks.accept(event('one')); const ctx = context()
+    await tasks.deliver(ctx, { type: 'turn-started' })
+    await tasks.deliver(ctx, { type: 'request', request: { id: 'question', kind: 'question', blocking: true, autoApproved: false,
+      scope: { agentSlug: 'agent', sessionId: ctx.sessionId }, payload: { questions: [{ question: 'Which branch?' }] } } })
+    tasks.onEvent(async input => {
+      if (input.type !== 'response') return
+      await tasks.deliver(ctx, { type: 'turn-failed', event: {} })
+      input.onAnswered?.()
+    })
+    await tasks.accept({ ...event('answer'), interactionId: 'one', text: 'main' })
+    expect(getTaskEvent(ctx.replyTarget!.eventId)?.status).toBe('failed')
+  })
+  it('bounds streamed drafts and ignores late stream deltas from cancelled work', async () => {
+    await tasks.accept(event('one')); const ctx = context()
+    await tasks.deliver(ctx, { type: 'turn-started' })
+    await tasks.deliver(ctx, { type: 'runtime', event: { type: 'stream_delta', text: 'x'.repeat(48000) } })
+    await tasks.deliver(ctx, { type: 'runtime', event: { type: 'stream_delta', text: 'end' } })
+    expect(getTaskEvent(ctx.replyTarget!.eventId)?.responseText).toBe('x'.repeat(47997) + 'end')
+    await tasks.stop('issue')
+    await tasks.deliver(ctx, { type: 'runtime', event: { type: 'stream_delta', text: 'late' } })
+    expect(getTaskEvent(ctx.replyTarget!.eventId)?.responseText?.endsWith('end')).toBe(true)
+  })
+
 })

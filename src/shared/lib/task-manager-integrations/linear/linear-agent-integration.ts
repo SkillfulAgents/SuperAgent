@@ -6,7 +6,7 @@ import { LinearTasks } from './tasks'
 import { collectDirectActions } from './direct-sync'
 import { LinearSubscriptions } from './subscriptions'
 import type { TrackedLinearIssue } from './direct-events'
-import { findTaskEvent, readTaskEvent, taskEventHistory } from '../store'
+import { enqueueTaskEvent, findTaskEvent, readTaskEvent, taskTrackingHistory, wasStopped } from '../store'
 import type { TaskEvent, TaskPublication } from '../types'
 
 import type { TaskAttachment } from '../attachment-schema'
@@ -24,6 +24,7 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
   private failures = 0
   private synced = false
   private dirty = false
+  private tracked = new Map<string, TrackedLinearIssue>()
   private subscriptions?: LinearSubscriptions
   private abort = new AbortController()
   private recoveryTimer?: ReturnType<typeof setInterval>
@@ -44,18 +45,18 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     this.abort = new AbortController()
     this.dispatchSuspended = true
     this.subscriptions = new LinearSubscriptions({ client: this.client, appUserId: identity.appUserId,
-      isTracked: id => this.trackedIssues().has(id), onWake: () => this.schedule(250), onUnavailable: () => this.schedule(30000), onError: error => this.report(error, 'subscription') })
+      isTracked: id => this.tracked.has(id), onWake: () => this.schedule(250), onUnavailable: () => this.schedule(30000), onError: error => this.report(error, 'subscription') })
     // First catch up, then subscribe. A failed initial sync fails connection
     // setup so the manager can retry without advertising a healthy installation.
     this.polling = this.poll()
     try { await this.polling } catch (error) {
-      await this.stopDelivery()
+      this.stopDelivery()
       throw error
     } finally { this.polling = undefined }
     if (this.connected) {
       this.subscriptions.start()
       this.schedule(30000)
-      this.recoveryTimer = setInterval(() => { if (!this.dispatchSuspended) void this.recoverTasks().catch(error => this.report(error, 'recover')) }, 30000)
+      this.recoveryTimer = setInterval(() => { if (this.isConnected() && !this.dispatchSuspended) void this.recoverTasks().catch(error => this.report(error, 'recover')) }, 30000)
       this.recoveryTimer.unref()
     }
   }
@@ -70,8 +71,10 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
 
   isAllowed(context: IntegrationSessionContext): boolean {
     if (!super.isAllowed(context)) return false
-    const config = getLinearConfig(this.installation.id)
-    return !config.authorizationPending && !config.authorizationError && !!config.tokens && !!config.identity
+    try {
+      const config = getLinearConfig(this.installation.id)
+      return !config.authorizationPending && !config.authorizationError && !!config.tokens && !!config.identity
+    } catch { return false }
   }
   protected async acknowledgeTask(event: TaskEvent): Promise<void> {
     if (event.sourceCommentId) await this.tasks.acknowledge(event.sourceCommentId)
@@ -90,8 +93,13 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
   protected taskTools(taskId: string, assertActive: () => void) { return this.tasks.tools(taskId, assertActive) }
   private trackedIssues(): Map<string, TrackedLinearIssue> {
     const tracked = new Map<string, TrackedLinearIssue>()
-    for (const row of taskEventHistory(this.installation.id)) {
-      const event = readTaskEvent(row)
+    const history = taskTrackingHistory(this.installation.id).map(row => ({ ...row, event: readTaskEvent(row) }))
+    const retired = new Map<string, string>()
+    for (const { event } of history) {
+      if (event.id.startsWith('retire:') && event.timestamp > (retired.get(event.taskId) ?? '')) retired.set(event.taskId, event.timestamp)
+    }
+    for (const { event, ...row } of history) {
+      if (event.timestamp <= (retired.get(row.taskId) ?? '')) continue
       if (event.kind !== 'invocation' && event.kind !== 'status') continue
       const item = tracked.get(row.taskId) ?? { since: event.timestamp, threads: new Set<string>() }
       if (event.timestamp < item.since) item.since = event.timestamp
@@ -112,7 +120,10 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
       this.timer = undefined
       this.scheduledAt = Infinity
       this.dirty = false
-      this.polling = this.poll().catch(error => this.syncFailed(error)).finally(() => {
+      this.polling = this.poll().catch(error => {
+        // Timer work must never leak a rejection, even after its DB row is gone.
+        try { this.syncFailed(error) } catch { this.stopDelivery() }
+      }).finally(() => {
         this.polling = undefined
         const normalDelay = this.subscriptions?.isReady() ? 300000 : 30000
         this.schedule(this.failures ? Math.min(60000, 2000 * 2 ** Math.min(this.failures, 5)) : this.dirty ? 250 : normalDelay)
@@ -122,43 +133,54 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
   }
   private async poll(): Promise<void> {
     const config = getLinearConfig(this.installation.id)
-    if (!config.tokens || !config.identity || config.authorizationPending || config.authorizationError) { await this.stopDelivery(); return }
+    if (!config.tokens || !config.identity || config.authorizationPending || config.authorizationError) { this.stopDelivery(); return }
     const started = Date.now()
     const since = config.syncedThrough ?? new Date(config.authorizedAt ?? started).toISOString()
     this.dispatchSuspended = true
-    const actions = await collectDirectActions({ client: this.client, appUserId: config.identity.appUserId,
-      since, authorizedAt: new Date(config.authorizedAt ?? started).toISOString(), tracked: this.trackedIssues(), runOnStatusChange: config.runOnStatusChange, signal: this.abort.signal })
-    if (!this.connected || getLinearConfig(this.installation.id).authorizationVersion !== config.authorizationVersion) return
-    // Stops are applied before accepting backlog. Timestamp fencing allows new
-    // mentions after a stop while suppressing withdrawn offline requests.
-    for (const action of actions.filter(action => action.type === 'stop')) {
+    try {
+      this.tracked = this.trackedIssues()
+      const actions = await collectDirectActions({ client: this.client, appUserId: config.identity.appUserId,
+        since, authorizedAt: new Date(config.authorizedAt ?? started).toISOString(), tracked: this.tracked, shouldTrackEvent: event => !findTaskEvent(this.installation.id, event.id) && !wasStopped(this.installation.id, event), runOnStatusChange: config.runOnStatusChange, signal: this.abort.signal })
+      if (!this.connected || getLinearConfig(this.installation.id).authorizationVersion !== config.authorizationVersion) return
+      // Stops are applied before accepting backlog. Timestamp fencing allows new
+      // mentions after a stop while suppressing withdrawn offline requests.
+      for (const action of actions.filter(action => action.type === 'stop')) {
+        if (!this.connected) return
+        if (action.type === 'stop') {
+          await this.stopTask(action.taskId, undefined, action.timestamp)
+          if (action.retire) {
+            enqueueTaskEvent(this.installation.id, { id: `retire:${action.taskId}:${action.timestamp}`, taskId: action.taskId,
+              interactionId: '', kind: 'context', timestamp: action.timestamp, text: 'Issue is no longer accessible', replyTarget: {}, payload: {} })
+            this.tracked.delete(action.taskId)
+          }
+        }
+      }
+      for (const action of actions) {
+        if (!this.connected) return
+        if (action.type === 'event') await this.acceptTaskEvent(action.event)
+      }
       if (!this.connected) return
-      if (action.type === 'stop') await this.stopTask(action.taskId, undefined, action.timestamp)
-    }
-    for (const action of actions) {
-      if (!this.connected) return
-      if (action.type === 'event') await this.acceptTaskEvent(action.event)
-    }
-    if (!this.connected) return
-    // Advance only after the entire paginated batch is durably accepted. Keep a
-    // one-minute overlap for concurrent writes and clock/replication differences.
-    updateLinearConfig(this.installation.id, latest => ({ ...latest,
-      syncedThrough: new Date(Math.max(Date.parse(since), started - 60000)).toISOString() }))
-    this.dispatchSuspended = false
-    this.failures = 0
-    this.synced = true
+      // Advance only after the entire paginated batch is durably accepted. Keep a
+      // one-minute overlap for concurrent writes and clock/replication differences.
+      updateLinearConfig(this.installation.id, latest => ({ ...latest,
+        syncedThrough: new Date(Math.max(Date.parse(since), started - 60000)).toISOString() }))
+      this.tracked = this.trackedIssues()
+      this.failures = 0
+      this.synced = true
+    } finally { this.dispatchSuspended = false }
     await this.recoverTasks().catch(error => this.report(error, 'recover'))
   }
-  private async syncFailed(error: unknown): Promise<void> {
+  private syncFailed(error: unknown): void {
     if (!this.connected || this.abort.signal.aborted) return
-    const config = getLinearConfig(this.installation.id)
-    if (!config.tokens || config.authorizationPending || config.authorizationError) { await this.stopDelivery(); return }
+    let config: ReturnType<typeof getLinearConfig>
+    try { config = getLinearConfig(this.installation.id) } catch { this.stopDelivery(); return }
+    if (!config.tokens || config.authorizationPending || config.authorizationError) { this.stopDelivery(); return }
     this.failures++
-    this.report(error, 'sync')
+    if (this.failures === 1) this.report(error, 'sync')
     // One notification per outage; normal socket outages still use healthy polling.
     if (this.failures === 3) this.emitError(new Error('Linear could not sync new events. Retrying automatically; check connectivity and app access if this continues.'))
   }
-  private async stopDelivery(): Promise<void> {
+  private stopDelivery(): void {
     this.connected = false
     this.subscriptions?.stop()
     clearTimeout(this.timer); this.timer = undefined; this.scheduledAt = Infinity

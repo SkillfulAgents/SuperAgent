@@ -1,5 +1,6 @@
 import type { z } from 'zod'
-import { LinearAccessError, type LinearClient } from './client'
+import type { LinearClient } from './client'
+import type { TaskEvent } from '../types'
 import { directPageSchema, directNotificationsResponseSchema, directCommentsResponseSchema, directHistoryResponseSchema, directIssuesResponseSchema, type DirectIssue } from './direct-schema'
 import { DIRECT_NOTIFICATIONS, DIRECT_COMMENTS, DIRECT_TRACKED_ISSUES, DIRECT_ISSUE_HISTORY } from './direct-queries'
 import { commentEvent, historyAction, notificationEvent, type DirectAction, type TrackedLinearIssue } from './direct-events'
@@ -12,6 +13,7 @@ export interface DirectSyncOptions {
   runOnStatusChange: boolean
   tracked: Map<string, TrackedLinearIssue>
   signal: AbortSignal
+  shouldTrackEvent?: (event: TaskEvent) => boolean
 }
 /** Read a complete recovery batch before dispatching any work: an offline
  * delegation and its later cancellation must be considered together. */
@@ -25,7 +27,7 @@ export async function collectDirectActions(options: DirectSyncOptions): Promise<
   })
   for (const notification of notifications) {
     const event = notificationEvent(notification, appUserId)
-    if (!event || event.timestamp < options.authorizedAt) continue
+    if (!event || event.timestamp < options.authorizedAt || options.shouldTrackEvent?.(event) === false) continue
     actions.push({ type: 'event', event })
     const item = tracked.get(event.taskId) ?? { since: event.timestamp, threads: new Set<string>() }
     if (event.timestamp < item.since) item.since = event.timestamp
@@ -61,29 +63,23 @@ export async function collectDirectActions(options: DirectSyncOptions): Promise<
   for (const [id, item] of tracked) {
     const current = currentIssues.get(id)
     if (!current) {
-      actions.push({ type: 'stop', taskId: id, timestamp: new Date().toISOString() })
+      actions.push({ type: 'stop', taskId: id, timestamp: new Date().toISOString(), retire: true })
       continue
     }
     if (current.archivedAt || current.state.type === 'canceled') actions.push({ type: 'stop', taskId: id, timestamp: current.archivedAt ?? current.updatedAt })
     if (current.updatedAt < since) continue
-    try {
-      let after: string | null = null
-      for (let page = 0; ; page++) {
-        if (page >= 100) throw new Error('Linear history catch-up exceeded its page limit; checkpoint was not advanced')
-        const result = await client.request(DIRECT_ISSUE_HISTORY, { id, after }, directHistoryResponseSchema, signal)
-        const issue = result.issue
-        for (const history of issue.history.nodes) {
-          if (history.updatedAt >= since && history.updatedAt >= item.since) actions.push(historyAction(history, issue, appUserId, options.runOnStatusChange))
-        }
-        // Linear orders updatedAt descending. Stop once a complete page is older
-        // than this checkpoint. Overlap is harmless because events have stable IDs.
-        if (!issue.history.pageInfo.hasNextPage || (issue.history.nodes.length > 0 && issue.history.nodes.every(row => row.updatedAt < since))) break
-        after = nextCursor(issue.history.pageInfo.endCursor, after)
+    let after: string | null = null
+    for (let page = 0; ; page++) {
+      if (page >= 100) throw new Error('Linear history catch-up exceeded its page limit; checkpoint was not advanced')
+      const result = await client.request(DIRECT_ISSUE_HISTORY, { id, after }, directHistoryResponseSchema, signal)
+      const issue = result.issue
+      for (const history of issue.history.nodes) {
+        if (history.updatedAt >= since && history.updatedAt >= item.since) actions.push(historyAction(history, issue, appUserId, options.runOnStatusChange))
       }
-    } catch (error) {
-      if (!(error instanceof LinearAccessError)) throw error
-      // A transient network/GraphQL failure is retried, never mistaken for removal.
-      actions.push({ type: 'stop', taskId: id, timestamp: new Date().toISOString() })
+      // Linear orders updatedAt descending. Stop once a complete page is older
+      // than this checkpoint. Overlap is harmless because events have stable IDs.
+      if (!issue.history.pageInfo.hasNextPage || (issue.history.nodes.length > 0 && issue.history.nodes.every(row => row.updatedAt < since))) break
+      after = nextCursor(issue.history.pageInfo.endCursor, after)
     }
   }
   return actions.sort((a, b) => timestamp(a).localeCompare(timestamp(b)) || (a.type === 'stop' ? -1 : b.type === 'stop' ? 1 : 0))

@@ -58,4 +58,17 @@ describe('Linear scoped task tools', () => {
       { id: 'publication', kind: 'response', body: 'Done' })).toBe('publication')
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
+  it.each(['wrong-issue', 'forbidden', 'offline'])('does not create a comment when reconciliation fails: %s', async failure => {
+    const fetchMock = vi.fn(async () => {
+      if (failure === 'offline') throw new Error('Offline')
+      if (failure === 'forbidden') return new Response(null, { status: 403 })
+      return Response.json({ data: { comment: { id: 'publication', issue: { id: 'another-issue' } } } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const tasks = new LinearTasks(new LinearClient(undefined, 'token'))
+    await expect(tasks.publish({ id: 'event', taskId: 'issue', interactionId: '', kind: 'invocation', timestamp: '', text: '', payload: {}, replyTarget: {} },
+      { id: 'publication', kind: 'response', body: 'Done' })).rejects.toThrow()
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
 })

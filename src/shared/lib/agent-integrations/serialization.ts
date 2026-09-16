@@ -8,7 +8,11 @@ export function toPublicAgentIntegration(row: ChatIntegration): PublicAgentInteg
   if (row.provider !== 'linear') return { ...toPublicChatIntegration(row),
     capabilities: ['reset_conversation', 'session_timeout', 'tool_activity'], managementAccess: 'user' }
   const { config: _config, ...fields } = row
-  const linear = publicLinearIntegration(row.id)
+  let linear: ReturnType<typeof publicLinearIntegration>
+  try { linear = publicLinearIntegration(row.id) } catch {
+    return { ...fields, hasCredentials: false, settings: {}, capabilities: [], managementAccess: 'owner',
+      errorMessage: 'Stored integration settings are invalid. Delete this integration and add it again.' }
+  }
   const result: PublicLinearIntegration = { ...fields, provider: 'linear', hasCredentials: linear.authorized, settings: { runOnStatusChange: linear.runOnStatusChange },
     capabilities: [], managementAccess: 'owner', reconnectRequired: linear.authorizationState === 'reconnect_needed', linear }
   return result

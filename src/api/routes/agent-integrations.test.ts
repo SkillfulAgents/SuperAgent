@@ -27,7 +27,7 @@ vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: () => 'owner' }))
 vi.mock('@shared/lib/services/audit-log-service', () => ({ logAuditEvent: vi.fn() }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 const manager = vi.hoisted(() => ({ getConnector: vi.fn(), isIntegrationConnected: vi.fn(() => false),
-  pauseIntegration: vi.fn(), resumeIntegration: vi.fn(), removeIntegration: vi.fn(), clearSessionById: vi.fn() }))
+  addIntegration: vi.fn(), pauseIntegration: vi.fn(), resumeIntegration: vi.fn(), removeIntegration: vi.fn(), clearSessionById: vi.fn() }))
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: manager }))
 const cleanup = vi.hoisted(() => vi.fn())
 vi.mock('@shared/lib/agent-integrations/registry', () => ({ agentIntegrationRegistry: { cleanup } }))
@@ -48,7 +48,7 @@ beforeEach(() => {
     tokens: { accessToken: 'access-secret', refreshToken: 'refresh-secret', expiresAt: Date.now() + 3600000, scope: 'read write app:mentionable app:assignable' },
   } })
 })
-afterEach(() => sqlite.close())
+afterEach(() => { sqlite.close(); vi.unstubAllGlobals() })
 function patch(body: unknown) { return app.request(`/api/agent-integrations/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
 describe('shared integration API', () => {
   it('lists all providers and serves a credential-free common detail contract', async () => {
@@ -110,6 +110,33 @@ describe('shared integration API', () => {
     const response = await app.request(`/api/agent-integrations/${id}/authorize`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clientId: 'missing-secret' }) })
     expect(response.status).toBe(400)
     expect(manager.pauseIntegration).not.toHaveBeenCalled()
+  })
+
+  it('keeps healthy integrations and deletion controls available when one Linear config is corrupt', async () => {
+    createChatIntegration({ agentSlug: 'agent', provider: 'telegram', config: { botToken: 'telegram-secret' } })
+    sqlite.prepare('UPDATE chat_integrations SET config = ? WHERE id = ?').run('{bad private data', id)
+    const response = await app.request('/api/agent-integrations/agents/agent')
+    expect(response.status).toBe(200)
+    const rows = await response.json()
+    expect(rows).toHaveLength(2)
+    expect(rows.find((row: { provider: string }) => row.provider === 'telegram')).toMatchObject({ hasCredentials: true })
+    expect(rows.find((row: { id: string }) => row.id === id)).toMatchObject({ id, hasCredentials: false, managementAccess: 'owner' })
+    expect(JSON.stringify(rows)).not.toContain('private data')
+    expect((await app.request(`/api/agent-integrations/${id}`)).status).toBe(200)
+    expect((await app.request(`/api/agent-integrations/${id}`, { method: 'DELETE' })).status).toBe(204)
+  })
+
+  it('keeps successful authorization when initial event sync fails transiently', async () => {
+    const start = await app.request(`/api/agent-integrations/${id}/authorize`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    const state = new URL((await start.json()).url).searchParams.get('state')!
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => Response.json(url.endsWith('/oauth/token')
+      ? { access_token: 'new-access', refresh_token: 'new-refresh', expires_in: 3600, scope: 'read write app:mentionable app:assignable' }
+      : { data: { viewer: { id: 'app', app: true, name: 'Helper', displayName: 'Helper', avatarUrl: null, organization: { id: 'workspace', name: 'Test' } } } })))
+    manager.addIntegration.mockRejectedValueOnce(new Error('Linear request failed (503)'))
+    const response = await app.request(`/api/agent-integrations/linear/callback?state=${state}&code=code`)
+    expect(response.status).toBe(200)
+    expect(await response.text()).toContain('retry automatically')
+    expect(getLinearConfig(id)).toMatchObject({ tokens: { accessToken: 'new-access' }, authorizationPending: false })
   })
 
 })

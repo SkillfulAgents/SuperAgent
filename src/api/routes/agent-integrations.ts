@@ -24,7 +24,10 @@ router.get('/linear/callback', async c => {
   }
   try {
     const id = await completeLinearSetup(state, code)
-    await agentIntegrationManager.addIntegration(id)
+    try { await agentIntegrationManager.addIntegration(id) } catch (error) {
+      captureException(error, { tags: { component: 'linear-setup', operation: 'initial-connect' } })
+      return c.html('<h1>Linear authorized</h1><p>Your account is connected. Event sync is temporarily unavailable and will retry automatically. You can close this window and return to Gamut.</p>')
+    }
     return c.html('<h1>Linear connected</h1><p>You can close this window and return to Gamut.</p>')
   } catch (error) {
     captureException(error, { tags: { component: 'linear-setup', operation: 'callback' } })

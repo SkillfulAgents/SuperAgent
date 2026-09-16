@@ -74,9 +74,33 @@ describe('Linear subscription transport', () => {
     expect(wake).toHaveBeenCalledTimes(2)
     expect(authorization).toHaveBeenCalledTimes(2)
   })
-  it('keeps exponential backoff when the handshake succeeds but an operation is rejected', async () => {
-    await connect()
+  it('keeps healthy subscriptions alive when one operation is rejected, with polling covering the gap', async () => {
+    transport.start(); await vi.advanceTimersByTimeAsync(0)
+    socket().frame({ type: 'connection_ack' })
     socket().frame({ type: 'error', id: 'notificationCreated', payload: [] })
+    await vi.advanceTimersByTimeAsync(12000)
+    expect(socket().sent.filter(frame => frame.type === 'subscribe')).toHaveLength(9)
+    expect(transport.isReady()).toBe(false)
+    const wakes = wake.mock.calls.length
+    socket().frame({ type: 'next', id: 'commentCreated', payload: { data: { commentCreated: { issue: { id: 'issue' } } } } })
+    expect(wake).toHaveBeenCalledTimes(wakes + 1)
+    for (let tick = 0; tick < 10; tick++) {
+      socket().frame({ type: 'pong' })
+      socket().frame({ type: 'error', id: 'notificationCreated', payload: [] })
+      await vi.advanceTimersByTimeAsync(30000)
+    }
+    expect(state.sockets).toHaveLength(1)
+    expect(error).toHaveBeenCalledOnce()
+    socket().close()
+    await vi.advanceTimersByTimeAsync(1000)
+    socket().frame({ type: 'connection_ack' })
+    await vi.advanceTimersByTimeAsync(12000)
+    expect(socket().sent.some(frame => frame.id === 'notificationCreated')).toBe(false)
+    expect(transport.isReady()).toBe(false)
+  })
+  it('backs off connection-level failures even when the handshake succeeds', async () => {
+    await connect()
+    socket().frame({ type: 'error', payload: [] })
     await vi.advanceTimersByTimeAsync(1000)
     expect(state.sockets).toHaveLength(2)
     socket().frame({ type: 'connection_ack' })
@@ -85,7 +109,6 @@ describe('Linear subscription transport', () => {
     expect(state.sockets).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(1000)
     expect(state.sockets).toHaveLength(3)
-    expect(error).toHaveBeenCalledTimes(2)
   })
   it('renews authentication before expiry and cancels reconnects on disconnect', async () => {
     authorization.mockResolvedValue({ accessToken: 'token', expiresAt: Date.now() + 65000 })

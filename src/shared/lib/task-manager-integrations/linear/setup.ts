@@ -1,4 +1,5 @@
 import { removeTaskAttachments } from '../attachments'
+import { captureException } from '../../error-reporting'
 import { randomUUID } from 'node:crypto'
 import { createChatIntegration, deleteChatIntegration, getChatIntegration, listChatIntegrations, updateChatIntegrationStatus } from '../../services/chat-integration-service'
 import { linearConfigSchema, linearCredentialsSchema, linearAuthorizationInputSchema } from './config'
@@ -41,14 +42,20 @@ export async function authorizeLinearSetup(id: string, input: unknown): Promise<
 /** Only the matching attempt can change its failure state; stale callbacks are inert. */
 export function failLinearSetup(state: string, message: string, allowClaimed = false): void {
   const stateHash = hashOAuthState(state)
-  const row = listChatIntegrations().find(row => row.provider === 'linear' && getLinearConfig(row.id).oauth?.stateHash === stateHash)
+  const row = listChatIntegrations().find(row => {
+    if (row.provider !== 'linear') return false
+    try { return getLinearConfig(row.id).oauth?.stateHash === stateHash } catch { return false }
+  })
   if (!row || (!allowClaimed && getLinearConfig(row.id).oauth?.claimed)) return
   updateLinearConfig(row.id, latest => ({ ...latest, oauth: undefined, authorizationPending: false, authorizationError: message }))
   updateChatIntegrationStatus(row.id, 'disconnected', message)
 }
 export async function completeLinearSetup(state: string, code: string): Promise<string> {
   const stateHash = hashOAuthState(state)
-  const row = listChatIntegrations().find(row => row.provider === 'linear' && getLinearConfig(row.id).oauth?.stateHash === stateHash)
+  const row = listChatIntegrations().find(row => {
+    if (row.provider !== 'linear') return false
+    try { return getLinearConfig(row.id).oauth?.stateHash === stateHash } catch { return false }
+  })
   if (!row) throw new Error('Authorization expired. Start again in Gamut.')
   let config = getLinearConfig(row.id)
   const oauth = config.oauth
@@ -82,8 +89,13 @@ export async function completeLinearSetup(state: string, code: string): Promise<
   }
 }
 export async function cleanupLinearIntegration(id: string): Promise<void> {
-  const config = getLinearConfig(id)
-  if (config.tokens) await revokeLinearToken(config.tokens.refreshToken)
+  // Local deletion must work offline and for damaged stored credentials.
+  try {
+    const config = getLinearConfig(id)
+    if (config.tokens) await revokeLinearToken(config.tokens.refreshToken)
+  } catch {
+    captureException(new Error('Could not revoke deleted Linear integration credentials'), { tags: { component: 'linear-setup', operation: 'revoke' }, extra: { integrationId: id } })
+  }
   await removeTaskAttachments(id)
 }
 export async function deleteLinearSetup(id: string): Promise<void> {

@@ -19,8 +19,8 @@ export function updateLinearConfig(id: string, update: (config: LinearConfig) =>
     // in the same statement, including when different processes authorize apps.
     const identityAvailable = next.identity ? sql`not exists (
       select 1 from ${chatIntegrations} as other where other.id <> ${id} and other.provider = 'linear'
-      and json_extract(other.config, '$.identity.workspaceId') = ${next.identity.workspaceId}
-      and json_extract(other.config, '$.identity.appUserId') = ${next.identity.appUserId}
+      and json_extract(case when json_valid(other.config) then other.config else '{}' end, '$.identity.workspaceId') = ${next.identity.workspaceId}
+      and json_extract(case when json_valid(other.config) then other.config else '{}' end, '$.identity.appUserId') = ${next.identity.appUserId}
     )` : undefined
     const changed = db.update(chatIntegrations).set({ config: JSON.stringify(next), updatedAt: new Date() })
       .where(and(eq(chatIntegrations.id, id), eq(chatIntegrations.config, row.config), identityAvailable))
@@ -30,7 +30,8 @@ export function updateLinearConfig(id: string, update: (config: LinearConfig) =>
       const others = db.select().from(chatIntegrations).where(eq(chatIntegrations.provider, 'linear')).all()
       for (const other of others) {
         if (other.id === id) continue
-        const identity = parseTaskJson(linearConfigSchema, other.config).identity
+        let identity: LinearConfig['identity']
+        try { identity = parseTaskJson(linearConfigSchema, other.config).identity } catch { continue }
         if (identity?.workspaceId === next.identity.workspaceId && identity.appUserId === next.identity.appUserId) {
           throw new Error('This Linear app already belongs to another integration. Create a separate app for each agent.')
         }

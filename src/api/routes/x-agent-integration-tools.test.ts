@@ -5,6 +5,7 @@ vi.mock('@shared/lib/agent-integrations/store', () => ({ getIntegration: mocks.i
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: { getConnector: mocks.connector } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 import router from './x-agent-integration-tools'
+import { taskManagerPolicy } from '@shared/lib/task-manager-integrations/policy'
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.token.mockResolvedValue('agent')
@@ -12,7 +13,7 @@ beforeEach(() => {
   mocks.integration.mockReturnValue({ id: 'integration', agentSlug: 'agent', status: 'active' })
   mocks.execute.mockResolvedValue({ changed: true })
   mocks.getTools.mockReturnValue([{ name: 'update_task', description: 'Edit', inputSchema: {}, execute: mocks.execute }])
-  mocks.connector.mockReturnValue({ isConnected: () => true, isAllowed: () => true, getTools: mocks.getTools })
+  mocks.connector.mockReturnValue({ isConnected: () => true, isAllowed: taskManagerPolicy.isAllowed, getTools: mocks.getTools })
 })
 function post(body: unknown, token = 'token', op = 'execute') { return router.request(`/${op}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
 describe('session-bound integration tool gateway', () => {
@@ -38,4 +39,10 @@ describe('session-bound integration tool gateway', () => {
     expect((await post({ sessionId: 'sdk', name: 'update_task' })).status).toBe(401)
     expect(mocks.mapping).not.toHaveBeenCalled()
   })
+  it('allows a recovered task connector while the persisted health status still says error', async () => {
+    mocks.integration.mockReturnValue({ id: 'integration', agentSlug: 'agent', status: 'error' })
+    expect((await post({ sessionId: 'sdk', name: 'update_task' })).status).toBe(200)
+    expect(mocks.execute).toHaveBeenCalledOnce()
+  })
+
 })

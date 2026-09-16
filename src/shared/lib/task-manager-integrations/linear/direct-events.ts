@@ -2,7 +2,7 @@ import type { TaskEvent } from '../types'
 import type { DirectComment, DirectHistory, DirectIssue, DirectNotification } from './direct-schema'
 
 export interface TrackedLinearIssue { since: string; threads: Set<string> }
-export type DirectAction = { type: 'event'; event: TaskEvent } | { type: 'stop'; taskId: string; timestamp: string }
+export type DirectAction = { type: 'event'; event: TaskEvent } | { type: 'stop'; taskId: string; timestamp: string; retire?: boolean }
 function event(issue: DirectIssue, id: string, timestamp: string, text: string, payload: unknown, commentId?: string, sourceCommentId?: string): TaskEvent {
   return { id, taskId: issue.id, interactionId: issue.id, timestamp, text, payload,
     kind: 'invocation', sourceCommentId, title: `${issue.identifier}: ${issue.title}`, replyTarget: commentId ? { commentId } : {} }

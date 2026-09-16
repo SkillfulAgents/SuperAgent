@@ -375,8 +375,7 @@ chatIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), R
     const id = c.req.param('integrationId')
 
     // Keep a failed cleanup paused so health checks cannot reconnect revoked credentials.
-    await agentIntegrationManager.removeIntegration(id)
-    updateChatIntegrationStatus(id, 'paused')
+    await agentIntegrationManager.pauseIntegration(id)
 
     const integration = getChatIntegration(id)
     if (integration) await agentIntegrationRegistry.cleanup(integration)

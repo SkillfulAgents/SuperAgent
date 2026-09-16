@@ -18,13 +18,14 @@ vi.mock('./subscriptions', () => ({ LinearSubscriptions: class {
   isReady() { return true }
 } }))
 import { LinearAgentIntegration } from './linear-agent-integration'
-import { createChatIntegration, getChatIntegration } from '../../services/chat-integration-service'
+import { createChatIntegration, deleteChatIntegration, getChatIntegration } from '../../services/chat-integration-service'
 import { getLinearConfig } from './store'
-import { pendingTaskEvents, taskEventHistory } from '../store'
+import { enqueueTaskEvent, pendingTaskEvents, taskEventHistory } from '../store'
 const at = '2026-09-01T00:00:00.000Z'
 const issue = { id: 'issue', identifier: 'TES-1', title: 'Test', updatedAt: at, archivedAt: null, delegate: { id: 'app' }, state: { id: 'todo', name: 'Todo', type: 'unstarted' } }
 const page = (nodes: unknown[]) => ({ nodes, pageInfo: { hasNextPage: false, endCursor: null } })
-let integration: LinearAgentIntegration
+class TestLinearIntegration extends LinearAgentIntegration { recover() { return this.recoverTasks() } }
+let integration: TestLinearIntegration
 let id: string
 let events: IntegrationEvent[]
 let fetchMock: ReturnType<typeof vi.fn<(url: string, options: { body: string }) => Promise<Response>>>
@@ -40,7 +41,7 @@ beforeEach(() => {
     identity: { workspaceId: 'workspace', workspaceName: 'Test', appUserId: 'app', appName: 'Agent' },
     tokens: { accessToken: 'access', refreshToken: 'refresh', expiresAt: Date.now() + 3600000, scope: 'read write app:mentionable app:assignable' },
   } })
-  integration = new LinearAgentIntegration(getChatIntegration(id)!)
+  integration = new TestLinearIntegration(getChatIntegration(id)!)
   events = []; integration.onEvent(event => { events.push(event) })
   notifications = [{ id: 'assignment', type: 'issueAssignedToYou', createdAt: at, updatedAt: at, actor: { id: 'human', app: false }, issue, comment: null }]
   comments = []; history = []
@@ -131,6 +132,43 @@ describe('Linear integration lifecycle', () => {
     await vi.advanceTimersByTimeAsync(300000)
     expect(fetchMock).toHaveBeenCalledTimes(calls)
     expect(errors).not.toHaveBeenCalled()
+  })
+
+  it('stops timer work safely when its row disappears', async () => {
+    await integration.connect()
+    deleteChatIntegration(id)
+    transport.wake(); await vi.advanceTimersByTimeAsync(250)
+    expect(integration.isConnected()).toBe(false)
+    const calls = fetchMock.mock.calls.length
+    await vi.advanceTimersByTimeAsync(300000)
+    expect(fetchMock).toHaveBeenCalledTimes(calls)
+  })
+  it('releases dispatch after a failed poll so accepted work can continue during backoff', async () => {
+    await integration.connect()
+    enqueueTaskEvent(id, { id: 'queued', taskId: 'another-issue', interactionId: '', kind: 'invocation',
+      timestamp: new Date().toISOString(), text: 'Continue accepted work', replyTarget: {}, payload: {} })
+    fetchMock.mockResolvedValue(new Response(null, { status: 503 }))
+    transport.wake(); await vi.advanceTimersByTimeAsync(250)
+    await integration.recover()
+    expect(events.filter(event => event.type === 'input')).toHaveLength(2)
+  })
+  it('retires a removed issue once, ignores overlapping notifications, and rediscovers a new mention', async () => {
+    await integration.connect()
+    const normal = fetchMock.getMockImplementation()!
+    let removed = true
+    fetchMock.mockImplementation(async (url, options) => JSON.parse(options.body).query.includes('issues(') && removed
+      ? Response.json({ data: { issues: page([]) } }) : normal(url, options))
+    transport.wake(); await vi.advanceTimersByTimeAsync(250)
+    const rows = taskEventHistory(id).length
+    expect(pendingTaskEvents(id)).toEqual([])
+    const calls = fetchMock.mock.calls.length
+    for (let tick = 0; tick < 5; tick++) { transport.wake(); await vi.advanceTimersByTimeAsync(250) }
+    expect(taskEventHistory(id)).toHaveLength(rows)
+    expect(fetchMock.mock.calls.slice(calls).every(([, options]) => JSON.parse(options.body).query.includes('notifications('))).toBe(true)
+    removed = false
+    notifications = [{ id: 'new-mention', type: 'issueMention', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), actor: { id: 'human', app: false }, issue, comment: null }]
+    transport.wake(); await vi.advanceTimersByTimeAsync(250)
+    expect(pendingTaskEvents(id).map(row => row.externalEventId)).toEqual(['mention:new-mention'])
   })
 
 })

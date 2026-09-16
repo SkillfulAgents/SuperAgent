@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, like, notExists } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, like, notExists, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/sqlite-core'
 import { changesOf } from '../db/batch'
 import { db } from '../db'
@@ -17,7 +17,7 @@ export function enqueueTaskEvent(integrationId: string, event: TaskEvent): boole
     status: event.kind === 'context' ? 'context' : 'queued', createdAt: now, updatedAt: now,
   }).onConflictDoNothing().run()) > 0
 }
-export function readTaskEvent(row: StoredTaskEvent): TaskEvent { return parseTaskJson(taskEventSchema, row.eventJson) }
+export function readTaskEvent(row: Pick<StoredTaskEvent, 'eventJson'>): TaskEvent { return parseTaskJson(taskEventSchema, row.eventJson) }
 export function getTaskEvent(id: string): StoredTaskEvent | undefined {
   return db.select().from(integrationTaskEvents).where(eq(integrationTaskEvents.id, id)).get()
 }
@@ -49,15 +49,29 @@ export function updateTaskEvent(id: string, patch: Partial<Pick<StoredTaskEvent,
   'status' | 'sessionId' | 'responseText' | 'publicationJson' | 'publishedId' | 'inputRequestJson'>>): void {
   db.update(integrationTaskEvents).set({ ...patch, updatedAt: new Date() }).where(eq(integrationTaskEvents.id, id)).run()
 }
-export function preparePublication(row: StoredTaskEvent, kind: TaskPublication['kind'], body: string): TaskPublication {
-  const existing = getTaskEvent(row.id)
-  if (existing?.publicationJson) {
-    updateTaskEvent(row.id, { status: 'responding' })
-    return parseTaskJson(taskPublicationSchema, existing.publicationJson)
-  }
-  const publication: TaskPublication = { id: crypto.randomUUID(), kind, body }
-  updateTaskEvent(row.id, { status: 'responding', publicationJson: JSON.stringify(taskPublicationSchema.parse(publication)) })
-  return publication
+/** A late answer cannot reopen a finished, cancelled, or different request. */
+export function resumeTaskInput(id: string, requestId: string): void {
+  db.update(integrationTaskEvents).set({ status: 'running', inputRequestJson: null, updatedAt: new Date() }).where(and(
+    eq(integrationTaskEvents.id, id), eq(integrationTaskEvents.status, 'awaiting_input'),
+    sql`json_extract(${integrationTaskEvents.inputRequestJson}, '$.id') = ${requestId}`,
+  )).run()
+}
+
+/** Keep stream deltas inside SQLite: no full draft SELECT/JS copy per token. */
+export function writeTaskResponse(integrationId: string, taskId: string, sessionId: string, eventId: string | undefined, text: string, append: boolean): void {
+  db.update(integrationTaskEvents).set({
+    responseText: append ? sql`substr(coalesce(${integrationTaskEvents.responseText}, '') || ${text}, -48000)` : '', updatedAt: new Date(),
+  }).where(and(eq(integrationTaskEvents.integrationId, integrationId), eq(integrationTaskEvents.taskId, taskId),
+    eq(integrationTaskEvents.sessionId, sessionId), eventId ? eq(integrationTaskEvents.id, eventId) : undefined,
+    inArray(integrationTaskEvents.status, ['running', 'awaiting_input']),
+  )).run()
+}
+
+export function preparePublication(row: StoredTaskEvent, kind: TaskPublication['kind'], body: string): void {
+  const publication = JSON.stringify(taskPublicationSchema.parse({ id: crypto.randomUUID(), kind, body }))
+  db.update(integrationTaskEvents).set({ status: 'responding', updatedAt: new Date(),
+    publicationJson: kind === 'error' ? publication : sql`coalesce(${integrationTaskEvents.publicationJson}, ${publication})`,
+  }).where(and(eq(integrationTaskEvents.id, row.id), inArray(integrationTaskEvents.status, ['running', 'awaiting_input']))).run()
 }
 export function taskContextUpdates(integrationId: string, taskId: string): TaskEvent[] {
   return db.select().from(integrationTaskEvents).where(and(
@@ -86,4 +100,10 @@ export function findTaskEvent(integrationId: string, externalEventId: string): S
 /** Include accepted work that has not created its runtime session yet. */
 export function taskEventHistory(integrationId: string): StoredTaskEvent[] {
   return db.select().from(integrationTaskEvents).where(eq(integrationTaskEvents.integrationId, integrationId)).orderBy(asc(integrationTaskEvents.createdAt)).all()
+}
+
+export function taskTrackingHistory(integrationId: string) {
+  return db.select({ taskId: integrationTaskEvents.taskId, eventJson: integrationTaskEvents.eventJson,
+    publishedId: integrationTaskEvents.publishedId }).from(integrationTaskEvents)
+    .where(eq(integrationTaskEvents.integrationId, integrationId)).orderBy(asc(integrationTaskEvents.createdAt)).all()
 }

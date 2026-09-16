@@ -12,7 +12,7 @@ export function IntegrationStatusCard({ integration, connected }: {
   const updateIntegration = useUpdateAgentIntegration()
   const state = deriveAgentIntegrationState(integration.status, connected, integration.reconnectRequired)
   // "On" covers active/error/connecting — anything the user means to be running.
-  const isOn = integration.hasCredentials && integration.status !== 'paused' && integration.status !== 'disconnected'
+  const isOn = integration.status !== 'paused' && integration.status !== 'disconnected'
 
   return (
     <DetailCard
@@ -23,7 +23,7 @@ export function IntegrationStatusCard({ integration, connected }: {
           <Switch
             className="scale-75 origin-right"
             checked={isOn}
-            disabled={updateIntegration.isPending || !integration.hasCredentials}
+            disabled={updateIntegration.isPending || (!isOn && !integration.hasCredentials)}
             aria-label={isOn ? 'Pause integration' : 'Resume integration'}
             onCheckedChange={(next) =>
               updateIntegration.mutate({ id: integration.id, status: next ? 'active' : 'paused' })

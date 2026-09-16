@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
   mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
   streams: new Map<string, (event: unknown) => void>(),
+  global: undefined as ((event: unknown) => void) | undefined, interrupt: vi.fn(),
   claim: vi.fn(), notify: vi.fn().mockResolvedValue(undefined),
   create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), register: vi.fn(), metadata: vi.fn(),
 }))
@@ -25,7 +26,7 @@ vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
   },
   listActiveChatIntegrationSessions: (id: string) => [...state.mappings.values()].filter(mapping => mapping.integrationId === id),
   getChatIntegrationSession: (id: string, externalId: string) => state.mappings.get(`${id}:${externalId}`),
-  getChatIntegrationSessionBySessionId: vi.fn(),
+  getChatIntegrationSessionBySessionId: (_agent: string, id: string) => [...state.mappings.values()].find(mapping => mapping.sessionId === id),
   listChatIntegrationSessions: vi.fn(() => []),
   archiveChatIntegrationSession: vi.fn(), updateChatIntegrationSessionName: vi.fn(), touchChatIntegrationSession: vi.fn(), getLastDisplayName: vi.fn(),
 }))
@@ -36,10 +37,10 @@ vi.mock('@shared/lib/agent-actor', () => ({
     inputs: { claim: state.claim },
     sessions: {
       create: state.create, register: state.register, updateMetadata: state.metadata,
-      markActive: vi.fn(), subscribeStream: state.subscribeStream, isStreamSubscribed: () => false,
+      activeIds: () => ['session-1'], markActive: vi.fn(), subscribeStream: state.subscribeStream, isStreamSubscribed: () => false,
     },
     messages: {
-      send: state.send,
+      send: state.send, interrupt: state.interrupt,
       withSend: (_session: string, callback: () => Promise<void>) => callback(),
       subscribe: (session: string, callback: (event: unknown) => void) => {
         state.streams.set(session, callback)
@@ -52,7 +53,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({ agentExists: async () => 
 vi.mock('@shared/lib/config/settings', () => ({ getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('@shared/lib/services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
-vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: { addGlobalNotificationClient: () => () => {} } }))
+vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: { addGlobalNotificationClient: (callback: (event: unknown) => void) => { state.global = callback; return () => { state.global = undefined } } } }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: state.notify } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 
@@ -80,6 +81,7 @@ class ObjectIntegration extends AgentIntegration {
     return this.emitEvent({ type: 'response', externalId: 'object-7', requestId: 'input-1', requestKind: 'input', value: 'yes' })
       .catch(error => this.emitError(error))
   }
+  cancel(onInterrupted: () => void) { return this.emitEvent({ type: 'cancel', externalId: 'object-7', onInterrupted }) }
   fail(error: Error) { this.emitError(error) }
   input(comment: string, text = 'hello') {
     return this.emitEvent({ type: 'input', externalId: comment, id: comment, timestamp: new Date(), payload: { objectId: 'object-7', text } })
@@ -250,4 +252,39 @@ describe('AgentIntegration host contract', () => {
     expect(create).not.toHaveBeenCalled()
     expect(() => metadataOnly.register({ definition: adapter.definition, policy: adapter, create })).toThrow('Duplicate integration provider')
   })
+  it('acknowledges cancellation only after the mapped runtime confirms interruption', async () => {
+    await manager.start()
+    const acknowledged = vi.fn()
+    await adapter.cancel(acknowledged)
+    expect(state.interrupt).not.toHaveBeenCalled()
+    expect(acknowledged).not.toHaveBeenCalled()
+    await adapter.input('comment')
+    await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+    state.interrupt.mockResolvedValue(false)
+    await adapter.cancel(acknowledged)
+    expect(acknowledged).not.toHaveBeenCalled()
+    state.interrupt.mockResolvedValue(true)
+    await adapter.cancel(acknowledged)
+    expect(state.interrupt).toHaveBeenCalledWith('session-1')
+    expect(acknowledged).toHaveBeenCalledOnce()
+  })
+  it('routes matched review creation and resolution without guessing a task session', async () => {
+    await manager.start()
+    await adapter.input('comment')
+    await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+    adapter.outputs = []
+    const request = { id: 'review', kind: 'proxy_review', blocking: true, autoApproved: false,
+      scope: { agentSlug: 'installation-a', sessionId: 'another-session' }, payload: {} }
+    state.global?.({ type: 'user_request_created', request })
+    state.global?.({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a' } } })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(adapter.outputs).toEqual([])
+    state.global?.({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a', sessionId: 'session-1' } } })
+    await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
+    expect(adapter.outputs[0].output.type).toBe('request')
+    state.global?.({ type: 'user_request_resolved', kind: 'proxy_review', requestId: 'review', scope: { agentSlug: 'installation-a', sessionId: 'session-1' } })
+    await vi.waitFor(() => expect(adapter.outputs).toHaveLength(2))
+    expect(adapter.outputs[1]).toMatchObject({ context: { sessionId: 'session-1' }, output: { type: 'runtime', event: { type: 'user_request_resolved', requestId: 'review' } } })
+  })
+
 })

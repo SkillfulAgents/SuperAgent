@@ -9,7 +9,7 @@ import { getIntegration, getIntegrationSession } from '../agent-integrations/sto
 import { pendingUserInputRequestSchema } from '../user-input/request-schema'
 import { captureException } from '../error-reporting'
 import { activeTaskEvent, claimTaskEvent, enqueueTaskEvent, getTaskEvent, pendingTaskEvents,
-  preparePublication, readTaskEvent, wasStopped, taskContextUpdates, updateTaskEvent, type StoredTaskEvent } from './store'
+  preparePublication, resumeTaskInput, writeTaskResponse, readTaskEvent, wasStopped, taskContextUpdates, updateTaskEvent, type StoredTaskEvent } from './store'
 import { parseTaskJson, taskPublicationSchema, taskRuntimeEventSchema } from './schemas'
 import { summarizeTaskReply } from './summary'
 import type { TaskEvent, TaskPublication, TaskSnapshot } from './types'
@@ -66,7 +66,7 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
           let answered = false
           await this.emitEvent({ type: 'response', externalId: event.taskId, requestId: request.id,
             requestKind: 'input', onAnswered: () => { answered = true }, value: { [questions.data[0].question]: event.text } })
-          if (answered) updateTaskEvent(active.id, { status: 'running', inputRequestJson: null })
+          if (answered) resumeTaskInput(active.id, request.id)
           else await this.publishTask(readTaskEvent(active), { id: crypto.randomUUID(), kind: 'elicitation', body: 'I could not apply that answer. Please complete the pending question in Gamut.' })
           return
         }
@@ -80,7 +80,7 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
   }
 
   protected async drainTasks(): Promise<void> {
-    if (this.draining || !this.connected || this.dispatchSuspended) return
+    if (this.draining || !this.isConnected() || this.dispatchSuspended) return
     const integration = getIntegration(this.installation.id)
     if (!integration || !this.isAllowed({ integration, externalId: '' })) return
     this.draining = true
@@ -124,6 +124,14 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
     try { await next } finally { if (this.deliveries.get(context.externalId) === next) this.deliveries.delete(context.externalId) }
   }
   private async deliverInOrder(context: IntegrationSessionContext, output: IntegrationOutput): Promise<void> {
+    if (output.type === 'runtime' && context.sessionId) {
+      const stream = taskRuntimeEventSchema.safeParse(output.event)
+      if (stream.success && ['stream_delta', 'stream_start', 'tool_use_start'].includes(stream.data.type)) {
+        writeTaskResponse(this.installation.id, context.externalId, context.sessionId, context.replyTarget?.eventId,
+          stream.data.text ?? '', stream.data.type === 'stream_delta')
+        return
+      }
+    }
     const candidate = output.type === 'message' ? activeTaskEvent(this.installation.id, context.externalId) : context.replyTarget?.eventId ? getTaskEvent(context.replyTarget.eventId) : activeTaskEvent(this.installation.id, context.externalId)
     if (!candidate || candidate.integrationId !== this.installation.id || candidate.taskId !== context.externalId) return
     if (!['running', 'awaiting_input'].includes(candidate.status)) return
@@ -133,15 +141,11 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
     if (!candidate.sessionId || candidate.sessionId !== context.sessionId) return
     if (output.type === 'runtime') {
       const event = taskRuntimeEventSchema.safeParse(output.event)
-      if (event.success && ['stream_start', 'tool_use_start'].includes(event.data.type)) updateTaskEvent(candidate.id, { responseText: '' })
-      if (event.success && event.data.type === 'stream_delta' && event.data.text) {
-        updateTaskEvent(candidate.id, { responseText: ((getTaskEvent(candidate.id)?.responseText ?? '') + event.data.text).slice(-48000) })
-      }
       if (event.success && event.data.type === 'user_request_created') {
         const data = z.object({ request: pendingUserInputRequestSchema }).safeParse(output.event)
         if (data.success) await this.requestInput(candidate, data.data.request)
       }
-      if (event.success && event.data.type === 'user_request_resolved') updateTaskEvent(candidate.id, { status: 'running', inputRequestJson: null })
+      if (event.success && event.data.type === 'user_request_resolved' && event.data.requestId) resumeTaskInput(candidate.id, event.data.requestId)
     } else if (output.type === 'request') await this.requestInput(candidate, output.request)
     else if (output.type === 'turn-completed') {
       if (candidate.status === 'awaiting_input') return
@@ -154,7 +158,10 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
   }
 
   private async requestInput(row: StoredTaskEvent, request: z.infer<typeof pendingUserInputRequestSchema>): Promise<void> {
-    if (row.inputRequestJson || request.autoApproved) return
+    // Agent-scoped reviews do not identify the turn that caused them. Never
+    // park an arbitrary issue session (or one belonging to another session).
+    if (request.scope.agentSlug !== this.installation.agentSlug || request.scope.sessionId !== row.sessionId) return
+    if (row.inputRequestJson || request.autoApproved || !request.blocking) return
     const questions = request.kind === 'question' ? z.array(z.object({ question: z.string() })).safeParse(request.payload.questions) : null
     const link = withSessionUrl(resolveAppLinkContext(this.installation.agentSlug), row.sessionId ?? undefined)?.url
     const body = (questions?.success ? questions.data.map(question => question.question).join('\n\n') + '\n\nReply here for a single question, or answer in Gamut.'
@@ -168,9 +175,8 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
     const current = getTaskEvent(row.id)
     if (!current || !['running', 'awaiting_input'].includes(current.status)) return
     const discarded = kind === 'error' && current.publicationJson ? parseTaskJson(taskPublicationSchema, current.publicationJson) : undefined
-    if (kind === 'error') updateTaskEvent(row.id, { publicationJson: null })
     // Close the tool gate before asynchronous cleanup can yield to a late draft.
-    preparePublication(getTaskEvent(row.id)!, kind, body)
+    preparePublication(current, kind, body)
     if (discarded?.attachments?.length) await this.cleanupAttachments(discarded.id)
     await this.flushPublication(getTaskEvent(row.id)!)
     queueMicrotask(() => { void this.drainTasks().catch(error => this.report(error, 'drain')) })

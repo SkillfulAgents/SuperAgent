@@ -30,7 +30,7 @@ for (const op of ['list', 'execute'] as const) {
       }
       if (!mapping || mapping.archivedAt) return c.json(op === 'list' ? { tools: [] } : { error: 'No integration is bound to this session' }, op === 'list' ? 200 : 403)
       const integration = getIntegration(mapping.integrationId)
-      if (!integration || integration.agentSlug !== agentSlug || integration.status !== 'active') return c.json({ error: 'Integration is not active' }, 403)
+      if (!integration || integration.agentSlug !== agentSlug) return c.json({ error: 'Integration is not active' }, 403)
       const connector = agentIntegrationManager.getConnector(integration.id)
       if (!connector?.isConnected()) return c.json({ error: 'Integration is not connected' }, 409)
       const context = { integration, externalId: mapping.externalId, sessionId: body.sessionId }

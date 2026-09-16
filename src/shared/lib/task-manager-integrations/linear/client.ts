@@ -5,6 +5,7 @@ import { getLinearConfig, updateLinearConfig } from './store'
 
 export class LinearAuthorizationError extends Error {}
 export class LinearAccessError extends Error {}
+export class LinearNotFoundError extends LinearAccessError {}
 const tokenResponseSchema = z.object({
   access_token: z.string().min(1), refresh_token: z.string().min(1),
   expires_in: z.number().positive(), scope: z.string(),
@@ -79,7 +80,8 @@ export class LinearClient {
     if (response.status === 403 || response.status === 404) throw new LinearAccessError('Linear issue is no longer accessible')
     if (!response.ok) throw new Error(`Linear request failed (${response.status})`)
     const result = z.object({ data: z.unknown().optional(), errors: z.array(z.object({ message: z.string().optional(), extensions: z.object({ code: z.string().optional() }).passthrough().optional() }).passthrough()).optional() }).parse(await response.json())
-    if (result.errors?.some(error => ['FORBIDDEN', 'NOT_FOUND', 'ENTITY_NOT_FOUND'].includes(error.extensions?.code ?? '') || (error.extensions?.code === 'INPUT_ERROR' && error.message?.startsWith('Entity not found:')))) throw new LinearAccessError('Linear issue is no longer accessible')
+    if (result.errors?.some(error => ['NOT_FOUND', 'ENTITY_NOT_FOUND'].includes(error.extensions?.code ?? '') || (error.extensions?.code === 'INPUT_ERROR' && error.message?.startsWith('Entity not found:')))) throw new LinearNotFoundError('Linear entity was not found')
+    if (result.errors?.some(error => error.extensions?.code === 'FORBIDDEN')) throw new LinearAccessError('Linear operation is not permitted')
     if (result.errors?.length) throw new Error('Linear could not complete the operation. Check app access and the requested fields.')
     return schema.parse(result.data)
   }

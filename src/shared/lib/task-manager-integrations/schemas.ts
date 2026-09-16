@@ -13,7 +13,7 @@ export const taskPublicationSchema = z.object({
   attachments: z.array(taskAttachmentSchema).max(MAX_TASK_ATTACHMENTS).optional(),
 })
 export const taskRuntimeEventSchema = z.object({
-  type: z.string(), text: z.string().optional(), error: z.string().optional(),
+  type: z.string(), requestId: z.string().optional(), text: z.string().optional(), error: z.string().optional(),
 })
 
 /** Decode persisted JSON at the boundary and report a stable, secret-free error. */

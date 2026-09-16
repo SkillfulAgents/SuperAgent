@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { IntegrationTool } from '../../agent-integrations/types'
 import type { TaskEvent, TaskPublication, TaskSnapshot } from '../types'
-import { LinearClient } from './client'
+import { LinearClient, LinearNotFoundError } from './client'
 import { linearPublicationBody } from './attachments'
 import { reactionResultSchema } from './reaction-schema'
 
@@ -67,12 +67,15 @@ export class LinearTasks {
     const client = this.client.withGuard(assertActive)
     // Client-generated UUIDs are persisted before sending. Reconcile ambiguous
     // outcomes on retry with the same ID; never create a second comment UUID.
+    let existing: { comment: { id: string; issue: { id: string } | null } | null } | undefined
     try {
-      const existing = await client.request(`query($id:String!){comment(id:$id){id issue{id}}}`, { id: publication.id },
-        z.object({ comment: z.object({ id: z.string(), issue: z.object({ id: z.string() }).nullable() }) }))
+      existing = await client.request(`query($id:String!){comment(id:$id){id issue{id}}}`, { id: publication.id },
+        z.object({ comment: z.object({ id: z.string(), issue: z.object({ id: z.string() }).nullable() }).nullable() }))
+    } catch (error) { if (!(error instanceof LinearNotFoundError)) throw error }
+    if (existing?.comment) {
       if (existing.comment.issue?.id !== event.taskId) throw new Error('Comment belongs to another issue')
       return existing.comment.id
-    } catch { /* New IDs are normally not found. The create still uses this ID. */ }
+    }
     const result = await client.request(`mutation($input:CommentCreateInput!){commentCreate(input:$input){success comment{id}}}`, {
       input: { id: publication.id, issueId: event.taskId, body: linearPublicationBody(publication), ...(event.replyTarget.commentId ? { parentId: event.replyTarget.commentId } : {}) },
     }, z.object({ commentCreate: z.object({ success: z.boolean(), comment: z.object({ id: z.string() }).nullable() }) }))

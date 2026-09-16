@@ -44,4 +44,13 @@ describe('IntegrationStatusCard', () => {
     await user.click(screen.getByLabelText(/resume integration/i))
     expect(updateMock).toHaveBeenCalledWith({ id: 'int-1', status: 'active' })
   })
+  it('allows pausing damaged credentials but prevents resuming them', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(<IntegrationStatusCard integration={makeIntegration({ status: 'error', hasCredentials: false })} />)
+    await user.click(screen.getByLabelText(/pause integration/i))
+    expect(updateMock).toHaveBeenCalledWith({ id: 'int-1', status: 'paused' })
+    rerender(<IntegrationStatusCard integration={makeIntegration({ status: 'paused', hasCredentials: false })} />)
+    expect(screen.getByRole('switch')).toBeDisabled()
+  })
+
 })

@@ -117,7 +117,7 @@ describe('Linear direct recovery', () => {
       return Response.json({ errors: [{ message: 'Entity not found: Issue', extensions: { code: 'INPUT_ERROR' } }] })
     })
     vi.stubGlobal('fetch', fetchMock)
-    expect(await sync(new Map([['issue', { since: at, threads: new Set() }]]))).toMatchObject([{ type: 'stop', taskId: 'issue' }])
+    await expect(sync(new Map([['issue', { since: at, threads: new Set() }]]))).rejects.toThrow('not found')
     fetchMock.mockImplementation(async (_url, options) => {
       const { query } = JSON.parse(options.body)
       if (query.includes('notifications(')) return Response.json({ data: { notifications: page([]) } })
@@ -127,4 +127,15 @@ describe('Linear direct recovery', () => {
     })
     await expect(sync(new Map([['issue', { since: at, threads: new Set() }]]))).rejects.toThrow('could not complete')
   })
+  it.each([403, 404, 503])('retries history HTTP %s without returning a cancellation', async status => {
+    vi.stubGlobal('fetch', vi.fn(async (_url, options) => {
+      const { query } = JSON.parse(options.body)
+      if (query.includes('notifications(')) return Response.json({ data: { notifications: page([]) } })
+      if (query.includes('comments(')) return Response.json({ data: { comments: page([]) } })
+      if (query.includes('issues(')) return Response.json({ data: { issues: page([issue]) } })
+      return new Response(null, { status })
+    }))
+    await expect(sync(new Map([['issue', { since: at, threads: new Set() }]]))).rejects.toThrow()
+  })
+
 })

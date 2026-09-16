@@ -175,4 +175,25 @@ describe('Linear identity lifecycle', () => {
     expect(getLinearConfig(id)).toMatchObject({ runOnStatusChange: true, authorizationVersion: 'outer-update' })
   })
 
+  it.each(['offline', 'server-error', 'malformed-config'])('deletes local setup even when revocation fails: %s', async failure => {
+    const { id, state } = await setup()
+    await completeLinearSetup(state, 'code')
+    if (failure === 'malformed-config') sqlite.prepare('UPDATE chat_integrations SET config = ? WHERE id = ?').run('{bad', id)
+    fetchMock.mockImplementation(async () => {
+      if (failure === 'offline') throw new Error('Offline')
+      return new Response(null, { status: 503 })
+    })
+    await expect(deleteLinearSetup(id)).resolves.toBeUndefined()
+    expect(getChatIntegration(id)).toBeNull()
+  })
+
+  it('authorizes and updates a healthy integration despite a malformed sibling config', async () => {
+    const { id, state } = await setup()
+    const sibling = await createLinearSetup('another-agent', 'Damaged', 'owner', 'http://localhost:47897')
+    sqlite.prepare('UPDATE chat_integrations SET config = ? WHERE id = ?').run('{bad', sibling.id)
+    await expect(completeLinearSetup(state, 'code')).resolves.toBe(id)
+    updateLinearConfig(id, config => ({ ...config, runOnStatusChange: true }))
+    expect(getLinearConfig(id)).toMatchObject({ runOnStatusChange: true, identity: { appUserId: 'app-user' } })
+  })
+
 })

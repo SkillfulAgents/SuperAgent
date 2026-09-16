@@ -24,6 +24,7 @@ export class LinearSubscriptions {
   private failures = 0
   private lastPong = 0
   private ready = false
+  private unavailableOperations = new Set<string>()
   constructor(private readonly options: Options) {}
   isReady(): boolean { return this.ready }
   start(): void { if (!this.stopped) return; this.stopped = false; void this.connect() }
@@ -56,7 +57,7 @@ export class LinearSubscriptions {
             acknowledged = true
             clearTimeout(acknowledgementTimeout)
             this.lastPong = Date.now()
-            const operations = Object.entries(DIRECT_SUBSCRIPTIONS)
+            const operations = Object.entries(DIRECT_SUBSCRIPTIONS).filter(([id]) => !this.unavailableOperations.has(id))
             // Linear closed burst registration with code 4003 in live testing.
             // Pace registrations and reconcile once the whole set is installed.
             const subscribeNext = () => {
@@ -70,7 +71,7 @@ export class LinearSubscriptions {
                 this.registration = setTimeout(subscribeNext, 1500)
                 this.registration.unref()
               } else {
-                this.ready = true
+                this.ready = this.unavailableOperations.size === 0
                 this.options.onWake()
               }
             }
@@ -85,11 +86,14 @@ export class LinearSubscriptions {
           } else if (frame.type === 'pong') this.lastPong = Date.now()
           else if (frame.type === 'ping') socket.send(JSON.stringify({ type: 'pong' }))
           else if (frame.type === 'error' || frame.type === 'complete') {
-            this.options.onError(new Error('Linear subscription ended; recovering through direct API queries'))
-            socket.close(1000)
+            if (frame.id && frame.id in DIRECT_SUBSCRIPTIONS) this.operationUnavailable(frame.id)
+            else {
+              this.options.onError(new Error('Linear subscription ended; recovering through direct API queries'))
+              socket.close(1000)
+            }
           } else if (frame.type === 'next' && frame.id) {
             const result = directWakeResponseSchema.parse(frame.payload)
-            if (result.errors?.length) throw new Error('Linear subscription returned an error')
+            if (result.errors?.length) { this.operationUnavailable(frame.id); return }
             const data = result.data?.[frame.id]
             if (data && (frame.id.startsWith('notification') || (frame.id === 'userUpdated' ? data.id === this.options.appUserId : this.options.isTracked(data.issue?.id ?? data.id ?? '')))) this.options.onWake()
           }
@@ -117,6 +121,13 @@ export class LinearSubscriptions {
       this.options.onError(new Error('Could not authenticate the Linear subscription connection'))
       this.reconnect()
     }
+  }
+  private operationUnavailable(id: string): void {
+    this.ready = false
+    if (this.unavailableOperations.has(id)) return
+    this.unavailableOperations.add(id)
+    this.options.onUnavailable?.()
+    this.options.onError(new Error(`Linear subscription ${id} is unavailable; using direct API polling for this operation`))
   }
   private reconnect(): void {
     clearTimeout(this.timer)

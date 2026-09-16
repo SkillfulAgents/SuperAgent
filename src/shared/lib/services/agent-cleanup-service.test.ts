@@ -38,6 +38,10 @@ vi.mock('../analytics/server-analytics', () => ({
   trackServerEvent: vi.fn(),
 }))
 
+const pauseIntegration = vi.hoisted(() => vi.fn())
+vi.mock('../agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: { pauseIntegration } }))
+vi.mock('../error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
+import { createChatIntegration, getChatIntegration } from './chat-integration-service'
 import { cleanupAgentData } from './agent-cleanup-service'
 
 const AGENT_SLUG = 'test-agent'
@@ -500,4 +504,12 @@ describe('agent-cleanup-service', () => {
       await expect(cleanupAgentData(AGENT_SLUG)).resolves.not.toThrow()
     })
   })
+  it('disconnects an agent’s live integration before removing corrupt local credentials', async () => {
+    const id = createChatIntegration({ agentSlug: AGENT_SLUG, provider: 'linear', config: {} })
+    pauseIntegration.mockImplementationOnce(async () => { expect(getChatIntegration(id)).not.toBeNull() })
+    await cleanupAgentData(AGENT_SLUG)
+    expect(pauseIntegration).toHaveBeenCalledWith(id)
+    expect(getChatIntegration(id)).toBeNull()
+  })
+
 })
