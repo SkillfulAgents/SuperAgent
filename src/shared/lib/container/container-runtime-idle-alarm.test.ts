@@ -6,13 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockStart = vi.fn().mockResolvedValue({ status: 'running', port: 4001 })
 const mockStop = vi.fn().mockResolvedValue({ forceStopUsed: false, stopped: true })
+const mockGetInfoFromRuntime = vi.fn().mockResolvedValue({ status: 'running', port: 4001 })
 
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
     start: mockStart,
     stop: mockStop,
     stopSync: vi.fn(),
-    getInfoFromRuntime: vi.fn().mockResolvedValue({ status: 'running', port: 4001 }),
+    getInfoFromRuntime: (...args: unknown[]) => mockGetInfoFromRuntime(...args),
     getStats: vi.fn(),
     fetch: vi.fn(),
     getHostApiBaseUrl: () => 'http://127.0.0.1:3000',
@@ -137,6 +138,7 @@ describe('ContainerRuntime idle alarm', () => {
     vi.setSystemTime(T0)
     vi.clearAllMocks()
     settings.app.autoSleepTimeoutMinutes = 30
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 4001 })
     mockHasActive.mockReturnValue(false)
     mockHasAwaiting.mockReturnValue(false)
     containerHost.dropRuntime(SLUG)
@@ -270,6 +272,38 @@ describe('ContainerRuntime idle alarm', () => {
     // The start is the newest mark: a full window from now, not the stale one.
     expect(runtime.idleAlarm.isArmed()).toBe(true)
     await vi.advanceTimersByTimeAsync(TIMEOUT)
+    expect(mockStop).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mockStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-arms when a status sync sees the container running again after reporting it stopped', async () => {
+    const runtime = await startRuntime()
+    // A transient inspect failure (or a real external stop) is reported as stopped:
+    // the alarm is disarmed, and one that fires in that window finds nothing to sleep.
+    mockGetInfoFromRuntime.mockResolvedValueOnce({ status: 'stopped', port: null })
+    await runtime.syncAgentStatus()
+    expect(runtime.getCachedInfo().status).toBe('stopped')
+    expect(runtime.idleAlarm.isArmed()).toBe(false)
+    await runtime.idleAlarm.fire()
+    await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
+    expect(mockStop).not.toHaveBeenCalled()
+
+    // The next sync sees it running: the clock was never reset, so the alarm
+    // arms from the original start mark, which is already past the timeout.
+    await runtime.syncAgentStatus()
+    expect(runtime.getCachedInfo().status).toBe('running')
+    expect(runtime.idleAlarm.isArmed()).toBe(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mockStop).toHaveBeenCalledTimes(1)
+    expect(runtime.getCachedInfo().status).toBe('stopped')
+  })
+
+  it('a periodic sync that keeps seeing the container running does not push the alarm out', async () => {
+    const runtime = await startRuntime()
+    await vi.advanceTimersByTimeAsync(20 * MINUTE)
+    await runtime.syncAgentStatus()
+    await vi.advanceTimersByTimeAsync(10 * MINUTE)
     expect(mockStop).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
     expect(mockStop).toHaveBeenCalledTimes(1)

@@ -385,11 +385,20 @@ export class ContainerRuntime {
 
     this.updateCachedStatus(info.status, info.port)
 
-    // Host restart clears in-memory start times. Floor the idle clock at
-    // rediscovery so zero-session warm containers are still reaped.
-    if (info.status === 'running' && !this.activity.hasStarted()) {
-      this.activity.started()
+    if (info.status === 'running') {
+      // Host restart clears in-memory start times. Floor the idle clock at
+      // rediscovery so zero-session warm containers are still reaped.
+      if (!this.activity.hasStarted()) this.activity.started()
+      // Arm from the last mark whether or not the clock was floored just now:
+      // an alarm that fired while a sync (or a transient inspect failure)
+      // reported the container stopped found nothing to sleep and disarmed,
+      // and the marks it would have re-armed from are still on the clock.
       this.idleAlarm.schedule()
+    } else {
+      // Nothing to sleep while the container is not observed running. The
+      // marks stay: if the report was a transient failure, the next running
+      // sync arms from them again rather than from a fresh floor.
+      this.idleAlarm.cancel()
     }
 
     // Broadcast if status changed (e.g., container was stopped externally)
