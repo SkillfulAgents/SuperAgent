@@ -2,10 +2,10 @@ import { IntegrationStatusCard } from './integration-status-card'
 import { IntegrationSettingsCard } from './integration-settings-card'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { IntegrationModelEffort } from './integration-settings-controls'
-import type { PublicAgentIntegration as ChatIntegration } from '@shared/lib/agent-integrations/public'
+import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 
 export interface AgentIntegrationSidePanelProps {
-  integration: ChatIntegration
+  integration: PublicAgentIntegration
   canManage: boolean
   /** Telegram owner: can gate new conversations behind approval. */
   canManageAccess: boolean

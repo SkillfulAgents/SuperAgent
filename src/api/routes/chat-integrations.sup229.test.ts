@@ -101,7 +101,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
 
-import chatIntegrationsRouter from './agent-integration-crud'
+import chatIntegrationsRouter from './chat-integrations'
 
 function app() {
   const a = new Hono()

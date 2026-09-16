@@ -14,7 +14,7 @@ vi.mock('@renderer/context/file-preview-context', () => ({
 
 // The inbox + rows pull react-query hooks; stub the whole module so the test
 // stays a pure render of the inbox logic. "New conversation" (clear) now lives
-// in AgentIntegrationView's title bar - see chat-integration-view.test.tsx.
+// in AgentIntegrationView's title bar - see agent-integration-view.test.tsx.
 const h = vi.hoisted(() => ({
   access: [] as ChatIntegrationAccess[],
   approve: vi.fn(),

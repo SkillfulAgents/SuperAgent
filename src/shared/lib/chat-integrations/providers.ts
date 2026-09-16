@@ -3,7 +3,7 @@ import type { IntegrationProvider } from '../agent-integrations/registry'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { ChatAgentIntegration, ChatConnectorClass } from './chat-agent-integration'
 import { telegramConfigSchema, slackConfigSchema, imessageConfigSchema, type ChatProvider } from './config-schema'
-import { resolveAppLinkContext, type AppLinkContext } from './utils'
+import { resolveAppLinkContext, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { chatDefinitions } from './definitions'
 import { chatIntegrationPolicy } from './chat-policy'
 

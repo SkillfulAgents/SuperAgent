@@ -6,10 +6,10 @@ import { buildChatRows, activeWindow, type ChatRow } from './chat-inbox-model'
 import { ChatListRow } from './chat-list-row'
 import { ConversationDetail } from './conversation-detail'
 import type { ChatIntegrationSession } from '@shared/lib/db/schema'
-import type { PublicAgentIntegration as ChatIntegration } from '@shared/lib/agent-integrations/public'
+import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 
 interface ConversationHistorySectionProps {
-  integration: ChatIntegration
+  integration: PublicAgentIntegration
   sessions: ChatIntegrationSession[] | undefined
   /** The route's `?session=` value (the open window), or null. */
   routeSessionId: string | null

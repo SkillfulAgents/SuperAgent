@@ -510,7 +510,7 @@ export function isDisplayNameFallback(name: string | null | undefined): boolean 
   return !name || name.startsWith('User ')
 }
 
-export { formatSessionTimestamp } from './utils'
+export { formatSessionTimestamp } from '../agent-integrations/presentation'
 
 /** Decide whether a chat session should be rotated based on the configured timeout. */
 export function shouldRotateSession(

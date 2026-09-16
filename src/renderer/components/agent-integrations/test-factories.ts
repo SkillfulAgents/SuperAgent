@@ -1,8 +1,8 @@
 import type { ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
-import type { PublicAgentIntegration as ChatIntegration } from '@shared/lib/agent-integrations/public'
+import type { PublicChatIntegration } from '@shared/lib/chat-integrations/public'
 
-/** Schema-complete ChatIntegration for component tests; override any field. */
-export function makeChatIntegration(overrides: Partial<ChatIntegration> = {}): ChatIntegration {
+/** Schema-complete PublicChatIntegration for component tests; override any field. */
+export function makeChatIntegration(overrides: Partial<PublicChatIntegration> = {}): PublicChatIntegration {
   return {
     id: 'int-1',
     agentSlug: 'a',
@@ -22,7 +22,7 @@ export function makeChatIntegration(overrides: Partial<ChatIntegration> = {}): C
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
-  } as ChatIntegration
+  } as PublicChatIntegration
 }
 
 /** Schema-complete conversation window; `externalChatId`/`sessionId` are required. */

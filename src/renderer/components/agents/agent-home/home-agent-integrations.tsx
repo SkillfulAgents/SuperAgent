@@ -1,11 +1,13 @@
+import { isPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { useState } from 'react'
 import { Plus } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { useAgentIntegrations, useAgentIntegrationAccess, type AgentIntegrationListItem } from '@renderer/hooks/use-agent-integrations'
-import { deriveChatIntegrationState, formatProviderName } from '@shared/lib/chat-integrations/utils'
+import { deriveAgentIntegrationState, formatProviderName } from '@shared/lib/agent-integrations/presentation'
 import { AgentIntegrationPill } from '@renderer/components/agent-integrations/agent-integration-pill'
-import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { integrationSetupProviders } from '@renderer/components/agent-integrations/setup-providers'
+import type { IntegrationSetupProvider } from '@renderer/components/agent-integrations/setup-types'
 import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
@@ -19,25 +21,18 @@ interface HomeAgentIntegrationsProps {
   className?: string
 }
 
-// All three fall back to their brand SVG (public/service-icons/<slug>.svg).
-const PROVIDER_TILES: Array<{ slug: ChatProvider; label: string }> = [
-  { slug: 'telegram', label: 'Telegram' },
-  { slug: 'slack', label: 'Slack' },
-  { slug: 'imessage', label: 'iMessage' },
-]
-
 // Status dot + an owner-only "N pending" count, derived from the access list
 // the app already polls. Lives in its own component so the access query (one per
 // integration) obeys the rules of hooks inside the integration list.
 function IntegrationNameBadges({ integration, showPending }: { integration: AgentIntegrationListItem; showPending: boolean }) {
   // Approval gating is Telegram-only (see chat-integration-access-service); other
   // providers always forward, so there are never pending requests to badge.
-  const enabled = showPending && integration.provider === 'telegram' && !!integration.requireApproval
+  const enabled = showPending && isPublicChatIntegration(integration) && integration.provider === 'telegram' && !!integration.requireApproval
   const { data: access } = useAgentIntegrationAccess(enabled ? integration.id : null)
   const pending = enabled ? (access?.filter((a) => a.status === 'pending').length ?? 0) : 0
   return (
     <span className="inline-flex items-center gap-1">
-      <AgentIntegrationPill state={deriveChatIntegrationState(integration.status, integration.connected)} size="xs" />
+      <AgentIntegrationPill state={deriveAgentIntegrationState(integration.status, integration.connected)} size="xs" />
       {pending > 0 && (
         <span className="text-2xs px-1.5 py-0 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400">
           {pending} pending
@@ -55,7 +50,7 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
   const { data: agent } = useAgent(agentSlug)
   const agentName = agent?.name ?? agentSlug
   const rows = Array.isArray(integrations) ? integrations : []
-  const [setupProvider, setSetupProvider] = useState<ChatProvider | null>(null)
+  const [setupProvider, setSetupProvider] = useState<IntegrationSetupProvider | null>(null)
 
   return (
     <HomeCollapsible title="Remote Chat" className={className}>
@@ -95,10 +90,10 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
             Connect messaging to chat with this agent from anywhere.
           </p>
           <div className="mt-3 grid grid-cols-3 gap-1.5">
-            {PROVIDER_TILES.map((tile) => (
+            {integrationSetupProviders.map((tile) => (
               <button
                 key={tile.slug}
-                onClick={() => setSetupProvider(tile.slug)}
+                onClick={() => setSetupProvider(tile)}
                 aria-label={`Chat via ${tile.label}`}
                 className="flex items-center gap-2 rounded-lg border border-border bg-background p-2 shadow-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
@@ -124,11 +119,11 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-1">
-                {PROVIDER_TILES.map((tile) => (
+                {integrationSetupProviders.map((tile) => (
                   <button
                     key={tile.slug}
                     className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                    onClick={() => setSetupProvider(tile.slug)}
+                    onClick={() => setSetupProvider(tile)}
                   >
                     <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border bg-background dark:bg-zinc-200">
                       <ServiceIcon slug={tile.slug} fallback="mcp" className="h-3 w-3" />

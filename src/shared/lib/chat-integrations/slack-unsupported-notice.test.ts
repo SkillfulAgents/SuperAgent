@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { SlackConnector } from './slack-connector'
-import type { AppLinkContext } from './utils'
+import type { AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 

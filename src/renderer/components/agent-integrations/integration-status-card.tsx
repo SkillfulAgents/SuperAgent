@@ -1,16 +1,16 @@
 import { Switch } from '@renderer/components/ui/switch'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { useUpdateAgentIntegration } from '@renderer/hooks/use-agent-integrations'
-import { deriveChatIntegrationState } from '@shared/lib/chat-integrations/utils'
+import { deriveAgentIntegrationState } from '@shared/lib/agent-integrations/presentation'
 import { AgentIntegrationPill } from './agent-integration-pill'
-import type { PublicAgentIntegration as ChatIntegration } from '@shared/lib/agent-integrations/public'
+import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 
 export function IntegrationStatusCard({ integration, connected }: {
-  integration: ChatIntegration
+  integration: PublicAgentIntegration
   connected?: boolean
 }) {
   const updateIntegration = useUpdateAgentIntegration()
-  const state = deriveChatIntegrationState(integration.status, connected)
+  const state = deriveAgentIntegrationState(integration.status, connected)
   // "On" covers active/error/connecting — anything the user means to be running.
   const isOn = integration.status !== 'paused'
 

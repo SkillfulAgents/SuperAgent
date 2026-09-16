@@ -24,7 +24,7 @@ import {
 import { useAgent, useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
-import { formatProviderName } from '@shared/lib/chat-integrations/utils'
+import { formatProviderName } from '@shared/lib/agent-integrations/presentation'
 import { chatFallbackTitle } from './chat-inbox-model'
 import { ConversationHistorySection } from './conversation-history-section'
 import { AgentIntegrationSidePanel } from './agent-integration-side-panel'
