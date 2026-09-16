@@ -1004,7 +1004,7 @@ describe('session-service', () => {
       ]
       await createSessionFile('test-agent', 'forked-session', entries)
 
-      const messages = await getSessionMessages('test-agent', 'forked-session')
+      const messages = await getSessionMessages(createLocalSessionStore('test-agent'), 'forked-session')
 
       const queued = messages[messages.length - 1]
       expect(queued.type).toBe('user')
