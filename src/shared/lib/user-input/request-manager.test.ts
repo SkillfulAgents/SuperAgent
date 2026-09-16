@@ -550,6 +550,27 @@ describe('UserInputRequestManager', () => {
       expect(manager.stats.open).toBe(0)
     })
 
+    it('attaching stores that already hold requests rebuilds the id index without re-announcing them', () => {
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-a', sessionId: 's' } }))
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-b', sessionId: 's' } }))
+      manager.register(secretRequest({ id: 'tool-2', scope: { agentSlug: 'agent-b', sessionId: 's' } }))
+      const transitions: string[] = []
+      const stop = manager.onTransition((t) => transitions.push(t.type))
+
+      // What a registry rebuilt over surviving state does: attach the same
+      // stores to the router again. Nothing was created, so nothing is
+      // announced, and the index answers as it did before.
+      manager.attachAgents(agents)
+      stop()
+
+      expect(transitions).toEqual([])
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.getOpenRequest('tool-2')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.getOpenRequest('tool-1', 'agent-b')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.resolve('tool-1', 'answered')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-b')
+    })
+
     it('a named agent that does not hold the id is a miss, not a fallback to whoever does', () => {
       manager.register(secretRequest())
       expect(manager.getOpenRequest('tool-1', 'agent-z')).toBeNull()

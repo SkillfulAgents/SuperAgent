@@ -44,10 +44,30 @@ export class UserInputRequestManager implements UserInputTransitionSink {
 
   private transitionListeners = new Set<(transition: UserInputRequestTransition) => void>()
 
-  /** Called once by the agent registry with the way to each agent's store. */
+  /**
+   * Called by the agent registry with the way to each agent's store. The
+   * index is rebuilt from what the stores hold: a registry built over state
+   * that outlived an earlier one (a dev-server reload) attaches stores with
+   * requests already open, and those emit no second 'created' transition.
+   * Stores come in the order their handles were made, which is the order
+   * the agents first registered anything, so the first registrant of an id
+   * stays first.
+   */
   attachAgents(directory: AgentStoreDirectory<AgentInputRequests> | null): void {
     this.agents.attach(directory)
     this.ownersById.clear()
+    for (const store of this.agents.all()) {
+      for (const request of store.getOpenRequests()) this.indexOwner(request.id, store.slug)
+    }
+  }
+
+  private indexOwner(id: string, slug: AgentSlug): void {
+    let owners = this.ownersById.get(id)
+    if (!owners) {
+      owners = new Set()
+      this.ownersById.set(id, owners)
+    }
+    owners.add(slug)
   }
 
   /** A store's transition: index it, then fan it out. */
@@ -56,12 +76,7 @@ export class UserInputRequestManager implements UserInputTransitionSink {
     const slug = scope.agentSlug
     if (slug !== undefined) {
       if (transition.type === 'created') {
-        let owners = this.ownersById.get(id)
-        if (!owners) {
-          owners = new Set()
-          this.ownersById.set(id, owners)
-        }
-        owners.add(slug)
+        this.indexOwner(id, slug)
       } else {
         const owners = this.ownersById.get(id)
         owners?.delete(slug)

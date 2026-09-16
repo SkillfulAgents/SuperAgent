@@ -82,23 +82,34 @@ describe('the actors\' state survives a backend module reload', () => {
     expect(reloaded.agentRegistry).not.toBe(original.agentRegistry)
     expect(reloaded.agentRegistry.get('a').inputs.get('reload-secret')).not.toBeNull()
     expect(reloaded.userInputRequestManager.getOpenRequest('reload-secret', 'a')?.id).toBe('reload-secret')
+    // The router's id index was rebuilt from the surviving stores: a bare id
+    // still finds its owner, and the owner is not announced a second time.
+    expect(reloaded.userInputRequestManager.getOpenRequest('reload-secret')?.scope.agentSlug).toBe('a')
     // Visible to sweeps without anyone asking for the handle first.
     expect(reloaded.userInputRequestManager.getOpenRequestsForAgent('a').map((r) => r.id)).toEqual(['reload-secret'])
   })
 
-  it('a review parked before the reload is decidable after it, and the parked call resumes', async () => {
+  it('a review parked before the reload is decidable after it, by the actor and by bare id, and the parked call resumes', async () => {
     const original = await load()
     const decision = original.agentRegistry
       .get('a')
       .inputs.reviews.request(reviewDetails)
       .catch(() => 'rejected')
+    const bare = original.agentRegistry
+      .get('b')
+      .inputs.reviews.request(reviewDetails)
+      .catch(() => 'rejected')
     const [entry] = original.agentRegistry.get('a').inputs.reviews.pending()
+    const [bareEntry] = original.agentRegistry.get('b').inputs.reviews.pending()
 
     const reloaded = await reload()
 
     expect(reloaded.agentRegistry.get('a').inputs.reviews.pending().map((r) => r.id)).toEqual([entry.id])
     expect(reloaded.agentRegistry.get('a').inputs.reviews.submit(entry.id, 'allow')).toBe(true)
     await expect(decision).resolves.toBe('allow')
+    // The id-only decision path finds the owner through the rebuilt index.
+    expect(reloaded.reviewManager.submitDecision(bareEntry.id, 'allow')).toBe(true)
+    await expect(bare).resolves.toBe('allow')
   })
 
   it('a reconnect completed after the reload releases the request parked before it', async () => {
