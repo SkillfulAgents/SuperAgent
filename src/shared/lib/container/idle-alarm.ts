@@ -21,7 +21,11 @@
 export interface IdleAlarmDeps {
   /** How long the container may be idle before it sleeps, in ms; zero or less disables. Read at every arm. */
   timeoutMs(): number
-  /** The clock: when the container was last busy, or undefined when nothing has marked it since it stopped. */
+  /**
+   * The clock: when the container was last busy, or undefined when there is
+   * nothing to sleep — no mark since it stopped, or a container that is not
+   * running. Undefined never arms and never retries.
+   */
   lastActivityAt(): number | undefined
   /** Whether the container is busy right now: a session active or awaiting input. */
   isBusy(): boolean
@@ -33,6 +37,14 @@ export interface IdleAlarmDeps {
 
 /** How long a sleep that did not complete waits before the alarm tries again. */
 export const IDLE_ALARM_RETRY_MS = 60_000
+
+/**
+ * The longest delay Node's `setTimeout` honours (2^31 - 1 ms, about 24.8
+ * days); anything longer is silently run after 1 ms with an overflow warning.
+ * A longer wait is armed in legs of this length, and every fire rechecks the
+ * deadline before doing anything.
+ */
+export const MAX_TIMER_MS = 2_147_483_647
 
 /**
  * Whether a container whose idle clock reads `idleSince` (see
@@ -112,7 +124,7 @@ export class IdleAlarm {
     this.timer = setTimeout(() => {
       this.timer = null
       void this.fire()
-    }, ms)
+    }, Math.min(ms, MAX_TIMER_MS))
     // An armed alarm is not a reason to keep the process alive.
     this.timer.unref?.()
   }

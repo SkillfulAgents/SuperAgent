@@ -236,6 +236,45 @@ describe('ContainerRuntime idle alarm', () => {
     expect(runtime.idleAlarm.isArmed()).toBe(false)
   })
 
+  it('a session write to a stopped agent marks the clock but arms nothing, and the next start is unaffected', async () => {
+    const runtime = containerHost.runtime(SLUG)
+    // Deleting a message or appending to a transcript offline records activity.
+    runtime.noteSessionActivity()
+    expect(runtime.idleAlarm.isArmed()).toBe(false)
+    expect(runtime.idleSince()).toBeNull()
+    await vi.advanceTimersByTimeAsync(2 * TIMEOUT)
+    expect(mockStop).not.toHaveBeenCalled()
+
+    await runtime.ensureRunning()
+    expect(runtime.idleAlarm.isArmed()).toBe(true)
+    await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
+    expect(mockStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('a stale mark during an in-flight start neither arms nor fires against the start', async () => {
+    let finishStart!: (info: { status: 'running'; port: number }) => void
+    mockStart.mockImplementationOnce(() => new Promise((resolve) => { finishStart = resolve }))
+    const runtime = containerHost.runtime(SLUG)
+    const starting = runtime.ensureRunning()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(runtime.isStarting()).toBe(true)
+
+    runtime.noteSessionActivity(T0 - TIMEOUT - MINUTE)
+    expect(runtime.idleAlarm.isArmed()).toBe(false)
+    await runtime.idleAlarm.fire()
+    expect(mockStop).not.toHaveBeenCalled()
+
+    finishStart({ status: 'running', port: 4001 })
+    await starting
+    expect(runtime.getCachedInfo().status).toBe('running')
+    // The start is the newest mark: a full window from now, not the stale one.
+    expect(runtime.idleAlarm.isArmed()).toBe(true)
+    await vi.advanceTimersByTimeAsync(TIMEOUT)
+    expect(mockStop).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mockStop).toHaveBeenCalledTimes(1)
+  })
+
   it('dropping the runtime disarms it', async () => {
     const runtime = await startRuntime()
     containerHost.dropRuntime(SLUG)

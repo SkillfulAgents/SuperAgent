@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { IDLE_ALARM_RETRY_MS, IdleAlarm, idleLongerThan } from './idle-alarm'
+import { IDLE_ALARM_RETRY_MS, IdleAlarm, MAX_TIMER_MS, idleLongerThan } from './idle-alarm'
 
 const MINUTE = 60_000
 const TIMEOUT = 30 * MINUTE
@@ -177,6 +177,24 @@ describe('IdleAlarm', () => {
     mark()
     await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
     expect(sleep).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits out a timeout longer than a Node timer in legs, without firing early', async () => {
+    const THIRTY_DAYS = 30 * 24 * 60 * MINUTE
+    const { sleep, alarm, mark } = fakeContainer({ timeoutMs: THIRTY_DAYS })
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+    mark()
+    expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), MAX_TIMER_MS)
+
+    // The first leg ends before the deadline: the alarm rechecks and re-arms.
+    await vi.advanceTimersByTimeAsync(MAX_TIMER_MS)
+    expect(sleep).not.toHaveBeenCalled()
+    expect(alarm.isArmed()).toBe(true)
+    expect(setTimeoutSpy).toHaveBeenCalledTimes(2)
+
+    await vi.advanceTimersByTimeAsync(THIRTY_DAYS - MAX_TIMER_MS + 1)
+    expect(sleep).toHaveBeenCalledTimes(1)
+    setTimeoutSpy.mockRestore()
   })
 
   it('fire() decides now and ignores a second call while a sleep is in flight', async () => {

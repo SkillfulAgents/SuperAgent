@@ -97,7 +97,7 @@ export class ContainerRuntime {
    */
   readonly idleAlarm = new IdleAlarm({
     timeoutMs: () => (getSettings().app?.autoSleepTimeoutMinutes ?? 30) * 60_000,
-    lastActivityAt: () => this.activity.lastActivityAt(),
+    lastActivityAt: () => this.sleepableSince(),
     isBusy: () => this.isBusy(),
     sleep: () => this.sleepIdle(),
   })
@@ -236,12 +236,22 @@ export class ContainerRuntime {
       status: 'stopped',
     })
     const client = this.getClient()
-    const startPromise = this.doStartContainer(client)
+    await this.trackStart(this.doStartContainer(client))
+  }
+
+  /**
+   * Hold a start as the in-flight one until it settles, then arm the idle
+   * alarm: a mark made while the start was in flight (the start's own, or a
+   * session write) could not arm it, since the alarm is inert during a start.
+   * A start that failed leaves the container not running, so arming is a no-op.
+   */
+  private async trackStart(startPromise: Promise<ContainerClient>): Promise<void> {
     this.starting = startPromise
     try {
       await startPromise
     } finally {
       this.starting = null
+      this.idleAlarm.schedule()
     }
   }
 
@@ -477,13 +487,7 @@ export class ContainerRuntime {
       this.assertNotStopping('start')
       if (this.starting) return this.starting
 
-      const startPromise = this.doStartContainer(client)
-      this.starting = startPromise
-      try {
-        await startPromise
-      } finally {
-        this.starting = null
-      }
+      await this.trackStart(this.doStartContainer(client))
     }
 
     return client
@@ -658,9 +662,9 @@ export class ContainerRuntime {
     this.updateCachedStatus(info.status, info.port)
 
     // The start is the first mark on the idle clock: it floors stale session
-    // timestamps from before the previous sleep and arms the alarm.
+    // timestamps from before the previous sleep. The alarm is armed by
+    // trackStart once this start is no longer in flight.
     this.activity.started()
-    this.idleAlarm.schedule()
 
     // Broadcast agent status change globally
     messagePersister.broadcastGlobal({
@@ -699,11 +703,25 @@ export class ContainerRuntime {
 
   /**
    * When this container last stopped being busy, or null while a session is
-   * active or awaiting input, or while nothing has marked the clock. What
-   * the idle alarm decides on; see `ContainerOps.idleSince`.
+   * active or awaiting input, or while there is nothing to put to sleep: no
+   * mark on the clock, or a container that is not running. What the idle
+   * alarm decides on; see `ContainerOps.idleSince`.
    */
   idleSince(): number | null {
-    return this.isBusy() ? null : (this.activity.lastActivityAt() ?? null)
+    return this.isBusy() ? null : (this.sleepableSince() ?? null)
+  }
+
+  /**
+   * The clock as the alarm sees it: the last mark while the container is
+   * running and neither starting nor stopping, otherwise nothing. A session
+   * of a stopped agent is still written to (a message deleted, a transcript
+   * appended), and that marks the clock, but it must not arm an alarm that
+   * would stop a container that is not there — or, worse, one that a later
+   * start is in the middle of bringing up.
+   */
+  private sleepableSince(): number | undefined {
+    if (this.starting || this.stopping || this.getCachedInfo().status !== 'running') return undefined
+    return this.activity.lastActivityAt()
   }
 
   private isBusy(): boolean {
