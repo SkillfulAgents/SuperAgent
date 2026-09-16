@@ -4,7 +4,7 @@ import { createVoiceAgentAdapter } from '@renderer/lib/voice/registry/voice-agen
 import { type VoiceAgentAdapter, type VoiceAgentConfig, type VoiceAgentEvent } from '@renderer/lib/voice/contracts/voice-agent'
 import { acquireMicStream, startAudioCapture, type AudioCaptureHandle } from '@renderer/lib/voice/shared/audio-capture'
 import { pcm16ToFloat32 } from '@renderer/lib/voice/shared/pcm'
-import type { VoiceTokenResponse } from '@shared/lib/voice/stt-protocol'
+import { resolveSttProtocol, type VoiceTokenResponse } from '@shared/lib/voice/stt-protocol'
 
 export type VoiceAgentState = 'idle' | 'connecting' | 'active' | 'error'
 export type SpeakingState = 'none' | 'user' | 'agent'
@@ -222,10 +222,11 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
       if (!credRes.ok) {
         throw new Error(('error' in credData ? credData.error : null) || 'Failed to get Voice Agent credentials')
       }
-      const { provider, protocol, token } = credData as VoiceAgentCredentials
+      const credentials = credData as VoiceAgentCredentials
+      const { provider, token } = credentials
 
       // 2. Create adapter
-      const adapter = createVoiceAgentAdapter(protocol, provider)
+      const adapter = createVoiceAgentAdapter(resolveSttProtocol(credentials), provider)
       adapterRef.current = adapter
       adapter.onEvent(handleEvent)
 

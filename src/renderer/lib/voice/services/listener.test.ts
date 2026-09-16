@@ -101,6 +101,12 @@ describe('VoiceListener', () => {
     expect(listener.isRunning).toBe(true)
   })
 
+  it('derives deepgram when an older host omits protocol on a platform token', async () => {
+    apiFetch.mockResolvedValue({ ok: true, json: async () => ({ provider: 'platform', token: 'jwt' }) })
+    await started()
+    expect(stt.createSttAdapter).toHaveBeenCalledWith('deepgram', 'platform')
+  })
+
   it('accumulates finals and the interim tail into one utterance', async () => {
     const { listener, ev, adapter } = await started()
     adapter.emit({ type: 'interim', text: 'hel' })
