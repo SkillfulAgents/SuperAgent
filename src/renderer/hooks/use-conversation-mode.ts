@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMessageStream } from './use-message-stream'
 import { useInterruptSession } from './use-messages'
-import { createVoiceConversation } from '@renderer/lib/voice-conversation-factory'
-import { VoiceAgentCoordinator } from '@renderer/lib/voice-agent-coordinator'
-import { holdSound } from '@renderer/lib/speech/hold-sound'
+import { createVoiceConversation } from '@renderer/lib/voice/registry/conversation'
+import { VoiceAgentCoordinator } from '@renderer/lib/voice/conversation/coordinator'
+import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
 import type { VoiceHistory } from '@shared/lib/voice/conversation-types'
-import type { VoiceAgentSnapshot, VoiceAgentState, VoiceConversationAdapter, VoiceConversationEngine, VoiceConversationSnapshot } from '@renderer/lib/voice-conversation'
+import type { VoiceAgentSnapshot, VoiceAgentState, VoiceConversationAdapter, VoiceConversationEngine, VoiceConversationSnapshot } from '@renderer/lib/voice/contracts/conversation'
 
 export interface UseVoiceModeArgs {
   sessionId: string

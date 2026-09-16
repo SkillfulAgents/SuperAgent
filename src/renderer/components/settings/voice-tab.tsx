@@ -1,3 +1,4 @@
+import { VOICE_PROVIDER_OPTIONS, PROVIDER_CONFIG, isApiKeyProvider, getConversationNotice, type ApiKeyProvider } from '@renderer/lib/voice/registry/catalog'
 import { useState, useCallback } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import {
@@ -18,68 +19,12 @@ import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Eye, EyeOff, Check, Loader2, ExternalLink, Square, Volume2 } from 'lucide-react'
 import { useIsTtsConfigured, useVoiceConversationEngine, useTtsVoices, useVoiceInput } from '@renderer/hooks/use-voice-input'
-import { readAloud, useReadAloud } from '@renderer/hooks/use-read-aloud'
+import { readAloud } from '@renderer/lib/voice/services/read-aloud'
+import { useReadAloud } from '@renderer/hooks/use-read-aloud'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { ApiKeyStatus, VoiceProvider } from '@shared/lib/config/settings'
 import { TTS_SPEEDS, resolveHoldSound, resolveTtsSpeed, type TtsVoiceInfo } from '@shared/lib/voice/tts-preferences'
-
-const VOICE_PROVIDERS = [
-  {
-    value: 'platform' as const,
-    label: 'Platform',
-    model: 'Nova 3',
-    docsUrl: undefined as string | undefined,
-    note: 'Uses Deepgram via your platform connection. No API key required.',
-    platformOnly: true,
-  },
-  {
-    value: 'deepgram' as const,
-    label: 'Deepgram',
-    model: 'Nova 3',
-    docsUrl: 'https://developers.deepgram.com/docs/models-languages-overview',
-    note: 'Lowest latency (~200ms). 47 languages supported.',
-  },
-  {
-    value: 'openai' as const,
-    label: 'OpenAI',
-    model: 'GPT-4o Mini Transcribe · GPT-Live',
-    docsUrl: 'https://platform.openai.com/docs/guides/speech-to-text#supported-languages',
-    note: 'Dictation and read-aloud use your OpenAI API key. Conversation voice uses GPT-Live and the app’s configured summarizer.',
-  },
-]
-
-type ApiKeyProvider = 'deepgram' | 'openai'
-
-const PROVIDER_CONFIG: Record<ApiKeyProvider, {
-  envVar: string
-  placeholder: string
-  apiKeyField: 'deepgramApiKey' | 'openaiApiKey'
-  statusField: 'deepgram' | 'openai'
-  dashboardUrl: string
-  dashboardLabel: string
-}> = {
-  deepgram: {
-    envVar: 'DEEPGRAM_API_KEY',
-    placeholder: 'Enter your Deepgram API key',
-    apiKeyField: 'deepgramApiKey',
-    statusField: 'deepgram',
-    dashboardUrl: 'https://console.deepgram.com/',
-    dashboardLabel: 'Deepgram Console',
-  },
-  openai: {
-    envVar: 'OPENAI_API_KEY',
-    placeholder: 'sk-...',
-    apiKeyField: 'openaiApiKey',
-    statusField: 'openai',
-    dashboardUrl: 'https://platform.openai.com/api-keys',
-    dashboardLabel: 'OpenAI Dashboard',
-  },
-}
-
-function isApiKeyProvider(provider: VoiceProvider): provider is ApiKeyProvider {
-  return provider === 'deepgram' || provider === 'openai'
-}
 
 function SttApiKeyInput({ provider, disabled }: { provider: ApiKeyProvider; disabled: boolean }) {
   const { data: settings } = useSettings()
@@ -140,7 +85,7 @@ function SttApiKeyInput({ provider, disabled }: { provider: ApiKeyProvider; disa
   return (
     <div className="space-y-2">
       <Label htmlFor={`${provider}-api-key`}>
-        {VOICE_PROVIDERS.find(p => p.value === provider)?.label} API Key
+        {VOICE_PROVIDER_OPTIONS.find(p => p.value === provider)?.label} API Key
       </Label>
 
       {apiKeyStatus?.isConfigured && (
@@ -286,7 +231,7 @@ function VoiceTest() {
   )
 }
 
-const VALID_PROVIDERS = new Set(VOICE_PROVIDERS.map(p => p.value))
+const VALID_PROVIDERS = new Set(VOICE_PROVIDER_OPTIONS.map(p => p.value))
 
 const VOICE_PREVIEW_ID = 'settings-voice-preview'
 const VOICE_PREVIEW_TEXT = 'Hi! This is how your agent will sound when it reads a reply out loud.'
@@ -478,6 +423,7 @@ export function VoiceTab() {
   const { data: platformAuth } = usePlatformAuthStatus()
   const ttsAvailable = useIsTtsConfigured()
   const conversationEngine = useVoiceConversationEngine()
+  const conversationNotice = getConversationNotice(conversationEngine)
   const isPlatformConnected = platformAuth?.connected ?? false
   const rawProvider = settings?.voice?.sttProvider
   const selectedProvider = rawProvider && VALID_PROVIDERS.has(rawProvider) ? rawProvider : undefined
@@ -485,8 +431,7 @@ export function VoiceTab() {
   const hasKeyConfigured = selectedProvider && (
     selectedProvider === 'platform'
       ? isPlatformConnected
-      : (selectedProvider === 'deepgram' && settings?.apiKeyStatus?.deepgram?.isConfigured) ||
-        (selectedProvider === 'openai' && settings?.apiKeyStatus?.openai?.isConfigured)
+      : isApiKeyProvider(selectedProvider) && settings?.apiKeyStatus?.[PROVIDER_CONFIG[selectedProvider].statusField]?.isConfigured
   )
 
   return (
@@ -495,12 +440,12 @@ export function VoiceTab() {
         <PersonalVoiceSection heading={isAuthMode ? 'Your Voice' : 'Text-to-Speech'} offerWorkspaceDefault={isAuthMode} />
       )}
 
-      {conversationEngine === 'openai-live' && (
+      {conversationNotice && (
         <p className="text-sm text-muted-foreground">
-          Conversation voice uses OpenAI Live with the Marin voice. The voice and speed settings above apply to read-aloud playback. Open an agent conversation and press the voice button to talk.
+          {conversationNotice}
         </p>
       )}
-      {!ttsAvailable && conversationEngine !== 'openai-live' && !showAdminFeatures && (
+      {!ttsAvailable && !conversationEngine && !showAdminFeatures && (
         <p className="text-sm text-muted-foreground" data-testid="voice-unavailable-note">
           Text-to-speech isn&apos;t set up for this workspace yet. Ask an admin to configure a voice provider.
         </p>
@@ -524,7 +469,7 @@ export function VoiceTab() {
                   <SelectValue placeholder="Select a provider" />
                 </SelectTrigger>
                 <SelectContent>
-                  {VOICE_PROVIDERS.map((provider) => (
+                  {VOICE_PROVIDER_OPTIONS.map((provider) => (
                     <SelectItem
                       key={provider.value}
                       value={provider.value}
@@ -543,7 +488,7 @@ export function VoiceTab() {
                 Choose which service to use for transcription and speech.
               </p>
               {selectedProvider && (() => {
-                const info = VOICE_PROVIDERS.find(p => p.value === selectedProvider)
+                const info = VOICE_PROVIDER_OPTIONS.find(p => p.value === selectedProvider)
                 if (!info) return null
                 return (
                   <p className="text-xs text-muted-foreground">

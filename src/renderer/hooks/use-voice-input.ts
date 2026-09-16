@@ -2,7 +2,9 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import { acquireMicStream, createSttAdapter, startAudioCapture, type SttAdapter, type VoiceProvider, type AudioCaptureHandle, type CaptureKind } from '@renderer/lib/stt'
+import { acquireMicStream, startAudioCapture, type AudioCaptureHandle, type CaptureKind } from '@renderer/lib/voice/shared/audio-capture'
+import { createSttAdapter } from '@renderer/lib/voice/registry/stt'
+import { type SttAdapter, type VoiceProvider } from '@renderer/lib/voice/contracts/stt'
 import { addRendererBreadcrumb, captureRendererException, captureRendererMessage } from '@renderer/lib/error-reporting'
 import type { VoiceConversationEngine } from '@shared/lib/voice/conversation-types'
 import type { TtsVoiceInfo } from '@shared/lib/voice/tts-preferences'
@@ -192,7 +194,7 @@ export function useTtsVoices(): { voices: TtsVoiceInfo[]; defaultVoice: string |
 export function useCanUseVoiceMode(): boolean {
   const { configured, supportsTts, conversationEngine } = useVoiceConfiguredStatus()
   const hasMic = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
-  return configured && (supportsTts || conversationEngine === 'openai-live') && hasMic
+  return configured && (supportsTts || !!conversationEngine) && hasMic
 }
 
 /** The transport for in-session voice, separate from dictation and read-aloud. */

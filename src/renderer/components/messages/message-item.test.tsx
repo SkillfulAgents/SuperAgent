@@ -105,6 +105,8 @@ vi.mock('@renderer/hooks/use-read-aloud', () => ({
   }),
   useSpokenWordHighlight: () => {},
   useIsVoiceReading: () => false,
+}))
+vi.mock('@renderer/lib/voice/services/read-aloud', () => ({
   readAloud: {
     restart: vi.fn(),
     getPlayer: () => null,
