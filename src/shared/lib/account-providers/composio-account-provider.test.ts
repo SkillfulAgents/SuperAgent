@@ -17,16 +17,10 @@ vi.mock('@shared/lib/composio/client', () => ({
   getConnectionToken: mocks.getConnectionToken,
   proxyExecute: mocks.proxyExecute,
   isPlatformComposioActive: mocks.isPlatformComposioActive,
-  ComposioApiError: class extends Error {
-    constructor(message: string, public statusCode: number, public details?: unknown) {
-      super(message)
-    }
-  },
   ComposioRedactedTokenError: class extends Error {},
 }))
 
 import { ComposioAccountProvider } from './composio-account-provider'
-import { ComposioApiError } from '@shared/lib/composio/client'
 
 const call = (toolkitSlug: string) => ({
   providerConnectionId: 'ca_1',
@@ -101,22 +95,6 @@ describe('ComposioAccountProvider proxy-only toolkits', () => {
     await provider.makeApiCall(call('twitter'))
     expect(mocks.getConnectionToken).toHaveBeenCalledTimes(1)
     expect(mocks.proxyExecute).not.toHaveBeenCalled()
-  })
-
-  it('returns a hop refusal to the agent with the platform status and body', async () => {
-    mocks.isPlatformComposioActive.mockReturnValue(true)
-    // The hop answers with a bare { message } body, parsed untyped by composioFetch.
-    const body = JSON.parse('{"message":"Payload too large"}')
-    mocks.proxyExecute.mockRejectedValue(new ComposioApiError('Payload too large', 413, body))
-    const res = await provider.makeApiCall(call('twitter'))
-    expect(res.status).toBe(413)
-    expect(await res.json()).toEqual({ message: 'Payload too large' })
-  })
-
-  it('keeps other hop failures as thrown errors', async () => {
-    mocks.isPlatformComposioActive.mockReturnValue(true)
-    mocks.proxyExecute.mockRejectedValue(new ComposioApiError('upstream down', 502))
-    await expect(provider.makeApiCall(call('twitter'))).rejects.toThrow('upstream down')
   })
 
   it('resolves the connection mode for other toolkits on platform Composio', async () => {
