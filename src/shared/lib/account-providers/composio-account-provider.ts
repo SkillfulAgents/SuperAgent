@@ -1,7 +1,7 @@
 import { BaseAccountProvider } from './base-account-provider'
 import type { InitiateConnectionResult, ProviderConnection, ProviderConnectionListItem } from './base-account-provider'
 import { resolveDisplayName } from './display-name-helpers'
-import { getProvider, getProviderSlug, getToolkitSlugFromProviderSlug } from './service-catalog'
+import { getProviderSlug, getToolkitSlugFromProviderSlug } from './service-catalog'
 import {
   getOrCreateAuthConfig,
   initiateConnection as composioInitiateConnection,
@@ -10,7 +10,6 @@ import {
   listConnections as composioListConnections,
   getConnectionToken,
   proxyExecute,
-  isPlatformComposioActive,
   ComposioRedactedTokenError,
 } from '@shared/lib/composio/client'
 import type { ProxyExecuteParams } from '@shared/lib/composio/client'
@@ -70,13 +69,6 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     headers: Headers
     body: ArrayBuffer | null
   }): Promise<Response> {
-    // Platform-only toolkits always take the hop so the platform can meter
-    // them. Their custom auth configs return full tokens, which would
-    // otherwise flip the connection into token mode and bypass the hop.
-    if (getProvider(params.toolkitSlug)?.platformOnly && isPlatformComposioActive()) {
-      return this.proxyForward(params)
-    }
-
     const mode = await this.resolveConnectionMode(params.providerConnectionId)
 
     if (mode.kind === 'token') {
