@@ -2,7 +2,7 @@
 import { StrictMode } from 'react'
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { VoiceConversationEngine } from '@renderer/lib/voice-conversation'
+import type { VoiceConversationEngine } from '@renderer/lib/voice/contracts/conversation'
 const mocks = vi.hoisted(() => ({
   engine: 'chained' as VoiceConversationEngine | null,
   stream: { isActive: false, streamingMessage: null as string | null, activeStartTime: null as number | null, streamingToolUses: [], error: null },
@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./use-voice-input', () => ({ useVoiceConversationEngine: () => mocks.engine }))
 vi.mock('./use-message-stream', () => ({ useMessageStream: () => mocks.stream }))
 vi.mock('./use-messages', () => ({ useInterruptSession: () => ({ mutateAsync: vi.fn() }) }))
-vi.mock('@renderer/lib/voice-conversation-factory', () => ({ createVoiceConversation: mocks.create }))
+vi.mock('@renderer/lib/voice/registry/conversation', () => ({ createVoiceConversation: mocks.create }))
 import { useVoiceMode } from './use-voice-mode'
 
 beforeEach(() => {

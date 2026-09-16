@@ -10,6 +10,7 @@ describe('conversation capability is independent of standalone read-aloud', () =
   it.each([
     ['openai-live', true, false, true],
     ['chained', true, true, true],
+    ['chained', true, false, true],
     [null, false, false, false],
   ])('%s configured=%s tts=%s available=%s', (engine, configured, supportsTts, available) => {
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn() } })

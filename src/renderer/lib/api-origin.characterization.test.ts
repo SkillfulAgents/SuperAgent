@@ -76,7 +76,7 @@ const PRIMITIVE_CONSTRUCTORS = new Set(['EventSource', 'WebSocket'])
  * Keyed `file::scope::primitive(argument)`. Every part is load-bearing:
  * per-module keys would bless the *next* call added to the module, and the
  * enclosing scope is what separates the two `createSocket` methods in
- * `lib/stt.ts`, which are otherwise identical calls. The argument text is
+ * the transcription adapters, which are otherwise identical calls. The argument text is
  * included so changing what a pinned call passes re-opens it for review rather
  * than riding on the old exemption.
  *
@@ -102,15 +102,15 @@ const PINNED_CALL_SITES: Record<string, string> = {
     'derives the origin even though the host does. The `window.location.host` ' +
     'fallback is correct — getApiBaseUrl() is empty in web mode, where ' +
     'same-origin is the right answer. Re-read this if the API origin ever moves.',
-  'lib/stt.ts::DeepgramAdapter.createSocket::WebSocket(url)':
+  'lib/voice/providers/deepgram/transcription.ts::DeepgramSttAdapter.createSocket::WebSocket(url)':
     'third-party Deepgram STT endpoint, not this API — must NOT follow the API origin',
-  'lib/stt.ts::OpenaiAdapter.createSocket::WebSocket(url)':
+  'lib/voice/providers/openai/transcription.ts::OpenAISttAdapter.createSocket::WebSocket(url)':
     'third-party OpenAI STT endpoint, not this API — must NOT follow the API origin',
-  'lib/voice-agent-deepgram.ts::DeepgramVoiceAgentAdapter.connect::WebSocket(url)':
+  'lib/voice/providers/deepgram/voice-agent.ts::DeepgramVoiceAgentAdapter.connect::WebSocket(url)':
     'third-party Deepgram voice-agent socket — must NOT follow the API origin',
-  'lib/voice-agent-openai.ts::OpenAIVoiceAgentAdapter.connect::WebSocket(url)':
+  'lib/voice/providers/openai/voice-agent.ts::OpenAIVoiceAgentAdapter.connect::WebSocket(url)':
     'third-party OpenAI realtime socket — must NOT follow the API origin',
-  'lib/tts.ts::DeepgramTtsAdapter.connect::WebSocket(url)':
+  'lib/voice/providers/deepgram/tts.ts::DeepgramTtsAdapter.connect::WebSocket(url)':
     'third-party Deepgram text-to-speech socket — must NOT follow the API origin',
 }
 
@@ -120,10 +120,11 @@ const PINNED_CALL_SITES: Record<string, string> = {
  * mints. They are not this app's API and must not follow its origin.
  */
 const EXTERNAL_ENDPOINT_MODULES = [
-  'lib/stt.ts',
-  'lib/tts.ts',
-  'lib/voice-agent-deepgram.ts',
-  'lib/voice-agent-openai.ts',
+  'lib/voice/providers/deepgram/transcription.ts',
+  'lib/voice/providers/openai/transcription.ts',
+  'lib/voice/providers/deepgram/tts.ts',
+  'lib/voice/providers/deepgram/voice-agent.ts',
+  'lib/voice/providers/openai/voice-agent.ts',
 ]
 
 /**
@@ -664,8 +665,7 @@ describe('scanner', () => {
   })
 
   it('gives two identical calls in one file distinct identities', () => {
-    // lib/stt.ts really does have two `new WebSocket(url, …)` calls, one per
-    // adapter class. A key without the enclosing scope would cover both, so
+    // Two adapter classes can both contain `new WebSocket(url, …)`. A key without the enclosing scope would cover both, so
     // one pin would exempt the other for free.
     const sites = scan(`
       class A { createSocket() { const url = 'wss://a'; return new WebSocket(url) } }

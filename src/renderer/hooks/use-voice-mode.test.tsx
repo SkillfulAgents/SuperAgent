@@ -23,7 +23,7 @@ interface FakeListener {
 
 const h = vi.hoisted(() => ({ listeners: [] as FakeListener[] }))
 
-vi.mock('@renderer/lib/voice-listener', () => ({
+vi.mock('@renderer/lib/voice/services/listener', () => ({
   VoiceListener: class {
     utterance = ''
     analyser = null
@@ -82,7 +82,7 @@ const reader = vi.hoisted(() => {
   }
   return api
 })
-vi.mock('./use-read-aloud', () => ({ readAloud: reader, voiceStreamId: (sessionId: string) => `voice:${sessionId}` }))
+vi.mock('@renderer/lib/voice/services/read-aloud', () => ({ readAloud: reader, voiceStreamId: (sessionId: string) => `voice:${sessionId}` }))
 
 const stream = vi.hoisted(() => ({
   state: { isActive: false, streamingMessage: null as string | null, streamingToolUses: [] as Array<{ id: string; name: string; partialInput: string }> },
@@ -99,7 +99,7 @@ vi.mock('./use-messages', () => ({ useInterruptSession: () => ({
 
 vi.mock('./use-voice-input', () => ({ useVoiceConversationEngine: () => 'chained' }))
 import { useVoiceMode } from './use-voice-mode'
-import { INTERRUPT_WORD_THRESHOLD, LISTENER_RESTART_MS, DUCK_MAX_MS, CHAINED_TURN_POLICY } from '@renderer/lib/voice-conversation-deepgram'
+import { INTERRUPT_WORD_THRESHOLD, LISTENER_RESTART_MS, DUCK_MAX_MS, CHAINED_TURN_POLICY } from '@renderer/lib/voice/conversation/chained'
 
 const STREAM_ID = 'voice:s1'
 

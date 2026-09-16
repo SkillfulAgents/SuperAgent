@@ -17,9 +17,9 @@ Automated tests use mocked provider responses. Microphone quality, model access,
 
 `VoiceAgentCoordinator` owns agent command serialization, successful interruption before replacement, acknowledgment waiting, stale-response filtering, and response segment/completion events. Both engines emit typed `submit`/`cancel` commands and consume the same agent events. Closing a voice conversation prevents queued commands and post-interruption continuations from submitting; it does not cancel already-running agent work.
 
-`DeepgramConversationAdapter` owns utterance finalization, interruption word thresholds, ducking, listener reconnection, and the existing read-aloud pipeline. `OpenAILiveConversationAdapter` wraps Live media/mapping behind the same contract. Neither adapter imports agent mutations or subscribes to the agent stream.
+`ChainedConversationAdapter` owns utterance finalization, interruption word thresholds, ducking, listener reconnection, and the existing read-aloud pipeline. `OpenAILiveConversationAdapter` wraps Live media/mapping behind the same contract. Neither adapter imports agent mutations or subscribes to the agent stream.
 
-Neutral history/transcript types live in `shared/lib/voice/conversation-types.ts`; renderer contracts live in `renderer/lib/voice-conversation.ts`. Provider protocol types remain in `live-types.ts`. The provider registry preserves concrete types, and each provider declares its conversation engine without API-layer casts. Host routes resolve the configured provider’s optional `getLiveConversation()` capability and delegate creation/mapping through its typed methods. Providers without that capability return a named unsupported-operation error. Each cleanup handle retains its creating provider’s close operation, so cleanup, retries, and expiry do not depend on later provider selection.
+Neutral history/transcript types live in `shared/lib/voice/conversation-types.ts`; renderer contracts live in `renderer/lib/voice/contracts/conversation.ts`. Provider protocol types remain in `live-types.ts`. The provider registry preserves concrete types, and each provider declares its conversation engine without API-layer casts. Host routes resolve the configured provider’s optional `getLiveConversation()` capability and delegate creation/mapping through its typed methods. Providers without that capability return a named unsupported-operation error. Each cleanup handle retains its creating provider’s close operation, so cleanup, retries, and expiry do not depend on later provider selection.
 
 The common snapshot separates user and assistant speech activity. `working` consistently means an active backend turn with a ready, unpaused voice connection. Adapters supply hold eligibility/delay and control capabilities so the composer does not branch on engine names. Music is cut synchronously on either participant's speech activity for both engines.
 
@@ -39,6 +39,10 @@ Synthesis fetches on both the host and renderer have a 30-second header deadline
 
 
 The authenticated `/api/voice/tts` route validates and bounds text, voice, and speed, then delegates through the configured provider’s optional synthesis capability. The OpenAI key stays on the host; raw 24 kHz PCM streams to the existing speech player. The HTTP adapter serializes batches, splits unusually long input to the API limit, and cancels active/queued synthesis when playback stops. Provider changes reject stale synthesis requests instead of silently switching a running reader to another provider.
+
+## Renderer organization
+
+The renderer voice package lives under `src/renderer/lib/voice/`. See its [README](../src/renderer/lib/voice/README.md) for the dependency boundary. OpenAI and Deepgram each own their protocol adapters and settings metadata under `providers/`; only the `registry/` entrypoints select those implementations. React hooks consume contracts and shared services. The read-aloud controller is a plain service, while its hooks subscribe to the same singleton for controls and highlights.
 
 ## Current limits
 
