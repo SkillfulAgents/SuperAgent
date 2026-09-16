@@ -127,7 +127,7 @@ afterEach(() => vi.useRealTimers())
 
   it.each([
     'Store the Supabase credential, then request the endpoint address.',
-    '保存凭据并索取项目地址。',
+    'Save the credentials and ask for the project address.',
   ])('ignores message rewrites from a remote mapper: %s', async (text) => {
     const { bridge, events, user, delegate } = setup()
     user('Do we have Supabase access set up on this agent?')

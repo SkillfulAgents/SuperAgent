@@ -63,7 +63,7 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     ['You are the new casual greeting agent Yes', 'Store the Supabase credential, then request the endpoint address.'],
     ['Do we have Supabase access set up on this agent?', "Check Supabase access. I'm asking about an existing credential, not connecting a new account."],
     ['Do we have Supabase access set up on this agent? I mean is there a credential', 'Connect Supabase.'],
-    ['只检查现有权限，不要修改配置。', '更新 Supabase 配置。'],
+    ['Only check existing permissions; do not change the configuration.', 'Update the Supabase configuration.'],
     ['Save my Supabase API key and ask me for my project URL to complete the connection.', ''],
   ])('forwards only the user utterance: %s', async (utterance, text) => {
     const question = 'Just to confirm, are you asking me to save your Supabase API key and ask you for the project URL to complete the connection?'
