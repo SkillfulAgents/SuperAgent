@@ -171,7 +171,7 @@ export function deletePolicy(
       ),
     )
     .run()
-  return result.changes
+  return changesOf(result)
 }
 
 /**
@@ -202,7 +202,7 @@ export function deleteTargetPolicy(
     .delete(xAgentPolicies)
     .where(and(...conditions))
     .run()
-  return result.changes
+  return changesOf(result)
 }
 
 /**

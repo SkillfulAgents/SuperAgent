@@ -23,7 +23,7 @@ vi.mock('@shared/lib/services/api-log-auto-delete', () => ({
 }))
 
 vi.mock('@shared/lib/db', () => ({
-  sqlite: { prepare: vi.fn() },
+  db: {},
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({

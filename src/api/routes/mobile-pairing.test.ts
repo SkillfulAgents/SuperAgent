@@ -8,6 +8,7 @@
  * credentials, and per-user device-family listing/revocation.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import Database from 'better-sqlite3'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -19,6 +20,7 @@ const DAY_MS = 24 * 60 * 60 * 1000
 let tmpDir: string
 // Deferred imports (must happen after env setup)
 let dbModule: typeof import('@shared/lib/db')
+let sqlite: Database.Database
 let app: Hono
 
 function wipeAuthTables(): void {
@@ -30,7 +32,7 @@ function wipeAuthTables(): void {
     'user',
     'audit_log',
   ]) {
-    dbModule.sqlite.prepare(`DELETE FROM ${table}`).run()
+    sqlite.prepare(`DELETE FROM ${table}`).run()
   }
 }
 
@@ -102,7 +104,7 @@ async function pairDevice(webToken: string, deviceName = 'Test Phone') {
 }
 
 function sessionRow(token: string) {
-  return dbModule.sqlite
+  return sqlite
     .prepare(`SELECT id, user_id, expires_at, creation_method, device_id FROM session WHERE token = ?`)
     .get(token) as
     | { id: string; user_id: string; expires_at: number; creation_method: string; device_id: string | null }
@@ -110,7 +112,7 @@ function sessionRow(token: string) {
 }
 
 function deviceRow(id: string) {
-  return dbModule.sqlite
+  return sqlite
     .prepare(
       `SELECT id, user_id, refresh_token_hash, device_name, platform, created_at, updated_at, expires_at
        FROM mobile_device WHERE id = ?`,
@@ -136,6 +138,9 @@ beforeAll(async () => {
   process.env.BETTER_AUTH_SECRET = 'test-secret-0123456789abcdef0123456789abcdef'
 
   dbModule = await import('@shared/lib/db')
+  await dbModule.openDatabase()
+  // A second connection to the same file for raw seeding and assertions.
+  sqlite = new Database(path.join(tmpDir, 'superagent.db'))
 
   const mobilePairingRoute = (await import('./mobile-pairing')).default
   const { Authenticated } = await import('../middleware/auth')
@@ -146,7 +151,9 @@ beforeAll(async () => {
   )
 })
 
-afterAll(() => {
+afterAll(async () => {
+  sqlite.close()
+  await dbModule.closeDatabase()
   delete process.env.SUPERAGENT_DATA_DIR
   delete process.env.AUTH_MODE
   fs.rmSync(tmpDir, { recursive: true, force: true })
@@ -178,7 +185,7 @@ describe('minting pairing tokens', () => {
     expect(expiresIn).toBeLessThanOrEqual(5 * 60 * 1000)
 
     // Plaintext never stored: exactly one row, holding the sha256 hex.
-    const rows = dbModule.sqlite
+    const rows = sqlite
       .prepare(`SELECT token_hash, user_id FROM mobile_pairing_token`)
       .all() as { token_hash: string; user_id: string }[]
     expect(rows).toHaveLength(1)
@@ -236,7 +243,7 @@ describe('minting pairing tokens', () => {
       expect(res.status).toBe(200)
       tokens.push((await res.json()).token)
     }
-    const count = dbModule.sqlite
+    const count = sqlite
       .prepare(`SELECT count(*) AS n FROM mobile_pairing_token WHERE user_id = ?`)
       .get(userId) as { n: number }
     expect(count.n).toBe(3)
@@ -319,7 +326,7 @@ describe('redeeming', () => {
     const { token: webToken } = await signUpUser()
     const mintRes = await mintRequest(webToken)
     const { token: pairingToken } = await mintRes.json()
-    dbModule.sqlite
+    sqlite
       .prepare(`UPDATE mobile_pairing_token SET expires_at = ?`)
       .run(Date.now() - 1000)
 
@@ -339,7 +346,7 @@ describe('redeeming', () => {
     const { token: webToken, userId } = await signUpUser()
     const mintRes = await mintRequest(webToken)
     const { token: pairingToken } = await mintRes.json()
-    dbModule.sqlite.prepare(`UPDATE user SET banned = 1 WHERE id = ?`).run(userId)
+    sqlite.prepare(`UPDATE user SET banned = 1 WHERE id = ?`).run(userId)
 
     const res = await redeemRequest({ token: pairingToken })
     expect(res.status).toBe(401)
@@ -365,7 +372,7 @@ describe('renewing', () => {
     expect(newRow.creation_method).toBe('mobile')
     expect(newRow.device_id).toBe(mobile.deviceId)
     expect(sessionRow(mobile.token)).toBeUndefined()
-    const count = dbModule.sqlite
+    const count = sqlite
       .prepare(`SELECT count(*) AS n FROM session WHERE device_id = ?`)
       .get(mobile.deviceId) as { n: number }
     expect(count.n).toBe(1)
@@ -400,7 +407,7 @@ describe('renewing', () => {
     ])
     expect(responses.map((res) => res.status).sort()).toEqual([200, 401])
 
-    const sessions = dbModule.sqlite
+    const sessions = sqlite
       .prepare(`SELECT count(*) AS n FROM session WHERE device_id = ?`)
       .get(mobile.deviceId) as { n: number }
     expect(sessions.n).toBe(1)
@@ -417,7 +424,7 @@ describe('renewing', () => {
   it('rejects an expired device refresh credential', async () => {
     const { token: webToken } = await signUpUser()
     const mobile = await pairDevice(webToken)
-    dbModule.sqlite
+    sqlite
       .prepare(`UPDATE mobile_device SET expires_at = ? WHERE id = ?`)
       .run(Date.now() - 1000, mobile.deviceId)
 
@@ -465,7 +472,7 @@ describe('devices list and revoke', () => {
     expect(renewedList.devices).toHaveLength(1)
     expect(renewedList.devices[0].id).toBe(mobile.deviceId)
 
-    dbModule.sqlite
+    sqlite
       .prepare(`UPDATE mobile_device SET expires_at = ? WHERE id = ?`)
       .run(Date.now() - 1000, mobile.deviceId)
     const afterExpiry = await app.request('/api/auth/mobile/devices', {
@@ -495,7 +502,7 @@ describe('devices list and revoke', () => {
     const protectedRes = await app.request('/api/protected', { headers: bearer(mobile.token) })
     expect(protectedRes.status).toBe(401)
 
-    const audit = dbModule.sqlite
+    const audit = sqlite
       .prepare(`SELECT user_id, action FROM audit_log WHERE object = 'session' AND action = 'revoked' AND object_id = ?`)
       .get(mobile.deviceId) as { user_id: string; action: string } | undefined
     expect(audit).toBeDefined()

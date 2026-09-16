@@ -97,5 +97,5 @@ export function deletePushSubscriptionByEndpoint(
     .delete(pushSubscriptions)
     .where(and(eq(pushSubscriptions.endpoint, endpoint), ownerFilter))
     .run()
-  return result.changes > 0
+  return changesOf(result) > 0
 }

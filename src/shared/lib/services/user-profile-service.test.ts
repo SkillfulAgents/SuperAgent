@@ -12,6 +12,7 @@ beforeAll(async () => {
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'user-profiles-'))
   vi.stubEnv('SUPERAGENT_DATA_DIR', directory)
   database = await import('@shared/lib/db')
+  await database.openDatabase()
   profiles = await import('./user-profile-service')
   const { user } = await import('@shared/lib/db/schema')
   database.db.insert(user).values([
@@ -26,8 +27,8 @@ beforeAll(async () => {
   ]).run()
 })
 
-afterAll(() => {
-  database.sqlite.close()
+afterAll(async () => {
+  await database.closeDatabase()
   vi.unstubAllEnvs()
   fs.rmSync(directory, { recursive: true, force: true })
 })

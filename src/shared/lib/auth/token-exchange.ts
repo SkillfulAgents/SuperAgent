@@ -1,6 +1,7 @@
 import { lt } from 'drizzle-orm'
 import { captureException } from '@shared/lib/error-reporting'
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
 import { tokenExchangeJti } from '@shared/lib/db/schema'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 import { PLATFORM_AUTH_PROVIDER_ID } from '@shared/lib/services/platform-auth-service'
@@ -176,7 +177,7 @@ function consumeJti(jti: string, expSec: number): void {
       .values({ jti, expiresAt: new Date(expSec * 1000) })
       .onConflictDoNothing()
       .run()
-    if (result.changes === 0) {
+    if (changesOf(result) === 0) {
       throw new TokenExchangeError('invalid_grant')
     }
   } catch (error) {

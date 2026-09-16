@@ -14,12 +14,13 @@ import { agents } from '../schema'
 import { LOCAL_RUNTIME, readAgentDirectoriesSync } from '@shared/lib/agent-actor/agent-directories'
 import type { DataMigration, DataMigrationDb } from './index'
 
-export function importAgentDirectories(db: DataMigrationDb): string[] {
-  const known = new Set(db.select({ slug: agents.slug }).from(agents).all().map((row) => row.slug))
+export async function importAgentDirectories(db: DataMigrationDb): Promise<string[]> {
+  const rows = await db.select({ slug: agents.slug }).from(agents).all()
+  const known = new Set(rows.map((row) => row.slug))
   const imported: string[] = []
   for (const found of readAgentDirectoriesSync()) {
     if (known.has(found.slug)) continue
-    db.insert(agents).values({
+    await db.insert(agents).values({
       slug: found.slug,
       name: found.name,
       description: found.description ?? null,
@@ -35,7 +36,7 @@ export function importAgentDirectories(db: DataMigrationDb): string[] {
 export const importAgentsFromDirectories: DataMigration = {
   id: 1,
   name: 'import-agents-from-directories',
-  run(db) {
-    importAgentDirectories(db)
+  async run(db) {
+    await importAgentDirectories(db)
   },
 }

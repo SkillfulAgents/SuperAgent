@@ -57,13 +57,29 @@ export default defineConfig({
         sourcemap: false,
       },
     }),
-    devServer({
-      entry: 'src/api/index.ts',
-      exclude: [/^(?!\/api).*/], // Only handle /api/* routes
-    }),
     {
+      // Before the API plugin, so its middleware runs first: the dev server is
+      // an entry point like the web server and Electron main, and opening the
+      // database is its first boot step. /api requests wait for the open.
+      // Re-checked per request because an edit under src/shared/lib/db makes
+      // Vite re-instantiate that module with nothing open.
       name: 'server-lifecycle',
       configureServer(server) {
+        const dbModule = path.resolve(__dirname, 'src/shared/lib/db/index.ts')
+        const ensureDatabaseOpen = async () => {
+          const { isDatabaseOpen, openDatabase } = await server.ssrLoadModule(dbModule)
+          if (!isDatabaseOpen()) await openDatabase()
+        }
+        server.middlewares.use((req, res, next) => {
+          if (!req.url?.startsWith('/api')) return next()
+          ensureDatabaseOpen().then(
+            () => next(),
+            (error) => {
+              res.statusCode = 500
+              res.end(`The database failed to open: ${error instanceof Error ? error.message : String(error)}`)
+            },
+          )
+        })
         // Sync process.env.PORT to the actual bound port so that
         // getAppPort() returns the right value even when Vite auto-assigns.
         server.httpServer?.on('listening', () => {
@@ -73,12 +89,15 @@ export default defineConfig({
           }
         })
         if (server.httpServer) {
-          server.ssrLoadModule(path.resolve(__dirname, 'src/shared/lib/startup.ts')).then(
-            ({ setupServerHandlers, afterBindInitialize }) => {
+          ensureDatabaseOpen()
+            .then(() => server.ssrLoadModule(path.resolve(__dirname, 'src/shared/lib/startup.ts')))
+            .then(({ setupServerHandlers, afterBindInitialize }) => {
               setupServerHandlers(server.httpServer as any)
               void afterBindInitialize()
-            },
-          )
+            })
+            .catch((error) => {
+              console.error('Failed to open the database:', error)
+            })
         }
         server.httpServer?.on('close', async () => {
           const { shutdownServices } = await server.ssrLoadModule(
@@ -89,6 +108,10 @@ export default defineConfig({
         })
       },
     },
+    devServer({
+      entry: 'src/api/index.ts',
+      exclude: [/^(?!\/api).*/], // Only handle /api/* routes
+    }),
   ],
   resolve: {
     alias: {

@@ -1,6 +1,7 @@
-import { eq, and, inArray, count } from 'drizzle-orm'
+import { eq, and, inArray, count, notExists, sql } from 'drizzle-orm'
 import crypto from 'node:crypto'
-import { db, sqlite } from '@shared/lib/db'
+import { db } from '@shared/lib/db'
+import { changesOf, insertWhere } from '@shared/lib/db/batch'
 import { chatIntegrationAccess, chatIntegrations } from '@shared/lib/db/schema'
 import type { ChatIntegrationAccess } from '@shared/lib/db/schema'
 
@@ -51,18 +52,21 @@ export function decideInboundAccess(args: {
     return { action: 'blocked', sendNotice: existing.requestNoticeSentAt == null, status: 'pending' }
   }
 
-  // no row yet — try atomic bootstrap (private only)
+  // no row yet — try atomic bootstrap (private only): one INSERT … SELECT … WHERE,
+  // so two first messages racing cannot both become the allowed chat
   if (args.chatType === 'private') {
-    const now = Date.now()
-    const info = sqlite.prepare(`
-      INSERT INTO chat_integration_access
-        (id, integration_id, external_chat_id, chat_type, status, approval_source, title, first_user_id, first_user_name, first_message_preview, requested_at, created_at, updated_at)
-      SELECT ?, ?, ?, 'private', 'allowed', 'auto_first_contact', ?, ?, ?, ?, ?, ?, ?
-      WHERE NOT EXISTS (SELECT 1 FROM chat_integration_access WHERE integration_id = ? AND status = 'allowed')
-    `).run(crypto.randomUUID(), args.integrationId, args.externalChatId,
-      args.chatName ?? null, args.userId ?? null, args.userName ?? null, preview(args.preview),
-      now, now, now, args.integrationId)
-    if (info.changes === 1) return { action: 'forward', sendNotice: false, status: 'bootstrapped' }
+    const now = new Date()
+    const noAllowedChatYet = notExists(
+      db.select({ one: sql`1` }).from(chatIntegrationAccess)
+        .where(and(eq(chatIntegrationAccess.integrationId, args.integrationId), eq(chatIntegrationAccess.status, 'allowed'))),
+    )
+    const bootstrapped = insertWhere(chatIntegrationAccess, {
+      id: crypto.randomUUID(), integrationId: args.integrationId, externalChatId: args.externalChatId,
+      chatType: 'private', status: 'allowed', approvalSource: 'auto_first_contact',
+      title: args.chatName ?? null, firstUserId: args.userId ?? null, firstUserName: args.userName ?? null,
+      firstMessagePreview: preview(args.preview), requestedAt: now, createdAt: now, updatedAt: now,
+    }, noAllowedChatYet).run()
+    if (changesOf(bootstrapped) === 1) return { action: 'forward', sendNotice: false, status: 'bootstrapped' }
   }
 
   // not bootstrapped → record pending unless capped
@@ -77,7 +81,7 @@ export function decideInboundAccess(args: {
     title: args.chatName ?? null, firstUserId: args.userId ?? null, firstUserName: args.userName ?? null,
     firstMessagePreview: preview(args.preview), requestedAt: now, createdAt: now, updatedAt: now,
   }).onConflictDoNothing().run()
-  return { action: 'blocked', sendNotice: ins.changes === 1, status: 'pending' }
+  return { action: 'blocked', sendNotice: changesOf(ins) === 1, status: 'pending' }
 }
 
 function preview(s?: string): string | null { return s ? s.slice(0, PREVIEW_MAX) : null }
@@ -100,17 +104,17 @@ export function markNoticeSent(id: string): void {
 
 // state-guarded transitions — return true only when a valid transition occurred
 export function approveChatAccess(id: string, by: string): boolean {
-  return db.update(chatIntegrationAccess)
+  return changesOf(db.update(chatIntegrationAccess)
     .set({ status: 'allowed', approvalSource: 'owner', decidedByUserId: by, decidedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(chatIntegrationAccess.id, id), inArray(chatIntegrationAccess.status, ['pending', 'denied']))).run().changes > 0
+    .where(and(eq(chatIntegrationAccess.id, id), inArray(chatIntegrationAccess.status, ['pending', 'denied']))).run()) > 0
 }
 export function denyChatAccess(id: string, by: string): boolean {
-  return db.update(chatIntegrationAccess)
+  return changesOf(db.update(chatIntegrationAccess)
     .set({ status: 'denied', decidedByUserId: by, decidedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(chatIntegrationAccess.id, id), inArray(chatIntegrationAccess.status, ['pending', 'allowed']))).run().changes > 0
+    .where(and(eq(chatIntegrationAccess.id, id), inArray(chatIntegrationAccess.status, ['pending', 'allowed']))).run()) > 0
 }
 export function revokeChatAccess(id: string, by: string): boolean {
-  return db.update(chatIntegrationAccess)
+  return changesOf(db.update(chatIntegrationAccess)
     .set({ status: 'denied', decidedByUserId: by, decidedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(chatIntegrationAccess.id, id), eq(chatIntegrationAccess.status, 'allowed'))).run().changes > 0
+    .where(and(eq(chatIntegrationAccess.id, id), eq(chatIntegrationAccess.status, 'allowed'))).run()) > 0
 }

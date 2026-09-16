@@ -6,6 +6,7 @@
  */
 
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
 import {
   webhookTriggers,
   connectedAccounts,
@@ -374,7 +375,7 @@ export async function cancelWebhookTrigger(triggerId: string): Promise<boolean> 
       )
     )
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -396,7 +397,7 @@ export async function pauseWebhookTrigger(triggerId: string): Promise<boolean> {
       )
     )
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -416,7 +417,7 @@ export async function resumeWebhookTrigger(triggerId: string): Promise<boolean> 
       )
     )
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 export async function markTriggerFired(
@@ -660,7 +661,7 @@ export async function updateWebhookTriggerPrompt(
     .set({ prompt })
     .where(eq(webhookTriggers.id, triggerId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 export async function updateWebhookTriggerName(
@@ -675,7 +676,7 @@ export async function updateWebhookTriggerName(
     .set({ name })
     .where(eq(webhookTriggers.id, triggerId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -699,5 +700,5 @@ export async function updateWebhookTriggerRuntimeOptions(
     .set(updates)
     .where(eq(webhookTriggers.id, triggerId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }

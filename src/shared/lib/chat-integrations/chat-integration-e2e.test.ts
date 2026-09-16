@@ -28,7 +28,6 @@ let mockContainerClient: any
 
 vi.mock('../db', () => ({
   get db() { return testDb },
-  get sqlite() { return testSqlite },
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({

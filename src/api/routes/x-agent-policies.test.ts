@@ -27,9 +27,6 @@ vi.mock('@shared/lib/db', async () => ({
   get db() {
     return testDb
   },
-  get sqlite() {
-    return testSqlite
-  },
 }))
 
 // ----------------------------------------------------------------------------

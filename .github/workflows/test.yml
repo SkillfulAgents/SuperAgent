@@ -52,6 +52,33 @@ jobs:
           json-summary-path: ./coverage/coverage-summary.json
           json-final-path: ./coverage/coverage-final.json
 
+  # The same unit tests against libsql: asynchronous, batch-only, the in-process
+  # stand-in for Cloudflare D1. Only the files in scripts/libsql-must-pass.txt
+  # run here; the list grows as directories are converted to awaited access
+  # (SUP-865) and never shrinks.
+  unit-tests-libsql:
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the libsql must-pass list
+        run: npm run test:libsql
+
   # Builds both shipped targets and verifies every bare import in the emitted
   # bundles is reachable from the production dependency closure, and that no
   # direct production dependency goes unused. The packaging workflows

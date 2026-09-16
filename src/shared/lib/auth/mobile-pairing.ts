@@ -225,7 +225,7 @@ export async function renewMobileSession(
       ),
     )
     .run()
-  if (rotated.changes !== 1) throw new MobilePairingError('invalid_refresh_token')
+  if (changesOf(rotated) !== 1) throw new MobilePairingError('invalid_refresh_token')
 
   try {
     // The CAS above elected one rotation winner, so it is now safe to remove

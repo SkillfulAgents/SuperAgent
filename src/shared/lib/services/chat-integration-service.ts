@@ -4,6 +4,7 @@
 
 import { eq, and, inArray, count } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
 import { chatIntegrations, chatIntegrationSessions } from '@shared/lib/db/schema'
 import type { ChatIntegration, NewChatIntegration } from '@shared/lib/db/schema'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
@@ -288,7 +289,7 @@ export function updateChatIntegration(id: string, params: UpdateChatIntegrationP
     .where(eq(chatIntegrations.id, id))
     .run()
 
-  return result.changes > 0
+  return changesOf(result) > 0
 }
 
 export function updateChatIntegrationStatus(
@@ -306,5 +307,5 @@ export function deleteChatIntegration(id: string): boolean {
     .where(eq(chatIntegrations.id, id))
     .run()
 
-  return result.changes > 0
+  return changesOf(result) > 0
 }

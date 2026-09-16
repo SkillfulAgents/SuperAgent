@@ -132,5 +132,5 @@ export function deleteApnsDeviceByToken(token: string, ownerUserId?: string): bo
     .delete(apnsDevices)
     .where(and(eq(apnsDevices.token, token), ownerFilter))
     .run()
-  return result.changes > 0
+  return changesOf(result) > 0
 }
