@@ -27,7 +27,8 @@ export const liveMappingSchema = z.discriminatedUnion('kind', [
     history: voiceHistorySchema,
     transcript: z.string().min(1).max(16000),
     // Everything the user said since their last message was sent: the only source of the rewrite.
-    userWords: z.string().min(1).max(16000),
+    // Absent from clients older than the rewrite pipe; the host then answers in the legacy shape.
+    userWords: z.string().min(1).max(16000).optional(),
     previousRequest: z.string().max(4000),
     agentBusy: z.boolean(),
   }),
@@ -41,6 +42,16 @@ export const liveRequestSchema = z.object({
   mode: z.enum(['interrupt', 'queue']),
 })
 export type LiveRequest = z.infer<typeof liveRequestSchema>
+
+/**
+ * The shape hosts returned before `mode`. A host still answers with it when the
+ * client sent no `userWords`, and a client still accepts it from an older host.
+ */
+export const legacyLiveRequestSchema = z.object({
+  action: z.enum(['message', 'cancel', 'clarify', 'none']),
+  text: z.string().max(4000),
+})
+export type LegacyLiveRequest = z.infer<typeof legacyLiveRequestSchema>
 
 export interface LiveSessionAnswer {
   session: { id: string }
@@ -86,7 +97,7 @@ export interface LiveSessionCredentials {
 export interface LiveConversationProvider {
   createLiveSession(sdp: string, history: VoiceHistory, agent?: LiveAgentContext, credentials?: LiveSessionCredentials): Promise<LiveSessionAnswer>
   /** `settings`: the request's settings, for the summarizer; read when absent. */
-  mapLiveConversation(input: LiveMappingInput, signal?: AbortSignal, settings?: AppSettings): Promise<LiveRequest | { text: string }>
+  mapLiveConversation(input: LiveMappingInput, signal?: AbortSignal, settings?: AppSettings): Promise<LiveRequest | LegacyLiveRequest | { text: string }>
   closeLiveSession(id: string, apiKey?: string): Promise<void>
   /** The voices a Live session can speak with; the first is the default. Distinct from read-aloud voices. */
   getLiveVoices(): readonly TtsVoiceInfo[]
