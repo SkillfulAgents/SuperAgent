@@ -46,8 +46,8 @@ describe('push-subscription-service', () => {
     testSqlite?.close()
   })
 
-  it('inserts a new subscription', () => {
-    upsertPushSubscription({ ...BASE_SUB, deviceName: 'iPhone' })
+  it('inserts a new subscription', async () => {
+    await upsertPushSubscription({ ...BASE_SUB, deviceName: 'iPhone' })
 
     const rows = listPushSubscriptions()
     expect(rows).toHaveLength(1)
@@ -61,9 +61,9 @@ describe('push-subscription-service', () => {
     })
   })
 
-  it('upserts by endpoint — re-subscribing refreshes keys/origin instead of duplicating', () => {
-    upsertPushSubscription(BASE_SUB)
-    upsertPushSubscription({
+  it('upserts by endpoint — re-subscribing refreshes keys/origin instead of duplicating', async () => {
+    await upsertPushSubscription(BASE_SUB)
+    await upsertPushSubscription({
       ...BASE_SUB,
       p256dh: 'rotated-p256dh',
       origin: 'https://192.168.1.10:3000',
@@ -75,8 +75,8 @@ describe('push-subscription-service', () => {
     expect(rows[0].origin).toBe('https://192.168.1.10:3000')
   })
 
-  it('deletes by id', () => {
-    upsertPushSubscription(BASE_SUB)
+  it('deletes by id', async () => {
+    await upsertPushSubscription(BASE_SUB)
     const [row] = listPushSubscriptions()
 
     deletePushSubscriptionById(row.id)
@@ -85,37 +85,53 @@ describe('push-subscription-service', () => {
   })
 
   describe('per-owner subscription cap', () => {
-    it('rejects a new endpoint once the owner is at the cap; refreshing an existing one still works', () => {
+    it('rejects a new endpoint once the owner is at the cap; refreshing an existing one still works', async () => {
       for (let i = 0; i < MAX_PUSH_SUBSCRIPTIONS_PER_OWNER; i++) {
         expect(
-          upsertPushSubscription({ ...BASE_SUB, endpoint: `https://push.example/dev-${i}` })
+          await upsertPushSubscription({ ...BASE_SUB, endpoint: `https://push.example/dev-${i}` })
         ).toBe(true)
       }
 
       expect(
-        upsertPushSubscription({ ...BASE_SUB, endpoint: 'https://push.example/one-too-many' })
+        await upsertPushSubscription({ ...BASE_SUB, endpoint: 'https://push.example/one-too-many' })
       ).toBe(false)
       expect(listPushSubscriptions()).toHaveLength(MAX_PUSH_SUBSCRIPTIONS_PER_OWNER)
 
       // Re-upserting an endpoint that already exists is a refresh, not growth.
       expect(
-        upsertPushSubscription({ ...BASE_SUB, endpoint: 'https://push.example/dev-0', p256dh: 'new' })
+        await upsertPushSubscription({ ...BASE_SUB, endpoint: 'https://push.example/dev-0', p256dh: 'new' })
       ).toBe(true)
     })
 
-    it('the cap is per owner, not global', () => {
+    it('the cap is per owner, not global', async () => {
       for (let i = 0; i < MAX_PUSH_SUBSCRIPTIONS_PER_OWNER; i++) {
-        upsertPushSubscription({ ...BASE_SUB, endpoint: `https://push.example/a-${i}`, userId: 'user-a' })
+        await upsertPushSubscription({ ...BASE_SUB, endpoint: `https://push.example/a-${i}`, userId: 'user-a' })
       }
       expect(
-        upsertPushSubscription({ ...BASE_SUB, endpoint: 'https://push.example/b-0', userId: 'user-b' })
+        await upsertPushSubscription({ ...BASE_SUB, endpoint: 'https://push.example/b-0', userId: 'user-b' })
       ).toBe(true)
+    })
+
+    it('two concurrent subscribes with one slot left admit exactly one', async () => {
+      // The cap is checked by the insert statement itself, not by a read
+      // before it, so racing callers cannot both see the free slot.
+      for (let i = 0; i < MAX_PUSH_SUBSCRIPTIONS_PER_OWNER - 1; i++) {
+        await upsertPushSubscription({ ...BASE_SUB, endpoint: `https://push.example/dev-${i}` })
+      }
+
+      const admitted = await Promise.all([
+        upsertPushSubscription({ ...BASE_SUB, endpoint: 'https://push.example/racer-a' }),
+        upsertPushSubscription({ ...BASE_SUB, endpoint: 'https://push.example/racer-b' }),
+      ])
+
+      expect(admitted.filter(Boolean)).toHaveLength(1)
+      expect(listPushSubscriptions()).toHaveLength(MAX_PUSH_SUBSCRIPTIONS_PER_OWNER)
     })
   })
 
   describe('deletePushSubscriptionByEndpoint owner scoping', () => {
-    it('an auth-mode user cannot delete another user’s subscription by endpoint', () => {
-      upsertPushSubscription({ ...BASE_SUB, userId: 'user-a' })
+    it('an auth-mode user cannot delete another user’s subscription by endpoint', async () => {
+      await upsertPushSubscription({ ...BASE_SUB, userId: 'user-a' })
 
       expect(deletePushSubscriptionByEndpoint(BASE_SUB.endpoint, 'user-b')).toBe(false)
       expect(listPushSubscriptions()).toHaveLength(1)
@@ -124,14 +140,14 @@ describe('push-subscription-service', () => {
       expect(listPushSubscriptions()).toHaveLength(0)
     })
 
-    it('local mode (no owner) deletes by endpoint alone — including rows from a previous auth-mode life', () => {
-      upsertPushSubscription({ ...BASE_SUB, userId: 'user-a' })
+    it('local mode (no owner) deletes by endpoint alone — including rows from a previous auth-mode life', async () => {
+      await upsertPushSubscription({ ...BASE_SUB, userId: 'user-a' })
 
       expect(deletePushSubscriptionByEndpoint(BASE_SUB.endpoint)).toBe(true)
       expect(listPushSubscriptions()).toHaveLength(0)
     })
 
-    it('returns false when nothing matches (route surfaces this as 404)', () => {
+    it('returns false when nothing matches (route surfaces this as 404)', async () => {
       expect(deletePushSubscriptionByEndpoint('https://push.example/nope')).toBe(false)
     })
   })
@@ -149,37 +165,37 @@ describe('vapid-keys', () => {
     testSqlite?.close()
   })
 
-  it('returns null before any keys are created', () => {
+  it('returns null before any keys are created', async () => {
     expect(getVapidKeys()).toBeNull()
   })
 
-  it('generates once and stays stable across calls', () => {
-    const first = getOrCreateVapidKeys()
+  it('generates once and stays stable across calls', async () => {
+    const first = await getOrCreateVapidKeys()
     expect(first.publicKey).toBeTruthy()
     expect(first.privateKey).toBeTruthy()
 
-    const second = getOrCreateVapidKeys()
+    const second = await getOrCreateVapidKeys()
     expect(second).toEqual(first)
     expect(getVapidKeys()).toEqual(first)
   })
 
-  it('drops orphaned subscriptions when minting a fresh keypair', () => {
+  it('drops orphaned subscriptions when minting a fresh keypair', async () => {
     // A subscription row without a stored keypair (restored/partial backup)
     // was minted against a key we no longer have — it is undeliverable and
     // must not survive key generation.
-    upsertPushSubscription(BASE_SUB)
+    await upsertPushSubscription(BASE_SUB)
     expect(listPushSubscriptions()).toHaveLength(1)
 
-    getOrCreateVapidKeys()
+    await getOrCreateVapidKeys()
 
     expect(listPushSubscriptions()).toHaveLength(0)
   })
 
-  it('does not drop subscriptions when keys already exist', () => {
-    getOrCreateVapidKeys()
-    upsertPushSubscription(BASE_SUB)
+  it('does not drop subscriptions when keys already exist', async () => {
+    await getOrCreateVapidKeys()
+    await upsertPushSubscription(BASE_SUB)
 
-    getOrCreateVapidKeys()
+    await getOrCreateVapidKeys()
 
     expect(listPushSubscriptions()).toHaveLength(1)
   })

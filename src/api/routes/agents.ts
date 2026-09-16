@@ -1,5 +1,5 @@
 import agentMembers, { agentMembersBatch } from './agent-members'
-import { notifyAgentMembersChanged } from '@shared/lib/services/agent-members-service'
+import { notifyAgentMembersChanged, changeMemberRole, removeMember } from '@shared/lib/services/agent-members-service'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
@@ -1631,40 +1631,11 @@ agents.patch('/:id/access/:userId', AgentAdmin(), async (c) => {
       return c.json({ error: 'Invalid role. Must be owner, user, or viewer' }, 400)
     }
 
-    // Transaction to prevent TOCTOU race on last-owner check
-    // Note: better-sqlite3 transactions are synchronous — no async/await inside
-    const error = db.transaction((tx) => {
-      const [currentAcl] = tx
-        .select({ role: agentAcl.role })
-        .from(agentAcl)
-        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
-        .limit(1)
-        .all()
-
-      if (!currentAcl) return 'User does not have access to this agent'
-
-      if (currentAcl.role === 'owner' && role !== 'owner') {
-        const [{ ownerCount }] = tx
-          .select({ ownerCount: count() })
-          .from(agentAcl)
-          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
-          .all()
-        if (ownerCount <= 1) return 'Cannot change role: agent must have at least one owner'
-      }
-
-      tx
-        .update(agentAcl)
-        .set({ role })
-        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
-        .run()
-
-      return null
-    })
-
-    if (error) {
-      const status = error.includes('does not have access') ? 404 : 400
-      return c.json({ error }, status)
-    }
+    // The last-owner guard is part of the update statement, so there is no
+    // read-then-decide window for a concurrent demotion to slip through.
+    const outcome = await changeMemberRole(slug, targetUserId, role)
+    if (outcome === 'not-a-member') return c.json({ error: 'User does not have access to this agent' }, 404)
+    if (outcome === 'last-owner') return c.json({ error: 'Cannot change role: agent must have at least one owner' }, 400)
     notifyAgentMembersChanged(slug)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'changed', details: { targetUserId: targetUserId, role } })
     return c.json({ ok: true })
@@ -1680,39 +1651,11 @@ agents.delete('/:id/access/:userId', AgentAdmin(), async (c) => {
     const slug = getAgentId(c)
     const targetUserId = c.req.param('userId')
 
-    // Transaction to prevent TOCTOU race on last-owner check
-    // Note: better-sqlite3 transactions are synchronous — no async/await inside
-    const error = db.transaction((tx) => {
-      const [currentAcl] = tx
-        .select({ role: agentAcl.role })
-        .from(agentAcl)
-        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
-        .limit(1)
-        .all()
-
-      if (!currentAcl) return 'User does not have access to this agent'
-
-      if (currentAcl.role === 'owner') {
-        const [{ ownerCount }] = tx
-          .select({ ownerCount: count() })
-          .from(agentAcl)
-          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
-          .all()
-        if (ownerCount <= 1) return 'Cannot remove access: agent must have at least one owner'
-      }
-
-      tx
-        .delete(agentAcl)
-        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
-        .run()
-
-      return null
-    })
-
-    if (error) {
-      const status = error.includes('does not have access') ? 404 : 400
-      return c.json({ error }, status)
-    }
+    // The last-owner guard is part of the delete statement, so two concurrent
+    // revokes leave exactly one owner.
+    const outcome = await removeMember(slug, targetUserId)
+    if (outcome === 'not-a-member') return c.json({ error: 'User does not have access to this agent' }, 404)
+    if (outcome === 'last-owner') return c.json({ error: 'Cannot remove access: agent must have at least one owner' }, 400)
     notifyAgentMembersChanged(slug, targetUserId)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId } })
     return c.body(null, 204)
@@ -1728,36 +1671,9 @@ agents.post('/:id/leave', AgentRead(), async (c) => {
     const slug = getAgentId(c)
     const userId = getCurrentUserId(c)
 
-    const error = db.transaction((tx) => {
-      const [currentAcl] = tx
-        .select({ role: agentAcl.role })
-        .from(agentAcl)
-        .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, slug)))
-        .limit(1)
-        .all()
-
-      if (!currentAcl) return 'You do not have access to this agent'
-
-      if (currentAcl.role === 'owner') {
-        const [{ ownerCount }] = tx
-          .select({ ownerCount: count() })
-          .from(agentAcl)
-          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
-          .all()
-        if (ownerCount <= 1) return 'Cannot leave: you are the only owner'
-      }
-
-      tx
-        .delete(agentAcl)
-        .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, slug)))
-        .run()
-
-      return null
-    })
-
-    if (error) {
-      return c.json({ error }, 400)
-    }
+    const outcome = await removeMember(slug, userId)
+    if (outcome === 'not-a-member') return c.json({ error: 'You do not have access to this agent' }, 400)
+    if (outcome === 'last-owner') return c.json({ error: 'Cannot leave: you are the only owner' }, 400)
     notifyAgentMembersChanged(slug, userId)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId: userId } })
     return c.body(null, 204)
@@ -7800,7 +7716,7 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
       return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
     }
   }
-  replacePoliciesForCaller(slug, parsed.data.policies)
+  await replacePoliciesForCaller(slug, parsed.data.policies)
   return c.json({ ok: true })
 })
 

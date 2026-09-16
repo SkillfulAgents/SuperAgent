@@ -568,6 +568,11 @@ export const xAgentPolicies = sqliteTable('x_agent_policies', {
   // Unique per (caller, target, operation). NULL targetAgentSlug counts as a distinct value in SQLite.
   callerTargetOpUnique: uniqueIndex('x_agent_policies_unique')
     .on(table.callerAgentSlug, table.targetAgentSlug, table.operation),
+  // The same key with NULL folded to '', so a global (null-target) policy is
+  // one row too and setPolicy can upsert against it (ON CONFLICT needs an
+  // index the NULL-distinct one above cannot provide).
+  callerTargetOpNullSafeUnique: uniqueIndex('x_agent_policies_null_safe_unique')
+    .on(table.callerAgentSlug, sql`coalesce(target_agent_slug, '')`, table.operation),
   callerSlugIdx: index('x_agent_policies_caller_idx').on(table.callerAgentSlug),
 }))
 

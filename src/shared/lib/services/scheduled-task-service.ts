@@ -6,6 +6,7 @@
  */
 
 import { db } from '@shared/lib/db'
+import { batch } from '@shared/lib/db/batch'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
 import { eq, and, lte, inArray, isNotNull, isNull, desc } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
@@ -122,7 +123,7 @@ export async function createScheduledTask(
  *
  * The schedule expression is validated BEFORE any mutation (a bad wakeTime
  * must never cancel the session's valid wake), and the cancel+insert pair runs
- * in a transaction so concurrent calls can't interleave into duplicate pending
+ * as one batch so concurrent calls can't interleave into duplicate pending
  * wakes. A partial unique index on pending wakes backstops both.
  */
 export async function createSessionWake(
@@ -151,33 +152,20 @@ export async function createSessionWake(
     resumeSessionId: params.sessionId,
   }
 
-  // Synchronous better-sqlite3 transaction: read-existing → cancel → insert is
-  // one atomic unit, so no other caller can observe (or create) an
-  // intermediate state.
-  const replaced = db.transaction((tx) => {
-    const existing = tx
-      .select()
-      .from(scheduledTasks)
-      .where(
-        and(
-          eq(scheduledTasks.agentSlug, params.agentSlug),
-          eq(scheduledTasks.resumeSessionId, params.sessionId),
-          eq(scheduledTasks.status, 'pending')
-        )
-      )
-      .all()
-
-    for (const wake of existing) {
-      tx.update(scheduledTasks)
-        .set({ status: 'cancelled', cancelledAt: now })
-        .where(eq(scheduledTasks.id, wake.id))
-        .run()
-    }
-
-    tx.insert(scheduledTasks).values(newTask).run()
-
-    return existing[0] ?? null
-  })
+  const pendingWake = and(
+    eq(scheduledTasks.agentSlug, params.agentSlug),
+    eq(scheduledTasks.resumeSessionId, params.sessionId),
+    eq(scheduledTasks.status, 'pending')
+  )
+  // Read only to report what was replaced. The swap itself is one batch that
+  // cancels whatever is pending at that moment and inserts the new wake, so
+  // no caller observes (or creates) an intermediate state; the partial unique
+  // index rejects the one interleaving a racing insert could still attempt.
+  const [replaced = null] = await db.select().from(scheduledTasks).where(pendingWake).all()
+  await batch([
+    db.update(scheduledTasks).set({ status: 'cancelled', cancelledAt: now }).where(pendingWake),
+    db.insert(scheduledTasks).values(newTask),
+  ])
 
   trackServerEvent('task_scheduled', {
     scheduleType: 'at',
