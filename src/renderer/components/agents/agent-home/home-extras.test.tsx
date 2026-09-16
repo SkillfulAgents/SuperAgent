@@ -62,6 +62,13 @@ describe('HomeExtras', () => {
     expect(screen.getByTestId('home-secrets-open-page')).toBeInTheDocument()
   })
 
+  it('opens the Memories page', async () => {
+    const user = userEvent.setup()
+    render(<HomeExtras agentSlug="test-agent" />)
+    await user.click(screen.getByTestId('home-memories-open-page'))
+    expect(mocks.navigate).toHaveBeenCalledWith({ to: '/agents/$slug/memories', params: { slug: 'test-agent' } })
+  })
+
   it('opens Agent Directory in the built-in folder browser', async () => {
     const user = userEvent.setup()
     render(<HomeExtras agentSlug="test-agent" />)

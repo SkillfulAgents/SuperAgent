@@ -1,0 +1,61 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Hono } from 'hono'
+import { InMemoryFileOps } from '@shared/lib/agent-actor/testing/in-memory-file-ops'
+import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
+import { AGENT_MEMORY_DIR } from '@shared/lib/services/agent-memory-service'
+
+let files: InMemoryFileOps
+const get = vi.fn((_slug: string) => ({ files }))
+vi.mock('@shared/lib/agent-actor', () => ({
+  agentRegistry: { get: (slug: string) => get(slug) },
+  get WorkspaceFileError() { return WorkspaceFileError },
+}))
+vi.mock('../middleware/auth', () => ({
+  AgentAdmin: () => async (c: any, next: () => Promise<void>) => {
+    if (c.req.header('x-test-role') !== 'admin') return c.json({ error: 'Forbidden' }, 403)
+    return next()
+  },
+  getAgentId: () => 'resolved-agent-slug',
+}))
+import { agentMemoryRoutes } from './agent-memories'
+
+const app = new Hono().route('/api/agents', agentMemoryRoutes)
+const url = '/api/agents/display-name/memories'
+const headers = { 'x-test-role': 'admin', 'Content-Type': 'application/json' }
+
+beforeEach(() => {
+  files = new InMemoryFileOps()
+  get.mockClear()
+})
+
+describe('memory API', () => {
+  it('lists and edits through the resolved actor, preserving conflict responses', async () => {
+    await files.putDoc(`${AGENT_MEMORY_DIR}/example.md`, '# Original')
+    const list = await app.request(url, { headers })
+    expect(list.status).toBe(200)
+    expect(list.headers.get('Cache-Control')).toBe('no-store')
+    expect(get).toHaveBeenCalledWith('resolved-agent-slug')
+    const doc = await (await app.request(`${url}/content?path=example.md`, { headers })).json()
+    const body = JSON.stringify({ path: 'example.md', content: '# Edited', revision: doc.revision })
+    expect((await app.request(`${url}/content`, { method: 'PUT', headers, body })).status).toBe(200)
+    const conflict = await app.request(`${url}/content`, { method: 'PUT', headers, body })
+    expect(conflict.status).toBe(409)
+    expect(await conflict.json()).toMatchObject({ error: expect.stringContaining('changed') })
+  })
+
+  it.each(['', '/content?path=example.md'])('denies non-admin reads before actor access (%s)', async suffix => {
+    expect((await app.request(url + suffix)).status).toBe(403)
+    expect(get).not.toHaveBeenCalled()
+  })
+
+  it('denies non-admin writes before actor access', async () => {
+    expect((await app.request(url + '/content', { method: 'PUT', body: '{}' })).status).toBe(403)
+    expect(get).not.toHaveBeenCalled()
+  })
+
+  it('validates revisions and paths', async () => {
+    expect((await app.request(url + '/content', { method: 'PUT', headers, body: JSON.stringify({ path: 'example.md', content: 'draft' }) })).status).toBe(400)
+    expect((await app.request(url + '/content?path=..%2Fprivate.md', { headers })).status).toBe(400)
+    expect((await app.request(url + '/content?path=missing.md', { headers })).status).toBe(404)
+  })
+})
