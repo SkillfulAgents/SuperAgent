@@ -9,6 +9,7 @@ import Database from 'better-sqlite3'
 
 let directory: string
 let db: typeof import('@shared/lib/db')
+let sqlite: Database.Database
 let authModule: typeof import('@shared/lib/auth')
 let app: Hono
 const base = 'http://localhost:47891'
@@ -24,6 +25,9 @@ beforeAll(async () => {
     id: 'platform', type: 'oidc', issuer, discoveryUrl: `${issuer}/.well-known/openid-configuration`, clientId: 'test-client', scopes: ['openid', 'profile', 'email'],
   }]))
   db = await import('@shared/lib/db')
+  await db.openDatabase()
+  // A second connection to the same file for raw seeding and assertions.
+  sqlite = new Database(path.join(directory, 'superagent.db'))
   authModule = await import('@shared/lib/auth')
   const profile = (await import('./profile')).default
   const { defaultCacheControl } = await import('../middleware/default-cache-control')
@@ -33,11 +37,12 @@ beforeAll(async () => {
 })
 
 beforeEach(() => {
-  for (const table of ['session', 'account', 'user', 'verification']) db.sqlite.prepare(`DELETE FROM ${table}`).run()
+  for (const table of ['session', 'account', 'user', 'verification']) sqlite.prepare(`DELETE FROM ${table}`).run()
 })
-afterAll(() => {
+afterAll(async () => {
   authModule.resetAuth()
-  db.sqlite.close()
+  sqlite.close()
+  await db.closeDatabase()
   vi.unstubAllEnvs()
   fs.rmSync(directory, { recursive: true, force: true })
 })
@@ -72,7 +77,7 @@ describe('profile avatar API', () => {
     expect(session?.user.avatarOverride).toBe(avatarOverride)
     expect(session?.user.image).toBe('https://example.com/provider.png')
     expect((await app.request('/api/profile/avatar', { method: 'DELETE', headers })).status).toBe(200)
-    expect(db.sqlite.prepare('SELECT image, avatar_override FROM user').get()).toEqual({ image: 'https://example.com/provider.png', avatar_override: null })
+    expect(sqlite.prepare('SELECT image, avatar_override FROM user').get()).toEqual({ image: 'https://example.com/provider.png', avatar_override: null })
     expect((await app.request(avatarOverride, { headers })).status).toBe(404)
   })
 
@@ -85,7 +90,7 @@ describe('profile avatar API', () => {
       const lookup = prepare.mock.calls.find(([query]) => query.includes('where "user"."avatar_override" ='))?.[0]
       expect(lookup).toBeDefined()
       // Explain the actual image route query against the fully migrated DB.
-      const plan = db.sqlite.prepare(`EXPLAIN QUERY PLAN ${lookup!}`).all(avatarOverride, 1)
+      const plan = sqlite.prepare(`EXPLAIN QUERY PLAN ${lookup!}`).all(avatarOverride, 1)
       expect(plan).toEqual([expect.objectContaining({
         detail: expect.stringContaining('USING COVERING INDEX user_avatar_override_idx'),
       })])
@@ -117,7 +122,7 @@ describe('profile avatar API', () => {
     const largeDimensions = png()
     largeDimensions.writeUInt32BE(100_000, 16)
     expect((await upload(signedIn.token!, largeDimensions)).status).toBe(400)
-    expect(db.sqlite.prepare('SELECT avatar_override FROM user').get()).toEqual({ avatar_override: first.avatarOverride })
+    expect(sqlite.prepare('SELECT avatar_override FROM user').get()).toEqual({ avatar_override: first.avatarOverride })
   })
 
   it('only writes the signed-in user and does not accept an override through update-user', async () => {
@@ -127,7 +132,7 @@ describe('profile avatar API', () => {
       body: JSON.stringify({ avatarOverride: '/api/profile/images/00000000-0000-4000-8000-000000000001.png' }),
     }))
     expect([200, 400]).toContain(response.status)
-    expect(db.sqlite.prepare('SELECT avatar_override FROM user').get()).toEqual({ avatar_override: null })
+    expect(sqlite.prepare('SELECT avatar_override FROM user').get()).toEqual({ avatar_override: null })
     expect((await app.request('/api/profile/images/%2E%2E%2Fsettings.json', { headers: { authorization: `Bearer ${signedIn.token}` } })).status).toBe(404)
     expect((await app.request('/api/profile/avatar', { method: 'DELETE' })).status).toBe(401)
   })
@@ -163,13 +168,13 @@ describe('browser OIDC image propagation', () => {
     }
     try {
       await callback()
-      expect(db.sqlite.prepare('SELECT image FROM user').get()).toEqual({ image: picture })
+      expect(sqlite.prepare('SELECT image FROM user').get()).toEqual({ image: picture })
       const override = '/api/profile/images/00000000-0000-4000-8000-000000000001.png'
-      db.sqlite.prepare('UPDATE user SET avatar_override = ?').run(override)
+      sqlite.prepare('UPDATE user SET avatar_override = ?').run(override)
       picture = 'https://example.com/new.png'
       await callback()
-      expect(db.sqlite.prepare('SELECT image, avatar_override FROM user').get()).toEqual({ image: picture, avatar_override: override })
-      expect(db.sqlite.prepare('SELECT account_id FROM account').all()).toEqual([{ account_id: 'sub_member_one' }])
+      expect(sqlite.prepare('SELECT image, avatar_override FROM user').get()).toEqual({ image: picture, avatar_override: override })
+      expect(sqlite.prepare('SELECT account_id FROM account').all()).toEqual([{ account_id: 'sub_member_one' }])
     } finally {
       vi.unstubAllGlobals()
     }

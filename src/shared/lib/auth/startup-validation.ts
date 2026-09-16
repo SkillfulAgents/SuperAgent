@@ -1,4 +1,5 @@
-import { sqlite } from '@shared/lib/db'
+import { sql } from 'drizzle-orm'
+import { db } from '@shared/lib/db'
 import { getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { listDirectories } from '@shared/lib/utils/file-storage'
 import { initEnvManagedPlatformStatus } from '@shared/lib/services/platform-auth-service'
@@ -66,9 +67,9 @@ function validateAuthProviders(): void {
 
 function hasUserTable(): boolean {
   try {
-    const result = sqlite.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='user'"
-    ).get() as { name: string } | undefined
+    const result = db.get<{ name: string } | undefined>(
+      sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'user'`,
+    )
     return !!result
   } catch {
     return false
@@ -77,7 +78,7 @@ function hasUserTable(): boolean {
 
 function getUserCount(): number {
   try {
-    const result = sqlite.prepare('SELECT COUNT(*) as count FROM user').get() as { count: number }
+    const result = db.get<{ count: number }>(sql`SELECT COUNT(*) as count FROM user`)
     return result.count
   } catch {
     return 0

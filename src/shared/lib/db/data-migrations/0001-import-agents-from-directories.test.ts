@@ -42,7 +42,7 @@ afterEach(() => {
 })
 
 describe('import-agents-from-directories', () => {
-  it('imports every directory with a CLAUDE.md, named from its frontmatter, and ignores the rest', () => {
+  it('imports every directory with a CLAUDE.md, named from its frontmatter, and ignores the rest', async () => {
     writeAgentDirectory('imported', [
       '---',
       'name: Imported Agent',
@@ -54,7 +54,7 @@ describe('import-agents-from-directories', () => {
     writeAgentDirectory('hollow', null)
     fs.writeFileSync(path.join(dataDir, 'agents', 'stray-file'), 'not an agent')
 
-    expect(importAgentDirectories(db)).toEqual(['imported'])
+    expect(await importAgentDirectories(db)).toEqual(['imported'])
 
     expect(rows()).toEqual([{
       slug: 'imported',
@@ -66,12 +66,12 @@ describe('import-agents-from-directories', () => {
     }])
   })
 
-  it('falls back to the slug for a missing name and to the directory birth time for a missing date', () => {
+  it('falls back to the slug for a missing name and to the directory birth time for a missing date', async () => {
     const before = Date.now() - 1000
     writeAgentDirectory('bare', 'No frontmatter at all')
     writeAgentDirectory('numbered', '---\nname: 123\n---\nBody')
 
-    importAgentDirectories(db)
+    await importAgentDirectories(db)
 
     const [bare, numbered] = rows()
     expect(bare.name).toBe('bare')
@@ -81,35 +81,35 @@ describe('import-agents-from-directories', () => {
     expect(numbered.name).toBe('123')
   })
 
-  it('leaves directories the table already knows alone, so re-running is safe', () => {
+  it('leaves directories the table already knows alone, so re-running is safe', async () => {
     writeAgentDirectory('known', '---\nname: On Disk\n---\nBody')
     db.insert(schema.agents).values({ slug: 'known', name: 'In The Table', createdAt: new Date() }).run()
 
-    expect(importAgentDirectories(db)).toEqual([])
+    expect(await importAgentDirectories(db)).toEqual([])
     expect(rows()[0].name).toBe('In The Table')
   })
 
-  it('does nothing when there is no agents directory yet', () => {
-    expect(importAgentDirectories(db)).toEqual([])
+  it('does nothing when there is no agents directory yet', async () => {
+    expect(await importAgentDirectories(db)).toEqual([])
     expect(rows()).toEqual([])
   })
 
-  it('runs as data migration 1 and is recorded in the ledger', () => {
+  it('runs as data migration 1 and is recorded in the ledger', async () => {
     writeAgentDirectory('first', '---\nname: First\n---\nBody')
 
-    expect(runDataMigrations(db, [importAgentsFromDirectories])).toEqual([1])
+    expect(await runDataMigrations(db, [importAgentsFromDirectories])).toEqual([1])
 
     expect(rows().map((row) => row.slug)).toEqual(['first'])
     expect(db.select().from(schema.dataMigrations).all()).toMatchObject([{ id: 1, name: 'import-agents-from-directories' }])
     // A directory added afterwards is not imported by a later boot.
     writeAgentDirectory('later', '---\nname: Later\n---\nBody')
-    expect(runDataMigrations(db, [importAgentsFromDirectories])).toEqual([])
+    expect(await runDataMigrations(db, [importAgentsFromDirectories])).toEqual([])
     expect(rows().map((row) => row.slug)).toEqual(['first'])
   })
 })
 
 describe('identityFromInstructions', () => {
-  it('reads name, description and a valid date, and leaves out what is absent or blank', () => {
+  it('reads name, description and a valid date, and leaves out what is absent or blank', async () => {
     expect(identityFromInstructions('---\nname: A\ndescription: B\ncreatedAt: "2026-01-01T00:00:00.000Z"\n---\nBody'))
       .toEqual({ name: 'A', description: 'B', createdAt: new Date('2026-01-01T00:00:00.000Z') })
     expect(identityFromInstructions('---\nname:\ndescription:   \ncreatedAt: not-a-date\n---\nBody')).toEqual({})

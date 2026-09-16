@@ -117,6 +117,7 @@ registerUpdateHandlers()
 // Now safe to import API (env var is set)
 import { serve } from '@hono/node-server'
 import api from '../api'
+import { openDatabase } from '@shared/lib/db'
 import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
@@ -1452,6 +1453,18 @@ function stopNotificationListener(): void {
 
 // Start the API server and app
 async function startApp() {
+  // The database first: SUPERAGENT_DATA_DIR is set above, and nothing below
+  // (the API, the launcher, notifications) runs without a current schema.
+  // A failure here is fatal and already reported; the app cannot run on an
+  // unmigrated database, so it quits instead of serving errors.
+  try {
+    await openDatabase()
+  } catch (error) {
+    console.error('Failed to open the database:', error)
+    app.quit()
+    return
+  }
+
   // Download-carried enrollment nonce recovery. The channels are all
   // best-effort reads of the install's surroundings; the handoff file is the
   // Windows installer's note of its own (stamped) filename, and the dev-only

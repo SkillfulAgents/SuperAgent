@@ -20,9 +20,6 @@ vi.mock('@shared/lib/db', () => ({
   get db() {
     return testDb
   },
-  get sqlite() {
-    return testSqlite
-  },
 }))
 
 vi.mock('../analytics/server-analytics', () => ({

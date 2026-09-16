@@ -2,6 +2,7 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { existsSync } from 'fs'
 import api from '../api'
+import { openDatabase } from '@shared/lib/db'
 import { afterBindInitialize, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
 import { markBoot } from '@shared/lib/boot-timing'
 import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
@@ -87,6 +88,10 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
 async function start() {
   markBoot('modulesLoaded')
+
+  // First: nothing below runs without the schema being current, and a
+  // migration failure must fail the boot rather than the first request.
+  await openDatabase()
 
   const defaultPort = parseInt(process.env.PORT || '47891', 10)
 

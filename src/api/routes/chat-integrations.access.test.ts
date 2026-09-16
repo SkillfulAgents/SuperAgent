@@ -24,7 +24,6 @@ let testSqlite: InstanceType<typeof Database>
 
 vi.mock('@shared/lib/db', () => ({
   get db() { return testDb },
-  get sqlite() { return testSqlite },
 }))
 
 // ── Auth middleware: faithful passthrough (mirrors sup229 test) ──────────

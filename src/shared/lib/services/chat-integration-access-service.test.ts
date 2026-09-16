@@ -11,7 +11,6 @@ let testSqlite: InstanceType<typeof Database>
 
 vi.mock('../db', () => ({
   get db() { return testDb },
-  get sqlite() { return testSqlite },
 }))
 
 import {

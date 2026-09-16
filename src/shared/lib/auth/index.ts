@@ -3,6 +3,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle'
 import { admin, bearer, genericOAuth } from 'better-auth/plugins'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
 import * as schema from '@shared/lib/db/schema'
 import { getOrCreateAuthSecret } from './secret'
 import { getAppBaseUrl, getTrustedOrigins } from './config'
@@ -156,7 +157,7 @@ function createAuthInstance() {
                   )
                 )
                 .run()
-              if (result.changes > 0) {
+              if (changesOf(result) > 0) {
                 console.log(`First user ${createdUser.email} promoted to admin`)
               }
 
@@ -164,7 +165,7 @@ function createAuthInstance() {
               // auto-ban them pending admin review.
               // Fresh settings each time; platform-controlled forces approval off.
               const currentAuth = resolveAuthSettings(getSettings().auth)
-              if (result.changes === 0 && currentAuth.requireAdminApproval) {
+              if (changesOf(result) === 0 && currentAuth.requireAdminApproval) {
                 db.update(schema.user)
                   .set({ banned: true, banReason: PENDING_APPROVAL_BAN_REASON })
                   .where(eq(schema.user.id, createdUser.id))

@@ -47,13 +47,15 @@
     "benchmark:halftone": "tsx scripts/benchmark-halftone.ts",
     "benchmark:halftone:runtime": "tsx scripts/benchmark-halftone-runtime.ts",
     "db:reset": "rm superagent.db* && drizzle-kit migrate",
-    "db:generate": "drizzle-kit generate",
+    "db:generate": "drizzle-kit generate && npm run db:bundle",
+    "db:bundle": "tsx scripts/bundle-migrations.ts",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "build:container": "docker build -t superagent-container ./agent-container",
     "icons:download": "tsx scripts/download-service-icons.ts",
     "icons:optimize": "tsx scripts/optimize-service-icons.ts",
-    "test:perf": "vitest run --config vitest.perf.config.ts"
+    "test:perf": "vitest run --config vitest.perf.config.ts",
+    "test:libsql": "node scripts/run-libsql-tests.mjs"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.33.5",
@@ -100,6 +102,7 @@
     "@electron/rebuild": "^4.0.6",
     "@hono/vite-dev-server": "^0.24.1",
     "@hookform/resolvers": "^5.2.2",
+    "@libsql/client": "^0.18.0",
     "@monaco-editor/react": "^4.7.0",
     "@playwright/test": "^1.58.0",
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -236,10 +239,6 @@
       "node_modules/@skillful-agents/agent-computer/bin/**"
     ],
     "extraResources": [
-      {
-        "from": "src/shared/lib/db/migrations",
-        "to": "migrations"
-      },
       {
         "from": "build",
         "to": "tray-icons",

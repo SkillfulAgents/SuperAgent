@@ -17,9 +17,6 @@ vi.mock('../db', async () => {
     get db() {
       return testDb
     },
-    get sqlite() {
-      return testSqlite
-    },
   }
 })
 

@@ -28,9 +28,6 @@ vi.mock('../db', () => ({
   get db() {
     return testDb
   },
-  get sqlite() {
-    return testSqlite
-  },
 }))
 
 // Manager-shaped mock behind the container host: the actor reaches an agent's

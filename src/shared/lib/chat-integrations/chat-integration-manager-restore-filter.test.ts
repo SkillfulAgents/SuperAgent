@@ -25,7 +25,6 @@ let testSqlite: InstanceType<typeof Database>
 
 vi.mock('../db', () => ({
   get db() { return testDb },
-  get sqlite() { return testSqlite },
 }))
 
 vi.mock('@shared/lib/services/chat-integration-service', () => ({

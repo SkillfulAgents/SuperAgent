@@ -40,8 +40,8 @@ describe('skillset install', () => {
     // database and running its migrations is a process-lifetime cost that
     // startup pays long before any install; pay it here, unmeasured, as the
     // home profiles do.
-    const { sqlite } = await import('@shared/lib/db')
-    sqlite.prepare('select 1').get()
+    const { openDatabase } = await import('@shared/lib/db')
+    await openDatabase()
   })
 
   afterAll(async () => {

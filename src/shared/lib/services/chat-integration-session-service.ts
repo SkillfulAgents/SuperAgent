@@ -6,6 +6,7 @@
 
 import { eq, and, isNull, desc } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
 import { chatIntegrationSessions, chatIntegrations } from '@shared/lib/db/schema'
 import type { ChatIntegrationSession, NewChatIntegrationSession } from '@shared/lib/db/schema'
 
@@ -115,7 +116,7 @@ export function updateChatIntegrationSessionName(id: string, displayName: string
     .set({ displayName, updatedAt: new Date() })
     .where(eq(chatIntegrationSessions.id, id))
     .run()
-  return result.changes > 0
+  return changesOf(result) > 0
 }
 
 /** Bump updatedAt to record last activity (used by session timeout). */
@@ -124,7 +125,7 @@ export function touchChatIntegrationSession(id: string): boolean {
     .set({ updatedAt: new Date() })
     .where(eq(chatIntegrationSessions.id, id))
     .run()
-  return result.changes > 0
+  return changesOf(result) > 0
 }
 
 // ── Session Resolution ────────────────────────────────────────────────
@@ -184,7 +185,7 @@ export function archiveChatIntegrationSession(id: string): boolean {
     .set({ archivedAt: new Date(), updatedAt: new Date() })
     .where(eq(chatIntegrationSessions.id, id))
     .run()
-  return result.changes > 0
+  return changesOf(result) > 0
 }
 
 // ── Delete ──────────────────────────────────────────────────────────────
@@ -193,12 +194,12 @@ export function deleteChatIntegrationSession(id: string): boolean {
   const result = db.delete(chatIntegrationSessions)
     .where(eq(chatIntegrationSessions.id, id))
     .run()
-  return result.changes > 0
+  return changesOf(result) > 0
 }
 
 export function deleteChatIntegrationSessionsByIntegration(integrationId: string): number {
   const result = db.delete(chatIntegrationSessions)
     .where(eq(chatIntegrationSessions.integrationId, integrationId))
     .run()
-  return result.changes
+  return changesOf(result)
 }
