@@ -2286,6 +2286,56 @@ describe('/download-file', () => {
     await expect(res.arrayBuffer()).rejects.toThrow(/changed after it was published/i)
   })
 
+  it.each([false, true])('validates the digest over real HTTP (changed: %s)', async (changed) => {
+    const { serve } = await import('@hono/node-server')
+    reviewDecisions.push('allow')
+    const original = Buffer.alloc(128 * 1024, 65)
+    const bytes = changed ? Buffer.alloc(original.length, 66) : original
+    mockGetTranscript.mockResolvedValue(deliveredFileTranscript(
+      '/workspace/output/result.bin', original.length, 'delivery-1',
+      createHash('sha256').update(original).digest('hex'),
+    ))
+    let finishUpstream!: () => void
+    const upstreamFinished = new Promise<void>((resolve) => { finishUpstream = resolve })
+    mockTargetFetch.mockResolvedValue(new Response(new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(bytes)
+        await upstreamFinished
+        controller.close()
+      },
+    }), { headers: { 'Content-Length': String(bytes.length) } }))
+    const server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' })
+    try {
+      if (!server.listening) await new Promise<void>((resolve) => server.once('listening', resolve))
+      const address = server.address() as { port: number }
+      const response = await fetch(`http://127.0.0.1:${address.port}/x-agent/download-file`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${CALLER_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: TARGET_SLUG, sessionId: 'delivered-session', deliveryId: 'delivery-1' }),
+      })
+      expect(response.status).toBe(200)
+      const reader = response.body!.getReader()
+      let received = 0
+      while (received < bytes.length) {
+        const chunk = await reader.read()
+        expect(chunk.done).toBe(false)
+        received += chunk.value!.byteLength
+      }
+      // The advertised byte count has arrived, but the upstream EOF/digest has
+      // not. The HTTP adapter must not turn those bytes into a successful EOF.
+      const completion = reader.read()
+      const assertion = changed
+        ? expect(completion).rejects.toThrow()
+        : expect(completion).resolves.toMatchObject({ done: true })
+      finishUpstream()
+      await assertion
+    } finally {
+      finishUpstream()
+      if ('closeAllConnections' in server) server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
   it('does not expose target container error details', async () => {
     reviewDecisions.push('allow')
     mockTargetFetch.mockResolvedValue(Response.json({ error: '/secret/host/path missing' }, { status: 404 }))

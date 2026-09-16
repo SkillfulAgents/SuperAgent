@@ -758,7 +758,9 @@ xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), 
       status: 200,
       headers: {
         'Content-Type': 'application/octet-stream',
-        'Content-Length': String(currentSize),
+        // Digest validation runs at EOF. Fixed-length HTTP responses can finish
+        // before that validation fails; streaming framing must signal completion.
+        ...(delivery.sha256 ? {} : { 'Content-Length': String(currentSize) }),
         'Content-Disposition': attachmentDisposition(delivery.filename),
         'Cache-Control': 'private, no-store, max-age=0',
       },

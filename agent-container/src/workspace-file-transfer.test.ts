@@ -111,6 +111,27 @@ describe('workspace file transfer', () => {
     expect(await fs.promises.readFile(empty.localPath)).toEqual(Buffer.alloc(0))
   })
 
+  it.each([220, 255])('writes a valid %i-byte filename with bounded staging names', async (length) => {
+    const name = 'a'.repeat(length - 4) + '.pdf'
+    const written = await writeWorkspaceFile(name, Readable.from('original'), {
+      workspaceRoot: workspace,
+      overwrite: false,
+    })
+    expect(await fs.promises.readFile(written.localPath, 'utf8')).toBe('original')
+    await writeWorkspaceFile(name, Readable.from('updated'), { workspaceRoot: workspace })
+    expect(await fs.promises.readFile(written.localPath, 'utf8')).toBe('updated')
+    expect(await fs.promises.readdir(workspace)).toEqual([name])
+  })
+
+  it.each([0o755, 0o640])('preserves mode %i when overwriting an existing file', async (mode) => {
+    const destination = path.join(workspace, 'run.sh')
+    await fs.promises.writeFile(destination, 'old')
+    await fs.promises.chmod(destination, mode)
+    await writeWorkspaceFile('run.sh', Readable.from('new'), { workspaceRoot: workspace })
+    expect((await fs.promises.stat(destination)).mode & 0o7777).toBe(mode)
+    expect(await fs.promises.readFile(destination, 'utf8')).toBe('new')
+  })
+
   it('rejects an escaping parent symlink without writing outside', async () => {
     await fs.promises.symlink(sibling, path.join(workspace, 'linked'))
 

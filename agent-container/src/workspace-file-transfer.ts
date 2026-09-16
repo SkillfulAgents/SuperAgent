@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import { Readable } from 'stream'
@@ -290,9 +290,10 @@ export async function writeWorkspaceFile(
       filename = suffixedFilename(requestedFilename, attempt)
       destination = path.join(parent, filename)
       if (collisionSafe || !overwrite) {
-        lockPath = path.join(parent, `.${filename}.x-agent.lock`)
+        const candidateLockPath = path.join(parent, `.x-agent-${createHash('sha256').update(filename).digest('hex')}.lock`)
         try {
-          lockHandle = await fs.promises.open(lockPath, 'wx', 0o600)
+          lockHandle = await fs.promises.open(candidateLockPath, 'wx', 0o600)
+          lockPath = candidateLockPath
         } catch (error) {
           if (collisionSafe && errorCode(error) === 'EEXIST') continue
           if (errorCode(error) === 'EEXIST') throw new WorkspaceFileError('File already exists', 409)
@@ -319,7 +320,8 @@ export async function writeWorkspaceFile(
 
     if (!selected) throw new WorkspaceFileError('Could not find an available filename', 409)
 
-    tempPath = path.join(parent, `.${filename}.${process.pid}.${randomUUID()}.tmp`)
+    // Keep staging names bounded even when the destination uses all NAME_MAX bytes.
+    tempPath = path.join(parent, `.x-agent-${randomUUID()}.tmp`)
     tempHandle = await fs.promises.open(tempPath, 'wx', 0o600)
     await assertOpenedHandleContained(tempHandle, workspaceRoot)
     const output = tempHandle.createWriteStream({ autoClose: true })
@@ -339,6 +341,8 @@ export async function writeWorkspaceFile(
     if (existing && !existing.isFile()) throw new WorkspaceFileError('Destination is not a regular file', 400)
 
     if (overwrite) {
+      // Replacing the inode must preserve the permissions that writeFile kept.
+      if (existing) await fs.promises.chmod(tempPath, existing.mode & 0o7777)
       await fs.promises.rename(tempPath, destination)
     } else {
       // link() publishes without replacing a destination created after the
