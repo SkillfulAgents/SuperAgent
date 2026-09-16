@@ -1,4 +1,8 @@
 import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+import { deliverFileInputSchema } from '@shared/lib/tool-definitions/deliver-file-schema'
+import { getDeliveredFileMetadata } from '@shared/lib/tool-definitions/deliver-file'
+import { sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
+import { transformMessages } from '@shared/lib/utils/message-transform'
 
 export type TranscriptMessage = {
   role: string
@@ -8,6 +12,72 @@ export type TranscriptMessage = {
 
 export type CompactedMessage = TranscriptMessage & {
   spoken: string
+}
+
+export interface DeliveredAgentFile {
+  /** Stable authorization lookup key; filename is display metadata only. */
+  deliveryId: string
+  filename: string
+  description?: string
+  sizeBytes: number
+  sha256?: string
+}
+
+export interface ResolvedDeliveredAgentFile extends DeliveredAgentFile {
+  filePath: string
+}
+
+const DELIVER_FILE_TOOL = 'mcp__user-input__deliver_file'
+
+/** Project completed file deliveries from the full persisted transcript. */
+function collectResolvedDeliveredFiles(
+  entries: Array<JsonlMessageEntry | JsonlSystemEntry>,
+): ResolvedDeliveredAgentFile[] {
+  const delivered: ResolvedDeliveredAgentFile[] = []
+  const seenDeliveryIds = new Set<string>()
+
+  for (const item of transformMessages(entries)) {
+    if (item.type !== 'assistant') continue
+
+    for (const toolCall of item.toolCalls) {
+      if (
+        toolCall.name !== DELIVER_FILE_TOOL ||
+        toolCall.isError !== false ||
+        seenDeliveryIds.has(toolCall.id)
+      ) continue
+
+      const input = deliverFileInputSchema.safeParse(toolCall.input)
+      if (!input.success) continue
+
+      const metadata = getDeliveredFileMetadata((toolCall as { result?: unknown }).result)
+      if (!metadata) continue
+
+      seenDeliveryIds.add(toolCall.id)
+      delivered.push({
+        deliveryId: toolCall.id,
+        filePath: input.data.filePath,
+        filename: sanitizeUploadFilename(input.data.filePath),
+        ...(input.data.description !== undefined ? { description: input.data.description } : {}),
+        sizeBytes: metadata.sizeBytes,
+        ...(metadata.sha256 ? { sha256: metadata.sha256 } : {}),
+      })
+    }
+  }
+
+  return delivered
+}
+
+export function collectDeliveredFiles(
+  entries: Array<JsonlMessageEntry | JsonlSystemEntry>,
+): DeliveredAgentFile[] {
+  return collectResolvedDeliveredFiles(entries).map(({ filePath: _filePath, ...file }) => file)
+}
+
+export function findDeliveredFile(
+  entries: Array<JsonlMessageEntry | JsonlSystemEntry>,
+  deliveryId: string,
+): ResolvedDeliveredAgentFile | undefined {
+  return collectResolvedDeliveredFiles(entries).find((file) => file.deliveryId === deliveryId)
 }
 
 const INTERNAL_STUB: TranscriptMessage = {

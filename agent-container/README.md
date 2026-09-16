@@ -123,14 +123,19 @@ GET /files/path/to/dir
 ```http
 GET /files/path/to/file.txt/content
 ```
+Returns a streamed `application/octet-stream` response with `Content-Length` and
+`Cache-Control: private, no-store`. Text files remain compatible because their
+original bytes are returned unchanged.
 
 #### Upload File
 ```http
 POST /files/path/to/file.txt/upload
-Content-Type: text/plain
+Content-Type: application/octet-stream
 
-file content here
+raw file bytes
 ```
+The request body is streamed to a same-directory temporary file and atomically
+renamed into place. `text/plain` callers remain supported.
 
 #### Delete File/Directory
 ```http

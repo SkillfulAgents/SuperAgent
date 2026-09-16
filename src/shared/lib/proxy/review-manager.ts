@@ -28,6 +28,8 @@ export interface ReviewDetails {
     operation: 'list' | 'read' | 'invoke' | 'create'
     // For 'invoke': the prompt being sent. For 'create': the proposed name.
     preview?: string
+    // Caller-local files proposed for an invoke. Display-only; the host validates them again.
+    attachments?: string[]
   }
 }
 
@@ -308,6 +310,7 @@ export class ReviewManager {
     decision: 'allow' | 'deny'
   ): void {
     for (const entry of this.reviewEntriesForAgent(agentSlug)) {
+      if (ReviewManager.detailsOf(entry).xAgent?.attachments?.length) continue
       if (!ReviewManager.detailsOf(entry).matchedScopes.includes(scope)) continue
       this.settleReview(entry, decision === 'allow' ? 'answered' : 'declined', {
         type: 'resolve',
@@ -357,7 +360,8 @@ export class ReviewManager {
     decision: 'allow' | 'deny',
   ): void {
     for (const entry of this.reviewEntriesForAgent(agentSlug)) {
-      if (ReviewManager.detailsOf(entry).xAgent?.operation !== operation) continue
+      const xAgent = ReviewManager.detailsOf(entry).xAgent
+      if (xAgent?.operation !== operation || xAgent.attachments?.length) continue
       this.settleReview(entry, decision === 'allow' ? 'answered' : 'declined', {
         type: 'resolve',
         decision,
@@ -386,6 +390,7 @@ export class ReviewManager {
     targetAgentName: string,
     operation: 'list' | 'read' | 'invoke' | 'create',
     preview?: string,
+    attachments?: string[],
     signal?: AbortSignal,
   ): Promise<'allow' | 'deny'> {
     const scope =
@@ -400,8 +405,10 @@ export class ReviewManager {
         : operation === 'list'
           ? `Allow agent to list other agents in this workspace?`
           : operation === 'invoke'
-            ? `Allow agent to send a message to "${targetAgentName}"?`
-            : `Allow agent to read sessions of "${targetAgentName}"?`
+            ? `Allow agent to send a message${attachments?.length ? ` and ${attachments.length} file${attachments.length === 1 ? '' : 's'}` : ''} to "${targetAgentName}"?`
+            : preview
+              ? `Allow agent to ${preview} from "${targetAgentName}"?`
+              : `Allow agent to read sessions of "${targetAgentName}"?`
 
     return this.requestReview(
       {
@@ -418,6 +425,7 @@ export class ReviewManager {
           targetAgentName,
           operation,
           preview,
+          ...(attachments?.length ? { attachments } : {}),
         },
       },
       signal,

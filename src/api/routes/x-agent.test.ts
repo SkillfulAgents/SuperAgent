@@ -15,7 +15,7 @@ import Database from 'better-sqlite3'
 import { eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import * as schema from '@shared/lib/db/schema'
 
 // Shrink the readLastAssistantMessage retry budget in tests (default is 10×500ms).
@@ -105,14 +105,18 @@ vi.mock('@shared/lib/services/session-service', () => ({
 const mockCreateSession = vi.fn((..._args: unknown[]): unknown => undefined)
 const mockSendMessage = vi.fn((..._args: unknown[]): unknown => undefined)
 const mockDeleteSession = vi.fn(async (..._args: unknown[]) => true)
+const mockTargetFetch = vi.fn(async (_path: string, _init?: RequestInit): Promise<Response> => Response.json({ success: true }))
+const mockSourceFetch = vi.fn(async (_path: string, _init?: RequestInit): Promise<Response> => new Response('source'))
 const mockEnsureRunning = vi.fn(async (..._args: unknown[]) => ({
   createSession: (...args: unknown[]) => mockCreateSession(...args),
   sendMessage: (...args: unknown[]) => mockSendMessage(...args),
   deleteSession: (...args: unknown[]) => mockDeleteSession(...args),
+  fetch: (fetchPath: string, init?: RequestInit) => mockTargetFetch(fetchPath, init),
 }))
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
+    getClient: vi.fn(() => ({ fetch: (fetchPath: string, init?: RequestInit) => mockSourceFetch(fetchPath, init) })),
   },
 }))
 
@@ -145,6 +149,7 @@ const mockIsSessionAwaitingInput = vi.fn((_agentSlug?: string, _sessionId?: stri
 const mockWaitForIdle = vi.fn(async (..._args: unknown[]) => {})
 const mockSubscribeToSession = vi.fn()
 const mockMarkSessionActive = vi.fn()
+const mockMarkSessionIdle = vi.fn()
 const mockBroadcastGlobal = vi.fn()
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
@@ -155,6 +160,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
     unsubscribeFromSession: vi.fn(),
     markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
+    markSessionIdle: (...args: unknown[]) => mockMarkSessionIdle(...args),
     setSlashCommands: vi.fn(),
     broadcastGlobal: (...args: unknown[]) => mockBroadcastGlobal(...args),
   },
@@ -179,13 +185,14 @@ vi.mock('@shared/lib/services/agent-preferences-service', () => ({
 
 // Review manager (direct decision injection)
 let reviewDecisions: Array<'allow' | 'deny'> = []
+const mockRequestXAgentReview = vi.fn(async (..._args: unknown[]) => {
+  const next = reviewDecisions.shift()
+  if (!next) throw new Error('No queued review decision')
+  return next
+})
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
-    requestXAgentReview: vi.fn(async () => {
-      const next = reviewDecisions.shift()
-      if (!next) throw new Error('No queued review decision')
-      return next
-    }),
+    requestXAgentReview: (...args: unknown[]) => mockRequestXAgentReview(...args),
   },
 }))
 
@@ -230,6 +237,50 @@ async function grantCallerOwnerTargetAccess() {
     role: 'user',
     createdAt: new Date(),
   })
+}
+
+function deliveredFileTranscript(
+  filePath: string,
+  sizeBytes: number,
+  deliveryId = 'delivery-1',
+  sha256?: string,
+): unknown[] {
+  const delivered = JSON.stringify({ sizeBytes, ...(sha256 ? { sha256 } : {}) })
+  return [
+    {
+      uuid: 'assistant-delivery',
+      parentUuid: null,
+      type: 'assistant',
+      sessionId: 'delivered-session',
+      timestamp: '2026-09-12T10:00:00.000Z',
+      message: {
+        role: 'assistant',
+        id: 'assistant-message',
+        content: [{
+          type: 'tool_use',
+          id: deliveryId,
+          name: 'mcp__user-input__deliver_file',
+          input: { filePath, description: 'Result file' },
+        }],
+      },
+    },
+    {
+      uuid: 'result-delivery',
+      parentUuid: 'assistant-delivery',
+      type: 'user',
+      sessionId: 'delivered-session',
+      timestamp: '2026-09-12T10:00:01.000Z',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: deliveryId,
+          content: `File "${filePath}" (${sizeBytes} bytes) has been delivered to the user.\n\nDelivered: ${delivered}`,
+          is_error: false,
+        }],
+      },
+    },
+  ]
 }
 
 beforeEach(async () => {
@@ -283,7 +334,10 @@ beforeEach(async () => {
     createSession: mockCreateSession,
     sendMessage: mockSendMessage,
     deleteSession: mockDeleteSession,
+    fetch: mockTargetFetch,
   } as never)
+  mockSourceFetch.mockResolvedValue(new Response('source', { headers: { 'Content-Length': '6' } }))
+  mockTargetFetch.mockResolvedValue(Response.json({ success: true }))
 
   app = new Hono()
   app.route('/x-agent', xAgentRoute)
@@ -560,6 +614,142 @@ describe('/invoke', () => {
       expect.any(String),
       expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
     )
+  })
+
+  it('copies caller attachments before creating a session and sends only target-local paths', async () => {
+    reviewDecisions.push('allow')
+    const sourceBytes = Uint8Array.from([0, 255, 1, 128])
+    let uploadedBytes: Uint8Array | undefined
+    mockSourceFetch.mockResolvedValue(new Response(sourceBytes, {
+      headers: { 'Content-Length': String(sourceBytes.length) },
+    }))
+    mockTargetFetch.mockImplementation(async (_filePath, init?: RequestInit) => {
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+      uploadedBytes = new Uint8Array(await new Response(init?.body).arrayBuffer())
+      return Response.json({ success: true })
+    })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'inspect this binary',
+      attachments: ['/workspace/results/report.bin'],
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockSourceFetch).toHaveBeenCalledWith('/workspace-files/content/results/report.bin', expect.any(Object))
+    expect(uploadedBytes).toEqual(sourceBytes)
+    const initialMessage = (mockCreateSession.mock.calls[0][0] as { initialMessage: string }).initialMessage
+    expect(initialMessage).toMatch(/^inspect this binary\n\n\[Attached files:\]\n- \/workspace\/uploads\/x-agent\/[\w-]+\/0\/report\.bin$/)
+    expect(initialMessage).not.toContain('/workspace/results/report.bin')
+    expect(mockRequestXAgentReview).toHaveBeenCalledWith(
+      CALLER_SLUG,
+      TARGET_SLUG,
+      'Target',
+      'invoke',
+      'inspect this binary',
+      ['/workspace/results/report.bin'],
+    )
+  })
+
+  it('reviews attachments even when an existing policy allows messages', async () => {
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'invoke', TARGET_SLUG, 'allow')
+    reviewDecisions.push('allow')
+    mockTargetFetch.mockImplementation(async (_filePath, init?: RequestInit) => {
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+      await new Response(init?.body).arrayBuffer()
+      return Response.json({ success: true })
+    })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'share this',
+      attachments: ['/workspace/report.bin'],
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockRequestXAgentReview).toHaveBeenCalledWith(
+      CALLER_SLUG,
+      TARGET_SLUG,
+      'Target',
+      'invoke',
+      'share this',
+      ['/workspace/report.bin'],
+    )
+  })
+
+  it('removes staged attachments when session creation fails', async () => {
+    reviewDecisions.push('allow')
+    mockCreateSession.mockRejectedValueOnce(new Error('create failed'))
+    mockTargetFetch.mockImplementation(async (_filePath, init?: RequestInit) => {
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+      await new Response(init?.body).arrayBuffer()
+      return Response.json({ success: true })
+    })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'inspect this',
+      attachments: ['/workspace/report.bin'],
+    })
+
+    expect(res.status).toBe(500)
+    expect(mockTargetFetch).toHaveBeenCalledWith(expect.stringMatching(/^\/workspace-files\/delete\/uploads\/x-agent\//), {
+      method: 'DELETE',
+    })
+  })
+
+  it('removes staged attachments when session registration fails', async () => {
+    reviewDecisions.push('allow')
+    mockRegisterSession.mockRejectedValueOnce(new Error('register failed'))
+    mockTargetFetch.mockImplementation(async (_filePath, init?: RequestInit) => {
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+      await new Response(init?.body).arrayBuffer()
+      return Response.json({ success: true })
+    })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'inspect this',
+      attachments: ['/workspace/report.bin'],
+    })
+
+    expect(res.status).toBe(500)
+    expect(mockDeleteSession).toHaveBeenCalledWith('new-sess-id')
+    expect(mockTargetFetch).toHaveBeenCalledWith(expect.stringMatching(/^\/workspace-files\/delete\/uploads\/x-agent\//), {
+      method: 'DELETE',
+    })
+  })
+
+  it('does not read attachments when invoke policy is denied', async () => {
+    reviewDecisions.push('deny')
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'do not send',
+      attachments: ['/workspace/private.txt'],
+    })
+
+    expect(res.status).toBe(403)
+    expect(mockSourceFetch).not.toHaveBeenCalled()
+    expect(mockTargetFetch).not.toHaveBeenCalled()
+    expect(mockCreateSession).not.toHaveBeenCalled()
+  })
+
+  it('does not deliver a prompt when an attachment cannot be read', async () => {
+    reviewDecisions.push('allow')
+    mockSourceFetch.mockResolvedValue(Response.json({ error: 'File not found' }, { status: 404 }))
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'missing input',
+      attachments: ['/workspace/missing.txt'],
+    })
+
+    expect(res.status).toBe(404)
+    expect(mockCreateSession).not.toHaveBeenCalled()
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(mockTargetFetch).toHaveBeenCalledWith(expect.stringMatching(/uploads\/x-agent/), { method: 'DELETE' })
   })
 
   it('names a new session after the caller agent display name', async () => {
@@ -847,6 +1037,36 @@ describe('/invoke', () => {
       .from(schema.messageAuthor)
       .where(eq(schema.messageAuthor.sessionId, 'existing-sess'))
     expect(targetAuthors).toEqual([])
+  })
+
+  it('releases an existing session and staged files when the container confirms a failed send never started', async () => {
+    reviewDecisions.push('allow')
+    mockSendMessage.mockRejectedValueOnce(new Error('send rejected'))
+    mockEnsureRunning.mockResolvedValueOnce({
+      createSession: mockCreateSession,
+      sendMessage: mockSendMessage,
+      deleteSession: mockDeleteSession,
+      getSession: vi.fn(async () => ({ id: 'existing-sess', isRunning: false })),
+      fetch: mockTargetFetch,
+    } as never)
+    mockTargetFetch.mockImplementation(async (_filePath, init?: RequestInit) => {
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+      await new Response(init?.body).arrayBuffer()
+      return Response.json({ success: true })
+    })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'follow-up',
+      sessionId: 'existing-sess',
+      attachments: ['/workspace/report.bin'],
+    })
+
+    expect(res.status).toBe(500)
+    expect(mockMarkSessionIdle).toHaveBeenCalledWith(TARGET_SLUG, 'existing-sess')
+    expect(mockTargetFetch).toHaveBeenCalledWith(expect.stringMatching(/^\/workspace-files\/delete\/uploads\/x-agent\//), {
+      method: 'DELETE',
+    })
   })
 
   it('cleans up the container session if registerSession fails (no orphan)', async () => {
@@ -1363,6 +1583,41 @@ describe('/invoke', () => {
     expect(res.status).toBe(409)
   })
 
+  it('reserves an idle existing session while pre-send work is in progress', async () => {
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'invoke', TARGET_SLUG, 'allow')
+    let releaseStart!: () => void
+    const startGate = new Promise<void>((resolve) => { releaseStart = resolve })
+    mockEnsureRunning.mockImplementationOnce(async () => {
+      await startGate
+      return {
+        createSession: mockCreateSession,
+        sendMessage: mockSendMessage,
+        deleteSession: mockDeleteSession,
+        fetch: mockTargetFetch,
+      } as never
+    })
+
+    const first = authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'first',
+      sessionId: 'existing-sess',
+    })
+    await vi.waitFor(() => expect(mockEnsureRunning).toHaveBeenCalledOnce())
+
+    const second = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'second',
+      sessionId: 'existing-sess',
+    })
+    expect(second.status).toBe(409)
+    expect(mockSendMessage).not.toHaveBeenCalled()
+
+    releaseStart()
+    expect((await first).status).toBe(200)
+    expect(mockSendMessage).toHaveBeenCalledOnce()
+  })
+
   it('continues existing session via sendMessage when not running', async () => {
     reviewDecisions.push('allow')
     mockIsSessionActive.mockReturnValue(false)
@@ -1379,6 +1634,34 @@ describe('/invoke', () => {
       { isAutomated: true },
     )
     expect(mockCreateSession).not.toHaveBeenCalled()
+  })
+
+  it('copies attachments before continuing an existing session', async () => {
+    reviewDecisions.push('allow')
+    mockIsSessionActive.mockReturnValue(false)
+    mockSourceFetch.mockResolvedValue(new Response('follow-up bytes', {
+      headers: { 'Content-Length': '15' },
+    }))
+    mockTargetFetch.mockImplementation(async (_filePath, init?: RequestInit) => {
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+      await new Response(init?.body).arrayBuffer()
+      return Response.json({ success: true })
+    })
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'continued file',
+      sessionId: 'existing-sess',
+      attachments: ['out/data.txt'],
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      'existing-sess',
+      expect.stringMatching(/^continued file\n\n\[Attached files:\]\n- \/workspace\/uploads\/x-agent\/[\w-]+\/0\/data\.txt$/),
+      undefined,
+      { isAutomated: true },
+    )
   })
 
   it('blocks in auth mode when caller owner lacks user role on target', async () => {
@@ -1777,6 +2060,29 @@ describe('/get-transcript', () => {
     expect(body.messages.map((m: { content: string }) => m.content)).toEqual(['two', 'three'])
   })
 
+  it('returns delivered files independently of message pagination', async () => {
+    reviewDecisions.push('allow')
+    mockGetTranscript.mockResolvedValue([
+      ...deliveredFileTranscript('/workspace/output/report.bin', 4),
+      { type: 'assistant', message: { role: 'assistant', content: 'final' } },
+    ])
+
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'delivered-session',
+      limit: 1,
+    })
+
+    const body = await res.json()
+    expect(body.messages).toEqual([{ role: 'assistant', content: 'final' }])
+    expect(body.deliveredFiles).toEqual([{
+      deliveryId: 'delivery-1',
+      filename: 'report.bin',
+      description: 'Result file',
+      sizeBytes: 4,
+    }])
+  })
+
   it('returns the full transcript and total when limit is omitted', async () => {
     reviewDecisions.push('allow')
     mockGetTranscript.mockResolvedValue([
@@ -1835,6 +2141,178 @@ describe('/get-transcript', () => {
     expect(body.messages[0].content).toBe('final')
     expect(JSON.stringify(body)).not.toContain('do not leak this')
     expect(JSON.stringify(body)).not.toContain('secret')
+  })
+})
+
+describe('/download-file', () => {
+  beforeEach(() => {
+    mockGetAgent.mockResolvedValue({
+      slug: TARGET_SLUG,
+      frontmatter: { name: 'Target', createdAt: '2024-01-01' },
+      instructions: '',
+    })
+    mockGetTranscript.mockResolvedValue(deliveredFileTranscript('/workspace/output/result.bin', 4))
+  })
+
+  it('streams exact delivered bytes and derives the source path only from the transcript', async () => {
+    reviewDecisions.push('allow')
+    const bytes = Uint8Array.from([0, 255, 1, 128])
+    mockTargetFetch.mockResolvedValue(new Response(bytes, {
+      headers: { 'Content-Length': String(bytes.length) },
+    }))
+
+    const res = await authedFetch('/x-agent/download-file', {
+      slug: TARGET_SLUG,
+      sessionId: 'delivered-session',
+      deliveryId: 'delivery-1',
+      filePath: '/workspace/private/forged.bin',
+    })
+
+    expect(res.status).toBe(200)
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes)
+    expect(mockTargetFetch).toHaveBeenCalledWith('/workspace-files/content/output/result.bin', expect.any(Object))
+    expect(res.headers.get('Content-Disposition')).toContain('filename="result.bin"')
+    expect(res.headers.get('Cache-Control')).toBe('private, no-store, max-age=0')
+    expect(mockRequestXAgentReview).toHaveBeenCalledWith(
+      CALLER_SLUG,
+      TARGET_SLUG,
+      'Target',
+      'read',
+      'download delivered file "result.bin"',
+      undefined,
+    )
+  })
+
+  it('rejects unknown, unresolved, and errored delivery IDs', async () => {
+    reviewDecisions.push('allow', 'allow', 'allow')
+    const unknown = await authedFetch('/x-agent/download-file', {
+      slug: TARGET_SLUG,
+      sessionId: 'delivered-session',
+      deliveryId: 'unknown',
+    })
+    expect(unknown.status).toBe(404)
+
+    const unresolved = deliveredFileTranscript('/workspace/output/result.bin', 4)
+    unresolved.pop()
+    mockGetTranscript.mockResolvedValue(unresolved)
+    const unresolvedResponse = await authedFetch('/x-agent/download-file', {
+      slug: TARGET_SLUG,
+      sessionId: 'delivered-session',
+      deliveryId: 'delivery-1',
+    })
+    expect(unresolvedResponse.status).toBe(404)
+
+    const errored = deliveredFileTranscript('/workspace/output/result.bin', 4) as Array<{
+      message?: { content?: Array<{ is_error?: boolean }> }
+    }>
+    errored[1].message!.content![0].is_error = true
+    mockGetTranscript.mockResolvedValue(errored)
+    const erroredResponse = await authedFetch('/x-agent/download-file', {
+      slug: TARGET_SLUG,
+      sessionId: 'delivered-session',
+      deliveryId: 'delivery-1',
+    })
+    expect(erroredResponse.status).toBe(404)
+    expect(mockTargetFetch).not.toHaveBeenCalled()
+  })
+
+  it('rejects unknown sessions before reading the transcript', async () => {
+    reviewDecisions.push('allow')
+    mockSessionIsKnown.mockResolvedValue(false)
+
+    const res = await authedFetch('/x-agent/download-file', {
+      slug: TARGET_SLUG,
+      sessionId: 'other-session',
+      deliveryId: 'delivery-1',
+    })
+
+    expect(res.status).toBe(404)
+    expect(mockGetTranscript).not.toHaveBeenCalled()
+    expect(mockTargetFetch).not.toHaveBeenCalled()
+  })
+
+  it('applies target viewer ACL and read policy before opening the file', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+
+    const res = await authedFetch('/x-agent/download-file', {
+      slug: TARGET_SLUG,
+      sessionId: 'delivered-session',
+      deliveryId: 'delivery-1',
+    })
+
+    expect(res.status).toBe(403)
+    expect(mockGetTranscript).not.toHaveBeenCalled()
+    expect(mockTargetFetch).not.toHaveBeenCalled()
+  })
+
+  it('rejects a file whose current size differs from the successful delivery', async () => {
+    reviewDecisions.push('allow')
+    mockTargetFetch.mockResolvedValue(new Response('changed', {
+      headers: { 'Content-Length': '7' },
+    }))
+
+    const res = await authedFetch('/x-agent/download-file', {
+      slug: TARGET_SLUG,
+      sessionId: 'delivered-session',
+      deliveryId: 'delivery-1',
+    })
+
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toMatch(/changed/i)
+  })
+
+  it('aborts a same-size download whose bytes differ from the delivery digest', async () => {
+    reviewDecisions.push('allow')
+    const original = Buffer.from('good')
+    const replacement = Buffer.from('evil')
+    mockGetTranscript.mockResolvedValue(deliveredFileTranscript(
+      '/workspace/output/result.bin',
+      original.length,
+      'delivery-1',
+      createHash('sha256').update(original).digest('hex'),
+    ))
+    mockTargetFetch.mockResolvedValue(new Response(replacement, {
+      headers: { 'Content-Length': String(replacement.length) },
+    }))
+
+    const res = await authedFetch('/x-agent/download-file', {
+      slug: TARGET_SLUG,
+      sessionId: 'delivered-session',
+      deliveryId: 'delivery-1',
+    })
+
+    expect(res.status).toBe(200)
+    await expect(res.arrayBuffer()).rejects.toThrow(/changed after it was published/i)
+  })
+
+  it('does not expose target container error details', async () => {
+    reviewDecisions.push('allow')
+    mockTargetFetch.mockResolvedValue(Response.json({ error: '/secret/host/path missing' }, { status: 404 }))
+
+    const res = await authedFetch('/x-agent/download-file', {
+      slug: TARGET_SLUG,
+      sessionId: 'delivered-session',
+      deliveryId: 'delivery-1',
+    })
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Delivered file is no longer available' })
+  })
+
+  it('rejects a legacy delivery whose transcript path escapes the workspace', async () => {
+    reviewDecisions.push('allow')
+    mockGetTranscript.mockResolvedValue(deliveredFileTranscript('/workspace/../../etc/passwd', 4))
+
+    const res = await authedFetch('/x-agent/download-file', {
+      slug: TARGET_SLUG,
+      sessionId: 'delivered-session',
+      deliveryId: 'delivery-1',
+    })
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Delivered file path is invalid' })
+    expect(mockTargetFetch).not.toHaveBeenCalled()
   })
 })
 

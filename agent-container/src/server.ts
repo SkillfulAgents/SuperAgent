@@ -14,6 +14,7 @@ import * as path from 'path';
 import { execFile, execSync } from 'child_process';
 import { promisify } from 'util';
 import { z } from 'zod';
+import { Readable } from 'stream';
 
 import { inputManager } from './input-manager';
 import { resolveCdpIp } from './cdp-host';
@@ -40,6 +41,14 @@ import {
   type DeleteWorkspaceEntryRequest,
   type RenameWorkspaceEntryRequest,
 } from './workspace-entry-operations';
+import {
+  extractWorkspaceFileRoutePath,
+  openWorkspaceFile,
+  removeWorkspacePath,
+  resolveWorkspaceRegularFile,
+  WorkspaceFileError,
+  writeWorkspaceFile,
+} from './workspace-file-transfer';
 
 import { getEditingCommands } from './cdp-editing-commands';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
@@ -323,8 +332,47 @@ app.delete('/workspace/entries', async (c) => {
   }
 });
 
+app.get('/workspace-files/content/*', async (c) => {
+  try {
+    const filePath = extractWorkspaceFileRoutePath(c.req.raw.url, 'content');
+    if (c.req.method === 'HEAD') {
+      const file = await resolveWorkspaceRegularFile(filePath);
+      c.header('Content-Type', 'application/octet-stream');
+      c.header('Content-Length', String(file.size));
+      c.header('Cache-Control', 'private, no-store');
+      return c.body(null);
+    }
+    const file = await openWorkspaceFile(filePath);
+    c.header('Content-Type', 'application/octet-stream');
+    c.header('Content-Length', String(file.size));
+    c.header('Cache-Control', 'private, no-store');
+    return c.body(Readable.toWeb(file.stream) as globalThis.ReadableStream<Uint8Array>);
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      return c.json({ error: error.message }, error.status);
+    }
+    console.error('Error reading file:', error);
+    return c.json({ error: error instanceof Error ? error.message : 'Failed to read file' }, 500);
+  }
+});
+
 app.get('/files/*', async (c) => {
   const filePath = c.req.param('*') || '';
+  if (filePath.endsWith('/content')) {
+    try {
+      const file = await openWorkspaceFile(filePath.slice(0, -'/content'.length));
+      c.header('Content-Type', 'application/octet-stream');
+      c.header('Content-Length', String(file.size));
+      c.header('Cache-Control', 'private, no-store');
+      return c.body(Readable.toWeb(file.stream) as globalThis.ReadableStream<Uint8Array>);
+    } catch (error) {
+      if (error instanceof WorkspaceFileError) {
+        return c.json({ error: error.message }, error.status);
+      }
+      console.error('Error reading file:', error);
+      return c.json({ error: error instanceof Error ? error.message : 'Failed to read file' }, 500);
+    }
+  }
   const fullPath = path.join('/workspace', filePath);
 
   try {
@@ -364,34 +412,47 @@ app.get('/files/*', async (c) => {
   }
 });
 
-app.get('/files/*/content', async (c) => {
-  const filePath = (c.req.param('*') || '').replace('/content', '');
-  const fullPath = path.join('/workspace', filePath);
-
+app.post('/workspace-files/upload/*', async (c) => {
   try {
-    const content = await fs.promises.readFile(fullPath, 'utf-8');
-    return c.text(content);
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      return c.json({ error: 'File not found' }, 404);
+    const filePath = extractWorkspaceFileRoutePath(c.req.raw.url, 'upload');
+    const file = await writeWorkspaceFile(filePath, c.req.raw.body, { overwrite: false });
+    return c.json({ success: true, path: file.relativePath });
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      return c.json({ error: error.message }, error.status);
     }
-    console.error('Error reading file:', error);
-    return c.json({ error: error.message || 'Failed to read file' }, 500);
+    console.error('Error uploading file:', error);
+    return c.json({ error: error instanceof Error ? error.message : 'Failed to upload file' }, 500);
   }
 });
 
-app.post('/files/*/upload', async (c) => {
-  const filePath = (c.req.param('*') || '').replace('/upload', '');
-  const fullPath = path.join('/workspace', filePath);
-
+app.post('/files/*', async (c, next) => {
+  const routePath = c.req.param('*') || '';
+  if (!routePath.endsWith('/upload')) return next();
   try {
-    const body = await c.req.text();
-    await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
-    await fs.promises.writeFile(fullPath, body);
-    return c.json({ success: true, path: filePath });
-  } catch (error: any) {
+    const filePath = routePath.slice(0, -'/upload'.length);
+    const file = await writeWorkspaceFile(filePath, c.req.raw.body);
+    return c.json({ success: true, path: file.relativePath });
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      return c.json({ error: error.message }, error.status);
+    }
     console.error('Error uploading file:', error);
-    return c.json({ error: error.message || 'Failed to upload file' }, 500);
+    return c.json({ error: error instanceof Error ? error.message : 'Failed to upload file' }, 500);
+  }
+});
+
+app.delete('/workspace-files/delete/*', async (c) => {
+  try {
+    const filePath = extractWorkspaceFileRoutePath(c.req.raw.url, 'delete');
+    await removeWorkspacePath(filePath);
+    return c.json({ success: true });
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      return c.json({ error: error.message }, error.status);
+    }
+    console.error('Error removing transferred file:', error);
+    return c.json({ error: error instanceof Error ? error.message : 'Failed to remove transferred file' }, 500);
   }
 });
 
@@ -3137,6 +3198,9 @@ console.log('  WS     /sessions/:id/stream');
 console.log('  GET    /files/*');
 console.log('  GET    /files/*/content');
 console.log('  POST   /files/*/upload');
+console.log('  GET    /workspace-files/content/*');
+console.log('  POST   /workspace-files/upload/*');
+console.log('  DELETE /workspace-files/delete/*');
 console.log('  DELETE /files/*');
 console.log('  POST   /files/*/mkdir');
 console.log('  GET    /files/tree');
