@@ -195,6 +195,7 @@ export function ActivityCard({
               <li
                 key={item.id}
                 style={tracerRowStyle(computerUseRows + index)}
+                data-testid="subagent-activity-row"
                 data-tracer-live={item.status === 'running' ? 'true' : undefined}
               >
                 {/* A finished row recedes as a whole — the mark inherits the

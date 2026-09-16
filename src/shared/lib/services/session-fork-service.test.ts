@@ -24,9 +24,17 @@ const { isSessionActive, ensureRunning, forkInContainer, deleteInContainer } = v
   deleteInContainer: vi.fn(),
 }))
 
+// The derived-file copy and the raw transcript read, as the actor binds them
+// from the transcript ops; gated by the tests that check they overlap.
 const { copyDirectoryFiltered, streamJsonlFile } = vi.hoisted(() => ({
   copyDirectoryFiltered: vi.fn(),
   streamJsonlFile: vi.fn(async function* (): AsyncGenerator<unknown> { yield }),
+}))
+
+vi.mock('@shared/lib/agent-actor/local-transcript-ops', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/agent-actor/local-transcript-ops')>()),
+  copyDerivedSessionFiles: (...args: unknown[]) => copyDirectoryFiltered(...args),
+  streamRawEntries: () => streamJsonlFile(),
 }))
 
 const { insertMessageAuthorsBestEffort, dbSelectFrom } = vi.hoisted(() => ({
@@ -43,25 +51,26 @@ vi.mock('./session-service', () => ({
   sessionIsKnown,
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning,
-    getClient: () => ({
-      forkSession: forkInContainer,
-      deleteSession: deleteInContainer,
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning,
+      getClient: () => ({
+        forkSession: forkInContainer,
+        deleteSession: deleteInContainer,
+      }),
     }),
-  },
-}))
+  }
+})
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: { isSessionActive },
 }))
 
-vi.mock('@shared/lib/utils/file-storage', () => ({
-  copyDirectoryFiltered,
-  getAgentSessionsDir: () => '/sessions',
-  getSessionJsonlPath: (slug: string, id: string) => `/sessions/${slug}/${id}.jsonl`,
-  streamJsonlFile,
+vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/utils/file-storage')>()),
+  getAgentWorkspaceDir: () => '/',
 }))
 
 vi.mock('@/api/routes/message-author', () => ({
@@ -190,9 +199,9 @@ describe('forkSession', () => {
     await forkSession('test-agent', 'src-1')
     expect(readSessionMetadata).toHaveBeenCalledTimes(1)
     expect(getSessionMetadata).not.toHaveBeenCalled()
-    expect(getSession).toHaveBeenCalledWith('test-agent', 'src-1', { metadata: sourceMeta })
+    expect(getSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'src-1', { metadata: sourceMeta })
     expect(registerSession).toHaveBeenCalledWith(
-      'test-agent',
+      expect.objectContaining({ slug: 'test-agent' }),
       'fork-1',
       'Pricing (fork)',
       expect.objectContaining({ model: 'claude-sonnet-5', effort: 'high', speed: 'fast' }),
@@ -231,7 +240,7 @@ describe('forkSession', () => {
     registerSession.mockRejectedValue(new Error('metadata write failed'))
     deleteSession.mockRejectedValue(new Error('unlink failed'))
     await expect(forkSession('test-agent', 'src-1')).rejects.toThrow('metadata write failed')
-    expect(deleteSession).toHaveBeenCalledWith('test-agent', 'fork-1')
+    expect(deleteSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'fork-1')
     expect(deleteInContainer).toHaveBeenCalledWith('fork-1')
   })
 })

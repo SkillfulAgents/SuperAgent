@@ -190,13 +190,18 @@ RUN if [ -d /root/.agent-browser/browsers ]; then \
       chown -R claude:claude /home/claude/.agent-browser; \
     fi
 
-# Copy skills into the user's Claude config directory (after user creation).
-# NOTE: session-transcript retention (cleanupPeriodDays) is NOT set here. The
-# CLI reads its user settings.json from CLAUDE_CONFIG_DIR (/workspace/.claude),
-# not ~/.claude, so a settings.json baked in here would be ignored. The
-# SessionManager provisions /workspace/.claude/settings.json at runtime instead
-# (see agent-container/src/session-manager.ts:ensureClaudeSettings).
-COPY --chown=claude:claude skills/ /home/claude/.claude/skills/
+# The Gamut plugin: our skills (dashboards, widgets) and vendored workflows
+# (deep-research), loaded into every session via the SDK `plugins` option
+# (claude-code.ts / gamut-plugin.ts). Image-owned and read-only like the docs:
+# the CLI ignores ~/.claude entirely (it reads CLAUDE_CONFIG_DIR =
+# /workspace/.claude, which is the agent-writable bind mount), so a plugin
+# outside both is the only way to ship skills the agent can neither miss nor
+# edit. See plugin/README.md.
+# NOTE: session-transcript retention (cleanupPeriodDays) is NOT set here for
+# the same reason — SessionManager provisions /workspace/.claude/settings.json
+# at runtime instead (see session-manager.ts:ensureClaudeSettings).
+COPY --chown=root:root plugin/ /opt/gamut/plugin/
+RUN chmod -R a-w /opt/gamut/plugin
 
 # Platform capability guides are image-owned rather than stored in /workspace,
 # which is replaced by a writable per-agent bind mount at runtime. The agent can

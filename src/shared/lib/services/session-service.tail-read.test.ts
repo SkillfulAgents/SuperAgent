@@ -17,6 +17,7 @@ import {
   getSessionMessagesWithCompact,
 } from './session-service'
 import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
 type Entry = JsonlMessageEntry | JsonlSystemEntry
 type Predicate = (entry: Entry) => boolean
@@ -126,7 +127,7 @@ describe('findLastSessionEntry', () => {
 
   /** The pre-existing code path, run directly as the oracle. */
   async function fullParseOracle(predicate: Predicate): Promise<Entry | null> {
-    const entries = await getSessionMessagesWithCompact(AGENT, SESSION)
+    const entries = await getSessionMessagesWithCompact(createLocalSessionStore(AGENT), SESSION)
     for (let i = entries.length - 1; i >= 0; i--) {
       if (predicate(entries[i])) return entries[i]
     }
@@ -135,7 +136,7 @@ describe('findLastSessionEntry', () => {
 
   async function expectSameAsFullParse(predicate: Predicate): Promise<Entry | null> {
     const expected = await fullParseOracle(predicate)
-    const actual = await findLastSessionEntry(AGENT, SESSION, predicate)
+    const actual = await findLastSessionEntry(createLocalSessionStore(AGENT), SESSION, predicate)
     expect(actual).toEqual(expected)
     return actual
   }
@@ -168,7 +169,7 @@ describe('findLastSessionEntry', () => {
     await writeTranscript(completedTurn + toJsonl([laterRequest]))
 
     const result = await findLastSessionEntry(
-      AGENT,
+      createLocalSessionStore(AGENT),
       SESSION,
       (entry) => entry.type === 'user',
       { endOffset: completionOffset },
@@ -260,7 +261,7 @@ describe('findLastSessionEntry', () => {
     await writeTranscript(toJsonl([assistantEntry(1, 'only answer'), ...filler]))
 
     const openSpy = vi.spyOn(fs.promises, 'open')
-    const result = await findLastSessionEntry(AGENT, SESSION, isAssistant)
+    const result = await findLastSessionEntry(createLocalSessionStore(AGENT), SESSION, isAssistant)
     // 3 tail windows (256KB, 1MB, 4MB — all miss) + 1 full-parse fallback.
     expect(openSpy).toHaveBeenCalledTimes(4)
     expect(result).toMatchObject({ uuid: 'assistant-1' })
@@ -278,7 +279,7 @@ describe('findLastSessionEntry', () => {
     const openSpy = vi.spyOn(fs.promises, 'open')
 
     const result = await findLastSessionEntry(
-      AGENT,
+      createLocalSessionStore(AGENT),
       SESSION,
       (entry) => entry.type === 'user' && typeof entry.message.content === 'string',
       { endOffset },
@@ -295,7 +296,7 @@ describe('findLastSessionEntry', () => {
     await writeTranscript(toJsonl([assistantEntry(1, 'early answer'), ...filler]))
 
     const openSpy = vi.spyOn(fs.promises, 'open')
-    const result = await findLastSessionEntry(AGENT, SESSION, isAssistant)
+    const result = await findLastSessionEntry(createLocalSessionStore(AGENT), SESSION, isAssistant)
     // 256KB miss → 1MB miss → 4MB window covers the whole file and hits.
     expect(openSpy).toHaveBeenCalledTimes(3)
     expect(result).toMatchObject({ uuid: 'assistant-1' })
@@ -305,7 +306,7 @@ describe('findLastSessionEntry', () => {
   it('no assistant entry at all: null, decided from a whole-file window without fallback', async () => {
     await writeTranscript(toJsonl([userEntry(1, 'hello?'), toolResultEntry(1, 'noise')]))
     const openSpy = vi.spyOn(fs.promises, 'open')
-    const result = await findLastSessionEntry(AGENT, SESSION, isAssistant)
+    const result = await findLastSessionEntry(createLocalSessionStore(AGENT), SESSION, isAssistant)
     expect(result).toBeNull()
     // Small file: first window covers it entirely — one read, no fallback.
     expect(openSpy).toHaveBeenCalledTimes(1)

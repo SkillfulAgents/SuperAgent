@@ -12,11 +12,21 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
 const mockSendMessage = vi.fn()
 const mockEnsureRunning = vi.fn()
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
-  },
-}))
+// The actor reaches the container client through getClient after start();
+// hand back whatever ensureRunning last resolved to.
+let mockClient: unknown
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning: async (...args: unknown[]) => {
+        mockClient = await mockEnsureRunning(...args)
+        return mockClient
+      },
+      getClient: () => mockClient,
+    }),
+  }
+})
 
 const mockSubscribeToSession = vi.fn()
 const mockMarkSessionActive = vi.fn()
@@ -124,7 +134,7 @@ describe('deliverSessionWake', () => {
     expect(content.startsWith('[SYSTEM] ')).toBe(true)
     expect(options).toEqual({ shouldQuery: true })
     expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
-      'agent-one',
+      expect.objectContaining({ slug: 'agent-one' }),
       'sleeping-session-1',
       { lastWake: { taskId: 'wake-task-1', executionAt: wakeExecutionAt.toISOString() } }
     )

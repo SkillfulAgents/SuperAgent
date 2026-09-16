@@ -15,9 +15,21 @@ const mocks = vi.hoisted(() => ({
   ranAsUser: undefined as string | null | undefined,
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: { ensureRunning: (...args: unknown[]) => mocks.ensureRunning(...args) },
-}))
+// The actor reaches the container client through getClient after start();
+// hand back whatever ensureRunning last resolved to.
+let ensuredClient: unknown
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning: async (...args: unknown[]) => {
+        ensuredClient = await mocks.ensureRunning(...args)
+        return ensuredClient
+      },
+      getClient: () => ensuredClient,
+    }),
+  }
+})
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
     hasActiveSessionsForAgent: () => mocks.hasActiveSessions,
@@ -83,7 +95,7 @@ describe('openWidgetRepairSession', () => {
     expect(created.initialMessage).toContain(ERROR)
     expect(created.initialMessage).toContain('TypeError: ...')
     expect(created.initialMessage).toContain('widgets` skill')
-    expect(mocks.registerSession).toHaveBeenCalledWith(AGENT, 'session-new', 'Invoked to fix widget', {
+    expect(mocks.registerSession).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT }), 'session-new', 'Invoked to fix widget', {
       isWidgetRepair: true,
       widgetRepairSlug: 'weather',
       automationStatus: 'running',

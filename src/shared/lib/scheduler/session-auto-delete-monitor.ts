@@ -1,14 +1,9 @@
 import { listAgents } from '@shared/lib/services/agent-service'
-import {
-  listSessions,
-  readSessionMetadata,
-  deleteSessionsBatch,
-} from '@shared/lib/services/session-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { listSessionIdsWithPendingWakes } from '@shared/lib/services/scheduled-task-service'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { db } from '@shared/lib/db'
@@ -94,10 +89,11 @@ class SessionAutoDeleteMonitor {
     agentSlug: string,
     inactiveDays: number
   ): Promise<void> {
-    const sessions = await listSessions(agentSlug)
+    const actor = agentRegistry.get(agentSlug)
+    const sessions = await actor.sessions.list()
     if (sessions.length === 0) return
 
-    const metadata = await readSessionMetadata(agentSlug)
+    const metadata = await actor.sessions.readMetadata()
     const cutoff = Date.now() - inactiveDays * 86_400_000
     // A long-sleeping session can be inactive far past the cutoff by design —
     // deleting it would silently destroy the very session its wake resumes.
@@ -107,7 +103,7 @@ class SessionAutoDeleteMonitor {
       .filter((s) => {
         if (s.lastActivityAt.getTime() >= cutoff) return false
         if (metadata[s.id]?.starred) return false
-        if (messagePersister.isSessionActive(agentSlug, s.id)) return false
+        if (actor.sessions.isActive(s.id)) return false
         if (pendingWakeSessionIds.has(s.id)) return false
         return true
       })
@@ -115,10 +111,10 @@ class SessionAutoDeleteMonitor {
 
     if (toDelete.length === 0) return
 
-    const deletedIds = await deleteSessionsBatch(agentSlug, toDelete)
+    const deletedIds = await actor.sessions.deleteMany(toDelete)
 
     for (const sessionId of deletedIds) {
-      messagePersister.unsubscribeFromSession(agentSlug, sessionId)
+      actor.sessions.unsubscribeStream(sessionId)
     }
 
     if (isAuthMode() && deletedIds.length > 0) {

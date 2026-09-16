@@ -4,6 +4,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { McpReauthRequestItem } from './mcp-reauth-request-item'
 
+vi.mock('./remote-mcp-request-item', () => ({
+  RemoteMcpRequestItem: ({ url, replacement }: { url: string; replacement: { requestId: string; onCancel: () => void } }) => (
+    <div data-testid="mcp-replacement-picker" data-url={url} data-request-id={replacement.requestId}>
+      <button onClick={replacement.onCancel}>Cancel replacement</button>
+    </div>
+  ),
+}))
+
 const mockInitiateOAuth = vi.fn()
 const mockApiFetch = vi.fn()
 const mockNavigate = vi.fn()
@@ -106,16 +114,24 @@ describe('McpReauthRequestItem', () => {
 
     expect(screen.queryByTestId('mcp-reauth-reconnect-btn')).not.toBeInTheDocument()
     expect(screen.queryByTestId('mcp-reauth-dismiss-btn')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('mcp-reauth-replace-btn')).not.toBeInTheDocument()
     expect(screen.getByText('Waiting for reconnection')).toBeInTheDocument()
   })
 
-  it('offers a member who cannot manage the MCP a way out instead of reconnect', () => {
+  it('lets a non-owner open the replacement picker and cancel back to the recovery card', async () => {
     mockCanManage = false
     renderItem()
 
     expect(screen.queryByTestId('mcp-reauth-reconnect-btn')).not.toBeInTheDocument()
     expect(screen.getByTestId('mcp-reauth-dismiss-btn')).toBeInTheDocument()
-    expect(screen.getByText(/Only the connection owner or an administrator/)).toBeInTheDocument()
+    expect(screen.getByText(/Replace it with a connection you own/)).toBeInTheDocument()
+    mockApiFetch.mockResolvedValueOnce(new Response(JSON.stringify({ url: 'https://my-mcp.example/mcp' })))
+    fireEvent.click(screen.getByTestId('mcp-reauth-replace-btn'))
+    expect(await screen.findByTestId('mcp-replacement-picker')).toHaveAttribute('data-url', 'https://my-mcp.example/mcp')
+    expect(screen.getByTestId('mcp-replacement-picker')).toHaveAttribute('data-request-id', 'proxy-1')
+    fireEvent.click(screen.getByText('Cancel replacement'))
+    expect(screen.getByTestId('mcp-reauth-dismiss-btn')).toBeInTheDocument()
+    expect(mockInitiateOAuth).not.toHaveBeenCalled()
   })
 
   it('dismisses the parked request and closes the card', async () => {

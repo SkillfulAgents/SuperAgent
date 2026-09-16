@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useDraftsStore } from '@renderer/context/drafts-context'
+import { useForkAndCompact } from '@renderer/hooks/use-sessions'
 import {
   newSessionCarryoverKey,
   splitComposerSnapshot,
@@ -38,11 +39,13 @@ export function useStaleSession({
 }: UseStaleSessionArgs) {
   const navigate = useNavigate()
   const draftsStore = useDraftsStore()
+  const { mutate: forkAndCompact, isPending } = useForkAndCompact()
   const [ignored, setIgnored] = useState(false)
-  const [learnMoreOpen, setLearnMoreOpen] = useState(false)
+  const [popoverOpen, setPopoverOpen] = useState(false)
   const [liveActivityAt, setLiveActivityAt] = useState<number | null>(null)
   const wasActiveRef = useRef(isActive)
   const composerSnapshotRef = useRef<(() => ComposerSnapshot) | null>(null)
+  const forkInFlightRef = useRef(false)
 
   // Persisted activity can lag a just-completed turn. Stamp active -> idle locally
   // so the prompt does not immediately return after the user continues the session.
@@ -55,7 +58,7 @@ export function useStaleSession({
   // state must be scoped explicitly to the current session.
   useEffect(() => {
     setIgnored(false)
-    setLearnMoreOpen(false)
+    setPopoverOpen(false)
     setLiveActivityAt(null)
     wasActiveRef.current = isActive
   }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -75,6 +78,7 @@ export function useStaleSession({
   }, [])
 
   const startFresh = useCallback(() => {
+    if (forkInFlightRef.current) return
     const { draftText, carryover } = splitComposerSnapshot(composerSnapshotRef.current?.())
     if (draftText !== undefined) draftsStore.set(`agent:${agentSlug}`, draftText)
     draftsStore.set(newSessionCarryoverKey(agentSlug), carryover)
@@ -82,12 +86,26 @@ export function useStaleSession({
     void navigate({ to: '/agents/$slug', params: { slug: routeAgentSlug ?? agentSlug } })
   }, [agentSlug, draftsStore, navigate, routeAgentSlug, sessionId])
 
+  // Continue in a compacted copy. The display slug goes to the fork so the
+  // copy's URL keeps it, as startFresh does.
+  const continueCompacted = useCallback(() => {
+    // Guard synchronously: a second selection can arrive before isPending renders.
+    if (forkInFlightRef.current) return
+    forkInFlightRef.current = true
+    forkAndCompact(
+      { sessionId, agentSlug: routeAgentSlug ?? agentSlug },
+      { onSettled: () => { forkInFlightRef.current = false } },
+    )
+  }, [agentSlug, forkAndCompact, routeAgentSlug, sessionId])
+
   return {
     showNotice: shouldPrompt && !isActive && !isViewOnly && !ignored,
+    isPending,
     ignore: useCallback(() => setIgnored(true), []),
-    learnMoreOpen,
-    setLearnMoreOpen,
+    popoverOpen,
+    setPopoverOpen,
     registerSnapshot,
     startFresh,
+    continueCompacted,
   }
 }

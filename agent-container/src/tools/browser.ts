@@ -17,13 +17,27 @@ import {
 import { hostAuthHeaders } from '../host-auth'
 import { tabManager } from '../tab-manager'
 import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScrollDigest, type UrlDigest, type ScrollInfo } from '../browser-digest'
+import { parseObservation, EMPTY_OBSERVATION } from '../page-observer'
+import { landedElsewhere, pageWarnings } from '../page-status'
+import { formatActionEffect, type ActionEffect, type ActionVerb } from '../action-settle'
+import { classifyWaitTarget, formatWaitResult } from '../wait-target'
+
+/** The effect line for a mutating action's result, from the server's settle-and-diff. */
+function effectText(data: Record<string, unknown> | undefined, verb: ActionVerb, fallbackSettleMs: number): string {
+  const effect = (data?.effect as ActionEffect | undefined) ?? null
+  const settleMs = typeof data?.settleMs === 'number' ? data.settleMs : fallbackSettleMs
+  return formatActionEffect(effect, { settleMs, verb })
+}
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
 // Conditional on purpose: it has to agree with the prompt, which tells a parent
 // with a web-browser subagent to delegate rather than read. An unconditional
 // "required" here would either undo that saving or train the model to ignore
 // these hints — including in the no-subagent case where the read is the only
-// source of browsing guidance.
+// source of browsing guidance. It is attached once per browser launch (the
+// open that started a browser), never on tab switches or navigations inside
+// a live browser: repeated on every open, it told the web-browser subagent
+// up to 50 times a session to consider delegating to itself (mining theme 31).
 export const BROWSER_USE_GUIDANCE_HINT =
   'Guidance: if you will drive the browser yourself rather than delegate to the web-browser agent, read `/opt/gamut/docs/browser-use.md` before interacting (unless you already read it in this conversation).'
 
@@ -128,23 +142,44 @@ Omit location to keep using the current browser where it is; when no browser is 
     const localhostWarning = isLoopbackBrowserUrl(args.url) && activeLocation === 'host'
       ? '\n\nWARNING: This URL points at the host browser\'s own loopback interface. If you meant a service inside the agent container, reopen it with location="container".'
       : ''
+    const guide = data?.launched === true ? `\n\n${BROWSER_USE_GUIDANCE_HINT}` : ''
 
     if (data?.switchedToExisting) {
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Switched to existing tab ${data.tabId} in ${locationText}, which already has ${data.url} open. Use browser_snapshot to see the page content.${localhostWarning}\n\n${BROWSER_USE_GUIDANCE_HINT}`,
+            text: `Switched to existing tab ${data.tabId} in ${locationText}, which already has ${data.url} open. Use browser_snapshot to see the page content.${localhostWarning}`,
           },
         ],
       }
+    }
+
+    // Report where the browser landed, not what was asked for. The server's
+    // page probe is the source; when it could not run (dead page, eval
+    // blocked) fall back to the old intent-shaped text and say so. The result
+    // is an error only for Chrome's own error page — everything else is a
+    // fact the agent weighs itself.
+    const page = (data?.page ? parseObservation(JSON.stringify(data.page)) : null) ?? EMPTY_OBSERVATION
+    if (page.url) {
+      const title = page.title ? JSON.stringify(page.title.slice(0, 120)) : 'an untitled page'
+      const redirect = landedElsewhere(args.url, page.url) ? ` (redirected from ${args.url})` : ''
+      const http = page.httpStatus > 0 ? ` · HTTP ${page.httpStatus}` : ''
+      const warns = pageWarnings(page, null)
+      const unreachable = Boolean(page.netError)
+      const text =
+        `Loaded ${title} at ${page.url}${redirect}${http} in ${locationText}.${switchText}` +
+        warns.map(w => `\n⚠ ${w}`).join('') +
+        (warns.length > 0 && page.preview ? `\nPage text: ${JSON.stringify(page.preview.slice(0, 400))}` : '') +
+        ` The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}${guide}`
+      return { content: [{ type: 'text' as const, text }], ...(unreachable ? { isError: true } : {}) }
     }
 
     return {
       content: [
         {
           type: 'text' as const,
-          text: `Browser opened in ${locationText} and navigating to ${args.url}.${switchText} The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}\n\n${BROWSER_USE_GUIDANCE_HINT}`,
+          text: `Browser opened in ${locationText} and navigating to ${args.url}.${switchText} The landing page could not be read — take a browser_snapshot to see where you are; its status line shows the URL, title and HTTP status.${localhostWarning}${guide}`,
         },
       ],
     }
@@ -170,11 +205,11 @@ const browserSnapshotTool = tool(
   'browser_snapshot',
   `Get an accessibility tree snapshot of the current page. Returns interactive elements with refs (like @e1, @e2) that you can use with browser_click and browser_fill.
 
-The default view shows interactive elements only. Two knobs handle the cases that view misses:
-- scope: limit the snapshot to a CSS-selected region (e.g. "form", "#main", ".modal", a dialog selector). Use this on large pages — it slashes output and avoids truncation. Refs stay valid for the rest of the page.
-- fullText=true: include STATIC text the interactive view drops — validation errors, prices, instructions, toasts, char counters. Reach for this when an action seemed to fail but no error showed, or when you need on-page copy.
+The default view shows interactive elements only — it drops ALL static text (prices, prose, error messages, table values). A footer says how much text was dropped and what the page's live regions (alerts, status, toasts) currently say. Two knobs handle what the default view misses:
+- fullText=true: THE way to read a page. Adds the static text to the same compact tree; refs are identical in both views. Use it to extract data, read results or errors, or check on-page copy — not browser_eval innerText scrapers, not screenshots.
+- scope: limit the snapshot to a CSS-selected region (e.g. "form", "#main", ".modal", a dialog selector). Combine with fullText on large pages — it slashes output and avoids truncation. Refs stay valid for the rest of the page.
 
-Cross-origin iframes (e.g. Stripe payment frames) are listed as placeholders below the tree — their fields are NOT in the snapshot; fill them via coordinate click + browser_type.
+Frames — cross-origin ones such as Stripe payment frames included — are normally merged into the tree with working refs; use those refs like any other. A frame whose contents the tree could not read is listed below the tree.
 Very large snapshots are truncated with a note rather than failing — scope to recover the rest.`,
   {
     interactive: z
@@ -200,7 +235,7 @@ Very large snapshots are truncated with a note rather than failing — scope to 
       .boolean()
       .optional()
       .default(false)
-      .describe('Include static text (validation errors, prices, instructions) that the interactive view omits (default: false).'),
+      .describe('Add the page\'s static text (prices, prose, validation errors, table values) to the compact interactive tree. Same refs as the default view (default: false).'),
     includeUrls: z
       .boolean()
       .optional()
@@ -245,7 +280,9 @@ const browserClickTool = tool(
     const tabInfo = data?.tabInfo as { activeId: string; activeUrl: string; tabCount: number } | undefined
     const digest = (data?.digest as UrlDigest | undefined) ?? null
 
-    let text = `Clicked ${args.ref}.${formatUrlDigest(digest)}`
+    // A click that opened a new tab did its work there; the effect line is about
+    // this tab and would only read as "nothing happened".
+    let text = `Clicked ${args.ref}.${formatUrlDigest(digest)}${tabInfo ? '' : effectText(data, 'click', 300)}`
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {
@@ -321,20 +358,26 @@ const browserScrollTool = tool(
 
 const browserWaitTool = tool(
   'browser_wait',
-  `Wait for a CSS selector to appear on the page. Only use this when you need to wait for a specific element to render (e.g. after triggering dynamic content). Do NOT use for "networkidle", "load", or "domcontentloaded" — browser_open already waits for the page to load.`,
+  `Wait for a CSS selector to appear on the page, or for a number of milliseconds. The result says how long it actually took — a selector that is already present matches in ~0 ms, which is not a delay.
+
+Playwright locator syntax (text=…, role=…, :has-text(…)) is not CSS and is refused. To wait for text use browser_run(["wait","--text","<text>"]); for a URL, browser_run(["wait","--url","<pattern>"]). "networkidle"/"load"/"domcontentloaded" are accepted but rarely useful — browser_open already waits for the page to load.`,
   {
     for: z
       .string()
       .describe(
-        'CSS selector to wait for (e.g. "#results", ".loaded"). Avoid "networkidle"/"load"/"domcontentloaded" — browser_open already handles page load.'
+        'CSS selector to wait for (e.g. "#results", ".loaded"), or a number of milliseconds to sleep (e.g. "1500").'
       ),
   },
   async (args) => {
+    const target = classifyWaitTarget(args.for)
+    if (target.kind === 'rejected') return errorResult(target.reason)
     const result = await browserFetch('wait', { for: args.for })
     if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown> | undefined
+    const elapsedMs = typeof data?.elapsedMs === 'number' ? data.elapsedMs : 0
     return {
       content: [
-        { type: 'text' as const, text: `Wait condition "${args.for}" satisfied.` },
+        { type: 'text' as const, text: formatWaitResult(target, elapsedMs, data?.timedOut === true, typeof data?.url === 'string' ? data.url : undefined) },
       ],
     }
   }
@@ -355,7 +398,7 @@ This cannot type text — multi-character strings are rejected. To type into the
     const tabInfo = data?.tabInfo as { activeId: string; activeUrl: string; tabCount: number } | undefined
     const digest = (data?.digest as UrlDigest | undefined) ?? null
 
-    let text = `Pressed "${args.key}".${formatUrlDigestBrief(digest)}`
+    let text = `Pressed "${args.key}".${formatUrlDigestBrief(digest)}${tabInfo ? '' : effectText(data, 'press', 50)}`
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {
@@ -428,7 +471,7 @@ Custom dropdowns (divs with role=combobox/listbox) will NOT work with this tool.
     const committed = data?.committedValue
     return {
       content: [
-        { type: 'text' as const, text: `Selected "${args.value}" in ${args.ref} — committed value verified: "${committed}".` },
+        { type: 'text' as const, text: `Selected "${args.value}" in ${args.ref} — the element's value is now "${committed}".${effectText(data, 'select', 300)}` },
       ],
     }
   }
@@ -443,9 +486,11 @@ const browserHoverTool = tool(
   async (args) => {
     const result = await browserFetch('hover', { ref: args.ref })
     if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown> | undefined
+    const effect = effectText(data, 'hover', 300)
     return {
       content: [
-        { type: 'text' as const, text: `Hovered over ${args.ref}. Use browser_snapshot to see any changes.` },
+        { type: 'text' as const, text: `Hovered over ${args.ref}.${effect || ' Use browser_snapshot to see any changes.'}` },
       ],
     }
   }
@@ -524,7 +569,7 @@ const browserTypeTool = tool(
   `Type text with REAL keystrokes into the currently focused element — or pass a ref to focus that element first.
 
 Use this when browser_fill cannot work:
-- Fields inside cross-origin payment iframes (Stripe card number/expiry/CVC): click into the field first (by ref if available, else by coordinates via browser_run mouse), then call browser_type WITHOUT a ref. Verify with a screenshot — the field is not readable from outside the iframe.
+- Fields inside payment iframes (Stripe card number/expiry/CVC) normally have refs in the snapshot: pass the ref, or browser_click it first and type without a ref. If the snapshot lists the frame as unreadable, focus the field with browser_run mouse (move x y, down, up) and type without a ref; verify with a screenshot.
 - Keystroke-listening widgets that ignore programmatic fill: OTP digit boxes, typeaheads, autocomplete inputs.
 
 Notes: this APPENDS to existing content (it does not clear first — use browser_fill to replace, or browser_press "Control+a" then type). When a ref is provided, the field's value is read back and returned.`,
@@ -555,7 +600,7 @@ const browserEvalTool = tool(
 
 - A single expression returns its value (e.g. document.title). A multi-line/statement body runs in a fresh scope — use \`return\` to produce a value (top-level return and await are supported; const/let won't collide across calls). Bare function expressions are auto-invoked.
 - Return JSON-serializable data — for structured results, end with JSON.stringify(...).
-- TOP FRAME ONLY: elements inside cross-origin iframes (e.g. Stripe payment frames) are unreachable from JavaScript. For those, click the field by coordinates and type with browser_type.
+- TOP FRAME ONLY: elements inside cross-origin iframes (e.g. Stripe payment frames) are unreachable from JavaScript. Use their refs from browser_snapshot (browser_click / browser_fill / browser_type) instead.
 - Output is capped at ~8000 chars — query only the fields you need instead of dumping HTML.`,
   {
     script: z.string().describe('JavaScript to evaluate. An expression (document.title) returns its value; a statement body should use return, e.g. "const n = document.querySelectorAll(\'a\').length; return n;"'),
@@ -564,9 +609,14 @@ const browserEvalTool = tool(
     const result = await browserFetch('eval', { script: args.script })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
-    let text = data.output ? String(data.output) : '(no output)'
-    if (data.wrapped) {
-      text += '\n(note: ran in a fresh function scope — add `return` if you expected a value back)'
+    const output = data.output ? String(data.output) : ''
+    let text = output || '(no output)'
+    // A statement body runs inside an async IIFE, and the CLI prints `null`
+    // for a body that completes without `return` (undefined → JSON null).
+    // The note is only informative in that case; on any other output it was
+    // a 100% false positive in the mined sessions (theme 4).
+    if (data.wrapped && (output === '' || output === 'null')) {
+      text += '\n(note: a statement body that does not `return` also yields null — add `return` if you expected a value back)'
     }
     text += getTabWarning()
     return {
@@ -617,7 +667,11 @@ Available commands:
     const result = await browserFetch('run', { command: args.command, args: args.args })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
-    let text = data.output ? String(data.output) : 'Command executed.'
+    // Read verbs (console, errors, cookies, get value/attr, network requests)
+    // legitimately return nothing. "Command executed." read as a clean
+    // result — three mined sessions laundered it into "no console errors"
+    // verdicts. Say what came back: nothing.
+    let text = data.output ? String(data.output) : '(no output)'
     const tabInfo = data.tabInfo as { activeId: string; activeUrl: string; tabCount: number } | undefined
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
@@ -634,58 +688,112 @@ Available commands:
 
 const browserGetStateTool = tool(
   'browser_get_state',
-  `Get the current state of the browser in one call. Returns the current URL, a screenshot image, and an accessibility snapshot. Use this to quickly check what the browser is showing without needing multiple tool calls.`,
-  {},
-  async () => {
-    const [urlResult, screenshotResult, snapshotResult] = await Promise.all([
-      browserFetch('run', { command: 'get url' }),
-      browserFetch('screenshot', { full: false }),
-      browserFetch('snapshot', { interactive: true, compact: true }),
-    ])
+  `Get the current state of the browser in one call. Returns the current URL, a screenshot image, and an accessibility snapshot. Use this to quickly check what the browser is showing without needing multiple tool calls. Takes the snapshot tool's scope/fullText/includeUrls knobs; pass screenshot=false to skip the image and get just URL + snapshot.`,
+  {
+    scope: z
+      .string()
+      .optional()
+      .describe('CSS selector to limit the snapshot to one region (same as browser_snapshot).'),
+    fullText: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Include the page\'s static text in the snapshot (same as browser_snapshot; default: false).'),
+    includeUrls: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Inline link URLs in the snapshot (default: false).'),
+    screenshot: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe('Capture and return a screenshot image (default: true). Set false when you only need URL + snapshot.'),
+  },
+  async (args) => {
+    // One observation, in order: the snapshot first (its page probe carries
+    // the URL, so no separate `get url`), then the screenshot. The old version
+    // fired `get url`, screenshot and snapshot in parallel with no shared
+    // instant, so "Current URL" could name a different page than the snapshot
+    // beside it, and a dead browser printed the same CDP error three times
+    // inside a success-shaped result (transcript-mining theme 23).
+    const snapshotResult = await browserFetch('snapshot', {
+      interactive: true,
+      compact: true,
+      scope: args.scope,
+      fullText: args.fullText,
+      includeUrls: args.includeUrls,
+    })
+    const screenshotResult = args.screenshot === false ? null : await browserFetch('screenshot', { full: false })
 
     const content: Array<{ type: 'image'; data: string; mimeType: string } | { type: 'text'; text: string }> = []
     const parts: string[] = []
+    const failures: string[] = []
 
-    if (urlResult.success) {
-      const data = urlResult.data as Record<string, unknown>
-      parts.push(`**Current URL:** ${data.output || 'unknown'}`)
-    } else {
-      parts.push(`**Current URL:** Error - ${urlResult.error}`)
+    const snapshotData = snapshotResult.success ? (snapshotResult.data as Record<string, unknown>) : null
+    const page = snapshotData?.page ? parseObservation(JSON.stringify(snapshotData.page)) : null
+    if (page?.url) {
+      parts.push(`**Current URL:** ${page.url}`)
     }
 
-    if (screenshotResult.success) {
+    // The screenshot leg delivered something only when an image reached the
+    // result. A route success whose file cannot be read or resized is a
+    // failure like any other (review: it used to leave isError unset with
+    // nothing delivered).
+    let screenshotFailure: string | null = null
+    if (screenshotResult === null) {
+      // screenshot=false: nothing to report
+    } else if (screenshotResult.success) {
       const data = screenshotResult.data as Record<string, unknown>
       const rawOutput = data.output ? String(data.output) : ''
       const filePath = rawOutput ? extractScreenshotPath(rawOutput) : ''
-      if (filePath) {
+      if (!filePath) {
+        screenshotFailure = 'no screenshot path returned'
+      } else {
         const image = await readScreenshotAsBase64(filePath)
         if (image) {
           content.push({ type: 'image' as const, data: image.data, mimeType: image.mimeType })
+          parts.push(`**Screenshot:** ${filePath}`)
+        } else {
+          screenshotFailure = `screenshot file could not be read: ${filePath}`
         }
-        parts.push(`**Screenshot:** ${filePath}`)
-      } else {
-        parts.push(`**Screenshot:** No screenshot path returned`)
       }
     } else {
-      parts.push(`**Screenshot:** Error - ${screenshotResult.error}`)
+      screenshotFailure = screenshotResult.error ?? 'unknown error'
     }
 
-    if (snapshotResult.success) {
-      const data = snapshotResult.data as Record<string, unknown>
-      const tabCount = typeof data.tabCount === 'number' ? data.tabCount : 0
-      const snapshot = data.snapshot
-        ? String(data.snapshot)
-        : JSON.stringify(data, null, 2)
+    if (snapshotData) {
+      const tabCount = typeof snapshotData.tabCount === 'number' ? snapshotData.tabCount : 0
+      const snapshot = snapshotData.snapshot
+        ? String(snapshotData.snapshot)
+        : JSON.stringify(snapshotData, null, 2)
       parts.push(`**Accessibility Snapshot:**\n${snapshot}`)
       const tabStatus = tabManager.formatTabStatus(tabCount)
       if (tabStatus) parts.push(tabStatus.trim())
-    } else {
-      parts.push(`**Accessibility Snapshot:** Error - ${snapshotResult.error}`)
+    }
+
+    if (!snapshotData) failures.push(`snapshot: ${snapshotResult.error}`)
+    if (screenshotFailure !== null) failures.push(`screenshot: ${screenshotFailure}`)
+
+    // One line per distinct cause: a dead browser fails every leg with the
+    // same message, which is one fact, not two.
+    const requested = screenshotResult === null ? 1 : 2
+    const allFailed = failures.length === requested
+    if (failures.length > 0) {
+      const causes = new Map<string, string[]>()
+      for (const f of failures) {
+        const [leg, ...rest] = f.split(': ')
+        const cause = rest.join(': ')
+        causes.set(cause, [...(causes.get(cause) ?? []), leg])
+      }
+      for (const [cause, legs] of causes) {
+        parts.push(`**Error (${legs.join(' and ')}):** ${cause}`)
+      }
     }
 
     content.push({ type: 'text' as const, text: parts.join('\n\n') })
 
-    return { content }
+    return allFailed ? { content, isError: true } : { content }
   }
 )
 

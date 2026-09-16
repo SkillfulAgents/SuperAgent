@@ -11,7 +11,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { chatIntegrationManager } from './chat-integration-manager'
+import { ChatInputBuilder } from './chat-input'
+const chatInput = new ChatInputBuilder(async () => undefined)
 
 const DOWNLOAD_URL = 'https://files.slack.com/files-pri/T123-F456/secret.pdf'
 const TOKEN = 'xoxb-secret-token'
@@ -83,7 +84,7 @@ describe('SUP-232 downloadWithAuth redirect token handling', () => {
       fakeResponse({ status: 200, body: Buffer.from('file-bytes') }),
     ])
 
-    const buf = await (chatIntegrationManager as any).downloadWithAuth(DOWNLOAD_URL, TOKEN)
+    const buf = await (chatInput as any).downloadWithAuth(DOWNLOAD_URL, TOKEN)
     expect(buf).not.toBeNull()
 
     const attackerCall = calls.find((c) => {
@@ -99,7 +100,7 @@ describe('SUP-232 downloadWithAuth redirect token handling', () => {
       fakeResponse({ status: 200, body: Buffer.from('file-bytes') }),
     ])
 
-    const buf = await (chatIntegrationManager as any).downloadWithAuth(DOWNLOAD_URL, TOKEN)
+    const buf = await (chatInput as any).downloadWithAuth(DOWNLOAD_URL, TOKEN)
     expect(buf).not.toBeNull()
 
     // First hop (the original Slack download URL) is authenticated.

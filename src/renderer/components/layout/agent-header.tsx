@@ -20,6 +20,7 @@ import { useDashboardHeader } from '@renderer/context/dashboard-header-context'
 import { DashboardHeaderActions } from '@renderer/components/dashboards/dashboard-header-actions'
 import type { ContainerStatus } from '@shared/lib/container/types'
 import { ScrollAwareNavTitle } from './scroll-aware-title'
+import { ForkedFromIndicator } from './forked-from-indicator'
 
 interface AgentHeaderProps {
   slug: string
@@ -53,6 +54,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
   const inboundXAgentOpen = view.kind === 'inboundXAgent'
   const completedTasksOpen = view.kind === 'completedTasks'
   const apiLogsOpen = view.kind === 'apiLogs'
+  const memoriesOpen = view.kind === 'memories'
   const secretsOpen = view.kind === 'secrets'
   const xAgentPermissionsOpen = view.kind === 'xAgentPermissions'
   const connectionsOpen = view.kind === 'connections'
@@ -205,6 +207,13 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
                 {session?.name || 'Loading...'}
               </span>
             </SessionContextMenu>
+            {session?.forkedFromSessionId && (
+              <ForkedFromIndicator
+                agentSlug={slug}
+                sourceSessionId={session.forkedFromSessionId}
+                sourceSessionName={session.forkedFromSessionName}
+              />
+            )}
           </>
         )}
         {dashboardSlug && (
@@ -222,6 +231,12 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
           <>
             <BreadcrumbSeparator />
             <span className="text-sm font-light text-foreground">API Logs</span>
+          </>
+        )}
+        {memoriesOpen && (
+          <>
+            <BreadcrumbSeparator />
+            <span className="text-sm font-light text-foreground">Memories</span>
           </>
         )}
         {secretsOpen && (

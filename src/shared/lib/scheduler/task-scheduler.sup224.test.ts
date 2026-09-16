@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 //
 // Only the scheduled-task-service boundary and the error-reporting sink need
 // mocking; when scans return []/throw, executeTask is never reached, so the
-// heavy collaborators (containerManager, messagePersister, …) aren't exercised.
+// heavy collaborators (containerHost, messagePersister, …) aren't exercised.
 // ============================================================================
 
 const mockGetDueTasks = vi.fn()

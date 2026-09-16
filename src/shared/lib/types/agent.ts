@@ -211,6 +211,17 @@ export interface JsonlMessageEntry {
   // Set on synthetic user entries derived from queued_command attachments
   // (messages delivered mid-turn) — see normalizeQueuedCommandEntry.
   isQueuedCommand?: boolean
+  forkedFrom?: JsonlForkStamp
+}
+
+/**
+ * Stamped by the SDK on every line copied into a forked session (messages,
+ * system entries, attachments alike): the source session and the line's uuid
+ * there. Absent on lines written after the fork.
+ */
+export interface JsonlForkStamp {
+  sessionId: string
+  messageUuid: string
 }
 
 /**
@@ -231,6 +242,7 @@ export interface JsonlSystemEntry {
   // Severity for `informational` entries (host-persisted loop banners, e.g. a
   // hook blocking a prompt). Mirrors the SDK's informational message `level`.
   level?: string
+  forkedFrom?: JsonlForkStamp
 }
 
 /**
@@ -253,6 +265,7 @@ export interface JsonlAttachmentEntry {
     commandMode?: string
     isMeta?: boolean
   }
+  forkedFrom?: JsonlForkStamp
 }
 
 /**

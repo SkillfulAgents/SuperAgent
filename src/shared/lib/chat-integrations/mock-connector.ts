@@ -7,9 +7,9 @@
 
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
-import { ChatClientConnector, type OutgoingMessage } from './base-connector'
+import { ChatAgentIntegration, type OutgoingMessage } from './chat-agent-integration'
 
-export class MockChatClientConnector extends ChatClientConnector {
+export class MockChatClientConnector extends ChatAgentIntegration {
   readonly provider = 'telegram' as const // Arbitrary, just needs a valid value
 
   private connected = false
@@ -87,7 +87,7 @@ export class MockChatClientConnector extends ChatClientConnector {
     this.nextMessageId = 1
   }
 
-  // ── ChatClientConnector implementation ────────────────────────────
+  // ── ChatAgentIntegration implementation ────────────────────────────
 
   async connect(): Promise<void> {
     this.connected = true

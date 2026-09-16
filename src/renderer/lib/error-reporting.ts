@@ -11,6 +11,7 @@
 import { ERROR_REPORTING_INGEST_URL } from '@shared/lib/error-reporting/config'
 import type { ErrorReportingUser } from '@shared/lib/error-reporting/types'
 import { isElectron } from './env'
+import { isWorkspaceUnavailableError } from './workspace-unavailable'
 
 let errorReportingEnabled = true // null/undefined means true — default on for existing users
 let errorReportingUser: ErrorReportingUser | null = null
@@ -36,8 +37,12 @@ function loadSentry(): Promise<typeof import('./sentry-browser-provider') | null
         environment: isElectron() ? 'electron-renderer' : 'web',
         release: __APP_VERSION__,
         tracesSampleRate: 0,
-        beforeSend(event) {
+        beforeSend(event, hint) {
           if (!errorReportingEnabled) return null
+          // Expected while a cloud workspace sleeps or wakes; the breadcrumb
+          // from apiFetch is the record. Filtered here so unhandled rejections
+          // and cache-level reports are covered alike.
+          if (isWorkspaceUnavailableError(hint?.originalException)) return null
           return event
         },
       })

@@ -13,8 +13,12 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'https://proxy.test',
 }))
 
+vi.mock('../llm-provider/helpers', () => ({ getConfiguredLlmClient: vi.fn(), createSummarizerText: vi.fn() }))
+vi.mock('../llm-provider', () => ({ resolveActiveProviderModel: vi.fn() }))
+
 import { getVoiceProvider } from './index'
 import { DEEPGRAM_TTS_VOICES } from './deepgram-voices'
+import { OPENAI_TTS_VOICES } from './openai-voices'
 import { resolveTtsSpeed } from './tts-preferences'
 
 describe('text-to-speech provider support', () => {
@@ -22,34 +26,40 @@ describe('text-to-speech provider support', () => {
     vi.restoreAllMocks()
   })
 
-  it('Deepgram and platform can speak; OpenAI cannot (yet)', () => {
+  it('all configured voice providers support read-aloud', () => {
     expect(getVoiceProvider('deepgram').supportsTts()).toBe(true)
     expect(getVoiceProvider('platform').supportsTts()).toBe(true)
-    expect(getVoiceProvider('openai').supportsTts()).toBe(false)
+    expect(getVoiceProvider('openai').supportsTts()).toBe(true)
   })
 
-  it('mints the same grant token for speech as for transcription', async () => {
+  it('initializes OpenAI and platform without returning a token or making an upstream request', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    await expect(getVoiceProvider('openai').getTtsConnection()).resolves.toEqual({ transport: 'http' })
+    await expect(getVoiceProvider('platform').getTtsConnection()).resolves.toEqual({ transport: 'http' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('mints the same Deepgram grant token for speech as for transcription', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
       new Response(JSON.stringify({ access_token: 'jwt' }), { status: 200 }),
     )
     await expect(getVoiceProvider('deepgram').getTtsToken()).resolves.toEqual({ provider: 'deepgram', token: 'jwt' })
     expect(fetchMock.mock.calls[0][0]).toBe('https://api.deepgram.com/v1/auth/grant')
-
-    await expect(getVoiceProvider('platform').getTtsToken()).resolves.toEqual({ provider: 'platform', token: 'jwt' })
-    expect(fetchMock.mock.calls[1][0]).toBe('https://proxy.test/v1/deepgram/auth/grant')
   })
 
-  it('refuses to mint for a provider without speech', async () => {
+  it('does not mint a browser token for server-side OpenAI or platform speech', async () => {
     await expect(getVoiceProvider('openai').getTtsToken()).rejects.toThrow('Text-to-speech not supported by OpenAI')
+    await expect(getVoiceProvider('platform').getTtsToken()).rejects.toThrow('Text-to-speech not supported by Platform')
   })
 })
 
 describe('provider voice catalogue', () => {
-  it('Deepgram and platform offer the same Aura voices; OpenAI offers none', () => {
+  it('Deepgram offers Aura voices; OpenAI and platform offer the OpenAI catalogue', () => {
     expect(getVoiceProvider('deepgram').getTtsVoices()).toBe(DEEPGRAM_TTS_VOICES)
-    expect(getVoiceProvider('platform').getTtsVoices()).toBe(DEEPGRAM_TTS_VOICES)
-    expect(getVoiceProvider('openai').getTtsVoices()).toEqual([])
-    expect(getVoiceProvider('openai').getDefaultTtsVoice()).toBeUndefined()
+    expect(getVoiceProvider('platform').getTtsVoices()).toBe(OPENAI_TTS_VOICES)
+    expect(getVoiceProvider('openai').getTtsVoices()).toContainEqual({ id: 'marin', label: 'Marin', description: 'OpenAI' })
+    expect(getVoiceProvider('openai').getDefaultTtsVoice()).toBe('marin')
+    expect(getVoiceProvider('platform').getDefaultTtsVoice()).toBe('marin')
   })
 
   it('the default is the first voice and every id in the catalogue is recognised', () => {
@@ -74,5 +84,15 @@ describe('resolveTtsSpeed', () => {
     expect(resolveTtsSpeed(1.2)).toBe(1.2)
     expect(resolveTtsSpeed(3)).toBe(1)
     expect(resolveTtsSpeed(undefined)).toBe(1)
+  })
+})
+
+
+describe('delegated conversation capability', () => {
+  it('is provided by OpenAI and platform and absent for the chained Deepgram provider', () => {
+    expect(getVoiceProvider('openai').getLiveConversation()).toBe(getVoiceProvider('openai'))
+    expect(getVoiceProvider('platform').getLiveConversation()).toBe(getVoiceProvider('platform'))
+    expect(getVoiceProvider('platform').getConversationEngine()).toBe('openai-live')
+    expect(getVoiceProvider('deepgram').getLiveConversation()).toBeNull()
   })
 })

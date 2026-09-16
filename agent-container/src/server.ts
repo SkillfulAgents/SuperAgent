@@ -812,13 +812,20 @@ const execFileAsync = promisify(execFile);
 import { resolveRunCommandArgs } from './browser-command-args';
 import { validatePressKey } from './press-key';
 import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
-import { judgeSelectCommit, SELECT_COMMIT_SETTLE_MS } from './select-verify';
+import { judgeSelectCommit, parseSelectOptions, targetOptionMatches, SELECT_COMMIT_SETTLE_MS } from './select-verify';
+import { classifyWaitTarget, WAIT_PAGE_PROBE_SCRIPT, parseWaitPageProbe } from './wait-target';
+
+/** Budget for the page probe around a wait — independent of the exec ceiling. */
+const WAIT_PAGE_PROBE_TIMEOUT_MS = 3000;
 import { resolveCommittedValue } from './field-value-readback';
-import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
-import { capSnapshot, formatIframePlaceholders, parseIframeInfo, IFRAME_ENUM_SCRIPT } from './snapshot-format';
+import { capBrowserOutput, redactCdpUrls, describeExecFailure, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
+import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
+import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
+import { formatStatusLine, waitForLoaded } from './page-status';
+import { observeAction, pressPolicy, ACTION_POLICIES, type ActionEffect, type ActionPolicy } from './action-settle';
 import {
   observeUrl, resetUrlTracking,
-  CLICK_SETTLE_MS, FILL_SETTLE_MS, PRESS_ENTER_SETTLE_MS, PRESS_SETTLE_MS,
+  FILL_SETTLE_MS,
   type UrlDigest, type ScrollInfo, parseScrollInfo,
 } from './browser-digest';
 
@@ -872,11 +879,17 @@ function cleanupAgentBrowserDaemon(): void {
 
 // Execute an agent-browser CLI command and return the result.
 // Uses execFile (no shell) to prevent command injection.
-async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: string; exitCode: number }> {
+async function execBrowser(
+  args: string[],
+  cdpUrl?: string,
+  opts: { timeoutMs?: number; outputCap?: number } = {},
+): Promise<{ stdout: string; exitCode: number }> {
+  const started = Date.now();
+  const outputCap = opts.outputCap ?? MAX_BROWSER_OUTPUT_CHARS;
   try {
     const fullArgs = cdpUrl ? ['--cdp', cdpUrl, ...args] : args;
     const { stdout } = await execFileAsync('agent-browser', fullArgs, {
-      timeout: 30000,
+      timeout: opts.timeoutMs ?? BROWSER_EXEC_TIMEOUT_MS,
       // Large-but-legitimate outputs must not THROW (the throw path used to
       // stuff up to 1 MiB of partial output into an error string);
       // capBrowserOutput below bounds what the model actually sees.
@@ -887,7 +900,7 @@ async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: s
         AGENT_BROWSER_ARGS: process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled',
       },
     });
-    return { stdout: capBrowserOutput(stdout.trim(), MAX_BROWSER_OUTPUT_CHARS), exitCode: 0 };
+    return { stdout: capBrowserOutput(stdout.trim(), outputCap), exitCode: 0 };
   } catch (error: any) {
     // Full, unsanitized detail (incl. the command line with the CDP URL) goes
     // to container logs for connectivity debugging — never to the model.
@@ -895,11 +908,10 @@ async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: s
     if (error.stderr) {
       console.error('[Browser] agent-browser stderr:', error.stderr);
     }
-    const parts = [
-      error.stdout?.trim(),
-      error.stderr?.trim(),
-    ].filter(Boolean);
-    const rawDetail = parts.length > 0 ? parts.join('\n') : (error.message || 'Command failed');
+    // error.message carries the full argv (the agent's own script or text)
+    // and stands in for a cause it does not name — describeExecFailure
+    // reports the verb and the failure class the exec layer can vouch for.
+    const rawDetail = describeExecFailure(error, args[0] || 'command', Date.now() - started);
     return {
       stdout: redactCdpUrls(capBrowserOutput(rawDetail, MAX_BROWSER_ERROR_CHARS)),
       exitCode: typeof error.code === 'number' ? error.code : 1,
@@ -912,6 +924,41 @@ async function observeUrlDigest(): Promise<UrlDigest | null> {
   const r = await execBrowser(['get', 'url'], browserState.cdpUrl || undefined);
   if (r.exitCode !== 0 || !r.stdout.trim()) return null;
   return observeUrl(r.stdout.trim());
+}
+
+/** Run a page-observer script in the active page; null when the page cannot be read. */
+async function observePage(script: string): Promise<string | null> {
+  const r = await execBrowser(['eval', script], browserState.cdpUrl || undefined);
+  return r.exitCode === 0 ? r.stdout : null;
+}
+
+/** One observation of the current page. */
+async function observeNow(opts: { previewChars?: number } = {}): Promise<PageObservation> {
+  const out = await observePage(observerScript(opts));
+  return (out === null ? null : parseObservation(out)) ?? EMPTY_OBSERVATION;
+}
+
+/**
+ * Run a mutating action through the settle primitive (action-settle.ts) so
+ * the result can say what the action did rather than only whether the URL
+ * moved. The "after" observation also supplies the URL, so this replaces the
+ * post-action `get url` at no extra round trip; a failed read falls back to
+ * it. No effect is reported across a navigation.
+ */
+async function runWithEffect(
+  action: () => Promise<{ exitCode: number; stdout: string }>,
+  policy: ActionPolicy,
+): Promise<{ result: { exitCode: number; stdout: string }; digest: UrlDigest | null; effect: ActionEffect | null; settleMs: number }> {
+  const settled = await observeAction({
+    exec: action,
+    isFailure: r => r.exitCode !== 0,
+    evalScript: observePage,
+    policy,
+  });
+  if (settled.result.exitCode !== 0) return { result: settled.result, digest: null, effect: null, settleMs: 0 };
+  const digest = settled.after?.url ? observeUrl(settled.after.url) : await observeUrlDigest();
+  const effect = digest?.navigated ? null : settled.effect;
+  return { result: settled.result, digest, effect, settleMs: settled.waitedMs };
 }
 
 /**
@@ -1245,6 +1292,9 @@ app.post('/browser/open', async (c) => {
       }
     }
 
+    // A net-new browser (none active, or the location switch above closed the
+    // old one) is the one moment the browser-guide hint belongs on the result.
+    const launched = !browserState.active;
     const hostBrowser = await launchHostBrowserIfNeeded(location);
     const cdpUrl = hostBrowser?.cdpUrl;
     const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
@@ -1288,16 +1338,22 @@ app.post('/browser/open', async (c) => {
     _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null, location });
     tabManager.resetTabCount();
     resetUrlTracking();
-    // Seed the URL baseline so the FIRST post-action digest can distinguish
-    // "navigated" from "unchanged" (validation found a click that navigated
-    // away from the opened page being reported as "URL unchanged").
-    const landed = await execBrowser(['get', 'url'], cdpUrl);
-    if (landed.exitCode === 0 && landed.stdout.trim()) {
-      observeUrl(landed.stdout.trim());
+    // Read the landing page once: it seeds the URL baseline so the FIRST
+    // post-action digest can distinguish "navigated" from "unchanged", and it
+    // tells the tool where the browser actually ended up — final URL, title,
+    // HTTP status, challenge wall, net error — instead of echoing the requested
+    // URL (transcript-mining theme 2: a 429, a login redirect and about:blank
+    // all used to read "Browser opened and navigating to <url>").
+    const page = await observeNow({ previewChars: THIN_TREE_PREVIEW_CHARS });
+    if (page.url) {
+      observeUrl(page.url);
+    } else {
+      const fallback = await execBrowser(['get', 'url'], cdpUrl);
+      if (fallback.exitCode === 0 && fallback.stdout.trim()) observeUrl(fallback.stdout.trim());
     }
     broadcastBrowserEvent(true);
 
-    return c.json({ success: true, location, switchedFrom });
+    return c.json({ success: true, location, switchedFrom, page, launched });
   } catch (error: any) {
     console.error('[Browser] Error opening browser:', error);
     return c.json({ error: error.message || 'Failed to open browser' }, 500);
@@ -1457,16 +1513,32 @@ app.post('/browser/snapshot', async (c) => {
     if (body.scope) snapshotArgs.push('-s', body.scope);
     if (body.includeUrls) snapshotArgs.push('--urls');
 
-    const result = await execBrowser(snapshotArgs, browserState.cdpUrl || undefined);
+    // Observe the page and hold briefly while the document is still loading
+    // (a snapshot right after `Enter` used to return `loading · 0 refs`). The
+    // last observation feeds the status line, the text footer and the iframe
+    // placeholders, so this is the snapshot's only page-side read. The long
+    // preview is taken every time and trimmed below unless the tree turns out
+    // to be thin.
+    const { obs: observed, waitedMs } = await waitForLoaded(async () => {
+      const out = await observePage(observerScript({ previewChars: THIN_TREE_PREVIEW_CHARS }));
+      return out === null ? null : parseObservation(out);
+    });
+    const probe = observed ?? EMPTY_OBSERVATION;
+
+    // The snapshot has its own cap (capSnapshot) that reports the true size;
+    // the exec-level cap must not truncate first.
+    const result = await execBrowser(snapshotArgs, browserState.cdpUrl || undefined, { outputCap: MAX_SNAPSHOT_RAW_CHARS });
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    // Enumerate cross-origin iframes so the agent knows about fields the a11y
-    // tree cannot see (e.g. Stripe payment frames — audit P2).
-    const iframeProbe = await execBrowser(['eval', IFRAME_ENUM_SCRIPT], browserState.cdpUrl || undefined);
-    const iframes = iframeProbe.exitCode === 0 ? parseIframeInfo(iframeProbe.stdout) : [];
+    // A thin tree keeps the long text preview: `(no interactive elements)`
+    // looks the same for a 401 body, a challenge wall and a hydrating SPA —
+    // the text tells them apart (transcript-mining themes 1 and 2).
+    const refCount = countRefs(result.stdout);
+    const previewChars = refCount < THIN_TREE_REFS ? THIN_TREE_PREVIEW_CHARS : PREVIEW_CHARS;
+    const iframes = probe.iframes;
 
     if (body.json) {
       // Try to parse JSON output
@@ -1478,9 +1550,20 @@ app.post('/browser/snapshot', async (c) => {
       }
     }
 
+    // fullText fetches the unfiltered tree (the CLI's -i and -c each strip
+    // static text), so compaction has to happen here to stay text-preserving.
+    const fullText = Boolean(body.fullText);
+    const tree = fullText && body.compact !== false ? compactWithText(result.stdout) : result.stdout;
+
+    const header = formatStatusLine(probe, refCount, { waitedMs });
     return c.json({
-      snapshot: capSnapshot(result.stdout, Boolean(body.scope)) + formatIframePlaceholders(iframes),
+      snapshot:
+        (header ? `${header}\n\n` : '') +
+        capSnapshot(tree, Boolean(body.scope)) +
+        formatTextFooter(probe, { fullText, scoped: Boolean(body.scope), previewChars }) +
+        formatIframePlaceholders(iframes, tree),
       iframes,
+      page: { ...probe, preview: probe.preview.slice(0, previewChars) },
       tabCount: tabManager.getTabCount(),
     });
   } catch (error: any) {
@@ -1507,18 +1590,18 @@ app.post('/browser/click', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['click', body.ref], browserState.cdpUrl || undefined);
+    const { result, digest, effect, settleMs } = await runWithEffect(
+      () => execBrowser(['click', body.ref], browserState.cdpUrl || undefined),
+      ACTION_POLICIES.click,
+    );
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    await sleep(CLICK_SETTLE_MS);
-    const digest = await observeUrlDigest();
-
     const tabInfo = await tabManager.detectNewTab();
     notifyBrowserAction();
-    return c.json({ success: true, ...(digest && { digest }), ...(tabInfo && { tabInfo }) });
+    return c.json({ success: true, settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error clicking:', error);
     return c.json({ error: error.message || 'Failed to click' }, 500);
@@ -1622,24 +1705,43 @@ app.post('/browser/wait', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const loadStates = ['networkidle', 'load', 'domcontentloaded'];
-    const isLoadState = loadStates.includes(body.for);
-    const waitArgs = isLoadState
-      ? ['wait', '--load', body.for]
-      : ['wait', body.for];
-    const result = await execBrowser(waitArgs, browserState.cdpUrl || undefined);
-
-    if (result.exitCode !== 0) {
-      // Load state waits (especially networkidle) often time out on real-world pages
-      // with continuous ad/analytics traffic. Since browser_open already waits for the
-      // 'load' event, the page is usable — treat load state timeouts as success.
-      if (isLoadState) {
-        return c.json({ success: true });
-      }
-      return c.json({ error: result.stdout, success: false }, 500);
+    const target = classifyWaitTarget(body.for);
+    if (target.kind === 'rejected') {
+      return c.json({ error: target.reason, success: false }, 400);
     }
 
-    return c.json({ success: true });
+    const started = Date.now();
+    const result = await execBrowser(target.args, browserState.cdpUrl || undefined);
+    const elapsedMs = Date.now() - started;
+
+    // Where the page is now, read through a short budget of its own: a wait
+    // that hung the exec ceiling must not be followed by a probe that hangs
+    // it again (review: one hang could cost ~60 s). A browser that does not
+    // answer in time simply yields no page line.
+    const probePage = async (): Promise<{ url: string; readyState: string } | null> => {
+      const probe = await execBrowser(['eval', WAIT_PAGE_PROBE_SCRIPT], browserState.cdpUrl || undefined, { timeoutMs: WAIT_PAGE_PROBE_TIMEOUT_MS });
+      return probe.exitCode === 0 ? parseWaitPageProbe(probe.stdout) : null;
+    };
+
+    if (result.exitCode !== 0) {
+      // Load state waits (especially networkidle) often time out on real-world
+      // pages with continuous ad/analytics traffic. browser_open already waited
+      // for 'load', so the page is usable — not an error, but the result says
+      // the state was not reached rather than pretending it was.
+      if (target.kind === 'load') {
+        return c.json({ success: true, elapsedMs, timedOut: true });
+      }
+      // Only when the CLI itself reported the timeout (so the browser was
+      // answering) is it worth asking where the page is and whether the
+      // document had finished loading — a fact about this page at this moment.
+      const cliTimedOut = /wait timed out/i.test(result.stdout);
+      const page = cliTimedOut ? await probePage() : null;
+      const where = page?.url ? `\nPage: ${page.url} · readyState ${page.readyState || 'unknown'}` : '';
+      return c.json({ error: `${result.stdout}${where}`, success: false }, 500);
+    }
+
+    const page = await probePage();
+    return c.json({ success: true, elapsedMs, ...(page?.url && { url: page.url }) });
   } catch (error: any) {
     console.error('[Browser] Error waiting:', error);
     return c.json({ error: error.message || 'Failed to wait' }, 500);
@@ -1671,18 +1773,18 @@ app.post('/browser/press', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['press', body.key], browserState.cdpUrl || undefined);
+    const { result, digest, effect, settleMs } = await runWithEffect(
+      () => execBrowser(['press', body.key], browserState.cdpUrl || undefined),
+      pressPolicy(body.key),
+    );
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    await sleep(body.key.trim() === 'Enter' ? PRESS_ENTER_SETTLE_MS : PRESS_SETTLE_MS);
-    const digest = await observeUrlDigest();
-
     const tabInfo = await tabManager.detectNewTab();
     notifyBrowserAction();
-    return c.json({ success: true, ...(digest && { digest }), ...(tabInfo && { tabInfo }) });
+    return c.json({ success: true, settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error pressing key:', error);
     return c.json({ error: error.message || 'Failed to press key' }, 500);
@@ -1752,22 +1854,38 @@ app.post('/browser/select', async (c) => {
 
     const before = await readValue();
 
-    const result = await execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined);
+    const { result, effect, settleMs } = await runWithEffect(
+      () => execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined),
+      { ...ACTION_POLICIES.select, settleMs: SELECT_COMMIT_SETTLE_MS },
+    );
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    await new Promise(resolve => setTimeout(resolve, SELECT_COMMIT_SETTLE_MS));
     const after = await readValue();
 
-    const judgement = judgeSelectCommit(body.value, before, after);
+    // Unchanged value that is not the requested string: the agent may have
+    // asked by label for the option that was already selected. Focus the
+    // target and read ITS selected option — a probe over every <select> on
+    // the page could be satisfied by a different dropdown.
+    let labelMatches = false;
+    if (after !== null && after === before && after !== body.value) {
+      // Read the target's own option list through the same ref the select
+      // and the value read used. No page script: a page-wide search, a
+      // focused element or the element at the target's rectangle can all be
+      // a different dropdown (each verified the wrong one in review).
+      const html = await execBrowser(['get', 'html', body.ref], browserState.cdpUrl || undefined);
+      labelMatches = html.exitCode === 0 && targetOptionMatches(parseSelectOptions(html.stdout), body.value, after);
+    }
+
+    const judgement = judgeSelectCommit(body.value, before, after, labelMatches);
     if (!judgement.ok) {
       return c.json({ error: judgement.reason, success: false }, 500);
     }
 
     notifyBrowserAction();
-    return c.json({ success: true, committedValue: judgement.committed });
+    return c.json({ success: true, committedValue: judgement.committed, settleMs, ...(effect && { effect }) });
   } catch (error: any) {
     console.error('[Browser] Error selecting:', error);
     return c.json({ error: error.message || 'Failed to select' }, 500);
@@ -1792,14 +1910,17 @@ app.post('/browser/hover', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['hover', body.ref], browserState.cdpUrl || undefined);
+    const { result, effect, settleMs } = await runWithEffect(
+      () => execBrowser(['hover', body.ref], browserState.cdpUrl || undefined),
+      ACTION_POLICIES.hover,
+    );
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
     notifyBrowserAction();
-    return c.json({ success: true });
+    return c.json({ success: true, settleMs, ...(effect && { effect }) });
   } catch (error: any) {
     console.error('[Browser] Error hovering:', error);
     return c.json({ error: error.message || 'Failed to hover' }, 500);

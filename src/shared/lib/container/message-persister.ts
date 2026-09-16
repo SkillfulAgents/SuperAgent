@@ -93,13 +93,12 @@ import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-pro
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
-import { getAgentSessionsDir, getSessionJsonlPath } from '@shared/lib/utils/file-storage'
+import { unwrapComputerRun } from '@shared/lib/computer-use/computer-run'
+import { sessionFilePath, transcriptPath, type SessionStore } from '@shared/lib/agent-actor/session-store'
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
 import { WorkflowJournalTailer } from './workflow-journal-tailer'
 import { SubagentCapture } from './subagent-capture'
-import * as fs from 'fs'
-import * as path from 'path'
 import { randomUUID } from 'crypto'
 // Per-subagent streaming state (supports multiple concurrent background agents)
 interface SubagentStreamingState {
@@ -109,6 +108,25 @@ interface SubagentStreamingState {
   currentToolInput: string
   isBackground: boolean // Streamed launch hint, confirmed by an async launch acknowledgement
   isResumed: boolean // Authoritative task_started/result signal for a SendMessage-resumed run
+  subagentType?: string
+  description?: string
+  progressSummary?: string
+  usage?: { total_tokens: number; tool_uses: number; duration_ms: number }
+  lastToolName?: string
+  completed?: boolean
+}
+
+export interface ActiveSubagentSnapshot {
+  parentToolId: string
+  agentId: string | null
+  streamingMessage: string | null
+  streamingToolUse: { id: string; name: string; partialInput: string } | null
+  progressSummary: string | null
+  subagentType: string | null
+  description: string | null
+  usage: { total_tokens: number; tool_uses: number; duration_ms: number } | null
+  lastToolName: string | null
+  status: 'running' | 'completed'
 }
 
 /**
@@ -328,22 +346,22 @@ interface StreamingState {
   isRetrying: boolean // True while an API retry is in progress, cleared when the next message starts
 }
 
-// Lazy import to break circular dependency: container-manager -> message-persister
+// Lazy import to break circular dependency: container-host -> container-runtime -> message-persister
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _containerManagerModule: any = null
+let _containerHostModule: any = null
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _containerManagerImport: Promise<any> | null = null
-async function getContainerManager() {
-  if (!_containerManagerModule) {
+let _containerHostImport: Promise<any> | null = null
+async function getContainerHost() {
+  if (!_containerHostModule) {
     // Cache the in-flight import promise, not just the resolved module: concurrent
     // callers (e.g. a fire-and-forget tool handler resolving while cancelAwaitingInput
     // rejects) would otherwise each see a null module and start their own
-    // import('./container-manager'), racing redundant dynamic imports of a module
-    // that sits on the container-manager <-> message-persister circular edge.
-    if (!_containerManagerImport) _containerManagerImport = import('./container-manager')
-    _containerManagerModule = await _containerManagerImport
+    // import('./container-host'), racing redundant dynamic imports of a module
+    // that sits on the container-host <-> message-persister circular edge.
+    if (!_containerHostImport) _containerHostImport = import('./container-host')
+    _containerHostModule = await _containerHostImport
   }
-  return _containerManagerModule.containerManager
+  return _containerHostModule.containerHost
 }
 
 // Tool inputs whose streamed JSON may carry an HMAC signing secret in a
@@ -419,12 +437,16 @@ class MessagePersister {
   private globalNotificationClients: Set<(data: unknown) => void> = new Set()
   // Track container clients per session for reconnection
   private containerClients: Map<SessionKey, ContainerClient> = new Map()
-  // Callback to request stopping a container (registered by container-manager)
+  // Callback to request stopping a container (registered by the container host)
   private onStopContainerRequested: ((agentSlug: string) => void) | null = null
   private onUnexpectedDeathRequested: ((agentSlug: string, sessionId?: string) => void) | null = null
   private lastFatalByAgent: Map<string, RuntimeFatalKind> = new Map()
   // Dev-only capture for building fixture replay tests
   private capture: SubagentCapture | null = SubagentCapture.fromEnv()
+  // Where each agent's transcripts are, attached by the agent registry: the
+  // persister stats, appends to and tails transcripts, and reaches them only
+  // through the agent's session store, never by a path of its own.
+  private sessionStores: ((agentSlug: string) => SessionStore) | null = null
 
   // In-flight subscribe promises, keyed by sessionId. Concurrent
   // subscribeToSession() calls for the same session share the underlying
@@ -684,8 +706,8 @@ class MessagePersister {
     this.subscriptions.set(ctx.key, unsubscribe)
 
     if (this.capture) {
-      const subagentsDir = path.join(getAgentSessionsDir(agentSlug), sessionId, 'subagents')
-      await this.capture.snapshotSubagentsDir(sessionId, subagentsDir, 'subscribe')
+      const store = this.storeOf(agentSlug)
+      await this.capture.snapshotSubagentsDir(sessionId, store.files, sessionFilePath(store, sessionId, 'subagents'), 'subscribe')
       await this.capture.recordNote(sessionId, 'subscribe', { agentSlug, containerSessionId })
     }
 
@@ -703,7 +725,7 @@ class MessagePersister {
   private resolveStreamReleasePolicy(ctx: SessionCtx): void {
     const { agentSlug, sessionId } = ctx
     const stateRef = this.streamingStates.get(ctx.key)
-    void getSessionMetadata(agentSlug, sessionId)
+    void getSessionMetadata(this.storeOf(agentSlug), sessionId)
       .then((meta) => {
         // A resubscribe replaced the state and kicked off its own resolution.
         const current = this.streamingStates.get(ctx.key)
@@ -831,7 +853,7 @@ class MessagePersister {
         ) {
           const outputArrived = state.outputGeneration !== before.outputGeneration
           if ((before.isActive || !outputArrived) && state.provisionalActivity === activity && activity) {
-            revertSessionActivity(agentSlug, sessionId, activity)
+            revertSessionActivity(this.storeOf(agentSlug), sessionId, activity)
             state.provisionalActivity = null
           }
           if (before.isActive) {
@@ -935,7 +957,7 @@ class MessagePersister {
     // The send never happened, so the recency it was credited with is undone
     // too (a no-op if a frame has arrived since — then the turn was real).
     if (state.provisionalActivity && state.agentSlug) {
-      revertSessionActivity(state.agentSlug, sessionId, state.provisionalActivity)
+      revertSessionActivity(this.storeOf(state.agentSlug), sessionId, state.provisionalActivity)
     }
     state.provisionalActivity = null
     this.finalizeIdle(agentSlug, sessionId, state)
@@ -1255,8 +1277,8 @@ class MessagePersister {
    * True when every open background task is one the host never tracked: the
    * SDK's `background_tasks_changed` snapshot lists work, but the incremental
    * map — the list clients see and the per-task Stop buttons come from — is
-   * empty. A task a subagent launched lands here: its tool result travels the
-   * sidechain, so nothing registers it, while the runtime's snapshot names it.
+   * empty. This covers tasks whose incremental launch signal was malformed or
+   * missed while the runtime's snapshot still names them.
    *
    * A stop scoped to the turn cannot end such a session: the container keeps
    * the process (and the task) and the union keeps the session active, with
@@ -1293,6 +1315,33 @@ class MessagePersister {
       isWorkflow: info.isWorkflow,
       isSubagent: info.isSubagent,
     }))
+  }
+
+  getActiveSubagents(agentSlug: string, sessionId: string): ActiveSubagentSnapshot[] {
+    const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
+    if (!state) return []
+    return Array.from(state.activeSubagents.entries())
+      .filter(([, subagent]) => !!subagent.agentId || !!subagent.subagentType)
+      .map(([parentToolId, subagent]) => ({
+        parentToolId,
+        agentId: subagent.agentId,
+        streamingMessage: subagent.currentText || null,
+        streamingToolUse: subagent.currentToolUse
+          ? {
+              ...subagent.currentToolUse,
+              partialInput: redactStreamedToolInput(
+                subagent.currentToolUse.name,
+                subagent.currentToolInput,
+              ),
+            }
+          : null,
+        progressSummary: subagent.progressSummary ?? null,
+        subagentType: subagent.subagentType ?? null,
+        description: subagent.description ?? null,
+        usage: subagent.usage ?? null,
+        lastToolName: subagent.lastToolName ?? null,
+        status: subagent.completed ? 'completed' : 'running',
+      }))
   }
 
   // Check if a session has an active subscription
@@ -1610,6 +1659,22 @@ class MessagePersister {
     }
   }
 
+  /**
+   * Hand the persister the way to an agent's session store. Called once by
+   * the agent registry when it is created, so every transcript the persister
+   * touches is the one the agent's actor reads.
+   */
+  attachSessionStores(resolve: (agentSlug: string) => SessionStore): void {
+    this.sessionStores = resolve
+  }
+
+  private storeOf(agentSlug: string): SessionStore {
+    if (!this.sessionStores) {
+      throw new Error(`No session store for agent ${agentSlug}: the agent registry has not attached them`)
+    }
+    return this.sessionStores(agentSlug)
+  }
+
   // Public method to broadcast session metadata updates (e.g., name change)
   broadcastSessionUpdate(agentSlug: string, sessionId: string): void {
     this.broadcastToSSE(agentSlug, sessionId, { type: 'session_updated' })
@@ -1631,9 +1696,8 @@ class MessagePersister {
     sessionId: string,
   ): Promise<number | null> {
     try {
-      return (await fs.promises.stat(
-        getSessionJsonlPath(agentSlug, sessionId),
-      )).size
+      const store = this.storeOf(agentSlug)
+      return (await store.files.stat(transcriptPath(store, sessionId)))?.size ?? null
     } catch {
       return null
     }
@@ -1644,8 +1708,9 @@ class MessagePersister {
   private refreshSessionActivityFromDisk(agentSlug: string, sessionId: string): void {
     void (async () => {
       try {
-        const stat = await fs.promises.stat(getSessionJsonlPath(agentSlug, sessionId))
-        if (stat) recordSessionActivity(agentSlug, sessionId, stat.mtimeMs)
+        const store = this.storeOf(agentSlug)
+        const stat = await store.files.stat(transcriptPath(store, sessionId))
+        if (stat) recordSessionActivity(store, sessionId, stat.mtimeMs)
       } catch {
         // Missing or unreadable: the TTL reconciliation repairs it.
       }
@@ -1698,8 +1763,10 @@ class MessagePersister {
       }
       this.streamingStates.set(sessionKeyOf(agentSlug, sessionId), state)
       if (this.capture) {
-        const subagentsDir = path.join(getAgentSessionsDir(agentSlug), sessionId, 'subagents')
-        this.capture.snapshotSubagentsDir(sessionId, subagentsDir, 'state-created').catch(() => {})
+        const store = this.storeOf(agentSlug)
+        this.capture
+          .snapshotSubagentsDir(sessionId, store.files, sessionFilePath(store, sessionId, 'subagents'), 'state-created')
+          .catch(() => {})
         this.capture.recordNote(sessionId, 'state_created', { agentSlug }).catch(() => {})
       }
     }
@@ -1727,6 +1794,7 @@ class MessagePersister {
     if (wasActive) {
       state.queuedTurnCount += 1
     } else {
+      state.activeSubagents.clear()
       // Turn-scoped. Compaction/thinking mirror the app's reset: a turn that ended
       // mid-compaction/-thinking (error/interrupt before the clearing event) must
       // not wedge the next turn's label — state is reused across turns. Mid-turn
@@ -1758,7 +1826,7 @@ class MessagePersister {
     // Provisional until the container answers: markSessionIdle reverts it if
     // the send never got there.
     if (state.agentSlug) {
-      state.provisionalActivity = recordProvisionalSessionActivity(state.agentSlug, sessionId, Date.now())
+      state.provisionalActivity = recordProvisionalSessionActivity(this.storeOf(state.agentSlug), sessionId, Date.now())
     }
 
     // Broadcast to session-specific clients. queuedMidTurn tells the app this is a
@@ -1946,10 +2014,10 @@ class MessagePersister {
   // automations surface in session lists instead of accruing unread rows
   // nothing displays.
   async promoteAutomatedSession(agentSlug: string, sessionId: string): Promise<void> {
-    const meta = await getSessionMetadata(agentSlug, sessionId)
+    const meta = await getSessionMetadata(this.storeOf(agentSlug), sessionId)
     if (!isHiddenAutomatedSession(meta)) return
 
-    await updateSessionMetadata(agentSlug, sessionId, {
+    await updateSessionMetadata(this.storeOf(agentSlug), sessionId, {
       promotedToInteractive: true,
     })
 
@@ -1997,7 +2065,7 @@ class MessagePersister {
     // once: 'not-automation' is cached for the rest of the subscription.
     if (!state.agentSlug || state.notAutomationSession) return
     const agentSlug = state.agentSlug
-    void finalizeAutomationStatus(agentSlug, sessionId, automationStatus)
+    void finalizeAutomationStatus(this.storeOf(agentSlug), sessionId, automationStatus)
       .then((result) => {
         if (result === 'not-automation') state.notAutomationSession = true
       })
@@ -2031,7 +2099,14 @@ class MessagePersister {
       console.warn(`[MessagePersister] Dropping informational banner for ${sessionId}: no agent slug`)
       return
     }
-    void appendInformationalEntry(state.agentSlug, sessionId, {
+    let store: SessionStore
+    try {
+      store = this.storeOf(state.agentSlug)
+    } catch (error) {
+      console.error('[MessagePersister] Failed to persist informational banner:', error)
+      return
+    }
+    void appendInformationalEntry(store, sessionId, {
       uuid: content.uuid || randomUUID(),
       content: text,
       level: content.level,
@@ -2176,9 +2251,14 @@ class MessagePersister {
     // keyed by the real `wf_…` runId (the on-disk dir name), not the task_id.
     this.wireWorkflowFromToolResult(sessionId, content, state)
 
-    // Filter sidechain (subagent) messages — they should not affect main streaming state
-    // SDK emitted format uses parent_tool_use_id (non-null for subagent messages)
-    if (content.parent_tool_use_id != null) {
+    // Filter sidechain (subagent) messages — they should not affect main streaming state.
+    // Task lifecycle frames still describe a nested Agent launch and must reach the
+    // shared lifecycle handlers below so its status remains visible.
+    const isSidechainTaskLifecycle =
+      content.parent_tool_use_id != null &&
+      content.type === 'system' &&
+      ['task_started', 'task_progress', 'task_updated', 'task_notification'].includes(content.subtype)
+    if (content.parent_tool_use_id != null && !isSidechainTaskLifecycle) {
       this.handleSidechainMessage(sessionId, content, state)
       return
     }
@@ -2194,7 +2274,7 @@ class MessagePersister {
       !content.replayed &&
       (content.type === 'assistant' || content.type === 'user' || content.type === 'result')
     ) {
-      recordSessionActivity(state.agentSlug, sessionId, message.timestamp)
+      recordSessionActivity(this.storeOf(state.agentSlug), sessionId, message.timestamp)
       // The turn is real; the optimistic send record no longer needs undoing.
       state.provisionalActivity = null
     }
@@ -2288,92 +2368,7 @@ class MessagePersister {
       }
 
       case 'user':
-        // Detect subagent completion: check if this user message contains tool_results
-        // for any active subagent tool calls (meaning the subagent finished and returned its result)
-        if (state.activeSubagents.size > 0) {
-          const messageContent = content.message?.content
-          if (Array.isArray(messageContent)) {
-            for (const block of messageContent) {
-              if (block.type === 'tool_result' && state.activeSubagents.has(block.tool_use_id)) {
-                const sub = state.activeSubagents.get(block.tool_use_id)!
-
-                // Extract agentId from tool result before broadcasting completion.
-                // Try SDK tool_use_result metadata first, then parse from content text.
-                if (!sub.agentId) {
-                  const toolUseResult = content.tool_use_result as Record<string, unknown> | undefined
-                  if (toolUseResult?.agentId && typeof toolUseResult.agentId === 'string') {
-                    sub.agentId = toolUseResult.agentId
-                  } else if (
-                    toolUseResult?.resumedAgentId &&
-                    typeof toolUseResult.resumedAgentId === 'string'
-                  ) {
-                    sub.agentId = toolUseResult.resumedAgentId
-                  } else {
-                    // Parse agentId from the tool result text (SDK includes "agentId: <hex>")
-                    const parts = Array.isArray(block.content) ? block.content : []
-                    for (const part of parts) {
-                      if (part?.type === 'text' && typeof part.text === 'string') {
-                        const match = part.text.match(/\bagentId:\s*([a-f0-9]+)\b/)
-                        if (match) {
-                          sub.agentId = match[1]
-                          break
-                        }
-                      }
-                    }
-                  }
-                }
-
-                // Background Agent launches and SendMessage resumes both return
-                // immediate acknowledgments; their REAL completion arrives later
-                // as task_updated/task_notification, never as a second tool_result.
-                // Detect those acknowledgments authoritatively from result metadata
-                // or a resumed task_started. Do not use the streamed isBackground
-                // hint here: partial/interleaved input is unreliable, and an error
-                // result for a requested background launch is terminal.
-                const tur = content.tool_use_result as
-                  | { status?: string; isAsync?: boolean; agentId?: string; resumedAgentId?: string }
-                  | undefined
-                const isAsyncLaunchAck = tur?.status === 'async_launched' || tur?.isAsync === true
-                const isResumeAck = typeof tur?.resumedAgentId === 'string'
-                const isErrorResult = block.is_error === true
-                if (!isErrorResult && (isAsyncLaunchAck || isResumeAck || sub.isResumed)) {
-                  if (isAsyncLaunchAck) sub.isBackground = true
-                  if (isResumeAck) sub.isResumed = true
-                  // A background subagent outlives its launch turn, and since SDK
-                  // 0.3.197 the runtime settles the turn (result + idle) while the
-                  // subagent is still running — older SDKs held them back, which is
-                  // why local_agent was never tracked here. Register it exactly like
-                  // a backgrounded Bash command so it surfaces in the same
-                  // "N background processes" UI and holds the session in the
-                  // waiting-background state; its terminal task_updated /
-                  // task_notification (task_id === agentId) clears it through the
-                  // existing paths.
-                  const bgAgentId = tur?.resumedAgentId ?? tur?.agentId ?? sub.agentId
-                  if (bgAgentId) {
-                    this.registerBackgroundSubagent(
-                      sessionId,
-                      state,
-                      bgAgentId,
-                      block.tool_use_id,
-                    )
-                  }
-                } else {
-                  // Foreground subagent: the tool_result IS the completion.
-                  let resultText: string | undefined
-                  if (typeof block.content === 'string') {
-                    resultText = block.content
-                  } else if (Array.isArray(block.content)) {
-                    resultText = block.content
-                      .filter((p: { type?: string }) => p?.type === 'text')
-                      .map((p: { text?: string }) => p.text || '')
-                      .join('')
-                  }
-                  this.broadcastSubagentCompleted(agentSlug, sessionId, state, block.tool_use_id, resultText)
-                }
-              }
-            }
-          }
-        }
+        this.handleSubagentToolResults(sessionId, content, state)
 
         // Detect background Bash task from tool_use_result metadata
         {
@@ -2492,6 +2487,13 @@ class MessagePersister {
                 isResumed: isResumedSubagent,
               })
             }
+            const trackedSubagent = state.activeSubagents.get(toolUseId)!
+            if (typeof content.subagent_type === 'string') {
+              trackedSubagent.subagentType = content.subagent_type
+            }
+            if (typeof content.description === 'string') {
+              trackedSubagent.description = content.description
+            }
             if (isResumedSubagent && agentId) {
               this.registerBackgroundSubagent(sessionId, state, agentId, toolUseId)
             }
@@ -2534,6 +2536,13 @@ class MessagePersister {
           // Subagent progress with usage stats (description intentionally omitted —
           // task_progress.description can change to reflect current action, but the
           // header should keep the original task description from task_started)
+          const progressSubagent = state.activeSubagents.get(content.tool_use_id)
+          if (progressSubagent) {
+            if (typeof content.summary === 'string') progressSubagent.progressSummary = content.summary
+            if (typeof content.subagent_type === 'string') progressSubagent.subagentType = content.subagent_type
+            if (content.usage) progressSubagent.usage = content.usage
+            if (typeof content.last_tool_name === 'string') progressSubagent.lastToolName = content.last_tool_name
+          }
           this.broadcastToSSE(agentSlug, sessionId, {
             type: 'subagent_progress',
             parentToolId: content.tool_use_id,
@@ -2573,11 +2582,11 @@ class MessagePersister {
           // flags: foreground subagents complete via their tool_result (see the
           // 'user' case) and also emit these task events — acting on them here
           // would fire an early completion with an unresolved (null) agentId. Idempotent:
-          // broadcastSubagentCompleted removes it, so a trailing task_notification
-          // no-ops.
+          // broadcastSubagentCompleted marks it completed, so a trailing
+          // task_notification no-ops.
           if (taskId && isTerminal) {
             for (const [parentToolId, sub] of state.activeSubagents) {
-              if ((sub.isBackground || sub.isResumed) && sub.agentId === taskId) {
+              if (!sub.completed && (sub.isBackground || sub.isResumed) && sub.agentId === taskId) {
                 this.broadcastSubagentCompleted(agentSlug, sessionId, state, parentToolId)
                 break
               }
@@ -3108,6 +3117,108 @@ class MessagePersister {
     this.finalizeIdle(agentSlug, sessionId, state)
   }
 
+  private handleSubagentToolResults(
+    sessionId: string,
+    content: any,
+    state: StreamingState,
+  ): void {
+    if (state.activeSubagents.size === 0) return
+    const messageContent = content.message?.content
+    if (!Array.isArray(messageContent)) return
+
+    for (const block of messageContent) {
+      if (block.type !== 'tool_result' || !state.activeSubagents.has(block.tool_use_id)) continue
+      const sub = state.activeSubagents.get(block.tool_use_id)!
+      const toolUseResult = content.tool_use_result as
+        | { status?: string; isAsync?: boolean; agentId?: string; resumedAgentId?: string }
+        | undefined
+
+      if (!sub.agentId) {
+        if (typeof toolUseResult?.agentId === 'string') {
+          sub.agentId = toolUseResult.agentId
+        } else if (typeof toolUseResult?.resumedAgentId === 'string') {
+          sub.agentId = toolUseResult.resumedAgentId
+        } else {
+          const parts = Array.isArray(block.content) ? block.content : []
+          for (const part of parts) {
+            if (part?.type !== 'text' || typeof part.text !== 'string') continue
+            const match = part.text.match(/\bagentId:\s*([a-f0-9]+)\b/)
+            if (match) {
+              sub.agentId = match[1]
+              break
+            }
+          }
+        }
+      }
+
+      const isAsyncLaunchAck = toolUseResult?.status === 'async_launched' || toolUseResult?.isAsync === true
+      const isResumeAck = typeof toolUseResult?.resumedAgentId === 'string'
+      const isErrorResult = block.is_error === true
+      if (!isErrorResult && (isAsyncLaunchAck || isResumeAck || sub.isResumed)) {
+        if (isAsyncLaunchAck) sub.isBackground = true
+        if (isResumeAck) sub.isResumed = true
+        const backgroundAgentId = toolUseResult?.resumedAgentId ?? toolUseResult?.agentId ?? sub.agentId
+        if (backgroundAgentId) {
+          this.registerBackgroundSubagent(
+            sessionId,
+            state,
+            backgroundAgentId,
+            block.tool_use_id,
+          )
+        }
+        continue
+      }
+
+      let resultText: string | undefined
+      if (typeof block.content === 'string') {
+        resultText = block.content
+      } else if (Array.isArray(block.content)) {
+        resultText = block.content
+          .filter((part: { type?: string }) => part?.type === 'text')
+          .map((part: { text?: string }) => part.text || '')
+          .join('')
+      }
+      this.broadcastSubagentCompleted(
+        state.agentSlug,
+        sessionId,
+        state,
+        block.tool_use_id,
+        resultText,
+      )
+    }
+  }
+
+  private trackSubagentLaunch(
+    state: StreamingState,
+    toolUseId: string,
+    input: unknown,
+  ): void {
+    let isBackground = false
+    try {
+      const parsed = typeof input === 'string' ? JSON.parse(input) : input
+      isBackground = !!(
+        parsed &&
+        typeof parsed === 'object' &&
+        'run_in_background' in parsed &&
+        parsed.run_in_background
+      )
+    } catch { /* partial or invalid JSON — default to foreground */ }
+
+    const existing = state.activeSubagents.get(toolUseId)
+    if (existing) {
+      if (isBackground) existing.isBackground = true
+      return
+    }
+    state.activeSubagents.set(toolUseId, {
+      agentId: null,
+      currentText: '',
+      currentToolUse: null,
+      currentToolInput: '',
+      isBackground,
+      isResumed: false,
+    })
+  }
+
   // Handle sidechain (subagent) messages — filter them out of main streaming state
   private handleSidechainMessage(sessionId: string, content: any, state: StreamingState): void {
     const { agentSlug } = state
@@ -3168,6 +3279,7 @@ class MessagePersister {
       // until the whole turn ends.
       if (content.type === 'user') {
         this.resolveSidechainInputRequests(sessionId, state, content)
+        this.handleSubagentToolResults(sessionId, content, state)
       }
       if (content.type === 'assistant') {
         const messageContent = content.message?.content
@@ -3204,6 +3316,9 @@ class MessagePersister {
           for (const block of messageContent) {
             if (block.type !== 'tool_use') continue
             const input = JSON.stringify(block.input || {})
+            if (block.name === 'Task' || block.name === 'Agent') {
+              this.trackSubagentLaunch(state, block.id, block.input)
+            }
             this.dispatchBlockingUserInputTool(
               sessionId,
               block.name,
@@ -3453,9 +3568,10 @@ class MessagePersister {
   private startWorkflowTailer(agentSlug: string, sessionId: string, runId: string): void {
     const key = `${sessionKeyOf(agentSlug, sessionId)}::${runId}` as const
     if (this.workflowTailers.has(key)) return
+    const store = this.storeOf(agentSlug)
     const tailer = new WorkflowJournalTailer({
-      sessionsDir: getAgentSessionsDir(agentSlug),
-      sessionId,
+      files: store.files,
+      journalPath: sessionFilePath(store, sessionId, 'subagents', 'workflows', runId, 'journal.jsonl'),
       runId,
       emit: (update) => this.broadcastToSSE(agentSlug, sessionId, update),
     })
@@ -3484,6 +3600,7 @@ class MessagePersister {
 
   private broadcastSubagentCompleted(agentSlug: string, sessionId: string, state: StreamingState, parentToolId: string, resultText?: string): void {
     const sub = state.activeSubagents.get(parentToolId)
+    if (sub?.completed) return
     // Broadcast a final subagent_updated so the frontend refetches subagent messages
     this.broadcastToSSE(agentSlug, sessionId, {
       type: 'subagent_updated',
@@ -3500,7 +3617,7 @@ class MessagePersister {
     if (sub?.agentId) {
       state.completedSubagentIds.add(sub.agentId)
     }
-    state.activeSubagents.delete(parentToolId)
+    if (sub) sub.completed = true
     this.invalidateSubagentRequests(sessionId, state, parentToolId)
   }
 
@@ -3630,6 +3747,14 @@ class MessagePersister {
               sub.currentToolInput,
               state.agentSlug,
               parentToolId,
+            )
+          }
+
+          if (sub.currentToolUse.name === 'Task' || sub.currentToolUse.name === 'Agent') {
+            this.trackSubagentLaunch(
+              state,
+              sub.currentToolUse.id,
+              sub.currentToolInput,
             )
           }
 
@@ -3949,19 +4074,11 @@ class MessagePersister {
 
           // Track Task/Agent tool for subagent correlation
           if (state.currentToolUse.name === 'Task' || state.currentToolUse.name === 'Agent') {
-            let isBackground = false
-            try {
-              const parsed = JSON.parse(state.currentToolInput)
-              isBackground = !!parsed.run_in_background
-            } catch { /* partial or invalid JSON — default to foreground */ }
-            state.activeSubagents.set(state.currentToolUse.id, {
-              agentId: null,
-              currentText: '',
-              currentToolUse: null,
-              currentToolInput: '',
-              isBackground,
-              isResumed: false,
-            })
+            this.trackSubagentLaunch(
+              state,
+              state.currentToolUse.id,
+              state.currentToolInput,
+            )
           }
 
           this.broadcastToSSE(agentSlug, sessionId, {
@@ -4128,7 +4245,7 @@ class MessagePersister {
       try {
         // Resolve timezone: agent tool override > agent owner's timezone
         timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
-        const sessionOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+        const sessionOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
         taskId = await createScheduledTask({
           agentSlug,
           scheduleType: input.scheduleType,
@@ -4235,7 +4352,7 @@ class MessagePersister {
       let timezone: string | undefined
       try {
         timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
-        const sessionOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+        const sessionOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
         ;({ taskId, replaced } = await createSessionWake({
           agentSlug,
           scheduleExpression,
@@ -4633,8 +4750,7 @@ ${continuation}`
    * Resolve a blocking tool in the container with a string value.
    */
   private async resolveContainerInput(agentSlug: string, toolUseId: string, value: string): Promise<void> {
-    const cm = await getContainerManager()
-    const client = cm.getClient(agentSlug)
+    const client = (await getContainerHost()).runtime(agentSlug).getClient()
     await client.fetch(`/inputs/${encodeURIComponent(toolUseId)}/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4646,8 +4762,7 @@ ${continuation}`
    * Reject a blocking tool in the container with an error message.
    */
   private async rejectContainerInput(agentSlug: string, toolUseId: string, reason: string): Promise<void> {
-    const cm = await getContainerManager()
-    const client = cm.getClient(agentSlug)
+    const client = (await getContainerHost()).runtime(agentSlug).getClient()
     await client.fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4673,8 +4788,7 @@ ${continuation}`
   }
 
   private async interruptContainerSession(agentSlug: string, sessionId: string): Promise<{ processKept: boolean }> {
-    const cm = await getContainerManager()
-    const client = cm.getClient(agentSlug)
+    const client = (await getContainerHost()).runtime(agentSlug).getClient()
     // Same escalation as the interrupt route: a turn stop cannot settle a
     // session whose only background work is untracked, so stop everything.
     const scope = this.hasOnlyUntrackedBackgroundWork(agentSlug, sessionId) ? 'all' : 'turn'
@@ -4840,7 +4954,7 @@ ${continuation}`
         // 2. Save to SQLite (store the local account ID for app-level lookups)
         let triggerId: string
         try {
-          const triggerOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+          const triggerOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
           triggerId = await createWebhookTrigger({
             agentSlug,
             composioTriggerId,
@@ -4901,7 +5015,7 @@ ${continuation}`
    * ignore the member suffix entirely).
    */
   private async resolvePlatformMemberForSession(agentSlug: string, sessionId: string): Promise<string> {
-    const ownerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+    const ownerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
     const resolved = resolvePlatformMemberForCandidates([ownerId])
     return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
   }
@@ -4959,7 +5073,7 @@ ${continuation}`
         // 2. Save the local trigger row (rollback the mint on failure)
         let triggerId: string
         try {
-          const triggerOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+          const triggerOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
           triggerId = await createWebhookTrigger({
             agentSlug,
             kind: 'custom',
@@ -5633,8 +5747,8 @@ ${continuation}`
   /** Auto-reject a pending input request on the container with a reason message. */
   private autoRejectInput(agentSlug: string | undefined, toolUseId: string, reason: string): void {
     if (!agentSlug) return
-    getContainerManager().then((cm) =>
-      cm.getClient(agentSlug)
+    getContainerHost().then((host) =>
+      host.runtime(agentSlug).getClient()
         .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -5724,7 +5838,7 @@ ${continuation}`
   ): Promise<void> {
     try {
       // Extract AC method from tool name: mcp__computer-use__computer_launch -> launch.
-      const method = computerUseMethodFromToolName(toolName)
+      let method = computerUseMethodFromToolName(toolName)
 
       // The toolInput is the raw MCP tool input (e.g., { name: "Calculator" } for computer_launch)
       // Empty input is valid for tools like screenshot, apps, ungrab that take no required params
@@ -5735,6 +5849,10 @@ ${continuation}`
         console.error('[MessagePersister] Failed to parse computer use request:', toolInput)
         return
       }
+
+      // computer_run("clipboard_read", {...}) is really a clipboard_read request:
+      // unwrap it so the permission level, approval card and executor see that.
+      ;({ method, params } = unwrapComputerRun(method, params))
 
       // Check platform support — computer use requires macOS or Windows (skip in E2E mock mode)
       if (process.env.E2E_MOCK !== 'true' && process.platform !== 'darwin' && process.platform !== 'win32') {
@@ -5827,8 +5945,8 @@ ${continuation}`
       .catch((err: Error) => {
         clearTimeout(timeout)
         console.error('[MessagePersister] Failed to auto-execute script run:', err)
-        getContainerManager().then((cm) =>
-          cm.getClient(agentSlug)
+        getContainerHost().then((host) =>
+          host.runtime(agentSlug).getClient()
             .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -5890,8 +6008,8 @@ ${continuation}`
       .catch((err: Error) => {
         clearTimeout(timeout)
         console.error('[MessagePersister] Failed to auto-execute computer use command:', err)
-        getContainerManager().then((cm) =>
-          cm.getClient(agentSlug)
+        getContainerHost().then((host) =>
+          host.runtime(agentSlug).getClient()
             .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -5963,7 +6081,7 @@ ${continuation}`
 
         // Persist to session metadata (fire-and-forget)
         if (state.agentSlug) {
-          updateSessionMetadata(state.agentSlug, sessionId, { lastUsage }).catch((err) => {
+          updateSessionMetadata(this.storeOf(state.agentSlug), sessionId, { lastUsage }).catch((err) => {
             console.error('[MessagePersister] Failed to persist lastUsage:', err)
           })
         }

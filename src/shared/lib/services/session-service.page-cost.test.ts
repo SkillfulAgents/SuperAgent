@@ -28,6 +28,7 @@ import * as path from 'path'
 import * as os from 'os'
 
 import { getSessionMessagesPage } from './session-service'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
 const KB = 1024
 const MB = 1024 * KB
@@ -86,7 +87,7 @@ async function costOf(
 ): Promise<{ account: ReadAccount; page: Awaited<ReturnType<typeof getSessionMessagesPage>> }> {
   const account = trackReads()
   try {
-    const page = await getSessionMessagesPage(AGENT, sessionId, opts)
+    const page = await getSessionMessagesPage(createLocalSessionStore(AGENT), sessionId, opts)
     return { account, page }
   } finally {
     vi.restoreAllMocks()

@@ -186,7 +186,7 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('test-agent', ['old'])
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), ['old'])
   })
 
   it('uses per-agent override over global default', async () => {
@@ -202,7 +202,7 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('test-agent', ['s100'])
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), ['s100'])
   })
 
   it('a per-agent override of 0 ("Never") disables cleanup even with a global default', async () => {
@@ -236,7 +236,7 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('test-agent', [
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), [
       'normal',
     ])
   })
@@ -257,7 +257,7 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('test-agent', [
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), [
       'inactive',
     ])
   })
@@ -277,7 +277,7 @@ describe('SessionAutoDeleteMonitor', () => {
     await startAndTrigger()
 
     expect(mockListSessionIdsWithPendingWakes).toHaveBeenCalledWith('test-agent')
-    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('test-agent', ['normal'])
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), ['normal'])
   })
 
   it('does not delete when no sessions exceed threshold', async () => {
@@ -389,6 +389,6 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('ok-agent', ['old'])
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith(expect.objectContaining({ slug: 'ok-agent' }), ['old'])
   })
 })

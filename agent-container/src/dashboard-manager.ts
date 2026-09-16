@@ -1,10 +1,12 @@
 import { spawn, ChildProcess } from 'child_process'
+import { readFileTail } from './file-tail'
 import * as fs from 'fs'
 import * as path from 'path'
 import { captureDashboardScreenshot, type ScreenshotResult } from './dashboard-screenshot'
 import { notifyDashboardScreenshotReady, notifyDashboardStatusChanged } from './host-events'
 import { DashboardPackageSchema } from './dashboard-package-schema'
 import { readArtifactShapeSync } from './artifact-kind'
+import { gamutSkillPath } from './gamut-plugin'
 
 const SCREENSHOT_FILENAME = 'screenshot.png'
 
@@ -42,15 +44,8 @@ export async function truncateOversizedLog(
     const stat = await fs.promises.stat(logPath)
     if (stat.size <= maxBytes) return false
 
-    const fd = await fs.promises.open(logPath, 'r')
-    let tail: Buffer
-    try {
-      const buf = Buffer.alloc(Math.min(keepBytes, stat.size))
-      const { bytesRead } = await fd.read(buf, 0, buf.length, stat.size - buf.length)
-      tail = buf.subarray(0, bytesRead)
-    } finally {
-      await fd.close()
-    }
+    const tail = await readFileTail(logPath, keepBytes)
+    if (!tail) return false
 
     await fs.promises.writeFile(
       logPath,
@@ -840,10 +835,7 @@ console.log(\`Dashboard server running on http://localhost:\${port}\`);
     name: string,
     description: string
   ): Promise<void> {
-    const templateDir = path.join(
-      process.env.HOME || '/home/claude',
-      '.claude/skills/dashboards/templates/react-vite'
-    )
+    const templateDir = gamutSkillPath('dashboards', 'templates', 'react-vite')
 
     // Copy template directory recursively
     await fs.promises.cp(templateDir, dir, { recursive: true })

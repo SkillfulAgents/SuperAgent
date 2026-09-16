@@ -17,7 +17,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 
-import { containerManager } from '../src/shared/lib/container/container-manager'
+import { containerHost } from '../src/shared/lib/container/container-host'
 import { createAgent, agentExists } from '../src/shared/lib/services/agent-service'
 import { getSessionJsonlPath } from '../src/shared/lib/utils/file-storage'
 
@@ -87,7 +87,7 @@ async function main(): Promise<void> {
     console.log(`[validate] Created agent ${agentSlug}`)
   }
 
-  const client = await containerManager.ensureRunning(agentSlug)
+  const client = await containerHost.runtime(agentSlug).ensureRunning()
   console.log(`[validate] Container running for ${agentSlug}`)
 
   // ---- Scenario 1: create session with Haiku ----

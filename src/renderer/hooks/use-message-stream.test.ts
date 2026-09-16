@@ -141,6 +141,60 @@ describe('useMessageStream', () => {
     expect(result.current.isStreaming).toBe(false)
   })
 
+  it('restores and clears active subagents from connected snapshots', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+    const activeSubagents = [{
+      parentToolId: 'nested-agent-tool',
+      agentId: 'nested-agent-id',
+      streamingMessage: null,
+      streamingToolUse: null,
+      progressSummary: 'Inspecting tests',
+      subagentType: 'code-reviewer',
+      description: 'Review the changes',
+      usage: null,
+      lastToolName: 'Read',
+      status: 'running',
+    }]
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+        activeSubagents,
+      })
+    })
+    expect(result.current.activeSubagents).toEqual(activeSubagents)
+    expect(result.current.completedSubagents).toEqual(new Set())
+
+    const completedSubagents = activeSubagents.map((subagent) => ({
+      ...subagent,
+      status: 'completed',
+    }))
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+        activeSubagents: completedSubagents,
+      })
+    })
+    expect(result.current.activeSubagents).toEqual(completedSubagents)
+    expect(result.current.completedSubagents).toEqual(new Set(['nested-agent-tool']))
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+        activeSubagents: [],
+      })
+    })
+    expect(result.current.activeSubagents).toHaveLength(0)
+    expect(result.current.completedSubagents).toEqual(new Set())
+  })
+
   it('reads waiting-background from the connected snapshot, not from the task list alone', async () => {
     // A late-joining client can find a background task that a still-streaming
     // turn launched. Only the snapshot's own word marks the turn as over.
@@ -3326,5 +3380,31 @@ describe('useMessageStream — extended thinking blocks', () => {
 
     // No thinking event fired — consumers must not re-derive from a fresh array
     expect(result.current.thinkingBlocks).toBe(before)
+  })
+})
+
+
+describe('typing leases', () => {
+  it('keeps the latest photo and typing event alive for a full five seconds, then cleans up on unmount', async () => {
+    const { useMessageStream } = await getHookModule()
+    vi.useFakeTimers()
+    try {
+      const { result, unmount } = renderHook(() => useMessageStream('typing-session', 'agent-1'), { wrapper: createWrapper() })
+      const es = MockEventSource.instances[0]
+      act(() => es.simulateMessage({ type: 'user_typing', sender: { id: 'u2', name: 'Ada', image: 'https://example.com/ada.png' } }))
+      act(() => vi.advanceTimersByTime(3000))
+      act(() => es.simulateMessage({ type: 'user_typing', sender: { id: 'u2', name: 'Ada', image: 'https://example.com/new.png' } }))
+      act(() => vi.advanceTimersByTime(2500))
+      expect(result.current.typingUser?.image).toBe('https://example.com/new.png')
+      act(() => vi.advanceTimersByTime(2500))
+      expect(result.current.typingUser).toBeNull()
+      act(() => es.simulateMessage({ type: 'user_typing', sender: { id: 'u2', name: 'Ada' } }))
+      unmount()
+      const remounted = renderHook(() => useMessageStream('typing-session', 'agent-1'), { wrapper: createWrapper() })
+      expect(remounted.result.current.typingUser).toBeNull()
+      remounted.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -380,17 +380,18 @@ describe('widgetManager', () => {
   })
 
   describe('createWidget', () => {
-    const templateHome = fs.mkdtempSync(path.join(os.tmpdir(), 'widget-home-'))
-    const originalHome = process.env.HOME
+    const pluginDir = fs.mkdtempSync(path.join(os.tmpdir(), 'widget-plugin-'))
+    const originalPluginDir = process.env.GAMUT_PLUGIN_DIR
     beforeEach(() => {
-      const tpl = path.join(templateHome, '.claude/skills/widgets/templates/basic')
+      const tpl = path.join(pluginDir, 'skills/widgets/templates/basic')
       fs.mkdirSync(tpl, { recursive: true })
       fs.writeFileSync(path.join(tpl, 'widget.html'), '<html>tpl</html>')
       fs.writeFileSync(path.join(tpl, 'widget.ts'), '// tpl')
-      process.env.HOME = templateHome
+      process.env.GAMUT_PLUGIN_DIR = pluginDir
     })
     afterEach(() => {
-      process.env.HOME = originalHome
+      if (originalPluginDir === undefined) delete process.env.GAMUT_PLUGIN_DIR
+      else process.env.GAMUT_PLUGIN_DIR = originalPluginDir
     })
 
     it('scaffolds a widget-only artifact for a new slug', async () => {

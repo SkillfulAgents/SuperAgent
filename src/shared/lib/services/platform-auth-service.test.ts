@@ -12,10 +12,27 @@ import {
   type JSONWebKeySet,
 } from 'jose'
 
+// Skillset reconciliation walks the agents this suite writes to the temp data
+// dir; those directories are the agents that exist.
+vi.mock('@shared/lib/agent-actor/agent-catalog', async () => {
+  const { directoryExists, getAgentDir, getAgentsDir, listDirectories } = await import('@shared/lib/utils/file-storage')
+  return {
+    agentCatalog: {
+      list: () => listDirectories(getAgentsDir()),
+      exists: (slug: string) => directoryExists(getAgentDir(slug)),
+    },
+    identityFromInstructions: () => ({}),
+  }
+})
+
+// A token change reaches the host through `@shared/lib/agent-actor`, which
+// re-exports the container-host singleton and runs the real agent registry
+// against it.
 const mockMarkAgentsStale = vi.fn()
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: { markAgentsStale: mockMarkAgentsStale },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ markAgentsStale: mockMarkAgentsStale }) }
+})
 
 const mockDbGet = vi.fn()
 vi.mock('@shared/lib/db', () => ({

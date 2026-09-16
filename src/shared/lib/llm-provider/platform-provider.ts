@@ -7,6 +7,7 @@ import type { ModelDefinition } from './model-catalog-schema'
 import { PLATFORM_CATALOG, PLATFORM_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
 import { PLATFORM_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
 import { attribution } from '@shared/lib/platform-attribution'
+import { captureMessage } from '@shared/lib/error-reporting'
 import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import { getPlatformBaseUrl, getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import type { ApiKeyStatus } from '../config/settings'
@@ -69,7 +70,19 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     const proxyUrl = getPlatformProxyBaseUrl()
     const containerUrl = rewriteLoopbackForContainer(proxyUrl)
 
-    const auth = attribution.current()
+    // The token is baked once per container start and shared by every session
+    // in it, so an empty ambient scope here (scheduler / trigger / recovery
+    // start) must still resolve a member — a bare org JWT is admitted by the
+    // proxy as org_runtime and bills to the org pool instead of a seat (SUP-805).
+    const auth = agent ? attribution.forAgent(agent.id) : attribution.current()
+    if (!auth && attribution.requiresActingMember()) {
+      console.warn(`[PlatformLlmProvider] No acting member resolved for agent ${agent?.id ?? '(none)'}; baking bare org token`)
+      captureMessage('platform container env built without acting member', {
+        level: 'warning',
+        tags: { area: 'platform-attribution', op: 'container.env.no_member' },
+        extra: { agentId: agent?.id ?? null },
+      })
+    }
     const authToken = auth?.bearerToken() ?? this.getEffectiveApiKey()
 
     // Agent identity rides into the container as plain env vars; the container

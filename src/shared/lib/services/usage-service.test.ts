@@ -15,7 +15,19 @@ import {
   calculateCost,
 } from './usage-service'
 
+import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
+
 const FIXTURES_DIR = path.resolve(__dirname, '__fixtures__/usage-data')
+
+/** A fixture's Claude directory as a workspace: the usage loaders read through file operations. */
+function dailyOptions(claudePath: string) {
+  return { files: new LocalFileOps(() => claudePath), dir: 'projects' }
+}
+
+/** One transcript by host path, as the workspace it sits in plus its name. */
+function sessionOptions(sessionPath: string) {
+  return { files: new LocalFileOps(() => path.dirname(sessionPath)), transcript: path.basename(sessionPath) }
+}
 const RUNTIME_MODEL_FIXTURE = path.join(FIXTURES_DIR, 'runtime-model-ids')
 const MISSING_PRICE_FIXTURE = path.join(FIXTURES_DIR, 'missing-model-price')
 
@@ -95,7 +107,7 @@ describe('usage-service', () => {
 
         const [ccusageResult, lightweightResult] = await Promise.all([
           loadWithCcusage(claudePath),
-          loadDailyUsageDataLightweight({ claudePath }),
+          loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) }),
         ])
 
         const normalizedCcusage = normalize(ccusageResult as DailyResult[])
@@ -137,8 +149,8 @@ describe('usage-service', () => {
       // Agent 4b41 has data across 3 days: 2025-12-04, 2025-12-05, 2025-12-06
       const claudePath = getClaudePath('4b41c573-4c33-456d-9cc5-3df6ee95dc32')
 
-      const allData = await loadDailyUsageDataLightweight({ claudePath })
-      const filteredData = await loadDailyUsageDataLightweight({ claudePath, since: '20251206' })
+      const allData = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
+      const filteredData = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath), since: '20251206' })
 
       expect(allData.length).toBeGreaterThanOrEqual(2)
       expect(filteredData.length).toBe(1)
@@ -151,7 +163,7 @@ describe('usage-service', () => {
 
       const [ccusageResult, lightweightResult] = await Promise.all([
         loadWithCcusage(claudePath, since),
-        loadDailyUsageDataLightweight({ claudePath, since }),
+        loadDailyUsageDataLightweight({ ...dailyOptions(claudePath), since }),
       ])
 
       const normalizedCcusage = normalize(ccusageResult as DailyResult[])
@@ -169,7 +181,7 @@ describe('usage-service', () => {
   describe('loadDailyUsageData — empty/missing directory', () => {
     it('returns empty array for non-existent path', async () => {
       const result = await loadDailyUsageDataLightweight({
-        claudePath: '/tmp/nonexistent-usage-test-path',
+        ...dailyOptions('/tmp/nonexistent-usage-test-path'),
       })
       expect(result).toEqual([])
     })
@@ -178,8 +190,8 @@ describe('usage-service', () => {
   describe('loadDailyUsageData — deduplication', () => {
     it('produces consistent results (idempotent dedup)', async () => {
       const claudePath = getClaudePath('4b41c573-4c33-456d-9cc5-3df6ee95dc32')
-      const result1 = await loadDailyUsageDataLightweight({ claudePath })
-      const result2 = await loadDailyUsageDataLightweight({ claudePath })
+      const result1 = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
+      const result2 = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
       expect(normalize(result1)).toEqual(normalize(result2))
     })
   })
@@ -188,7 +200,7 @@ describe('usage-service', () => {
     it('includes usage from subagent (agent-*) files', async () => {
       // Agent 4b41 has agent-*.jsonl files alongside regular session files
       const claudePath = getClaudePath('4b41c573-4c33-456d-9cc5-3df6ee95dc32')
-      const result = await loadDailyUsageDataLightweight({ claudePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
 
       // Verify we have data (subagent tokens should be counted)
       const totalTokens = result.reduce(
@@ -213,8 +225,8 @@ describe('usage-service', () => {
       const sessionPath = path.join(claudePath, 'projects', '-workspace', 'session-a.jsonl')
 
       const [totals, allDaily] = await Promise.all([
-        loadSessionUsageTotals({ sessionPath }),
-        loadDailyUsageDataLightweight({ claudePath }),
+        loadSessionUsageTotals({ ...sessionOptions(sessionPath) }),
+        loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) }),
       ])
       const sessionDay = allDaily.find((day) => day.date === '2025-12-10')!
 
@@ -237,7 +249,7 @@ describe('usage-service', () => {
 
       try {
         const totals = await loadSessionUsageTotals({
-          sessionPath: path.join(dir, 'missing-session.jsonl'),
+          ...sessionOptions(path.join(dir, 'missing-session.jsonl')),
         })
 
         expect(totals).toEqual({
@@ -278,7 +290,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, `${partialSnapshot}\n${finalSnapshotWithoutRequestId}\n`)
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.2,
           totalTokens: 120,
           priceMissing: false,
@@ -300,7 +312,7 @@ describe('usage-service', () => {
 
     it('deduplicates repeated snapshots that omit requestId', async () => {
       const result = await loadDailyUsageDataLightweight({
-        claudePath: RUNTIME_MODEL_FIXTURE,
+        ...dailyOptions(RUNTIME_MODEL_FIXTURE),
         providerId: 'anthropic',
       })
       const day = result.find((entry) => entry.date === '2026-01-01')!
@@ -329,7 +341,7 @@ describe('usage-service', () => {
 
     it('prices each provider-qualified dated model id retained in the fixture', async () => {
       const result = await loadDailyUsageDataLightweight({
-        claudePath: RUNTIME_MODEL_FIXTURE,
+        ...dailyOptions(RUNTIME_MODEL_FIXTURE),
         providerId: 'anthropic',
       })
       const day = result.find((entry) => entry.date === '2026-01-02')!
@@ -345,7 +357,7 @@ describe('usage-service', () => {
 
     it('returns corrected all-time totals through the session calculation path', async () => {
       await expect(
-        loadSessionUsageTotals({ sessionPath, providerId: 'anthropic' }),
+        loadSessionUsageTotals({ ...sessionOptions(sessionPath), providerId: 'anthropic' }),
       ).resolves.toEqual({
         totalCost: 0.7782477,
         totalTokens: 286_966,
@@ -364,7 +376,7 @@ describe('usage-service', () => {
     )
 
     it('marks an unpriced discovered model without changing its deduplicated tokens', async () => {
-      await expect(loadSessionUsageTotals({ sessionPath, providerId: 'anthropic' })).resolves.toEqual({
+      await expect(loadSessionUsageTotals({ ...sessionOptions(sessionPath), providerId: 'anthropic' })).resolves.toEqual({
         totalCost: 0,
         totalTokens: 79_429,
         priceMissing: true,
@@ -390,7 +402,7 @@ describe('usage-service', () => {
       )
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0,
           totalTokens: 110,
           priceMissing: false,
@@ -438,7 +450,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, `${cacheReadRow}\n${cacheCreationRow}\n`)
 
       try {
-        const totals = await loadSessionUsageTotals({ sessionPath: transcript })
+        const totals = await loadSessionUsageTotals({ ...sessionOptions(transcript) })
         expect(totals).toEqual({
           totalCost: 0.0000369,
           totalTokens: 579,
@@ -482,7 +494,7 @@ describe('usage-service', () => {
       )
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.1,
           totalTokens: 110,
           priceMissing: false,
@@ -508,7 +520,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, `${validRow}\n{"message":{"usage":{"input_tokens":50}\n`)
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.00045,
           totalTokens: 110,
           priceMissing: false,
@@ -528,7 +540,7 @@ describe('usage-service', () => {
         .mockRejectedValueOnce(Object.assign(new Error('Permission denied'), { code: 'EACCES' }))
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0,
           totalTokens: 0,
           priceMissing: false,
@@ -572,7 +584,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, `${rows.join('\n')}\n`)
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.00135,
           totalTokens: 330,
           priceMissing: false,
@@ -598,7 +610,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, `${row}\n`)
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.00045,
           totalTokens: 110,
           priceMissing: false,
@@ -615,7 +627,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, usageRow({ id: 'last' }))
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.00045,
           totalTokens: 110,
           priceMissing: false,
@@ -632,7 +644,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, `\n   \n${usageRow({ id: 'crlf' })}\r\n\r\n`)
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.00045,
           totalTokens: 110,
           priceMissing: false,
@@ -654,7 +666,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, `${decoy}\n${usageRow({ id: 'real' })}\n`)
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.00045,
           totalTokens: 110,
           priceMissing: false,
@@ -669,7 +681,7 @@ describe('usage-service', () => {
   describe('loadDailyUsageData — costUSD field', () => {
     it('uses costUSD from entries when available', async () => {
       const claudePath = getClaudePath('bedrock-agent')
-      const result = await loadDailyUsageDataLightweight({ claudePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
 
       const sorted = normalize(result)
 
@@ -684,7 +696,7 @@ describe('usage-service', () => {
 
     it('preserves Bedrock model names for downstream normalization', async () => {
       const claudePath = getClaudePath('bedrock-agent')
-      const result = await loadDailyUsageDataLightweight({ claudePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
 
       const allModels = result.flatMap((d) => d.modelBreakdowns.map((mb) => mb.modelName))
       // Should keep the raw Bedrock model name — normalization happens in the route
@@ -694,7 +706,7 @@ describe('usage-service', () => {
 
     it('aggregates cost per model breakdown', async () => {
       const claudePath = getClaudePath('bedrock-agent')
-      const result = await loadDailyUsageDataLightweight({ claudePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
 
       const dec5 = result.find((d) => d.date === '2025-12-05')!
       const sonnetBreakdown = dec5.modelBreakdowns.find((mb) =>
@@ -710,7 +722,7 @@ describe('usage-service', () => {
     it('computes non-zero costs for known Claude models', async () => {
       // Agent 4b41 uses claude-sonnet-4-5-20250929 and claude-haiku-4-5-20251001
       const claudePath = getClaudePath('4b41c573-4c33-456d-9cc5-3df6ee95dc32')
-      const result = await loadDailyUsageDataLightweight({ claudePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
 
       const totalCost = result.reduce((sum, d) => sum + d.totalCost, 0)
       expect(totalCost).toBeGreaterThan(0)
@@ -729,7 +741,7 @@ describe('usage-service', () => {
     it('prefers costUSD over hardcoded pricing', async () => {
       // Bedrock fixture has costUSD — should use that, not hardcoded pricing
       const claudePath = getClaudePath('bedrock-agent')
-      const result = await loadDailyUsageDataLightweight({ claudePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
 
       const dec5 = result.find((d) => d.date === '2025-12-05')!
       // costUSD was 0.0023 + 0.0045 = 0.0068
@@ -1076,14 +1088,14 @@ describe('usage-service', () => {
     const edgePath = getClaudePath('edge-cases')
 
     it('skips non-usage lines (queue-operation, user messages, malformed JSON)', async () => {
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
       // Should not crash — malformed lines and non-usage entries are silently skipped
       expect(result.length).toBeGreaterThan(0)
     })
 
     it('deduplicates entries across files and keeps the richest token snapshot', async () => {
       // msg_dup1/req_dup1 appears multiple times with output snapshots 50, 75, and 50.
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
       const dec10 = result.find((d) => d.date === '2025-12-10')!
 
       // opus-4-6 entries: msg_dup1 (100in/75out, highest kept), msg_002 (200/100), msg_005 (400/200 costUSD=0)
@@ -1095,7 +1107,7 @@ describe('usage-service', () => {
     })
 
     it('falls back to "unknown" for entries without a model field', async () => {
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
       const dec10 = result.find((d) => d.date === '2025-12-10')!
 
       const unknownBreakdown = dec10.modelBreakdowns.find((mb) => mb.modelName === 'unknown')
@@ -1107,7 +1119,7 @@ describe('usage-service', () => {
     })
 
     it('returns cost 0 for unknown models', async () => {
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
       const dec10 = result.find((d) => d.date === '2025-12-10')!
 
       const unknownModel = dec10.modelBreakdowns.find((mb) => mb.modelName === 'totally-unknown-model')
@@ -1117,7 +1129,7 @@ describe('usage-service', () => {
     })
 
     it('uses explicit costUSD: 0 instead of computing from pricing table', async () => {
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
       const dec10 = result.find((d) => d.date === '2025-12-10')!
 
       // msg_005 has costUSD: 0 on a claude-opus-4-6 entry (400 input, 200 output)
@@ -1132,7 +1144,7 @@ describe('usage-service', () => {
     })
 
     it('uses costUSD from bedrock entry alongside computed entries', async () => {
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
       const dec10 = result.find((d) => d.date === '2025-12-10')!
 
       // msg_006 has costUSD: 0.05 for a bedrock model
@@ -1144,7 +1156,7 @@ describe('usage-service', () => {
     })
 
     it('aggregates across multiple days from different files', async () => {
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
 
       // session-b.jsonl has an entry on 2025-12-11
       const dec11 = result.find((d) => d.date === '2025-12-11')
@@ -1204,7 +1216,7 @@ describe('usage-service', () => {
           `${JSON.stringify(makeEntry(model, opts))}\n`,
         )
         const result = await loadDailyUsageDataLightweight({
-          claudePath: dir,
+          ...dailyOptions(dir),
           ...(providerId ? { providerId } : {}),
         })
         expect(result).toHaveLength(1)
@@ -1291,6 +1303,15 @@ describe('usage-service', () => {
       expect(await costOf('glm-5.3-flash', { speed: 'fast' }, 'platform')).toBeCloseTo(glmBase, 9)
     })
 
+    it('bills platform DeepSeek V4.1 Flash at Fireworks list rates with no speed tier', async () => {
+      const deepseekBase = (100_000 * 0.22 + 1_000 * 0.66) / 1_000_000
+      expect(await costOf('deepseek-v4.1-flash', {}, 'platform')).toBeCloseTo(deepseekBase, 9)
+      expect(await costOf('deepseek-v4.1-flash', { speed: 'fast' }, 'platform')).toBeCloseTo(
+        deepseekBase,
+        9,
+      )
+    })
+
     it('prefers the local computation over tier-blind costUSD when a multiplier applies', async () => {
       expect(await costOf('gpt-5.4', { speed: 'fast', costUSD: 9.99 }, 'platform')).toBeCloseTo(
         GPT54_BASE * 2,
@@ -1349,13 +1370,13 @@ describe('usage-service', () => {
         writeFileSync(path.join(dir, 'projects', 'session.jsonl'), `${JSON.stringify(entry)}\n`)
 
         // With a provider, the per-line path applies the catalog pricing.
-        const withProvider = await loadDailyUsageDataLightweight({ claudePath: dir, providerId: 'anthropic' })
+        const withProvider = await loadDailyUsageDataLightweight({ ...dailyOptions(dir), providerId: 'anthropic' })
         expect(withProvider).toHaveLength(1)
         expect(withProvider[0].totalCost).toBeCloseTo((100_000 * 1 + 1_000 * 2) / 1_000_000, 9)
         expect(withProvider[0].modelBreakdowns[0]).toMatchObject({ modelName: 'custom-priced-1' })
 
         // Without a provider the custom id isn't in the static table → 0.
-        const withoutProvider = await loadDailyUsageDataLightweight({ claudePath: dir })
+        const withoutProvider = await loadDailyUsageDataLightweight({ ...dailyOptions(dir) })
         expect(withoutProvider[0].totalCost).toBe(0)
       } finally {
         rmSync(dir, { recursive: true, force: true })

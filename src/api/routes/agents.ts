@@ -1,3 +1,6 @@
+import agentMembers, { agentMembersBatch } from './agent-members'
+import { notifyAgentMembersChanged, changeMemberRole, removeMember } from '@shared/lib/services/agent-members-service'
+import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
@@ -7,6 +10,9 @@ import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
+import accountReauth from './account-reauth'
+import mcpReauth from './mcp-reauth'
+import { agentMemoryRoutes } from './agent-memories'
 import { getLlmPolyfillJs } from '../llm-polyfill'
 import {
   dashboardMountPath,
@@ -22,17 +28,25 @@ import {
   createAgent,
   getAgentWithStatus,
   getAgent,
+  getAgentRecord,
   updateAgent,
   deleteAgent,
   agentExists,
   AgentContainerStopError,
 } from '@shared/lib/services/agent-service'
-import { containerManager } from '@shared/lib/container/container-manager'
 import {
-  syncAgentConnectionEnvironment,
-  updateConnectedAccountsEnvironment,
-  updateRemoteMcpEnvironment,
-} from '@shared/lib/container/connection-runtime-sync'
+  agentRegistry,
+  containerHost,
+  WorkspaceFileError,
+  joinWorkspacePath,
+  normalizeWorkspacePath,
+  decodeMediaRef,
+  sortSessionsNewestFirst,
+  SESSIONS_LIST_MAX_LIMIT,
+  type FileStat,
+  type SessionSortBy,
+} from '@shared/lib/agent-actor'
+import { copyHostFileIntoWorkspace, moveHostFileIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
 import { parseRuntimeOptions, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import {
   sessionDashboardDispatchSchema,
@@ -42,54 +56,26 @@ import { getDashboardViewDispatchHostJs } from '../dashboard-view-dispatch-host'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
-import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
+import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
 import type {
   UserInputRequestKind,
   UserInputRequestScope,
 } from '@shared/lib/user-input/request-schema'
-import {
-  listSessionsFromSummary,
-  listSessionsByIds,
-  sortSessionsNewestFirst,
-  SESSIONS_LIST_MAX_LIMIT,
-  type SessionSortBy,
-  getSessionSummary,
-  readSessionMetadata,
-  updateSessionName,
-  registerSession,
-  getSessionMessagesWithCompact,
-  getSessionMessagesPage,
-  getSessionMessagesDelta,
-  getSession,
-  getSessionMetadata,
-  sessionExists,
-  sessionIsKnown,
-  sessionFileRealPathWithinAgent,
-  isSessionRegistered,
-  updateSessionMetadata,
-  deleteSession,
-  removeMessage,
-  removeToolCall,
-} from '@shared/lib/services/session-service'
 import { forkSession, ForkSessionError, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
-import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
-import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform, directoryExists } from '@shared/lib/utils/file-storage'
+import { displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
   cleanupStaleTempUploads,
   formatUploadTooLargeMessage,
-  moveUploadedFile,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
@@ -115,8 +101,8 @@ import {
   listPendingWakesByAgent,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
-import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
-import { eq, and, inArray, notInArray, desc, count, or, sql, type AnyColumn } from 'drizzle-orm'
+import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
+import { eq, and, inArray, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
@@ -147,7 +133,9 @@ import {
   readWidgetFromFilesystem,
   readWidgetHtml,
   resolveWidgetPath,
+  resolveArtifactPath,
   widgetSnapshotPngPath,
+  containedArtifactPath,
 } from '@shared/lib/services/widget-service'
 import { widgetRefreshService } from '@shared/lib/services/widget-refresh-service'
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
@@ -155,9 +143,7 @@ import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, d
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
-import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
-import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
@@ -197,14 +183,12 @@ import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { workflowRoutes } from './workflows'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
-import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
 import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
-import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
-import { isPathWithinDir, isRealPathWithinDir, sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
+import { sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
@@ -212,15 +196,13 @@ import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
 import { stopInstanceOnAllProviders } from '../../main/host-browser'
 import { deleteBrowserProfile } from '../../main/host-browser/profile-maintenance'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
-import { loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { captureException } from '@shared/lib/error-reporting'
 import * as fs from 'fs'
 import { Readable, pipeline } from 'stream'
-import { pipeline as streamPipeline } from 'stream/promises'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
-import type { SessionInfo, SessionMetadataMap } from '@shared/lib/types/agent'
+import type { JsonlEntry, JsonlMessageEntry, SessionInfo, SessionMetadata, SessionMetadataMap } from '@shared/lib/types/agent'
 import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
 import {
@@ -294,6 +276,11 @@ class WorkspaceFolderAccessError extends Error {
   }
 }
 
+/** The container spelling of a workspace path the actor resolved (`''` is the root). */
+function toContainerPath(workspacePath: string): string {
+  return workspacePath === '' ? '/workspace' : `/workspace/${workspacePath}`
+}
+
 function normalizeWorkspaceContainerPath(rawPath: string): string | null {
   if (!rawPath.startsWith('/') || rawPath.includes('\0')) return null
   const normalizedPath = path.posix.normalize(rawPath)
@@ -307,19 +294,13 @@ function isContainerPathWithin(basePath: string, candidatePath: string): boolean
   return relative === '' || (!relative.startsWith('../') && relative !== '..' && !path.posix.isAbsolute(relative))
 }
 
-function workspaceContainerPathToHost(workspaceDir: string, containerPath: string): string | null {
-  const normalized = normalizeWorkspaceContainerPath(containerPath)
-  if (!normalized) return null
-  const relative = path.posix.relative('/workspace', normalized)
-  return path.resolve(workspaceDir, ...relative.split('/').filter(Boolean))
-}
+const BOOKMARKS_FILE = 'bookmarks.json'
 
 async function readWorkspaceBookmarks(agentSlug: string): Promise<WorkspaceBookmark[]> {
-  const bookmarksPath = path.join(getAgentWorkspaceDir(agentSlug), 'bookmarks.json')
-  const content = await fs.promises.readFile(bookmarksPath, 'utf-8').catch(() => null)
-  if (!content) return []
+  const bytes = await agentRegistry.get(agentSlug).files.getDoc(BOOKMARKS_FILE).catch(() => null)
+  if (!bytes || bytes.byteLength === 0) return []
   try {
-    const parsed = JSON.parse(content)
+    const parsed = JSON.parse(new TextDecoder().decode(bytes))
     if (!Array.isArray(parsed)) return []
     return parsed.flatMap((entry): WorkspaceBookmark[] => {
       const result = WorkspaceBookmarkSchema.safeParse(entry)
@@ -331,6 +312,11 @@ async function readWorkspaceBookmarks(agentSlug: string): Promise<WorkspaceBookm
 }
 
 function workspaceFolderFsError(error: unknown): WorkspaceFolderAccessError | null {
+  if (error instanceof WorkspaceFileError) {
+    if (error.status === 400) return new WorkspaceFolderAccessError('Invalid folder path', 400)
+    if (error.status === 403) return new WorkspaceFolderAccessError('Folder is not accessible', 403)
+    return new WorkspaceFolderAccessError('Folder or file not found', 404)
+  }
   const code = error instanceof Error && 'code' in error
     ? (error as NodeJS.ErrnoException).code
     : undefined
@@ -367,37 +353,52 @@ async function resolveBookmarkedWorkspacePath(
     }
   }
 
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const hostRoot = workspaceContainerPathToHost(workspaceDir, rootPath)
-  const hostCurrentPath = workspaceContainerPathToHost(workspaceDir, currentPath)
-  if (!hostRoot || !hostCurrentPath) {
-    throw new WorkspaceFolderAccessError('Invalid folder path', 400)
-  }
-
+  // Both are container paths (`/workspace/…`), which the actor's file
+  // operations accept as workspace paths; containment against the workspace
+  // itself is theirs to enforce. What the actor cannot know is the bookmark
+  // root: a link inside the shared sub-tree that points elsewhere in the
+  // workspace would widen what a viewer can reach. So the check is on where
+  // the two really are, as it always was: the entry's real location has to
+  // stay under the root's, which lets a link that stays inside the shared
+  // tree be browsed and refuses one that leaves it. An escaping link is the
+  // same 400 it always was.
+  const files = agentRegistry.get(agentSlug).files
+  let stat: FileStat | null
   try {
-    const [canonicalWorkspace, canonicalRoot, canonicalCurrentPath] = await Promise.all([
-      fs.promises.realpath(workspaceDir),
-      fs.promises.realpath(hostRoot),
-      fs.promises.realpath(hostCurrentPath),
-    ])
-    if (
-      !isPathWithinDir(canonicalWorkspace, canonicalRoot)
-      || !isPathWithinDir(canonicalRoot, canonicalCurrentPath)
-    ) {
+    // The workspace root is where it is; only a bookmarked sub-tree can itself
+    // sit behind a link, so only that root is resolved.
+    const rootResolved = rootPath === '/workspace' ? '' : await files.resolve(rootPath)
+    const resolved = await files.resolve(currentPath)
+    if (resolved !== null && (rootResolved === null || !isContainerPathWithin(toContainerPath(rootResolved), toContainerPath(resolved)))) {
       throw new WorkspaceFolderAccessError('Invalid folder path', 400)
     }
-
-    return {
-      rootPath,
-      currentPath,
-      hostCurrentPath,
-      canonicalRoot,
-      canonicalCurrentPath,
-    }
+    stat = resolved === null ? null : await files.stat(resolved)
   } catch (error) {
-    if (error instanceof WorkspaceFolderAccessError) throw error
-    throw workspaceFolderFsError(error) ?? error
+    if (error instanceof WorkspaceFileError) {
+      throw new WorkspaceFolderAccessError(error.status === 400 ? 'Invalid folder path' : error.message, error.status)
+    }
+    throw error
   }
+
+  return { rootPath, currentPath, stat }
+}
+
+/**
+ * The same, for an operation on the entry itself. The rename and delete are
+ * carried out by the container, which has to be running for it; a path with
+ * nothing at it is answered here first, so a stale browser acting on an
+ * entry that is already gone does not start the container for nothing.
+ */
+async function resolveBookmarkedWorkspaceEntry(
+  agentSlug: string,
+  rawRoot: string,
+  rawPath: string,
+): Promise<{ rootPath: string; currentPath: string; stat: FileStat }> {
+  const resolved = await resolveBookmarkedWorkspacePath(agentSlug, rawRoot, rawPath)
+  if (!resolved.stat) {
+    throw new WorkspaceFolderAccessError('Folder or file not found', 404)
+  }
+  return { ...resolved, stat: resolved.stat }
 }
 
 async function requestContainerWorkspaceMutation<T>(
@@ -409,8 +410,8 @@ async function requestContainerWorkspaceMutation<T>(
     name?: string
   },
 ): Promise<T> {
-  await containerManager.ensureRunning(agentSlug)
-  const response = await containerManager.getClient(agentSlug).fetch('/workspace/entries', {
+  await agentRegistry.get(agentSlug).container.start()
+  const response = await agentRegistry.get(agentSlug).container.fetch('/workspace/entries', {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -520,7 +521,7 @@ function getAttentionOutsideLatest(
   // The registry is authoritative for open requests and exposes explicit
   // session attribution when it exists. Agent-scoped requests have no unique
   // session, so they must conservatively count as outside latest.
-  for (const request of userInputRequestManager.getOpenRequestsForAgent(agentSlug)) {
+  for (const request of agentRegistry.get(agentSlug).inputs.openForAgent()) {
     if (!request.blocking || request.autoApproved) continue
     observedPendingInput = true
     const sessionId = request.scope.sessionId
@@ -535,10 +536,10 @@ function getAttentionOutsideLatest(
   if (!hasPendingInput) {
     const candidateIds = new Set([
       ...visibleSessionIds,
-      ...messagePersister.getActiveSessionIdsForAgent(agentSlug),
+      ...agentRegistry.get(agentSlug).sessions.activeIds(),
     ])
     for (const sessionId of candidateIds) {
-      if (!messagePersister.isSessionAwaitingInput(agentSlug, sessionId)) continue
+      if (!agentRegistry.get(agentSlug).sessions.isAwaitingInput(sessionId)) continue
       observedPendingInput = true
       if (countsOutside(sessionId)) {
         hasPendingInput = true
@@ -553,7 +554,7 @@ function getAttentionOutsideLatest(
   if (
     !hasPendingInput &&
     !observedPendingInput &&
-    messagePersister.hasSessionsAwaitingInputForAgent(agentSlug)
+    agentRegistry.get(agentSlug).sessions.hasAwaitingInput()
   ) {
     hasPendingInput = true
   }
@@ -568,6 +569,7 @@ async function getLatestVisibleSessionTail(
   sessionMetadata: SessionMetadataMap,
   signal?: AbortSignal,
 ): Promise<NonNullable<ApiAgent['latestVisibleSession']>> {
+  const actor = agentRegistry.get(agentSlug)
   // KNOWN RESIDUAL (accepted, out of scope): `session` comes from the listing,
   // which drops symlinked transcripts by dirent type but still readdir's THROUGH
   // a symlinked ancestor directory (e.g. an agent that replaced its own
@@ -584,7 +586,7 @@ async function getLatestVisibleSessionTail(
   // Read first, check existence only if the read came back empty: the page
   // reader answers a missing transcript with an empty page, so the common
   // case (a transcript with messages) costs no stat at all.
-  const messageTail = await getSessionMessagesPage(agentSlug, session.id, {
+  const messageTail = await actor.messages.page(session.id, {
     limit: LATEST_VISIBLE_SESSION_TAIL_LIMIT,
     byteBudget: LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET,
     media: 'ref',
@@ -599,7 +601,7 @@ async function getLatestVisibleSessionTail(
   if (
     messageTail.messages.length === 0 &&
     !(Object.hasOwn(sessionMetadata, session.id) && sessionMetadata[session.id]?.createdAt) &&
-    !(await sessionExists(agentSlug, session.id))
+    !(await actor.sessions.exists(session.id))
   ) {
     throw new Error(
       'Latest visible session transcript not found for ' + agentSlug + '/' + session.id,
@@ -614,8 +616,8 @@ async function getLatestVisibleSessionTail(
   return {
     session: {
       ...session,
-      isActive: messagePersister.isSessionActive(agentSlug, session.id),
-      isAwaitingInput: messagePersister.isSessionAwaitingInput(agentSlug, session.id),
+      isActive: agentRegistry.get(agentSlug).sessions.isActive(session.id),
+      isAwaitingInput: agentRegistry.get(agentSlug).sessions.isAwaitingInput(session.id),
       hasUnreadNotifications: unreadSessionIds.has(session.id),
     },
     messageTail,
@@ -642,7 +644,7 @@ async function getVisibleSessionExpansion(
     // cache with the metadata map the caller already read, so a warm poll
     // costs one directory stat per agent instead of one stat per transcript.
     sessionMetadata = await sessionMetadataPromise
-    visibleSessions = await listSessionsFromSummary(agentSlug, {
+    visibleSessions = await agentRegistry.get(agentSlug).sessions.listFromSummary({
       metadata: sessionMetadata,
       excludeAutomated: true,
       sortBy: 'last_activity_at',
@@ -725,7 +727,8 @@ async function enrichAgentsWithSummary(
       const unreadSessionIds = markedIds.size === 0
         ? notifiedIds
         : new Set<string>([...notifiedIds, ...markedIds])
-      const sessionMetadataPromise = readSessionMetadata(agent.slug)
+      const actor = agentRegistry.get(agent.slug)
+      const sessionMetadataPromise = actor.sessions.readMetadata()
       const visibleSessionExpansionPromise = options.includeLatestVisibleSessionTail
         ? getVisibleSessionExpansion(
             agent.slug,
@@ -739,7 +742,7 @@ async function enrichAgentsWithSummary(
       // outer p-limit).
       const [sessionSummary, { dashboards: artifacts, widgets }, sessionMetadata, visibleSessionExpansion] =
         await Promise.all([
-          getSessionSummary(agent.slug),
+          actor.sessions.summary(),
           // Dashboards and widgets are two halves of the same artifacts, read
           // in one scan: listing them separately doubled the manifest reads.
           listArtifactsAndWidgets(agent.slug),
@@ -758,13 +761,13 @@ async function enrichAgentsWithSummary(
       let hasActiveSessions = false
       let hasSessionsAwaitingInput = false
       let hasUnreadNotifications = false
-      const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(agent.slug).length > 0
+      const hasAgentLevelReviews = agentRegistry.get(agent.slug).inputs.reviews.pending().length > 0
       for (const sessionId of sessionSummary.sessionIds) {
-        const isActive = messagePersister.isSessionActive(agent.slug, sessionId)
+        const isActive = agentRegistry.get(agent.slug).sessions.isActive(sessionId)
         if (isActive) {
           hasActiveSessions = true
         }
-        if (messagePersister.isSessionAwaitingInput(agent.slug, sessionId)) {
+        if (agentRegistry.get(agent.slug).sessions.isAwaitingInput(sessionId)) {
           hasSessionsAwaitingInput = true
         }
         if (unreadSessionIds.has(sessionId) && !isHiddenAutomatedSession(sessionMetadata[sessionId])) {
@@ -775,10 +778,10 @@ async function enrichAgentsWithSummary(
       // Fallback: check in-memory streaming state for sessions not yet on the filesystem
       // (e.g. newly created sessions whose .jsonl hasn't been written yet)
       if (!hasActiveSessions) {
-        hasActiveSessions = messagePersister.hasActiveSessionsForAgent(agent.slug)
+        hasActiveSessions = agentRegistry.get(agent.slug).sessions.hasActive()
       }
       if (!hasSessionsAwaitingInput) {
-        hasSessionsAwaitingInput = messagePersister.hasSessionsAwaitingInputForAgent(agent.slug)
+        hasSessionsAwaitingInput = agentRegistry.get(agent.slug).sessions.hasAwaitingInput()
       }
       // Pending proxy reviews raise the flag regardless of session state — dashboard-triggered
       // reviews have no associated session but still need user attention.
@@ -861,31 +864,16 @@ export async function resolveInterruptedSubagents(
 
   if (unresolvedTaskCalls.length === 0) return
 
-  // Scan the subagents directory for .meta.json files which carry toolUseId
-  const sessionsDir = getAgentSessionsDir(agentSlug)
-  const subagentsDir = path.join(sessionsDir, sessionId, 'subagents')
-  let files: string[]
-  try {
-    files = await fs.promises.readdir(subagentsDir)
-  } catch {
-    return // No subagents directory
-  }
+  // The subagent sidecars carry the toolUseId that launched each one. The
+  // subagents already resolved are not read: an already-completed one must
+  // not be re-marked cancelled, and its sidecar is one read saved.
+  const subagents = await agentRegistry.get(agentSlug).sessions.subagents(sessionId, { except: resolvedAgentIds })
 
-  // Build toolUseId → agentId map from .meta.json files (deterministic, no FIFO)
+  // Build toolUseId → agentId map (deterministic, no FIFO)
   const toolUseToAgentId = new Map<string, string>()
-  for (const file of files) {
-    if (!file.endsWith('.meta.json')) continue
-    const id = file.replace('agent-', '').replace('.meta.json', '')
-    if (resolvedAgentIds.has(id)) continue
-    try {
-      const raw = await fs.promises.readFile(path.join(subagentsDir, file), 'utf8')
-      const meta = JSON.parse(raw) as { toolUseId?: string }
-      if (meta.toolUseId) {
-        toolUseToAgentId.set(meta.toolUseId, id)
-      }
-    } catch {
-      // skip unreadable files
-    }
+  for (const { id, toolUseId } of subagents) {
+    if (!toolUseId) continue
+    toolUseToAgentId.set(toolUseId, id)
   }
 
   // Match unresolved Task calls by toolUseId (deterministic)
@@ -900,6 +888,9 @@ export async function resolveInterruptedSubagents(
 const agents = new Hono()
 
 agents.use('*', Authenticated())
+
+// Collection roster reads must be mounted before /:id/* resolution.
+agents.route('/members/batch', agentMembersBatch)
 
 // ============================================================
 // Routes that must be registered BEFORE /:id middleware
@@ -1314,8 +1305,8 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
       ? clampGeneratedName(sessionName)
       : message.trim().split(/\s+/).slice(0, 6).join(' ').substring(0, 60)
     if (finalName) {
-      await updateSessionName(agentSlug, sessionId, finalName)
-      messagePersister.broadcastSessionUpdate(agentSlug, sessionId)
+      await agentRegistry.get(agentSlug).sessions.rename(sessionId, finalName)
+      agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
     }
   } catch (error) {
     console.error('Failed to update session name:', error)
@@ -1351,20 +1342,10 @@ agents.get('/', async (c) => {
         .select({ agentSlug: agentAcl.agentSlug })
         .from(agentAcl)
         .where(eq(agentAcl.userId, userId))
-      const agentLimit = pLimit(10)
-      const agents = await Promise.all(
-        rows.map((r) => agentLimit(() => getAgentWithStatus(
-          r.agentSlug,
-          { includeSummary: false },
-        )))
-      )
-      agentList = agents.filter((a): a is ApiAgent => a !== null)
-      // The ACL query has no ORDER BY, so rows arrive in index-scan order — i.e.
-      // by agentSlug, which is now an opaque random id (it used to embed the name,
-      // so the scan was incidentally name-ish). Sort newest-first to match the
-      // non-auth listAgentsWithStatus() ordering, so a freshly created agent lands
-      // at the top of the sidebar (the client's applyAgentOrder floats new agents up).
-      agentList.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      // One catalog query for the visible slugs, newest first like the
+      // non-auth listing, so a freshly created agent lands at the top of the
+      // sidebar (the client's applyAgentOrder floats new agents up).
+      agentList = await listAgentsWithStatus({ slugs: rows.map((r) => r.agentSlug) })
     } else {
       agentList = await listAgentsWithStatus()
     }
@@ -1463,8 +1444,9 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    // Stop/forget the running container before tearing anything down.
-    containerManager.removeClient(slug)
+    // The container is stopped, and its runtime forgotten, inside deleteAgent
+    // below: forgetting it here first would leave the stop to a fresh runtime
+    // while the old client's callbacks still pointed at the dropped one.
 
     // Clean up proxy token (best-effort — a revoked token is harmless on its own).
     try {
@@ -1569,6 +1551,8 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
 // Agent Access (ACL) endpoints
 // ============================================================
 
+agents.route('/:id/members', agentMembers)
+
 // GET /api/agents/:id/access - List users with roles on this agent
 agents.get('/:id/access', AgentAdmin(), async (c) => {
   try {
@@ -1578,13 +1562,14 @@ agents.get('/:id/access', AgentAdmin(), async (c) => {
         userId: agentAcl.userId,
         role: agentAcl.role,
         createdAt: agentAcl.createdAt,
-        userName: userTable.name,
-        userEmail: userTable.email,
       })
       .from(agentAcl)
-      .innerJoin(userTable, eq(agentAcl.userId, userTable.id))
       .where(eq(agentAcl.agentSlug, slug))
-    return c.json(rows)
+    const profiles = getUserSummaries(rows.map(row => row.userId))
+    return c.json(rows.flatMap(row => {
+      const profile = profiles.get(row.userId)
+      return profile ? [{ ...row, userName: profile.name, userEmail: profile.email, image: profile.image }] : []
+    }))
   } catch (error) {
     console.error('Failed to fetch agent access:', error)
     return c.json({ error: 'Failed to fetch agent access' }, 500)
@@ -1605,12 +1590,7 @@ agents.post('/:id/access', AgentAdmin(), async (c) => {
     }
 
     // Check user exists
-    const [targetUser] = await db
-      .select({ id: userTable.id })
-      .from(userTable)
-      .where(eq(userTable.id, userId))
-      .limit(1)
-    if (!targetUser) {
+    if (!userExists(userId)) {
       return c.json({ error: 'User not found' }, 404)
     }
 
@@ -1632,6 +1612,7 @@ agents.post('/:id/access', AgentAdmin(), async (c) => {
       createdAt: new Date(),
     })
 
+    notifyAgentMembersChanged(slug)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'granted', details: { targetUserId: userId, role } })
     return c.json({ ok: true }, 201)
   } catch (error) {
@@ -1651,40 +1632,12 @@ agents.patch('/:id/access/:userId', AgentAdmin(), async (c) => {
       return c.json({ error: 'Invalid role. Must be owner, user, or viewer' }, 400)
     }
 
-    // Transaction to prevent TOCTOU race on last-owner check
-    // Note: better-sqlite3 transactions are synchronous — no async/await inside
-    const error = db.transaction((tx) => {
-      const [currentAcl] = tx
-        .select({ role: agentAcl.role })
-        .from(agentAcl)
-        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
-        .limit(1)
-        .all()
-
-      if (!currentAcl) return 'User does not have access to this agent'
-
-      if (currentAcl.role === 'owner' && role !== 'owner') {
-        const [{ ownerCount }] = tx
-          .select({ ownerCount: count() })
-          .from(agentAcl)
-          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
-          .all()
-        if (ownerCount <= 1) return 'Cannot change role: agent must have at least one owner'
-      }
-
-      tx
-        .update(agentAcl)
-        .set({ role })
-        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
-        .run()
-
-      return null
-    })
-
-    if (error) {
-      const status = error.includes('does not have access') ? 404 : 400
-      return c.json({ error }, status)
-    }
+    // The last-owner guard is part of the update statement, so there is no
+    // read-then-decide window for a concurrent demotion to slip through.
+    const outcome = await changeMemberRole(slug, targetUserId, role)
+    if (outcome === 'not-a-member') return c.json({ error: 'User does not have access to this agent' }, 404)
+    if (outcome === 'last-owner') return c.json({ error: 'Cannot change role: agent must have at least one owner' }, 400)
+    notifyAgentMembersChanged(slug)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'changed', details: { targetUserId: targetUserId, role } })
     return c.json({ ok: true })
   } catch (error) {
@@ -1699,39 +1652,12 @@ agents.delete('/:id/access/:userId', AgentAdmin(), async (c) => {
     const slug = getAgentId(c)
     const targetUserId = c.req.param('userId')
 
-    // Transaction to prevent TOCTOU race on last-owner check
-    // Note: better-sqlite3 transactions are synchronous — no async/await inside
-    const error = db.transaction((tx) => {
-      const [currentAcl] = tx
-        .select({ role: agentAcl.role })
-        .from(agentAcl)
-        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
-        .limit(1)
-        .all()
-
-      if (!currentAcl) return 'User does not have access to this agent'
-
-      if (currentAcl.role === 'owner') {
-        const [{ ownerCount }] = tx
-          .select({ ownerCount: count() })
-          .from(agentAcl)
-          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
-          .all()
-        if (ownerCount <= 1) return 'Cannot remove access: agent must have at least one owner'
-      }
-
-      tx
-        .delete(agentAcl)
-        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
-        .run()
-
-      return null
-    })
-
-    if (error) {
-      const status = error.includes('does not have access') ? 404 : 400
-      return c.json({ error }, status)
-    }
+    // The last-owner guard is part of the delete statement, so two concurrent
+    // revokes leave exactly one owner.
+    const outcome = await removeMember(slug, targetUserId)
+    if (outcome === 'not-a-member') return c.json({ error: 'User does not have access to this agent' }, 404)
+    if (outcome === 'last-owner') return c.json({ error: 'Cannot remove access: agent must have at least one owner' }, 400)
+    notifyAgentMembersChanged(slug, targetUserId)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId } })
     return c.body(null, 204)
   } catch (error) {
@@ -1746,36 +1672,10 @@ agents.post('/:id/leave', AgentRead(), async (c) => {
     const slug = getAgentId(c)
     const userId = getCurrentUserId(c)
 
-    const error = db.transaction((tx) => {
-      const [currentAcl] = tx
-        .select({ role: agentAcl.role })
-        .from(agentAcl)
-        .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, slug)))
-        .limit(1)
-        .all()
-
-      if (!currentAcl) return 'You do not have access to this agent'
-
-      if (currentAcl.role === 'owner') {
-        const [{ ownerCount }] = tx
-          .select({ ownerCount: count() })
-          .from(agentAcl)
-          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
-          .all()
-        if (ownerCount <= 1) return 'Cannot leave: you are the only owner'
-      }
-
-      tx
-        .delete(agentAcl)
-        .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, slug)))
-        .run()
-
-      return null
-    })
-
-    if (error) {
-      return c.json({ error }, 400)
-    }
+    const outcome = await removeMember(slug, userId)
+    if (outcome === 'not-a-member') return c.json({ error: 'You do not have access to this agent' }, 400)
+    if (outcome === 'last-owner') return c.json({ error: 'Cannot leave: you are the only owner' }, 400)
+    notifyAgentMembersChanged(slug, userId)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId: userId } })
     return c.body(null, 204)
   } catch (error) {
@@ -1800,26 +1700,7 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
 
     const excludeIds = existingUserIds.map((r) => r.userId)
 
-    // Search users by name or email (SQLite LIKE is case-insensitive by default)
-    // Escape LIKE wildcards to prevent pattern injection (e.g. searching "%"
-    // matching all users); the ESCAPE clause is required for the backslashes
-    // to act as escapes rather than literals.
-    const escaped = query ? query.replace(/[\\%_]/g, '\\$&') : ''
-    const matchesQuery = (column: AnyColumn) =>
-      sql`${column} LIKE ${`%${escaped}%`} ESCAPE '\\'`
-    const users = await db
-      .select({ id: userTable.id, name: userTable.name, email: userTable.email })
-      .from(userTable)
-      .where(
-        and(
-          // Exclude access holders in the WHERE so they don't eat limit slots
-          excludeIds.length ? notInArray(userTable.id, excludeIds) : undefined,
-          escaped ? or(matchesQuery(userTable.name), matchesQuery(userTable.email)) : undefined
-        )
-      )
-      .limit(50)
-
-    return c.json(users)
+    return c.json(searchUserSummaries(query, excludeIds))
   } catch (error) {
     console.error('Failed to search users:', error)
     return c.json({ error: 'Failed to search users' }, 500)
@@ -1831,7 +1712,7 @@ agents.post('/:id/start', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
 
-    await containerManager.ensureRunning(slug)
+    await agentRegistry.get(slug).container.start()
 
     // Skip the session-summary enrichment: it stats every transcript, and every
     // caller of this command discards the body and refetches agent data anyway.
@@ -1858,7 +1739,7 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
     }
 
     // Use cached status to avoid spawning docker process
-    const info = containerManager.getCachedInfo(slug)
+    const info = agentRegistry.get(slug).container.status()
 
     if (info.status === 'stopped') {
       return c.json({
@@ -1873,7 +1754,7 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
       })
     }
 
-    await containerManager.stopContainer(slug)
+    await agentRegistry.get(slug).container.stop()
 
     return c.json({
       slug: agent.slug,
@@ -1893,7 +1774,7 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
 // POST /api/agents/:id/keep-alive - Prevent auto-sleep (e.g. dashboard is open)
 agents.post('/:id/keep-alive', AgentRead(), async (c) => {
   const slug = getAgentId(c)
-  containerManager.keepAlive(slug)
+  agentRegistry.get(slug).container.keepAlive()
   return c.json({ ok: true })
 })
 
@@ -1903,10 +1784,11 @@ const OpenDirectoryBody = z.object({ open: z.boolean().optional() })
 agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const workspaceDir = getAgentWorkspaceDir(slug)
 
-    // Ensure directory exists
-    await fs.promises.mkdir(workspaceDir, { recursive: true })
+    // Ensure the workspace exists, then find where it lives on this machine —
+    // opening it in the OS file manager is a host capability, not a file operation.
+    await agentRegistry.get(slug).files.mkdir('')
+    const workspaceDir = containerHost.workspaceHostPath(slug)
 
     const raw = await c.req.json().catch(() => ({}))
     const { open } = OpenDirectoryBody.parse(raw)
@@ -1938,6 +1820,7 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
 agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
+    const actor = agentRegistry.get(slug)
     const sortByRaw = c.req.query('sort_by')
     const notableRaw = c.req.query('notable')
     const limitRaw = c.req.query('limit')
@@ -1966,20 +1849,19 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         getSessionIdsWithUnreadNotifications(slug),
         getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
       ])
-      const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
-      const infos = await listSessionsByIds(
-        slug,
+      const activeIds = agentRegistry.get(slug).sessions.activeIds()
+      const infos = await actor.sessions.listByIds(
         [...new Set([...activeIds, ...unreadIds, ...markedUnreadIds])],
         { excludeAutomated: true },
       )
       const enriched = infos.map((session) => {
-        const isActive = messagePersister.isSessionActive(slug, session.id)
+        const isActive = agentRegistry.get(slug).sessions.isActive(session.id)
         return {
           ...session,
           isActive,
           // The awaiting projection already counts agent-scoped reviews
           // against every active session of the agent — no review special-case.
-          isAwaitingInput: messagePersister.isSessionAwaitingInput(slug, session.id),
+          isAwaitingInput: agentRegistry.get(slug).sessions.isAwaitingInput(session.id),
           hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
         }
       })
@@ -2001,7 +1883,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     // marks, scheduled tasks table) — overlap them rather than paying their
     // latencies in series.
     const [sessionList, unreadSessionIds, markedUnreadSessionIds, pendingWakes] = await Promise.all([
-      listSessionsFromSummary(slug, {
+      actor.sessions.listFromSummary({
         excludeAutomated: true,
         ...(sortByRaw === undefined ? {} : { sortBy }),
         ...(resultLimit === undefined ? {} : { limit: resultLimit }),
@@ -2012,14 +1894,14 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const sessionsWithStatus = sessionList.map((session) => {
-      const isActive = messagePersister.isSessionActive(slug, session.id)
+      const isActive = agentRegistry.get(slug).sessions.isActive(session.id)
       const wake = wakesBySession.get(session.id)
       return {
         ...session,
         isActive,
         // The awaiting projection already counts agent-scoped reviews against
         // every active session of the agent — no review special-case.
-        isAwaitingInput: messagePersister.isSessionAwaitingInput(slug, session.id),
+        isAwaitingInput: agentRegistry.get(slug).sessions.isAwaitingInput(session.id),
         hasUnreadNotifications:
           unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
         ...(wake
@@ -2075,7 +1957,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    const client = await containerManager.ensureRunning(slug)
+    const actor = agentRegistry.get(slug)
+
+    await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(slug)
 
     const agentLimits = getEffectiveAgentLimits()
@@ -2092,7 +1976,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const resolved = resolveRuntimeInherit(runtimeOptions, agentPrefs, models)
     const prewarm = resolveRuntimeInherit({}, agentPrefs, models)
 
-    const containerSession = await client.createSession({
+    const containerSession = await actor.sessions.create({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
       initialMessageUuid,
@@ -2123,7 +2007,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // inherited defaults. Persist the effective values, not merely explicit
     // overrides, so changing an agent/app default later cannot silently change
     // an existing conversation's next turn or make the composer claim it will.
-    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {
+    const initialMetadata: Partial<SessionMetadata> = {
       model: resolved.model,
       ...(resolved.effort ? { effort: resolved.effort } : {}),
       ...(resolved.speed ? { speed: resolved.speed } : {}),
@@ -2153,9 +2037,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     let lifecycleStarted = false
     let sessionRegistered = false
     try {
-      messagePersister.markSessionActive(slug, sessionId)
+      agentRegistry.get(slug).sessions.markActive(sessionId)
       lifecycleStarted = true
-      await messagePersister.subscribeToSession(slug, sessionId, client, sessionId)
+      await actor.sessions.subscribeStream(sessionId, sessionId)
 
       // Record author for initial message after we know the sessionId
       if (isAuthMode()) {
@@ -2168,18 +2052,18 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         })
       }
 
-      await registerSession(slug, sessionId, 'New Session', initialMetadata)
+      await actor.sessions.register(sessionId, 'New Session', initialMetadata)
       sessionRegistered = true
     } catch (error) {
       if (lifecycleStarted && !sessionRegistered) {
-        messagePersister.unsubscribeFromSession(slug, sessionId)
+        agentRegistry.get(slug).sessions.unsubscribeStream(sessionId)
       }
       throw error
     }
     // Store slash commands from container's init event (captured during session creation)
     if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
-      messagePersister.setSlashCommands(slug, sessionId, containerSession.slashCommands)
-      updateSessionMetadata(slug, sessionId, { slashCommands: containerSession.slashCommands }).catch(console.error)
+      agentRegistry.get(slug).sessions.setSlashCommands(sessionId, containerSession.slashCommands)
+      actor.sessions.updateMetadata(sessionId, { slashCommands: containerSession.slashCommands }).catch(console.error)
     }
 
     if (isSystemMessageText(message.trim())) {
@@ -2248,7 +2132,7 @@ async function annotateAndRecoverMessages(
   attachProviderErrorPresentations(transformed)
   await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
 
-  const settledRequests = messagePersister.getSettledInputRequests(agentSlug, sessionId)
+  const settledRequests = agentRegistry.get(agentSlug).inputs.settled(sessionId)
   if (settledRequests.size > 0) {
     for (const item of transformed) {
       if (item.type !== 'assistant') continue
@@ -2263,10 +2147,10 @@ async function annotateAndRecoverMessages(
     }
   }
 
-  if (messagePersister.isSessionActive(agentSlug, sessionId)) {
+  if (agentRegistry.get(agentSlug).sessions.isActive(sessionId)) {
     const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
     if (unresolvedRequests.length > 0) {
-      messagePersister.recoverSessionAwaitingInput(agentSlug, sessionId, unresolvedRequests)
+      agentRegistry.get(agentSlug).sessions.recoverAwaitingInput(sessionId, unresolvedRequests)
     }
   }
 
@@ -2282,23 +2166,17 @@ async function annotateAndRecoverMessages(
     .select({
       messageId: messageAuthor.id,
       userId: messageAuthor.userId,
-      userName: userTable.name,
-      userEmail: userTable.email,
     })
     .from(messageAuthor)
-    .innerJoin(userTable, eq(messageAuthor.userId, userTable.id))
     .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds)))
 
-  const authorMap = new Map(authors.map((a) => [a.messageId, a]))
+  const profiles = getUserSummaries(authors.map(author => author.userId))
+  const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
   for (const msg of transformed) {
     if (msg.type !== 'user') continue
     const author = authorMap.get(msg.id)
     if (author) {
-      msg.sender = {
-        id: author.userId,
-        name: author.userName,
-        email: author.userEmail,
-      }
+      msg.sender = author
     }
   }
 }
@@ -2322,6 +2200,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
 
     const rawLimit = c.req.query('limit')
     const rawCursor = c.req.query('cursor')
@@ -2336,7 +2215,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       rawAfter !== undefined ||
       rawMedia !== undefined
 
-    if (!(await sessionExists(agentSlug, sessionId))) {
+    if (!(await actor.sessions.exists(sessionId))) {
       // A live session whose first turn has not persisted anything yet: the
       // CLI creates the transcript on its first written line, seconds after
       // createSession returns on a cold agent, and the creating client has
@@ -2345,8 +2224,8 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       // keeps showing the running turn and picks the lines up as they land.
       // (sessionIsKnown keeps the containment guarantee for the id.)
       if (
-        messagePersister.isSessionActive(agentSlug, sessionId) &&
-        (await sessionIsKnown(agentSlug, sessionId))
+        agentRegistry.get(agentSlug).sessions.isActive(sessionId) &&
+        (await actor.sessions.isKnown(sessionId))
       ) {
         return paginated ? c.json({ messages: [], nextCursor: null }) : c.json([])
       }
@@ -2377,7 +2256,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         // refetch only cares about lines appended since the last read). The
         // window is bounded by the active turn near EOF, so this stays a few
         // KB while the full trailing page is multi-MB on long sessions.
-        const delta = await getSessionMessagesDelta(agentSlug, sessionId, {
+        const delta = await actor.messages.delta(sessionId, {
           after: parsed.data.after,
           signal: c.req.raw.signal,
           media: parsed.data.media,
@@ -2391,7 +2270,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
           ...(delta.resync ? { resync: true as const } : {}),
         })
       }
-      const page = await getSessionMessagesPage(agentSlug, sessionId, {
+      const page = await actor.messages.page(sessionId, {
         limit: capMessagesPageLimit(parsed.data.limit, parsed.data.cursor),
         cursor: parsed.data.cursor,
         signal: c.req.raw.signal,
@@ -2410,7 +2289,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       })
     }
 
-    const messages = await getSessionMessagesWithCompact(agentSlug, sessionId)
+    const messages = await actor.messages.withCompact(sessionId)
     // The legacy full read above predates abort support (reworked wholesale by
     // the streaming-page follow-up); at least skip transform + serialization
     // when the client is already gone.
@@ -2428,7 +2307,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     // history consumer — the client's refresh fallback, the transcript card,
     // and the recovery scan below — sees a completed call instead of
     // resurrecting a decided one.
-    const settledRequests = messagePersister.getSettledInputRequests(agentSlug, sessionId)
+    const settledRequests = agentRegistry.get(agentSlug).inputs.settled(sessionId)
     if (settledRequests.size > 0) {
       for (const item of transformed) {
         if (item.type !== 'assistant') continue
@@ -2443,13 +2322,13 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       }
     }
 
-    if (messagePersister.isSessionActive(agentSlug, sessionId)) {
+    if (agentRegistry.get(agentSlug).sessions.isActive(sessionId)) {
       const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
       if (unresolvedRequests.length > 0) {
         // If the request-specific stream event was missed, persisted messages are
         // the fallback source of truth. A stale transcript can briefly re-assert
         // awaiting input, but the next stream result/idle event clears it.
-        messagePersister.recoverSessionAwaitingInput(agentSlug, sessionId, unresolvedRequests)
+        agentRegistry.get(agentSlug).sessions.recoverAwaitingInput(sessionId, unresolvedRequests)
       }
     }
 
@@ -2464,24 +2343,18 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
           .select({
             messageId: messageAuthor.id,
             userId: messageAuthor.userId,
-            userName: userTable.name,
-            userEmail: userTable.email,
           })
           .from(messageAuthor)
-          .innerJoin(userTable, eq(messageAuthor.userId, userTable.id))
           .where(eq(messageAuthor.sessionId, sessionId))
 
-        const authorMap = new Map(authors.map((a) => [a.messageId, a]))
+        const profiles = getUserSummaries(authors.map(author => author.userId))
+        const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
 
         for (const msg of transformed) {
           if (msg.type !== 'user') continue
           const author = authorMap.get(msg.id)
           if (author) {
-            msg.sender = {
-              id: author.userId,
-              name: author.userName,
-              email: author.userEmail,
-            }
+            msg.sender = author
           }
         }
       }
@@ -2521,20 +2394,21 @@ agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
     // Ownership only. There is deliberately no existence preflight here:
     // fileExists() answers false for any stat failure, so EIO/EACCES/EMFILE
     // would 404 — telling the client the image is gone when the truth is that
-    // this machine could not look. openMediaBlob distinguishes the two, and a
-    // genuinely missing transcript surfaces there as 410.
-    // sessionIsKnown is satisfied by a metadata entry alone, and openMediaBlob
-    // below opens the transcript by path — so a planted symlink whose metadata
-    // the agent also forged would be FOLLOWED to another agent's transcript.
-    // The realpath guard (unlike sessionIsKnown) refuses that link while still
-    // admitting a legitimately deleted transcript, whose bytes are gone and
-    // which openMediaBlob answers with a 410.
+    // this machine could not look. The media read distinguishes the two, and
+    // a genuinely missing transcript surfaces there as 410.
+    // isKnown is satisfied by a metadata entry alone, and the media read below
+    // opens the transcript by path — so a planted symlink whose metadata the
+    // agent also forged would be FOLLOWED to another agent's transcript. The
+    // realpath guard (unlike isKnown) refuses that link while still admitting
+    // a legitimately deleted transcript, whose bytes are gone and which the
+    // media read answers with a 410.
     if (
-      !(await sessionIsKnown(agentSlug, sessionId)) ||
-      !sessionFileRealPathWithinAgent(agentSlug, sessionId)
+      !(await actor.sessions.isKnown(sessionId)) ||
+      !(await actor.sessions.fileRealPathWithinAgent(sessionId))
     ) {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
@@ -2542,13 +2416,13 @@ agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
     const ref = decodeMediaRef(c.req.param('ref'))
     if (!ref) return c.json({ error: 'Invalid media reference' }, 400)
 
-    const blob = await openMediaBlob(getSessionJsonlPath(agentSlug, sessionId), ref, c.req.raw.signal)
+    const blob = await actor.messages.media(sessionId, ref, c.req.raw.signal)
     // Deletion and retention rewrite transcripts in place, so a ref the client
     // still holds can address bytes that have moved or gone. Gone for good —
     // the client shows a placeholder rather than retrying.
     if (!blob) return c.json({ error: 'Media no longer available' }, 410)
 
-    return c.body(Readable.toWeb(blob.stream) as ReadableStream, 200, {
+    return c.body(blob.stream, 200, {
       'Content-Type': blob.mimeType,
       'Content-Length': String(blob.bytes),
       // A ref names an immutable byte span: any edit to the transcript
@@ -2575,7 +2449,7 @@ agents.delete('/:id/sessions/:sessionId/messages/:messageId', AgentUser(), async
     const messageId = c.req.param('messageId')
 
 
-    const removed = await removeMessage(agentSlug, sessionId, messageId)
+    const removed = await agentRegistry.get(agentSlug).messages.remove(sessionId, messageId)
     if (!removed) {
       return c.json({ error: 'Message not found' }, 404)
     }
@@ -2595,7 +2469,7 @@ agents.delete('/:id/sessions/:sessionId/tool-calls/:toolCallId', AgentUser(), as
     const toolCallId = c.req.param('toolCallId')
 
 
-    const removed = await removeToolCall(agentSlug, sessionId, toolCallId)
+    const removed = await agentRegistry.get(agentSlug).messages.removeToolCall(sessionId, toolCallId)
     if (!removed) {
       return c.json({ error: 'Tool call not found' }, 404)
     }
@@ -2614,26 +2488,20 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
     const sessionId = c.req.param('sessionId')
     const subagentId = c.req.param('agentId')
 
-    const sessionsDir = getAgentSessionsDir(agentSlug)
-    const subagentJsonlPath = path.join(sessionsDir, sessionId, 'subagents', `agent-${subagentId}.jsonl`)
-
-    // sessionId and subagentId are unvalidated URL segments spliced into a
-    // path, so keep the read inside this agent's own workspace: reject a
-    // traversal id lexically, and a symlinked component that resolves out of
-    // the tree via the real path. The realpath check is anchored on the
-    // WORKSPACE (the bind-mount point the container can't replace), not the
-    // attacker-writable session dir — a symlinked `-workspace` would otherwise
-    // resolve base and candidate to the same escaped location and pass.
-    if (
-      !isPathWithinDir(sessionsDir, subagentJsonlPath) ||
-      !isRealPathWithinDir(getAgentWorkspaceDir(agentSlug), subagentJsonlPath)
-    ) {
-      return c.json({ error: 'Subagent transcript not found' }, 404)
+    // sessionId and subagentId are unvalidated URL segments; the actor keeps
+    // the read inside this agent's own sessions directory and refuses an id
+    // that cannot name a transcript. Either refusal is "no such transcript".
+    let entries: JsonlEntry[]
+    try {
+      entries = await agentRegistry.get(agentSlug).sessions.subagentTranscript(sessionId, subagentId)
+    } catch (error) {
+      if (error instanceof WorkspaceFileError) {
+        return c.json({ error: 'Subagent transcript not found' }, 404)
+      }
+      throw error
     }
-
-    const entries = await readJsonlFile(subagentJsonlPath) as any[]
     const messageEntries = entries.filter(
-      (e) => e.type === 'user' || e.type === 'assistant'
+      (e): e is JsonlMessageEntry => e.type === 'user' || e.type === 'assistant'
     )
     const transformed = transformMessages(messageEntries)
     attachProviderErrorPresentations(transformed)
@@ -2655,57 +2523,29 @@ agents.get('/:id/sessions/:sessionId/raw-log', AgentRead(), async (c) => {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
-    // Ownership + containment first: this route opens the transcript by path
-    // directly, so without the gate a traversal-shaped id throws into the
-    // catch (500, not 404) and a planted symlink is followed to another
-    // agent's transcript. sessionExists is non-throwing and symlink-aware.
-    if (!(await sessionExists(agentSlug, sessionId))) {
+    const actor = agentRegistry.get(agentSlug)
+
+    // Ownership + containment first: the transcript is opened by path below,
+    // so without the gate a traversal-shaped id throws into the catch (500,
+    // not 404) and a planted symlink is followed to another agent's
+    // transcript. exists is non-throwing and symlink-aware.
+    if (!(await actor.sessions.exists(sessionId))) {
       return c.json({ error: 'Session log not found' }, 404)
     }
 
-    const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-
-    // Transcripts routinely reach tens of MB, so stream the file instead of
-    // buffering it whole. Open before committing to a 200 so a missing file
-    // still returns the 404 below (ENOENT → null, mirroring readFileOrNull).
-    const fileHandle = await fs.promises.open(jsonlPath, 'r').catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null
-      throw error
-    })
-    if (fileHandle === null) {
+    // Transcripts routinely reach tens of MB, so the actor streams the file
+    // instead of buffering it whole, bounded to its size at open so the byte
+    // count always matches the Content-Length advertised here even while the
+    // live transcript keeps growing. Null means the file is gone.
+    const raw = await actor.messages.rawLog(sessionId)
+    if (raw === null) {
       return c.json({ error: 'Session log not found' }, 404)
     }
 
-    // Bound the read to the size at open so the byte count always matches the
-    // Content-Length we advertise, even if the live transcript keeps growing.
-    const { size } = await fileHandle.stat().catch(async (error: unknown) => {
-      await fileHandle.close().catch(() => {})
-      throw error
-    })
-    // An empty-at-open file must answer with an empty body even if the live
-    // transcript gains its first append before the read starts — an unbounded
-    // stream there would overrun the advertised Content-Length of 0.
-    if (size === 0) {
-      await fileHandle.close().catch(() => {})
-      return c.body('', 200, {
-        'Content-Type': 'text/plain; charset=UTF-8',
-        'Content-Length': '0',
-      })
-    }
-    // autoClose (default) closes the handle on end/destroy.
-    const source = fileHandle.createReadStream({ end: size - 1 })
-    source.on('error', (err) => {
-      // Client disconnects surface here as stream aborts and are routine on a
-      // multi-MB endpoint; only report real read failures.
-      const code = (err as NodeJS.ErrnoException)?.code
-      if (code === 'ABORT_ERR' || code === 'ERR_STREAM_PREMATURE_CLOSE') return
-      console.error('Failed to stream raw log:', err)
-      captureException(err, { tags: { component: 'agents', operation: 'stream-raw-log' } })
-    })
     // Same headers the buffered c.text() response carried on the wire.
-    return c.body(Readable.toWeb(source) as ReadableStream, 200, {
+    return c.body(raw.stream, 200, {
       'Content-Type': 'text/plain; charset=UTF-8',
-      'Content-Length': String(size),
+      'Content-Length': String(raw.size),
     })
   } catch (error) {
     console.error('Failed to fetch raw log:', error)
@@ -2718,14 +2558,14 @@ agents.get('/:id/sessions/:sessionId/usage', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
 
-    if (!(await sessionExists(agentSlug, sessionId))) {
+    if (!(await actor.sessions.exists(sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const sessionPath = getSessionJsonlPath(agentSlug, sessionId)
     const providerId = getSettings().llmProvider ?? 'anthropic'
-    const totals = await loadSessionUsageTotals({ sessionPath, providerId })
+    const totals = await actor.sessions.usage(sessionId, { providerId })
     return c.json(totals)
   } catch (error) {
     console.error('Failed to calculate session usage:', error)
@@ -2745,11 +2585,10 @@ async function persistAndBroadcastUserMessage(
     agentSlug: args.agentSlug,
     userId,
   })
-  const user = c.get('user' as never) as { id: string; name: string }
-  messagePersister.broadcastSessionEvent(args.agentSlug, args.sessionId, {
+  agentRegistry.get(args.agentSlug).messages.broadcastEvent(args.sessionId, {
     type: 'user_message',
     content: args.content,
-    sender: { id: user.id, name: user.name },
+    sender: toUserSender(c.get('user' as never) as UserSenderSource),
     uuid: args.messageUuid,
     queued: args.queued,
   })
@@ -2760,6 +2599,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
     const body = await c.req.json()
     const { content } = body
 
@@ -2773,7 +2613,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // all keyed by session id alone: an unowned id would cancel another agent's
     // pending input request, re-bind its session to this agent, and inject a
     // spoofed user message into every client watching it.
-    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    if (!(await actor.sessions.isKnown(sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
@@ -2787,7 +2627,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // a person has joined the session. This must precede sendMessage: a fast
     // turn can settle immediately, and completion notification visibility is
     // decided from the host-side promotedToInteractive marker.
-    await messagePersister.promoteAutomatedSession(agentSlug, sessionId)
+    await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId)
 
     // Server-generated message uuid (never client-supplied — the uuid keys the
     // messageAuthor attribution row, so a client-chosen value could collide
@@ -2797,7 +2637,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     const messageUuid = randomUUID()
     const text = content.trim()
 
-    if (messagePersister.coalesceIfRecovering(agentSlug, sessionId, {
+    if (agentRegistry.get(agentSlug).messages.coalesceIfRecovering(sessionId, {
       uuid: messageUuid,
       text,
       ...(runtimeOptions.shouldQuery === false ? { shouldQuery: false as const } : {}),
@@ -2812,18 +2652,17 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ success: true, uuid: messageUuid, queued: true }, 201)
     }
 
-    const client = containerManager.getClient(agentSlug)
     // Use cached status to avoid spawning docker process
-    let info = containerManager.getCachedInfo(agentSlug)
+    let info = agentRegistry.get(agentSlug).container.status()
 
     if (info.status !== 'running') {
-      await containerManager.ensureRunning(agentSlug)
+      await agentRegistry.get(agentSlug).container.start()
       // ensureRunning updates the cache, so get updated info
-      info = containerManager.getCachedInfo(agentSlug)
+      info = agentRegistry.get(agentSlug).container.status()
     }
 
-    if (!messagePersister.isSubscribed(agentSlug, sessionId)) {
-      await messagePersister.subscribeToSession(agentSlug, sessionId, client, sessionId)
+    if (!agentRegistry.get(agentSlug).sessions.isStreamSubscribed(sessionId)) {
+      await actor.sessions.subscribeStream(sessionId, sessionId)
     }
 
     // A transcript-only append (the voice-mode notices): the message enters
@@ -2840,9 +2679,9 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         content: text,
         queued: false,
       })
-      await client.sendMessage(sessionId, text, messageUuid, { shouldQuery: false })
+      await actor.messages.send(sessionId, text, messageUuid, { shouldQuery: false })
       // No stream frames follow an append, so the warm summary is told directly.
-      recordSessionActivity(agentSlug, sessionId)
+      actor.sessions.recordActivity(sessionId)
       return c.json({ success: true, uuid: messageUuid, queued: false }, 201)
     }
 
@@ -2851,13 +2690,13 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // turn instead of deadlocking behind the blocked tool. No-op when not awaiting.
     // Runs before the wasQueued capture so its state changes (interrupt for subagent
     // requests) are reflected in the queue-vs-fresh-turn decision below.
-    await messagePersister.cancelAwaitingInput(agentSlug, sessionId)
+    await agentRegistry.get(agentSlug).inputs.cancelAwaiting(sessionId)
 
     // Captured before markSessionActive: a message sent while the agent is
     // mid-turn is queued by the agent loop rather than starting a new turn.
-    const wasQueued = messagePersister.isSessionActive(agentSlug, sessionId)
+    const wasQueued = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
 
-    messagePersister.markSessionActive(agentSlug, sessionId)
+    agentRegistry.get(agentSlug).sessions.markActive(sessionId)
 
     // A mid-turn send must not carry model/effort/speed: the container treats a
     // parameter change as interrupt/restart of the in-flight query. The
@@ -2878,9 +2717,9 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       queued: wasQueued,
     })
 
-    await client.sendMessage(sessionId, text, messageUuid, runtimeOptions)
+    await actor.messages.send(sessionId, text, messageUuid, runtimeOptions)
     nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
-    const updates: Parameters<typeof updateSessionMetadata>[2] = {}
+    const updates: Partial<SessionMetadata> = {}
     if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
     if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
     if (runtimeOptions.model) updates.model = runtimeOptions.model
@@ -2896,7 +2735,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
     if (Object.keys(updates).length > 0) {
       try {
-        const previous = await updateSessionMetadata(agentSlug, sessionId, updates)
+        const previous = await actor.sessions.updateMetadata(sessionId, updates)
         // The composer re-sends its whole selection on every fresh turn, so
         // option presence alone doesn't mean anything changed. Compare against
         // the previous metadata (captured under the update's lock) — otherwise
@@ -2911,7 +2750,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
           // Other windows/devices may already have seeded their composer from
           // the previous session metadata. Tell both the local session stream
           // and the global event stream to refresh before their next send.
-          messagePersister.broadcastSessionUpdate(agentSlug, sessionId)
+          agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
           messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
         }
       } catch (error) {
@@ -2938,16 +2777,16 @@ agents.delete('/:id/sessions/:sessionId/queued-messages/:uuid', AgentUser(), asy
       return c.json({ error: 'Invalid message uuid' }, 400)
     }
 
-    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    const actor = agentRegistry.get(agentSlug)
+    if (!(await actor.sessions.isKnown(sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    if (messagePersister.dropCoalescedUserMessage(agentSlug, sessionId, uuidParam.data)) {
+    if (agentRegistry.get(agentSlug).messages.dropCoalescedUserMessage(sessionId, uuidParam.data)) {
       return c.json({ cancelled: true })
     }
 
-    const client = containerManager.getClient(agentSlug)
-    const cancelled = await client.cancelQueuedMessage(sessionId, uuidParam.data)
+    const cancelled = await actor.messages.cancelQueued(sessionId, uuidParam.data)
     return c.json({ cancelled })
   } catch (error) {
     console.error('Failed to cancel queued message:', error)
@@ -2960,17 +2799,16 @@ agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
   if (!isAuthMode()) return c.json({ ok: true })
 
   const sessionId = c.req.param('sessionId')
-  const user = c.get('user' as never) as { id: string; name: string }
 
   // Otherwise this puts the caller's name in the typing indicator of a session
   // in someone else's agent.
-  if (!(await sessionIsKnown(getAgentId(c), sessionId))) {
+  if (!(await agentRegistry.get(getAgentId(c)).sessions.isKnown(sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  messagePersister.broadcastSessionEvent(getAgentId(c), sessionId, {
+  agentRegistry.get(getAgentId(c)).messages.broadcastEvent(sessionId, {
     type: 'user_typing',
-    sender: { id: user.id, name: user.name },
+    sender: toUserSender(c.get('user' as never) as UserSenderSource),
   })
 
   return c.json({ ok: true })
@@ -2981,16 +2819,16 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
 
-
-    const session = await getSession(agentSlug, sessionId)
+    const session = await actor.sessions.get(sessionId)
 
     if (!session) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const isActive = messagePersister.isSessionActive(agentSlug, sessionId)
-    const metadata = await getSessionMetadata(agentSlug, sessionId)
+    const isActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
+    const metadata = await actor.sessions.metadata(sessionId)
     const pendingWake = await getPendingWakeForSession(agentSlug, sessionId)
     const invokingAgent = metadata?.invokedByAgentSlug
       ? await getAgent(metadata.invokedByAgentSlug)
@@ -3008,7 +2846,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       // condition the session lists use (the breadcrumb context menu hides
       // "Mark as Unread" while a session is working or awaiting input, since
       // no list renders an unread dot in that state).
-      isAwaitingInput: messagePersister.isSessionAwaitingInput(agentSlug, sessionId),
+      isAwaitingInput: agentRegistry.get(agentSlug).sessions.isAwaitingInput(sessionId),
       lastUsage: metadata?.lastUsage,
       scheduledTaskId: metadata?.scheduledTaskId,
       scheduledTaskName: metadata?.scheduledTaskName,
@@ -3022,7 +2860,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       widgetRepairSlug: metadata?.widgetRepairSlug,
       forkedFromSessionId: metadata?.forkedFromSessionId,
       forkedFromSessionName: metadata?.forkedFromSessionId
-        ? (await getSessionMetadata(agentSlug, metadata.forkedFromSessionId))?.name
+        ? (await actor.sessions.metadata(metadata.forkedFromSessionId))?.name
         : undefined,
       effort: metadata?.effort,
       speed: metadata?.speed,
@@ -3048,22 +2886,22 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
     const sessionId = c.req.param('sessionId')
     const body = await c.req.json()
     const { name } = body
-
+    const actor = agentRegistry.get(agentSlug)
 
     // Guard before renaming so an unknown session never gets metadata written
     // for it — the rename below would otherwise register one.
-    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    if (!(await actor.sessions.isKnown(sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
     if (name?.trim()) {
-      await updateSessionName(agentSlug, sessionId, name.trim())
+      await actor.sessions.rename(sessionId, name.trim())
     }
 
     // Read the transcript once, after the rename, rather than on both sides of
     // it: renaming touches metadata only, so the pre-rename read differed from
     // this one by exactly the name.
-    const updated = await getSession(agentSlug, sessionId)
+    const updated = await actor.sessions.get(sessionId)
 
     if (!updated) {
       return c.json({ error: 'Session not found' }, 404)
@@ -3102,7 +2940,7 @@ async function setUnreadFlag(c: Context, sessionId: string, markedUnread: boolea
 
     // Guard first: writing the flag registers metadata under this id, so an
     // unknown session would otherwise be conjured into the map.
-    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    if (!(await agentRegistry.get(agentSlug).sessions.isKnown(sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
@@ -3153,6 +2991,7 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
 
     // Ownership first: unsubscribeFromSession below is keyed by session id
     // alone, so on a foreign id it would tear down another agent's live message
@@ -3160,15 +2999,15 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     // exactly the "transcript OR metadata entry exists" condition that
     // deleteSession itself reports success for.
     if (
-      !(await sessionExists(agentSlug, sessionId)) &&
-      !(await isSessionRegistered(agentSlug, sessionId))
+      !(await actor.sessions.exists(sessionId)) &&
+      !(await actor.sessions.isRegistered(sessionId))
     ) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
     // Before the delete, so an in-flight append can't recreate the transcript
     // just after it is unlinked.
-    messagePersister.unsubscribeFromSession(agentSlug, sessionId)
+    agentRegistry.get(agentSlug).sessions.unsubscribeStream(sessionId)
 
     // deleteSession is the authority for existence here: it removes the JSONL
     // transcript and/or a lingering metadata entry and returns false only when
@@ -3176,7 +3015,7 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     // than gating on a prior read, keeps a dangling session with only one half
     // left (e.g. a metadata entry whose transcript was already removed)
     // removable instead of wrongly reported as not-found.
-    const deleted = await deleteSession(agentSlug, sessionId)
+    const deleted = await actor.sessions.delete(sessionId)
     if (!deleted) {
       return c.json({ error: 'Session not found' }, 404)
     }
@@ -3211,7 +3050,8 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
 agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.param('sessionId')
-  if (!(await sessionIsKnown(agentSlug, sessionId))) {
+  const actor = agentRegistry.get(agentSlug)
+  if (!(await actor.sessions.isKnown(sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 
@@ -3221,7 +3061,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
 
     try {
       // Subscribe FIRST to avoid missing any broadcasts
-      unsubscribe = messagePersister.addSSEClient(agentSlug, sessionId, async (data) => {
+      unsubscribe = agentRegistry.get(agentSlug).messages.subscribe(sessionId, async (data) => {
         try {
           await stream.writeSSE({
             data: JSON.stringify(data),
@@ -3233,24 +3073,25 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       })
 
       // Send initial connection message (include slash commands for late-joining clients)
-      const isActive = messagePersister.isSessionActive(agentSlug, sessionId)
-      let slashCommands = messagePersister.getSlashCommands(agentSlug, sessionId)
+      const isActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
+      let slashCommands = agentRegistry.get(agentSlug).sessions.slashCommands(sessionId)
       // Fall back to persisted metadata (e.g. after container restart)
       if (slashCommands.length === 0) {
-        const meta = await getSessionMetadata(agentSlug, sessionId)
+        const meta = await actor.sessions.metadata(sessionId)
         if (meta?.slashCommands && meta.slashCommands.length > 0) {
           const repaired = repairLegacySlashCommands(meta.slashCommands)
           slashCommands = repaired.commands
-          messagePersister.setSlashCommands(agentSlug, sessionId, slashCommands)
+          agentRegistry.get(agentSlug).sessions.setSlashCommands(sessionId, slashCommands)
           if (repaired.changed) {
-            updateSessionMetadata(agentSlug, sessionId, { slashCommands }).catch(console.error)
+            actor.sessions.updateMetadata(sessionId, { slashCommands }).catch(console.error)
           }
         }
       }
-      const backgroundTasks = messagePersister.getActiveBackgroundTasks(agentSlug, sessionId)
+      const backgroundTasks = agentRegistry.get(agentSlug).sessions.backgroundTasks(sessionId)
+      const activeSubagents = agentRegistry.get(agentSlug).sessions.activeSubagents(sessionId)
       // A background task can run while the turn is still streaming, so the
       // task list alone does not say whether the turn's output has ended.
-      const isWaitingBackground = messagePersister.isSessionWaitingBackground(agentSlug, sessionId)
+      const isWaitingBackground = agentRegistry.get(agentSlug).sessions.isWaitingBackground(sessionId)
       await stream.writeSSE({
         data: JSON.stringify({
           type: 'connected',
@@ -3258,13 +3099,14 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
           isWaitingBackground,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
           backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
+          activeSubagents,
         }),
         event: 'message',
       })
 
       // Replay current computer use grab state (with icon if cached)
       const agentSlugForStream = getAgentId(c)
-      const grabbedApp = computerUsePermissionManager.getGrabbedApp(agentSlugForStream)
+      const grabbedApp = agentRegistry.get(agentSlugForStream).inputs.computerUse.grabbedApp()
       if (grabbedApp) {
         const { getAppIconBase64 } = await import('@shared/lib/computer-use/app-icon')
         const appIcon = await getAppIconBase64(grabbedApp)
@@ -3277,7 +3119,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       // Keep-alive ping every 30 seconds
       pingInterval = setInterval(async () => {
         try {
-          const currentIsActive = messagePersister.isSessionActive(agentSlug, sessionId)
+          const currentIsActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
           await stream.writeSSE({
             data: JSON.stringify({ type: 'ping', isActive: currentIsActive }),
             event: 'message',
@@ -3316,7 +3158,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   // markSessionInterrupted, which is keyed by session id alone across all agents,
   // so an unowned id reaching any of them wipes another agent's live session
   // state and tells its viewers it went idle.
-  if (!(await sessionIsKnown(agentSlug, sessionId))) {
+  if (!(await agentRegistry.get(agentSlug).sessions.isKnown(sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 
@@ -3340,30 +3182,30 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   // launched, for one), a turn stop keeps the session pinned "working" with
   // nothing to stop it from. Escalate to the full stop instead, without asking:
   // there is no keep/kill choice to offer when the list is empty.
-  const escalate = requestedScope === 'turn' && messagePersister.hasOnlyUntrackedBackgroundWork(agentSlug, sessionId)
+  const escalate = requestedScope === 'turn' && agentRegistry.get(agentSlug).sessions.hasOnlyUntrackedBackgroundWork(sessionId)
   const scope = escalate ? 'all' : requestedScope
   if (escalate) {
     console.log(`[Agents] Session ${sessionId}: only untracked background work is open — stopping everything instead of the turn`)
   }
 
   try {
-    const client = containerManager.getClient(agentSlug)
+    const actor = agentRegistry.get(agentSlug)
     // Use cached status to avoid spawning docker process
-    const info = containerManager.getCachedInfo(agentSlug)
+    const info = agentRegistry.get(agentSlug).container.status()
 
     // If container isn't running, just mark the session as interrupted locally
     // This handles the case where container crashed/restarted but UI still shows active
     if (info.status !== 'running') {
       console.log(`[Agents] Container not running for ${agentSlug}, marking session ${sessionId} as interrupted locally`)
-      await messagePersister.markSessionInterrupted(agentSlug, sessionId)
-      reviewManager.denyAllForAgent(agentSlug)
+      await agentRegistry.get(agentSlug).sessions.markInterrupted(sessionId)
+      agentRegistry.get(agentSlug).inputs.reviews.denyAll()
       return c.json({ success: true, note: 'Container not running, session marked inactive' })
     }
 
     // Try to interrupt in the container. The turn generation read here tells
     // the persister whether the turn running afterwards is still the stopped one.
-    const turnGenerationBefore = messagePersister.getTurnGeneration(agentSlug, sessionId)
-    const { interrupted, processKept } = await client.interruptSession(sessionId, { scope })
+    const turnGenerationBefore = actor.sessions.turnGeneration(sessionId)
+    const { interrupted, processKept } = await actor.messages.interrupt(sessionId, { scope })
 
     // Even if container interrupt fails (session might not exist there anymore),
     // still mark it as interrupted locally to update the UI
@@ -3374,8 +3216,8 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     // processKept is the container's word, not the requested scope: a 'turn'
     // stop that had to fall back to a process restart killed the background
     // tasks, and the persister must drop them.
-    await messagePersister.markSessionInterrupted(agentSlug, sessionId, { processKept, turnGenerationBefore })
-    reviewManager.denyAllForAgent(agentSlug)
+    await actor.sessions.markInterrupted(sessionId, { processKept, turnGenerationBefore })
+    actor.inputs.reviews.denyAll()
 
     return c.json({ success: true, processKept })
   } catch (error) {
@@ -3383,8 +3225,8 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     // Even on error, try to mark session as interrupted to fix UI state.
     // Ownership was established above, so this reaches only the caller's session.
     try {
-      await messagePersister.markSessionInterrupted(agentSlug, sessionId)
-      reviewManager.denyAllForAgent(agentSlug)
+      await agentRegistry.get(agentSlug).sessions.markInterrupted(sessionId)
+      agentRegistry.get(agentSlug).inputs.reviews.denyAll()
       return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
     } catch {
       return c.json({ error: 'Failed to interrupt session' }, 500)
@@ -3407,17 +3249,18 @@ agents.post('/:id/sessions/:sessionId/tasks/:taskId/stop', AgentUser(), async (c
     return c.json({ error: 'Invalid task id' }, 400)
   }
 
-  if (!(await sessionIsKnown(agentSlug, sessionId))) {
+  const actor = agentRegistry.get(agentSlug)
+  if (!(await actor.sessions.isKnown(sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  const info = containerManager.getCachedInfo(agentSlug)
+  const info = actor.container.status()
   if (info.status !== 'running') {
     return c.json({ error: 'Agent is not running' }, 409)
   }
 
   try {
-    const stopped = await containerManager.getClient(agentSlug).stopTask(sessionId, taskIdParam.data)
+    const stopped = await actor.sessions.stopTask(sessionId, taskIdParam.data)
     if (!stopped) {
       return c.json({ error: 'Task could not be stopped' }, 409)
     }
@@ -3477,28 +3320,23 @@ function gateRequestDecision(
   // Every gated route is mounted under /sessions/:sessionId, so the param is
   // always present; '' is an unmatchable placeholder, not a wildcard.
   const sessionId = c.req.param('sessionId') ?? ''
-  const open = userInputRequestManager.getOpenRequest(toolUseId)
+  // The actor only ever hands back this agent's requests: another agent's
+  // parked ask, or one with no agent in its scope, reads as unknown here and
+  // falls through to the settled shape below with nothing disclosed.
+  const open = agentRegistry.get(agentSlug).inputs.get(toolUseId)
   if (open) {
-    if (!open.scope.agentSlug) {
-      // Fail closed, loudly: an unattributable request cannot be proven to
-      // belong to this agent, and a silent 404 on a card the user just clicked
-      // would be near-undiagnosable.
-      console.error(
-        `[agents] Refusing decision for request ${toolUseId} (kind=${kind}): scope carries no agentSlug`,
-      )
-    }
     if (!requestMatchesRoute(open, kind, agentSlug, sessionId)) {
-      // A caller-supplied id must not settle someone else's parked wait — the
-      // same guard submitDecision has for review kinds.
+      // A caller-supplied id must not settle a wait parked for another kind or
+      // session — the same guard submitDecision has for review kinds.
       return c.json({ error: 'Request not found' }, 404)
     }
     return null
   }
-  // Settled, or never existed. A settled record is still route-bound: report
-  // its outcome only to the route that could have decided it, so settling a
-  // request can never widen who may read it. A record that fails the match is
-  // as good as absent — same 404 an open mismatch gets.
-  const settled = userInputRequestManager.getRecentResolution(toolUseId)
+  // Settled, or never existed (including another agent's). A settled record is
+  // still route-bound: report its outcome only to the route that could have
+  // decided it, so settling a request can never widen who may read it. A record
+  // that fails the match is as good as absent — same 404 an open mismatch gets.
+  const settled = agentRegistry.get(agentSlug).inputs.recentResolution(toolUseId)
   if (settled && !requestMatchesRoute(settled, kind, agentSlug, sessionId)) {
     return c.json({ error: 'Request not found' }, 404)
   }
@@ -3519,7 +3357,7 @@ function gateOpenRequestAccess(
   toolUseId: string,
   kind: UserInputRequestKind,
 ): Response | null {
-  const open = userInputRequestManager.getOpenRequest(toolUseId)
+  const open = agentRegistry.get(getAgentId(c)).inputs.get(toolUseId)
   if (!open || !requestMatchesRoute(
     open,
     kind,
@@ -3550,12 +3388,12 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
     }
 
 
-    const client = containerManager.getClient(agentSlug)
+    const actor = agentRegistry.get(agentSlug)
 
     if (decline) {
       const reason = declineReason || 'User declined to provide the secret'
 
-      const rejectResponse = await client.fetch(
+      const rejectResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
@@ -3570,7 +3408,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
         return c.json({ error: 'Failed to reject secret request' }, 500)
       }
 
-      messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'declined')
+      agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'secret', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -3588,7 +3426,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
 
     // Set environment variable in container FIRST
     console.log(`[provide-secret] Setting env var ${secretName} in container`)
-    const envResponse = await client.fetch('/env', {
+    const envResponse = await actor.container.fetch('/env', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: secretName, value }),
@@ -3612,7 +3450,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
 
     // Resolve the pending input request
     console.log(`[provide-secret] Resolving pending request ${toolUseId}`)
-    const resolveResponse = await client.fetch(
+    const resolveResponse = await actor.container.fetch(
       `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
       {
         method: 'POST',
@@ -3635,7 +3473,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
       return c.json({ error: 'Secret saved but failed to notify agent' }, 500)
     }
     console.log(`[provide-secret] Request ${toolUseId} resolved successfully`)
-    messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'answered')
+    agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true, saved: true })
   } catch (error) {
@@ -3663,12 +3501,12 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     }
 
 
-    const client = containerManager.getClient(agentSlug)
+    const actor = agentRegistry.get(agentSlug)
 
     if (decline) {
       const reason = declineReason || 'User declined to provide access'
 
-      const rejectResponse = await client.fetch(
+      const rejectResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
@@ -3683,7 +3521,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
         return c.json({ error: 'Failed to reject request' }, 500)
       }
 
-      messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'declined')
+      agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'connected_account', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -3736,7 +3574,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     console.log(
       `[provide-connected-account] Updating CONNECTED_ACCOUNTS metadata in container`
     )
-    const envResponse = await updateConnectedAccountsEnvironment(agentSlug, client)
+    const envResponse = await actor.container.updateConnectedAccountsEnvironment()
 
     if (!envResponse.ok) {
       let errorDetails = 'Unknown error'
@@ -3763,7 +3601,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
       `[provide-connected-account] Resolving pending request ${toolUseId}`
     )
     const accountNames = validAccounts.map((a) => a.displayName)
-    const resolveResponse = await client.fetch(
+    const resolveResponse = await actor.container.fetch(
       `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
       {
         method: 'POST',
@@ -3790,7 +3628,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     console.log(
       `[provide-connected-account] Request ${toolUseId} resolved successfully`
     )
-    messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'answered')
+    agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({
       success: true,
@@ -3821,12 +3659,12 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
     if (gated) return gated
 
 
-    const client = containerManager.getClient(agentSlug)
+    const actor = agentRegistry.get(agentSlug)
 
     if (decline) {
       const reason = declineReason || 'User declined to answer'
 
-      const rejectResponse = await client.fetch(
+      const rejectResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
@@ -3841,7 +3679,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
         return c.json({ error: 'Failed to reject question request' }, 500)
       }
 
-      messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'declined')
+      agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'question', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -3852,7 +3690,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
 
     // Resolve the pending input request with the answers
     console.log(`[answer-question] Resolving pending request ${toolUseId}`)
-    const resolveResponse = await client.fetch(
+    const resolveResponse = await actor.container.fetch(
       `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
       {
         method: 'POST',
@@ -3873,7 +3711,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
       return c.json({ error: 'Failed to submit answers' }, 500)
     }
     console.log(`[answer-question] Request ${toolUseId} resolved successfully`)
-    messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'answered')
+    agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true })
   } catch (error) {
@@ -3904,12 +3742,12 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
     const gated = gateRequestDecision(c, toolUseId, 'capability_review')
     if (gated) return gated
 
-    const client = containerManager.getClient(agentSlug)
+    const actor = agentRegistry.get(agentSlug)
 
     if (decline) {
       const reason = declineReason || 'User declined'
 
-      const rejectResponse = await client.fetch(
+      const rejectResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
@@ -3924,12 +3762,12 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
         return c.json({ error: 'Failed to reject capability launch' }, 500)
       }
 
-      messagePersister.completeCapabilityReview(agentSlug, sessionId, toolUseId, 'declined')
+      agentRegistry.get(agentSlug).inputs.completeCapabilityReview(sessionId, toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'capability_review', capability, withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
 
-    const resolveResponse = await client.fetch(
+    const resolveResponse = await actor.container.fetch(
       `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
       {
         method: 'POST',
@@ -3953,9 +3791,9 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
     // Mirror the container's grant so later launches in this session don't
     // produce review cards nothing is waiting on.
     if (scope === 'session') {
-      messagePersister.grantSessionCapability(agentSlug, sessionId, capability)
+      agentRegistry.get(agentSlug).sessions.grantCapability(sessionId, capability)
     }
-    messagePersister.completeCapabilityReview(agentSlug, sessionId, toolUseId, 'answered')
+    agentRegistry.get(agentSlug).inputs.completeCapabilityReview(sessionId, toolUseId, 'answered')
 
     trackServerEvent('capability_launch_approved', { capability, scope })
     return c.json({ success: true })
@@ -3966,8 +3804,8 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
 })
 
 async function readCredentialBrowserUrl(agentSlug: string, sessionId: string): Promise<string> {
-  const client = containerManager.getClient(agentSlug)
-  const response = await client.fetch(
+  const actor = agentRegistry.get(agentSlug)
+  const response = await actor.container.fetch(
     `/browser/credential-context?sessionId=${encodeURIComponent(sessionId)}`,
   )
   if (!response.ok) throw new CredentialBrokerError('provider_error', 'The active browser page is unavailable')
@@ -4033,8 +3871,8 @@ const browserCredentialAutofillBodySchema = z.object({
   credentialId: z.string().min(1),
 }).strict()
 
-function capturedBrowserInputUrl(toolUseId: string, now = Date.now()): string | null {
-  const request = userInputRequestManager.getOpenRequest(toolUseId)
+function capturedBrowserInputUrl(agentSlug: string, toolUseId: string, now = Date.now()): string | null {
+  const request = agentRegistry.get(agentSlug).inputs.get(toolUseId)
   if (!request || request.kind !== 'browser_input') return null
   const parsed = browserInputContextSchema.safeParse(request.payload.browserContext)
   if (!parsed.success) return null
@@ -4048,7 +3886,7 @@ async function refreshBrowserInputUrl(
   toolUseId: string,
 ): Promise<string> {
   const url = await readCredentialBrowserUrl(agentSlug, sessionId)
-  userInputRequestManager.enrichOpenRequestPayload(toolUseId, 'browser_input', {
+  agentRegistry.get(agentSlug).inputs.enrich(toolUseId, 'browser_input', {
     browserContext: { url, capturedAt: Date.now() },
   })
   return url
@@ -4067,7 +3905,7 @@ agents.get('/:id/sessions/:sessionId/browser-credentials', IsAdmin(), async (c) 
     // New requests carry a harness-probed URL. Explicit refreshes and stale or
     // recovered requests re-probe the live browser and replace that context.
     const forceRefresh = c.req.query('refresh') === 'true'
-    const url = (!forceRefresh && capturedBrowserInputUrl(toolUseId)) ||
+    const url = (!forceRefresh && capturedBrowserInputUrl(agentSlug, toolUseId)) ||
       await refreshBrowserInputUrl(agentSlug, sessionId, toolUseId)
     const result = await credentialBroker.suggest(
       { agentSlug, sessionId, toolUseId },
@@ -4145,7 +3983,7 @@ agents.post(
     const body = c.req.valid('json')
     const gated = gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
     if (gated) return gated
-    if (!userInputRequestManager.claimRequest(body.toolUseId)) {
+    if (!agentRegistry.get(getAgentId(c)).inputs.claim(body.toolUseId)) {
       return c.json({ error: 'This browser request is already being handled' }, 409)
     }
     claimedToolUseId = body.toolUseId
@@ -4160,8 +3998,8 @@ agents.post(
     )
     const credential = retrieved.credential
 
-    const client = containerManager.getClient(agentSlug)
-    const fillResponse = await client.fetch('/browser/fill-credential', {
+    const actor = agentRegistry.get(agentSlug)
+    const fillResponse = await actor.container.fetch('/browser/fill-credential', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -4205,7 +4043,7 @@ agents.post(
     // Autofill is the successful answer to this browser-input request. Resume
     // the parked tool with explicit next-step guidance instead of making the
     // user click Done after they already selected a credential.
-    const resolveResponse = await client.fetch(
+    const resolveResponse = await actor.container.fetch(
       `/inputs/${encodeURIComponent(body.toolUseId)}/resolve`,
       {
         method: 'POST',
@@ -4215,7 +4053,7 @@ agents.post(
     )
     const requestSettled = resolveResponse.ok
     if (requestSettled) {
-      messagePersister.completeInputRequest(agentSlug, sessionId, body.toolUseId, 'answered')
+      agentRegistry.get(agentSlug).inputs.complete(sessionId, body.toolUseId, 'answered')
     } else {
       console.error('[autofill-browser-credential] Credentials filled but browser input could not be resolved')
     }
@@ -4229,7 +4067,7 @@ agents.post(
   } catch (error) {
     return credentialBrokerErrorResponse(c, error)
   } finally {
-    if (claimedToolUseId) userInputRequestManager.releaseClaim(claimedToolUseId)
+    if (claimedToolUseId) agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimedToolUseId)
   }
   },
 )
@@ -4248,17 +4086,17 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
 
     const gated = gateRequestDecision(c, toolUseId, 'browser_input')
     if (gated) return gated
-    if (!userInputRequestManager.claimRequest(toolUseId)) {
+    if (!agentRegistry.get(agentSlug).inputs.claim(toolUseId)) {
       return c.json({ error: 'This browser request is already being handled' }, 409)
     }
     claimedToolUseId = toolUseId
 
-    const client = containerManager.getClient(agentSlug)
+    const actor = agentRegistry.get(agentSlug)
 
     if (decline) {
       const reason = declineReason || 'User wants to chat with the agent'
 
-      const rejectResponse = await client.fetch(
+      const rejectResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
@@ -4280,25 +4118,25 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       }
 
       const sessionId = c.req.param('sessionId')
-      messagePersister.completeInputRequest(agentSlug, sessionId, toolUseId, 'declined')
+      agentRegistry.get(agentSlug).inputs.complete(sessionId, toolUseId, 'declined')
 
       // Interrupt the turn so the user can chat directly with the agent.
       // Background tasks are not the user's target here, so they stay.
       let processKept = false
-      const turnGenerationBefore = messagePersister.getTurnGeneration(agentSlug, sessionId)
+      const turnGenerationBefore = actor.sessions.turnGeneration(sessionId)
       try {
-        processKept = (await client.interruptSession(sessionId, { scope: 'turn' })).processKept
+        processKept = (await actor.messages.interrupt(sessionId, { scope: 'turn' })).processKept
       } catch (e) {
         console.error(`[complete-browser-input] Failed to interrupt session: ${e}`)
       }
-      await messagePersister.markSessionInterrupted(agentSlug, sessionId, { processKept, turnGenerationBefore })
+      await actor.sessions.markInterrupted(sessionId, { processKept, turnGenerationBefore })
 
       trackServerEvent('request_declined', { type: 'browser_input', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
 
     // User completed the browser interaction
-    const resolveResponse = await client.fetch(
+    const resolveResponse = await actor.container.fetch(
       `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
       {
         method: 'POST',
@@ -4319,13 +4157,13 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       return c.json({ error: 'Failed to complete browser input request' }, 500)
     }
 
-    messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'answered')
+    agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to complete browser input:', error)
     return c.json({ error: 'Failed to complete browser input' }, 500)
   } finally {
-    if (claimedToolUseId) userInputRequestManager.releaseClaim(claimedToolUseId)
+    if (claimedToolUseId) agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimedToolUseId)
   }
 })
 
@@ -4343,12 +4181,12 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
     const gated = gateRequestDecision(c, toolUseId, 'script_run')
     if (gated) return gated
 
-    const client = containerManager.getClient(agentSlug)
+    const actor = agentRegistry.get(agentSlug)
 
     if (decline) {
       const reason = declineReason || 'User denied script execution'
 
-      const rejectResponse = await client.fetch(
+      const rejectResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
@@ -4369,7 +4207,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject script run request' }, 500)
       }
 
-      messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'declined')
+      agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'script_run', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -4379,7 +4217,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
     // The permission grant happens when the user clicks "Allow" in the UI
     // Record permission grant if grantType is provided
     if (body.grantType && ['once', 'timed', 'always'].includes(body.grantType)) {
-      computerUsePermissionManager.grantPermission(agentSlug, 'use_host_shell', body.grantType)
+      agentRegistry.get(agentSlug).inputs.computerUse.grant('use_host_shell', body.grantType)
     }
 
     if (!script || !scriptType) {
@@ -4429,7 +4267,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
 
     // Consume "once" grant after use
     if (body.grantType === 'once') {
-      computerUsePermissionManager.consumeOnceGrant(agentSlug, 'use_host_shell')
+      agentRegistry.get(agentSlug).inputs.computerUse.consumeOnce('use_host_shell')
     }
 
     // Format output for the agent
@@ -4440,7 +4278,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
     ].filter(Boolean).join('\n\n')
 
     // Resolve the pending input
-    const resolveResponse = await client.fetch(
+    const resolveResponse = await actor.container.fetch(
       `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
       {
         method: 'POST',
@@ -4461,7 +4299,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to resolve script run request' }, 500)
     }
 
-    messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'answered')
+    agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
     trackServerEvent('script_executed', { scriptType, exitCode })
     return c.json({ success: true })
   } catch (error) {
@@ -4485,19 +4323,18 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
     const gated = gateRequestDecision(c, toolUseId, 'computer_use')
     if (gated) return gated
 
+    const actor = agentRegistry.get(agentSlug)
     // Validate session belongs to this agent (skip for _auto internal calls from auto-execute)
     if (sessionId !== '_auto') {
-      if (!(await sessionIsKnown(agentSlug, sessionId))) {
+      if (!(await actor.sessions.isKnown(sessionId))) {
         return c.json({ error: 'Session not found' }, 404)
       }
     }
 
-    const client = containerManager.getClient(agentSlug)
-
     if (decline) {
       const reason = declineReason || 'User denied computer use request'
 
-      const rejectResponse = await client.fetch(
+      const rejectResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
@@ -4518,7 +4355,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject computer use request' }, 500)
       }
 
-      messagePersister.clearPendingComputerUseRequest(agentSlug, sessionId, toolUseId, 'declined')
+      agentRegistry.get(agentSlug).inputs.computerUse.clearPending(sessionId, toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'computer_use', method, withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -4530,7 +4367,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
 
     // In E2E mock mode, skip actual execution — just resolve the input directly
     if (process.env.E2E_MOCK === 'true') {
-      const resolveResponse = await client.fetch(
+      const resolveResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
         {
           method: 'POST',
@@ -4541,7 +4378,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       if (!resolveResponse.ok) {
         return c.json({ error: 'Failed to resolve computer use request' }, 500)
       }
-      messagePersister.clearPendingComputerUseRequest(agentSlug, sessionId, toolUseId, 'answered')
+      agentRegistry.get(agentSlug).inputs.computerUse.clearPending(sessionId, toolUseId, 'answered')
       return c.json({ success: true })
     }
 
@@ -4556,7 +4393,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
 
     // Record the permission grant
     if (grantType && ['once', 'timed', 'always'].includes(grantType)) {
-      computerUsePermissionManager.grantPermission(agentSlug, permissionLevel || 'use_application', grantType, appName)
+      agentRegistry.get(agentSlug).inputs.computerUse.grant(permissionLevel || 'use_application', grantType, appName)
     }
 
     // Execute the computer use command
@@ -4566,7 +4403,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
     } catch (execError: unknown) {
       // Execution failed — reject the input so the agent sees it as a tool error
       const errorMsg = execError instanceof Error ? execError.message : String(execError)
-      await client.fetch(
+      await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
@@ -4576,7 +4413,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       ).catch(() => {})
       // The user approved but execution blew up — the wait was consumed by a
       // system failure, not a user decision.
-      messagePersister.clearPendingComputerUseRequest(agentSlug, sessionId, toolUseId, 'invalidated')
+      agentRegistry.get(agentSlug).inputs.computerUse.clearPending(sessionId, toolUseId, 'invalidated')
       return c.json({ success: true, error: errorMsg })
     }
 
@@ -4587,28 +4424,28 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       // and fall back to resolveTargetApp for direct app name params
       const targetApp = appName || resolveTargetApp(method, params || {})
       if (targetApp) {
-        computerUsePermissionManager.setGrabbedApp(agentSlug, targetApp)
+        agentRegistry.get(agentSlug).inputs.computerUse.setGrabbedApp(targetApp)
         // Broadcast immediately with app name, then resolve icon async
-        messagePersister.broadcastSessionEvent(agentSlug, sessionId, { type: 'computer_use_grab_changed', app: targetApp })
+        agentRegistry.get(agentSlug).messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp })
         const { getAppIconBase64 } = await import('@shared/lib/computer-use/app-icon')
         getAppIconBase64(targetApp).then((icon) => {
           if (icon) {
-            messagePersister.broadcastSessionEvent(agentSlug, sessionId, { type: 'computer_use_grab_changed', app: targetApp, appIcon: icon })
+            agentRegistry.get(agentSlug).messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp, appIcon: icon })
           }
         }).catch(() => {})
       }
     } else if (method === 'ungrab' || method === 'quit') {
-      computerUsePermissionManager.clearGrabbedApp(agentSlug)
-      messagePersister.broadcastSessionEvent(agentSlug, sessionId, { type: 'computer_use_grab_changed', app: null })
+      agentRegistry.get(agentSlug).inputs.computerUse.clearGrabbedApp()
+      agentRegistry.get(agentSlug).messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: null })
     }
 
     // Consume "once" grant after use
     if (grantType === 'once') {
-      computerUsePermissionManager.consumeOnceGrant(agentSlug, permissionLevel || 'use_application', appName)
+      agentRegistry.get(agentSlug).inputs.computerUse.consumeOnce(permissionLevel || 'use_application', appName)
     }
 
     // Resolve the pending input
-    const resolveResponse = await client.fetch(
+    const resolveResponse = await actor.container.fetch(
       `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
       {
         method: 'POST',
@@ -4629,7 +4466,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to resolve computer use request' }, 500)
     }
 
-    messagePersister.clearPendingComputerUseRequest(agentSlug, sessionId, toolUseId, 'answered')
+    agentRegistry.get(agentSlug).inputs.computerUse.clearPending(sessionId, toolUseId, 'answered')
     trackServerEvent('computer_use_executed', { method, permissionLevel, grantType })
     return c.json({ success: true })
   } catch (error) {
@@ -4644,25 +4481,25 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
-    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    if (!(await agentRegistry.get(agentSlug).sessions.isKnown(sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const appName = computerUsePermissionManager.getGrabbedApp(agentSlug)
+    const appName = agentRegistry.get(agentSlug).inputs.computerUse.grabbedApp()
 
     // Ungrab via AC
     await ungrabAC()
 
     // Clear grab state
-    computerUsePermissionManager.clearGrabbedApp(agentSlug)
+    agentRegistry.get(agentSlug).inputs.computerUse.clearGrabbedApp()
 
     // Revoke use_application permission for this app
     if (appName) {
-      computerUsePermissionManager.revokeGrant(agentSlug, 'use_application', appName)
+      agentRegistry.get(agentSlug).inputs.computerUse.revokeGrant('use_application', appName)
     }
 
     // Broadcast to UI
-    messagePersister.broadcastSessionEvent(agentSlug, sessionId, { type: 'computer_use_grab_changed', app: null })
+    agentRegistry.get(agentSlug).messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: null })
 
     return c.json({ success: true, revoked: appName || true })
   } catch (error) {
@@ -4705,8 +4542,9 @@ agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
 agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
+    const actor = agentRegistry.get(slug)
     const tasks = await listCompletedOneTimeTasks(slug)
-    const metadata = await readSessionMetadata(slug)
+    const metadata = await actor.sessions.readMetadata()
 
     const completedSessionIds = tasks
       .map((task) => task.lastSessionId)
@@ -4717,14 +4555,14 @@ agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => 
         // restart, or during the tiny idle-event/metadata-write race, the same
         // inactive run is settled. This mirrors activity-stats semantics.
         return metadata[sessionId]?.automationStatus !== 'running'
-          || !messagePersister.isSessionActive(slug, sessionId)
+          || !agentRegistry.get(slug).sessions.isActive(sessionId)
       })
 
-    const sessions = await listSessionsByIds(slug, completedSessionIds)
+    const sessions = await actor.sessions.listByIds(completedSessionIds)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
-      isActive: messagePersister.isSessionActive(slug, session.id),
-      isAwaitingInput: messagePersister.isSessionAwaitingInput(slug, session.id),
+      isActive: agentRegistry.get(slug).sessions.isActive(session.id),
+      isAwaitingInput: agentRegistry.get(slug).sessions.isAwaitingInput(session.id),
     }))
     sessionsWithStatus.sort(
       (a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
@@ -4769,7 +4607,7 @@ agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
     // of guessing from persisted status alone.
     const withConnection = integrations.map((integration) => ({
       ...toPublicChatIntegration(integration),
-      connected: chatIntegrationManager.isIntegrationConnected(integration.id),
+      connected: agentIntegrationManager.isIntegrationConnected(integration.id),
     }))
     return c.json(withConnection)
   } catch (error) {
@@ -4777,6 +4615,13 @@ agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
     return c.json({ error: 'Failed to fetch chat integrations' }, 500)
   }
 })
+
+function secretsErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof WorkspaceFileError && error.code === 'not-a-file') {
+    return 'Cannot access secrets: workspace .env is a directory; a regular file is required.'
+  }
+  return fallback
+}
 
 // GET /api/agents/:id/secrets - List secrets for an agent
 agents.get('/:id/secrets', AgentRead(), async (c) => {
@@ -4797,7 +4642,7 @@ agents.get('/:id/secrets', AgentRead(), async (c) => {
     return c.json(response)
   } catch (error) {
     console.error('Failed to fetch secrets:', error)
-    return c.json({ error: 'Failed to fetch secrets' }, 500)
+    return c.json({ error: secretsErrorMessage(error, 'Failed to fetch secrets') }, 500)
   }
 })
 
@@ -4848,7 +4693,7 @@ agents.get('/:id/secrets/:secretId/value', AgentAdmin(), async (c) => {
         { 'Retry-After': '1' },
       )
     }
-    return c.json({ error: 'Failed to reveal secret' }, 500)
+    return c.json({ error: secretsErrorMessage(error, 'Failed to reveal secret') }, 500)
   }
 })
 
@@ -4898,7 +4743,7 @@ agents.post('/:id/secrets', AgentUser(), async (c) => {
     return c.json({ id: envVar, key: key.trim(), envVar, hasValue: true }, 201)
   } catch (error) {
     console.error('Failed to create secret:', error)
-    return c.json({ error: 'Failed to create secret' }, 500)
+    return c.json({ error: secretsErrorMessage(error, 'Failed to create secret') }, 500)
   }
 })
 
@@ -4940,7 +4785,7 @@ agents.put('/:id/secrets/:secretId', AgentUser(), async (c) => {
     return c.json({ id: updated.envVar, key: updated.key, envVar: updated.envVar, hasValue: true })
   } catch (error) {
     console.error('Failed to update secret:', error)
-    return c.json({ error: 'Failed to update secret' }, 500)
+    return c.json({ error: secretsErrorMessage(error, 'Failed to update secret') }, 500)
   }
 })
 
@@ -4961,7 +4806,7 @@ agents.delete('/:id/secrets/:secretId', AgentUser(), async (c) => {
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to delete secret:', error)
-    return c.json({ error: 'Failed to delete secret' }, 500)
+    return c.json({ error: secretsErrorMessage(error, 'Failed to delete secret') }, 500)
   }
 })
 
@@ -5070,7 +4915,7 @@ agents.post('/:id/connected-accounts', AgentUser(), async (c) => {
       ))
 
     for (const accountId of insertedAccountIds) { logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'assigned', details: { agentSlug: slug } }) }
-    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'connected-accounts')
+    const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('connected-accounts')
     return c.json({ accounts, liveRefresh })
   } catch (error) {
     console.error('Failed to map connected accounts to agent:', error)
@@ -5107,7 +4952,7 @@ agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
       .where(eq(agentConnectedAccounts.id, found.id))
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'unassigned', details: { agentSlug: slug } })
-    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'connected-accounts')
+    const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('connected-accounts')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove account mapping:', error)
@@ -5154,7 +4999,7 @@ agents.delete('/:id/connected-accounts/mapping/:mappingId', AgentAdmin(), async 
       .where(eq(agentConnectedAccounts.id, found.id))
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: found.connectedAccountId, action: 'unassigned', details: { agentSlug: slug } })
-    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'connected-accounts')
+    const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('connected-accounts')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove account mapping:', error)
@@ -5236,7 +5081,7 @@ agents.post('/:id/remote-mcps', AgentUser(), async (c) => {
     await db.insert(agentRemoteMcps).values(values).onConflictDoNothing()
 
     for (const mcpId of newMcpIds) { logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'assigned', details: { agentSlug: slug } }) }
-    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
+    const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('remote-mcps')
     return c.json({ success: true, added: newMcpIds.length, liveRefresh })
   } catch (error) {
     console.error('Failed to assign remote MCPs to agent:', error)
@@ -5271,7 +5116,7 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
 
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
     logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'unassigned', details: { agentSlug: slug } })
-    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
+    const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('remote-mcps')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove remote MCP from agent:', error)
@@ -5301,7 +5146,7 @@ agents.delete('/:id/remote-mcps/mapping/:mappingId', AgentAdmin(), async (c) => 
 
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
     logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mapping.remoteMcpId, action: 'unassigned', details: { agentSlug: slug } })
-    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
+    const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('remote-mcps')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove remote MCP from agent:', error)
@@ -5352,11 +5197,11 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       }
     }
 
-    const client = containerManager.getClient(slug)
+    const actor = agentRegistry.get(slug)
 
     if (body.decline) {
       // Decline the request
-      const rejectResponse = await client.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/reject`, {
+      const rejectResponse = await actor.container.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/reject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -5367,7 +5212,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
         console.error('Failed to reject remote MCP request:', await rejectResponse.text())
         return c.json({ error: 'Failed to decline the request in container' }, 502)
       }
-      messagePersister.completeInputRequest(getAgentId(c), c.req.param('sessionId'), body.toolUseId, 'declined')
+      agentRegistry.get(getAgentId(c)).inputs.complete(c.req.param('sessionId'), body.toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'remote_mcp', withReason: !!body.declineReason })
       return c.json({ success: true, status: 'declined' })
     }
@@ -5423,14 +5268,14 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
     }
 
     // Update container env var
-    const envResponse = await updateRemoteMcpEnvironment(slug, client)
+    const envResponse = await actor.container.updateRemoteMcpEnvironment()
     if (!envResponse.ok) {
       console.error('Failed to update REMOTE_MCPS env var:', await envResponse.text())
       return c.json({ error: 'Failed to update container environment' }, 502)
     }
 
     // Resolve the pending input request
-    const resolveResponse = await client.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, {
+    const resolveResponse = await actor.container.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value: requestedMcpIds }),
@@ -5440,7 +5285,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       return c.json({ error: 'Failed to resolve the request in container' }, 502)
     }
 
-    messagePersister.completeInputRequest(getAgentId(c), c.req.param('sessionId'), body.toolUseId, 'answered')
+    agentRegistry.get(getAgentId(c)).inputs.complete(c.req.param('sessionId'), body.toolUseId, 'answered')
     return c.json({ success: true, status: 'provided' })
   } catch (error) {
     console.error('Failed to provide remote MCP:', error)
@@ -5911,6 +5756,29 @@ agents.post('/:id/skills/import-zip', AgentAdmin(), async (c) => {
   }
 })
 
+/** The workspace path of an installed skill's directory. `dir` is validated by the route. */
+function skillWorkspaceDir(dir: string): string {
+  return joinWorkspacePath('.claude/skills', dir)
+}
+
+/**
+ * The workspace path of a file inside a skill directory, or null when
+ * `filePath` would reach outside it (absolute, `..`, or otherwise invalid).
+ * The actor keeps paths inside the workspace; this keeps them inside the skill.
+ */
+function resolveSkillFilePath(dir: string, filePath: string): string | null {
+  if (path.isAbsolute(filePath) || filePath.startsWith('/')) return null
+  const skillDir = skillWorkspaceDir(dir)
+  let target: string
+  try {
+    target = joinWorkspacePath(skillDir, filePath)
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return null
+    throw error
+  }
+  return target.startsWith(`${skillDir}/`) ? target : null
+}
+
 // GET /api/agents/:id/skills/:dir/files - List all files in a skill directory
 agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
   try {
@@ -5921,21 +5789,26 @@ agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
       return c.json({ error: 'Invalid skill directory name' }, 400)
     }
 
-    const skillDir = path.join(getAgentWorkspaceDir(agentSlug), '.claude', 'skills', dir)
+    const actor = agentRegistry.get(agentSlug)
+    const skillDir = skillWorkspaceDir(dir)
 
-    if (!(await directoryExists(skillDir))) {
+    const skillStat = await actor.files.stat(skillDir)
+    if (!skillStat || skillStat.kind !== 'directory') {
       return c.json({ error: 'Skill directory not found' }, 404)
     }
 
     const files: Array<{ path: string; type: 'file' | 'directory' }> = []
 
+    // The actor never lists a symbolic link, so one inside a skill does not
+    // appear here (the plain directory read listed it as a file). A link
+    // only gets into a skill by hand or by the agent: a zip import and a
+    // skillset install both write the linked file itself in its place.
     const walk = async (currentDir: string, prefix: string) => {
-      const entries = await fs.promises.readdir(currentDir, { withFileTypes: true })
-      for (const entry of entries) {
+      for (const entry of await actor.files.list(currentDir)) {
         const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
-        if (entry.isDirectory()) {
+        if (entry.kind === 'directory') {
           files.push({ path: relativePath, type: 'directory' })
-          await walk(path.join(currentDir, entry.name), relativePath)
+          await walk(entry.path, relativePath)
         } else {
           files.push({ path: relativePath, type: 'file' })
         }
@@ -5950,6 +5823,9 @@ agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
 
     return c.json({ files })
   } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      return c.json({ error: error.status === 404 ? 'Skill directory not found' : error.message }, error.status)
+    }
     console.error('Failed to list skill files:', error)
     return c.json({ error: 'Failed to list skill files' }, 500)
   }
@@ -5969,18 +5845,19 @@ agents.get('/:id/skills/:dir/files/content', AgentAdmin(), async (c) => {
       return c.json({ error: 'path query parameter is required' }, 400)
     }
 
-    const skillDir = path.join(getAgentWorkspaceDir(agentSlug), '.claude', 'skills', dir)
-    const resolved = path.resolve(skillDir, filePath)
-
-    if (!isPathWithinDir(skillDir, resolved)) {
+    const target = resolveSkillFilePath(dir, filePath)
+    if (!target) {
       return c.json({ error: 'Invalid file path' }, 400)
     }
 
-    const content = await fs.promises.readFile(resolved, 'utf-8')
-    return c.json({ content, path: filePath })
-  } catch (error) {
-    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+    const bytes = await agentRegistry.get(agentSlug).files.getDoc(target)
+    if (!bytes) {
       return c.json({ error: 'File not found' }, 404)
+    }
+    return c.json({ content: new TextDecoder().decode(bytes), path: filePath })
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      return c.json({ error: error.status === 400 ? 'Invalid file path' : error.message }, error.status)
     }
     console.error('Failed to read skill file:', error)
     return c.json({ error: 'Failed to read skill file' }, 500)
@@ -5997,20 +5874,21 @@ agents.put('/:id/skills/:dir/files/content', AgentAdmin(), async (c) => {
     if (!dir || dir.includes('/') || dir.includes('\\') || dir.includes('..')) {
       return c.json({ error: 'Invalid skill directory name' }, 400)
     }
-    if (!filePath || typeof content !== 'string') {
+    if (!filePath || typeof filePath !== 'string' || typeof content !== 'string') {
       return c.json({ error: 'path and content are required' }, 400)
     }
 
-    const skillDir = path.join(getAgentWorkspaceDir(agentSlug), '.claude', 'skills', dir)
-    const resolved = path.resolve(skillDir, filePath)
-
-    if (!isPathWithinDir(skillDir, resolved)) {
+    const target = resolveSkillFilePath(dir, filePath)
+    if (!target) {
       return c.json({ error: 'Invalid file path' }, 400)
     }
 
-    await fs.promises.writeFile(resolved, content, 'utf-8')
+    await agentRegistry.get(agentSlug).files.putDoc(target, content)
     return c.json({ saved: true })
   } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      return c.json({ error: error.status === 400 ? 'Invalid file path' : error.message }, error.status)
+    }
     console.error('Failed to write skill file:', error)
     return c.json({ error: 'Failed to write skill file' }, 500)
   }
@@ -6067,33 +5945,37 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
   }
 })
 
-function resolveUploadDestPath(agentSlug: string, filename: string, relativePath?: string) {
+const UPLOADS_DIR = 'uploads'
+
+/** The workspace path an upload lands at, always inside `uploads/`. */
+function resolveUploadDestPath(filename: string, relativePath?: string): string {
   // If relativePath is provided (folder upload), preserve directory structure
   let uploadPath: string
   if (relativePath) {
     const normalized = path.normalize(relativePath).replace(/^(\.\.[/\\])+/, '')
-    uploadPath = `uploads/${normalized}`
+    uploadPath = `${UPLOADS_DIR}/${normalized}`
   } else {
     // Single-file upload: collapse the untrusted name to a safe basename
-    // (shared with the chat-attachment write path). isPathWithinDir below is
-    // the defense-in-depth backstop.
-    uploadPath = `uploads/${withUploadTimestamp(sanitizeUploadFilename(filename))}`
+    // (shared with the chat-attachment write path). The check below is the
+    // defense-in-depth backstop.
+    uploadPath = `${UPLOADS_DIR}/${withUploadTimestamp(sanitizeUploadFilename(filename))}`
   }
 
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const fullPath = path.resolve(workspaceDir, uploadPath)
-
-  // Security: ensure path doesn't escape the uploads directory
-  if (!isPathWithinDir(path.resolve(workspaceDir, 'uploads'), fullPath)) {
+  // Security: the actor keeps the write inside the workspace; this keeps it
+  // inside the one folder uploads are allowed into.
+  if (!normalizeWorkspacePath(uploadPath).startsWith(`${UPLOADS_DIR}/`)) {
     throw new Error('Invalid file path')
   }
 
-  return { uploadPath, fullPath }
+  return uploadPath
 }
 
 async function writeUploadedFileFromPath(agentSlug: string, filename: string, srcPath: string, relativePath?: string) {
-  const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, filename, relativePath)
-  const size = await moveUploadedFile(srcPath, fullPath)
+  const uploadPath = resolveUploadDestPath(filename, relativePath)
+  // `srcPath` is the assembled chunk file in this machine's temp dir, not a
+  // workspace file: it is moved into the workspace, a rename when the two
+  // share a filesystem, so the bytes are not written a second time.
+  const { size } = await moveHostFileIntoWorkspace(agentRegistry.get(agentSlug).files, srcPath, uploadPath)
   return {
     success: true,
     path: `/workspace/${uploadPath}`,
@@ -6106,27 +5988,12 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
   if (file.size > MAX_UPLOAD_TOTAL_SIZE) {
     throw new UploadTooLargeError(file.size, MAX_UPLOAD_TOTAL_SIZE)
   }
-  const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, file.name, relativePath)
-  await fs.promises.mkdir(path.dirname(fullPath), { recursive: true })
+  const uploadPath = resolveUploadDestPath(file.name, relativePath)
 
-  // Stream to disk instead of Buffer.from(await file.arrayBuffer()) — avoids a
-  // second full in-memory copy of the file on top of formData()'s buffering.
-  try {
-    await streamPipeline(
-      Readable.fromWeb(file.stream() as import('stream/web').ReadableStream),
-      fs.createWriteStream(fullPath),
-    )
-  } catch (err) {
-    // Don't leave a partial file behind (pipeline already closed the fd).
-    try {
-      await fs.promises.unlink(fullPath)
-    } catch (cleanupErr) {
-      if ((cleanupErr as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-        console.warn('[agents] failed to remove partial upload:', cleanupErr)
-      }
-    }
-    throw err
-  }
+  // Stream into the workspace instead of Buffer.from(await file.arrayBuffer()) —
+  // avoids a second full in-memory copy of the file on top of formData()'s
+  // buffering. A write that fails part-way leaves nothing behind.
+  await agentRegistry.get(agentSlug).files.write(uploadPath, file.stream() as ReadableStream<Uint8Array>)
 
   return {
     success: true,
@@ -6171,7 +6038,7 @@ async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: 
     try {
       await fs.promises.unlink(result.filePath)
     } catch (err) {
-      // rename may have already moved the file
+      // The assembled file is read, not moved; ENOENT means it is already gone.
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
         console.warn('[agents] failed to unlink assembled file upload:', err)
         captureException(err, {
@@ -6246,22 +6113,38 @@ agents.post('/:id/upload-file', AgentUser(), uploadRequestBodyLimit, respondUplo
 agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), uploadRequestBodyLimit, respondUploadFile)
 
 async function handleFolderUpload(agentSlug: string, sourcePath: string) {
+  // `sourcePath` is a folder on this machine, chosen in the Electron file
+  // picker. Walk it with fs and copy each regular file into the workspace;
+  // symbolic links are skipped rather than followed.
   const stat = await fs.promises.stat(sourcePath)
   if (!stat.isDirectory()) {
     throw new Error('Source is not a directory')
   }
 
   const folderName = path.basename(sourcePath)
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const destPath = path.resolve(workspaceDir, 'uploads', folderName)
+  const destRoot = joinWorkspacePath(UPLOADS_DIR, folderName)
 
   // Security: ensure dest doesn't escape uploads directory
-  if (!isPathWithinDir(path.resolve(workspaceDir, 'uploads'), destPath)) {
+  if (!destRoot.startsWith(`${UPLOADS_DIR}/`)) {
     throw new Error('Invalid path')
   }
 
-  await fs.promises.mkdir(path.dirname(destPath), { recursive: true })
-  await fs.promises.cp(sourcePath, destPath, { recursive: true })
+  const actor = agentRegistry.get(agentSlug)
+  const copyDirectory = async (hostDir: string, destDir: string) => {
+    // Created up front so an empty folder still arrives.
+    await actor.files.mkdir(destDir)
+    for (const entry of await fs.promises.readdir(hostDir, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) continue
+      const hostEntry = path.join(hostDir, entry.name)
+      const destEntry = joinWorkspacePath(destDir, entry.name)
+      if (entry.isDirectory()) {
+        await copyDirectory(hostEntry, destEntry)
+      } else if (entry.isFile()) {
+        await copyHostFileIntoWorkspace(actor.files, hostEntry, destEntry)
+      }
+    }
+  }
+  await copyDirectory(sourcePath, destRoot)
 
   return {
     success: true,
@@ -6331,9 +6214,9 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
     }
 
     if (restart) {
-      const cachedInfo = containerManager.getCachedInfo(agentSlug)
+      const cachedInfo = agentRegistry.get(agentSlug).container.status()
       if (cachedInfo.status === 'running') {
-        await containerManager.restartContainer(agentSlug)
+        await agentRegistry.get(agentSlug).container.restart()
       }
     }
 
@@ -6355,9 +6238,9 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
     await removeMount(agentSlug, mountId)
 
     if (restart) {
-      const cachedInfo = containerManager.getCachedInfo(agentSlug)
+      const cachedInfo = agentRegistry.get(agentSlug).container.status()
       if (cachedInfo.status === 'running') {
-        await containerManager.restartContainer(agentSlug)
+        await agentRegistry.get(agentSlug).container.restart()
       }
     }
 
@@ -6386,24 +6269,23 @@ agents.get('/:id/folders', AgentRead(), async (c) => {
   }
 
   try {
-    const { rootPath, currentPath, canonicalCurrentPath } = await resolveBookmarkedWorkspacePath(
+    // The resolver has already stat'ed the path (and refused one reached
+    // through a link); this only asks what is there.
+    const { rootPath, currentPath, stat } = await resolveBookmarkedWorkspacePath(
       agentSlug,
       rawRoot,
       rawCurrentPath,
     )
-
-    const stat = await fs.promises.stat(canonicalCurrentPath)
-    if (!stat.isDirectory()) {
+    if (!stat || stat.kind !== 'directory') {
       return c.json({ error: 'Folder not found' }, 404)
     }
 
-    const dirents = await fs.promises.readdir(canonicalCurrentPath, { withFileTypes: true })
-    const entries = dirents
-      .filter(entry => !entry.isSymbolicLink() && (entry.isDirectory() || entry.isFile()))
+    // One level only; the actor never lists symbolic links.
+    const entries = (await agentRegistry.get(agentSlug).files.list(currentPath))
       .map(entry => ({
         name: entry.name,
         path: path.posix.join(currentPath, entry.name),
-        type: entry.isDirectory() ? 'directory' as const : 'file' as const,
+        type: entry.kind,
       }))
       .sort((a, b) => {
         if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
@@ -6435,7 +6317,7 @@ agents.patch('/:id/folders/file', AgentAdmin(), async (c) => {
 
   const agentSlug = getAgentId(c)
   try {
-    const resolved = await resolveBookmarkedWorkspacePath(
+    const resolved = await resolveBookmarkedWorkspaceEntry(
       agentSlug,
       parsed.data.root,
       parsed.data.path,
@@ -6473,7 +6355,7 @@ agents.delete('/:id/folders/file', AgentAdmin(), async (c) => {
 
   const agentSlug = getAgentId(c)
   try {
-    const resolved = await resolveBookmarkedWorkspacePath(
+    const resolved = await resolveBookmarkedWorkspaceEntry(
       agentSlug,
       parsed.data.root,
       parsed.data.path,
@@ -6503,7 +6385,7 @@ agents.patch('/:id/folders/directory', AgentAdmin(), async (c) => {
 
   const agentSlug = getAgentId(c)
   try {
-    const resolved = await resolveBookmarkedWorkspacePath(
+    const resolved = await resolveBookmarkedWorkspaceEntry(
       agentSlug,
       parsed.data.root,
       parsed.data.path,
@@ -6545,7 +6427,7 @@ agents.delete('/:id/folders/directory', AgentAdmin(), async (c) => {
 
   const agentSlug = getAgentId(c)
   try {
-    const resolved = await resolveBookmarkedWorkspacePath(
+    const resolved = await resolveBookmarkedWorkspaceEntry(
       agentSlug,
       parsed.data.root,
       parsed.data.path,
@@ -6586,11 +6468,21 @@ agents.post('/:id/folders/reveal-path', AgentAdmin(), async (c) => {
       parsed.data.root,
       parsed.data.path,
     )
-    const sourceStat = await fs.promises.lstat(resolved.hostCurrentPath)
+    // The resolver has confirmed the entry sits inside the workspace and was
+    // not reached through a link. Where it is on this machine is then a host
+    // question, as it is for open-directory.
+    if (!resolved.stat) {
+      throw new WorkspaceFolderAccessError('File or directory not found', 404)
+    }
+    const hostPath = path.join(
+      containerHost.workspaceHostPath(agentSlug),
+      ...normalizeWorkspacePath(resolved.currentPath).split('/').filter(Boolean),
+    )
+    const sourceStat = await fs.promises.lstat(hostPath)
     if (sourceStat.isSymbolicLink() || (!sourceStat.isDirectory() && !sourceStat.isFile())) {
       throw new WorkspaceFolderAccessError('File or directory not found', 404)
     }
-    return c.json({ hostPath: resolved.canonicalCurrentPath })
+    return c.json({ hostPath: await fs.promises.realpath(hostPath) })
   } catch (error) {
     const accessError = error instanceof WorkspaceFolderAccessError
       ? error
@@ -6620,29 +6512,15 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
       return c.json({ error: 'File path is required' }, 400)
     }
 
-
-    const workspaceDir = getAgentWorkspaceDir(agentSlug)
-    const fullPath = path.resolve(workspaceDir, filePath)
-
-    // Security: ensure path doesn't escape workspace. A bare startsWith() check
-    // is unsafe because a sibling directory can share the workspace path prefix
-    // (e.g. workspace "agent" vs sibling "agent-victim"), so confirm genuine
-    // containment via isPathWithinDir (path.relative based).
-    if (!isPathWithinDir(workspaceDir, fullPath)) {
-      return c.json({ error: 'Invalid path' }, 400)
-    }
-
-    const canonicalWorkspace = await fs.promises.realpath(workspaceDir).catch(() => null)
-    const canonicalFile = await fs.promises.realpath(fullPath).catch(() => null)
-    if (!canonicalWorkspace || !canonicalFile) {
-      return c.json({ error: 'File not found' }, 404)
-    }
-    if (!isPathWithinDir(canonicalWorkspace, canonicalFile)) {
-      return c.json({ error: 'Invalid path' }, 400)
-    }
-
-    const stat = await fs.promises.stat(canonicalFile).catch(() => null)
-    if (!stat || !stat.isFile()) {
+    // Security: lexical containment is the actor's; a path that would leave
+    // the workspace fails as a WorkspaceFileError, answered as 400 in the
+    // catch below. The file is then served by its real location, as it
+    // always was: a link is followed only while it stays inside the
+    // workspace, and one that leaves it is the same 400.
+    const actor = agentRegistry.get(agentSlug)
+    const resolved = await actor.files.resolve(filePath)
+    const stat = resolved === null ? null : await actor.files.stat(resolved)
+    if (resolved === null || !stat || stat.kind !== 'file') {
       return c.json({ error: 'File not found' }, 404)
     }
 
@@ -6702,15 +6580,18 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
       c.header('Content-Range', `bytes ${start}-${end}/${size}`)
       c.header('Content-Length', (end - start + 1).toString())
       if (bodyless) return c.body(null, 206)
-      const chunk = Readable.toWeb(fs.createReadStream(canonicalFile, { start, end })) as ReadableStream
+      const chunk = await actor.files.read(resolved, { start, end })
       return c.body(chunk, 206)
     }
 
     c.header('Content-Length', size.toString())
     if (bodyless) return c.body(null)
-    const webStream = Readable.toWeb(fs.createReadStream(canonicalFile)) as ReadableStream
+    const webStream = await actor.files.read(resolved)
     return c.body(webStream)
   } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      return c.json({ error: error.status === 400 ? 'Invalid path' : error.message }, error.status)
+    }
     console.error('Failed to download file:', error)
     return c.json({ error: 'Failed to download file' }, 500)
   }
@@ -6731,12 +6612,12 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
     if (gated) return gated
 
 
-    const client = containerManager.getClient(agentSlug)
+    const actor = agentRegistry.get(agentSlug)
 
     if (decline) {
       const reason = declineReason || 'User declined to provide the file'
 
-      const rejectResponse = await client.fetch(
+      const rejectResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
@@ -6751,7 +6632,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject file request' }, 500)
       }
 
-      messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'declined')
+      agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'file', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -6762,7 +6643,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
 
     // Resolve the pending input request with the file path
     console.log(`[provide-file] Resolving pending request ${toolUseId} with path ${filePath}`)
-    const resolveResponse = await client.fetch(
+    const resolveResponse = await actor.container.fetch(
       `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
       {
         method: 'POST',
@@ -6783,7 +6664,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to notify agent of uploaded file' }, 500)
     }
     console.log(`[provide-file] Request ${toolUseId} resolved successfully`)
-    messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'answered')
+    agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true, filePath })
   } catch (error) {
@@ -6807,12 +6688,12 @@ agents.get('/:id/artifacts', AgentRead(), async (c) => {
 
     // Try to merge with running container data (provides live status + port)
     try {
-      const client = containerManager.getClient(slug)
+      const actor = agentRegistry.get(slug)
       // Use cached status to avoid spawning docker process
-      const info = containerManager.getCachedInfo(slug)
+      const info = agentRegistry.get(slug).container.status()
 
       if (info.status === 'running') {
-        const response = await client.fetch('/artifacts')
+        const response = await actor.container.fetch('/artifacts')
         if (response.ok) {
           const containerDashboards = await response.json() as ArtifactInfo[]
           const fsMap = new Map(fsDashboards.map(d => [d.slug, d]))
@@ -6852,10 +6733,10 @@ agents.delete('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
 
     // Stop the dashboard process in the container (if running), then delete files
     try {
-      const client = containerManager.getClient(agentSlug)
-      const info = containerManager.getCachedInfo(agentSlug)
+      const actor = agentRegistry.get(agentSlug)
+      const info = agentRegistry.get(agentSlug).container.status()
       if (info.status === 'running') {
-        await client.fetch(`/artifacts/${encodeURIComponent(artifactSlug)}`, { method: 'DELETE' })
+        await actor.container.fetch(`/artifacts/${encodeURIComponent(artifactSlug)}`, { method: 'DELETE' })
       }
     } catch {
       // Container not running — just delete files
@@ -6973,7 +6854,7 @@ agents.get('/:id/artifacts/:artifactSlug/widget/html', AgentRead(), async (c) =>
 
 // GET /api/agents/:id/artifacts/:artifactSlug/widget/snapshot?family=&scale=&scheme=
 // Rasterized PNG for native surfaces (the iOS widget extension). Served from
-// the host filesystem, so it works while the container sleeps.
+// the agent's workspace, so it works while the container sleeps.
 agents.get('/:id/artifacts/:artifactSlug/widget/snapshot', AgentRead(), async (c) => {
   const slug = getAgentId(c)
   const artifactSlug = c.req.param('artifactSlug')
@@ -6991,10 +6872,13 @@ agents.get('/:id/artifacts/:artifactSlug/widget/snapshot', AgentRead(), async (c
   const pngPath = widgetSnapshotPngPath(slug, artifactSlug, family, scheme, scale)
   if (!pngPath) return c.json({ error: 'Invalid artifact slug' }, 400)
   try {
-    const buf = await fs.promises.readFile(pngPath)
-    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins
-    const body = new Uint8Array(buf)
-    return new Response(body, {
+    // Where the file really is, the check this route always made; an
+    // unexpected read failure is still this route's 500, not an absence.
+    const realPngPath = await containedArtifactPath(slug, pngPath)
+    const png = realPngPath === null ? null : await agentRegistry.get(slug).files.getDoc(realPngPath)
+    if (png === null) return c.json({ error: 'No snapshot rendered yet' }, 404)
+    // The bytes as read, not a copy: a typed view is all Response needs.
+    return new Response(png as Uint8Array<ArrayBuffer>, {
       status: 200,
       headers: {
         'content-type': 'image/png',
@@ -7003,35 +6887,38 @@ agents.get('/:id/artifacts/:artifactSlug/widget/snapshot', AgentRead(), async (c
         ...(widget.validUntil ? { 'x-widget-valid-until': widget.validUntil } : {}),
       },
     })
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') return c.json({ error: 'No snapshot rendered yet' }, 404)
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return c.json({ error: error.message }, error.status)
     console.error('Failed to read widget snapshot:', error)
     return c.json({ error: 'Failed to read snapshot' }, 500)
   }
 })
 
 // GET /api/agents/:id/artifacts/:artifactSlug/screenshot.png - Serve the
-// auto-captured dashboard thumbnail directly from the host filesystem. Works
+// auto-captured dashboard thumbnail from the agent's workspace. Works
 // regardless of whether the container is running. Must be registered before
 // the catch-all artifact proxy below.
 agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const artifactSlug = c.req.param('artifactSlug')
 
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const artifactsDir = path.join(workspaceDir, 'artifacts')
-  const screenshotPath = path.join(artifactsDir, artifactSlug, 'screenshot.png')
-  // Belt-and-suspenders path traversal guard: slug cannot escape artifactsDir.
-  const resolved = path.resolve(screenshotPath)
-  if (!isPathWithinDir(artifactsDir, resolved)) {
+  // A bad slug is answered here; containment of the path is the actor's job.
+  // Any artifact the listing shows can have a thumbnail, whatever its
+  // directory is called, so this is the artifact rule, not the widget one.
+  const screenshotPath = resolveArtifactPath(agentSlug, artifactSlug, 'screenshot.png')
+  if (!screenshotPath) {
     return c.json({ error: 'Invalid artifact slug' }, 400)
   }
 
   try {
-    const buf = await fs.promises.readFile(screenshotPath)
-    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins
-    const body = new Uint8Array(buf)
-    return new Response(body, {
+    // Read as named, the way the plain read did; a real-location check for
+    // dashboard files is part of the containment work tracked separately.
+    const png = await agentRegistry.get(agentSlug).files.getDoc(screenshotPath)
+    if (png === null) {
+      return c.json({ error: 'No screenshot available' }, 404)
+    }
+    // The bytes as read, not a copy: a typed view is all Response needs.
+    return new Response(png as Uint8Array<ArrayBuffer>, {
       status: 200,
       headers: {
         'content-type': 'image/png',
@@ -7042,10 +6929,8 @@ agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c)
         'cache-control': 'private, max-age=60, must-revalidate',
       },
     })
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') {
-      return c.json({ error: 'No screenshot available' }, 404)
-    }
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return c.json({ error: error.message }, error.status)
     console.error('Failed to read dashboard screenshot:', error)
     return c.json({ error: 'Failed to read screenshot' }, 500)
   }
@@ -7059,7 +6944,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
   const basePath = `/api/agents/${agentSlug}`
   // For the dispatch-consent dialog: resolved at render time so the wrapper
   // never needs a client-side agent-info fetch (removed by the fast-path work).
-  const agentName = (await getAgent(agentSlug))?.frontmatter.name ?? null
+  const agentName = (await getAgentRecord(agentSlug))?.name ?? null
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -7245,9 +7130,9 @@ async function proxyArtifactRequest(c: any) {
   const agentSlug = getAgentId(c)
   const artifactSlug = c.req.param('artifactSlug')
 
-  const client = containerManager.getClient(agentSlug)
+  const actor = agentRegistry.get(agentSlug)
   // Use cached status to avoid spawning docker process
-  const info = containerManager.getCachedInfo(agentSlug)
+  const info = agentRegistry.get(agentSlug).container.status()
 
   if (info.status !== 'running') {
     return c.json({ error: 'Agent is not running. Start the agent to view this dashboard.' }, 503)
@@ -7319,7 +7204,7 @@ async function proxyArtifactRequest(c: any) {
     init.body = await c.req.arrayBuffer()
   }
 
-  const response = await client.fetch(containerPath, init)
+  const response = await actor.container.fetch(containerPath, init)
 
   const contentType = response.headers.get('content-type') || ''
   if (contentType.includes('text/html')) {
@@ -7370,15 +7255,15 @@ agents.get('/:id/browser/status', AgentRead(), async (c) => {
     const slug = getAgentId(c)
 
 
-    const client = containerManager.getClient(slug)
+    const actor = agentRegistry.get(slug)
     // Use cached status to avoid spawning docker process
-    const info = containerManager.getCachedInfo(slug)
+    const info = agentRegistry.get(slug).container.status()
 
     if (info.status !== 'running') {
       return c.json({ active: false, sessionId: null })
     }
 
-    const response = await client.fetch('/browser/status')
+    const response = await actor.container.fetch('/browser/status')
     return c.json(await response.json())
   } catch (error) {
     console.error('Failed to get browser status:', error)
@@ -7393,16 +7278,16 @@ agents.post('/:id/browser/:action', AgentUser(), async (c) => {
     const action = c.req.param('action')
 
 
-    const client = containerManager.getClient(slug)
+    const actor = agentRegistry.get(slug)
     // Use cached status to avoid spawning docker process
-    const info = containerManager.getCachedInfo(slug)
+    const info = agentRegistry.get(slug).container.status()
 
     if (info.status !== 'running') {
       return c.json({ error: 'Agent container is not running' }, 400)
     }
 
     const body = await c.req.json()
-    const response = await client.fetch(`/browser/${action}`, {
+    const response = await actor.container.fetch(`/browser/${action}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -7449,7 +7334,7 @@ setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 agents.get('/:id/pending-requests', AgentRead(), (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.query('sessionId') || undefined
-  return c.json({ requests: userInputRequestManager.getSnapshotForScope(agentSlug, sessionId) })
+  return c.json({ requests: agentRegistry.get(agentSlug).inputs.snapshot(sessionId) })
 })
 
 // =============================================================================
@@ -7457,6 +7342,10 @@ agents.get('/:id/pending-requests', AgentRead(), (c) => {
 // =============================================================================
 
 const MAX_DISMISS_REASON_LENGTH = 500
+
+agents.route('/', accountReauth)
+agents.route('/', mcpReauth)
+agents.route('/', agentMemoryRoutes)
 
 // POST /api/agents/:id/reauth-request/:requestId/dismiss - Give up on a parked
 // re-authentication card.
@@ -7480,7 +7369,7 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
     ? body.reason.trim().slice(0, MAX_DISMISS_REASON_LENGTH)
     : undefined
 
-  const open = userInputRequestManager.getOpenRequest(requestId)
+  const open = agentRegistry.get(slug).inputs.get(requestId)
   if (open) {
     // A caller-supplied id points into a global, cross-agent registry, so both
     // the kind and the agent are re-checked against the URL before we settle
@@ -7494,7 +7383,7 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
 
     const dismissed = open.kind === 'account_reauth_required'
       ? accountReauthManager.dismiss(requestId, slug, reason)
-      : mcpReauthManager.dismiss(requestId, slug, reason)
+      : agentRegistry.get(slug).inputs.mcpReauth.dismiss(requestId, reason)
 
     // An open envelope whose parked group is already gone (every waiter
     // aborted, but the entry outlived them) would otherwise leave the card —
@@ -7502,8 +7391,8 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
     // is the whole point of this route, so do it rather than report success
     // and change nothing.
     if (!dismissed) {
-      userInputRequestManager.resolve(requestId, 'cancelled')
-      messagePersister.syncAgentSessionsAwaiting(slug)
+      agentRegistry.get(slug).inputs.resolve(requestId, 'cancelled')
+      agentRegistry.get(slug).sessions.syncAwaiting()
     }
 
     // Short form, matching the `type` its sibling decline routes emit
@@ -7515,7 +7404,7 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
 
   // Settled or unknown. Report on it only through the route that could have
   // decided it, so settling a request never widens who may read its outcome.
-  const settled = userInputRequestManager.getRecentResolution(requestId)
+  const settled = agentRegistry.get(slug).inputs.recentResolution(requestId)
   if (settled && (
     settled.scope.agentSlug !== slug ||
     (settled.kind !== 'account_reauth_required' && settled.kind !== 'mcp_reauth_required')
@@ -7548,7 +7437,7 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   // Pass slug so submitDecision rejects cross-agent attempts. AgentUser()
   // verifies the URL agent only — without this, a user with role on agent A
   // could resolve agent B's review by sending B's reviewId to A's URL.
-  const success = reviewManager.submitDecision(reviewId, body.decision, slug)
+  const success = agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
   if (!success) {
     return c.json({ error: 'Review not found or already resolved' }, 404)
   }
@@ -7665,15 +7554,15 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 
   // Submit decision for this review (and any others matching the same scope).
   // Pass slug so submitDecision rejects cross-agent attempts (see B1).
-  reviewManager.submitDecision(reviewId, body.decision, slug)
-  reviewManager.resolveMatchingPending(slug, body.scope, body.decision)
+  agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
+  agentRegistry.get(slug).inputs.reviews.resolveMatching(body.scope, body.decision)
 
   // "Allow all <label>" saves a label sentinel ('*read'/'*write'/'*destructive'),
   // which the exact-scope sweep above can't match. Sweep sibling pending API
   // reviews whose matched scopes carry the same risk label so they resolve now
   // instead of timing out.
   if (isLabelDefaultKey(body.scope)) {
-    reviewManager.resolveMatchingPendingByLabel(slug, body.scope.slice(1) as ScopeLabel, body.decision)
+    agentRegistry.get(slug).inputs.reviews.resolveMatchingByLabel(body.scope.slice(1) as ScopeLabel, body.decision)
   }
 
   // For x-agent "always allow for all agents" (targetSlug=null on read/invoke),
@@ -7682,7 +7571,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   // (e.g. an in-flight read:bob when the user just allowed read:* globally)
   // also resolve immediately instead of timing out.
   if (body.reviewType === 'xagent' && body.xAgent && body.xAgent.targetSlug === null) {
-    reviewManager.resolveMatchingXAgentByOperation(slug, body.xAgent.operation, body.decision)
+    agentRegistry.get(slug).inputs.reviews.resolveMatchingXAgent(body.xAgent.operation, body.decision)
   }
 
   return c.json({ ok: true })
@@ -7750,8 +7639,8 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   const nameMap = new Map<string, string>()
   for (const targetSlug of targetSlugs) {
     if (visibleTargets && !visibleTargets.has(targetSlug)) continue
-    const target = await getAgent(targetSlug)
-    if (target) nameMap.set(targetSlug, target.frontmatter.name)
+    const target = await getAgentRecord(targetSlug)
+    if (target) nameMap.set(targetSlug, target.name)
   }
   return c.json({
     policies: rows
@@ -7772,7 +7661,7 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
 // edits never race through the whole-list replacement endpoint below.
 agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   const slug = getAgentId(c)
-  const callerAgent = await getAgent(slug)
+  const callerAgent = await getAgentRecord(slug)
   if (!callerAgent) {
     return c.json({ error: 'Agent not found' }, 404)
   }
@@ -7795,7 +7684,7 @@ agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
     return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
   }
   if (targetSlug !== null) {
-    const targetAgent = await getAgent(targetSlug)
+    const targetAgent = await getAgentRecord(targetSlug)
     if (!targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
       return c.json({ error: 'Agent not found' }, 404)
     }
@@ -7814,7 +7703,7 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   const slug = getAgentId(c)
   // AgentAdmin checks role but not existence (and is a no-op in non-auth mode);
   // assert here so a typo'd slug doesn't write phantom rows that nothing references.
-  const callerAgent = await getAgent(slug)
+  const callerAgent = await getAgentRecord(slug)
   if (!callerAgent) {
     return c.json({ error: 'Agent not found' }, 404)
   }
@@ -7829,7 +7718,7 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
       return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
     }
   }
-  replacePoliciesForCaller(slug, parsed.data.policies)
+  await replacePoliciesForCaller(slug, parsed.data.policies)
   return c.json({ ok: true })
 })
 
@@ -7848,7 +7737,7 @@ agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
   // target must also be VISIBLE to the caller (same anti-topology-leak rule
   // the GET route enforces) — and an invisible target returns the SAME 404 as
   // a nonexistent one, so this can't be used as an agent-existence oracle.
-  const [callerAgent, targetAgent] = await Promise.all([getAgent(slug), getAgent(targetSlug)])
+  const [callerAgent, targetAgent] = await Promise.all([getAgentRecord(slug), getAgentRecord(targetSlug)])
   if (!callerAgent || !targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
     return c.json({ error: 'Agent not found' }, 404)
   }
@@ -7885,10 +7774,9 @@ agents.put('/:id/bookmarks', AgentAdmin(), async (c) => {
     if (!parsed.success) {
       return c.json({ error: 'Invalid bookmarks', issues: parsed.error.issues }, 400)
     }
-    const bookmarksPath = path.join(getAgentWorkspaceDir(agentSlug), 'bookmarks.json')
     // Atomic write: full-replace from client input, but crash-safe so
     // an interrupted write can't truncate bookmarks.json.
-    await writeJsonFileAtomic(bookmarksPath, parsed.data)
+    await agentRegistry.get(agentSlug).files.putDoc(BOOKMARKS_FILE, JSON.stringify(parsed.data, null, 2))
     return c.json(parsed.data)
   } catch (error) {
     console.error('Failed to update bookmarks:', error)

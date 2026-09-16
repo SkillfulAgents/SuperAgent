@@ -1023,6 +1023,152 @@ export class UserInputRequestScenario implements MockScenario {
   }
 }
 
+export class SkillSubagentLifecycleScenario implements MockScenario {
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const suffix = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const skillToolId = `skill_${suffix}`
+    const agentToolId = `nested_agent_${suffix}`
+    const agentId = `agent_${suffix}`
+
+    client.writeJsonlEntry(sessionId, {
+      type: 'user',
+      message: { content: userMessage },
+      timestamp: new Date().toISOString(),
+    })
+    client.writeJsonlEntry(sessionId, {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: skillToolId,
+          name: 'Skill',
+          input: { skill: 'code-review' },
+        }],
+      },
+      timestamp: new Date().toISOString(),
+    })
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          message: {
+            content: [{
+              type: 'tool_use',
+              id: skillToolId,
+              name: 'Skill',
+              input: { skill: 'code-review' },
+            }],
+          },
+        },
+      })
+    }, 20)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          parent_tool_use_id: skillToolId,
+          message: {
+            content: [{
+              type: 'tool_use',
+              id: agentToolId,
+              name: 'Agent',
+              input: {
+                subagent_type: 'code-reviewer',
+                description: 'Review the changes',
+                run_in_background: true,
+              },
+            }],
+          },
+        },
+      })
+    }, 80)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: {
+          type: 'system',
+          subtype: 'task_started',
+          parent_tool_use_id: skillToolId,
+          task_id: agentId,
+          tool_use_id: agentToolId,
+          task_type: 'local_agent',
+          subagent_type: 'code-reviewer',
+          description: 'Review the changes',
+        },
+      })
+    }, 120)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: {
+          type: 'user',
+          parent_tool_use_id: skillToolId,
+          tool_use_result: {
+            status: 'async_launched',
+            isAsync: true,
+            agentId,
+          },
+          message: {
+            content: [{
+              type: 'tool_result',
+              tool_use_id: agentToolId,
+              content: `Agent launched successfully. agentId: ${agentId}`,
+            }],
+          },
+        },
+      })
+    }, 180)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: {
+          type: 'system',
+          subtype: 'task_progress',
+          parent_tool_use_id: skillToolId,
+          task_id: agentId,
+          tool_use_id: agentToolId,
+          subagent_type: 'code-reviewer',
+          summary: 'Inspecting tests',
+        },
+      })
+    }, 600)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: {
+          type: 'system',
+          subtype: 'task_notification',
+          parent_tool_use_id: skillToolId,
+          task_id: agentId,
+          tool_use_id: agentToolId,
+          status: 'completed',
+          summary: 'Review complete',
+        },
+      })
+    }, 5000)
+
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Review complete.' }] },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, 10000)
+  }
+}
+
 /**
  * A BACKGROUND subagent parks on request_browser_input while the main turn
  * stays open: the request arrives as a sidechain assistant message
@@ -2038,6 +2184,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         input: { subagent_type: 'Explore', description: 'Scan the repo', prompt: 'Look at the files and report back' },
       },
     ])],
+    ['skill launches nested subagent', new SkillSubagentLifecycleScenario()],
     ['subagent browser input', new SubagentBrowserInputScenario()],
     ['dead subagent input', new DeadSubagentInputScenario()],
     // Proxy review scenario for E2E tests
@@ -2555,6 +2702,16 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async fetch(fetchPath: string, init?: RequestInit): Promise<Response> {
     // Mock fetch - return appropriate empty responses based on path
+    if (fetchPath === '/env' && init?.method === 'POST') {
+      try {
+        const body = JSON.parse(String(init.body)) as { key: string; value: string }
+        if (body.key === 'CONNECTED_ACCOUNTS' || body.key === 'REMOTE_MCPS') {
+          this.writeMockRecord({ type: 'connectionEnvironment', agentSlug: this.config.agentId, key: body.key, value: body.value })
+        }
+      } catch {
+        // A malformed body has no connection snapshot to record.
+      }
+    }
 
     // Workspace entry mutations are executed inside the real agent container.
     // The E2E mock has no container namespace, so mirror the operation against
@@ -3298,6 +3455,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     if (!session) return { interrupted: false, processKept: false }
 
     const hadTurnInFlight = this.busySessions.has(sessionId)
+    this.writeMockRecord({
+      type: 'interruptSession', agentSlug: this.config.agentId, sessionId,
+      scope: options?.scope ?? 'turn', hadTurnInFlight,
+    })
     // 'turn' keeps the process and its background tasks (the real CLI honors
     // perTaskStopAffordance); 'all' replaces it, so every task dies with it.
     const processKept = (options?.scope ?? 'turn') === 'turn'
@@ -3367,6 +3528,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     sessionId: string,
     callback: (message: StreamMessage) => void
   ): { unsubscribe: () => void; ready: Promise<void> } {
+    // The real container refuses a stream for a session it does not have, so the
+    // attach fails before any send. Resolving here hid the stuck-chat regression.
+    if (!this.sessions.has(sessionId)) {
+      return { unsubscribe: () => {}, ready: Promise.reject(new Error('Session not found')) }
+    }
     let callbacks = this.streamCallbacks.get(sessionId)
     if (!callbacks) {
       callbacks = new Set()
@@ -3406,4 +3572,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Events (inherited from EventEmitter)
   // on, off are already available from EventEmitter
+}
+
+// Recording-only scenario; ordinary E2E runs keep the default registry.
+if (process.env.E2E_MOCK === 'true' && process.env.E2E_CONNECTION_REPLACEMENT_DEMO === 'true') {
+  void import('./mock-connection-replacement-scenario').then(({ registerConnectionReplacementDemo }) => {
+    registerConnectionReplacementDemo()
+  })
 }

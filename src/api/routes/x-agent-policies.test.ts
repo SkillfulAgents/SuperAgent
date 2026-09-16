@@ -74,6 +74,12 @@ const mockGetAgent = vi.fn()
 vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: vi.fn(async () => true),
   getAgent: (...args: unknown[]) => mockGetAgent(...args),
+  // The policy routes read identity from the catalog record; project the
+  // CLAUDE.md-shaped fixtures the tests hand getAgent.
+  getAgentRecord: async (...args: unknown[]) => {
+    const agent = (await mockGetAgent(...args)) as { slug: string; frontmatter: { name: string } } | null
+    return agent ? { slug: agent.slug, name: agent.frontmatter.name, createdAt: new Date(0), placement: { runtime: 'local', workspaceHandle: null } } : null
+  },
   getAgentWithStatus: vi.fn(),
   listAgentsWithStatus: vi.fn(async () => []),
   createAgent: vi.fn(),
@@ -84,15 +90,18 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   getAgentClaudeMdContent: vi.fn(),
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: vi.fn(),
-    ensureRunning: vi.fn(),
-    getCachedInfo: vi.fn(() => ({ status: 'stopped', port: null })),
-    getHealthWarnings: vi.fn(() => []), isAgentStale: vi.fn(() => false),
-    removeClient: vi.fn(),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: vi.fn(),
+      ensureRunning: vi.fn(),
+      getCachedInfo: vi.fn(() => ({ status: 'stopped', port: null })),
+      getHealthWarnings: vi.fn(() => []),
+      removeClient: vi.fn(),
+    }),
+  }
+})
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {

@@ -25,6 +25,7 @@ export interface SubagentInfo {
   usage: { total_tokens: number; tool_uses: number; duration_ms: number } | null
   lastToolName: string | null
   resultText?: string | null
+  status?: 'running' | 'completed'
 }
 
 interface ApiRetryInfo {
@@ -41,7 +42,7 @@ interface ApiRetryInfo {
 export interface PeerUserMessage {
   uuid: string
   content: string
-  sender: { id: string; name?: string; email?: string }
+  sender: { id: string; name?: string; email?: string; image?: string | null }
   /** Sent while the agent was mid-turn — rendered as a queued ghost. */
   queued?: boolean
   /** Local arrival time — bounds the text-fallback match so an old identical-text message can't claim this ghost. */
@@ -66,7 +67,7 @@ interface StreamState {
   contextUsage: SessionUsage | null // Latest context window usage data
   activeSubagents: SubagentInfo[] // Currently running subagent(s) info
   completedSubagents: Set<string> | null // parentToolIds of completed subagents (for status logic)
-  typingUser: { id: string; name?: string } | null // User currently typing (auth mode shared agents)
+  typingUser: { id: string; name?: string; image?: string | null } | null // User currently typing (auth mode shared agents)
   peerUserMessages: PeerUserMessage[] // Messages from other users not yet seen in fetched messages
   apiRetry: ApiRetryInfo | null // Non-null while API is retrying a transient error
   backgroundTasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> // Active background Bash commands, dynamic workflows + background subagents
@@ -214,6 +215,7 @@ const sessionAutoApprovedComputerUseIds = new Map<string, Set<string>>()
 
 // Singleton EventSource connections per session (prevents duplicates from StrictMode/re-renders)
 const eventSources = new Map<string, EventSource>()
+const typingTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const refCounts = new Map<string, number>()
 
 // Owner token of the in-flight post-idle reconcile loop per session. A newer
@@ -431,6 +433,16 @@ function getOrCreateEventSource(
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)
         }
+        const connectedSubagents = Array.isArray(data.activeSubagents)
+          ? data.activeSubagents as SubagentInfo[]
+          : null
+        const connectedCompletedSubagents = connectedSubagents
+          ? new Set(
+              connectedSubagents
+                .filter((subagent) => subagent.status === 'completed' && subagent.parentToolId)
+                .map((subagent) => subagent.parentToolId!),
+            )
+          : (current?.completedSubagents ?? null)
         // Initial connection - get isActive from server
         streamStates.set(sessionId, {
           isActive: data.isActive ?? false,
@@ -446,8 +458,8 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
-          activeSubagents: current?.activeSubagents ?? [],
-          completedSubagents: current?.completedSubagents ?? null,
+          activeSubagents: connectedSubagents ?? (current?.activeSubagents ?? []),
+          completedSubagents: connectedCompletedSubagents,
           typingUser: current?.typingUser ?? null,
           peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
@@ -939,13 +951,15 @@ function getOrCreateEventSource(
         if (current) {
           streamStates.set(sessionId, { ...current, typingUser: data.sender })
           // Auto-clear after 5s if no follow-up
-          setTimeout(() => {
+          clearTimeout(typingTimers.get(sessionId))
+          typingTimers.set(sessionId, setTimeout(() => {
+            typingTimers.delete(sessionId)
             const latest = streamStates.get(sessionId)
             if (latest && latest.typingUser?.id === data.sender.id) {
               streamStates.set(sessionId, { ...latest, typingUser: null })
               streamListeners.get(sessionId)?.forEach((l) => l())
             }
-          }, 5000)
+          }, 5000))
         }
       }
       else if (data.type === 'messages_updated') {
@@ -1381,6 +1395,10 @@ function releaseEventSource(sessionId: string): void {
       eventSources.delete(key)
     }
     refCounts.delete(key)
+    clearTimeout(typingTimers.get(key))
+    typingTimers.delete(key)
+    const state = streamStates.get(key)
+    if (state) streamStates.set(key, { ...state, typingUser: null })
     // Symmetric cleanup for the refetch throttle: cancel a pending trailing
     // timer (nothing is mounted to refetch), settle its waiters so nothing can
     // ever hang on the joined promise, and drop the entry so the map stays

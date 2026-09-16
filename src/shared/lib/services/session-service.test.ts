@@ -28,13 +28,23 @@ import {
   updateSessionMetadata,
   getSessionMetadata,
   ensureSessionsDirectory,
-  findSessionAcrossAgents,
   removeMessage,
   removeToolCall,
   getSessionsByScheduledTask,
   getSessionForScheduledExecution,
   getSessionsByWebhookTrigger,
 } from './session-service'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+
+/**
+ * A registered session with no transcript counts as new for an hour after its
+ * registration (NEW_SESSION_GRACE_MS) and as deleted after that. Fixtures
+ * register at fixed dates, so the tests that list them pin the clock to
+ * shortly after.
+ */
+function nowIs(iso: string): void {
+  vi.spyOn(Date, 'now').mockReturnValue(new Date(iso).getTime())
+}
 
 describe('session-service', () => {
   let testDir: string
@@ -62,6 +72,7 @@ describe('session-service', () => {
     // Clean up temp directory
     await fs.promises.rm(testDir, { recursive: true, force: true })
 
+    vi.restoreAllMocks()
     // Reset module cache
     vi.resetModules()
   })
@@ -117,9 +128,9 @@ describe('session-service', () => {
         { recursive: true }
       )
 
-      await registerSession('test-agent', 'session-123', 'My Session')
+      await registerSession(createLocalSessionStore('test-agent'), 'session-123', 'My Session')
 
-      const metadata = await getSessionMetadata('test-agent', 'session-123')
+      const metadata = await getSessionMetadata(createLocalSessionStore('test-agent'), 'session-123')
       expect(metadata?.name).toBe('My Session')
       expect(metadata?.createdAt).toBeDefined()
     })
@@ -130,9 +141,9 @@ describe('session-service', () => {
         { recursive: true }
       )
 
-      await registerSession('test-agent', 'session-123')
+      await registerSession(createLocalSessionStore('test-agent'), 'session-123')
 
-      const metadata = await getSessionMetadata('test-agent', 'session-123')
+      const metadata = await getSessionMetadata(createLocalSessionStore('test-agent'), 'session-123')
       expect(metadata?.name).toBe('New Session')
     })
 
@@ -142,14 +153,14 @@ describe('session-service', () => {
         { recursive: true }
       )
 
-      await registerSession('test-agent', 'session-123', 'Scheduled Run', {
+      await registerSession(createLocalSessionStore('test-agent'), 'session-123', 'Scheduled Run', {
         isScheduledExecution: true,
         scheduledTaskId: 'task-abc',
         scheduledTaskName: 'Daily report',
         scheduledExecutionAt: '2026-01-24T02:00:00.000Z',
       })
 
-      const metadata = await getSessionMetadata('test-agent', 'session-123')
+      const metadata = await getSessionMetadata(createLocalSessionStore('test-agent'), 'session-123')
       expect(metadata).toMatchObject({
         name: 'Scheduled Run',
         isScheduledExecution: true,
@@ -163,7 +174,7 @@ describe('session-service', () => {
 
   describe('isSessionRegistered', () => {
     it('returns false when session not registered', async () => {
-      const result = await isSessionRegistered('test-agent', 'nonexistent')
+      const result = await isSessionRegistered(createLocalSessionStore('test-agent'), 'nonexistent')
       expect(result).toBe(false)
     })
 
@@ -171,7 +182,7 @@ describe('session-service', () => {
       await createSessionMetadata('test-agent', SAMPLE_SESSION_METADATA)
 
       const result = await isSessionRegistered(
-        'test-agent',
+        createLocalSessionStore('test-agent'),
         '519f8756-a16e-41ff-99de-9fe599dedae5'
       )
       expect(result).toBe(true)
@@ -183,13 +194,13 @@ describe('session-service', () => {
       await createSessionMetadata('test-agent', SAMPLE_SESSION_METADATA)
 
       await updateSessionMetadata(
-        'test-agent',
+        createLocalSessionStore('test-agent'),
         '519f8756-a16e-41ff-99de-9fe599dedae5',
         { name: 'Updated Name' }
       )
 
       const metadata = await getSessionMetadata(
-        'test-agent',
+        createLocalSessionStore('test-agent'),
         '519f8756-a16e-41ff-99de-9fe599dedae5'
       )
       expect(metadata?.name).toBe('Updated Name')
@@ -201,13 +212,13 @@ describe('session-service', () => {
       await createSessionMetadata('test-agent', SAMPLE_SESSION_METADATA)
 
       await updateSessionMetadata(
-        'test-agent',
+        createLocalSessionStore('test-agent'),
         '519f8756-a16e-41ff-99de-9fe599dedae5',
         { starred: true }
       )
 
       const metadata = await getSessionMetadata(
-        'test-agent',
+        createLocalSessionStore('test-agent'),
         '519f8756-a16e-41ff-99de-9fe599dedae5'
       )
       expect(metadata?.starred).toBe(true)
@@ -216,7 +227,7 @@ describe('session-service', () => {
 
   describe('getSessionMetadata', () => {
     it('returns null for non-existent session', async () => {
-      const metadata = await getSessionMetadata('test-agent', 'nonexistent')
+      const metadata = await getSessionMetadata(createLocalSessionStore('test-agent'), 'nonexistent')
       expect(metadata).toBeNull()
     })
 
@@ -224,7 +235,7 @@ describe('session-service', () => {
       await createSessionMetadata('test-agent', SAMPLE_SESSION_METADATA)
 
       const metadata = await getSessionMetadata(
-        'test-agent',
+        createLocalSessionStore('test-agent'),
         '519f8756-a16e-41ff-99de-9fe599dedae5'
       )
       expect(metadata?.name).toBe('Simple Math Question')
@@ -239,7 +250,7 @@ describe('session-service', () => {
     it('returns empty array when no sessions exist', async () => {
       await createSessionsDir('test-agent')
 
-      const sessions = await listSessions('test-agent')
+      const sessions = await listSessions(createLocalSessionStore('test-agent'))
       expect(sessions).toEqual([])
     })
 
@@ -250,7 +261,7 @@ describe('session-service', () => {
         SAMPLE_JSONL_ENTRIES
       )
 
-      const sessions = await listSessions('test-agent')
+      const sessions = await listSessions(createLocalSessionStore('test-agent'))
 
       expect(sessions.length).toBe(1)
       expect(sessions[0].id).toBe('519f8756-a16e-41ff-99de-9fe599dedae5')
@@ -267,7 +278,7 @@ describe('session-service', () => {
       }
       await createSessionFile('test-agent', 'session-voice-first', [notice, ...SAMPLE_JSONL_ENTRIES])
 
-      const session = await getSession('test-agent', 'session-voice-first')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'session-voice-first')
 
       expect(session?.name).toBe('Whats 1+1?')
     })
@@ -286,7 +297,7 @@ describe('session-service', () => {
         },
       })
 
-      const sessions = await listSessions('test-agent')
+      const sessions = await listSessions(createLocalSessionStore('test-agent'))
 
       expect(sessions[0].name).toBe('Simple Math Question')
     })
@@ -298,13 +309,14 @@ describe('session-service', () => {
         SAMPLE_JSONL_ENTRIES
       )
 
-      const sessions = await listSessions('test-agent')
+      const sessions = await listSessions(createLocalSessionStore('test-agent'))
 
       // No metadata name → falls back to 'New Session'
       expect(sessions[0].name).toBe('New Session')
     })
 
     it('includes registered sessions without JSONL files', async () => {
+      nowIs('2026-01-24T10:30:00.000Z')
       // Create sessions dir but no JSONL
       await createSessionsDir('test-agent')
       await createSessionMetadata('test-agent', {
@@ -314,12 +326,63 @@ describe('session-service', () => {
         },
       })
 
-      const sessions = await listSessions('test-agent')
+      const sessions = await listSessions(createLocalSessionStore('test-agent'))
 
       expect(sessions.length).toBe(1)
       expect(sessions[0].id).toBe('pending-session')
       expect(sessions[0].name).toBe('Pending Session')
       expect(sessions[0].messageCount).toBe(0)
+    })
+
+    it('treats a registration older than the grace window with no transcript as deleted, and prunes it', async () => {
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'orphaned': { name: 'Transcript gone', createdAt: '2026-01-24T10:00:00.000Z' },
+        'pending': { name: 'Just registered', createdAt: '2026-01-24T13:00:00.000Z' },
+        'unparsable': { name: 'Unknown age', createdAt: 'not-a-date' },
+      })
+      nowIs('2026-01-24T13:30:00.000Z')
+
+      const store = createLocalSessionStore('test-agent')
+      expect((await listSessions(store)).map((s) => s.id).sort()).toEqual(['pending', 'unparsable'])
+      expect(await getSession(store, 'orphaned')).toBeNull()
+      expect(await sessionIsKnown(store, 'orphaned')).toBe(false)
+      expect(await sessionIsKnown(store, 'pending')).toBe(true)
+
+      // The listing drops the entry from the document in the background; a
+      // transcript that appears in between is kept.
+      await vi.waitFor(async () => {
+        expect(Object.keys(await readSessionMetadata(store)).sort()).toEqual(['pending', 'unparsable'])
+      })
+    })
+
+    it('keeps an orphaned entry whose transcript appears while the prune waits for the document', async () => {
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'late': { name: 'Named before streaming', starred: true, createdAt: '2026-01-24T10:00:00.000Z' },
+      })
+      nowIs('2026-01-24T13:30:00.000Z')
+      const store = createLocalSessionStore('test-agent')
+
+      // Another update holds the document; the prune the listing starts has
+      // to wait behind it, and in the meantime the transcript arrives.
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      const held = store.config.update('sessionMetadata', async (current) => {
+        await gate
+        return current
+      })
+      expect((await listSessions(store)).map((s) => s.id)).toEqual([])
+      await createSessionFile('test-agent', 'late', SAMPLE_JSONL_ENTRIES)
+      release()
+      await held
+      // Queued after the prune's own update, so it has run by the time this resolves.
+      await store.config.update('sessionMetadata', (current) => current)
+
+      expect(await readSessionMetadata(store)).toMatchObject({
+        late: { name: 'Named before streaming', starred: true },
+      })
+      expect((await listSessions(store)).map((s) => s.id)).toEqual(['late'])
     })
 
     it('ignores an unparsable metadata createdAt and keeps a real list date', async () => {
@@ -328,7 +391,7 @@ describe('session-service', () => {
         'test-session': { name: 'Named', createdAt: 'not-a-date' },
       })
 
-      const [listed] = await listSessions('test-agent')
+      const [listed] = await listSessions(createLocalSessionStore('test-agent'))
 
       expect(listed).toBeDefined()
       expect(Number.isNaN(listed.createdAt.getTime())).toBe(false)
@@ -346,22 +409,23 @@ describe('session-service', () => {
         'x-agent-session': { name: 'X-Agent', invokedByAgentSlug: 'caller-agent' },
       })
 
-      const allSessions = await listSessions('test-agent')
+      const allSessions = await listSessions(createLocalSessionStore('test-agent'))
       expect(allSessions.length).toBe(4)
 
-      const filtered = await listSessions('test-agent', { excludeAutomated: true })
+      const filtered = await listSessions(createLocalSessionStore('test-agent'), { excludeAutomated: true })
       expect(filtered.length).toBe(1)
       expect(filtered[0].name).toBe('Manual')
     })
 
     it('excludes automated metadata-only sessions (no JSONL) when excludeAutomated is set', async () => {
+      nowIs('2026-01-24T10:30:00.000Z')
       await createSessionsDir('test-agent')
       await createSessionMetadata('test-agent', {
         'manual-pending': { name: 'Manual Pending', createdAt: '2026-01-24T10:00:00.000Z' },
         'scheduled-pending': { name: 'Scheduled Pending', createdAt: '2026-01-24T11:00:00.000Z', isScheduledExecution: true, scheduledTaskId: 'task-2' },
       })
 
-      const filtered = await listSessions('test-agent', { excludeAutomated: true })
+      const filtered = await listSessions(createLocalSessionStore('test-agent'), { excludeAutomated: true })
       expect(filtered.length).toBe(1)
       expect(filtered[0].name).toBe('Manual Pending')
     })
@@ -385,7 +449,7 @@ describe('session-service', () => {
         },
       })
 
-      const filtered = await listSessions('test-agent', { excludeAutomated: true })
+      const filtered = await listSessions(createLocalSessionStore('test-agent'), { excludeAutomated: true })
       expect(filtered.length).toBe(2)
       const names = filtered.map(s => s.name)
       expect(names).toContain('Manual')
@@ -394,6 +458,7 @@ describe('session-service', () => {
     })
 
     it('includes promoted metadata-only sessions (no JSONL) when excludeAutomated is set', async () => {
+      nowIs('2026-01-24T10:30:00.000Z')
       await createSessionsDir('test-agent')
       await createSessionMetadata('test-agent', {
         'promoted-pending': {
@@ -411,12 +476,13 @@ describe('session-service', () => {
         },
       })
 
-      const filtered = await listSessions('test-agent', { excludeAutomated: true })
+      const filtered = await listSessions(createLocalSessionStore('test-agent'), { excludeAutomated: true })
       expect(filtered.length).toBe(1)
       expect(filtered[0].name).toBe('Promoted Pending')
     })
 
     it('filters newer hidden automations before ordering and limit', async () => {
+      nowIs('2026-01-24T10:30:00.000Z')
       await createSessionsDir('test-agent')
       await createSessionMetadata('test-agent', {
         'manual-visible': {
@@ -440,7 +506,7 @@ describe('session-service', () => {
         },
       })
 
-      const sessions = await listSessions('test-agent', {
+      const sessions = await listSessions(createLocalSessionStore('test-agent'), {
         excludeAutomated: true,
         sortBy: 'last_activity_at',
         limit: 1,
@@ -450,6 +516,7 @@ describe('session-service', () => {
     })
 
     it('keeps promoted automation eligible before ordering and limit', async () => {
+      nowIs('2026-01-24T10:30:00.000Z')
       await createSessionsDir('test-agent')
       await createSessionMetadata('test-agent', {
         'manual-visible': {
@@ -466,7 +533,7 @@ describe('session-service', () => {
         },
       })
 
-      const sessions = await listSessions('test-agent', {
+      const sessions = await listSessions(createLocalSessionStore('test-agent'), {
         excludeAutomated: true,
         sortBy: 'last_activity_at',
         limit: 1,
@@ -530,7 +597,7 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'old-session', oldEntries)
       await createSessionFile('test-agent', 'new-session', newEntries)
 
-      const sessions = await listSessions('test-agent')
+      const sessions = await listSessions(createLocalSessionStore('test-agent'))
 
       expect(sessions[0].id).toBe('new-session')
       expect(sessions[1].id).toBe('old-session')
@@ -541,7 +608,7 @@ describe('session-service', () => {
     it('returns null for non-existent session', async () => {
       await createSessionsDir('test-agent')
 
-      const session = await getSession('test-agent', 'nonexistent')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'nonexistent')
       expect(session).toBeNull()
     })
 
@@ -554,7 +621,7 @@ describe('session-service', () => {
       await createSessionMetadata('test-agent', SAMPLE_SESSION_METADATA)
 
       const session = await getSession(
-        'test-agent',
+        createLocalSessionStore('test-agent'),
         '519f8756-a16e-41ff-99de-9fe599dedae5'
       )
 
@@ -572,7 +639,7 @@ describe('session-service', () => {
         SAMPLE_JSONL_ENTRIES
       )
 
-      const session = await getSession('test-agent', 'test-session')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'test-session')
 
       expect(session?.createdAt.toISOString()).toBe('2026-01-24T01:30:58.661Z')
       expect(session?.lastActivityAt.toISOString()).toBe(
@@ -586,7 +653,7 @@ describe('session-service', () => {
         'test-session': { name: 'Named', createdAt: '2026-01-24T01:31:30.000Z' },
       })
 
-      const session = await getSession('test-agent', 'test-session')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'test-session')
 
       // Registration time wins (it is what the list already shows); lastActivity
       // still comes from the transcript.
@@ -600,7 +667,7 @@ describe('session-service', () => {
         'test-session': { name: 'Named', createdAt: 'not-a-date' },
       })
 
-      const session = await getSession('test-agent', 'test-session')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'test-session')
 
       expect(session?.createdAt.toISOString()).toBe('2026-01-24T01:30:58.661Z')
       expect(session?.lastActivityAt.toISOString()).toBe('2026-01-24T01:31:19.827Z')
@@ -612,7 +679,7 @@ describe('session-service', () => {
         'settling-session': { name: 'Brand New', createdAt: 'not-a-date' },
       })
 
-      const session = await getSession('test-agent', 'settling-session')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'settling-session')
 
       expect(session).not.toBeNull()
       expect(Number.isNaN(session!.createdAt.getTime())).toBe(false)
@@ -624,7 +691,7 @@ describe('session-service', () => {
         'test-session': { name: 'On Disk', createdAt: '2026-01-24T01:31:30.000Z' },
       })
 
-      const session = await getSession('test-agent', 'test-session', {
+      const session = await getSession(createLocalSessionStore('test-agent'), 'test-session', {
         metadata: { name: 'Preloaded', createdAt: '2026-02-01T00:00:00.000Z' },
       })
 
@@ -633,6 +700,7 @@ describe('session-service', () => {
     })
 
     it('returns an empty session for a registered session with no JSONL yet', async () => {
+      nowIs('2026-06-18T12:30:00.000Z')
       // A just-created session is registered in metadata before the agent
       // streams its first message (which is what writes the JSONL). getSession
       // must report it as existing (empty) — parity with listSessions — rather
@@ -645,7 +713,7 @@ describe('session-service', () => {
         },
       })
 
-      const session = await getSession('test-agent', 'settling-session')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'settling-session')
 
       expect(session).not.toBeNull()
       expect(session?.id).toBe('settling-session')
@@ -664,7 +732,7 @@ describe('session-service', () => {
         'half-written': { name: 'No CreatedAt' },
       })
 
-      const session = await getSession('test-agent', 'half-written')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'half-written')
       expect(session).toBeNull()
     })
 
@@ -695,7 +763,7 @@ describe('session-service', () => {
         },
       ])
 
-      const session = await getSession('test-agent', 'wide-session')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'wide-session')
 
       expect(session?.messageCount).toBe(3)
       expect(session?.createdAt.toISOString()).toBe('2026-02-01T10:00:00.000Z')
@@ -728,7 +796,7 @@ describe('session-service', () => {
         },
       ])
 
-      const session = await getSession('test-agent', 'tool-first')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'tool-first')
 
       expect(session?.name).toBe('The actual prompt')
       expect(session?.messageCount).toBe(3)
@@ -747,7 +815,7 @@ describe('session-service', () => {
         },
       ])
 
-      const session = await getSession('test-agent', 'long-name')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'long-name')
       expect(session?.name).toBe(`${'a'.repeat(50)}...`)
     })
 
@@ -779,7 +847,7 @@ describe('session-service', () => {
         },
       ])
 
-      const session = await getSession('test-agent', 'queued-session')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'queued-session')
 
       expect(session?.messageCount).toBe(2)
       // The queued command is the last activity, so it moves the timestamp.
@@ -793,7 +861,7 @@ describe('session-service', () => {
         `${JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-02-05T10:00:00.000Z', message: { role: 'user', content: 'hello' } })}\n{"type":"assistant","timestamp":"2026-02-05T10`
       )
 
-      const session = await getSession('test-agent', 'torn')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'torn')
 
       expect(session?.messageCount).toBe(1)
       expect(session?.name).toBe('hello')
@@ -804,7 +872,7 @@ describe('session-service', () => {
     it('returns empty array for non-existent session', async () => {
       await createSessionsDir('test-agent')
 
-      const messages = await getSessionMessages('test-agent', 'nonexistent')
+      const messages = await getSessionMessages(createLocalSessionStore('test-agent'), 'nonexistent')
       expect(messages).toEqual([])
     })
 
@@ -815,7 +883,7 @@ describe('session-service', () => {
         SAMPLE_JSONL_ENTRIES
       )
 
-      const messages = await getSessionMessages('test-agent', 'test-session')
+      const messages = await getSessionMessages(createLocalSessionStore('test-agent'), 'test-session')
 
       expect(messages.length).toBe(4)
       expect(messages[0].type).toBe('user')
@@ -831,7 +899,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'test-session', entriesWithMeta)
 
-      const messages = await getSessionMessages('test-agent', 'test-session')
+      const messages = await getSessionMessages(createLocalSessionStore('test-agent'), 'test-session')
 
       expect(messages.length).toBe(4)
       expect(messages.every((m) => m.type === 'user' || m.type === 'assistant')).toBe(
@@ -846,7 +914,7 @@ describe('session-service', () => {
         SAMPLE_JSONL_WITH_TOOL_USE
       )
 
-      const messages = await getSessionMessages('test-agent', 'tool-session')
+      const messages = await getSessionMessages(createLocalSessionStore('test-agent'), 'tool-session')
 
       expect(messages.length).toBe(4)
 
@@ -905,7 +973,7 @@ describe('session-service', () => {
       ]
       await createSessionFile('test-agent', 'queued-session', entries)
 
-      const messages = await getSessionMessages('test-agent', 'queued-session')
+      const messages = await getSessionMessages(createLocalSessionStore('test-agent'), 'queued-session')
 
       expect(messages.length).toBe(5)
       const queued = messages[4]
@@ -914,6 +982,33 @@ describe('session-service', () => {
       expect(queued.uuid).toBe('queue-source-uuid')
       expect(queued.timestamp).toBe('2025-01-01T00:01:00.000Z')
       expect(queued.message.content).toEqual([{ type: 'text', text: 'Queued mid-turn message' }])
+    })
+
+    it('keeps the fork stamp on a queued_command copied into a fork', async () => {
+      const entries = [
+        ...SAMPLE_JSONL_ENTRIES,
+        {
+          type: 'attachment',
+          uuid: 'attachment-entry-uuid',
+          parentUuid: null,
+          sessionId: 'forked-session',
+          timestamp: '2025-01-01T00:01:00.000Z',
+          attachment: {
+            type: 'queued_command',
+            prompt: 'Queued before the fork',
+            source_uuid: 'queue-source-uuid',
+            commandMode: 'prompt',
+          },
+          forkedFrom: { sessionId: 'source-session', messageUuid: 'old-attachment-uuid' },
+        },
+      ]
+      await createSessionFile('test-agent', 'forked-session', entries)
+
+      const messages = await getSessionMessages(createLocalSessionStore('test-agent'), 'forked-session')
+
+      const queued = messages[messages.length - 1]
+      expect(queued.type).toBe('user')
+      expect(queued.forkedFrom).toEqual({ sessionId: 'source-session', messageUuid: 'old-attachment-uuid' })
     })
   })
 
@@ -947,7 +1042,7 @@ describe('session-service', () => {
     it('returns the trailing page and a cursor when more remain', async () => {
       await createSessionFile('test-agent', 'page-session', makeThread(10))
 
-      const page = await getSessionMessagesPage('test-agent', 'page-session', { limit: 5 })
+      const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 5 })
       expect(page.messages.map((m) => m.id)).toEqual(['a-7', 'u-8', 'a-8', 'u-9', 'a-9'])
       expect(page.nextCursor).toBe('a-7')
     })
@@ -955,7 +1050,7 @@ describe('session-service', () => {
     it('returns the page before a cursor', async () => {
       await createSessionFile('test-agent', 'page-session', makeThread(10))
 
-      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+      const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 5,
         cursor: 'a-7',
       })
@@ -966,7 +1061,7 @@ describe('session-service', () => {
     it('returns no cursor on the oldest page', async () => {
       await createSessionFile('test-agent', 'page-session', makeThread(3))
 
-      const page = await getSessionMessagesPage('test-agent', 'page-session', { limit: 20 })
+      const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 20 })
       expect(page.messages).toHaveLength(6)
       expect(page.nextCursor).toBeNull()
     })
@@ -982,7 +1077,7 @@ describe('session-service', () => {
       }
       await createSessionFile('test-agent', 'page-session', [prefix, ...makeThread(20)])
 
-      const page = await getSessionMessagesPage('test-agent', 'page-session', { limit: 4 })
+      const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 4 })
       expect(page.messages.map((m) => m.id)).toEqual(['u-18', 'a-18', 'u-19', 'a-19'])
       expect(page.messages.some((m) => m.id === 'huge-prefix')).toBe(false)
       expect(page.nextCursor).toBe('u-18')
@@ -1039,7 +1134,7 @@ describe('session-service', () => {
         ...meta,
       ])
 
-      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 5 })
+      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 5 })
       expect(first.messages.map((m) => m.id)).not.toContain('X-1')
       expect(first.messages[0]?.id).toBe('X-0')
       expect(first.nextCursor).toBe('X-0')
@@ -1048,7 +1143,7 @@ describe('session-service', () => {
         content: { text: 'leading' },
       })
 
-      const older = await getSessionMessagesPage('test-agent', 'page-session', {
+      const older = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 5,
         cursor: first.nextCursor!,
       })
@@ -1058,7 +1153,7 @@ describe('session-service', () => {
 
     it('returns an empty terminal page when the cursor id has vanished', async () => {
       await createSessionFile('test-agent', 'page-session', makeThread(40))
-      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+      const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 5,
         cursor: 'vanished-id',
       })
@@ -1071,12 +1166,12 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'page-session', makeThread(300))
 
       const loaded = new Set<string>()
-      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 5 })
+      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 5 })
       for (const m of first.messages) loaded.add(m.id)
 
       let cursor = first.nextCursor
       for (let i = 0; i < 300 && cursor; i++) {
-        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
           limit: 5,
           cursor,
         })
@@ -1097,7 +1192,7 @@ describe('session-service', () => {
       const controller = new AbortController()
       controller.abort()
       await expect(
-        getSessionMessagesPage('test-agent', 'page-session', {
+        getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
           limit: 5,
           signal: controller.signal,
         })
@@ -1108,7 +1203,7 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'page-session', makeThread(10))
 
       const controller = new AbortController()
-      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+      const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 5,
         signal: controller.signal,
       })
@@ -1121,7 +1216,7 @@ describe('session-service', () => {
 
       // ~1KB budget against ~180-byte rows: each window holds a handful of
       // items, far fewer than the requested limit.
-      const first = await getSessionMessagesPage('test-agent', 'page-session', {
+      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 20,
         byteBudget: 1024,
       })
@@ -1132,7 +1227,7 @@ describe('session-service', () => {
       const collected = [...first.messages.map((m) => m.id)]
       let cursor = first.nextCursor
       for (let i = 0; i < 100 && cursor; i++) {
-        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
           limit: 20,
           cursor,
           byteBudget: 1024,
@@ -1160,7 +1255,7 @@ describe('session-service', () => {
       }
       await createSessionFile('test-agent', 'page-session', [...makeThread(5), giant])
 
-      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+      const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 5,
         byteBudget: 1024,
       })
@@ -1169,7 +1264,7 @@ describe('session-service', () => {
       expect(page.messages.map((m) => m.id)).toEqual(['a-giant'])
       expect(page.nextCursor).toBe('a-giant')
 
-      const older = await getSessionMessagesPage('test-agent', 'page-session', {
+      const older = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 5,
         cursor: 'a-giant',
         byteBudget: 1024,
@@ -1205,21 +1300,21 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'page-session', entries)
 
       // Reference: one page big enough to hold everything.
-      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      const full = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 100 })
       expect(full.messages.map((m) => m.id)).toEqual([
         'u-0', 'a-0', 'u-1', 'A1a', 'qc-u', 'a-2', 'mr-1', 'cb-1', 'info-1', 'u-3', 'a-3',
       ])
 
       // Small pages + small budget: the same items must come back, in order,
       // with the split assistant still merged and its tool result attached.
-      const first = await getSessionMessagesPage('test-agent', 'page-session', {
+      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 3,
         byteBudget: 600,
       })
       const collected = [...first.messages]
       let cursor = first.nextCursor
       for (let i = 0; i < 50 && cursor; i++) {
-        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
           limit: 3,
           cursor,
           byteBudget: 600,
@@ -1247,11 +1342,11 @@ describe('session-service', () => {
       const six = makeThread(3)
       await createSessionFile('test-agent', 'page-session', [...six, ...six])
 
-      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 3 })
+      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 3 })
       const collected = [...first.messages.map((m) => m.id)]
       let cursor = first.nextCursor
       for (let i = 0; i < 10 && cursor; i++) {
-        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
           limit: 3,
           cursor,
         })
@@ -1277,14 +1372,14 @@ describe('session-service', () => {
         { type: 'system', uuid: 'info2', subtype: 'informational', content: 'note two', isMeta: false, timestamp: ts(4) },
       ])
 
-      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      const full = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 100 })
       expect(full.messages.map((m) => m.id)).toEqual(['u-0', 'mr', 'cb', 'info1', 'info2'])
 
-      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 1 })
+      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 1 })
       const collected = [...first.messages.map((m) => m.id)]
       let cursor = first.nextCursor
       for (let i = 0; i < 10 && cursor; i++) {
-        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
           limit: 1,
           cursor,
         })
@@ -1311,7 +1406,7 @@ describe('session-service', () => {
         { type: 'assistant', uuid: 'a-done', timestamp: ts(14), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
       ])
 
-      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+      const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 2,
         cursor: 'qc-2',
       })
@@ -1338,7 +1433,7 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'page-session', rows)
 
       // budget 1024 → hard cap 2048, far below the ~20KB result gap.
-      const first = await getSessionMessagesPage('test-agent', 'page-session', {
+      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 5,
         byteBudget: 1024,
       })
@@ -1347,7 +1442,7 @@ describe('session-service', () => {
       let cursor = first.nextCursor
       let hops = 0
       for (let i = 0; i < 5 && cursor; i++) {
-        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
           limit: 5,
           cursor,
           byteBudget: 1024,
@@ -1375,7 +1470,7 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'page-session', rows)
 
       // budget 512 -> hard cap 1024, far below the trailing 10KB result run.
-      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+      const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 5,
         byteBudget: 512,
       })
@@ -1398,10 +1493,10 @@ describe('session-service', () => {
         { type: 'user', uuid: 'N', timestamp: ts(4), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'newest' } },
       ])
 
-      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 2 })
+      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 2 })
       expect(first.messages.map((m) => m.id)).toEqual(['Q', 'N'])
 
-      const older = await getSessionMessagesPage('test-agent', 'page-session', {
+      const older = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 2,
         cursor: first.nextCursor!,
       })
@@ -1428,12 +1523,12 @@ describe('session-service', () => {
         sys('info2', 'informational', 5, { content: 'note two' }),
       ])
 
-      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
-      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 1 })
+      const full = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 100 })
+      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 1 })
       const collected = [...first.messages.map((m) => m.id)]
       let cursor = first.nextCursor
       for (let i = 0; i < 10 && cursor; i++) {
-        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
           limit: 1,
           cursor,
         })
@@ -1470,8 +1565,8 @@ describe('session-service', () => {
       )
       await createSessionFile('test-agent', 'page-session', rows)
 
-      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
-      const first = await getSessionMessagesPage('test-agent', 'page-session', {
+      const full = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 100 })
+      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 5,
         byteBudget: 512,
       })
@@ -1479,7 +1574,7 @@ describe('session-service', () => {
       const collected = [...first.messages.map((m) => m.id)]
       let cursor = first.nextCursor
       for (let i = 0; i < 10 && cursor; i++) {
-        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
           limit: 5,
           cursor,
           byteBudget: 512,
@@ -1508,13 +1603,13 @@ describe('session-service', () => {
         { type: 'assistant', uuid: 'newer-a', timestamp: ts(7), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'newer r' }] } },
       ])
 
-      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      const full = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 100 })
       for (const [limit, byteBudget] of [[2, 400], [3, 700], [1, 400]] as const) {
-        const first = await getSessionMessagesPage('test-agent', 'page-session', { limit, byteBudget })
+        const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit, byteBudget })
         const collected = [...first.messages.map((m) => m.id)]
         let cursor = first.nextCursor
         for (let i = 0; i < 15 && cursor; i++) {
-          const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
             limit,
             cursor,
             byteBudget,
@@ -1545,12 +1640,12 @@ describe('session-service', () => {
       rows.push({ type: 'user', uuid: 'N', timestamp: ts(20), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'after' } })
       await createSessionFile('test-agent', 'page-session', rows)
 
-      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      const full = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 100 })
       expect(full.messages.map((m) => m.id)).toEqual(['U', 'A', 'c4', 'N'])
 
-      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 2 })
+      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 2 })
       expect(first.messages.map((m) => m.id)).toEqual(['c4', 'N'])
-      const older = await getSessionMessagesPage('test-agent', 'page-session', {
+      const older = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 2,
         cursor: first.nextCursor!,
       })
@@ -1580,14 +1675,14 @@ describe('session-service', () => {
         boundary('c4', 5), X,
       ])
 
-      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      const full = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 100 })
       expect(full.messages.map((m) => m.id)).toEqual(['U', 'A', 'c4', 'X'])
 
-      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 2 })
+      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 2 })
       const collected = [...first.messages.map((m) => m.id)]
       let cursor = first.nextCursor
       for (let i = 0; i < 10 && cursor; i++) {
-        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
           limit: 2,
           cursor,
         })
@@ -1613,7 +1708,7 @@ describe('session-service', () => {
       ]
       await createSessionFile('test-agent', 'page-session', entries)
 
-      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+      const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 2,
         cursor: 'qc-2',
       })
@@ -1656,7 +1751,7 @@ describe('session-service', () => {
     it('returns upserts at-or-after the anchor plus items appended since', async () => {
       await createSessionFile('test-agent', 'delta-session', makeThread(10))
 
-      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+      const delta = await getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'delta-session', {
         after: 'u-8',
       })
       expect(delta.resync).toBeUndefined()
@@ -1698,7 +1793,7 @@ describe('session-service', () => {
       ]
       await createSessionFile('test-agent', 'delta-session', base)
 
-      const before = await getSessionMessagesDelta('test-agent', 'delta-session', {
+      const before = await getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'delta-session', {
         after: 'q-1',
       })
       // Defensive widening: the open tool call before the anchor is re-emitted.
@@ -1721,7 +1816,7 @@ describe('session-service', () => {
         },
       ])
 
-      const after = await getSessionMessagesDelta('test-agent', 'delta-session', {
+      const after = await getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'delta-session', {
         after: 'q-1',
       })
       expect(after.messages.map((m) => m.id)).toEqual(['X', 'q-1'])
@@ -1744,7 +1839,7 @@ describe('session-service', () => {
         },
       ])
 
-      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+      const delta = await getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'delta-session', {
         after: 'info-1',
       })
       expect(delta.messages.map((m) => m.id)).toEqual(['a-2', 'info-1'])
@@ -1755,7 +1850,7 @@ describe('session-service', () => {
       // 200 pairs = 400 raw lines, past the initial 128-line window.
       await createSessionFile('test-agent', 'delta-session', makeThread(200))
 
-      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+      const delta = await getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'delta-session', {
         after: 'u-30',
       })
       expect(delta.resync).toBeUndefined()
@@ -1767,7 +1862,7 @@ describe('session-service', () => {
     it('answers resync when the anchor id is not in the transcript', async () => {
       await createSessionFile('test-agent', 'delta-session', makeThread(10))
 
-      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+      const delta = await getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'delta-session', {
         after: 'vanished-id',
       })
       expect(delta).toEqual({ messages: [], anchor: null, resync: true })
@@ -1776,7 +1871,7 @@ describe('session-service', () => {
     it('answers resync when the transcript file is gone', async () => {
       await createSessionsDir('test-agent')
 
-      const delta = await getSessionMessagesDelta('test-agent', 'nonexistent', {
+      const delta = await getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'nonexistent', {
         after: 'u-1',
       })
       expect(delta).toEqual({ messages: [], anchor: null, resync: true })
@@ -1786,7 +1881,7 @@ describe('session-service', () => {
       // 5100 pairs = 10200 raw lines; u-0 sits beyond the 10k-line delta cap.
       await createSessionFile('test-agent', 'delta-session', makeThread(5100))
 
-      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+      const delta = await getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'delta-session', {
         after: 'u-0',
       })
       expect(delta).toEqual({ messages: [], anchor: null, resync: true })
@@ -1798,7 +1893,7 @@ describe('session-service', () => {
       const controller = new AbortController()
       controller.abort()
       await expect(
-        getSessionMessagesDelta('test-agent', 'delta-session', {
+        getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'delta-session', {
           after: 'u-8',
           signal: controller.signal,
         })
@@ -1849,7 +1944,7 @@ describe('session-service', () => {
         },
       ])
 
-      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+      const delta = await getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'delta-session', {
         after: 'q-1',
       })
       expect(delta.messages.map((m) => m.id)).toEqual(['S-0', 'q-1'])
@@ -1903,7 +1998,7 @@ describe('session-service', () => {
         lateResult,
       ])
 
-      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+      const delta = await getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'delta-session', {
         after: 'anchor-u',
       })
       expect(delta.resync).toBeUndefined()
@@ -1933,7 +2028,7 @@ describe('session-service', () => {
         },
       ])
 
-      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+      const delta = await getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'delta-session', {
         after: 'u-5099',
       })
       expect(delta.resync).toBeUndefined()
@@ -1956,7 +2051,7 @@ describe('session-service', () => {
         },
       ])
 
-      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+      const delta = await getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'delta-session', {
         after: 'u-2',
       })
       expect(delta.resync).toBeUndefined()
@@ -1992,7 +2087,7 @@ describe('session-service', () => {
         },
       ])
 
-      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+      const delta = await getSessionMessagesDelta(createLocalSessionStore('test-agent'), 'delta-session', {
         after: 'u-1',
       })
       expect(delta.messages.map((m) => m.id)).toEqual(['u-1', 'a-1', 'X-0'])
@@ -2004,7 +2099,7 @@ describe('session-service', () => {
     it('returns false for non-existent session', async () => {
       await createSessionsDir('test-agent')
 
-      const result = await deleteSession('test-agent', 'nonexistent')
+      const result = await deleteSession(createLocalSessionStore('test-agent'), 'nonexistent')
       expect(result).toBe(false)
     })
 
@@ -2015,10 +2110,10 @@ describe('session-service', () => {
         SAMPLE_JSONL_ENTRIES
       )
 
-      const result = await deleteSession('test-agent', 'test-session')
+      const result = await deleteSession(createLocalSessionStore('test-agent'), 'test-session')
 
       expect(result).toBe(true)
-      expect(await sessionExists('test-agent', 'test-session')).toBe(false)
+      expect(await sessionExists(createLocalSessionStore('test-agent'), 'test-session')).toBe(false)
     })
 
     it('removes session from metadata', async () => {
@@ -2029,10 +2124,10 @@ describe('session-service', () => {
       )
       await createSessionMetadata('test-agent', SAMPLE_SESSION_METADATA)
 
-      await deleteSession('test-agent', '519f8756-a16e-41ff-99de-9fe599dedae5')
+      await deleteSession(createLocalSessionStore('test-agent'), '519f8756-a16e-41ff-99de-9fe599dedae5')
 
       const metadata = await getSessionMetadata(
-        'test-agent',
+        createLocalSessionStore('test-agent'),
         '519f8756-a16e-41ff-99de-9fe599dedae5'
       )
       expect(metadata).toBeNull()
@@ -2046,17 +2141,17 @@ describe('session-service', () => {
         'dangling-session': { name: 'Dangling', createdAt: '2026-01-24T10:00:00.000Z' },
       })
 
-      const result = await deleteSession('test-agent', 'dangling-session')
+      const result = await deleteSession(createLocalSessionStore('test-agent'), 'dangling-session')
 
       expect(result).toBe(true)
-      const metadata = await getSessionMetadata('test-agent', 'dangling-session')
+      const metadata = await getSessionMetadata(createLocalSessionStore('test-agent'), 'dangling-session')
       expect(metadata).toBeNull()
     })
   })
 
   describe('deleteSessionsBatch', () => {
     it('returns empty array when given no session IDs', async () => {
-      const result = await deleteSessionsBatch('test-agent', [])
+      const result = await deleteSessionsBatch(createLocalSessionStore('test-agent'), [])
       expect(result).toEqual([])
     })
 
@@ -2065,15 +2160,15 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'session-2', SAMPLE_JSONL_ENTRIES)
       await createSessionFile('test-agent', 'session-3', SAMPLE_JSONL_ENTRIES)
 
-      const result = await deleteSessionsBatch('test-agent', [
+      const result = await deleteSessionsBatch(createLocalSessionStore('test-agent'), [
         'session-1',
         'session-2',
       ])
 
       expect(result).toEqual(['session-1', 'session-2'])
-      expect(await sessionExists('test-agent', 'session-1')).toBe(false)
-      expect(await sessionExists('test-agent', 'session-2')).toBe(false)
-      expect(await sessionExists('test-agent', 'session-3')).toBe(true)
+      expect(await sessionExists(createLocalSessionStore('test-agent'), 'session-1')).toBe(false)
+      expect(await sessionExists(createLocalSessionStore('test-agent'), 'session-2')).toBe(false)
+      expect(await sessionExists(createLocalSessionStore('test-agent'), 'session-3')).toBe(true)
     })
 
     it('removes metadata entries for deleted sessions', async () => {
@@ -2085,9 +2180,9 @@ describe('session-service', () => {
         'session-3': { name: 'Third', createdAt: '2026-01-03T00:00:00Z' },
       })
 
-      await deleteSessionsBatch('test-agent', ['session-1', 'session-2'])
+      await deleteSessionsBatch(createLocalSessionStore('test-agent'), ['session-1', 'session-2'])
 
-      const metadata = await readSessionMetadata('test-agent')
+      const metadata = await readSessionMetadata(createLocalSessionStore('test-agent'))
       expect(metadata['session-1']).toBeUndefined()
       expect(metadata['session-2']).toBeUndefined()
       expect(metadata['session-3']).toBeDefined()
@@ -2103,10 +2198,10 @@ describe('session-service', () => {
         },
       })
 
-      const result = await deleteSessionsBatch('test-agent', ['missing-session'])
+      const result = await deleteSessionsBatch(createLocalSessionStore('test-agent'), ['missing-session'])
 
       expect(result).toEqual(['missing-session'])
-      const metadata = await readSessionMetadata('test-agent')
+      const metadata = await readSessionMetadata(createLocalSessionStore('test-agent'))
       expect(metadata['missing-session']).toBeUndefined()
     })
   })
@@ -2119,13 +2214,13 @@ describe('session-service', () => {
         SAMPLE_JSONL_ENTRIES
       )
 
-      await updateSessionName('test-agent', 'test-session', 'New Name')
+      await updateSessionName(createLocalSessionStore('test-agent'), 'test-session', 'New Name')
 
-      const metadata = await getSessionMetadata('test-agent', 'test-session')
+      const metadata = await getSessionMetadata(createLocalSessionStore('test-agent'), 'test-session')
       expect(metadata?.name).toBe('New Name')
       expect(metadata?.createdAt).toBeUndefined()
 
-      const session = await getSession('test-agent', 'test-session')
+      const session = await getSession(createLocalSessionStore('test-agent'), 'test-session')
       expect(session?.createdAt.toISOString()).toBe('2026-01-24T01:30:58.661Z')
     })
   })
@@ -2134,7 +2229,7 @@ describe('session-service', () => {
     it('returns false for non-existent session', async () => {
       await createSessionsDir('test-agent')
 
-      const exists = await sessionExists('test-agent', 'nonexistent')
+      const exists = await sessionExists(createLocalSessionStore('test-agent'), 'nonexistent')
       expect(exists).toBe(false)
     })
 
@@ -2145,7 +2240,7 @@ describe('session-service', () => {
         SAMPLE_JSONL_ENTRIES
       )
 
-      const exists = await sessionExists('test-agent', 'test-session')
+      const exists = await sessionExists(createLocalSessionStore('test-agent'), 'test-session')
       expect(exists).toBe(true)
     })
   })
@@ -2157,33 +2252,34 @@ describe('session-service', () => {
     it('agrees with getSession on a written transcript', async () => {
       await createSessionFile('test-agent', 'test-session', SAMPLE_JSONL_ENTRIES)
 
-      expect(await sessionIsKnown('test-agent', 'test-session')).toBe(true)
-      expect(await getSession('test-agent', 'test-session')).not.toBeNull()
+      expect(await sessionIsKnown(createLocalSessionStore('test-agent'), 'test-session')).toBe(true)
+      expect(await getSession(createLocalSessionStore('test-agent'), 'test-session')).not.toBeNull()
     })
 
     it('agrees with getSession on a registered session with no transcript yet', async () => {
+      nowIs('2026-06-18T12:30:00.000Z')
       await createSessionsDir('test-agent')
       await createSessionMetadata('test-agent', {
         'settling-session': { name: 'Brand New', createdAt: '2026-06-18T12:00:00.000Z' },
       })
 
-      expect(await sessionIsKnown('test-agent', 'settling-session')).toBe(true)
-      expect(await getSession('test-agent', 'settling-session')).not.toBeNull()
+      expect(await sessionIsKnown(createLocalSessionStore('test-agent'), 'settling-session')).toBe(true)
+      expect(await getSession(createLocalSessionStore('test-agent'), 'settling-session')).not.toBeNull()
     })
 
     it('agrees with getSession on a metadata entry with no createdAt', async () => {
       await createSessionsDir('test-agent')
       await createSessionMetadata('test-agent', { 'half-written': { name: 'No CreatedAt' } })
 
-      expect(await sessionIsKnown('test-agent', 'half-written')).toBe(false)
-      expect(await getSession('test-agent', 'half-written')).toBeNull()
+      expect(await sessionIsKnown(createLocalSessionStore('test-agent'), 'half-written')).toBe(false)
+      expect(await getSession(createLocalSessionStore('test-agent'), 'half-written')).toBeNull()
     })
 
     it('agrees with getSession on an unknown session', async () => {
       await createSessionsDir('test-agent')
 
-      expect(await sessionIsKnown('test-agent', 'nonexistent')).toBe(false)
-      expect(await getSession('test-agent', 'nonexistent')).toBeNull()
+      expect(await sessionIsKnown(createLocalSessionStore('test-agent'), 'nonexistent')).toBe(false)
+      expect(await getSession(createLocalSessionStore('test-agent'), 'nonexistent')).toBeNull()
     })
 
     it('never reads the transcript', async () => {
@@ -2192,7 +2288,7 @@ describe('session-service', () => {
       const openSpy = vi.spyOn(fs.promises, 'open')
 
       try {
-        expect(await sessionIsKnown('test-agent', 'test-session')).toBe(true)
+        expect(await sessionIsKnown(createLocalSessionStore('test-agent'), 'test-session')).toBe(true)
         expect(
           openSpy.mock.calls.some(([file]) => String(file).endsWith('test-session.jsonl')),
         ).toBe(false)
@@ -2204,7 +2300,7 @@ describe('session-service', () => {
 
   describe('ensureSessionsDirectory', () => {
     it('creates sessions directory structure', async () => {
-      await ensureSessionsDirectory('test-agent')
+      await ensureSessionsDirectory(createLocalSessionStore('test-agent'))
 
       const sessionsDir = path.join(
         testDir,
@@ -2222,46 +2318,7 @@ describe('session-service', () => {
     it('does not throw if directory already exists', async () => {
       await createSessionsDir('test-agent')
 
-      await expect(ensureSessionsDirectory('test-agent')).resolves.toBeUndefined()
-    })
-  })
-
-  describe('findSessionAcrossAgents', () => {
-    it('returns null when session not found', async () => {
-      await createSessionsDir('agent-1')
-      await createSessionsDir('agent-2')
-
-      const result = await findSessionAcrossAgents('nonexistent-session')
-      expect(result).toBeNull()
-    })
-
-    it('finds session and returns agent slug', async () => {
-      await createSessionFile('agent-1', 'session-in-1', SAMPLE_JSONL_ENTRIES)
-      await createSessionFile('agent-2', 'session-in-2', SAMPLE_JSONL_ENTRIES)
-
-      const result = await findSessionAcrossAgents('session-in-2')
-
-      expect(result).not.toBeNull()
-      expect(result?.agentSlug).toBe('agent-2')
-      expect(result?.session.id).toBe('session-in-2')
-    })
-
-    it('returns null when no agents exist', async () => {
-      // Ensure agents dir exists but is empty
-      await fs.promises.mkdir(path.join(testDir, 'agents'), { recursive: true })
-
-      const result = await findSessionAcrossAgents('any-session')
-      expect(result).toBeNull()
-    })
-
-    it('finds session in first agent when multiple agents have sessions', async () => {
-      await createSessionFile('agent-1', 'shared-session', SAMPLE_JSONL_ENTRIES)
-
-      const result = await findSessionAcrossAgents('shared-session')
-
-      expect(result).not.toBeNull()
-      expect(result?.agentSlug).toBe('agent-1')
-      expect(result?.session.id).toBe('shared-session')
+      await expect(ensureSessionsDirectory(createLocalSessionStore('test-agent'))).resolves.toBeUndefined()
     })
   })
 
@@ -2323,7 +2380,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'user-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'user-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -2361,7 +2418,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'queue-source-uuid')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'queue-source-uuid')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -2423,7 +2480,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'asst-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'asst-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -2490,7 +2547,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'asst-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'asst-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -2545,7 +2602,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'asst-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'asst-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -2601,7 +2658,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'asst-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'asst-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -2612,7 +2669,7 @@ describe('session-service', () => {
     it('returns false when message UUID is not found', async () => {
       await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_ENTRIES)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'nonexistent-uuid')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'nonexistent-uuid')
       expect(result).toBe(false)
 
       // Verify no changes were made
@@ -2623,7 +2680,7 @@ describe('session-service', () => {
     it('returns false when session file does not exist', async () => {
       await createSessionsDir('test-agent')
 
-      const result = await removeMessage('test-agent', 'nonexistent-session', 'any-uuid')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'nonexistent-session', 'any-uuid')
       expect(result).toBe(false)
     })
 
@@ -2631,7 +2688,7 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_ENTRIES)
 
       const firstUuid = SAMPLE_JSONL_ENTRIES[0].uuid
-      const result = await removeMessage('test-agent', 'sess-1', firstUuid)
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', firstUuid)
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -2643,7 +2700,7 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_ENTRIES)
 
       const lastUuid = SAMPLE_JSONL_ENTRIES[SAMPLE_JSONL_ENTRIES.length - 1].uuid
-      const result = await removeMessage('test-agent', 'sess-1', lastUuid)
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', lastUuid)
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -2665,7 +2722,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', singleEntry)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'only-msg')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'only-msg')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -2706,7 +2763,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'asst-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'asst-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -2800,7 +2857,7 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'sess-1', entries)
 
       // Remove using the UUID of the first part
-      const result = await removeMessage('test-agent', 'sess-1', 'asst-1-part-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'asst-1-part-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -2845,7 +2902,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'user-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'user-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -2881,7 +2938,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'asst-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'asst-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -2959,7 +3016,7 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'sess-1', entries)
 
       // Remove only asst-1 (tool call tc-A)
-      const result = await removeMessage('test-agent', 'sess-1', 'asst-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'asst-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -3005,7 +3062,7 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'sess-1', entries)
 
       // Remove the tool_result user entry directly by its uuid
-      const result = await removeMessage('test-agent', 'sess-1', 'tr-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'tr-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -3020,7 +3077,7 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_WITH_TOOL_USE)
 
       // Remove the assistant message with tool_use
-      const result = await removeMessage('test-agent', 'sess-1', 'assistant-msg-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'assistant-msg-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -3058,7 +3115,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeMessage('test-agent', 'sess-1', 'asst-1')
+      const result = await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', 'asst-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -3069,7 +3126,7 @@ describe('session-service', () => {
     it('writes valid JSONL after removal (each line is valid JSON)', async () => {
       await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_ENTRIES)
 
-      await removeMessage('test-agent', 'sess-1', SAMPLE_JSONL_ENTRIES[1].uuid)
+      await removeMessage(createLocalSessionStore('test-agent'), 'sess-1', SAMPLE_JSONL_ENTRIES[1].uuid)
 
       const sessionsDir = path.join(
         testDir,
@@ -3162,7 +3219,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeToolCall('test-agent', 'sess-1', 'tc-1')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tc-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -3228,7 +3285,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeToolCall('test-agent', 'sess-1', 'tc-1')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tc-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -3280,7 +3337,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeToolCall('test-agent', 'sess-1', 'tc-only')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tc-only')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -3326,7 +3383,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeToolCall('test-agent', 'sess-1', 'tc-2')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tc-2')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -3348,14 +3405,14 @@ describe('session-service', () => {
     it('returns false when tool call ID is not found', async () => {
       await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_WITH_TOOL_USE)
 
-      const result = await removeToolCall('test-agent', 'sess-1', 'nonexistent-tool-id')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'nonexistent-tool-id')
       expect(result).toBe(false)
     })
 
     it('returns false when session file does not exist', async () => {
       await createSessionsDir('test-agent')
 
-      const result = await removeToolCall('test-agent', 'nonexistent-session', 'any-tool-id')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'nonexistent-session', 'any-tool-id')
       expect(result).toBe(false)
     })
 
@@ -3395,7 +3452,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeToolCall('test-agent', 'sess-1', 'tc-1')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tc-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -3452,7 +3509,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeToolCall('test-agent', 'sess-1', 'tc-1')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tc-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -3465,7 +3522,7 @@ describe('session-service', () => {
     it('uses the SAMPLE_JSONL_WITH_TOOL_USE fixture correctly', async () => {
       await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_WITH_TOOL_USE)
 
-      const result = await removeToolCall('test-agent', 'sess-1', 'tool-1')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tool-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -3483,7 +3540,7 @@ describe('session-service', () => {
     it('writes valid JSONL after removal', async () => {
       await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_WITH_TOOL_USE)
 
-      await removeToolCall('test-agent', 'sess-1', 'tool-1')
+      await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tool-1')
 
       const sessionsDir = path.join(
         testDir,
@@ -3539,7 +3596,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeToolCall('test-agent', 'sess-1', 'tc-only')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tc-only')
       expect(result).toBe(true)
 
       const sessionsDir = path.join(
@@ -3579,7 +3636,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeToolCall('test-agent', 'sess-1', 'tc-orphan')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tc-orphan')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -3621,7 +3678,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeToolCall('test-agent', 'sess-1', 'tc-nonexistent')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tc-nonexistent')
       expect(result).toBe(false)
 
       // Entries should be unchanged
@@ -3673,7 +3730,7 @@ describe('session-service', () => {
 
       await createSessionFile('test-agent', 'sess-1', entries)
 
-      const result = await removeToolCall('test-agent', 'sess-1', 'tc-1')
+      const result = await removeToolCall(createLocalSessionStore('test-agent'), 'sess-1', 'tc-1')
       expect(result).toBe(true)
 
       const remaining = await readSessionEntries('test-agent', 'sess-1')
@@ -3698,7 +3755,7 @@ describe('session-service', () => {
         },
       })
 
-      const sessions = await getSessionsByScheduledTask('test-agent', 'task-abc')
+      const sessions = await getSessionsByScheduledTask(createLocalSessionStore('test-agent'), 'task-abc')
       expect(sessions).toEqual([])
     })
 
@@ -3718,7 +3775,7 @@ describe('session-service', () => {
         },
       })
 
-      const sessions = await getSessionsByScheduledTask('test-agent', 'task-abc')
+      const sessions = await getSessionsByScheduledTask(createLocalSessionStore('test-agent'), 'task-abc')
       expect(sessions.length).toBe(1)
       expect(sessions[0].id).toBe('sess-1')
     })
@@ -3748,7 +3805,7 @@ describe('session-service', () => {
         },
       })
 
-      const sessions = await getSessionsByScheduledTask('test-agent', 'task-abc')
+      const sessions = await getSessionsByScheduledTask(createLocalSessionStore('test-agent'), 'task-abc')
       expect(sessions.length).toBe(2)
       const ids = sessions.map((s) => s.id)
       expect(ids).toContain('sess-1')
@@ -3758,7 +3815,7 @@ describe('session-service', () => {
     it('returns empty array when no sessions exist for the agent', async () => {
       await createSessionsDir('test-agent')
 
-      const sessions = await getSessionsByScheduledTask('test-agent', 'task-abc')
+      const sessions = await getSessionsByScheduledTask(createLocalSessionStore('test-agent'), 'task-abc')
       expect(sessions).toEqual([])
     })
 
@@ -3774,7 +3831,7 @@ describe('session-service', () => {
         },
       })
 
-      const sessions = await getSessionsByScheduledTask('test-agent', 'task-abc')
+      const sessions = await getSessionsByScheduledTask(createLocalSessionStore('test-agent'), 'task-abc')
       expect(sessions.length).toBe(1)
       expect(sessions[0].id).toBe('sess-1')
     })
@@ -3814,7 +3871,7 @@ describe('session-service', () => {
       })
 
       const session = await getSessionForScheduledExecution(
-        'test-agent',
+        createLocalSessionStore('test-agent'),
         'task-abc',
         new Date('2026-01-24T02:00:00.000Z'),
       )
@@ -3835,7 +3892,7 @@ describe('session-service', () => {
       })
 
       const session = await getSessionForScheduledExecution(
-        'test-agent',
+        createLocalSessionStore('test-agent'),
         'task-abc',
         new Date('2026-01-24T02:00:00.000Z'),
       )
@@ -3861,7 +3918,7 @@ describe('session-service', () => {
         },
       })
 
-      const sessions = await getSessionsByWebhookTrigger('test-agent', 'trigger-abc')
+      const sessions = await getSessionsByWebhookTrigger(createLocalSessionStore('test-agent'), 'trigger-abc')
       expect(sessions.length).toBe(1)
       expect(sessions[0].id).toBe('sess-1')
     })
@@ -3877,7 +3934,7 @@ describe('session-service', () => {
         },
       })
 
-      const sessions = await getSessionsByWebhookTrigger('test-agent', 'trigger-abc')
+      const sessions = await getSessionsByWebhookTrigger(createLocalSessionStore('test-agent'), 'trigger-abc')
       expect(sessions).toHaveLength(1)
       expect(sessions[0].createdAt).toEqual(new Date('2026-07-30T19:44:31.000Z'))
     })
@@ -3892,7 +3949,7 @@ describe('session-service', () => {
         'wanted-1': { name: 'First', createdAt: '2026-01-01T00:00:00Z' },
       })
 
-      const sessions = await listSessionsByIds('test-agent', ['wanted-1', 'wanted-2'])
+      const sessions = await listSessionsByIds(createLocalSessionStore('test-agent'), ['wanted-1', 'wanted-2'])
       expect(sessions.map((s) => s.id).sort()).toEqual(['wanted-1', 'wanted-2'])
       const first = sessions.find((s) => s.id === 'wanted-1')
       expect(first?.name).toBe('First')
@@ -3902,7 +3959,7 @@ describe('session-service', () => {
     it('dedupes repeated ids and skips ids with no transcript and no registration', async () => {
       await createSessionFile('test-agent', 'real', SAMPLE_JSONL_ENTRIES)
 
-      const sessions = await listSessionsByIds('test-agent', ['real', 'real', 'ghost'])
+      const sessions = await listSessionsByIds(createLocalSessionStore('test-agent'), ['real', 'real', 'ghost'])
       expect(sessions.map((s) => s.id)).toEqual(['real'])
     })
 
@@ -3913,7 +3970,7 @@ describe('session-service', () => {
         'registered-empty': { name: 'Empty but real', createdAt: '2026-01-01T00:00:00Z' },
       })
 
-      const sessions = await listSessionsByIds('test-agent', ['artifact', 'registered-empty'])
+      const sessions = await listSessionsByIds(createLocalSessionStore('test-agent'), ['artifact', 'registered-empty'])
       expect(sessions.map((s) => s.id)).toEqual(['registered-empty'])
     })
 
@@ -3930,7 +3987,7 @@ describe('session-service', () => {
       })
 
       const sessions = await listSessionsByIds(
-        'test-agent',
+        createLocalSessionStore('test-agent'),
         ['cron-run', 'promoted', 'chat-run', 'x-agent-run'],
         { excludeAutomated: true },
       )
@@ -3938,11 +3995,12 @@ describe('session-service', () => {
     })
 
     it('falls back to registration metadata for sessions that have not streamed yet', async () => {
+      nowIs('2026-01-05T00:30:00.000Z')
       await createSessionMetadata('test-agent', {
         'registered-only': { name: 'Brand new', createdAt: '2026-01-05T00:00:00Z' },
       })
 
-      const sessions = await listSessionsByIds('test-agent', ['registered-only'])
+      const sessions = await listSessionsByIds(createLocalSessionStore('test-agent'), ['registered-only'])
       expect(sessions).toHaveLength(1)
       expect(sessions[0]).toMatchObject({ id: 'registered-only', name: 'Brand new', messageCount: 0 })
       expect(sessions[0].lastActivityAt).toEqual(new Date('2026-01-05T00:00:00Z'))
@@ -3951,7 +4009,7 @@ describe('session-service', () => {
     it('returns an empty list for no ids without reading anything', async () => {
       // No directories were created for this agent at all — an eager metadata
       // read would throw or create paths as a side effect.
-      await expect(listSessionsByIds('missing-agent', [])).resolves.toEqual([])
+      await expect(listSessionsByIds(createLocalSessionStore('missing-agent'), [])).resolves.toEqual([])
     })
   })
 })

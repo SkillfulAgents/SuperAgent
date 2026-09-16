@@ -3,6 +3,7 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import { ReauthDismissedError, reauthDismissedMessage } from './reauth-dismissal'
+import { McpReplacedError } from './mcp-replacement'
 
 export const MCP_REAUTH_TIMEOUT_MS = 5 * 60 * 1000
 
@@ -209,6 +210,17 @@ export class McpReauthManager {
         reauthDismissedMessage('MCP re-authentication', reason),
         reason,
       ),
+    })
+    return true
+  }
+
+  /** Settle this agent's waiters without resuming them against stale tools. */
+  replaceMcp(entryId: string, agentSlug: string, replacementMcpId: string): boolean {
+    const group = this.groups.get(entryId)
+    if (!group || group.agentSlug !== agentSlug) return false
+    this.settleGroup(group, 'answered', {
+      type: 'reject',
+      error: new McpReplacedError(replacementMcpId),
     })
     return true
   }

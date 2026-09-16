@@ -182,18 +182,36 @@ vi.mock('@shared/lib/db/schema', () => ({
   connectedAccounts: { id: 'id', providerConnectionId: 'provider_connection_id', providerName: 'provider_name', toolkitSlug: 'toolkit_slug' },
 }))
 
-// Mock container-manager (used by resolveContainerInput / rejectContainerInput)
+// Mock container-host (used by resolveContainerInput / rejectContainerInput)
 const mockContainerClientFetch = vi.fn<MockFn>(() => Promise.resolve({ ok: true }))
-vi.mock('./container-manager', () => ({
-  containerManager: {
-    getClient: () => ({
-      fetch: (...args: unknown[]) => mockContainerClientFetch(...args),
+vi.mock('./container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: () => ({
+        fetch: (...args: unknown[]) => mockContainerClientFetch(...args),
+      }),
     }),
-  },
-}))
+  }
+})
 
 // Import after mocks are set up
 import { messagePersister, redactStreamedToolInput, sessionKeyOf, WaitForIdleTimeoutError } from './message-persister'
+import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
+
+// The registry attaches the real stores; these tests drive the persister
+// alone, over in-memory stores kept per agent so a test can reach the one
+// the persister will use.
+const sessionStores = new Map<string, ReturnType<typeof createInMemorySessionStore>>()
+function storeFor(slug: string): ReturnType<typeof createInMemorySessionStore> {
+  let store = sessionStores.get(slug)
+  if (!store) {
+    store = createInMemorySessionStore(slug)
+    sessionStores.set(slug, store)
+  }
+  return store
+}
+messagePersister.attachSessionStores(storeFor)
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
@@ -341,7 +359,7 @@ describe('MessagePersister', () => {
         sessionId: SESSION_ID,
       })
 
-      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, timestamp)
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_SLUG }), SESSION_ID, timestamp)
     })
 
     it('records the session as active the moment a message is sent to it', () => {
@@ -357,7 +375,7 @@ describe('MessagePersister', () => {
 
       expect(mockRecordProvisionalSessionActivity).toHaveBeenCalledTimes(1)
       expect(mockRecordProvisionalSessionActivity).toHaveBeenCalledWith(
-        AGENT_SLUG,
+        expect.objectContaining({ slug: AGENT_SLUG }),
         SESSION_ID,
         Date.parse('2026-08-07T18:30:00.000Z'),
       )
@@ -377,7 +395,7 @@ describe('MessagePersister', () => {
       messagePersister.markSessionIdle(AGENT_SLUG, SESSION_ID)
 
       expect(mockRevertSessionActivity).toHaveBeenCalledTimes(1)
-      expect(mockRevertSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, mark)
+      expect(mockRevertSessionActivity).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_SLUG }), SESSION_ID, mark)
       expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
@@ -412,7 +430,8 @@ describe('MessagePersister', () => {
     it('refreshes a session that finished while detached from its transcript mtime, not the replay time', async () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockRecordSessionActivity.mockClear()
-      mockStat.mockResolvedValueOnce({ mtimeMs: 1_754_600_000_000, size: 4096 })
+      const transcriptStat = vi.spyOn(storeFor(AGENT_SLUG).files, 'stat')
+        .mockResolvedValueOnce({ kind: 'file', mtimeMs: 1_754_600_000_000, size: 4096 })
 
       mockClient._messageCallback!({
         type: 'message',
@@ -422,8 +441,8 @@ describe('MessagePersister', () => {
       })
       await vi.waitFor(() => expect(mockRecordSessionActivity).toHaveBeenCalled())
 
-      expect(mockStat).toHaveBeenCalledWith(expect.stringContaining(`${SESSION_ID}.jsonl`))
-      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, 1_754_600_000_000)
+      expect(transcriptStat).toHaveBeenCalledWith(expect.stringContaining(`${SESSION_ID}.jsonl`))
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_SLUG }), SESSION_ID, 1_754_600_000_000)
     })
 
     it('does not attribute a sidechain transcript frame to the parent session', () => {
@@ -440,7 +459,7 @@ describe('MessagePersister', () => {
 
   describe('completion notification response selection', () => {
     it('passes only the newest merged textual assistant response at authoritative idle', async () => {
-      mockStat.mockResolvedValueOnce({ size: 12_345 })
+      vi.spyOn(storeFor(AGENT_SLUG).files, 'stat').mockResolvedValueOnce({ kind: 'file', size: 12_345, mtimeMs: 0 })
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({
         type: 'system',
@@ -555,7 +574,7 @@ describe('MessagePersister', () => {
     })
 
     it('ignores the synthetic "No response requested." placeholder as a response candidate', async () => {
-      mockStat.mockResolvedValueOnce({ size: 12_345 })
+      vi.spyOn(storeFor(AGENT_SLUG).files, 'stat').mockResolvedValueOnce({ kind: 'file', size: 12_345, mtimeMs: 0 })
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({
         type: 'system',
@@ -600,9 +619,9 @@ describe('MessagePersister', () => {
     })
 
     it('dispatches completion without waiting for the transcript stat', async () => {
-      let resolveStat: ((value: { size: number }) => void) | undefined
-      mockStat.mockImplementationOnce(
-        () => new Promise<{ size: number }>((resolve) => {
+      let resolveStat: ((value: { kind: 'file'; size: number; mtimeMs: number }) => void) | undefined
+      vi.spyOn(storeFor(AGENT_SLUG).files, 'stat').mockImplementationOnce(
+        () => new Promise((resolve) => {
           resolveStat = resolve
         }),
       )
@@ -626,7 +645,7 @@ describe('MessagePersister', () => {
       expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
       const offset = vi.mocked(notificationManager.triggerSessionComplete)
         .mock.calls[0][2]?.responseTranscriptEndOffset
-      resolveStat?.({ size: 99 })
+      resolveStat?.({ kind: 'file', size: 99, mtimeMs: 0 })
       await expect(offset).resolves.toBe(99)
     })
 
@@ -885,7 +904,7 @@ describe('MessagePersister', () => {
         prevent_continuation: true,
       })
 
-      expect(mockAppendInformationalEntry).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, {
+      expect(mockAppendInformationalEntry).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_SLUG }), SESSION_ID, {
         uuid: 'info-uuid-1',
         content: 'UserPromptSubmit operation blocked by hook:\nCircuit breaker\n\nOriginal prompt: hello',
         level: 'warning',
@@ -1371,6 +1390,226 @@ describe('MessagePersister', () => {
   // ============================================================================
 
   describe('subagent completion detection', () => {
+    it('broadcasts lifecycle events for a background subagent launched inside a Skill', () => {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'skill-tool', name: 'Skill' },
+        },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        parent_tool_use_id: 'skill-tool',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'nested-agent-tool', name: 'Agent' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        parent_tool_use_id: 'skill-tool',
+        event: {
+          type: 'content_block_delta',
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"subagent_type":"code-reviewer"}',
+          },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        parent_tool_use_id: 'skill-tool',
+        event: { type: 'content_block_stop' },
+      })
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        parent_tool_use_id: 'skill-tool',
+        task_id: 'nested-agent-id',
+        tool_use_id: 'nested-agent-tool',
+        task_type: 'local_agent',
+        subagent_type: 'code-reviewer',
+        description: 'Review the changes',
+      })
+      mockClient._sendMessage({
+        type: 'user',
+        parent_tool_use_id: 'skill-tool',
+        tool_use_result: {
+          status: 'async_launched',
+          isAsync: true,
+          agentId: 'nested-agent-id',
+        },
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'nested-agent-tool',
+            content: 'Agent launched successfully. agentId: nested-agent-id',
+          }],
+        },
+      })
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([
+        expect.objectContaining({
+          taskId: 'nested-agent-id',
+          isSubagent: true,
+        }),
+      ])
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_progress',
+        parent_tool_use_id: 'skill-tool',
+        task_id: 'nested-agent-id',
+        tool_use_id: 'nested-agent-tool',
+        subagent_type: 'code-reviewer',
+        summary: 'Inspecting tests',
+        usage: { total_tokens: 100, tool_uses: 2, duration_ms: 500 },
+        last_tool_name: 'Read',
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        parent_tool_use_id: 'nested-agent-tool',
+        event: {
+          type: 'content_block_start',
+          content_block: {
+            type: 'tool_use',
+            id: 'webhook-tool',
+            name: 'mcp__user-input__create_webhook_endpoint',
+          },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        parent_tool_use_id: 'nested-agent-tool',
+        event: {
+          type: 'content_block_delta',
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"verification":{"secret":"whsec_supersecret","header":"x-sig"}}',
+          },
+        },
+      })
+      const activeSubagents = messagePersister.getActiveSubagents(AGENT_SLUG, SESSION_ID)
+      expect(activeSubagents).toEqual([
+        expect.objectContaining({
+          parentToolId: 'nested-agent-tool',
+          agentId: 'nested-agent-id',
+          subagentType: 'code-reviewer',
+          description: 'Review the changes',
+          progressSummary: 'Inspecting tests',
+          usage: { total_tokens: 100, tool_uses: 2, duration_ms: 500 },
+          lastToolName: 'Read',
+          streamingToolUse: expect.objectContaining({
+            id: 'webhook-tool',
+            name: 'mcp__user-input__create_webhook_endpoint',
+          }),
+        }),
+      ])
+      expect(activeSubagents[0].streamingToolUse?.partialInput).not.toContain('whsec_supersecret')
+      expect(activeSubagents[0].streamingToolUse?.partialInput).toContain('"secret":"***"')
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        parent_tool_use_id: 'skill-tool',
+        task_id: 'nested-agent-id',
+        tool_use_id: 'nested-agent-tool',
+        status: 'completed',
+        summary: 'Review complete',
+      })
+
+      expect(sseEvents.filter(e => e.type === 'subagent_started')).toEqual([
+        expect.objectContaining({
+          parentToolId: 'nested-agent-tool',
+          agentId: 'nested-agent-id',
+          subagentType: 'code-reviewer',
+          description: 'Review the changes',
+        }),
+      ])
+      expect(sseEvents.filter(e => e.type === 'subagent_progress')).toEqual([
+        expect.objectContaining({
+          parentToolId: 'nested-agent-tool',
+          summary: 'Inspecting tests',
+        }),
+      ])
+      expect(sseEvents.filter(e => e.type === 'subagent_completed')).toEqual([
+        expect.objectContaining({
+          parentToolId: 'nested-agent-tool',
+          agentId: 'nested-agent-id',
+          resultText: 'Review complete',
+        }),
+      ])
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.getActiveSubagents(AGENT_SLUG, SESSION_ID)).toEqual([
+        expect.objectContaining({
+          parentToolId: 'nested-agent-tool',
+          status: 'completed',
+        }),
+      ])
+
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      expect(messagePersister.getActiveSubagents(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
+    })
+
+    it('completes a foreground subagent from its Skill sidechain tool result', () => {
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: 'skill-tool',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use',
+            id: 'foreground-agent-tool',
+            name: 'Agent',
+            input: { subagent_type: 'Explore', description: 'Inspect files' },
+          }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        parent_tool_use_id: 'skill-tool',
+        task_id: 'foreground-agent-id',
+        tool_use_id: 'foreground-agent-tool',
+        task_type: 'local_agent',
+        subagent_type: 'Explore',
+        description: 'Inspect files',
+      })
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'user',
+        parent_tool_use_id: 'skill-tool',
+        tool_use_result: { status: 'completed', agentId: 'foreground-agent-id' },
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'foreground-agent-tool',
+            content: 'Inspection complete',
+          }],
+        },
+      })
+
+      expect(sseEvents.filter(e => e.type === 'subagent_completed')).toEqual([
+        expect.objectContaining({
+          parentToolId: 'foreground-agent-tool',
+          agentId: 'foreground-agent-id',
+          resultText: 'Inspection complete',
+        }),
+      ])
+      expect(messagePersister.getActiveSubagents(AGENT_SLUG, SESSION_ID)).toEqual([
+        expect.objectContaining({
+          parentToolId: 'foreground-agent-tool',
+          status: 'completed',
+        }),
+      ])
+    })
+
     it('broadcasts subagent_completed when tool_result matches pendingTaskToolId', async () => {
       // Set up Task tool tracking
       mockClient._sendMessage({
@@ -1460,7 +1699,7 @@ describe('MessagePersister', () => {
     it('fires subagent completion exactly once when task_updated is followed by task_notification', () => {
       startBackgroundSubagent()
       // The real capture emits task_updated then task_notification for the same
-      // subagent — the second must not double-fire (the first removes it).
+      // subagent — the second must not double-fire.
       mockClient._sendMessage({
         type: 'system', subtype: 'task_updated', task_id: 'bgsub', patch: { status: 'completed' },
       })
@@ -1468,6 +1707,40 @@ describe('MessagePersister', () => {
         type: 'system', subtype: 'task_notification', task_id: 'bgsub', tool_use_id: 'bg-tool', status: 'completed',
       })
       expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(1)
+    })
+
+    it('does not let a completed background run shadow a resumed run completion', () => {
+      startBackgroundSubagent()
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'bgsub',
+        patch: { status: 'completed' },
+      })
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'bgsub',
+        tool_use_id: 'send-tool',
+        task_type: 'local_agent',
+        subagent_type: 'general-purpose',
+        description: 'Resume background agent',
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'bgsub',
+        patch: { status: 'completed' },
+      })
+
+      expect(sseEvents.filter(e => e.type === 'subagent_completed')).toEqual([
+        expect.objectContaining({
+          parentToolId: 'send-tool',
+          agentId: 'bgsub',
+        }),
+      ])
     })
 
     it('completes an errored background launch instead of treating it as an async ack', () => {
@@ -4675,7 +4948,7 @@ describe('MessagePersister', () => {
       // Let the async promotion complete
       await vi.waitFor(() => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           { promotedToInteractive: true },
         )
@@ -4695,7 +4968,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           { promotedToInteractive: true },
         )
@@ -4714,7 +4987,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           { promotedToInteractive: true },
         )
@@ -4732,7 +5005,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           { promotedToInteractive: true },
         )
@@ -4748,9 +5021,9 @@ describe('MessagePersister', () => {
     // null path. mockImplementation survives clearAllMocks, so restore the
     // suite default afterwards.
     function withHiddenScheduledMetadata(agentSlug: string, sessionId: string): () => void {
-      vi.mocked(getSessionMetadata).mockImplementation((slug, id) =>
+      vi.mocked(getSessionMetadata).mockImplementation((store, id) =>
         Promise.resolve(
-          slug === agentSlug && id === sessionId
+          store.slug === agentSlug && id === sessionId
             ? ({ isScheduledExecution: true, scheduledTaskId: 'task-1' } as never)
             : null,
         ),
@@ -4797,7 +5070,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           { promotedToInteractive: true },
         )
@@ -4903,7 +5176,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(finalizeAutomationStatus).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           'succeeded',
         )
@@ -4938,7 +5211,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(finalizeAutomationStatus).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           'succeeded',
         )
@@ -4960,7 +5233,7 @@ describe('MessagePersister', () => {
       sendResult(true)
       await vi.waitFor(() => {
         expect(finalizeAutomationStatus).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           'failed',
         )
@@ -4977,7 +5250,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(finalizeAutomationStatus).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           'failed',
         )
@@ -9076,7 +9349,7 @@ describe('MessagePersister mid-turn recovery snapshot', () => {
     messagePersister.settleRecoveringSessions(AGENT_SLUG, [SESSION_ID])
     expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
     expect(messagePersister.isSessionRecovering(AGENT_SLUG, SESSION_ID)).toBe(false)
-    expect(finalizeAutomationStatus).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, 'failed')
+    expect(finalizeAutomationStatus).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_SLUG }), SESSION_ID, 'failed')
   })
 
   it('defers a fatal SIGKILL result to unexpected-death recovery', async () => {
@@ -9302,8 +9575,8 @@ describe('cross-agent isolation', () => {
         sessionId: SESSION_B1,
       })
 
-      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_B, SESSION_B1, timestamp)
-      expect(mockRecordSessionActivity).not.toHaveBeenCalledWith(AGENT_A, SESSION_B1, timestamp)
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_B }), SESSION_B1, timestamp)
+      expect(mockRecordSessionActivity).not.toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_A }), SESSION_B1, timestamp)
     })
   })
 })

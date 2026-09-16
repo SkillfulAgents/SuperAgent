@@ -16,7 +16,8 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { ChatInputBuilder } from './chat-input'
+const chatInput = new ChatInputBuilder(async () => undefined)
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 
 // `sanitizeUploadFilename` itself is unit-tested in utils/path-safety.test.ts
@@ -48,7 +49,7 @@ function workspacePaths() {
 
 async function writeToWorkspace(filename: string, data: Buffer): Promise<string> {
   // writeToWorkspace is private; reach it directly for the repro.
-  return (chatIntegrationManager as any).writeToWorkspace(AGENT_SLUG, filename, data)
+  return (chatInput as any).writeToWorkspace(AGENT_SLUG, filename, data)
 }
 
 describe('SUP-231 writeToWorkspace path containment', () => {

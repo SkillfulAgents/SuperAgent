@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   invokedByAgentSlug: undefined as string | undefined,
   isWidgetRepair: false,
   sessionIsActive: true,
+  forkedFromSessionId: undefined as string | undefined,
+  forkedFromSessionName: undefined as string | undefined,
 }))
 
 const agent: ApiAgent = {
@@ -51,6 +53,8 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
       invokedByAgentSlug: mocks.invokedByAgentSlug,
       isWidgetRepair: mocks.isWidgetRepair,
       isActive: mocks.sessionIsActive,
+      forkedFromSessionId: mocks.forkedFromSessionId,
+      forkedFromSessionName: mocks.forkedFromSessionName,
     },
   }),
 }))
@@ -144,6 +148,8 @@ describe('AgentHeader breadcrumbs', () => {
     mocks.invokedByAgentSlug = undefined
     mocks.isWidgetRepair = false
     mocks.sessionIsActive = true
+    mocks.forkedFromSessionId = undefined
+    mocks.forkedFromSessionName = undefined
     vi.clearAllMocks()
   })
 
@@ -236,6 +242,56 @@ describe('AgentHeader breadcrumbs', () => {
     )
 
     expect(screen.getByTestId('inbound-x-agent-breadcrumb')).toHaveTextContent('Called from Other Agents')
+  })
+
+  it('marks a forked session with an icon that opens a link to the source on hover', () => {
+    mocks.forkedFromSessionId = 'source-1'
+    mocks.forkedFromSessionName = 'Pricing'
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+
+    const indicator = screen.getByTestId('forked-from-indicator')
+    expect(screen.queryByTestId('forked-from-popover')).toBeNull()
+    fireEvent.pointerEnter(indicator, { pointerType: 'mouse' })
+    expect(screen.getByTestId('forked-from-popover')).toHaveTextContent('Branched from Pricing')
+    expect(screen.getByTestId('forked-from-link')).toHaveTextContent('Pricing')
+  })
+
+  it('opens the fork popover on click and names a deleted source without a link', () => {
+    mocks.forkedFromSessionId = 'source-1'
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('forked-from-indicator'))
+    expect(screen.getByTestId('forked-from-popover')).toHaveTextContent('Branched from a deleted conversation')
+    expect(screen.queryByTestId('forked-from-link')).toBeNull()
+  })
+
+  it('shows no fork icon for a session that is not a fork', () => {
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+    expect(screen.queryByTestId('forked-from-indicator')).toBeNull()
   })
 
   it('clips and hover-scrolls the complete breadcrumb trail as one unit', () => {

@@ -99,7 +99,7 @@ test.describe('read-aloud at the live edge', () => {
         }),
       }),
     )
-    await page.route('**/api/voice/tts-token', async (route) => {
+    await page.route('**/api/voice/tts-session', async (route) => {
       // Long enough for the connecting render to paint and settle on its own,
       // and for the menu-item click to return (WebKit takes most of a second
       // to close the menu) before the connecting state is asserted.

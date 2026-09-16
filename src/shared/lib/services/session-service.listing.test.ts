@@ -10,7 +10,7 @@
  * transcript). Every case here must keep passing regardless of how the list
  * is produced.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -20,6 +20,7 @@ import {
   listSessionsFromSummary,
   getSessionMessagesPage,
 } from './session-service'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
 // Both implementations must satisfy the same contract: listSessions stats
 // every transcript; listSessionsFromSummary reads the summary cache. Each
@@ -39,10 +40,14 @@ describe.each([
   })
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     if (originalEnv === undefined) delete process.env.SUPERAGENT_DATA_DIR
     else process.env.SUPERAGENT_DATA_DIR = originalEnv
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
+
+  /** A metadata-only session is listed only within the grace window after its registration. */
+  const nowIs = (iso: string) => vi.spyOn(Date, 'now').mockReturnValue(new Date(iso).getTime())
 
   const workspaceDir = (slug: string) => path.join(testDir, 'agents', slug, 'workspace')
   const sessionsDir = (slug: string) =>
@@ -85,7 +90,7 @@ describe.each([
       'registered-empty': { name: 'Just created', createdAt: '2026-01-02T00:00:00.000Z' },
     })
 
-    const sessions = await list('agent-a', {
+    const sessions = await list(createLocalSessionStore('agent-a'), {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -108,7 +113,7 @@ describe.each([
       'x-agent-new': { invokedByAgentSlug: 'caller' },
     })
 
-    const latest = await list('agent-a', {
+    const latest = await list(createLocalSessionStore('agent-a'), {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
       limit: 1,
@@ -128,7 +133,7 @@ describe.each([
       },
     })
 
-    const latest = await list('agent-a', {
+    const latest = await list(createLocalSessionStore('agent-a'), {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
       limit: 1,
@@ -138,12 +143,13 @@ describe.each([
   })
 
   it('ranks a newer metadata-only session above an older transcript, with createdAt as its activity', async () => {
+    nowIs('2026-01-03T00:30:00.000Z')
     await writeTranscript('agent-a', 'transcript-old', { activityAt: '2026-01-01T00:00:00.000Z' })
     await writeMetadata('agent-a', {
       'pending-new': { name: 'Pending', createdAt: '2026-01-03T00:00:00.000Z' },
     })
 
-    const sessions = await list('agent-a', {
+    const sessions = await list(createLocalSessionStore('agent-a'), {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -160,7 +166,7 @@ describe.each([
     await writeTranscript('agent-a', 'c-newest', { activityAt: '2026-01-03T00:00:00.000Z' })
     await writeTranscript('agent-a', 'b-middle', { activityAt: '2026-01-02T00:00:00.000Z' })
 
-    const sessions = await list('agent-a', { sortBy: 'last_activity_at' })
+    const sessions = await list(createLocalSessionStore('agent-a'), { sortBy: 'last_activity_at' })
 
     expect(ids(sessions)).toEqual(['c-newest', 'b-middle', 'a-oldest'])
     expect(sessions.map((s) => s.lastActivityAt.toISOString())).toEqual([
@@ -177,7 +183,7 @@ describe.each([
       'with-meta': { createdAt: '2025-12-25T00:00:00.000Z' },
     })
 
-    const sessions = await list('agent-a')
+    const sessions = await list(createLocalSessionStore('agent-a'))
     const withMeta = sessions.find((s) => s.id === 'with-meta')!
     const noMeta = sessions.find((s) => s.id === 'no-meta')!
 
@@ -199,7 +205,7 @@ describe.each([
     await writeTranscript('agent-b', 'shared-id', { activityAt: '2026-01-09T00:00:00.000Z' })
     await writeTranscript('agent-a', 'shared-id', { activityAt: '2026-01-10T00:00:00.000Z' })
 
-    const sessions = await list('agent-a', {
+    const sessions = await list(createLocalSessionStore('agent-a'), {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -218,7 +224,7 @@ describe.each([
       'hidden-3': { isScheduledExecution: true, scheduledTaskId: 't' },
     })
 
-    const sessions = await list('agent-a', {
+    const sessions = await list(createLocalSessionStore('agent-a'), {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
       limit: 2,
@@ -231,6 +237,8 @@ describe.each([
     // One fixture with every kind of entry the listing has to classify. The
     // expected order is the contract the route's "latest visible session" and
     // attention computation are built on.
+    // Registrations later than the clock are new too: they are not older than the window.
+    nowIs('2026-01-05T00:30:00.000Z')
     await writeTranscript('agent-a', 'visible-jan1', { activityAt: '2026-01-01T00:00:00.000Z' })
     await writeTranscript('agent-a', 'visible-jan4', { activityAt: '2026-01-04T00:00:00.000Z' })
     await writeTranscript('agent-a', 'promoted-jan3', { activityAt: '2026-01-03T00:00:00.000Z' })
@@ -256,7 +264,7 @@ describe.each([
     const jan2 = new Date('2026-01-02T00:00:00.000Z')
     await fs.promises.utimes(transcriptPath('agent-a', 'registered-empty-jan2'), jan2, jan2)
 
-    const visible = await list('agent-a', {
+    const visible = await list(createLocalSessionStore('agent-a'), {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -269,7 +277,7 @@ describe.each([
       'visible-jan1',
     ])
 
-    const everything = await list('agent-a', { sortBy: 'last_activity_at' })
+    const everything = await list(createLocalSessionStore('agent-a'), { sortBy: 'last_activity_at' })
     expect(ids(everything)).toEqual([
       'pending-hidden-jan8',
       'hidden-jan6',
@@ -308,13 +316,13 @@ describe('getSessionMessagesPage without a transcript', () => {
     )
 
     await expect(
-      getSessionMessagesPage('agent-a', 'not-written-yet', { limit: 20, media: 'ref' }),
+      getSessionMessagesPage(createLocalSessionStore('agent-a'), 'not-written-yet', { limit: 20, media: 'ref' }),
     ).resolves.toEqual({ messages: [], nextCursor: null })
   })
 
   it('returns an empty terminal page when the sessions directory itself is absent', async () => {
     await expect(
-      getSessionMessagesPage('agent-a', 'not-written-yet', { limit: 20 }),
+      getSessionMessagesPage(createLocalSessionStore('agent-a'), 'not-written-yet', { limit: 20 }),
     ).resolves.toEqual({ messages: [], nextCursor: null })
   })
 })
