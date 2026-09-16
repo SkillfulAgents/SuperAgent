@@ -1,13 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { apiFetch } from '@renderer/lib/api'
-import {
-  createVoiceAgentAdapter,
-  type VoiceAgentAdapter,
-  type VoiceAgentConfig,
-  type VoiceAgentEvent,
-  type VoiceProvider,
-} from '@renderer/lib/voice-agent'
-import { acquireMicStream, pcm16ToFloat32, startAudioCapture, type AudioCaptureHandle } from '@renderer/lib/stt'
+import { createVoiceAgentAdapter } from '@renderer/lib/voice/registry/voice-agent'
+import { type VoiceAgentAdapter, type VoiceAgentConfig, type VoiceAgentEvent, type VoiceProvider } from '@renderer/lib/voice/contracts/voice-agent'
+import { acquireMicStream, startAudioCapture, type AudioCaptureHandle } from '@renderer/lib/voice/shared/audio-capture'
+import { pcm16ToFloat32 } from '@renderer/lib/voice/shared/pcm'
 
 export type VoiceAgentState = 'idle' | 'connecting' | 'active' | 'error'
 export type SpeakingState = 'none' | 'user' | 'agent'

@@ -7,7 +7,7 @@ const apiFetch = vi.fn()
 vi.mock('@renderer/lib/api', () => ({ apiFetch: (...args: unknown[]) => apiFetch(...args) }))
 
 const createTtsAdapter = vi.fn((session: unknown) => ({ session }))
-vi.mock('@renderer/lib/tts', () => ({ createTtsAdapter: (provider: unknown) => createTtsAdapter(provider) }))
+vi.mock('@renderer/lib/voice/registry/tts', () => ({ createTtsAdapter: (provider: unknown) => createTtsAdapter(provider) }))
 
 interface FakePlayer {
   options: { adapter: { session: unknown }; voice: { voice: string; speed?: number }; firstWordIndex?: number; onStatus?: (s: string, e?: Error) => void }
@@ -23,7 +23,7 @@ interface FakePlayer {
   totalWords: number
 }
 const players: FakePlayer[] = []
-vi.mock('@renderer/lib/speech/speech-player', () => ({
+vi.mock('@renderer/lib/voice/shared/speech/speech-player', () => ({
   SpeechPlayer: class {
     status = 'speaking'
     acceptsWords = true
@@ -44,7 +44,8 @@ vi.mock('@renderer/lib/speech/speech-player', () => ({
   },
 }))
 
-import { readAloud, useIsReadAloudAvailable, useReadAloud, useSpokenWordHighlight, useIsVoiceReading, voiceStreamId } from './use-read-aloud'
+import { readAloud, voiceStreamId } from '@renderer/lib/voice/shared/read-aloud'
+import { useIsReadAloudAvailable, useReadAloud, useSpokenWordHighlight, useIsVoiceReading } from './use-read-aloud'
 
 function tokenResponse(body: unknown, ok = true) {
   return { ok, json: async () => body }

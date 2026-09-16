@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 const sound = vi.hoisted(() => ({ start: vi.fn(), stop: vi.fn(), stopImmediately: vi.fn(), prime: vi.fn() }))
-vi.mock('@renderer/lib/speech/hold-sound', () => ({ holdSound: sound }))
+vi.mock('@renderer/lib/voice/shared/speech/hold-sound', () => ({ holdSound: sound }))
 import { useHoldSound, HOLD_DELAY_MS, HOLD_DELAY_BEFORE_TOOLS_MS } from './use-hold-sound'
 
 describe('useHoldSound', () => {

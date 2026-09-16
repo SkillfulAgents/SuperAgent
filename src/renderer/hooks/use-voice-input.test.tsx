@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import type { SttAdapter, SttSessionStats, TranscriptCallback, ErrorCallback } from '@renderer/lib/stt'
+import type { SttAdapter, SttSessionStats, TranscriptCallback, ErrorCallback } from '@renderer/lib/voice/contracts/stt'
 
 const reporting = vi.hoisted(() => ({
   captureRendererException: vi.fn(),
@@ -15,7 +15,8 @@ const stt = vi.hoisted(() => ({
   createSttAdapter: vi.fn(),
   startAudioCapture: vi.fn(),
 }))
-vi.mock('@renderer/lib/stt', () => stt)
+vi.mock('@renderer/lib/voice/registry/stt', () => stt)
+vi.mock('@renderer/lib/voice/shared/audio-capture', () => stt)
 
 const api = vi.hoisted(() => ({ apiFetch: vi.fn() }))
 vi.mock('@renderer/lib/api', () => api)
