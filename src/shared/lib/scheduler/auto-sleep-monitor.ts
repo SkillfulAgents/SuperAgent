@@ -1,13 +1,27 @@
 /**
  * Auto-Sleep Monitor
  *
- * Background process that periodically checks running containers and stops
- * those that have been idle (no active sessions, no recent activity) for
- * longer than a configurable timeout.
+ * Background process that periodically asks every running agent how long it
+ * has been idle and stops the ones idle for longer than a configurable
+ * timeout.
+ *
+ * The facts and the verb are the actor's: `container.idleSince()` is a clock
+ * the actor keeps in memory from the events that define activity, and
+ * `container.stop()` is how it sleeps. A sweep therefore reads nothing from
+ * disk — one settings lookup, then one in-memory read per running agent.
  */
 
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
+
+/**
+ * Whether an agent whose idle clock reads `idleSince` (see
+ * `ContainerOps.idleSince`) has been idle for longer than `timeoutMs` at
+ * `now`. A `null` clock — busy, or nothing recorded yet — is never idle.
+ */
+export function idleLongerThan(idleSince: number | null, timeoutMs: number, now: number): boolean {
+  return idleSince !== null && now - idleSince > timeoutMs
+}
 
 class AutoSleepMonitor {
   private intervalId: NodeJS.Timeout | null = null
@@ -29,7 +43,7 @@ class AutoSleepMonitor {
 
     // Start periodic polling
     this.intervalId = setInterval(() => {
-      this.checkIdleContainers().catch((error) => {
+      this.sweep().catch((error) => {
         console.error('[AutoSleepMonitor] Error in check cycle:', error)
       })
     }, this.pollIntervalMs)
@@ -52,9 +66,10 @@ class AutoSleepMonitor {
   }
 
   /**
-   * Check all running containers and stop any that have been idle too long.
+   * One sweep: stop every running agent that has been idle for longer than
+   * the configured timeout. Public so it can be run without the interval.
    */
-  private async checkIdleContainers(): Promise<void> {
+  async sweep(): Promise<void> {
     if (this.isProcessing) return
     this.isProcessing = true
 
@@ -75,46 +90,22 @@ class AutoSleepMonitor {
       for (const actor of runningAgents) {
         const agentId = actor.slug
         try {
-          // Skip if any session is currently processing a request
-          if (actor.sessions.hasActive()) {
+          if (!idleLongerThan(actor.container.idleSince(), timeoutMs, now)) {
             continue
           }
 
-          // Check last activity across all sessions
-          const sessions = await actor.sessions.list()
-
-          // Use container start time as a floor — when an agent is woken up
-          // to view its dashboard, session timestamps are stale from before
-          // the previous sleep and would cause immediate re-sleep. Also covers
-          // warm-started containers that still have zero sessions.
-          const containerStartTime = actor.container.startedAt() ?? 0
-          const lastKeepAlive = actor.container.lastKeepAliveAt() ?? 0
-
-          const lastActivity = Math.max(
-            containerStartTime,
-            lastKeepAlive,
-            ...sessions.map((s) => s.lastActivityAt.getTime())
+          console.log(
+            `[AutoSleepMonitor] Agent ${agentId} idle for >${timeoutMinutes}m, stopping...`
           )
 
-          // No start/keep-alive/session signal yet — do not reap.
-          if (lastActivity === 0) {
-            continue
-          }
-
-          if (now - lastActivity > timeoutMs) {
-            console.log(
-              `[AutoSleepMonitor] Agent ${agentId} idle for >${timeoutMinutes}m, stopping...`
-            )
-
-            await actor.container.stop({
-              stopTimeoutMs: 60_000,
-              killTimeoutMs: 30_000,
-              // Never force-stop the shared VM from a background idle sweep — it
-              // would kill every running agent to reclaim one idle container. If
-              // stop+kill time out, leave it running and retry next cycle.
-              escalateToForceStop: false,
-            })
-          }
+          await actor.container.stop({
+            stopTimeoutMs: 60_000,
+            killTimeoutMs: 30_000,
+            // Never force-stop the shared VM from a background idle sweep — it
+            // would kill every running agent to reclaim one idle container. If
+            // stop+kill time out, leave it running and retry next cycle.
+            escalateToForceStop: false,
+          })
         } catch (error) {
           console.error(
             `[AutoSleepMonitor] Error checking agent ${agentId}:`,

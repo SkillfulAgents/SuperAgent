@@ -37,6 +37,13 @@ export interface SessionStore {
    * the workspace directory.
    */
   readonly key: string
+  /**
+   * Told the epoch ms of every activity recorded against a session of this
+   * store — a message sent to it, a frame received from it, a transcript
+   * write. The local actor keeps its container's idle clock from it; a store
+   * with no owner to tell leaves it unset.
+   */
+  readonly onActivity?: (activityAtMs: number) => void
 }
 
 /**

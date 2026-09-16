@@ -84,7 +84,13 @@ export class LocalAgentActor implements AgentActor {
   readonly store: SessionStore
 
   constructor(readonly slug: AgentSlug, deps: LocalActorDeps) {
-    this.store = createLocalSessionStore(slug, deps)
+    // Every write to a session goes through the store, so this is where the
+    // container's idle clock learns of session activity — the persister's
+    // stream frames, the transcript appends and `sessions.recordActivity`
+    // all record through it.
+    this.store = createLocalSessionStore(slug, deps, {
+      onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
+    })
     this.files = this.store.files
     this.config = this.store.config
     this.container = createContainerOps(slug, deps)
@@ -110,8 +116,15 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
     status: () => runtime().getCachedInfo(),
     syncStatus: () => runtime().syncAgentStatus(),
     health: () => runtime().getHealthWarnings(),
-    startedAt: () => runtime().getContainerStartTime(),
-    lastKeepAliveAt: () => runtime().getLastKeepAlive(),
+    idleSince: () => {
+      if (
+        deps.messagePersister.hasActiveSessionsForAgent(slug) ||
+        deps.messagePersister.hasSessionsAwaitingInputForAgent(slug)
+      ) {
+        return null
+      }
+      return runtime().lastActivityAt() ?? null
+    },
     stats: () => client().getStats(),
     info: () => client().getInfo(),
     updateConnectedAccountsEnvironment: () => deps.updateConnectedAccountsEnvironment(slug, client()),
@@ -178,7 +191,11 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
     isActive: (sessionId) => deps.messagePersister.isSessionActive(slug, sessionId),
     isAwaitingInput: (sessionId) => deps.messagePersister.isSessionAwaitingInput(slug, sessionId),
     markActive: (sessionId) => deps.messagePersister.markSessionActive(slug, sessionId),
-    markIdle: (sessionId) => deps.messagePersister.markSessionIdle(slug, sessionId),
+    markIdle: (sessionId) => {
+      // Going idle is the last moment the session was busy.
+      deps.containerHost.runtime(slug).noteSessionActivity()
+      deps.messagePersister.markSessionIdle(slug, sessionId)
+    },
     markInterrupted: (...args) => deps.messagePersister.markSessionInterrupted(slug, ...args),
     turnGeneration: (sessionId) => deps.messagePersister.getTurnGeneration(slug, sessionId),
     isWaitingBackground: (sessionId) => deps.messagePersister.isSessionWaitingBackground(slug, sessionId),

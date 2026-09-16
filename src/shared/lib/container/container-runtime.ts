@@ -9,6 +9,7 @@
  * `RuntimeHost`.
  */
 import { createContainerClient } from './client-factory'
+import { ActivityClock } from './activity-clock'
 import type {
   ContainerClient,
   ContainerConfig,
@@ -82,8 +83,12 @@ export class ContainerRuntime {
   private client: ContainerClient | null = null
   /** Cached container status - avoids repeated docker inspect calls */
   private cached: CachedContainerStatus | null = null
-  private startedAt: number | undefined
-  private lastKeepAlive: number | undefined
+  /**
+   * When this container was last busy: its start, the last keep-alive, the
+   * last session activity. Auto-sleep reads it through the actor's
+   * `container.idleSince()`; nothing here touches the filesystem.
+   */
+  private readonly activity = new ActivityClock()
   /** Cached health warnings */
   private healthWarnings: HealthCheckResult[] = []
   /** Being stopped — skip health checks, sync, and connection error recovery */
@@ -253,8 +258,7 @@ export class ContainerRuntime {
    */
   markAsStopped(): void {
     this.updateCachedStatus('stopped', null)
-    this.startedAt = undefined
-    this.lastKeepAlive = undefined
+    this.activity.reset()
   }
 
   /**
@@ -360,8 +364,8 @@ export class ContainerRuntime {
 
     // Host restart clears in-memory start times. Floor the idle clock at
     // rediscovery so zero-session warm containers are still reaped.
-    if (info.status === 'running' && this.startedAt === undefined) {
-      this.startedAt = Date.now()
+    if (info.status === 'running' && !this.activity.hasStarted()) {
+      this.activity.started()
     }
 
     // Broadcast if status changed (e.g., container was stopped externally)
@@ -641,7 +645,7 @@ export class ContainerRuntime {
 
     // Record start time so auto-sleep monitor doesn't immediately
     // sleep the container based on stale session activity timestamps
-    this.startedAt = Date.now()
+    this.activity.started()
 
     // Broadcast agent status change globally
     messagePersister.broadcastGlobal({
@@ -653,18 +657,27 @@ export class ContainerRuntime {
     return client
   }
 
-  // Get the time the container was started (used by auto-sleep monitor)
-  getContainerStartTime(): number | undefined {
-    return this.startedAt
-  }
-
   // Record a keep-alive ping (e.g. from an open dashboard) to prevent auto-sleep
   keepAlive(): void {
-    this.lastKeepAlive = Date.now()
+    this.activity.keepAlive()
   }
 
-  getLastKeepAlive(): number | undefined {
-    return this.lastKeepAlive
+  /**
+   * A session of this agent was sent to or written to at `at` (epoch ms).
+   * The actor's session store reports every such write here, so the idle
+   * clock follows the sessions without anyone re-reading their metadata.
+   */
+  noteSessionActivity(at: number = Date.now()): void {
+    this.activity.sessionActivity(at)
+  }
+
+  /**
+   * When this container was last busy — the latest of its start, the last
+   * keep-alive and the last session activity — or undefined when none has
+   * been recorded since it was last stopped or dropped.
+   */
+  lastActivityAt(): number | undefined {
+    return this.activity.lastActivityAt()
   }
 
   /**
@@ -675,8 +688,7 @@ export class ContainerRuntime {
     this.disposed = true
     this.client = null
     this.cached = null
-    this.startedAt = undefined
-    this.lastKeepAlive = undefined
+    this.activity.reset()
     this.healthWarnings = []
     this.stopping = false
     this.starting = null

@@ -163,10 +163,18 @@ export interface ContainerOps {
   syncStatus(): Promise<ContainerInfo>
   /** `containerManager.getHealthWarnings` */
   health(): HealthCheckResult[]
-  /** `containerManager.getContainerStartTime` */
-  startedAt(): number | undefined
-  /** `containerManager.getLastKeepAlive` */
-  lastKeepAliveAt(): number | undefined
+  /**
+   * When this agent last stopped being busy, as epoch ms, or `null` while it
+   * is busy or its idleness is unknown. Busy is any session active or
+   * awaiting input. Otherwise it is the latest of the container start, the
+   * last `keepAlive()` and the last session activity (a message sent, a frame
+   * received, a transcript write), and `null` when none has been recorded
+   * since the container last stopped. Answered from memory: the actor sees
+   * every event that defines activity and keeps the clock itself, so reading
+   * it costs nothing and a remote actor answers from its own state.
+   * Auto-sleep is `idleSince() !== null && now - idleSince() > timeout`.
+   */
+  idleSince(): number | null
   /** `client.getStats` */
   stats(): Promise<ContainerStats | null>
   /** `client.getInfo` — queries the runtime; prefer `status()` unless freshness matters. */

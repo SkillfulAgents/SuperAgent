@@ -18,7 +18,11 @@ export interface LocalSessionStoreDeps {
 // provide this one until a store is used.
 const defaultDeps: LocalSessionStoreDeps = { getAgentWorkspaceDir: (slug) => getAgentWorkspaceDir(slug) }
 
-export function createLocalSessionStore(slug: AgentSlug, deps: LocalSessionStoreDeps = defaultDeps): SessionStore {
+export function createLocalSessionStore(
+  slug: AgentSlug,
+  deps: LocalSessionStoreDeps = defaultDeps,
+  hooks: Pick<SessionStore, 'onActivity'> = {},
+): SessionStore {
   const files = createLocalFileOps(slug, deps)
   const config = createLocalConfigOps({ files, workspaceHostPath: () => deps.getAgentWorkspaceDir(slug) })
   return {
@@ -26,6 +30,7 @@ export function createLocalSessionStore(slug: AgentSlug, deps: LocalSessionStore
     files,
     config,
     transcriptsDir: CLI_TRANSCRIPTS_DIR,
+    onActivity: hooks.onActivity,
     // Read at call time, like the file operations' root: tests and embedded
     // deployments change the data directory in-process, and cached state must
     // follow the directory, not the slug.
