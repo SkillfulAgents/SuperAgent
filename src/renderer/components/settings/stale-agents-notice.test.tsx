@@ -11,34 +11,25 @@ vi.mock('@renderer/hooks/use-stale-agents', () => ({
 import { StaleAgentsNotice } from './stale-agents-notice'
 
 function state(rows: StaleAgentRow[], overrides: Record<string, unknown> = {}) {
-  return {
-    record: { agents: rows, running: false },
-    rows,
-    lastRun: null,
-    restartAll: vi.fn(),
-    isRestarting: false,
-    restartError: null,
-    ...overrides,
-  }
+  return { rows, stopAll: vi.fn(), isStopping: false, stoppedCount: 0, ...overrides }
 }
 
-const row = (slug: string, status: StaleAgentRow['status'], extra: Partial<StaleAgentRow> = {}): StaleAgentRow =>
-  ({ slug, status, name: slug, working: false, ...extra })
+const row = (slug: string, name: string, working = false): StaleAgentRow => ({ slug, name, working })
 
 describe('StaleAgentsNotice', () => {
   beforeEach(() => useStaleAgentsMock.mockReset())
 
-  it('renders nothing without a host record', () => {
-    useStaleAgentsMock.mockReturnValue(state([], { record: null }))
+  it('renders nothing when the host lists no agents and this mount stopped none', () => {
+    useStaleAgentsMock.mockReturnValue(state([]))
     const { container } = render(<StaleAgentsNotice />)
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('shows the count, expands to names with the working marker, and offers Restart all', () => {
-    const s = state([row('a', 'pending', { name: 'Research assistant' }), row('b', 'pending', { name: 'Shopify ops', working: true })])
+  it('shows the count, expands to names with the working marker, and offers Stop all', () => {
+    const s = state([row('a', 'Research assistant'), row('b', 'Shopify ops', true)])
     useStaleAgentsMock.mockReturnValue(s)
     render(<StaleAgentsNotice />)
-    expect(screen.getByText(/Restart for changes to take effect/)).toBeInTheDocument()
+    expect(screen.getByText(/Stop them and they start fresh on their next message/)).toBeInTheDocument()
     expect(screen.queryByText(/Shopify ops/)).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /2 running agents/ }))
@@ -47,25 +38,18 @@ describe('StaleAgentsNotice', () => {
     expect(screen.getByRole('img', { name: 'working' })).toBeInTheDocument()
     expect(screen.getByRole('img', { name: 'running' })).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Restart all' }))
-    expect(s.restartAll).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Stop all' }))
+    expect(s.stopAll).toHaveBeenCalledTimes(1)
   })
 
-  it('disables the button and names the agent in flight while a run is running', () => {
-    useStaleAgentsMock.mockReturnValue(state([row('a', 'restarted'), row('b', 'restarting')], { isRestarting: true }))
-    render(<StaleAgentsNotice />)
-    expect(screen.getByText(/Restarting 2 agents one at a time/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Restarting…' })).toBeDisabled()
-  })
+  it('disables the button while stopping, then keeps the count this mount stopped', () => {
+    useStaleAgentsMock.mockReturnValue(state([row('a', 'Research assistant')], { isStopping: true }))
+    const { rerender } = render(<StaleAgentsNotice />)
+    expect(screen.getByRole('button', { name: 'Stopping…' })).toBeDisabled()
 
-  it('after a run: green count from the run this mount received, red block with Retry from the record', () => {
-    const failedRow = row('b', 'failed', { name: 'Shopify ops', error: 'Container failed to become healthy\nstderr: request returned 500\nstdout: []' })
-    const s = state([failedRow], { lastRun: [row('a', 'restarted'), failedRow] })
-    useStaleAgentsMock.mockReturnValue(s)
-    render(<StaleAgentsNotice />)
-    expect(screen.getByText('1 agent restarted.')).toBeInTheDocument()
-    expect(screen.getByText(/didn't restart: Container failed to become healthy$/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-    expect(s.restartAll).toHaveBeenCalledTimes(1)
+    useStaleAgentsMock.mockReturnValue(state([], { stoppedCount: 1 }))
+    rerender(<StaleAgentsNotice />)
+    expect(screen.getByText('1 agent stopped.')).toBeInTheDocument()
+    expect(screen.queryByRole('button')).toBeNull()
   })
 })

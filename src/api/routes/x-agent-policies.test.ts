@@ -89,7 +89,7 @@ vi.mock('@shared/lib/container/container-manager', () => ({
     getClient: vi.fn(),
     ensureRunning: vi.fn(),
     getCachedInfo: vi.fn(() => ({ status: 'stopped', port: null })),
-    getHealthWarnings: vi.fn(() => []),
+    getHealthWarnings: vi.fn(() => []), isAgentStale: vi.fn(() => false),
     removeClient: vi.fn(),
   },
 }))

@@ -31,6 +31,8 @@ export interface ApiAgent {
   status: 'running' | 'stopped'
   containerPort: number | null
   healthWarnings?: HealthCheckResult[]
+  /** Running on a container env that a setting change replaced. A stop clears it. */
+  stale?: boolean
   templateStatus?: ApiAgentTemplateStatus
   // Summary fields (included in list response)
   hasActiveSessions?: boolean
@@ -45,23 +47,6 @@ export interface ApiAgent {
   latestVisibleSession?: ApiLatestVisibleSession | null
   /** Attention on visible sessions other than latestVisibleSession. Null means unavailable. */
   attentionOutsideLatest?: ApiAttentionOutsideLatest | null
-}
-
-export type StaleAgentStatus = 'pending' | 'restarting' | 'restarted' | 'failed' | 'skipped'
-
-export interface StaleAgentEntry {
-  slug: string
-  status: StaleAgentStatus
-  error?: string
-}
-
-/**
- * GET /api/settings/stale-agents: agents that were running when a setting baked
- * into the container env changed, plus whether a restart run is in flight.
- */
-export interface ApiStaleAgents {
-  agents: StaleAgentEntry[]
-  running: boolean
 }
 
 /** Response returned when an agent template has been installed or imported. */

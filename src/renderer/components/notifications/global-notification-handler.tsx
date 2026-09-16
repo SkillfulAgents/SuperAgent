@@ -32,7 +32,6 @@ import {
   updateAgentRuntimeCache,
   type SessionStatusPatch,
 } from '@renderer/lib/agent-cache'
-import { STALE_AGENTS_KEY } from '@renderer/hooks/use-stale-agents'
 import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
 import {
   NotificationActionContextSchema,
@@ -472,8 +471,6 @@ export function GlobalNotificationHandler() {
             if (agentSlug && status) {
               updateAgentRuntimeCache(queryClient, agentSlug, status)
               invalidateAgentArtifacts(queryClient, agentSlug)
-              // The host prunes its stale-agents record on every stop.
-              queryClient.invalidateQueries({ queryKey: STALE_AGENTS_KEY })
             }
             break
           }
@@ -635,8 +632,6 @@ export function GlobalNotificationHandler() {
       }
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
-      // Stops during the gap pruned the host's stale-agents record; the stream has no replay.
-      queryClient.invalidateQueries({ queryKey: STALE_AGENTS_KEY })
     }
 
     es.onerror = () => {

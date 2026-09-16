@@ -27,6 +27,7 @@ vi.mock('@shared/lib/container/container-manager', () => ({
     getCachedInfo: mockGetCachedInfo,
     stopContainer: mockStopContainer,
     getHealthWarnings: vi.fn(() => []),
+    isAgentStale: vi.fn(() => false),
   },
 }))
 

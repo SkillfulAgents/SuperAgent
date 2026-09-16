@@ -504,7 +504,7 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
     platformAuth: data,
     isLoadingPlatformAuth: isLoading,
   } = usePlatformConnect({
-    // Agents that need a restart announce themselves below (StaleAgentsNotice).
+    // Agents still on the old token announce themselves below (StaleAgentsNotice).
     successMessage: 'Connected.',
   })
   // The signed-in user's own profile leads this tab instead of having a tab of

@@ -59,6 +59,7 @@ function toApiAgent(
     status,
     containerPort,
     ...(healthWarnings.length > 0 ? { healthWarnings } : {}),
+    ...(containerManager.isAgentStale(agent.slug) ? { stale: true } : {}),
   }
 }
 
