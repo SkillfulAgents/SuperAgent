@@ -127,6 +127,16 @@ describe('getSessionSummary cache', () => {
     expect(statProbe.paths).toEqual([sessionsDir()])
   })
 
+  it('tells the store\'s owner of every recorded activity, provisional or not', () => {
+    const onActivity = vi.fn()
+    const store = { ...createLocalSessionStore(agentSlug), onActivity }
+    recordSessionActivity(store, 'session-a', new Date('2026-01-04T12:00:00.000Z'))
+    recordSessionActivity(store, 'session-a', 1_700_000_000_000)
+    // A non-finite timestamp is dropped before anyone hears of it.
+    recordSessionActivity(store, 'session-a', Number.NaN)
+    expect(onActivity.mock.calls).toEqual([[new Date('2026-01-04T12:00:00.000Z').getTime()], [1_700_000_000_000]])
+  })
+
   it('does not fabricate a session from an activity signal alone', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await getSessionSummary(createLocalSessionStore(agentSlug))

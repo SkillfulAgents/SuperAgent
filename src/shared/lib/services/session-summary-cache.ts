@@ -63,6 +63,10 @@ export function invalidateSessionSummaryCache(store: SessionStore): void {
  * (a send is recorded before the CLI appends the user entry). Every rebuild
  * folds pending in and clears it, so nothing is lost and nothing accumulates
  * beyond one entry per session.
+ *
+ * The store's owner hears of the write too (`store.onActivity`): this is the
+ * one funnel every session write passes, so it is where the agent's idle
+ * clock is kept current.
  */
 export function recordSessionActivity(
   store: SessionStore,
@@ -71,6 +75,7 @@ export function recordSessionActivity(
 ): void {
   const activityAtMs = activityAt instanceof Date ? activityAt.getTime() : activityAt
   if (!Number.isFinite(activityAtMs)) return
+  store.onActivity?.(activityAtMs)
   const slot = getSessionSummaryCacheSlot(store)
 
   const cached = slot.value?.activityBySession.get(sessionId)
