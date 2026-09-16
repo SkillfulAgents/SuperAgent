@@ -1,4 +1,13 @@
+import { fetchWithIdleTimeout } from './streaming-fetch'
+import { VoiceProviderError } from './provider-error'
+import { OPENAI_TTS_VOICES } from './openai-voices'
+import type { TtsSynthesisInput, TtsSynthesisProvider } from './tts-types'
 import { BaseVoiceProvider } from './voice-provider'
+import { getEffectiveModels } from '../config/settings'
+import { getConfiguredLlmClient, createSummarizerText } from '../llm-provider/helpers'
+import { resolveActiveProviderModel } from '../llm-provider'
+import { liveRequestSchema, type LiveConversationProvider, type LiveMappingInput, type LiveSessionAnswer, type VoiceHistory } from './live-types'
+import { LIVE_CONVERSATION_PROMPT, LIVE_REPLY_PROMPT, LIVE_REQUEST_PROMPT } from '../../prompts/voice-live'
 
 const MIME_TO_EXT: Record<string, string> = {
   'audio/mpeg': 'mp3',
@@ -15,11 +24,115 @@ const MIME_TO_EXT: Record<string, string> = {
   'audio/amr': 'amr',
 }
 
-export class OpenaiVoiceProvider extends BaseVoiceProvider {
+export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConversationProvider, TtsSynthesisProvider {
   readonly id = 'openai' as const
   readonly name = 'OpenAI'
   protected readonly settingsKeyField = 'openaiApiKey' as const
   protected readonly envVarName = 'OPENAI_API_KEY'
+
+  override getTtsVoices() { return OPENAI_TTS_VOICES }
+
+  override getTtsSynthesis(): TtsSynthesisProvider { return this }
+
+  async synthesizeSpeech(input: TtsSynthesisInput, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+    const apiKey = this.getEffectiveApiKey()
+    if (!apiKey) throw new VoiceProviderError('Add your OpenAI API key in Settings > Voice.', 400)
+    const response = await fetchWithIdleTimeout(fetch, 'https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      signal,
+      body: JSON.stringify({ model: 'gpt-4o-mini-tts', input: input.text, voice: input.voice,
+        speed: input.speed, response_format: 'pcm' }),
+    })
+    if (!response.ok || !response.body) {
+      void response.body?.cancel().catch(() => {})
+      throw new VoiceProviderError(response.status === 401 || response.status === 403
+        ? 'OpenAI rejected speech synthesis access. Check your API key and permissions in Settings > Voice.'
+        : `OpenAI speech synthesis failed (${response.status}). Please try again.`)
+    }
+    return response.body
+  }
+
+  override getConversationEngine() {
+    return 'openai-live' as const
+  }
+
+  override getLiveConversation(): LiveConversationProvider {
+    return this
+  }
+
+  /** The project key stays on the host; the renderer receives only an SDP answer. */
+  async createLiveSession(sdp: string, history: VoiceHistory): Promise<LiveSessionAnswer> {
+    const apiKey = this.getEffectiveApiKey()
+    if (!apiKey) throw new VoiceProviderError('Add your OpenAI API key in Settings > Voice.', 400)
+    // Check the mapping dependency before creating a billable voice session.
+    getConfiguredLlmClient()
+    const res = await fetch('https://api.openai.com/v1/live/sessions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(20_000),
+      body: JSON.stringify({
+        session: {
+          model: 'gpt-live-1',
+          instructions: LIVE_CONVERSATION_PROMPT,
+          delegation: { type: 'client' },
+          audio: { output: { voice: 'marin' } },
+          store: false,
+          client: { data_channel: { allowed_client_events: [
+            'session.commentary.append', 'session.thinking.append', 'session.instructions.append',
+            'session.input_audio.mute', 'session.input_audio.unmute', 'session.close',
+          ] } },
+          input: history.filter((message) => message.content.trim()).slice(-12).map((message) => ({
+            role: message.role,
+            content: [{ type: message.role === 'user' ? 'input_text' : 'text', text: message.content.slice(-800) }],
+          })),
+        },
+        transport: { type: 'webrtc', sdp },
+      }),
+    })
+    if (!res.ok) {
+      throw new Error(`OpenAI Live session failed (${res.status}). Check your key, GPT-Live access, and billing.`)
+    }
+    const answer = await res.json() as LiveSessionAnswer
+    if (!answer.session?.id || !answer.transport?.sdp) throw new Error('OpenAI Live returned an invalid session answer.')
+    return { session: { id: answer.session.id }, transport: { type: 'webrtc', sdp: answer.transport.sdp } }
+  }
+
+  async closeLiveSession(id: string): Promise<void> {
+    const apiKey = this.getEffectiveApiKey()
+    if (!apiKey) return
+    const response = await fetch(`https://api.openai.com/v1/live/sessions/${encodeURIComponent(id)}/hangup`, {
+      method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(5000),
+    })
+    if (!response.ok && response.status !== 404) throw new Error('Could not close OpenAI Live session.')
+  }
+
+  /** Provider-owned translation using the app's configured summarizer. */
+  async mapLiveConversation(input: LiveMappingInput, signal?: AbortSignal) {
+    const deadline = AbortSignal.timeout(12_000)
+    const text = await createSummarizerText(getConfiguredLlmClient(), {
+      model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
+      system: input.kind === 'request' ? LIVE_REQUEST_PROMPT : LIVE_REPLY_PROMPT,
+      messages: [{ role: 'user', content: JSON.stringify(input) }],
+      ...(input.kind === 'request' ? { output_config: { format: {
+        type: 'json_schema' as const,
+        schema: {
+          type: 'object',
+          properties: { action: { type: 'string', enum: liveRequestSchema.shape.action.options }, text: { type: 'string' } },
+          required: ['action', 'text'], additionalProperties: false,
+        },
+      } } } : {}),
+    }, signal ? AbortSignal.any([signal, deadline]) : deadline)
+    if (!text) throw new Error('The configured summarizer returned no voice mapping. Please try again.')
+    if (input.kind === 'reply') return { text: text.slice(0, 1800) }
+    try {
+      const request = liveRequestSchema.parse(JSON.parse(text))
+      if (request.action !== 'none' && !request.text.trim()) throw new Error('Empty request')
+      return request
+    } catch {
+      throw new Error('The configured summarizer returned an invalid voice request. Please try again.')
+    }
+  }
 
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
     try {

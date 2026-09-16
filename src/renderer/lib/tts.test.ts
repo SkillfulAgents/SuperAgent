@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createTtsAdapter, DeepgramTtsAdapter, type TtsEvent } from './tts'
+import { HttpTtsAdapter } from './tts-http'
 import { MockWebSocket } from '@shared/test/mock-websocket'
 
 class BinaryMockWebSocket extends MockWebSocket {
@@ -22,12 +23,12 @@ describe('DeepgramTtsAdapter', () => {
   })
 
   function connect(voiceOptions: { speed?: number } = {}) {
-    const adapter = new DeepgramTtsAdapter()
+    const adapter = new DeepgramTtsAdapter('jwt-token')
     const audio: ArrayBuffer[] = []
     const events: TtsEvent[] = []
     adapter.onAudio((chunk) => audio.push(chunk))
     adapter.onEvent((e) => events.push(e))
-    const connected = adapter.connect('jwt-token', { voice: 'aura-2-thalia-en', ...voiceOptions })
+    const connected = adapter.connect({ voice: 'aura-2-thalia-en', ...voiceOptions })
     const ws = MockWebSocket.instances[0] as BinaryMockWebSocket
     return { adapter, ws, audio, events, connected }
   }
@@ -127,11 +128,11 @@ describe('DeepgramTtsAdapter', () => {
 
 describe('createTtsAdapter', () => {
   it('maps deepgram and platform to the Deepgram adapter', () => {
-    expect(createTtsAdapter('deepgram')).toBeInstanceOf(DeepgramTtsAdapter)
-    expect(createTtsAdapter('platform')).toBeInstanceOf(DeepgramTtsAdapter)
+    expect(createTtsAdapter({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' } })).toBeInstanceOf(DeepgramTtsAdapter)
+    expect(createTtsAdapter({ provider: 'platform', connection: { transport: 'websocket', token: 'jwt' } })).toBeInstanceOf(DeepgramTtsAdapter)
   })
 
   it('rejects providers without text-to-speech', () => {
-    expect(() => createTtsAdapter('openai')).toThrow('Text-to-speech not supported by openai')
+    expect(createTtsAdapter({ provider: 'openai', connection: { transport: 'http' } })).toBeInstanceOf(HttpTtsAdapter)
   })
 })

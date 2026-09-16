@@ -1,0 +1,72 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const mocks = vi.hoisted(() => ({
+  summarize: vi.fn(), client: {}, resolve: vi.fn(() => 'resolved-summary-model'),
+  settings: { apiKeys: { openaiApiKey: 'byok-test-key' } },
+}))
+vi.mock('../config/settings', () => ({
+  getSettings: () => mocks.settings,
+  getEffectiveModels: () => ({ summarizerModel: 'configured-summary-model' }),
+}))
+vi.mock('../llm-provider/helpers', () => ({ getConfiguredLlmClient: () => mocks.client, createSummarizerText: mocks.summarize }))
+vi.mock('../llm-provider', () => ({ resolveActiveProviderModel: mocks.resolve }))
+import { OpenaiVoiceProvider } from './openai-provider'
+
+const provider = new OpenaiVoiceProvider()
+const fetchMock = vi.fn()
+beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
+
+ describe('OpenAI Live BYOK', () => {
+  it('creates a client-delegated Live session with a host-only key and bounded history', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ session: { id: 'live_test' }, transport: { sdp: 'answer' }, secret: 'never-return' })))
+    const result = await provider.createLiveSession('offer', [{ role: 'user', content: 'hello' }])
+    expect(fetchMock).toHaveBeenCalledWith('https://api.openai.com/v1/live/sessions', expect.objectContaining({
+      headers: { Authorization: 'Bearer byok-test-key', 'Content-Type': 'application/json' },
+    }))
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body).toMatchObject({ session: { model: 'gpt-live-1', delegation: { type: 'client' }, store: false,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+    }, transport: { type: 'webrtc', sdp: 'offer' } })
+    expect(body.session.client.data_channel.allowed_client_events).not.toContain('session.update')
+    expect(result).toEqual({ session: { id: 'live_test' }, transport: { type: 'webrtc', sdp: 'answer' } })
+    expect(provider.getConversationEngine()).toBe('openai-live')
+    expect(provider.supportsTts()).toBe(true)
+  })
+
+  it('reuses the configured summarizer and validates its normalized request', async () => {
+    mocks.summarize.mockResolvedValue('{"action":"message","text":"Check Thursday instead of Friday."}')
+    expect(await provider.mapLiveConversation({ kind: 'request', transcript: 'user: Actually Thursday.', history: [], previousRequest: 'Check Friday.', agentBusy: true }))
+      .toEqual({ action: 'message', text: 'Check Thursday instead of Friday.' })
+    expect(mocks.resolve).toHaveBeenCalledWith('configured-summary-model', 'summarizer')
+    expect(mocks.summarize).toHaveBeenCalledWith(mocks.client, expect.objectContaining({ model: 'resolved-summary-model', output_config: { format: expect.objectContaining({ type: 'json_schema', schema: expect.objectContaining({ required: ['action', 'text'], additionalProperties: false }) }) } }), expect.any(AbortSignal))
+  })
+
+  it.each(['not JSON', '{"action":"execute","text":"bad"}', '{"action":"message","text":""}'])('rejects unusable mappings: %s', async (text) => {
+    mocks.summarize.mockResolvedValue(text)
+    await expect(provider.mapLiveConversation({ kind: 'request', transcript: 'user: hello', history: [], previousRequest: '', agentBusy: false })).rejects.toThrow()
+  })
+
+  it('uses the summarizer for outgoing updates and propagates aborts', async () => {
+    mocks.summarize.mockResolvedValue('The search is still running.')
+    expect(await provider.mapLiveConversation({ kind: 'reply', text: 'Searching...' })).toEqual({ text: 'The search is still running.' })
+    const abort = new AbortController()
+    abort.abort()
+    await provider.mapLiveConversation({ kind: 'reply', text: 'Searching...' }, abort.signal)
+    expect(mocks.summarize.mock.calls.at(-1)?.[2].aborted).toBe(true)
+  })
+
+  it('does not expose an upstream error body', async () => {
+    fetchMock.mockResolvedValue(new Response('sensitive upstream body', { status: 403 }))
+    await expect(provider.createLiveSession('offer', [])).rejects.toThrow('GPT-Live access')
+  })
+  it('omits empty and whitespace-only turns from upstream history', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ session: { id: 'live_test' }, transport: { sdp: 'answer' } })))
+    await provider.createLiveSession('offer', [
+      { role: 'user', content: 'Research this' }, { role: 'assistant', content: '' },
+      { role: 'assistant', content: '  ' }, { role: 'assistant', content: 'Found it' },
+    ])
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.session.input.map((entry: { content: Array<{ text: string }> }) => entry.content[0].text)).toEqual(['Research this', 'Found it'])
+  })
+
+})

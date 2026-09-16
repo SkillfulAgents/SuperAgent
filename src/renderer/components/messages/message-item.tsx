@@ -26,7 +26,7 @@ import { createMarkdownUrlTransform } from '@renderer/lib/markdown-url-transform
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 import { countSpokenWords, rehypeSpokenWords } from '@renderer/lib/speech/spoken-words'
-import { readAloud, useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
+import { readAloud, useIsReadAloudAvailable, useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
 import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'
 
@@ -422,7 +422,8 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // "Read aloud" lives in the message's context menu, so an idle reply
   // carries no row for it; the controls appear under it only while it reads.
   const ttsConfigured = useIsTtsConfigured()
-  const readAloudMenu = canReadAloud && ttsConfigured
+  const readAloudAvailable = useIsReadAloudAvailable()
+  const readAloudMenu = canReadAloud && ttsConfigured && readAloudAvailable
     ? {
         active: isThisBeingRead,
         onToggle: () => {

@@ -1,6 +1,8 @@
+import { prepareSpeechAudioOutput } from '@renderer/lib/speech/audio-output'
 import { useCallback, useEffect, useSyncExternalStore, type RefObject } from 'react'
 import { apiFetch } from '@renderer/lib/api'
-import { createTtsAdapter, type VoiceProvider } from '@renderer/lib/tts'
+import type { TtsSession } from '@shared/lib/voice/tts-types'
+import { createTtsAdapter } from '@renderer/lib/tts'
 import { SpeechPlayer } from '@renderer/lib/speech/speech-player'
 import { markdownToSpokenWords, type SpokenWord } from '@renderer/lib/speech/spoken-words'
 import { stableMarkdownPrefix } from '@renderer/lib/speech/stable-markdown'
@@ -17,12 +19,7 @@ export interface ReadAloudSnapshot {
   errorId: string | null
 }
 
-interface TtsCredentials {
-  provider: VoiceProvider
-  token: string
-  voice: string
-  speed: number
-}
+type TtsCredentials = TtsSession
 
 const IDLE: ReadAloudSnapshot = { activeId: null, status: 'idle', error: null, errorId: null }
 
@@ -82,6 +79,7 @@ function createUnlockedAudioContext(): AudioContext | null {
   if (typeof AudioContext === 'undefined') return null
   const ctx = new AudioContext()
   if (ctx.state === 'suspended') ctx.resume().catch(() => {})
+  prepareSpeechAudioOutput(ctx)
   return ctx
 }
 
@@ -106,6 +104,20 @@ class ReadAloudController {
   // Bumped by every speak()/stop() so a token round-trip that resolves after
   // the user moved on doesn't start a stale player.
   private generation = 0
+  private readonly outputOwners = new Set<symbol>()
+  isAvailable = (): boolean => this.outputOwners.size === 0
+
+  /** Live media owns speaker and microphone together, including while connecting or paused. */
+  suspend(): () => void {
+    const owner = Symbol()
+    this.outputOwners.add(owner)
+    this.stop()
+    for (const listener of this.listeners) listener()
+    return () => {
+      if (!this.outputOwners.delete(owner)) return
+      for (const listener of this.listeners) listener()
+    }
+  }
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
@@ -129,6 +141,7 @@ class ReadAloudController {
    * mid-reply keeps the words before it lit).
    */
   async speak(id: string, markdown: string, fromWord = 0, options: { paused?: boolean } = {}): Promise<void> {
+    if (!this.isAvailable()) return
     this.stop()
     const generation = ++this.generation
     this.current = { id, markdown }
@@ -137,7 +150,7 @@ class ReadAloudController {
 
     let credentials: TtsCredentials
     try {
-      const res = await apiFetch('/api/voice/tts-token')
+      const res = await apiFetch('/api/voice/tts-session')
       const data: TtsCredentials | { error: string } = await res.json()
       if (!res.ok) throw new Error(('error' in data ? data.error : null) || 'Failed to get text-to-speech credentials')
       credentials = data as TtsCredentials
@@ -158,8 +171,7 @@ class ReadAloudController {
 
     let startPaused = options.paused ?? false
     const player = new SpeechPlayer({
-      adapter: createTtsAdapter(credentials.provider),
-      token: credentials.token,
+      adapter: createTtsAdapter(credentials),
       voice: { voice: credentials.voice, speed: credentials.speed },
       firstWordIndex: fromWord,
       ...(ctx ? { createAudioContext: () => ctx } : {}),
@@ -284,6 +296,7 @@ class ReadAloudController {
    * message ends and another begins, and endStream() when the turn is over.
    */
   beginStream(id: string): void {
+    if (!this.isAvailable()) return
     this.stop()
     this.stream = {
       id,
@@ -417,8 +430,7 @@ class ReadAloudController {
     }
 
     const player = new SpeechPlayer({
-      adapter: createTtsAdapter(credentials.provider),
-      token: credentials.token,
+      adapter: createTtsAdapter(credentials),
       voice: { voice: credentials.voice, speed: credentials.speed },
       finishOnIdleClose: true,
       ...(ctx ? { createAudioContext: () => ctx } : {}),
@@ -488,7 +500,7 @@ class ReadAloudController {
     const cached = this.credentials
     if (cached && Date.now() - cached.fetchedAt < CREDENTIALS_MAX_AGE_MS) return cached.value
     const generation = this.credentialsGeneration
-    const res = await apiFetch('/api/voice/tts-token')
+    const res = await apiFetch('/api/voice/tts-session')
     const data: TtsCredentials | { error: string } = await res.json()
     if (!res.ok) throw new Error(('error' in data ? data.error : null) || 'Failed to get text-to-speech credentials')
     // Dropped while this was in flight (a speed change): these are stale.
@@ -520,6 +532,10 @@ class ReadAloudController {
 }
 
 export const readAloud = new ReadAloudController()
+
+export function useIsReadAloudAvailable(): boolean {
+  return useSyncExternalStore(readAloud.subscribe, readAloud.isAvailable, readAloud.isAvailable)
+}
 
 /**
  * Whether `id` is the message being read. Selects a boolean so the many

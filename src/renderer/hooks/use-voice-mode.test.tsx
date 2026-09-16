@@ -62,11 +62,14 @@ const reader = vi.hoisted(() => {
       return () => subscribers.delete(listener)
     },
     getSnapshot: () => snapshot,
+    audible: undefined as boolean | undefined,
+    isAudible: () => api.audible ?? snapshot.status === 'speaking',
     set(next: Partial<typeof snapshot>) {
       snapshot = { ...snapshot, ...next }
       for (const listener of subscribers) listener()
     },
     reset() {
+      api.audible = undefined
       snapshot = { activeId: null, status: 'idle', error: null, errorId: null }
     },
     beginStream: vi.fn((id: string) => api.set({ activeId: id, status: 'connecting' })),
@@ -90,9 +93,13 @@ vi.mock('./use-message-stream', () => ({ useMessageStream: () => stream.state })
 const interruptSession = vi.hoisted(() => ({
   mutate: vi.fn((_vars: unknown, opts?: { onSettled?: () => void }) => opts?.onSettled?.()),
 }))
-vi.mock('./use-messages', () => ({ useInterruptSession: () => interruptSession }))
+vi.mock('./use-messages', () => ({ useInterruptSession: () => ({
+  mutateAsync: (variables: unknown) => new Promise<void>((resolve) => interruptSession.mutate(variables, { onSettled: resolve })),
+}) }))
 
-import { useVoiceMode, INTERRUPT_WORD_THRESHOLD, LISTENER_RESTART_MS, DUCK_MAX_MS } from './use-voice-mode'
+vi.mock('./use-voice-input', () => ({ useVoiceConversationEngine: () => 'chained' }))
+import { useVoiceMode } from './use-voice-mode'
+import { INTERRUPT_WORD_THRESHOLD, LISTENER_RESTART_MS, DUCK_MAX_MS, CHAINED_TURN_POLICY } from '@renderer/lib/voice-conversation-deepgram'
 
 const STREAM_ID = 'voice:s1'
 
@@ -242,6 +249,28 @@ describe('useVoiceMode', () => {
     expect(reader.duckStream).toHaveBeenLastCalledWith(STREAM_ID, false)
   })
 
+  it('reports real playback and user speech separately while the TTS connection remains open', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result, listener, setStream } = setup()
+      act(() => listener.hear('go'))
+      act(() => listener.events.onSpeechEnded())
+      await flush()
+      setStream({ isActive: true, streamingMessage: 'A reply.' })
+      act(() => reader.set({ status: 'speaking' }))
+      expect(result.current.speechActive).toBe(true)
+      reader.audible = false
+      act(() => vi.advanceTimersByTime(1400))
+      expect(result.current.speechActive).toBe(false)
+      expect(result.current.hold.allowed).toBe(true)
+      act(() => listener.events.onSpeechStarted?.())
+      expect(result.current.userSpeaking).toBe(true)
+      expect(result.current.speechActive).toBe(true)
+      act(() => listener.events.onSpeechEnded())
+      expect(result.current.speechActive).toBe(false)
+    } finally { vi.useRealTimers() }
+  })
+
   it('voice activity with no words behind it stops ducking the reply after a moment', async () => {
     vi.useFakeTimers()
     try {
@@ -331,7 +360,7 @@ describe('useVoiceMode', () => {
     const enough = `${below} more`
     act(() => listener.hear(enough))
     expect(reader.stop).toHaveBeenCalled()
-    expect(interruptSession.mutate).toHaveBeenCalledWith({ sessionId: 's1', agentSlug: 'agent' }, expect.anything())
+    expect(interruptSession.mutate).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1', agentSlug: 'agent', signal: expect.any(AbortSignal) }), expect.anything())
     expect(result.current.phase).toBe('listening')
     expect(result.current.utterance).toBe(enough)
   })
@@ -344,7 +373,7 @@ describe('useVoiceMode', () => {
     expect(send).toHaveBeenCalledWith('send this')
     expect(result.current.phase).toBe('thinking')
 
-    setStream({ isActive: true })
+    setStream({ isActive: true, streamingMessage: 'The reply.' })
     act(() => result.current.pressMic())
     expect(interruptSession.mutate).toHaveBeenCalledTimes(1)
     expect(reader.stop).toHaveBeenCalled()
@@ -359,7 +388,7 @@ describe('useVoiceMode', () => {
     expect(result.current.phase).toBe('thinking')
     // isActive is still false: the server has not confirmed the turn yet.
     act(() => result.current.pressMic())
-    expect(interruptSession.mutate).toHaveBeenCalledWith({ sessionId: 's1', agentSlug: 'agent' }, expect.anything())
+    expect(interruptSession.mutate).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1', agentSlug: 'agent', signal: expect.any(AbortSignal) }), expect.anything())
     expect(result.current.phase).toBe('listening')
   })
 
@@ -453,17 +482,18 @@ describe('useVoiceMode', () => {
     expect(result.current.error).toMatch(/say it again/)
   })
 
-  it('reports the agent as working once its turn reaches a tool call, until the floor comes back', async () => {
+  it('reports agent activity consistently and shortens the hold delay after a tool call', async () => {
     const { result, listener, setStream } = setup()
     expect(result.current.working).toBe(false)
     act(() => listener.hear('look it up'))
     act(() => listener.events.onSpeechEnded())
     await flush()
-    // Thinking, then an opening sentence: not working yet.
     setStream({ isActive: true, streamingMessage: "I'll look that up. " })
-    expect(result.current.working).toBe(false)
+    expect(result.current.working).toBe(true)
+    expect(result.current.hold.delayMs).toBe(3000)
     setStream({ streamingToolUses: [{ id: 't1', name: 'WebSearch', partialInput: '' }] })
     expect(result.current.working).toBe(true)
+    expect(result.current.hold.delayMs).toBe(700)
     // Sticky through the rest of the turn, tool finished or not.
     setStream({ streamingToolUses: [], streamingMessage: 'Here is what I found. ' })
     expect(result.current.working).toBe(true)
@@ -532,6 +562,41 @@ describe('useVoiceMode', () => {
     }
   })
 
+  it('gives the floor back without a warning when the turn never resumes after a card', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result, rerender, listener, setStream } = setup()
+      act(() => listener.hear('connect my calendar'))
+      act(() => listener.events.onSpeechEnded())
+      await flush()
+      setStream({ isActive: true, streamingMessage: 'Which account? ' })
+      rerender({ paused: true })
+      setStream({ isActive: false, streamingMessage: null })
+      act(() => reader.set({ activeId: null, status: 'idle' }))
+      rerender({ paused: false })
+      expect(result.current.phase).toBe('thinking')
+      act(() => vi.advanceTimersByTime(CHAINED_TURN_POLICY.turnStartTimeoutMs + 100))
+      expect(result.current.phase).toBe('listening')
+      expect(result.current.error).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps words finalized as a card went up and sends them once it is answered', async () => {
+    let finish: (text: string) => void = () => {}
+    const { rerender, listener, send } = setup()
+    listener.take.mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve }))
+    act(() => listener.hear('use the work account'))
+    act(() => listener.events.onSpeechEnded())
+    rerender({ paused: true })
+    await act(async () => { finish('use the work account'); await Promise.resolve() })
+    expect(send).not.toHaveBeenCalled()
+    rerender({ paused: false })
+    await flush()
+    expect(send).toHaveBeenCalledExactlyOnceWith('use the work account')
+  })
+
   it('entered while the agent is already replying, it reads what follows', () => {
     stream.state = { streamingToolUses: [], isActive: true, streamingMessage: 'Half way through. ' }
     const { result, setStream } = setup()
@@ -542,9 +607,24 @@ describe('useVoiceMode', () => {
   })
 
   it('turning voice mode off releases the mic and silences the reader', () => {
-    const { rerender, listener } = setup()
+    const { rerender, listener, setStream } = setup()
+    setStream({ isActive: true, streamingMessage: 'A reply in progress.' })
     rerender({ active: false })
     expect(listener.stop).toHaveBeenCalledTimes(1)
     expect(reader.stop).toHaveBeenCalled()
   })
+  it('suppresses hold music while an older message is being read aloud', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result, setStream, unmount } = setup()
+      setStream({ isActive: true })
+      act(() => reader.set({ activeId: 'older-message', status: 'speaking' }))
+      expect(result.current.speechActive).toBe(true)
+      act(() => reader.set({ activeId: null, status: 'idle' }))
+      act(() => vi.advanceTimersByTime(1400))
+      expect(result.current.speechActive).toBe(false)
+      unmount()
+    } finally { vi.useRealTimers() }
+  })
+
 })

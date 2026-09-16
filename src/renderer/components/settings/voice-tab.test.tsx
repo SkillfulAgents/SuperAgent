@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, screen } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
+import { OPENAI_TTS_VOICES } from '@shared/lib/voice/openai-voices'
 import { VoiceTab } from './voice-tab'
 
 const state = {
@@ -45,9 +46,10 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
 }))
 vi.mock('@renderer/hooks/use-voice-input', () => ({
   useIsTtsConfigured: () => state.ttsConfigured,
+  useVoiceConversationEngine: () => state.sttProvider === 'openai' ? 'openai-live' : state.ttsConfigured ? 'chained' : null,
   // What the member-readable endpoint reports: the provider's voices and the
   // deployment default among them.
-  useTtsVoices: () => ({ voices: VOICES, defaultVoice: state.defaultVoice ?? 'aura-2-thalia-en' }),
+  useTtsVoices: () => ({ voices: state.sttProvider === 'openai' ? OPENAI_TTS_VOICES : VOICES, defaultVoice: state.defaultVoice ?? (state.sttProvider === 'openai' ? 'marin' : 'aura-2-thalia-en') }),
   useVoiceInput: () => ({ state: 'idle', isRecording: false, isConnecting: false, isFinalizing: false, error: null, clearError: vi.fn(), isSupported: false, analyserRef: { current: null }, startRecording: vi.fn(), stopRecording: vi.fn() }),
 }))
 const readAloudRestart = vi.fn()
@@ -140,6 +142,17 @@ describe('VoiceTab', () => {
     fireEvent.click(screen.getByLabelText('Voice', { selector: '#tts-voice' }))
     fireEvent.click(screen.getByRole('option', { name: /Workspace Default \(Zeus\)/ }))
     expect(updateUserSettings).toHaveBeenCalledWith({ voice: { ttsVoice: null } }, expect.anything())
+  })
+
+  it('offers OpenAI read-aloud voices while explaining the separate Live voice', () => {
+    state.sttProvider = 'openai'
+    renderWithProviders(<VoiceTab />)
+    expect(screen.getByLabelText('Voice', { selector: '#tts-voice' })).toHaveTextContent('Marin')
+    expect(screen.getByLabelText('Speed')).toHaveTextContent('Normal')
+    expect(screen.getByText(/Conversation voice uses OpenAI Live with the Marin voice/)).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Voice', { selector: '#tts-voice' }))
+    fireEvent.click(screen.getByRole('option', { name: /Cedar/ }))
+    expect(updateUserSettings).toHaveBeenCalledWith({ voice: { ttsVoice: 'cedar' } }, expect.anything())
   })
 
   it('a local install offers no workspace default: there is nobody else to follow', () => {

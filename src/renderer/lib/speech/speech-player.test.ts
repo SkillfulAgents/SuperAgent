@@ -89,7 +89,6 @@ function setup() {
   const errors: (Error | undefined)[] = []
   const player = new SpeechPlayer({
     adapter,
-    token: 't',
     voice: { voice: 'v' },
     onStatus: (s, e) => { statuses.push(s); errors.push(e) },
     createAudioContext: () => ctx as unknown as AudioContext,
@@ -287,7 +286,7 @@ describe('SpeechPlayer', () => {
   it('a first-word offset shifts the cursor onto the whole message', () => {
     const adapter = new FakeAdapter()
     const ctx = new FakeAudioContext()
-    const player = new SpeechPlayer({ adapter, token: 't', voice: { voice: 'v' }, firstWordIndex: 10, createAudioContext: () => ctx as unknown as AudioContext })
+    const player = new SpeechPlayer({ adapter, voice: { voice: 'v' }, firstWordIndex: 10, createAudioContext: () => ctx as unknown as AudioContext })
     player.start()
     expect(player.getWordCursor()).toBe(10) // the word the restart took over stays lit
     player.append(words('One two three four.'))
@@ -558,7 +557,7 @@ describe('SpeechPlayer with finishOnIdleClose', () => {
     const errors: (Error | undefined)[] = []
     const player = new SpeechPlayer({
       adapter,
-      token: 't',
+
       voice: { voice: 'v' },
       finishOnIdleClose: true,
       onStatus: (s, e) => { statuses.push(s); errors.push(e) },

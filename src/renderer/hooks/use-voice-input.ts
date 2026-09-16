@@ -4,6 +4,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { acquireMicStream, createSttAdapter, startAudioCapture, type SttAdapter, type VoiceProvider, type AudioCaptureHandle, type CaptureKind } from '@renderer/lib/stt'
 import { addRendererBreadcrumb, captureRendererException, captureRendererMessage } from '@renderer/lib/error-reporting'
+import type { VoiceConversationEngine } from '@shared/lib/voice/conversation-types'
 import type { TtsVoiceInfo } from '@shared/lib/voice/tts-preferences'
 
 // 'finalizing': mic released, but we're flushing buffered audio and awaiting the
@@ -127,6 +128,7 @@ interface SttCredentials {
 }
 
 interface VoiceConfiguredStatus {
+  conversationEngine?: VoiceConversationEngine | null
   configured: boolean
   supportsVoiceAgent: boolean
   supportsTts: boolean
@@ -184,13 +186,19 @@ export function useTtsVoices(): { voices: TtsVoiceInfo[]; defaultVoice: string |
 
 /**
  * Whether voice mode (talk, and hear the replies) can be offered here: the
- * configured provider both transcribes and speaks, and this browser has a
- * microphone API.
+ * configured provider supports a chained or Live conversation, and this
+ * browser has a microphone API.
  */
 export function useCanUseVoiceMode(): boolean {
-  const { configured, supportsTts } = useVoiceConfiguredStatus()
+  const { configured, supportsTts, conversationEngine } = useVoiceConfiguredStatus()
   const hasMic = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
-  return configured && supportsTts && hasMic
+  return configured && (supportsTts || conversationEngine === 'openai-live') && hasMic
+}
+
+/** The transport for in-session voice, separate from dictation and read-aloud. */
+export function useVoiceConversationEngine(): VoiceConversationEngine | null {
+  const status = useVoiceConfiguredStatus()
+  return status.conversationEngine ?? (status.configured && status.supportsTts ? 'chained' : null)
 }
 
 export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {

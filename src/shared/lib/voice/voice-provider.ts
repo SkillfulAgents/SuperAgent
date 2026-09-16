@@ -1,4 +1,8 @@
+import { VoiceProviderError } from './provider-error'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus, type VoiceProvider } from '../config/settings'
+import type { TtsConnection, TtsSynthesisProvider } from './tts-types'
+import type { LiveConversationProvider } from './live-types'
+import type { VoiceConversationEngine } from './conversation-types'
 import type { TtsVoiceInfo } from './tts-preferences'
 
 export abstract class BaseVoiceProvider {
@@ -40,7 +44,7 @@ export abstract class BaseVoiceProvider {
   async getEphemeralToken(): Promise<{ provider: VoiceProvider; token: string }> {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) {
-      throw new Error(`No API key configured for ${this.name}. Add one in Settings > Voice.`)
+      throw new VoiceProviderError(`No API key configured for ${this.name}. Add one in Settings > Voice.`, 400)
     }
     const token = await this.mintEphemeralToken(apiKey)
     return { provider: this.id, token }
@@ -49,6 +53,16 @@ export abstract class BaseVoiceProvider {
   /** Whether this provider supports Voice Agent (S2S) sessions. */
   supportsVoiceAgent(): boolean {
     return false
+  }
+
+  /** Renderer implementation used for an independently running agent session. */
+  getConversationEngine(): VoiceConversationEngine | null {
+    return this.supportsTts() ? 'chained' : null
+  }
+
+  /** Host-side delegated conversation sessions, when supported by the provider. */
+  getLiveConversation(): LiveConversationProvider | null {
+    return null
   }
 
   /** Mint a token for a Voice Agent session. Override in providers that support it. */
@@ -64,7 +78,7 @@ export abstract class BaseVoiceProvider {
     }
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) {
-      throw new Error(`No API key configured for ${this.name}. Add one in Settings > Voice.`)
+      throw new VoiceProviderError(`No API key configured for ${this.name}. Add one in Settings > Voice.`, 400)
     }
     const token = await this.mintVoiceAgentToken(apiKey)
     return { provider: this.id, token }
@@ -78,6 +92,19 @@ export abstract class BaseVoiceProvider {
    */
   getTtsVoices(): readonly TtsVoiceInfo[] {
     return []
+  }
+
+  /** Optional server-side synthesis; token-based providers use their own socket. */
+  getTtsSynthesis(): TtsSynthesisProvider | null {
+    return null
+  }
+
+  async getTtsConnection(): Promise<TtsConnection> {
+    if (!this.supportsTts()) throw new VoiceProviderError(`Text-to-speech not supported by ${this.name}`, 400)
+    if (!this.getApiKeyStatus().isConfigured) throw new VoiceProviderError(`No API key configured for ${this.name}. Add one in Settings > Voice.`, 400)
+    if (this.getTtsSynthesis()) return { transport: 'http' }
+    const { token } = await this.getTtsToken()
+    return { transport: 'websocket', token }
   }
 
   /** Whether this provider supports streaming text-to-speech. */
@@ -106,17 +133,17 @@ export abstract class BaseVoiceProvider {
   /** Mint a token for a text-to-speech session. Override in providers that support it. */
   async mintTtsToken(apiKey: string): Promise<string> {
     void apiKey
-    throw new Error(`Text-to-speech not supported by ${this.name}`)
+    throw new VoiceProviderError(`Text-to-speech not supported by ${this.name}`, 400)
   }
 
   /** Convenience: resolve the effective key and mint a text-to-speech token. */
   async getTtsToken(): Promise<{ provider: VoiceProvider; token: string }> {
     if (!this.supportsTts()) {
-      throw new Error(`Text-to-speech not supported by ${this.name}`)
+      throw new VoiceProviderError(`Text-to-speech not supported by ${this.name}`, 400)
     }
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) {
-      throw new Error(`No API key configured for ${this.name}. Add one in Settings > Voice.`)
+      throw new VoiceProviderError(`No API key configured for ${this.name}. Add one in Settings > Voice.`, 400)
     }
     const token = await this.mintTtsToken(apiKey)
     return { provider: this.id, token }
@@ -139,7 +166,7 @@ export abstract class BaseVoiceProvider {
     }
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) {
-      throw new Error(`No API key configured for ${this.name}. Add one in Settings > Voice.`)
+      throw new VoiceProviderError(`No API key configured for ${this.name}. Add one in Settings > Voice.`, 400)
     }
     return this.transcribeAudio(apiKey, audioBuffer, mimeType)
   }
