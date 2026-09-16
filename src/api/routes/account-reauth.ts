@@ -1,8 +1,8 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, exists, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { batch } from '@shared/lib/db/batch'
+import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { ownerScope } from '@shared/lib/auth/ownership'
@@ -51,20 +51,31 @@ accountReauth.post('/:id/reauth-request/:requestId/replace-account', AgentUser()
       eq(agentConnectedAccounts.connectedAccountId, previousAccountId),
     )).get()
     if (!mapping) return c.json({ error: 'The original account is no longer assigned to this agent' }, 409)
+    // The reads above yielded; make sure the card did not settle meanwhile.
+    if (agentRegistry.get(slug).inputs.get(requestId)?.kind !== 'account_reauth_required') {
+      return c.json({ error: 'Reconnection request is no longer available' }, 404)
+    }
 
-    // One batch: assign the replacement (a no-op if a concurrent grant already
-    // did) and drop the original mapping (a no-op if it was unassigned
-    // meanwhile). Either way the agent ends up with the replacement and
-    // without the original, which is the state the card settles into.
-    await batch([
-      db.insert(agentConnectedAccounts).values({
+    // The write claims the original mapping. The replacement is assigned only
+    // while that mapping still exists, and deleting it is what makes this
+    // request the winner: a concurrent replacement, unassign or reconnect
+    // that consumed it first leaves this batch with zero changes, and the
+    // caller gets the same 409 the base code gave the loser.
+    const originalStillAssigned = exists(
+      db.select({ one: sql`1` }).from(agentConnectedAccounts).where(eq(agentConnectedAccounts.id, mapping.id)),
+    )
+    const [, unlinked] = await batch([
+      insertWhere(agentConnectedAccounts, {
         id: crypto.randomUUID(),
         agentSlug: slug,
         connectedAccountId: accountId,
         createdAt: new Date(),
-      }).onConflictDoNothing(),
+      }, originalStillAssigned).onConflictDoNothing(),
       db.delete(agentConnectedAccounts).where(eq(agentConnectedAccounts.id, mapping.id)),
     ])
+    if (changesOf(unlinked) === 0) {
+      return c.json({ error: 'The original account is no longer assigned to this agent' }, 409)
+    }
     const result = { accountId, previousAccountId, toolkit: request.payload.toolkit }
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: result.previousAccountId, action: 'unassigned', details: { agentSlug: slug } })

@@ -1,8 +1,8 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, exists, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { batch } from '@shared/lib/db/batch'
+import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { agentRemoteMcps, remoteMcpServers } from '@shared/lib/db/schema'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { isOwnedByCaller, ownerScope } from '@shared/lib/auth/ownership'
@@ -56,16 +56,23 @@ mcpReauth.post('/:id/reauth-request/:requestId/replace-mcp', AgentUser(), async 
       return c.json({ error: 'Choose a different connection to the same MCP endpoint' }, 400)
     }
     if (replacement.status !== 'active') return c.json({ error: 'Reconnect the replacement MCP before granting access' }, 409)
+    // The read above yielded; make sure the card did not settle meanwhile.
+    if (!loadRequestedMcp(requestId, agentSlug)) return c.json({ error: 'Reconnection request is no longer available' }, 404)
 
-    // One batch: assign the replacement (a no-op if already assigned) and drop
-    // the original mapping (a no-op if it was unassigned meanwhile); the end
-    // state is the same either way.
-    await batch([
-      db.insert(agentRemoteMcps).values({
+    // The write claims the original mapping: the replacement is assigned only
+    // while it still exists, and deleting it is what makes this request the
+    // winner. A concurrent replacement that consumed it first leaves zero
+    // changes here, and the loser gets the 404 the base code gave it.
+    const originalStillAssigned = exists(
+      db.select({ one: sql`1` }).from(agentRemoteMcps).where(eq(agentRemoteMcps.id, current.mapping.id)),
+    )
+    const [, unlinked] = await batch([
+      insertWhere(agentRemoteMcps, {
         id: crypto.randomUUID(), agentSlug, remoteMcpId: replacementId, createdAt: new Date(),
-      }).onConflictDoNothing(),
+      }, originalStillAssigned).onConflictDoNothing(),
       db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, current.mapping.id)),
     ])
+    if (changesOf(unlinked) === 0) return c.json({ error: 'Reconnection request is no longer available' }, 404)
     const result = { previousId: current.mcp.id, replacementId, name: current.mcp.name }
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: result.previousId, action: 'unassigned', details: { agentSlug } })

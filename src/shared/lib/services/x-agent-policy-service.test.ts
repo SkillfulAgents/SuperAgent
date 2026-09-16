@@ -210,6 +210,29 @@ describe('x-agent-policy-service', () => {
       expect(listPoliciesForCaller('alice')).toHaveLength(1)
       expect(getPolicy('alice', 'invoke', 'bob')?.decision).toBe('block')
     })
+
+    it('only the first concurrent write reports creating the policy', async () => {
+      // The graph decides whether to refresh from these fields, so they must
+      // describe what each write actually displaced, not what it read first.
+      const results = await Promise.all([
+        setPolicy('alice', 'invoke', 'bob', 'block'),
+        setPolicy('alice', 'invoke', 'bob', 'allow'),
+      ])
+      expect(results).toEqual([
+        { created: true, previousDecision: null },
+        { created: false, previousDecision: 'block' },
+      ])
+    })
+
+    it('restoring allow reports the block it actually overwrote', async () => {
+      await setPolicy('alice', 'invoke', 'bob', 'allow')
+      const results = await Promise.all([
+        setPolicy('alice', 'invoke', 'bob', 'block'),
+        setPolicy('alice', 'invoke', 'bob', 'allow'),
+      ])
+      expect(results[0]).toEqual({ created: false, previousDecision: 'allow' })
+      expect(results[1]).toEqual({ created: false, previousDecision: 'block' })
+    })
   })
 
   describe('replacePoliciesForCaller', () => {

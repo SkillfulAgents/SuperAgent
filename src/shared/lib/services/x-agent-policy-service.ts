@@ -14,9 +14,9 @@
 
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
-import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm'
+import { and, desc, eq, isNull, ne, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { batch } from '@shared/lib/db/batch'
+import { batch, changesOf } from '@shared/lib/db/batch'
 import { xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
 
 // ============================================================================
@@ -82,27 +82,17 @@ export function getPolicy(
   return rows[0] ?? null
 }
 
-/**
- * The unique index setPolicy upserts against. A plain (caller, target, op)
- * index treats NULL targets as distinct, so the global (caller, NULL, op)
- * rows need `coalesce` to conflict; migration 0044 adds this index and
- * dedupes any global rows that slipped in before it.
- */
-const policyKey = () => [
-  xAgentPolicies.callerAgentSlug,
-  sql`coalesce(${xAgentPolicies.targetAgentSlug}, '')`,
-  xAgentPolicies.operation,
-]
+const MAX_SET_POLICY_ATTEMPTS = 5
 
 /**
- * Upsert a policy row: one `INSERT … ON CONFLICT DO UPDATE`, so two
- * concurrent setPolicy calls for the same key end in one row holding the
- * later decision, never a duplicate.
- *
- * The result reports whether a row was created and what it replaced, so
- * single-policy callers (the graph's drawn edges) can message accurately
- * without a list round-trip. That comes from a read just before the write
- * and is informational only; the upsert is correct whatever the read saw.
+ * Set a policy row and report exactly what it displaced: whether a row was
+ * created and the decision it replaced. The graph's drawn edges rely on that
+ * to decide whether to refresh, so it cannot be a guess from a read next to
+ * the write. Each attempt is a compare-and-set: update only while the row
+ * still holds the decision that was read, or insert only while no row holds
+ * the key (the NULL-safe unique index from migration 0044 makes a global,
+ * null-target key conflict too). Zero changes means another writer got in
+ * first; read again and swap against what they left.
  */
 export async function setPolicy(
   callerSlug: string,
@@ -111,31 +101,42 @@ export async function setPolicy(
   decision: XAgentDecision,
 ): Promise<{ created: boolean; previousDecision: XAgentDecision | null }> {
   const now = new Date()
-  const existing = await db
-    .select({ decision: xAgentPolicies.decision })
-    .from(xAgentPolicies)
-    .where(
-      and(
-        eq(xAgentPolicies.callerAgentSlug, callerSlug),
-        eq(xAgentPolicies.operation, operation),
-        targetMatch(targetSlug),
-      ),
-    )
-    .get()
-  await db
-    .insert(xAgentPolicies)
-    .values({
-      id: randomUUID(),
-      callerAgentSlug: callerSlug,
-      targetAgentSlug: targetSlug,
-      operation,
-      decision,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({ target: policyKey(), set: { decision, updatedAt: now } })
-    .run()
-  return { created: !existing, previousDecision: (existing?.decision as XAgentDecision | undefined) ?? null }
+  const key = and(
+    eq(xAgentPolicies.callerAgentSlug, callerSlug),
+    eq(xAgentPolicies.operation, operation),
+    targetMatch(targetSlug),
+  )
+  for (let attempt = 0; attempt < MAX_SET_POLICY_ATTEMPTS; attempt++) {
+    const existing = await db
+      .select({ id: xAgentPolicies.id, decision: xAgentPolicies.decision })
+      .from(xAgentPolicies)
+      .where(key)
+      .get()
+    if (existing) {
+      const updated = await db
+        .update(xAgentPolicies)
+        .set({ decision, updatedAt: now })
+        .where(and(eq(xAgentPolicies.id, existing.id), eq(xAgentPolicies.decision, existing.decision)))
+        .run()
+      if (changesOf(updated) > 0) return { created: false, previousDecision: existing.decision as XAgentDecision }
+      continue
+    }
+    const inserted = await db
+      .insert(xAgentPolicies)
+      .values({
+        id: randomUUID(),
+        callerAgentSlug: callerSlug,
+        targetAgentSlug: targetSlug,
+        operation,
+        decision,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoNothing()
+      .run()
+    if (changesOf(inserted) > 0) return { created: true, previousDecision: null }
+  }
+  throw new Error('Policy changed concurrently; try again')
 }
 
 /** Delete the exact policy row(s) for (caller, operation, target). */

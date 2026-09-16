@@ -6,7 +6,7 @@
  */
 
 import { db } from '@shared/lib/db'
-import { batch } from '@shared/lib/db/batch'
+import { batch, changesOf } from '@shared/lib/db/batch'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
 import { eq, and, lte, inArray, isNotNull, isNull, desc } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
@@ -126,6 +126,15 @@ export async function createScheduledTask(
  * as one batch so concurrent calls can't interleave into duplicate pending
  * wakes. A partial unique index on pending wakes backstops both.
  */
+const MAX_WAKE_REPLACE_ATTEMPTS = 5
+
+/** The partial unique index on pending wakes rejected an insert (SQLite names the column, not the index). */
+function isPendingWakeConflict(error: unknown): boolean {
+  return error instanceof Error
+    && error.message.includes('UNIQUE constraint failed')
+    && error.message.includes('resume_session_id')
+}
+
 export async function createSessionWake(
   params: CreateSessionWakeParams
 ): Promise<{ taskId: string; replaced: ScheduledTask | null }> {
@@ -157,15 +166,29 @@ export async function createSessionWake(
     eq(scheduledTasks.resumeSessionId, params.sessionId),
     eq(scheduledTasks.status, 'pending')
   )
-  // Read only to report what was replaced. The swap itself is one batch that
-  // cancels whatever is pending at that moment and inserts the new wake, so
-  // no caller observes (or creates) an intermediate state; the partial unique
-  // index rejects the one interleaving a racing insert could still attempt.
-  const [replaced = null] = await db.select().from(scheduledTasks).where(pendingWake).all()
-  await batch([
-    db.update(scheduledTasks).set({ status: 'cancelled', cancelledAt: now }).where(pendingWake),
-    db.insert(scheduledTasks).values(newTask),
-  ])
+  // `replaced` is the wake this call cancels, so cancel it by id and let the
+  // change count say whether it was still pending: a concurrent cancel that
+  // got there first means nothing was replaced. A concurrent create that got
+  // there first leaves its own pending wake, which the partial unique index
+  // rejects the insert against; read again and replace that one instead.
+  let replaced: ScheduledTask | null = null
+  for (let attempt = 1; ; attempt++) {
+    const existing = (await db.select().from(scheduledTasks).where(pendingWake).get()) ?? null
+    const cancelExisting = existing
+      ? [
+          db.update(scheduledTasks)
+            .set({ status: 'cancelled', cancelledAt: now })
+            .where(and(eq(scheduledTasks.id, existing.id), eq(scheduledTasks.status, 'pending'))),
+        ]
+      : []
+    try {
+      const results = await batch([...cancelExisting, db.insert(scheduledTasks).values(newTask)])
+      replaced = existing && changesOf(results[0]) > 0 ? existing : null
+      break
+    } catch (error) {
+      if (attempt >= MAX_WAKE_REPLACE_ATTEMPTS || !isPendingWakeConflict(error)) throw error
+    }
+  }
 
   trackServerEvent('task_scheduled', {
     scheduleType: 'at',

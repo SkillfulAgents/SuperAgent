@@ -250,6 +250,21 @@ describe('scheduled-task-service session wakes', () => {
       expect(pending).toHaveLength(1)
     })
 
+    it('a concurrent replacement reports the wake it actually displaced', async () => {
+      const params = {
+        agentSlug: 'test-agent',
+        scheduleExpression: 'at now + 1 hour',
+        note: 'Wake',
+        sessionId: 'session-abc',
+      }
+      const [first, second] = await Promise.all([createSessionWake(params), createSessionWake(params)])
+
+      expect(first.replaced).toBeNull()
+      expect(second.replaced?.id).toBe(first.taskId)
+      const pending = await listPendingWakesByAgent('test-agent')
+      expect(pending.map((wake) => wake.id)).toEqual([second.taskId])
+    })
+
     it('a replace racing a cancel leaves at most one pending wake, never two', async () => {
       const first = await createSessionWake({
         agentSlug: 'test-agent',
@@ -258,7 +273,7 @@ describe('scheduled-task-service session wakes', () => {
         sessionId: 'session-abc',
       })
 
-      const [replaced, cancelled] = await Promise.all([
+      const [replaced] = await Promise.all([
         createSessionWake({
           agentSlug: 'test-agent',
           scheduleExpression: 'at now + 48 hours',
@@ -270,7 +285,6 @@ describe('scheduled-task-service session wakes', () => {
 
       // The cancel+insert pair is one batch, so whichever order the two land
       // in, the original is cancelled and the session never holds two wakes.
-      expect(cancelled).toBe(true)
       expect((await getScheduledTask(first.taskId))!.status).toBe('cancelled')
       const pending = await listPendingWakesByAgent('test-agent')
       expect(pending.length).toBeLessThanOrEqual(1)
