@@ -1,6 +1,8 @@
 import { z } from 'zod'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
+import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 import { userSettings } from '@shared/lib/db/schema'
 import { getSettings } from '@shared/lib/config/settings'
 import { ttsSpeedSchema } from '@shared/lib/voice/tts-preferences'
@@ -246,15 +248,12 @@ export async function getUserSettings(userId: string): Promise<UserSettingsData>
     .all()
 
   if (rows.length > 0) {
-    try {
-      return userSettingsSchema.parse(JSON.parse(rows[0].settings))
-    } catch {
-      // Corrupted JSON — fall through to defaults
-    }
+    const stored = parseStoredSettings(rows[0].settings)
+    if (stored) return stored
   }
 
   // No row found — seed from app settings for 'local' user, otherwise use defaults
-  const initial = userId === 'local' ? seedFromAppSettings() : getDefaultUserSettings()
+  const initial = initialUserSettings(userId)
 
   // Persist the initial settings so future reads come from DB
   await db.insert(userSettings)
@@ -269,9 +268,20 @@ export async function getUserSettings(userId: string): Promise<UserSettingsData>
   return initial
 }
 
-/**
- * Update user settings with a partial update. Merges with existing, validates, and upserts.
- */
+/** The stored document, or null when it is not valid (corrupted JSON falls back to defaults). */
+function parseStoredSettings(stored: string): UserSettingsData | null {
+  try {
+    return userSettingsSchema.parse(JSON.parse(stored))
+  } catch {
+    return null
+  }
+}
+
+/** What a user starts from: the 'local' sentinel seeds from settings.json, everyone else from the defaults. */
+function initialUserSettings(userId: string): UserSettingsData {
+  return userId === 'local' ? seedFromAppSettings() : getDefaultUserSettings()
+}
+
 /** Merge a voice write; a null voice means "unset", not "store null". */
 function mergeVoice(
   current: UserSettingsData['voice'],
@@ -284,41 +294,66 @@ function mergeVoice(
   return merged
 }
 
-export async function updateUserSettings(
-  userId: string,
-  partial: UserSettingsWrite
-): Promise<UserSettingsData> {
-  const current = await getUserSettings(userId)
-
-  // Deep merge the nested groups if provided
-  const merged = {
+/** Deep merge the nested groups if provided. */
+function mergeSettings(current: UserSettingsData, partial: UserSettingsWrite): UserSettingsData {
+  return userSettingsSchema.parse({
     ...current,
     ...partial,
     notifications: partial.notifications
       ? { ...current.notifications, ...partial.notifications }
       : current.notifications,
     voice: partial.voice ? mergeVoice(current.voice, partial.voice) : current.voice,
+  })
+}
+
+const MAX_UPDATE_ATTEMPTS = 5
+
+/**
+ * Update user settings with a partial update: merge into the stored document,
+ * validate, and write it back. One writer per user at a time in this process;
+ * the compare-and-swap in {@link compareAndSetUserSettings} covers writers in
+ * other processes.
+ */
+export function updateUserSettings(
+  userId: string,
+  partial: UserSettingsWrite
+): Promise<UserSettingsData> {
+  return serializeByKey(`user-settings:${userId}`, () => compareAndSetUserSettings(userId, partial))
+}
+
+/**
+ * The read and the write are separate statements, so a second writer could
+ * read the same document and overwrite the first writer's merge. The write
+ * therefore replaces the document only if it is still the one that was read
+ * (or inserts only if there is still no row); zero changes means read again
+ * and merge onto what the other writer left.
+ */
+async function compareAndSetUserSettings(
+  userId: string,
+  partial: UserSettingsWrite
+): Promise<UserSettingsData> {
+  for (let attempt = 0; attempt < MAX_UPDATE_ATTEMPTS; attempt++) {
+    const row = await db
+      .select({ settings: userSettings.settings })
+      .from(userSettings)
+      .where(eq(userSettings.userId, userId))
+      .get()
+    const current = (row && parseStoredSettings(row.settings)) ?? initialUserSettings(userId)
+    const validated = mergeSettings(current, partial)
+    const json = JSON.stringify(validated)
+    const now = new Date()
+    const result = row
+      ? await db.update(userSettings)
+          .set({ settings: json, updatedAt: now })
+          .where(and(eq(userSettings.userId, userId), eq(userSettings.settings, row.settings)))
+          .run()
+      : await db.insert(userSettings)
+          .values({ userId, settings: json, updatedAt: now })
+          .onConflictDoNothing()
+          .run()
+    if (changesOf(result) > 0) return validated
   }
-
-  const validated = userSettingsSchema.parse(merged)
-  const json = JSON.stringify(validated)
-
-  await db.insert(userSettings)
-    .values({
-      userId,
-      settings: json,
-      updatedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: userSettings.userId,
-      set: {
-        settings: json,
-        updatedAt: new Date(),
-      },
-    })
-    .run()
-
-  return validated
+  throw new Error('User settings changed concurrently; try again')
 }
 
 /**
