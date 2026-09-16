@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
-import { and, eq, gt, isNull, ne, or, count, getTableColumns } from 'drizzle-orm'
+import { and, count, eq, exists, getTableColumns, gt, isNull, lt, ne, or, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { batch, changesOf, insertWhere, type BatchStatement } from '@shared/lib/db/batch'
 import { apnsDevices, mobileDevice } from '@shared/lib/db/schema'
 
 export type ApnsDeviceRow = typeof apnsDevices.$inferSelect
@@ -19,14 +20,14 @@ export const MAX_APNS_DEVICES_PER_OWNER = 10
  * ephemeral), so this doubles as the keep-alive that repairs a lost row.
  *
  * When the registration carries a `mobileDeviceId`, any other row for the same
- * physical device but a DIFFERENT token is deleted in the same transaction —
+ * physical device but a DIFFERENT token is deleted in the same batch —
  * APNs rotates tokens across reinstalls/restores and the stale token would
  * otherwise linger until a send finally reports it Unregistered.
  *
  * Returns false when the owner is at MAX_APNS_DEVICES_PER_OWNER and the token
  * is new (the route surfaces this as 429).
  */
-export function upsertApnsDevice(params: {
+export async function upsertApnsDevice(params: {
   token: string
   environment: string
   userId: string | null
@@ -34,45 +35,35 @@ export function upsertApnsDevice(params: {
   workspaceTag?: string | null
   deviceName?: string | null
   platform?: string
-}): boolean {
+}): Promise<boolean> {
   const now = new Date()
-  return db.transaction((tx) => {
-    if (params.mobileDeviceId !== null) {
-      // One live token per physical device: drop rotated-away tokens.
-      tx.delete(apnsDevices)
-        .where(
-          and(
-            eq(apnsDevices.mobileDeviceId, params.mobileDeviceId),
-            ne(apnsDevices.token, params.token)
-          )
+  const statements: BatchStatement[] = []
+  if (params.mobileDeviceId !== null) {
+    // One live token per physical device: drop rotated-away tokens. Runs
+    // before the insert, so the cap below counts the device once.
+    statements.push(
+      db.delete(apnsDevices).where(
+        and(
+          eq(apnsDevices.mobileDeviceId, params.mobileDeviceId),
+          ne(apnsDevices.token, params.token)
         )
-        .run()
-    }
+      )
+    )
+  }
 
-    const exists = tx
-      .select({ id: apnsDevices.id })
-      .from(apnsDevices)
-      .where(eq(apnsDevices.token, params.token))
-      .limit(1)
-      .all()
-
-    if (exists.length === 0) {
-      const ownerFilter =
-        params.userId === null
-          ? isNull(apnsDevices.userId)
-          : eq(apnsDevices.userId, params.userId)
-      const [{ ownerCount }] = tx
-        .select({ ownerCount: count() })
-        .from(apnsDevices)
-        .where(ownerFilter)
-        .all()
-      if (ownerCount >= MAX_APNS_DEVICES_PER_OWNER) {
-        return false
-      }
-    }
-
-    tx.insert(apnsDevices)
-      .values({
+  const ownerFilter =
+    params.userId === null
+      ? isNull(apnsDevices.userId)
+      : eq(apnsDevices.userId, params.userId)
+  // A known token is always refreshed; a new one is admitted only while the
+  // owner is under the cap. The driver evaluates both inside the insert, so
+  // two concurrent registrations at the cap admit exactly one.
+  const known = db.select({ one: sql`1` }).from(apnsDevices).where(eq(apnsDevices.token, params.token))
+  const owned = db.select({ n: count() }).from(apnsDevices).where(ownerFilter)
+  statements.push(
+    insertWhere(
+      apnsDevices,
+      {
         id: randomUUID(),
         token: params.token,
         environment: params.environment,
@@ -83,22 +74,24 @@ export function upsertApnsDevice(params: {
         platform: params.platform ?? 'ios',
         createdAt: now,
         updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: apnsDevices.token,
-        set: {
-          environment: params.environment,
-          userId: params.userId,
-          mobileDeviceId: params.mobileDeviceId,
-          workspaceTag: params.workspaceTag ?? null,
-          deviceName: params.deviceName ?? null,
-          platform: params.platform ?? 'ios',
-          updatedAt: now,
-        },
-      })
-      .run()
-    return true
-  })
+      },
+      or(exists(known), lt(owned, MAX_APNS_DEVICES_PER_OWNER)),
+    ).onConflictDoUpdate({
+      target: apnsDevices.token,
+      set: {
+        environment: params.environment,
+        userId: params.userId,
+        mobileDeviceId: params.mobileDeviceId,
+        workspaceTag: params.workspaceTag ?? null,
+        deviceName: params.deviceName ?? null,
+        platform: params.platform ?? 'ios',
+        updatedAt: now,
+      },
+    })
+  )
+
+  const results = await batch(statements)
+  return changesOf(results[results.length - 1]) > 0
 }
 
 export function listApnsDevices(): ApnsDeviceRow[] {

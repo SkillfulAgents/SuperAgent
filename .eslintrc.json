@@ -31,6 +31,7 @@
     "local-rules/no-path-containment-startswith": "warn",
     "local-rules/no-agent-internals-outside-actor": "error",
     "local-rules/agent-actor-escape-hatch-tally": "warn",
+    "local-rules/no-db-transaction": "error",
     "react-hooks/rules-of-hooks": "error",
     "react-hooks/exhaustive-deps": "warn",
     "no-extra-semi": "off",
@@ -46,7 +47,8 @@
         "local-rules/no-unhandled-throwing-builtins": "off",
         "local-rules/no-path-containment-startswith": "off",
         "local-rules/no-agent-internals-outside-actor": "off",
-        "local-rules/agent-actor-escape-hatch-tally": "off"
+        "local-rules/agent-actor-escape-hatch-tally": "off",
+        "local-rules/no-db-transaction": "off"
       }
     },
     {
@@ -54,7 +56,8 @@
       "rules": {
         "local-rules/no-brittle-playwright-selectors": "error",
         "local-rules/no-agent-internals-outside-actor": "off",
-        "local-rules/agent-actor-escape-hatch-tally": "off"
+        "local-rules/agent-actor-escape-hatch-tally": "off",
+        "local-rules/no-db-transaction": "off"
       }
     }
   ],

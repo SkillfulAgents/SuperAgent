@@ -47,7 +47,7 @@ describe('x-agent-policy-service', () => {
   })
 
   describe('evaluate (defaults)', () => {
-    it('returns review when no policy exists', () => {
+    it('returns review when no policy exists', async () => {
       expect(evaluate('caller', 'list', null)).toBe('review')
       expect(evaluate('caller', 'read', 'target')).toBe('review')
       expect(evaluate('caller', 'invoke', 'target')).toBe('review')
@@ -185,13 +185,40 @@ describe('x-agent-policy-service', () => {
     })
   })
 
+  describe('setPolicy concurrency', () => {
+    it('concurrent writes to the same global (null-target) key end in one row', async () => {
+      // A plain unique index treats NULL targets as distinct; the null-safe
+      // index from migration 0044 is what lets the upsert conflict instead of
+      // inserting a duplicate.
+      await Promise.all([
+        setPolicy('alice', 'list', null, 'allow'),
+        setPolicy('alice', 'list', null, 'block'),
+        setPolicy('alice', 'list', null, 'review'),
+      ])
+
+      const rows = listPoliciesForCaller('alice')
+      expect(rows).toHaveLength(1)
+      expect(rows[0].targetAgentSlug).toBeNull()
+      expect(rows[0].decision).toBe('review')
+    })
+
+    it('concurrent writes to the same specific key end in one row', async () => {
+      await Promise.all([
+        setPolicy('alice', 'invoke', 'bob', 'allow'),
+        setPolicy('alice', 'invoke', 'bob', 'block'),
+      ])
+      expect(listPoliciesForCaller('alice')).toHaveLength(1)
+      expect(getPolicy('alice', 'invoke', 'bob')?.decision).toBe('block')
+    })
+  })
+
   describe('replacePoliciesForCaller', () => {
     it('wipes existing rows and inserts the new set atomically', async () => {
       await setPolicy('alice', 'invoke', 'bob', 'allow')
       await setPolicy('alice', 'read', 'bob', 'review')
       await setPolicy('alice', 'list', null, 'allow')
 
-      replacePoliciesForCaller('alice', [
+      await replacePoliciesForCaller('alice', [
         { operation: 'invoke', targetSlug: 'carol', decision: 'allow' },
         { operation: 'invoke', targetSlug: 'bob', decision: 'block' },
       ])
@@ -207,7 +234,7 @@ describe('x-agent-policy-service', () => {
     })
 
     it('persists decision=review rows (a per-target review overrides a global allow/block)', async () => {
-      replacePoliciesForCaller('alice', [
+      await replacePoliciesForCaller('alice', [
         { operation: 'invoke', targetSlug: 'bob', decision: 'allow' },
         { operation: 'read', targetSlug: 'bob', decision: 'review' },
       ])
@@ -219,7 +246,7 @@ describe('x-agent-policy-service', () => {
     })
 
     it('a stored per-target review overrides a global allow in evaluate', async () => {
-      replacePoliciesForCaller('alice', [
+      await replacePoliciesForCaller('alice', [
         { operation: 'read', targetSlug: null, decision: 'allow' },
         { operation: 'read', targetSlug: 'bob', decision: 'review' },
       ])
@@ -230,13 +257,13 @@ describe('x-agent-policy-service', () => {
 
     it('does not affect other callers', async () => {
       await setPolicy('charlie', 'invoke', 'bob', 'allow')
-      replacePoliciesForCaller('alice', [
+      await replacePoliciesForCaller('alice', [
         { operation: 'invoke', targetSlug: 'bob', decision: 'block' },
       ])
       expect(getPolicy('charlie', 'invoke', 'bob')?.decision).toBe('allow')
     })
 
-    it('rejects invalid input via Zod schema', () => {
+    it('rejects invalid input via Zod schema', async () => {
       const result = replacePoliciesForCallerInputSchema.safeParse({
         policies: [{ operation: 'bogus', targetSlug: null, decision: 'allow' }],
       })
@@ -245,11 +272,11 @@ describe('x-agent-policy-service', () => {
 
     it('accepts an empty list (clears all rows for caller)', async () => {
       await setPolicy('alice', 'invoke', 'bob', 'allow')
-      replacePoliciesForCaller('alice', [])
+      await replacePoliciesForCaller('alice', [])
       expect(listPoliciesForCaller('alice')).toHaveLength(0)
     })
 
-    it('rolls back the entire transaction if one insert violates a unique constraint', async () => {
+    it('rolls back the entire batch if one insert violates a unique constraint', async () => {
       // Seed a baseline so we can verify it survives unchanged after the failed replace.
       await setPolicy('alice', 'invoke', 'bob', 'allow')
       await setPolicy('alice', 'list', null, 'allow')
@@ -258,15 +285,15 @@ describe('x-agent-policy-service', () => {
       // — second insert violates the (caller, target, operation) unique index.
       // The transaction wrapper should roll back the delete that runs at the
       // start of replacePoliciesForCaller, leaving the seed rows intact.
-      expect(() =>
+      await expect(
         replacePoliciesForCaller('alice', [
           { operation: 'invoke', targetSlug: 'carol', decision: 'allow' },
           { operation: 'invoke', targetSlug: 'carol', decision: 'block' },
         ]),
-      ).toThrow()
+      ).rejects.toThrow()
 
       const rows = listPoliciesForCaller('alice')
-      // Both seeded rows must still be present — proves the transaction rolled
+      // Both seeded rows must still be present — proves the batch rolled
       // back the initial DELETE, not just the failing INSERT.
       expect(rows).toHaveLength(2)
       expect(getPolicy('alice', 'invoke', 'bob')?.decision).toBe('allow')
@@ -276,7 +303,7 @@ describe('x-agent-policy-service', () => {
     })
 
     it('handles a large bulk replace (250 rows) without partial visibility', async () => {
-      // Drives the transaction with a non-trivial payload to make sure the
+      // Drives the batch with a non-trivial payload to make sure the
       // delete + insert loop scales and stays atomic. Caller observes either
       // all-old or all-new, never a mid-state.
       await setPolicy('alice', 'invoke', 'old-target', 'allow')
@@ -286,7 +313,7 @@ describe('x-agent-policy-service', () => {
         targetSlug: `bulk-${i}`,
         decision: 'allow' as const,
       }))
-      replacePoliciesForCaller('alice', big)
+      await replacePoliciesForCaller('alice', big)
 
       const rows = listPoliciesForCaller('alice')
       expect(rows).toHaveLength(250)

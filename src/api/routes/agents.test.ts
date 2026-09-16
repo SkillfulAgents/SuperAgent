@@ -1,5 +1,16 @@
-vi.mock('@shared/lib/services/agent-members-service', () => ({ notifyAgentMembersChanged: vi.fn(), listAgentMembers: vi.fn(() => []) }))
+vi.mock('@shared/lib/services/agent-members-service', () => ({
+  notifyAgentMembersChanged: (...args: unknown[]) => mockNotifyAgentMembersChanged(...args),
+  listAgentMembers: vi.fn(() => []),
+  changeMemberRole: (...args: unknown[]) => mockChangeMemberRole(...args),
+  removeMember: (...args: unknown[]) => mockRemoveMember(...args),
+}))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+// The last-owner guards live in agent-members-service (real-database tests
+// there); the routes only map its outcome to a status and a message.
+const mockNotifyAgentMembersChanged = vi.fn()
+const mockChangeMemberRole = vi.fn()
+const mockRemoveMember = vi.fn()
 import { Hono } from 'hono'
 import { runInNewContext } from 'node:vm'
 import { Readable, Writable } from 'node:stream'
@@ -1845,8 +1856,7 @@ describe('ACL role management — PATCH /:id/access/:userId', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
-    txSelectResults = {}
-    txSelectCallIndex = 0
+    mockChangeMemberRole.mockResolvedValue('done')
   })
 
   const PATCH_URL = '/api/agents/test-agent/access/target-user'
@@ -1860,6 +1870,7 @@ describe('ACL role management — PATCH /:id/access/:userId', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('Invalid role')
+    expect(mockChangeMemberRole).not.toHaveBeenCalled()
   })
 
   it('returns 400 when role is an invalid string', async () => {
@@ -1877,150 +1888,36 @@ describe('ACL role management — PATCH /:id/access/:userId', () => {
   })
 
   // --------------------------------------------------------------------------
-  // User not found in ACL
+  // Outcome mapping
   // --------------------------------------------------------------------------
 
   it('returns 404 when target user has no ACL entry', async () => {
-    // First tx.select: current ACL lookup returns empty
-    txSelectResults = { '0': [] }
+    mockChangeMemberRole.mockResolvedValue('not-a-member')
 
     const res = await patchJson(app, PATCH_URL, { role: 'user' })
     expect(res.status).toBe(404)
     const body = await res.json()
     expect(body.error).toContain('does not have access')
+    expect(mockNotifyAgentMembersChanged).not.toHaveBeenCalled()
   })
 
-  // --------------------------------------------------------------------------
-  // Last owner protection: cannot demote last owner
-  // --------------------------------------------------------------------------
-
-  it('returns 400 when demoting the last owner to user', async () => {
-    // First select: user is currently owner
-    // Second select: owner count is 1
-    txSelectResults = {
-      '0': [{ role: 'owner' }],
-      '1': [{ ownerCount: 1 }],
-    }
-
-    const res = await patchJson(app, PATCH_URL, { role: 'user' })
-    expect(res.status).toBe(400)
-    const body = await res.json()
-    expect(body.error).toContain('at least one owner')
-  })
-
-  it('returns 400 when demoting the last owner to viewer', async () => {
-    txSelectResults = {
-      '0': [{ role: 'owner' }],
-      '1': [{ ownerCount: 1 }],
-    }
+  it('returns 400 when demoting the last owner', async () => {
+    mockChangeMemberRole.mockResolvedValue('last-owner')
 
     const res = await patchJson(app, PATCH_URL, { role: 'viewer' })
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('at least one owner')
+    expect(mockNotifyAgentMembersChanged).not.toHaveBeenCalled()
   })
-
-  // --------------------------------------------------------------------------
-  // Demoting owner when other owners exist
-  // --------------------------------------------------------------------------
-
-  it('allows demoting an owner to user when other owners exist', async () => {
-    txSelectResults = {
-      '0': [{ role: 'owner' }],
-      '1': [{ ownerCount: 3 }],
-    }
-
-    const res = await patchJson(app, PATCH_URL, { role: 'user' })
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.ok).toBe(true)
-  })
-
-  it('allows demoting an owner to viewer when other owners exist', async () => {
-    txSelectResults = {
-      '0': [{ role: 'owner' }],
-      '1': [{ ownerCount: 2 }],
-    }
-
-    const res = await patchJson(app, PATCH_URL, { role: 'viewer' })
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.ok).toBe(true)
-  })
-
-  // --------------------------------------------------------------------------
-  // Promoting roles (no owner-count check needed)
-  // --------------------------------------------------------------------------
-
-  it('allows promoting a user to owner (no count check)', async () => {
-    txSelectResults = {
-      '0': [{ role: 'user' }],
-    }
-
-    const res = await patchJson(app, PATCH_URL, { role: 'owner' })
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.ok).toBe(true)
-  })
-
-  it('allows promoting a viewer to user', async () => {
-    txSelectResults = {
-      '0': [{ role: 'viewer' }],
-    }
-
-    const res = await patchJson(app, PATCH_URL, { role: 'user' })
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.ok).toBe(true)
-  })
-
-  it('allows promoting a viewer to owner', async () => {
-    txSelectResults = {
-      '0': [{ role: 'viewer' }],
-    }
-
-    const res = await patchJson(app, PATCH_URL, { role: 'owner' })
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.ok).toBe(true)
-  })
-
-  // --------------------------------------------------------------------------
-  // Setting the same role (owner -> owner bypasses count check)
-  // --------------------------------------------------------------------------
-
-  it('allows setting owner to owner without triggering count check', async () => {
-    txSelectResults = {
-      '0': [{ role: 'owner' }],
-      // The owner count query should NOT be called since role === 'owner'
-    }
-
-    const res = await patchJson(app, PATCH_URL, { role: 'owner' })
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.ok).toBe(true)
-  })
-
-  it('allows setting user to user (no-op update)', async () => {
-    txSelectResults = {
-      '0': [{ role: 'user' }],
-    }
-
-    const res = await patchJson(app, PATCH_URL, { role: 'user' })
-    expect(res.status).toBe(200)
-  })
-
-  // --------------------------------------------------------------------------
-  // Valid role values accepted
-  // --------------------------------------------------------------------------
 
   it.each(['owner', 'user', 'viewer'])('accepts valid role value: %s', async (role) => {
-    txSelectResults = {
-      '0': [{ role: 'user' }], // current role is user
-    }
-
     const res = await patchJson(app, PATCH_URL, { role })
     expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.ok).toBe(true)
+    expect(mockChangeMemberRole).toHaveBeenCalledWith('test-agent', 'target-user', role)
+    expect(mockNotifyAgentMembersChanged).toHaveBeenCalledWith('test-agent')
   })
 })
 
@@ -2034,85 +1931,36 @@ describe('ACL role management — DELETE /:id/access/:userId', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
-    txSelectResults = {}
-    txSelectCallIndex = 0
+    mockRemoveMember.mockResolvedValue('done')
   })
 
   const DELETE_URL = '/api/agents/test-agent/access/target-user'
 
-  // --------------------------------------------------------------------------
-  // User not found
-  // --------------------------------------------------------------------------
-
   it('returns 404 when user has no ACL entry', async () => {
-    txSelectResults = { '0': [] }
+    mockRemoveMember.mockResolvedValue('not-a-member')
 
     const res = await deleteReq(app, DELETE_URL)
     expect(res.status).toBe(404)
     const body = await res.json()
     expect(body.error).toContain('does not have access')
+    expect(mockNotifyAgentMembersChanged).not.toHaveBeenCalled()
   })
 
-  // --------------------------------------------------------------------------
-  // Last owner protection: cannot remove last owner
-  // --------------------------------------------------------------------------
-
   it('returns 400 when removing the last owner', async () => {
-    txSelectResults = {
-      '0': [{ role: 'owner' }],
-      '1': [{ ownerCount: 1 }],
-    }
+    mockRemoveMember.mockResolvedValue('last-owner')
 
     const res = await deleteReq(app, DELETE_URL)
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('at least one owner')
+    expect(mockNotifyAgentMembersChanged).not.toHaveBeenCalled()
   })
 
-  // --------------------------------------------------------------------------
-  // Removing owner when others exist
-  // --------------------------------------------------------------------------
-
-  it('allows removing an owner when other owners exist', async () => {
-    txSelectResults = {
-      '0': [{ role: 'owner' }],
-      '1': [{ ownerCount: 2 }],
-    }
-
+  it('removes the member and tells the roster, including the removed user', async () => {
     const res = await deleteReq(app, DELETE_URL)
     expect(res.status).toBe(204)
-  })
-
-  it('allows removing an owner when many owners exist', async () => {
-    txSelectResults = {
-      '0': [{ role: 'owner' }],
-      '1': [{ ownerCount: 5 }],
-    }
-
-    const res = await deleteReq(app, DELETE_URL)
-    expect(res.status).toBe(204)
-  })
-
-  // --------------------------------------------------------------------------
-  // Removing non-owner roles (no count check needed)
-  // --------------------------------------------------------------------------
-
-  it('allows removing a user role (no owner count check)', async () => {
-    txSelectResults = {
-      '0': [{ role: 'user' }],
-    }
-
-    const res = await deleteReq(app, DELETE_URL)
-    expect(res.status).toBe(204)
-  })
-
-  it('allows removing a viewer role (no owner count check)', async () => {
-    txSelectResults = {
-      '0': [{ role: 'viewer' }],
-    }
-
-    const res = await deleteReq(app, DELETE_URL)
-    expect(res.status).toBe(204)
+    expect(mockRemoveMember).toHaveBeenCalledWith('test-agent', 'target-user')
+    expect(mockNotifyAgentMembersChanged).toHaveBeenCalledWith('test-agent', 'target-user')
   })
 })
 
@@ -2126,17 +1974,13 @@ describe('ACL — POST /:id/leave', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
-    txSelectResults = {}
-    txSelectCallIndex = 0
+    mockRemoveMember.mockResolvedValue('done')
   })
 
   const LEAVE_URL = '/api/agents/test-agent/leave'
 
   it('returns 400 when user is the only owner', async () => {
-    txSelectResults = {
-      '0': [{ role: 'owner' }],
-      '1': [{ ownerCount: 1 }],
-    }
+    mockRemoveMember.mockResolvedValue('last-owner')
 
     const res = await postJson(app, LEAVE_URL, {})
     expect(res.status).toBe(400)
@@ -2144,41 +1988,20 @@ describe('ACL — POST /:id/leave', () => {
     expect(body.error).toContain('only owner')
   })
 
-  it('allows leaving when user is an owner but others exist', async () => {
-    txSelectResults = {
-      '0': [{ role: 'owner' }],
-      '1': [{ ownerCount: 3 }],
-    }
-
-    const res = await postJson(app, LEAVE_URL, {})
-    expect(res.status).toBe(204)
-  })
-
-  it('allows leaving when user has user role', async () => {
-    txSelectResults = {
-      '0': [{ role: 'user' }],
-    }
-
-    const res = await postJson(app, LEAVE_URL, {})
-    expect(res.status).toBe(204)
-  })
-
-  it('allows leaving when user has viewer role', async () => {
-    txSelectResults = {
-      '0': [{ role: 'viewer' }],
-    }
-
-    const res = await postJson(app, LEAVE_URL, {})
-    expect(res.status).toBe(204)
-  })
-
   it('returns 400 when user does not have access', async () => {
-    txSelectResults = { '0': [] }
+    mockRemoveMember.mockResolvedValue('not-a-member')
 
     const res = await postJson(app, LEAVE_URL, {})
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('do not have access')
+  })
+
+  it('removes the caller and tells the roster', async () => {
+    const res = await postJson(app, LEAVE_URL, {})
+    expect(res.status).toBe(204)
+    expect(mockRemoveMember).toHaveBeenCalledWith('test-agent', 'test-user-id')
+    expect(mockNotifyAgentMembersChanged).toHaveBeenCalledWith('test-agent', 'test-user-id')
   })
 })
 
