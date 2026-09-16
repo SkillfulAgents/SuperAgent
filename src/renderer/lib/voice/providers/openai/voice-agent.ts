@@ -12,6 +12,8 @@ export class OpenAIVoiceAgentAdapter implements VoiceAgentAdapter {
   readonly inputSampleRate = 24000
   readonly outputSampleRate = 24000
 
+  constructor(private readonly quotaExceeded: string) {}
+
   async connect(token: string, config: VoiceAgentConfig): Promise<void> {
     return new Promise((resolve, reject) => {
       const url = 'wss://api.openai.com/v1/realtime?model=gpt-realtime'
@@ -196,12 +198,12 @@ export class OpenAIVoiceAgentAdapter implements VoiceAgentAdapter {
         break
 
       case 'error':
-        this.eventCb?.({ type: 'error', message: friendlyRealtimeError(data.error) })
+        this.eventCb?.({ type: 'error', message: this.friendlyRealtimeError(data.error) })
         break
 
       case 'response.done':
         if (data.response?.status === 'failed') {
-          this.eventCb?.({ type: 'error', message: friendlyRealtimeError(data.response?.status_details?.error) })
+          this.eventCb?.({ type: 'error', message: this.friendlyRealtimeError(data.response?.status_details?.error) })
         }
         break
     }
@@ -243,5 +245,8 @@ export class OpenAIVoiceAgentAdapter implements VoiceAgentAdapter {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg))
     }
+  }
+  private friendlyRealtimeError(err: { code?: string; message?: string } | undefined): string {
+    return friendlyRealtimeError(err, this.quotaExceeded)
   }
 }

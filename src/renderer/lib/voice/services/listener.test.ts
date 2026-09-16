@@ -85,7 +85,7 @@ describe('VoiceListener', () => {
     stt.acquireMicStream.mockClear()
     stt.startAudioCapture.mockClear()
     apiFetch.mockReset()
-    apiFetch.mockResolvedValue({ ok: true, json: async () => ({ provider: 'deepgram', token: 'jwt' }) })
+    apiFetch.mockResolvedValue({ ok: true, json: async () => ({ provider: 'deepgram', protocol: 'deepgram', token: 'jwt' }) })
   })
 
   afterEach(() => {
@@ -99,6 +99,12 @@ describe('VoiceListener', () => {
     expect(stt.startAudioCapture).toHaveBeenCalledWith(adapter, expect.anything(), { withAnalyser: true })
     expect(listener.analyser).toBe(stt.captures[0].analyser)
     expect(listener.isRunning).toBe(true)
+  })
+
+  it('derives deepgram when an older host omits protocol on a platform token', async () => {
+    apiFetch.mockResolvedValue({ ok: true, json: async () => ({ provider: 'platform', token: 'jwt' }) })
+    await started()
+    expect(stt.createSttAdapter).toHaveBeenCalledWith('deepgram', 'platform')
   })
 
   it('accumulates finals and the interim tail into one utterance', async () => {

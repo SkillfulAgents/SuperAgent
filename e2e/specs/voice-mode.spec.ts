@@ -46,7 +46,7 @@ async function mockSpeech(page: Page, { supportsTts = true } = {}): Promise<Spee
     }),
   )
   await page.route('**/api/voice/token', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ provider: 'deepgram', token: 'listen-token' }) }),
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ provider: 'deepgram', protocol: 'deepgram', token: 'listen-token' }) }),
   )
   await page.route('**/api/voice/tts-session', (route) =>
     route.fulfill({

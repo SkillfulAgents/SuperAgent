@@ -8,8 +8,9 @@ export type { ApiKeyProvider } from '../contracts/presentation'
 // Which vendor backs the platform provider is the host's decision; the
 // renderer only labels the option, so it lives with the catalog, not a vendor.
 const platformOption: VoiceProviderOption = {
-  value: 'platform', label: 'Platform', model: 'Nova 3',
-  note: 'Uses Deepgram via your platform connection. No API key required.', platformOnly: true,
+  value: 'platform', label: 'Platform', model: 'GPT-4o Mini Transcribe · GPT-Live',
+  note: 'Uses OpenAI voice via your platform connection. No API key required. Conversation voice uses GPT-Live and the app’s configured summarizer.',
+  platformOnly: true,
 }
 
 /** Presentation metadata stays lightweight: importing settings never loads audio engines. */

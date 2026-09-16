@@ -14,6 +14,10 @@ export class OpenAISttAdapter extends WebSocketSttAdapter {
   // A finalize() is waiting for the transcript of the buffer it committed.
   private finalizePending = false
 
+  constructor(private readonly quotaExceeded: string) {
+    super()
+  }
+
   protected createSocket(token: string): WebSocket {
     const url = 'wss://api.openai.com/v1/realtime?intent=transcription'
     return new WebSocket(url, ['realtime', `openai-insecure-api-key.${token}`])
@@ -107,7 +111,7 @@ export class OpenAISttAdapter extends WebSocketSttAdapter {
       case 'conversation.item.input_audio_transcription.failed':
         // The server heard the utterance but could not transcribe it (a model
         // the project may not use, a quota). Without this the words just vanish.
-        this.emitError(new Error(friendlyRealtimeError(data.error)))
+        this.emitError(new Error(friendlyRealtimeError(data.error, this.quotaExceeded)))
         if (this.isFinishing) this.completeFinish()
         break
       case 'error':
@@ -115,15 +119,15 @@ export class OpenAISttAdapter extends WebSocketSttAdapter {
         // the server's auto-commit) is benign — finish quietly instead of alarming
         // the user, who already has their transcript.
         if (this.isFinishing) {
-          this.noteError(new Error(friendlyRealtimeError(data.error)))
+          this.noteError(new Error(friendlyRealtimeError(data.error, this.quotaExceeded)))
           this.completeFinish()
         } else {
-          this.emitError(new Error(friendlyRealtimeError(data.error)))
+          this.emitError(new Error(friendlyRealtimeError(data.error, this.quotaExceeded)))
         }
         break
       case 'response.done':
         if (data.response?.status === 'failed') {
-          this.emitError(new Error(friendlyRealtimeError(data.response?.status_details?.error)))
+          this.emitError(new Error(friendlyRealtimeError(data.response?.status_details?.error, this.quotaExceeded)))
         }
         break
     }

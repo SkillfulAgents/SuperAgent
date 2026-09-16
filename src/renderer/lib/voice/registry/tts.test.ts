@@ -4,12 +4,12 @@ import { DeepgramTtsAdapter } from '../providers/deepgram/tts'
 import { HttpTtsAdapter } from '../shared/http-tts'
 
 describe('createTtsAdapter', () => {
-  it('maps deepgram and platform to the Deepgram adapter', () => {
+  it('maps a websocket connection to the Deepgram adapter', () => {
     expect(createTtsAdapter({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' } })).toBeInstanceOf(DeepgramTtsAdapter)
-    expect(createTtsAdapter({ provider: 'platform', connection: { transport: 'websocket', token: 'jwt' } })).toBeInstanceOf(DeepgramTtsAdapter)
   })
 
-  it('uses the shared HTTP adapter for HTTP synthesis', () => {
+  it('maps an http connection to the server-streamed adapter for openai and platform', () => {
     expect(createTtsAdapter({ provider: 'openai', connection: { transport: 'http' } })).toBeInstanceOf(HttpTtsAdapter)
+    expect(createTtsAdapter({ provider: 'platform', connection: { transport: 'http' } })).toBeInstanceOf(HttpTtsAdapter)
   })
 })

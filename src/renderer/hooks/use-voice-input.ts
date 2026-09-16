@@ -5,6 +5,7 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { acquireMicStream, startAudioCapture, type AudioCaptureHandle, type CaptureKind } from '@renderer/lib/voice/shared/audio-capture'
 import { createSttAdapter } from '@renderer/lib/voice/registry/stt'
 import { type SttAdapter, type VoiceProvider } from '@renderer/lib/voice/contracts/stt'
+import { resolveSttProtocol, type VoiceTokenResponse } from '@shared/lib/voice/stt-protocol'
 import { addRendererBreadcrumb, captureRendererException, captureRendererMessage } from '@renderer/lib/error-reporting'
 import type { VoiceConversationEngine } from '@shared/lib/voice/conversation-types'
 import type { TtsVoiceInfo } from '@shared/lib/voice/tts-preferences'
@@ -124,10 +125,7 @@ interface UseVoiceInputOptions {
   onTranscriptUpdate: (text: string) => void
 }
 
-interface SttCredentials {
-  provider: VoiceProvider
-  token: string
-}
+type SttCredentials = VoiceTokenResponse
 
 interface VoiceConfiguredStatus {
   conversationEngine?: VoiceConversationEngine | null
@@ -349,7 +347,7 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
       }
 
       // 2. Create adapter and wire transcript events
-      const adapter = createSttAdapter(provider)
+      const adapter = createSttAdapter(resolveSttProtocol(credentials), provider)
       adapterRef.current = adapter
       const session: DictationSession = { provider, attempt: ++attemptsRef.current, startedAt: Date.now(), adapter, failed: false }
       sessionRef.current = session

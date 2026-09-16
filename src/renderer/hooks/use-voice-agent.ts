@@ -1,9 +1,10 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { createVoiceAgentAdapter } from '@renderer/lib/voice/registry/voice-agent'
-import { type VoiceAgentAdapter, type VoiceAgentConfig, type VoiceAgentEvent, type VoiceProvider } from '@renderer/lib/voice/contracts/voice-agent'
+import { type VoiceAgentAdapter, type VoiceAgentConfig, type VoiceAgentEvent } from '@renderer/lib/voice/contracts/voice-agent'
 import { acquireMicStream, startAudioCapture, type AudioCaptureHandle } from '@renderer/lib/voice/shared/audio-capture'
 import { pcm16ToFloat32 } from '@renderer/lib/voice/shared/pcm'
+import { resolveSttProtocol, type VoiceTokenResponse } from '@shared/lib/voice/stt-protocol'
 
 export type VoiceAgentState = 'idle' | 'connecting' | 'active' | 'error'
 export type SpeakingState = 'none' | 'user' | 'agent'
@@ -13,10 +14,7 @@ export interface VoiceAgentTranscriptEntry {
   text: string
 }
 
-interface VoiceAgentCredentials {
-  provider: VoiceProvider
-  token: string
-}
+type VoiceAgentCredentials = VoiceTokenResponse
 
 interface UseVoiceAgentOptions {
   config: VoiceAgentConfig
@@ -224,10 +222,11 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
       if (!credRes.ok) {
         throw new Error(('error' in credData ? credData.error : null) || 'Failed to get Voice Agent credentials')
       }
-      const { provider, token } = credData as VoiceAgentCredentials
+      const credentials = credData as VoiceAgentCredentials
+      const { provider, token } = credentials
 
       // 2. Create adapter
-      const adapter = createVoiceAgentAdapter(provider)
+      const adapter = createVoiceAgentAdapter(resolveSttProtocol(credentials), provider)
       adapterRef.current = adapter
       adapter.onEvent(handleEvent)
 

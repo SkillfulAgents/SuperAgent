@@ -13,18 +13,17 @@ describe('createSttAdapter', () => {
   })
 
   it('creates an openai adapter', () => {
-    const adapter = createSttAdapter('openai')
+    const adapter = createSttAdapter('openai-realtime')
     expect(adapter).toBeDefined()
     expect(adapter.sampleRate).toBe(24000)
   })
 
   it('deepgram adapter has default sample rate (undefined = 16000)', () => {
     const adapter = createSttAdapter('deepgram')
-    // DeepgramAdapter doesn't set sampleRate, defaults to 16000 in startAudioCapture
     expect(adapter.sampleRate).toBeUndefined()
   })
 
-  it('throws for unknown provider', () => {
-    expect(() => createSttAdapter('unknown' as any)).toThrow('Unknown voice provider: unknown')
+  it('throws for unknown protocol', () => {
+    expect(() => createSttAdapter('unknown' as any)).toThrow('Unknown STT protocol: unknown')
   })
 })

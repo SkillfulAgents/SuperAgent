@@ -4,6 +4,7 @@ import type { TtsConnection, TtsSynthesisProvider } from './tts-types'
 import type { LiveConversationProvider } from './live-types'
 import type { VoiceConversationEngine } from './conversation-types'
 import type { TtsVoiceInfo } from './tts-preferences'
+import type { SttProtocol, VoiceTokenResponse } from './stt-protocol'
 
 export abstract class BaseVoiceProvider {
   abstract readonly id: VoiceProvider
@@ -37,17 +38,26 @@ export abstract class BaseVoiceProvider {
   /** Validate an API key. Returns { valid: true } or { valid: false, error: string }. */
   abstract validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }>
 
+  /** Wire protocol the renderer uses for dictation / voice-agent sockets. */
+  getSttProtocol(): SttProtocol {
+    return 'deepgram'
+  }
+
+  protected missingCredentialMessage(): string {
+    return `No API key configured for ${this.name}. Add one in Settings > Voice.`
+  }
+
   /** Mint a short-lived ephemeral token for client-side use. */
   abstract mintEphemeralToken(apiKey: string): Promise<string>
 
   /** Convenience: resolve the effective key and mint an ephemeral token. */
-  async getEphemeralToken(): Promise<{ provider: VoiceProvider; token: string }> {
+  async getEphemeralToken(): Promise<VoiceTokenResponse> {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) {
-      throw new VoiceProviderError(`No API key configured for ${this.name}. Add one in Settings > Voice.`, 400)
+      throw new VoiceProviderError(this.missingCredentialMessage(), 400)
     }
     const token = await this.mintEphemeralToken(apiKey)
-    return { provider: this.id, token }
+    return { provider: this.id, token, protocol: this.getSttProtocol() }
   }
 
   /** Whether this provider supports Voice Agent (S2S) sessions. */
@@ -72,16 +82,16 @@ export abstract class BaseVoiceProvider {
   }
 
   /** Convenience: resolve the effective key and mint a Voice Agent token. */
-  async getVoiceAgentToken(): Promise<{ provider: VoiceProvider; token: string }> {
+  async getVoiceAgentToken(): Promise<VoiceTokenResponse> {
     if (!this.supportsVoiceAgent()) {
       throw new Error(`Voice Agent not supported by ${this.name}`)
     }
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) {
-      throw new VoiceProviderError(`No API key configured for ${this.name}. Add one in Settings > Voice.`, 400)
+      throw new VoiceProviderError(this.missingCredentialMessage(), 400)
     }
     const token = await this.mintVoiceAgentToken(apiKey)
-    return { provider: this.id, token }
+    return { provider: this.id, token, protocol: this.getSttProtocol() }
   }
 
   /**
@@ -101,7 +111,7 @@ export abstract class BaseVoiceProvider {
 
   async getTtsConnection(): Promise<TtsConnection> {
     if (!this.supportsTts()) throw new VoiceProviderError(`Text-to-speech not supported by ${this.name}`, 400)
-    if (!this.getApiKeyStatus().isConfigured) throw new VoiceProviderError(`No API key configured for ${this.name}. Add one in Settings > Voice.`, 400)
+    if (!this.getApiKeyStatus().isConfigured) throw new VoiceProviderError(this.missingCredentialMessage(), 400)
     if (this.getTtsSynthesis()) return { transport: 'http' }
     const { token } = await this.getTtsToken()
     return { transport: 'websocket', token }
@@ -143,7 +153,7 @@ export abstract class BaseVoiceProvider {
     }
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) {
-      throw new VoiceProviderError(`No API key configured for ${this.name}. Add one in Settings > Voice.`, 400)
+      throw new VoiceProviderError(this.missingCredentialMessage(), 400)
     }
     const token = await this.mintTtsToken(apiKey)
     return { provider: this.id, token }
@@ -166,7 +176,7 @@ export abstract class BaseVoiceProvider {
     }
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) {
-      throw new VoiceProviderError(`No API key configured for ${this.name}. Add one in Settings > Voice.`, 400)
+      throw new VoiceProviderError(this.missingCredentialMessage(), 400)
     }
     return this.transcribeAudio(apiKey, audioBuffer, mimeType)
   }
