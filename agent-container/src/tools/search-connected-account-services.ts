@@ -15,6 +15,11 @@ interface ServiceInfo {
   description: string
 }
 
+// Services that exist only through Gamut's Composio; the host sets this env at container start.
+const GAMUT_PLATFORM_ACCOUNTS: ServiceInfo[] = [
+  { slug: 'twitter', displayName: 'X', category: 'Social Media', description: 'Posts, timelines, and direct messages' },
+]
+
 export const SERVICES: ServiceInfo[] = [
   // Google Workspace
   { slug: 'gmail', displayName: 'Gmail', category: 'Google Workspace', description: 'Google email service' },
@@ -58,10 +63,6 @@ export const SERVICES: ServiceInfo[] = [
   // Social Media
   { slug: 'linkedin', displayName: 'LinkedIn', category: 'Social Media', description: 'Professional networking' },
   { slug: 'instagram', displayName: 'Instagram', category: 'Social Media', description: 'Photo and video sharing' },
-  // X exists only through Gamut's Composio; the host sets this env at container start.
-  ...(process.env.COMPOSIO_PLATFORM_MODE === 'true'
-    ? [{ slug: 'twitter', displayName: 'X', category: 'Social Media', description: 'Posts, timelines, and direct messages' }]
-    : []),
   // Finance
   { slug: 'stripe', displayName: 'Stripe', category: 'Finance', description: 'Payment processing' },
   { slug: 'quickbooks', displayName: 'QuickBooks', category: 'Finance', description: 'Accounting and bookkeeping' },
@@ -75,6 +76,7 @@ export const SERVICES: ServiceInfo[] = [
   { slug: 'calendly', displayName: 'Calendly', category: 'Scheduling & Forms', description: 'Scheduling and appointments' },
   { slug: 'typeform', displayName: 'Typeform', category: 'Scheduling & Forms', description: 'Forms and surveys' },
 ]
+if (process.env.COMPOSIO_PLATFORM_MODE === 'true') SERVICES.push(...GAMUT_PLATFORM_ACCOUNTS)
 
 export const searchConnectedAccountServicesTool = tool(
   'search_connected_account_services',
