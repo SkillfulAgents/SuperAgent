@@ -237,6 +237,7 @@ export interface PendingReview {
     targetAgentName: string
     operation: 'list' | 'read' | 'invoke' | 'create'
     preview?: string
+    attachments?: string[]
   }
 }
 
@@ -337,6 +338,9 @@ export function reviewFromEnvelope(
       targetAgentName: raw.targetAgentName,
       operation: raw.operation,
       preview: typeof raw.preview === 'string' ? raw.preview : undefined,
+      attachments: Array.isArray(raw.attachments)
+        ? raw.attachments.filter((item): item is string => typeof item === 'string')
+        : undefined,
     }
   }
   return {

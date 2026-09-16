@@ -296,6 +296,8 @@ export interface SessionOps {
 
   // Live sessions — ContainerClient. Needs the container.
 
+  /** Inspect the running container session, including whether a send was accepted. */
+  getLive(sessionId: string): Promise<ContainerSession | null>
   /** `client.createSession` */
   create(options: CreateSessionOptions): Promise<ContainerSession>
   /** `client.forkSession` */
@@ -495,6 +497,7 @@ export interface ReviewOps {
     targetAgentName: string,
     operation: 'list' | 'read' | 'invoke' | 'create',
     preview?: string,
+    attachments?: string[],
     signal?: AbortSignal,
   ): Promise<'allow' | 'deny'>
 }

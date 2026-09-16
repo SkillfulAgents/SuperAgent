@@ -1,4 +1,4 @@
-import { SquareGanttChart, SquarePlus, SquareArrowRight, MessagesSquare, ArrowUpRight } from 'lucide-react'
+import { SquareGanttChart, SquarePlus, SquareArrowRight, MessagesSquare, ArrowUpRight, ArrowDownToLine } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps } from './types'
 import { ResultBlock } from './shared'
 import { AppLink } from '@renderer/components/ui/app-link'
@@ -8,10 +8,7 @@ import {
   invokeAgentDef,
   getAgentSessionsDef,
   getAgentSessionTranscriptDef,
-  type CreateAgentInput,
-  type InvokeAgentInput,
-  type GetAgentSessionsInput,
-  type GetAgentSessionTranscriptInput,
+  downloadAgentFileDef,
 } from '@shared/lib/tool-definitions/x-agent-tools'
 
 // ── shared helpers ────────────────────────────────────────────
@@ -63,7 +60,7 @@ export const listAgentsRenderer: ToolRenderer = {
 // ── create_agent ──────────────────────────────────────────────
 
 function CreateAgentExpandedView({ input, result, isError }: ToolRendererProps) {
-  const { name, description, instructions } = input as CreateAgentInput
+  const { name, description, instructions } = createAgentDef.parseInput(input)
   // Parse slug from result text if available (format: 'Created agent "X" with slug "Y".')
   const slugMatch = typeof result === 'string' ? result.match(/slug "([^"]+)"/) : null
   const createdSlug = slugMatch?.[1]
@@ -103,7 +100,7 @@ export const createAgentRenderer: ToolRenderer = {
 // ── invoke_agent ──────────────────────────────────────────────
 
 function InvokeAgentExpandedView({ input, result, isError }: ToolRendererProps) {
-  const { slug, prompt, session_id, sync } = input as InvokeAgentInput
+  const { slug, prompt, session_id, sync, attachments } = invokeAgentDef.parseInput(input)
   // Parse sessionId + status from result (format: 'session_id: X\nstatus: Y\n...')
   const resultText = typeof result === 'string' ? result : ''
   const sessionIdMatch = resultText.match(/session_id:\s*([^\s]+)/)
@@ -146,6 +143,20 @@ function InvokeAgentExpandedView({ input, result, isError }: ToolRendererProps) 
           </div>
         </div>
       )}
+      {!!attachments?.length && (
+        <div>
+          <div className="mb-1 text-xs font-medium tracking-wider text-muted-foreground">
+            Attachments ({attachments.length})
+          </div>
+          <ul className="space-y-1 rounded bg-background p-2 text-xs">
+            {attachments.map((path, index) => (
+              <li key={`${path}-${index}`}>
+                <code className="break-all">{path}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <ResultBlock result={result} isError={isError} />
     </div>
   )
@@ -161,7 +172,7 @@ export const invokeAgentRenderer: ToolRenderer = {
 // ── get_agent_sessions ────────────────────────────────────────
 
 function GetAgentSessionsExpandedView({ input, result, isError }: ToolRendererProps) {
-  const { slug } = input as GetAgentSessionsInput
+  const { slug } = getAgentSessionsDef.parseInput(input)
   return (
     <div className="space-y-2">
       <div className="text-xs">
@@ -182,7 +193,7 @@ export const getAgentSessionsRenderer: ToolRenderer = {
 // ── get_agent_session_transcript ──────────────────────────────
 
 function GetAgentSessionTranscriptExpandedView({ input, result, isError }: ToolRendererProps) {
-  const { slug, session_id, sync } = input as GetAgentSessionTranscriptInput
+  const { slug, session_id, sync } = getAgentSessionTranscriptDef.parseInput(input)
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -210,4 +221,31 @@ export const getAgentSessionTranscriptRenderer: ToolRenderer = {
   icon: MessagesSquare,
   getSummary: getAgentSessionTranscriptDef.getSummary,
   ExpandedView: GetAgentSessionTranscriptExpandedView,
+}
+
+// ── download_agent_file ───────────────────────────────────────
+
+function DownloadAgentFileExpandedView({ input, result, isError }: ToolRendererProps) {
+  const { slug, session_id, delivery_id } = downloadAgentFileDef.parseInput(input)
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-muted-foreground">Target:</span>
+        {slug ? <AgentLink slug={slug} /> : <span>—</span>}
+        <span className="text-muted-foreground">· Session:</span>
+        {slug && session_id ? <SessionLink slug={slug} sessionId={session_id} /> : <span>—</span>}
+        <span className="text-muted-foreground">· Delivery:</span>
+        {delivery_id ? <code className="rounded bg-background px-1.5 py-0.5">{delivery_id}</code> : <span>—</span>}
+      </div>
+      <ResultBlock result={result} isError={isError} />
+    </div>
+  )
+}
+
+export const downloadAgentFileRenderer: ToolRenderer = {
+  displayName: downloadAgentFileDef.displayName,
+  icon: ArrowDownToLine,
+  getSummary: downloadAgentFileDef.getSummary,
+  ExpandedView: DownloadAgentFileExpandedView,
 }

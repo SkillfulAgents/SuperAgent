@@ -7460,6 +7460,11 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     return c.json({ error: 'Invalid decision' }, 400)
   }
 
+  const pendingReview = agentRegistry.get(slug).inputs.reviews.pending().find((review) => review.id === reviewId)
+  if (pendingReview?.xAgent?.attachments?.length) {
+    return c.json({ error: 'File-sharing reviews can only be allowed once' }, 400)
+  }
+
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
   const now = new Date()
 

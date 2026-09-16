@@ -19,6 +19,7 @@ import type {
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 import { resolveContainerModel } from './resolve-model'
 import { getAgentWorkspaceDir, getSessionJsonlPath, readJsonlFile } from '../utils/file-storage'
+import { assertPathWithinDir, isRealPathWithinDir } from '../utils/path-safety'
 import { reviewManager } from '../proxy/review-manager'
 import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
@@ -2710,6 +2711,61 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         }
       } catch {
         // A malformed body has no connection snapshot to record.
+      }
+    }
+
+    const fileRoute = /^\/workspace-files\/(content|upload|delete)\/(.+)$/.exec(fetchPath)
+    if (fileRoute) {
+      try {
+        const operation = fileRoute[1]
+        const relativePath = decodeURIComponent(fileRoute[2])
+        if (!relativePath || relativePath.split('/').includes('..') || relativePath.includes('\0')) {
+          return Response.json({ error: 'Invalid workspace file path' }, { status: 400 })
+        }
+        const workspace = getAgentWorkspaceDir(this.config.agentId)
+        const localPath = assertPathWithinDir(workspace, path.resolve(workspace, ...relativePath.split('/')))
+
+        if (operation === 'content') {
+          if (!isRealPathWithinDir(workspace, localPath)) {
+            return Response.json({ error: 'File resolves outside workspace' }, { status: 403 })
+          }
+          const stats = await fs.promises.stat(localPath)
+          if (!stats.isFile()) return Response.json({ error: 'Path is not a regular file' }, { status: 400 })
+          const bytes = await fs.promises.readFile(localPath)
+          return new Response(bytes, {
+            headers: {
+              'Content-Type': 'application/octet-stream',
+              'Content-Length': String(bytes.length),
+            },
+          })
+        }
+
+        if (operation === 'delete') {
+          if (!isRealPathWithinDir(workspace, localPath)) {
+            return Response.json({ error: 'Path resolves outside workspace' }, { status: 403 })
+          }
+          await fs.promises.rm(localPath, { recursive: true })
+          return Response.json({ success: true })
+        }
+
+        const parent = path.dirname(localPath)
+        await fs.promises.mkdir(parent, { recursive: true })
+        if (!isRealPathWithinDir(workspace, parent)) {
+          return Response.json({ error: 'Destination resolves outside workspace' }, { status: 403 })
+        }
+        const bytes = Buffer.from(await new Response(init?.body).arrayBuffer())
+        const tempPath = `${localPath}.${randomUUID()}.tmp`
+        try {
+          await fs.promises.writeFile(tempPath, bytes, { flag: 'wx' })
+          await fs.promises.rename(tempPath, localPath)
+        } finally {
+          await fs.promises.unlink(tempPath).catch(() => {})
+        }
+        return Response.json({ success: true, path: relativePath })
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        const status = code === 'ENOENT' ? 404 : 400
+        return Response.json({ error: error instanceof Error ? error.message : 'File operation failed' }, { status })
       }
     }
 

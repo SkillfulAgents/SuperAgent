@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getDeliveredFileSize } from './deliver-file'
+import { getDeliveredFileMetadata, getDeliveredFileSize } from './deliver-file'
 
 const REAL_RESULT = [
   'File "output/report.pdf" (12345 bytes) has been delivered to the user. They can now download it from the chat.',
@@ -14,9 +14,27 @@ describe('getDeliveredFileSize', () => {
     expect(getDeliveredFileSize(REAL_RESULT)).toBe(12345)
   })
 
+  it('reads the integrity digest from current delivery metadata', () => {
+    const sha256 = 'a'.repeat(64)
+    expect(getDeliveredFileMetadata(`Delivered: {"sizeBytes":12345,"sha256":"${sha256}"}`))
+      .toEqual({ sizeBytes: 12345, sha256 })
+  })
+
   it('prefers the contract line over the prose', () => {
     const result = 'File "x" (999 bytes) has been delivered to the user.\n\nDelivered: {"sizeBytes":4096}'
     expect(getDeliveredFileSize(result)).toBe(4096)
+  })
+
+  it('reads text from an MCP result block array', () => {
+    expect(getDeliveredFileSize([
+      { type: 'image', data: 'ignored' },
+      { type: 'text', text: 'Delivered: {"sizeBytes":2048}' },
+    ])).toBe(2048)
+  })
+
+  it('reads text from a JSON-encoded result block array', () => {
+    const result = JSON.stringify([{ type: 'text', text: 'File "old.txt" (77 bytes) has been delivered' }])
+    expect(getDeliveredFileSize(result)).toBe(77)
   })
 
   it('reads a zero-byte file', () => {

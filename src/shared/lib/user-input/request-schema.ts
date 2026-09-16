@@ -159,6 +159,7 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
           targetAgentName: lenientString,
           operation: lenientString,
           preview: lenientString,
+          attachments: z.array(z.string()).optional().catch(undefined),
         })
         .optional()
         .catch(undefined),

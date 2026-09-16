@@ -886,6 +886,7 @@ describe('usePendingRequests', () => {
             targetAgentSlug: 'researcher',
             targetAgentName: 'Researcher',
             operation: 'invoke',
+            attachments: ['/workspace/report.pdf', 42],
           },
         },
         { agentScoped: true },
@@ -895,7 +896,9 @@ describe('usePendingRequests', () => {
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
 
     expect(result.current.count).toBe(1)
-    expect(ofKind(result.current.items, 'x_agent_review')).toHaveLength(1)
+    const matches = ofKind(result.current.items, 'x_agent_review')
+    expect(matches).toHaveLength(1)
+    expect(matches[0].xAgent.attachments).toEqual(['/workspace/report.pdf'])
     expect(ofKind(result.current.items, 'proxy_review')).toHaveLength(0)
   })
 
