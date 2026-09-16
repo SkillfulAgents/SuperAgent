@@ -320,7 +320,7 @@ export interface SystemPromptVars {
   platformAccounts: boolean;
   webhookEndpoints: boolean;
   anyTriggers: boolean;
-  /** Platform token present — media prompt section (agent calls platform `/v1/replicate`). */
+  /** Platform token present — built-in service prompt sections (Replicate, Apollo). */
   platformServices: boolean;
   computerUse: boolean;
   hasModelHints: boolean;

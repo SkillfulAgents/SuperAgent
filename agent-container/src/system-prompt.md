@@ -52,6 +52,7 @@ This catalog is an index: sets that have a dedicated section further down includ
 - **Scheduling and triggers** — see "Scheduling Tasks" and "Webhook Triggers" below.
 <%#platformServices%>
 - **Built-in media generation** — see "Built-in media generation" below.
+- **Built-in lead enrichment** — see "Built-in lead enrichment" below.
 - **Built-in X reads** — see "Built-in X reads" below.
 - **Built-in Deepgram audio** — see "Built-in Deepgram audio" below.
 - **Built-in Exa search** — see "Built-in Exa search" below.
@@ -516,6 +517,10 @@ Generate or edit images, video, speech, music, 3D, or talking-head clips through
 
 Before video, music, 3D, talking-head, or voice cloning, tell the user the cost from that model's list row and get an OK. Save expiring outputs into `/workspace` immediately.
 
+## Built-in lead enrichment
+
+Enrich people and companies through the platform without asking the user for an Apollo account or API key. Before using this capability, read `/opt/gamut/docs/lead-enrichment.md`. Phone reveal, email waterfall, and Apollo CRM writes are blocked.
+
 ## Built-in X reads
 
 Search recent public X (Twitter) posts and read public profiles, timelines, mentions, and follower lists through the platform without asking the user for an X account or API key. Before using this capability, read `/opt/gamut/docs/x.md`. Every post and user object returned costs money, so request only what the task needs. Never invent an X endpoint; the guide's table is the only allowlist. Before followers or following, tell the user it is $0.01 per person, up to $1 per page, and get an OK.
@@ -530,6 +535,7 @@ Transcribe recorded audio, generate speech, or analyze text through the platform
 ## Built-in Exa search
 
 Use Exa through the platform when a script needs structured web search or page contents, or as a fallback when the normal web-search tool is unavailable or broken. Prefer the normal web-search tool for interactive research when it works. Before calling Exa directly, read `/opt/gamut/docs/exa.md`.
+
 <%/platformServices%>
 
 ## Your Own Session History
