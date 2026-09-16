@@ -52,16 +52,28 @@ describe('targeted agent cache updates', () => {
     expect(client.getQueryData<ApiAgent[]>(['agents'])?.[1].status).toBe('stopped')
   })
 
-  it('clears a stale port on stop events that carry no port', () => {
+  it('clears a stale port and the stale mark on stop events, and keeps the mark on running events', () => {
     const client = seededClient()
+    const mark = () => {
+      client.setQueryData<ApiAgent>(['agents', 'agent-a'], (a) => a && { ...a, stale: true })
+      client.setQueryData<ApiAgent[]>(['agents'], (as) => as?.map((a) => a.slug === 'agent-a' ? { ...a, stale: true } : a))
+    }
     updateAgentRuntimeCache(client, 'agent-a', 'running', 3456)
+    mark()
 
     updateAgentRuntimeCache(client, 'agent-a', 'stopped')
 
     expect(client.getQueryData<ApiAgent>(['agents', 'agent-a'])).toMatchObject({
       status: 'stopped',
       containerPort: null,
+      stale: undefined,
     })
+    expect(client.getQueryData<ApiAgent[]>(['agents'])?.find((a) => a.slug === 'agent-a')?.stale).toBeUndefined()
+
+    // A warm start of a running agent leaves the host's mark in place.
+    mark()
+    updateAgentRuntimeCache(client, 'agent-a', 'running', 3456)
+    expect(client.getQueryData<ApiAgent[]>(['agents'])?.find((a) => a.slug === 'agent-a')?.stale).toBe(true)
   })
 
   it('marks only the announced dashboard screenshot ready', () => {

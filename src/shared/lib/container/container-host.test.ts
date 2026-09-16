@@ -1643,3 +1643,30 @@ describe('ContainerRuntime.stopContainer force stop recovery', () => {
     })
   })
 })
+
+// The stale-agents record: agents still running on a container env that a
+// setting change replaced. Stops clear it.
+describe('ContainerHost stale agents', () => {
+  beforeEach(() => {
+    containerHost.clearRuntimes()
+  })
+
+  function running(...slugs: string[]) {
+    for (const slug of slugs) containerHost.runtime(slug).updateCachedStatus('running', 4000)
+  }
+
+  const stale = () => ['a', 'b', 'c'].map((s) => containerHost.runtime(s).isStale())
+
+  it('markAgentsStale marks every running agent; a stop or a drop clears one', () => {
+    running('a', 'b')
+    containerHost.markAgentsStale()
+    running('c') // started after the change: fresh until the next change
+    expect(stale()).toEqual([true, true, false])
+    containerHost.markAgentsStale()
+    expect(stale()).toEqual([true, true, true])
+
+    containerHost.runtime('a').updateCachedStatus('stopped', null)
+    containerHost.dropRuntime('b')
+    expect(stale()).toEqual([false, false, true])
+  })
+})

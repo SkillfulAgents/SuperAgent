@@ -116,6 +116,8 @@ function usePlatformAuthCallbackListener(
 
     const handleCallback = (params: PlatformAuthCallbackParams) => {
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      // A changed token marks running agents stale; nothing else refetches the agent list for it.
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
       // Reset, not invalidate: this key holds another account's deployment URL
       // behind a live "Open" button, and invalidation keeps serving stale data
       // while the refetch runs. Reset drops it and refetches from scratch.
@@ -196,6 +198,7 @@ export function useRedeemDownloadNonce() {
     onSuccess: async () => {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
       // Reset, not invalidate: this key holds another account's deployment URL
       // behind a live "Open" button, and invalidation keeps serving stale data
       // while the refetch runs. Reset drops it and refetches from scratch.
@@ -251,6 +254,7 @@ export function useSavePlatformAccessKey() {
     onSuccess: async () => {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
       // Reset, not invalidate: this key holds another account's deployment URL
       // behind a live "Open" button, and invalidation keeps serving stale data
       // while the refetch runs. Reset drops it and refetches from scratch.

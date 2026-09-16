@@ -39,6 +39,7 @@ const PER_AGENT_METHODS = [
   'restartContainer',
   'syncAgentStatus',
   'getHealthWarnings',
+  'isStale',
   'keepAlive',
   'noteSessionActivity',
   'lastActivityAt',
@@ -54,6 +55,7 @@ const RENAMED_PER_AGENT: Record<string, string> = {
 /** Host-level methods, unchanged in name and signature. */
 const HOST_METHODS = [
   'getRunningAgentIds',
+  'markAgentsStale',
   'hasRunningAgents',
   'getReadiness',
   'resetReadiness',
@@ -94,6 +96,7 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
       hasClient: () => true,
       isStopping: () => false,
       isStarting: () => false,
+      isStale: () => false,
       keepAlive: () => activity.keepAlive(),
       noteSessionActivity: (at?: number) => activity.sessionActivity(at),
       lastActivityAt: () => activity.lastActivityAt(),

@@ -173,6 +173,11 @@ export class ContainerHost {
     return running
   }
 
+  /** Record every running agent as stale. */
+  markAgentsStale(): void {
+    for (const slug of this.getRunningAgentIds()) this.runtime(slug).markStale()
+  }
+
   /**
    * Create runtimes for the given agent slugs and sync their statuses.
    * Call this on app startup with the list of all agent slugs.

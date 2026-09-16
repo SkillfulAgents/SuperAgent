@@ -25,6 +25,15 @@ vi.mock('@shared/lib/agent-actor/agent-catalog', async () => {
   }
 })
 
+// A token change reaches the host through `@shared/lib/agent-actor`, which
+// re-exports the container-host singleton and runs the real agent registry
+// against it.
+const mockMarkAgentsStale = vi.fn()
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ markAgentsStale: mockMarkAgentsStale }) }
+})
+
 const mockDbGet = vi.fn()
 vi.mock('@shared/lib/db', () => ({
   db: {
@@ -891,6 +900,29 @@ describe('platform-auth-service', () => {
       getAgentsDir(), 'agent-c', 'workspace', '.claude', 'skills', 'stale-skill',
     )
     expect(fs.existsSync(skillDir)).toBe(false)
+  })
+
+  describe('stale agents on token change', () => {
+    beforeEach(() => {
+      mockMarkAgentsStale.mockClear()
+    })
+
+    it('marks running agents stale when the saved token differs from the stored one', async () => {
+      await savePlatformAuth('local', { token: 'plat_first_token_00000000000000000', orgId: 'org_x' })
+      expect(mockMarkAgentsStale).toHaveBeenCalledTimes(1)
+
+      await savePlatformAuth('local', { token: 'plat_second_token_1111111111111111', orgId: 'org_x' })
+      expect(mockMarkAgentsStale).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not mark agents stale on a same-token metadata re-save', async () => {
+      await savePlatformAuth('local', { token: 'plat_first_token_00000000000000000', orgId: 'org_x', role: 'owner' })
+      mockMarkAgentsStale.mockClear()
+
+      // The refreshStoredPlatformAccount path: same token, new metadata.
+      await savePlatformAuth('local', { token: 'plat_first_token_00000000000000000', orgId: 'org_x', role: 'admin' })
+      expect(mockMarkAgentsStale).not.toHaveBeenCalled()
+    })
   })
 
   describe('cloud-workspace token invalidation on identity change', () => {

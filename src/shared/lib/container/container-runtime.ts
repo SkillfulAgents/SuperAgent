@@ -115,6 +115,11 @@ export class ContainerRuntime {
    * the host no longer knows about.
    */
   private disposed = false
+  /**
+   * Running on a container env that a setting change replaced. The host marks
+   * every running runtime when a platform token changes; a stop clears it.
+   */
+  private stale = false
 
   constructor(
     readonly slug: string,
@@ -272,6 +277,15 @@ export class ContainerRuntime {
    */
   updateCachedStatus(status: 'running' | 'stopped', port: number | null): void {
     this.cached = { status, port, lastSyncedAt: Date.now() }
+    if (status === 'stopped') this.stale = false
+  }
+
+  markStale(): void {
+    this.stale = true
+  }
+
+  isStale(): boolean {
+    return this.stale
   }
 
   /**
@@ -767,6 +781,7 @@ export class ContainerRuntime {
     this.healthWarnings = []
     this.stopping = false
     this.starting = null
+    this.stale = false
   }
 
   /**

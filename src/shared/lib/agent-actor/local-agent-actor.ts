@@ -120,6 +120,7 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
     status: () => runtime().getCachedInfo(),
     syncStatus: () => runtime().syncAgentStatus(),
     health: () => runtime().getHealthWarnings(),
+    stale: () => runtime().isStale(),
     idleSince: () => runtime().idleSince(),
     stats: () => client().getStats(),
     info: () => client().getInfo(),
