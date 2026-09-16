@@ -18,11 +18,11 @@ const mockNavigate = vi.fn()
 const mockClose = vi.fn()
 const mockDismiss = vi.fn()
 let oauthComplete: ((result: { success: boolean; error?: string }) => void) | null = null
-let mockCanManage = true
+let mockOwnMcps: { servers: Array<{ id: string }> } | undefined
 
 vi.mock('@renderer/hooks/use-remote-mcps', () => ({
   useInitiateMcpOAuth: () => ({ mutateAsync: (...args: unknown[]) => mockInitiateOAuth(...args) }),
-  useCanManageRemoteMcp: () => ({ data: mockCanManage }),
+  useRemoteMcps: () => ({ data: mockOwnMcps }),
 }))
 
 vi.mock('@renderer/hooks/use-mcp-oauth-listener', () => ({
@@ -67,7 +67,7 @@ describe('McpReauthRequestItem', () => {
     vi.clearAllMocks()
     mockDismiss.mockResolvedValue(undefined)
     oauthComplete = null
-    mockCanManage = true
+    mockOwnMcps = { servers: [{ id: 'mcp-1' }] }
   })
 
   it('starts OAuth for the existing MCP and completes after the callback', async () => {
@@ -119,7 +119,7 @@ describe('McpReauthRequestItem', () => {
   })
 
   it('lets a non-owner open the replacement picker and cancel back to the recovery card', async () => {
-    mockCanManage = false
+    mockOwnMcps = { servers: [{ id: 'another-mcp' }] }
     renderItem()
 
     expect(screen.queryByTestId('mcp-reauth-reconnect-btn')).not.toBeInTheDocument()
@@ -134,8 +134,25 @@ describe('McpReauthRequestItem', () => {
     expect(mockInitiateOAuth).not.toHaveBeenCalled()
   })
 
+  it('hides reconnect until ownership is known', () => {
+    mockOwnMcps = undefined
+    renderItem()
+
+    expect(screen.queryByTestId('mcp-reauth-reconnect-btn')).not.toBeInTheDocument()
+    expect(screen.getByTestId('mcp-reauth-replace-btn')).toBeInTheDocument()
+  })
+
+  it('hides bearer token entry for a connection absent from the owner-scoped list', () => {
+    mockOwnMcps = { servers: [] }
+    renderItem({ authType: 'bearer' })
+
+    expect(screen.queryByTestId('mcp-reauth-token-input')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('mcp-reauth-reconnect-btn')).not.toBeInTheDocument()
+    expect(screen.getByTestId('mcp-reauth-replace-btn')).toBeInTheDocument()
+  })
+
   it('dismisses the parked request and closes the card', async () => {
-    mockCanManage = false
+    mockOwnMcps = { servers: [{ id: 'another-mcp' }] }
     const props = renderItem()
 
     fireEvent.click(screen.getByTestId('mcp-reauth-dismiss-btn'))
@@ -149,7 +166,7 @@ describe('McpReauthRequestItem', () => {
   })
 
   it('keeps the card open when the dismissal fails', async () => {
-    mockCanManage = false
+    mockOwnMcps = { servers: [{ id: 'another-mcp' }] }
     mockDismiss.mockRejectedValue(new Error('Request not found'))
     const props = renderItem()
 
