@@ -35,6 +35,8 @@ export interface ActivityBackgroundTask {
   isWorkflow?: boolean
   /** Background subagents already render as named subagent rows — excluded here. */
   isSubagent?: boolean
+  /** Launched by a subagent: keep a fallback row when no named row represents it. */
+  launchedBySubagent?: boolean
   /** What kind of work ("Background command"); the generic noun when absent. */
   title?: string
   /** The command or description, when known. */
@@ -86,9 +88,13 @@ export function ActivityCard({
   const [isCollapsed, setIsCollapsed] = useState(false)
   const listRef = useRef<HTMLUListElement>(null)
 
-  // Background subagents are excluded: they already render as named subagent
-  // rows above, and counting them here would show the same work twice.
-  const visibleBackgroundTasks = backgroundTasks.filter((task) => !task.isSubagent)
+  // Main and nested agents can both have named lifecycle rows. Keep a
+  // sidechain or snapshot fallback only when no running named row represents it.
+  const visibleBackgroundTasks = backgroundTasks.filter((task) =>
+    (!task.isSubagent || task.launchedBySubagent) && !subagents.some((subagent) =>
+      subagent.taskId === task.taskId && subagent.status === 'running'
+    )
+  )
   const backgroundWorkflowCount = visibleBackgroundTasks.filter((task) => task.isWorkflow).length
   const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount
   const activeSubagentCount = subagents.filter((item) => item.status === 'running').length
