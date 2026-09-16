@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { MAX_CONSECUTIVE_CLARIFY, OpenAILiveBridge, leaksAssistantSpeech, liveTextChunks } from './live-bridge'
+import { MAX_CONSECUTIVE_CLARIFY, OpenAILiveBridge, liveTextChunks } from './live-bridge'
 
 function setup() {
   const events = {
@@ -81,7 +81,7 @@ afterEach(() => vi.useRealTimers())
     expect(events.onRequest).not.toHaveBeenCalled()
     events.map.mockResolvedValue({ action: 'message', text: 'Check Thursday.' })
     await vi.advanceTimersByTimeAsync(700)
-    expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: 'Check Thursday.' })
+    expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: 'Friday. Actually Thursday.' })
     bridge.close()
   })
 
@@ -116,7 +116,7 @@ afterEach(() => vi.useRealTimers())
       utterance: 'You are the new casual greeting agent Yes',
       lastClarify: 'Are you asking me to save your Supabase API key and ask for the project URL?',
     })
-    expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: 'You are the new Casual Greeting Agent, go ahead.' })
+    expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: 'You are the new casual greeting agent Yes' })
     user(' Thanks')
     events.map.mockResolvedValueOnce({ action: 'none', text: '' })
     delegate('item_3')
@@ -125,19 +125,36 @@ afterEach(() => vi.useRealTimers())
     bridge.close()
   })
 
-  it('sends the user\'s own words when the mapper answers its own clarification with a fabricated request', async () => {
+  it.each([
+    'Store the Supabase credential, then request the endpoint address.',
+    '保存凭据并索取项目地址。',
+  ])('ignores message rewrites from a remote mapper: %s', async (text) => {
     const { bridge, events, user, delegate } = setup()
-    user('You are the new casual greeting agent')
-    const question = 'Just to confirm, are you asking me to save your Supabase API key and ask you for the project URL to complete the connection?'
-    events.map.mockResolvedValueOnce({ action: 'clarify', text: question })
+    user('Do we have Supabase access set up on this agent?')
+    events.map.mockResolvedValueOnce({ action: 'message', text })
     delegate()
     await vi.advanceTimersByTimeAsync(700)
-    bridge.receive({ type: 'session.output_transcript.delta', delta: question })
-    user(' Yes')
-    events.map.mockResolvedValueOnce({ action: 'message', text: 'Save my Supabase API key and ask me for my project URL to complete the connection.' })
+    expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: 'Do we have Supabase access set up on this agent?' })
+    bridge.close()
+  })
+
+  it('keeps the original user request after it leaves the spoken transcript window', async () => {
+    const { bridge, events, user, delegate } = setup()
+    const original = 'Do we have Supabase access set up on this agent?'
+    user(original)
+    events.map.mockResolvedValueOnce({ action: 'clarify', text: 'Do you mean an existing credential?' })
+    delegate()
+    await vi.advanceTimersByTimeAsync(700)
+    for (let i = 0; i < 13; i++) {
+      bridge.receive({ type: 'session.output_transcript.delta', delta: 'Want to connect Supabase?' })
+      user(' Just check.')
+    }
+    const utterance = original + ' Just check.'.repeat(13)
+    events.map.mockResolvedValueOnce({ action: 'message', text: utterance })
     delegate('item_2')
     await vi.advanceTimersByTimeAsync(700)
-    expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: 'You are the new casual greeting agent Yes' })
+    expect(events.map.mock.calls[1][0]).toMatchObject({ utterance, transcript: expect.not.stringContaining(original) })
+    expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: utterance })
     bridge.close()
   })
 
@@ -165,16 +182,8 @@ afterEach(() => vi.useRealTimers())
     events.map.mockResolvedValueOnce({ action: 'message', text: 'Request AWS staging read-only access, since that is the biggest gap.' })
     delegate()
     await vi.advanceTimersByTimeAsync(700)
-    expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: 'Request AWS staging read-only access, since that is the biggest gap.' })
+    expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: 'You said AWS staging read-only is the biggest gap, so request that one.' })
     bridge.close()
-  })
-
-  it('flags only long verbatim runs of assistant speech the user did not say', () => {
-    const assistant = "Want me to probe a specific API next, like Workers or DNS? Just to clarify, are you asking about an existing credential?"
-    expect(leaksAssistantSpeech('Just to clarify, are you asking about an existing credential?', assistant, 'Do we have Supabase?')).toBe(true)
-    expect(leaksAssistantSpeech('Yes, probe a specific API next, like Workers.', assistant, 'Yes, probe a specific API next, like Workers.')).toBe(false)
-    expect(leaksAssistantSpeech('Probe the Workers API next.', assistant, 'Probe Workers.')).toBe(false)
-    expect(leaksAssistantSpeech('Check Friday.', '', 'Check Friday.')).toBe(false)
   })
 
   it('does not leak delayed replies across a new request or a closed session', async () => {

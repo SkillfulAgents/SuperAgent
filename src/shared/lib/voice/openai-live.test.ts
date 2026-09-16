@@ -11,6 +11,7 @@ vi.mock('../config/settings', () => ({
 vi.mock('../llm-provider/helpers', () => ({ getConfiguredLlmClient: () => mocks.client, createSummarizerText: mocks.summarize }))
 vi.mock('../llm-provider', () => ({ resolveActiveProviderModel: mocks.resolve }))
 import { OpenaiVoiceProvider } from './openai-provider'
+import { OpenAILiveBridge } from '@renderer/lib/voice/providers/openai/live-bridge'
 
 const provider = new OpenaiVoiceProvider()
 const fetchMock = vi.fn()
@@ -49,15 +50,77 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     expect(body.session.input).toEqual([])
   })
 
-  it('reuses the configured summarizer and validates its normalized request', async () => {
+  it('uses the configured summarizer to route a correction without rewriting it', async () => {
     mocks.summarize.mockResolvedValue('{"action":"message","text":"Check Thursday instead of Friday."}')
     expect(await provider.mapLiveConversation({ kind: 'request', transcript: 'user: Actually Thursday.', utterance: 'Actually Thursday.', lastClarify: null, history: [], previousRequest: 'Check Friday.', agentBusy: true }))
-      .toEqual({ action: 'message', text: 'Check Thursday instead of Friday.' })
+      .toEqual({ action: 'message', text: 'Actually Thursday.' })
     expect(mocks.resolve).toHaveBeenCalledWith('configured-summary-model', 'summarizer')
     expect(mocks.summarize).toHaveBeenCalledWith(mocks.client, expect.objectContaining({ model: 'resolved-summary-model', output_config: { format: expect.objectContaining({ type: 'json_schema', schema: expect.objectContaining({ required: ['action', 'text'], additionalProperties: false }) }) } }), expect.any(AbortSignal))
   })
 
-  it.each(['not JSON', '{"action":"execute","text":"bad"}', '{"action":"message","text":""}'])('rejects unusable mappings: %s', async (text) => {
+  it.each([
+    ['You are the new casual greeting agent Yes', 'Save my Supabase API key and ask me for my project URL to complete the connection.'],
+    ['You are the new casual greeting agent Yes', 'Store the Supabase credential, then request the endpoint address.'],
+    ['Do we have Supabase access set up on this agent?', "Check Supabase access. I'm asking about an existing credential, not connecting a new account."],
+    ['Do we have Supabase access set up on this agent? I mean is there a credential', 'Connect Supabase.'],
+    ['只检查现有权限，不要修改配置。', '更新 Supabase 配置。'],
+    ['Save my Supabase API key and ask me for my project URL to complete the connection.', ''],
+  ])('forwards only the user utterance: %s', async (utterance, text) => {
+    const question = 'Just to confirm, are you asking me to save your Supabase API key and ask you for the project URL to complete the connection?'
+    mocks.summarize.mockResolvedValue(JSON.stringify({ action: 'message', text }))
+    expect(await provider.mapLiveConversation({
+      kind: 'request', utterance, transcript: `assistant: ${question}\nuser: ${utterance}`,
+      lastClarify: question, history: [], previousRequest: 'Send my Supabase API key.', agentBusy: false,
+    })).toEqual({ action: 'message', text: utterance })
+  })
+
+  it('does not fabricate a message when there are no user words', async () => {
+    mocks.summarize.mockResolvedValue('{"action":"message","text":"Save the API key."}')
+    expect(await provider.mapLiveConversation({
+      kind: 'request', utterance: '   ', transcript: 'assistant: Save the API key?',
+      lastClarify: null, history: [], previousRequest: '', agentBusy: false,
+    })).toEqual({ action: 'none', text: '' })
+  })
+
+  it.each([
+    { utterance: 'Check...', request: { action: 'clarify', text: 'Which day?' } },
+    { utterance: 'Stop the task.', request: { action: 'cancel', text: '' } },
+    { utterance: 'Thanks.', request: { action: 'none', text: '' } },
+  ])('preserves routing for $utterance', async ({ utterance, request }) => {
+    mocks.summarize.mockResolvedValue(JSON.stringify(request))
+    expect(await provider.mapLiveConversation({
+      kind: 'request', utterance, transcript: `user: ${utterance}`,
+      lastClarify: null, history: [], previousRequest: '', agentBusy: true,
+    })).toEqual(request)
+  })
+
+  it('hands off accumulated user words through the bridge after a fabricated clarification', async () => {
+    vi.useFakeTimers()
+    const onRequest = vi.fn(async () => true)
+    const bridge = new OpenAILiveBridge({
+      send: vi.fn(), onUtterance: vi.fn(), onError: vi.fn(), onRequest,
+      map: (input, signal) => provider.mapLiveConversation(input, signal),
+    })
+    try {
+      const question = 'Should I save your Supabase API key and ask for your project URL?'
+      mocks.summarize.mockResolvedValueOnce(JSON.stringify({ action: 'clarify', text: question }))
+      bridge.receive({ type: 'session.input_transcript.delta', delta: 'You are the new casual greeting agent' })
+      bridge.requestNow()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(onRequest).not.toHaveBeenCalled()
+      bridge.receive({ type: 'session.output_transcript.delta', delta: question })
+      bridge.receive({ type: 'session.input_transcript.delta', delta: ' Yes' })
+      mocks.summarize.mockResolvedValueOnce('{"action":"message","text":"Store the Supabase credential and request the endpoint address."}')
+      bridge.requestNow()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(onRequest).toHaveBeenCalledExactlyOnceWith({ action: 'message', text: 'You are the new casual greeting agent Yes' })
+    } finally {
+      bridge.close()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['not JSON', '{"action":"execute","text":"bad"}', '{"action":"clarify","text":"  "}'])('rejects unusable mappings: %s', async (text) => {
     mocks.summarize.mockResolvedValue(text)
     await expect(provider.mapLiveConversation({ kind: 'request', transcript: 'user: hello', utterance: 'hello', lastClarify: null, history: [], previousRequest: '', agentBusy: false })).rejects.toThrow()
   })

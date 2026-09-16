@@ -46,6 +46,13 @@ describe('Live agent prompt', () => {
     expect(LIVE_REQUEST_PROMPT).toContain('Never infer authorization from the voice assistant')
   })
 
+  it('routes requests without generating user message content', () => {
+    expect(LIVE_REQUEST_PROMPT).toContain('Do not write the user\'s request')
+    expect(LIVE_REQUEST_PROMPT).toContain('Only clarify has non-empty text')
+    expect(LIVE_REQUEST_PROMPT).toContain('the application forwards utterance unchanged')
+    expect(LIVE_REQUEST_PROMPT).not.toContain('produce a self-contained corrected request')
+  })
+
   it('includes saved identity and instructions while preserving the voice delegation boundary', () => {
     const prompt = buildLiveConversationPrompt(agent)
     expect(prompt).toContain('"name":"Ada"')

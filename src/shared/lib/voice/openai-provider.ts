@@ -148,7 +148,11 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
     if (input.kind === 'reply') return { text: text.slice(0, 1800) }
     try {
       const request = liveRequestSchema.parse(JSON.parse(text))
-      if (request.action !== 'none' && !request.text.trim()) throw new Error('Empty request')
+      if (request.action === 'message') {
+        request.text = input.utterance.trim()
+        if (!request.text) request.action = 'none'
+      }
+      if (request.action === 'clarify' && !request.text.trim()) throw new Error('Empty clarification')
       return request
     } catch {
       throw new Error('The configured summarizer returned an invalid voice request. Please try again.')

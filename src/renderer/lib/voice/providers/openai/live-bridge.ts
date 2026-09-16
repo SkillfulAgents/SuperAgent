@@ -18,23 +18,6 @@ export function liveTextChunks(text: string): string[] {
 
 /** After this many clarifications in a row, the user's own words go to the agent, which can ask better. */
 export const MAX_CONSECUTIVE_CLARIFY = 2
-const LEAK_NGRAM = 6
-
-function wordGrams(text: string): Set<string> {
-  const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/u).filter(Boolean)
-  const grams = new Set<string>()
-  for (let i = 0; i + LEAK_NGRAM <= words.length; i++) grams.add(words.slice(i, i + LEAK_NGRAM).join(' '))
-  return grams
-}
-
-/** True when `text` repeats a run of the voice assistant's words that the user never said. */
-export function leaksAssistantSpeech(text: string, assistantSpeech: string, userSpeech: string): boolean {
-  const assistant = wordGrams(assistantSpeech)
-  if (assistant.size === 0) return false
-  const user = wordGrams(userSpeech)
-  for (const gram of wordGrams(text)) if (assistant.has(gram) && !user.has(gram)) return true
-  return false
-}
 
 /** Live-specific mapping. Neither the session hook nor the agent sees protocol events. */
 export class OpenAILiveBridge {
@@ -147,13 +130,12 @@ export class OpenAILiveBridge {
       // voice; after a bounded run, the user's words go to the agent unchanged.
       if (request.action === 'clarify' && this.clarifyStreak >= MAX_CONSECUTIVE_CLARIFY && utterance) {
         console.warn('[voice] Live mapping kept clarifying; sending the user\'s own words instead.')
-        request = { action: 'message', text: utterance }
+        request.action = 'message'
       }
-      // The mapper must not turn the voice assistant's speech, or its own
-      // clarification, into the user's request. Fall back to the user's words.
-      if (request.action === 'message' && leaksAssistantSpeech(request.text, this.assistantSpeech(), utterance)) {
-        console.warn('[voice] Live mapping repeated the assistant\'s words; sending the user\'s utterance instead.')
-        request = utterance ? { action: 'message', text: utterance } : { action: 'none', text: '' }
+      // Remote hosts can run a different mapper version.
+      if (request.action === 'message') {
+        request.text = utterance
+        if (!request.text) request.action = 'none'
       }
       if (request.action === 'none') { this.resetRequestWords(); return }
       if (request.action === 'clarify') {
@@ -192,11 +174,6 @@ export class OpenAILiveBridge {
     this.requestWords = ''
     this.lastClarify = null
     this.clarifyStreak = 0
-  }
-
-  private assistantSpeech(): string {
-    const spoken = this.transcript.filter(({ role }) => role === 'assistant').map(({ text }) => text)
-    return [...spoken, this.lastClarify ?? ''].join('\n')
   }
 
   invalidateReplies() {
