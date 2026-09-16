@@ -186,6 +186,7 @@ describe('Live voice routes', () => {
   })
   it('rejects invalid and oversized mappings before calling the LLM', async () => {
     expect((await request('/live/map', { kind: 'request', transcript: '' })).status).toBe(400)
+    expect((await request('/live/map', { kind: 'request', transcript: 'user: hi', history: [], previousRequest: '', agentBusy: false })).status).toBe(400)
     expect((await request('/live/map', { kind: 'reply', text: 'a'.repeat(140000) })).status).toBe(413)
     expect(mocks.map).not.toHaveBeenCalled()
   })

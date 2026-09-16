@@ -16,12 +16,36 @@ export function liveTextChunks(text: string): string[] {
   return splitSpeechText(text, 400, 'utf8')
 }
 
+const LEAK_NGRAM = 6
+
+function wordGrams(text: string): Set<string> {
+  const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/u).filter(Boolean)
+  const grams = new Set<string>()
+  for (let i = 0; i + LEAK_NGRAM <= words.length; i++) grams.add(words.slice(i, i + LEAK_NGRAM).join(' '))
+  return grams
+}
+
+/** True when `text` repeats a run of the voice assistant's words that the user never said. */
+export function leaksAssistantSpeech(text: string, assistantSpeech: string, userSpeech: string): boolean {
+  const assistant = wordGrams(assistantSpeech)
+  if (assistant.size === 0) return false
+  const user = wordGrams(userSpeech)
+  for (const gram of wordGrams(text)) if (assistant.has(gram) && !user.has(gram)) return true
+  return false
+}
+
+/** `end`: user characters received up to the end of this entry. Offsets survive trimming and eviction. */
+interface BridgeEntry extends VoiceTranscriptEntry { end: number }
+
 /** Live-specific mapping. Neither the session hook nor the agent sees protocol events. */
 export class OpenAILiveBridge {
-  private transcript: VoiceTranscriptEntry[] = []
+  private transcript: BridgeEntry[] = []
+  /** Live subtitle: the user's words since the last mapping. */
   private utterance = ''
+  /** User characters received in total, and how many of them the agent has accepted. */
+  private receivedUserChars = 0
+  private sentUserChars = 0
   private userRevision = 0
-  private handledRevision = 0
   private previousRequest = ''
   private pendingDelegation: string | null = null
   private delegationId: string | null = null
@@ -54,10 +78,13 @@ export class OpenAILiveBridge {
     if (event.type === 'session.input_transcript.delta' || event.type === 'session.output_transcript.delta') {
       if (typeof event.delta !== 'string' || !event.delta) return
       const role = event.type === 'session.input_transcript.delta' ? 'user' : 'assistant'
+      if (role === 'user') this.receivedUserChars += event.delta.length
       const last = this.transcript.at(-1)
       // Concatenation is exact; the provider supplies whitespace in its deltas.
-      if (last?.role === role) last.text = (last.text + event.delta).slice(-8000)
-      else this.transcript.push({ role, text: event.delta.slice(-8000) })
+      if (last?.role === role) {
+        last.text = (last.text + event.delta).slice(-8000)
+        last.end = this.receivedUserChars
+      } else this.transcript.push({ role, text: event.delta.slice(-8000), end: this.receivedUserChars })
       this.transcript = this.transcript.slice(-24)
       while (this.transcript.length > 1 && this.transcript.reduce((size, item) => size + item.text.length, 0) > 16000) this.transcript.shift()
       // A small immutable tail for rolling subtitles. Keep the full mapping
@@ -84,52 +111,72 @@ export class OpenAILiveBridge {
 
   /** The explicit mic button may request a handoff without waiting for Live. */
   requestNow() {
-    if (this.closed || this.paused || this.userRevision === this.handledRevision) return
+    if (this.closed || this.paused || !this.unsentUserWords()) return
     if (!this.pendingDelegation) this.pendingDelegation = 'manual'
     this.scheduleRequest(0)
   }
 
+  /** The user's words the agent has not accepted yet, in order, across the voice assistant's turns. */
+  private unsentUserWords(): string {
+    const parts: string[] = []
+    for (const entry of this.transcript) {
+      if (entry.role !== 'user') continue
+      const start = entry.end - entry.text.length
+      const unsent = entry.text.slice(Math.max(0, this.sentUserChars - start)).trim()
+      if (unsent) parts.push(unsent)
+    }
+    return parts.join('\n')
+  }
+
+  private assistantSpeech(): string {
+    return this.transcript.filter(({ role }) => role === 'assistant').map(({ text }) => text).join('\n')
+  }
+
   private scheduleRequest(delay = 700) {
     clearTimeout(this.timer)
-    if (this.closed || this.paused || this.dispatching || !this.pendingDelegation || this.userRevision === this.handledRevision) return
+    if (this.closed || this.paused || this.dispatching || !this.pendingDelegation || !this.unsentUserWords()) return
     // This is a coalescing window, not an authoritative end-of-turn detector.
-    // The summarizer must return clarify for incomplete requests.
+    // Words that turn out incomplete are the backend's to ask about.
     this.timer = setTimeout(() => { void this.resolveRequest() }, delay)
   }
 
   private async resolveRequest() {
     const id = this.pendingDelegation
     if (!id || this.closed || this.paused) return
+    const userWords = this.unsentUserWords()
+    if (!userWords) return
     const revision = this.userRevision
+    const received = this.receivedUserChars
     const controller = new AbortController()
     this.requestAbort = controller
     let dispatched = false
     try {
-      const request = liveRequestSchema.parse(await this.events.map({
+      const mapped = liveRequestSchema.parse(await this.events.map({
         kind: 'request', history: this.history,
-        transcript: this.transcript.map(({ role, text }) => `${role}: ${text}`).join('\n').slice(-16000),
-        previousRequest: this.previousRequest, agentBusy: this.busy,
+        transcript: this.transcript.map(({ role, text }) => `${role === 'user' ? 'user' : 'voice_assistant'}: ${text}`).join('\n').slice(-16000),
+        userWords, previousRequest: this.previousRequest, agentBusy: this.busy,
       }, controller.signal))
       if (controller.signal.aborted || this.closed || this.paused || revision !== this.userRevision || id !== this.pendingDelegation) return
       this.pendingDelegation = null
-      this.handledRevision = revision
       this.utterance = ''
       this.events.onUtterance('')
-      if (request.action === 'none') return
-      if (request.action === 'clarify') {
-        this.commentary(`Clarification needed: ${request.text}`, id === 'manual' ? null : id)
-        return
+      let request: LiveRequest = mapped
+      if (leaksAssistantSpeech(mapped.text, this.assistantSpeech(), userWords)) {
+        console.warn('[voice] Live rewrite repeated the voice assistant\'s words; sending the user\'s own words instead.')
+        request = { ...mapped, text: userWords }
       }
-      this.invalidateReplies()
+      // Queued words join the running turn, so its replies stay valid.
+      if (request.mode !== 'queue' || !this.busy) this.invalidateReplies()
       this.delegationId = id === 'manual' ? null : id
       this.dispatching = true
       dispatched = true
       const accepted = await this.events.onRequest(request)
       if (this.closed) return
       if (accepted) {
-        if (request.action === 'message') this.previousRequest = request.text
-        else this.commentary('The running agent turn was stopped. This does not undo actions already completed.')
+        this.sentUserChars = Math.max(this.sentUserChars, received)
+        this.previousRequest = request.text
       } else {
+        // The words stay unsent: the next delegation or mic press carries them again.
         this.events.onError('The agent could not accept the voice request. Please try again.')
         this.commentary('The request was not accepted by the agent. Ask the user to try again.')
       }

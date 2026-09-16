@@ -67,29 +67,49 @@ export class VoiceAgentCoordinator {
   command(command: VoiceAgentCommand): Promise<VoiceCommandResult> {
     if (this.closed || this.paused) return Promise.resolve({ accepted: false })
     this.commands++
-    this.warning = false
-    this.dependencies.onIssue(null)
-    this.dependencies.onEvent({ type: 'reset' })
-    this.fedText = ''
-    this.fedComplete = false
-    this.segment++
-    this.staleText = this.dependencies.snapshot().text
-    this.clearWait()
-    this.resumeWait = false
-    this.awaiting = command.type === 'submit'
-    if (command.type === 'submit') this.followingTurn = true
-    if (command.type === 'cancel') this.cancelled = true
-    this.publishState()
+    // Queued words join the running turn: no interrupt, no reply reset, and no
+    // new acknowledgment wait. A cancelled or unconfirmed turn takes the strict path.
+    const steer = command.type === 'submit' && command.queue === true && !this.cancelled && !this.cancellationError
+      && (this.dependencies.snapshot().active || this.pendingAccepted)
+    if (!steer) {
+      this.warning = false
+      this.dependencies.onIssue(null)
+      this.dependencies.onEvent({ type: 'reset' })
+      this.fedText = ''
+      this.fedComplete = false
+      this.segment++
+      this.staleText = this.dependencies.snapshot().text
+      this.clearWait()
+      this.resumeWait = false
+      this.awaiting = command.type === 'submit'
+      if (command.type === 'submit') this.followingTurn = true
+      if (command.type === 'cancel') this.cancelled = true
+      this.publishState()
+    }
     // Run the first operation immediately. Later commands wait for its result,
     // including a cancellation requested while a submission is in flight.
     const queued = this.queue
     if (!queued) this.cancellationError = null
-    const pending = queued
-      ? queued.then(() => this.execute(command))
-      : this.execute(command)
+    const run = () => steer ? this.steer(command.text) : this.execute(command)
+    const pending = queued ? queued.then(run) : run()
     this.queue = pending
     void pending.then(() => { if (this.queue === pending) this.queue = null })
     return pending
+  }
+
+  private async steer(text: string): Promise<VoiceCommandResult> {
+    try {
+      if (this.closed || this.paused) return { accepted: false }
+      if (!await this.dependencies.send(text)) throw new Error('Could not send that. Please say it again.')
+      return { accepted: true }
+    } catch (reason) {
+      if (this.closed) return { accepted: false }
+      const message = reason instanceof Error ? reason.message : 'Could not send the voice request.'
+      this.dependencies.onIssue(message)
+      return { accepted: false, error: message }
+    } finally {
+      this.settle()
+    }
   }
 
   private async execute(command: VoiceAgentCommand): Promise<VoiceCommandResult> {
@@ -153,11 +173,15 @@ export class VoiceAgentCoordinator {
       if (!this.closed && !quietCancel) this.dependencies.onIssue(message)
       return { accepted: false, error: message }
     } finally {
-      this.commands--
-      if (!this.closed && this.commands === 0) {
-        this.update(this.dependencies.snapshot())
-        this.armWait()
-      }
+      this.settle()
+    }
+  }
+
+  private settle() {
+    this.commands--
+    if (!this.closed && this.commands === 0) {
+      this.update(this.dependencies.snapshot())
+      this.armWait()
     }
   }
 

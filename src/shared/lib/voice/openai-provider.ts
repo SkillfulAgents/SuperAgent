@@ -139,17 +139,15 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
         type: 'json_schema' as const,
         schema: {
           type: 'object',
-          properties: { action: { type: 'string', enum: liveRequestSchema.shape.action.options }, text: { type: 'string' } },
-          required: ['action', 'text'], additionalProperties: false,
+          properties: { text: { type: 'string' }, mode: { type: 'string', enum: liveRequestSchema.shape.mode.options } },
+          required: ['text', 'mode'], additionalProperties: false,
         },
       } } } : {}),
     }, signal ? AbortSignal.any([signal, deadline]) : deadline)
     if (!text) throw new Error('The configured summarizer returned no voice mapping. Please try again.')
     if (input.kind === 'reply') return { text: text.slice(0, 1800) }
     try {
-      const request = liveRequestSchema.parse(JSON.parse(text))
-      if (request.action !== 'none' && !request.text.trim()) throw new Error('Empty request')
-      return request
+      return liveRequestSchema.parse(JSON.parse(text))
     } catch {
       throw new Error('The configured summarizer returned an invalid voice request. Please try again.')
     }

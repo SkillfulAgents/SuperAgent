@@ -9,6 +9,8 @@ export const liveMappingSchema = z.discriminatedUnion('kind', [
     kind: z.literal('request'),
     history: voiceHistorySchema,
     transcript: z.string().min(1).max(16000),
+    // Everything the user said since their last message was sent: the only source of the rewrite.
+    userWords: z.string().min(1).max(16000),
     previousRequest: z.string().max(4000),
     agentBusy: z.boolean(),
   }),
@@ -16,9 +18,10 @@ export const liveMappingSchema = z.discriminatedUnion('kind', [
 ])
 export type LiveMappingInput = z.infer<typeof liveMappingSchema>
 
+/** A rewrite of the user's words, and whether it joins the running turn or replaces it. */
 export const liveRequestSchema = z.object({
-  action: z.enum(['message', 'cancel', 'clarify', 'none']),
-  text: z.string().max(4000),
+  text: z.string().trim().min(1).max(4000),
+  mode: z.enum(['interrupt', 'queue']),
 })
 export type LiveRequest = z.infer<typeof liveRequestSchema>
 
