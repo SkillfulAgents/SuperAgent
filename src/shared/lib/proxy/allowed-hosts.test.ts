@@ -32,6 +32,17 @@ describe('matchesHostPatterns', () => {
 })
 
 describe('isHostAllowed', () => {
+  // A '#' or '?' inside the host ends the authority, so the request would leave for
+  // the part before it while the suffix check saw an allowed name. Userinfo does not
+  // redirect the request, but a host segment is not where credentials belong.
+  it.each([
+    'evil.example#.atlassian.net',
+    'evil.example?.atlassian.net',
+    'user@tenant.atlassian.net',
+  ])('rejects a host that is not a bare hostname: %s', (host) => {
+    expect(isHostAllowed('jira', host)).toBe(false)
+  })
+
   it('allows known hosts for gmail toolkit', () => {
     expect(isHostAllowed('gmail', 'gmail.googleapis.com')).toBe(true)
     expect(isHostAllowed('gmail', 'www.googleapis.com')).toBe(true)

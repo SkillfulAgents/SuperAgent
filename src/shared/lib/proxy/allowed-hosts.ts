@@ -130,8 +130,19 @@ export function matchesHostPatterns(host: string, patterns: string[]): boolean {
   })
 }
 
+// The proxy takes its host from the request path, where a percent-encoded
+// delimiter survives the suffix check and then re-delimits the URL:
+// `evil.example%23.atlassian.net` ends with an allowed suffix, but the '#' it
+// decodes to ends the authority, so the request would reach evil.example with the
+// account's credentials. This admits only characters that cannot do that; it is
+// not a hostname validator, and DNS rejects the rest. The web filter takes its
+// host from `new URL()` instead, so the guard belongs here and not in the shared
+// matcher, where it would stop a bracketed IPv6 address from matching.
+const BARE_HOSTNAME = /^[a-z0-9._-]+$/i
+
 export function isHostAllowed(toolkit: string, host: string): boolean {
   const allowed = TOOLKIT_ALLOWED_HOSTS[toolkit]
   if (!allowed) return false
+  if (!BARE_HOSTNAME.test(host)) return false
   return matchesHostPatterns(host, allowed)
 }

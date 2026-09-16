@@ -223,6 +223,39 @@ describe('proxy route', () => {
     expect(mockRequestReauth).not.toHaveBeenCalled()
   })
 
+  // End to end through the route, with the real allowlist: the '%23' Hono decodes
+  // would make the built URL resolve to evil.example while the suffix check saw an
+  // Atlassian host, so the guard has to run on the decoded value.
+  it('returns 403 for an encoded delimiter in the host, using the real allowlist', async () => {
+    const { isHostAllowed } = await vi.importActual<typeof import('@shared/lib/proxy/allowed-hosts')>(
+      '@shared/lib/proxy/allowed-hosts',
+    )
+    mockIsHostAllowed.mockImplementation(isHostAllowed)
+    mockValidateProxyToken.mockResolvedValue('my-agent')
+    mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+    mockInnerJoin.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      {
+        account: {
+          id: 'acc-123',
+          toolkitSlug: 'jira',
+          providerConnectionId: 'comp-123',
+          providerName: 'composio',
+          status: 'active',
+        },
+      },
+    ])
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/evil.example%23.atlassian.net/rest/api/3/myself',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toContain('not allowed')
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+  })
+
   it('returns 502 when provider makeApiCall fails', async () => {
     mockValidateProxyToken.mockResolvedValue('my-agent')
     mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
