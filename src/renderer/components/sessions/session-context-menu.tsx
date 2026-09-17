@@ -68,6 +68,13 @@ interface SessionContextMenuProps {
   agentSlug: string
   activity: SessionMenuActivity
   children: React.ReactNode
+  /**
+   * Reports the menu opening and closing. Call sites that reveal a trigger on
+   * hover (the 3-dot on a sidebar or list row) need this: once the menu is
+   * open Radix takes pointer events off the page, so `:hover` drops and a
+   * hover-only affordance would disappear out from under its own menu.
+   */
+  onOpenChange?: (open: boolean) => void
 }
 
 export function SessionContextMenu({
@@ -76,6 +83,7 @@ export function SessionContextMenu({
   agentSlug,
   activity,
   children,
+  onOpenChange,
 }: SessionContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showRenameDialog, setShowRenameDialog] = useState(false)
@@ -158,6 +166,7 @@ export function SessionContextMenu({
   }
 
   const handleMenuOpenChange = (open: boolean) => {
+    onOpenChange?.(open)
     if (!open) return
 
     const requestId = ++usageRequestRef.current
