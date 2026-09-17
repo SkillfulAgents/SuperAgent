@@ -34,8 +34,9 @@ import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread, useF
 import { useNavigate } from '@tanstack/react-router'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useUser } from '@renderer/context/user-context'
-import { Trash2, ClipboardCopy, Pencil, Eye, Split, Minimize2 } from 'lucide-react'
+import { Trash2, ClipboardCopy, Download, Pencil, Eye, Split, Minimize2 } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
+import { downloadBlob } from '@renderer/lib/download'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
 
 type UsageState =
@@ -144,16 +145,30 @@ export function SessionContextMenu({
     }
   }
 
+  const fetchRawLog = async (): Promise<Response> => {
+    const response = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/raw-log`)
+    if (!response.ok) {
+      throw new Error('Failed to fetch raw log')
+    }
+    return response
+  }
+
   const handleCopyRawLog = async () => {
     try {
-      const response = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/raw-log`)
-      if (!response.ok) {
-        throw new Error('Failed to fetch raw log')
-      }
-      const text = await response.text()
+      const text = await (await fetchRawLog()).text()
       await navigator.clipboard.writeText(text)
     } catch (error) {
       console.error('Failed to copy raw log:', error)
+    }
+  }
+
+  const handleDownloadRawLog = async () => {
+    try {
+      const response = await fetchRawLog()
+      const base = sessionName.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+      await downloadBlob(response, `${base || sessionId}.jsonl`)
+    } catch (error) {
+      console.error('Failed to download raw log:', error)
     }
   }
 
@@ -185,7 +200,7 @@ export function SessionContextMenu({
         <ContextMenuTrigger asChild>
           {children}
         </ContextMenuTrigger>
-        <ContextMenuContent className="w-52 rounded-xl p-2" data-testid="session-context-menu">
+        <ContextMenuContent className="w-56 rounded-xl p-2" data-testid="session-context-menu">
           {isOwner && (
             <ContextMenuItem
               data-testid="rename-session-item"
@@ -237,6 +252,10 @@ export function SessionContextMenu({
           <ContextMenuItem onClick={handleCopyRawLog} data-testid="copy-session-raw-log-item">
             <ClipboardCopy className="h-4 w-4 mr-2" />
             Copy Raw Log
+          </ContextMenuItem>
+          <ContextMenuItem onClick={handleDownloadRawLog} data-testid="download-session-raw-log-item">
+            <Download className="h-4 w-4 mr-2" />
+            Download Raw Log
           </ContextMenuItem>
           {isOwner && (
             <>
