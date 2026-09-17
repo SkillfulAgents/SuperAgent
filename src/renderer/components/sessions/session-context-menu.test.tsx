@@ -7,6 +7,7 @@ import { SessionContextMenu } from './session-context-menu'
 const IDLE = { isActive: false, isAwaitingInput: false, isStreaming: false }
 
 const mockApiFetch = vi.fn()
+const mockDownloadBlob = vi.fn()
 const {
   mockFork,
   mockForkAndCompact,
@@ -35,6 +36,10 @@ const {
 
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+}))
+
+vi.mock('@renderer/lib/download', () => ({
+  downloadBlob: (...args: unknown[]) => mockDownloadBlob(...args),
 }))
 
 // Keep this test focused on the menu's lazy request behavior. The worktree test
@@ -443,4 +448,32 @@ describe('Fork Session item', () => {
     expect(mockFork).not.toHaveBeenCalled()
   })
 
+})
+
+describe('SessionContextMenu raw log', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockCanUse.value = true
+    mockCanAdminAgent.mockReturnValue(true)
+    mockCanUseAgent.mockReturnValue(true)
+    mockDownloadBlob.mockResolvedValue(undefined)
+  })
+
+  it('downloads the session transcript as a jsonl file', async () => {
+    const response = { ok: true, text: async () => 'log-line\n' }
+    mockApiFetch.mockResolvedValue(response)
+
+    render(
+      <SessionContextMenu sessionId="session-1" sessionName="Code PR Review" agentSlug="agent-1" activity={IDLE}>
+        <button type="button">Code PR Review</button>
+      </SessionContextMenu>,
+    )
+
+    fireEvent.click(screen.getByTestId('download-session-raw-log-item'))
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/agent-1/sessions/session-1/raw-log')
+    })
+    expect(mockDownloadBlob).toHaveBeenCalledWith(response, 'Code-PR-Review.jsonl')
+  })
 })
