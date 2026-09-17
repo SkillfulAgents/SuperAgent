@@ -37,6 +37,7 @@ import {
   webhookEnvelopeSchema,
   CUSTOM_WEBHOOK_TRIGGER_TYPE,
 } from '@shared/lib/services/webhook-endpoint-schema'
+import { buildAutomatedSessionPrompt } from './automated-session-prompt'
 
 /**
  * Custom-endpoint events carry a request envelope from the public ingest
@@ -351,6 +352,7 @@ class TriggerManager {
     const containerSession = await actor.sessions.create({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: prompt,
+      systemPrompt: buildAutomatedSessionPrompt('webhook'),
       model: resolved.model,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
