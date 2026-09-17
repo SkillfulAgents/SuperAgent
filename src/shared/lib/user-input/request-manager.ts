@@ -49,16 +49,17 @@ export class UserInputRequestManager implements UserInputTransitionSink {
    * index is rebuilt from what the stores hold: a registry built over state
    * that outlived an earlier one (a dev-server reload) attaches stores with
    * requests already open, and those emit no second 'created' transition.
-   * Stores come in the order their handles were made, which is the order
-   * the agents first registered anything, so the first registrant of an id
-   * stays first.
+   * The stores are replayed in registration order, so the first registrant
+   * of an id stays first however the handles were made.
    */
   attachAgents(directory: AgentStoreDirectory<AgentInputRequests> | null): void {
     this.agents.attach(directory)
     this.ownersById.clear()
-    for (const store of this.agents.all()) {
-      for (const request of store.getOpenRequests()) this.indexOwner(request.id, store.slug)
-    }
+    const registrations = this.agents
+      .all()
+      .flatMap((store) => store.openRegistrations().map(({ request, seq }) => ({ id: request.id, slug: store.slug, seq })))
+      .sort((a, b) => a.seq - b.seq)
+    for (const { id, slug } of registrations) this.indexOwner(id, slug)
   }
 
   private indexOwner(id: string, slug: AgentSlug): void {

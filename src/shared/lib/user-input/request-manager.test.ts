@@ -571,6 +571,21 @@ describe('UserInputRequestManager', () => {
       expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-b')
     })
 
+    it('the rebuilt index keeps registration order, not the order the stores were made in', () => {
+      // agent-a's store exists first, but agent-b registers the shared id first.
+      manager.register(secretRequest({ id: 'tool-0', scope: { agentSlug: 'agent-a', sessionId: 's' } }))
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-b', sessionId: 's' } }))
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-a', sessionId: 's' } }))
+      expect(agents.all().map((store) => store.slug)).toEqual(['agent-a', 'agent-b'])
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-b')
+
+      manager.attachAgents(agents)
+
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.resolve('tool-1', 'answered')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
+    })
+
     it('a named agent that does not hold the id is a miss, not a fallback to whoever does', () => {
       manager.register(secretRequest())
       expect(manager.getOpenRequest('tool-1', 'agent-z')).toBeNull()

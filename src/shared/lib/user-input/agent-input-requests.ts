@@ -63,10 +63,18 @@ export interface UserInputTransitionSink {
 export const RECENT_RESOLUTIONS_LIMIT = 100
 
 /**
- * Orders settlements across every agent's trail: a process-wide clock, not
- * state — the router asks the trails which of them settled an id last.
+ * Orders registrations and settlements across every agent's store: a
+ * process-wide clock, not state — the router asks the stores which of them
+ * registered an id first and which settled it last. Kept on `globalThis` in
+ * development, like the stores it orders, so a module reload does not
+ * restart it under stores that survived the reload.
  */
-let nextSettlementSeq = 0
+const globalForSequence = globalThis as unknown as { userInputRequestSequence: { next: number } | undefined }
+const sequence = globalForSequence.userInputRequestSequence ?? { next: 0 }
+if (process.env.NODE_ENV !== 'production') {
+  globalForSequence.userInputRequestSequence = sequence
+}
+const nextSeq = (): number => sequence.next++
 
 /** A settlement as the trail holds it: the record, and its place in the process-wide order. */
 export interface SettlementEntry {
@@ -74,8 +82,21 @@ export interface SettlementEntry {
   seq: number
 }
 
+/** An open request and its place in the process-wide registration order. */
+export interface RegistrationEntry {
+  request: PendingUserInputRequest
+  seq: number
+}
+
 export class AgentInputRequests {
   private requests = new Map<string, PendingUserInputRequest>()
+
+  /**
+   * When each open request was first registered, in the process-wide order.
+   * An upgrade of a recovered synthetic keeps the stub's place: it is the
+   * same request, announced properly the second time.
+   */
+  private registeredAt = new Map<string, number>()
 
   /**
    * Bounded trail of recent settlements, for shadow-mode debugging and tests.
@@ -136,6 +157,7 @@ export class AgentInputRequests {
     }
     if (existing && AgentInputRequests.isRecoveredSynthetic(parsed.data)) return existing
     this.requests.set(parsed.data.id, parsed.data)
+    if (!this.registeredAt.has(parsed.data.id)) this.registeredAt.set(parsed.data.id, nextSeq())
     this.emitTransition({ type: 'created', request: parsed.data })
     return parsed.data
   }
@@ -149,13 +171,14 @@ export class AgentInputRequests {
     const request = this.requests.get(id)
     if (!request) return null
     this.requests.delete(id)
+    this.registeredAt.delete(id)
     // The claim dies with the entry: a settled id must never leave a
     // reservation behind that a re-registration under the same toolUseId
     // would inherit.
     this.claimed.delete(id)
     this.recentResolutions.push({
       record: { id, kind: request.kind, scope: request.scope, outcome },
-      seq: nextSettlementSeq++,
+      seq: nextSeq(),
     })
     if (this.recentResolutions.length > RECENT_RESOLUTIONS_LIMIT) this.recentResolutions.shift()
     this.emitTransition({ type: 'resolved', request, outcome })
@@ -314,6 +337,14 @@ export class AgentInputRequests {
     return [...this.requests.values()]
   }
 
+  /** Every open request with its place in the process-wide registration order. */
+  openRegistrations(): RegistrationEntry[] {
+    return [...this.requests.values()].map((request) => ({
+      request,
+      seq: this.registeredAt.get(request.id) ?? Number.MAX_SAFE_INTEGER,
+    }))
+  }
+
   /** Agent-scoped only (no sessionId) — reviews and re-auth requests. */
   getAgentScopedRequests(): PendingUserInputRequest[] {
     return [...this.requests.values()].filter((r) => r.scope.sessionId === undefined)
@@ -420,6 +451,7 @@ export class AgentInputRequests {
   /** Test hook: wipe all state including diagnostics, silently. */
   reset(): void {
     this.requests.clear()
+    this.registeredAt.clear()
     this.claimed.clear()
     this.recentResolutions = []
     this.mismatchCount = 0

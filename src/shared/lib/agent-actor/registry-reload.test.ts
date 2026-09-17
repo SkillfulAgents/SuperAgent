@@ -89,6 +89,33 @@ describe('the actors\' state survives a backend module reload', () => {
     expect(reloaded.userInputRequestManager.getOpenRequestsForAgent('a').map((r) => r.id)).toEqual(['reload-secret'])
   })
 
+  it('a bare id shared by two agents still goes to the agent that registered it first after the reload', async () => {
+    const original = await load()
+    // a's handle exists first; b registers the shared id first.
+    original.agentRegistry.get('a')
+    original.agentRegistry.get('b').inputs.register({
+      id: 'shared-id',
+      kind: 'secret',
+      scope: { sessionId: 's' },
+      blocking: true,
+      payload: {},
+    })
+    original.agentRegistry.get('a').inputs.register({
+      id: 'shared-id',
+      kind: 'secret',
+      scope: { sessionId: 's' },
+      blocking: true,
+      payload: {},
+    })
+    expect(original.userInputRequestManager.getOpenRequest('shared-id')?.scope.agentSlug).toBe('b')
+
+    const reloaded = await reload()
+
+    expect(reloaded.userInputRequestManager.getOpenRequest('shared-id')?.scope.agentSlug).toBe('b')
+    expect(reloaded.userInputRequestManager.resolve('shared-id', 'answered')?.scope.agentSlug).toBe('b')
+    expect(reloaded.userInputRequestManager.getOpenRequest('shared-id')?.scope.agentSlug).toBe('a')
+  })
+
   it('a review parked before the reload is decidable after it, by the actor and by bare id, and the parked call resumes', async () => {
     const original = await load()
     const decision = original.agentRegistry
