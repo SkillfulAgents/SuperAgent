@@ -28,7 +28,8 @@ not substitute a vendor key or construct an acting-member token yourself.
 | Transcribe a file you have on disk, plain text result | Either; OpenAI `whisper-1` is cheaper per minute | $0.006/min vs $0.0077/min |
 | Transcribe from a URL without downloading | Deepgram `/listen` | OpenAI only accepts an uploaded file |
 | Large recording (over 25 MB) | Deepgram `/listen` | OpenAI rejects uploads over 25 MB; split the file otherwise |
-| Speaker labels, multichannel, word timing, keyword boosting | Deepgram `/listen` | Structured `results.channels[].alternatives[].words` with `diarize`, `multichannel` |
+| Speaker labels | Either: Deepgram `diarize=true`, or OpenAI `gpt-4o-transcribe-diarize` | Deepgram labels every word; OpenAI returns speaker segments in `diarized_json` |
+| Multichannel, word timing, keyword boosting | Deepgram `/listen` | Structured `results.channels[].alternatives[].words` with `multichannel` |
 | Subtitles (`srt` / `vtt`) directly | OpenAI `/audio/transcriptions` with `whisper-1` | `response_format=srt` or `vtt` |
 | Text to speech, lowest cost | OpenAI `tts-1` | $0.015 per 1,000 chars |
 | Text to speech with style control ("speak calmly", "whisper") | OpenAI `gpt-4o-mini-tts` with `instructions` | Deepgram voices take no style prompt |
@@ -113,11 +114,14 @@ curl --fail-with-body -sS \
 
 The transcript is in `text`. Use `model=whisper-1` for file work: it is the
 model that supports `response_format=srt`, `vtt`, and `verbose_json` (segment
-timestamps), and it returns the audio duration so the charge is exact.
-`gpt-4o-transcribe` and `gpt-4o-mini-transcribe` return `json` or `text` only
-and carry no duration, so the platform estimates the charge from the upload
-size instead. Set `language` (ISO-639-1) when you know it; it improves
-accuracy and speed.
+and word timestamps via `timestamp_granularities[]`). With `json` or
+`verbose_json` it also returns the audio duration, so the charge is exact;
+`srt`, `vtt`, and `text` responses carry no duration and are charged from the
+upload size instead. `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` support
+`response_format=json` only and carry no duration. For speaker labels use
+`model=gpt-4o-transcribe-diarize` with `response_format=diarized_json`, and
+add `chunking_strategy=auto` when the audio is longer than 30 seconds. Set
+`language` (ISO-639-1) when you know it; it improves accuracy and speed.
 
 ## Generate Speech with Deepgram
 
@@ -152,7 +156,10 @@ curl --fail-with-body -sS \
 ```
 
 `instructions` (delivery style) works only with `gpt-4o-mini-tts`. `tts-1`
-and `tts-1-hd` ignore it. `speed` (0.25 to 4.0) works on all three.
+and `tts-1-hd` ignore it. `speed` (0.25 to 4.0) works on all three. Use the
+plain `gpt-4o-mini-tts` alias, not a dated snapshot such as
+`gpt-4o-mini-tts-2025-12-15`: the platform prices unknown model names at the
+highest rate.
 
 For either provider, check that the request succeeded before treating the
 output file as audio; an error response may have been written to it. Deliver
@@ -180,7 +187,7 @@ Transcription is metered per audio minute by provider and model:
 | Deepgram | `nova-3-multilingual` | $0.0092 |
 | Deepgram | `nova-2` | $0.0058 |
 | Deepgram | any other model | $0.0092 |
-| OpenAI | `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` | $0.006 |
+| OpenAI | any model (`whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe-diarize`, ...) | $0.006 |
 
 Speech generation is metered per 1,000 input characters:
 
@@ -193,9 +200,9 @@ Speech generation is metered per 1,000 input characters:
 
 These are platform metering rates, not a complete model-availability list.
 When duration metadata is missing from a transcription response, the platform
-estimates duration from the upload size with a minimum of one minute; this
-applies to OpenAI transcription models other than `whisper-1`. Deepgram text
-analysis uses a flat $0.002 per request.
+estimates duration from the upload size with a minimum of one minute; on the
+OpenAI lane that is every response except `whisper-1` with `json` or
+`verbose_json`. Deepgram text analysis uses a flat $0.002 per request.
 
 Process only the audio or text the task needs. Reuse saved transcripts rather
 than resubmitting the same recording. Before long recordings, large batches,
@@ -218,7 +225,8 @@ or substantial speech generation, estimate the cost and get the user's OK.
 - `413`: the request body is too large.
 - `429`: honor `Retry-After` if provided; otherwise back off and retry once.
   Do not loop on rate limits.
-- `503` with a configuration error: that provider is not configured on this
-  proxy. Use the other provider if it fits the task; do not ask for a key.
+- `503` with `configuration_error` on the OpenAI lane: OpenAI voice is not
+  configured on this proxy. Use Deepgram if it fits the task; do not ask for
+  a key.
 - Other upstream failures: report the returned error without exposing tokens.
   Do not blindly replay a paid request after a timeout; it may have completed.
