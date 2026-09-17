@@ -5,8 +5,9 @@ import { LinearClient } from './client'
 import { LinearTasks } from './tasks'
 import { collectDirectActions } from './direct-sync'
 import { LinearSubscriptions } from './subscriptions'
-import type { TrackedLinearIssue } from './direct-events'
-import { enqueueTaskEvent, findTaskEvent, readTaskEvent, taskTrackingHistory, wasStopped } from '../store'
+import type { DirectIssue } from './direct-schema'
+import { checkpointIssue, dueIssues, getIssueTracking, hasDueIssues, initializeIssueSync, knownIssueIds, rememberIssue, wakeIssue } from './issue-sync-store'
+import { findTaskEvent, pendingTaskEvents, wasStopped } from '../store'
 import type { TaskEvent, TaskPublication } from '../types'
 
 import type { TaskAttachment } from '../attachment-schema'
@@ -24,7 +25,10 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
   private failures = 0
   private synced = false
   private dirty = false
-  private tracked = new Map<string, TrackedLinearIssue>()
+  private hasBacklog = false
+  private knownIssues = new Set<string>()
+  private urgentIssues = new Set<string>()
+  private readyIssues = new Set<string>()
   private subscriptions?: LinearSubscriptions
   private abort = new AbortController()
   private recoveryTimer?: ReturnType<typeof setInterval>
@@ -44,8 +48,15 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     this.failures = 0
     this.abort = new AbortController()
     this.dispatchSuspended = true
+    initializeIssueSync(this.installation.id, config.syncedThrough ?? new Date(config.authorizedAt ?? Date.now()).toISOString())
+    this.knownIssues = knownIssueIds(this.installation.id)
+    this.readyIssues.clear()
+    this.urgentIssues = new Set(pendingTaskEvents(this.installation.id).map(row => row.taskId))
     this.subscriptions = new LinearSubscriptions({ client: this.client, appUserId: identity.appUserId,
-      isTracked: id => this.tracked.has(id), onWake: () => this.schedule(250), onUnavailable: () => this.schedule(30000), onError: error => this.report(error, 'subscription') })
+      isTracked: id => this.knownIssues.has(id), onWake: id => {
+        if (id) { this.urgentIssues.add(id); wakeIssue(this.installation.id, id) }
+        this.schedule(250)
+      }, onUnavailable: () => this.schedule(30000), onError: error => this.report(error, 'subscription') })
     // First catch up, then subscribe. A failed initial sync fails connection
     // setup so the manager can retry without advertising a healthy installation.
     this.polling = this.poll()
@@ -91,23 +102,15 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     return uploadLinearAttachment(this.client, attachment, bytes, assertActive)
   }
   protected taskTools(taskId: string, assertActive: () => void) { return this.tasks.tools(taskId, assertActive) }
-  private trackedIssues(): Map<string, TrackedLinearIssue> {
-    const tracked = new Map<string, TrackedLinearIssue>()
-    const history = taskTrackingHistory(this.installation.id).map(row => ({ ...row, event: readTaskEvent(row) }))
-    const retired = new Map<string, string>()
-    for (const { event } of history) {
-      if (event.id.startsWith('retire:') && event.timestamp > (retired.get(event.taskId) ?? '')) retired.set(event.taskId, event.timestamp)
-    }
-    for (const { event, ...row } of history) {
-      if (event.timestamp <= (retired.get(row.taskId) ?? '')) continue
-      if (event.kind !== 'invocation' && event.kind !== 'status') continue
-      const item = tracked.get(row.taskId) ?? { since: event.timestamp, threads: new Set<string>() }
-      if (event.timestamp < item.since) item.since = event.timestamp
-      if (event.replyTarget.commentId) item.threads.add(event.replyTarget.commentId)
-      else if (row.publishedId) item.threads.add(row.publishedId)
-      tracked.set(row.taskId, item)
-    }
-    return tracked
+  protected canDispatchTask(taskId: string): boolean { return this.readyIssues.has(taskId) }
+  protected async acceptTaskEvent(event: TaskEvent): Promise<void> {
+    if (event.kind !== 'context' && !wasStopped(this.installation.id, event)) this.rememberTask(event)
+    await super.acceptTaskEvent(event)
+  }
+  private rememberTask(event: TaskEvent): void {
+    // Publish routing membership before any acknowledgement/network await.
+    rememberIssue(this.installation.id, event.taskId, event.timestamp)
+    this.knownIssues.add(event.taskId)
   }
   private schedule(delay: number): void {
     if (!this.connected) return
@@ -125,7 +128,8 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
         try { this.syncFailed(error) } catch { this.stopDelivery() }
       }).finally(() => {
         this.polling = undefined
-        const normalDelay = this.subscriptions?.isReady() ? 300000 : 30000
+        if (!this.connected) return
+        const normalDelay = this.urgentIssues.size || this.hasBacklog || !this.subscriptions?.isReady() ? 30000 : 300000
         this.schedule(this.failures ? Math.min(60000, 2000 * 2 ** Math.min(this.failures, 5)) : this.dirty ? 250 : normalDelay)
       })
     }, delay)
@@ -138,22 +142,20 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     const since = config.syncedThrough ?? new Date(config.authorizedAt ?? started).toISOString()
     this.dispatchSuspended = true
     try {
-      this.tracked = this.trackedIssues()
+      const tracked = dueIssues(this.installation.id, this.urgentIssues)
+      for (const id of tracked.keys()) this.urgentIssues.delete(id)
+      const observed = new Map<string, DirectIssue | null>()
       const actions = await collectDirectActions({ client: this.client, appUserId: config.identity.appUserId,
-        since, authorizedAt: new Date(config.authorizedAt ?? started).toISOString(), tracked: this.tracked, shouldTrackEvent: event => !findTaskEvent(this.installation.id, event.id) && !wasStopped(this.installation.id, event), runOnStatusChange: config.runOnStatusChange, signal: this.abort.signal })
+        since, authorizedAt: new Date(config.authorizedAt ?? started).toISOString(), tracked, startedAt: started,
+        onDiscover: event => { this.rememberTask(event); return getIssueTracking(this.installation.id, event.taskId) },
+        onIssueRead: (id, issue) => observed.set(id, issue),
+        shouldTrackEvent: event => !findTaskEvent(this.installation.id, event.id) && !wasStopped(this.installation.id, event), runOnStatusChange: config.runOnStatusChange, signal: this.abort.signal })
       if (!this.connected || getLinearConfig(this.installation.id).authorizationVersion !== config.authorizationVersion) return
       // Stops are applied before accepting backlog. Timestamp fencing allows new
       // mentions after a stop while suppressing withdrawn offline requests.
       for (const action of actions.filter(action => action.type === 'stop')) {
         if (!this.connected) return
-        if (action.type === 'stop') {
-          await this.stopTask(action.taskId, undefined, action.timestamp)
-          if (action.retire) {
-            enqueueTaskEvent(this.installation.id, { id: `retire:${action.taskId}:${action.timestamp}`, taskId: action.taskId,
-              interactionId: '', kind: 'context', timestamp: action.timestamp, text: 'Issue is no longer accessible', replyTarget: {}, payload: {} })
-            this.tracked.delete(action.taskId)
-          }
-        }
+        if (action.type === 'stop') await this.stopTask(action.taskId, undefined, action.timestamp)
       }
       for (const action of actions) {
         if (!this.connected) return
@@ -164,7 +166,12 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
       // one-minute overlap for concurrent writes and clock/replication differences.
       updateLinearConfig(this.installation.id, latest => ({ ...latest,
         syncedThrough: new Date(Math.max(Date.parse(since), started - 60000)).toISOString() }))
-      this.tracked = this.trackedIssues()
+      for (const [id, issue] of observed) {
+        checkpointIssue(this.installation.id, id, issue, started)
+        if (issue) this.readyIssues.add(id)
+        else this.readyIssues.delete(id)
+      }
+      this.hasBacklog = hasDueIssues(this.installation.id)
       this.failures = 0
       this.synced = true
     } finally { this.dispatchSuspended = false }

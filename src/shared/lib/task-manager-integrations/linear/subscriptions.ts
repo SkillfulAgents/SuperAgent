@@ -7,7 +7,7 @@ interface Options {
   client: LinearClient
   appUserId: string
   isTracked: (id: string) => boolean
-  onWake: () => void
+  onWake: (issueId?: string) => void
   onError: (error: Error) => void
   onUnavailable?: () => void
 }
@@ -95,7 +95,7 @@ export class LinearSubscriptions {
             const result = directWakeResponseSchema.parse(frame.payload)
             if (result.errors?.length) { this.operationUnavailable(frame.id); return }
             const data = result.data?.[frame.id]
-            if (data && (frame.id.startsWith('notification') || (frame.id === 'userUpdated' ? data.id === this.options.appUserId : this.options.isTracked(data.issue?.id ?? data.id ?? '')))) this.options.onWake()
+            if (data && (frame.id.startsWith('notification') || (frame.id === 'userUpdated' ? data.id === this.options.appUserId : this.options.isTracked(data.issue?.id ?? data.id ?? '')))) this.options.onWake(frame.id.startsWith('notification') || frame.id === 'userUpdated' ? undefined : data.issue?.id ?? data.id)
           }
         } catch {
           this.options.onError(new Error('Linear subscription returned an invalid response'))

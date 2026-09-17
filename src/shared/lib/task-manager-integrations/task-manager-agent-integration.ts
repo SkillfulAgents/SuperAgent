@@ -33,6 +33,7 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
     super()
     this.restoredRuns = new Set(pendingTaskEvents(installation.id).filter(row => row.status === 'running' || row.status === 'awaiting_input').map(row => row.id))
   }
+  protected canDispatchTask(_taskId: string): boolean { return true }
   protected abstract hydrateTask(taskId: string): Promise<TaskSnapshot>
   protected abstract publishTask(event: TaskEvent, publication: TaskPublication): Promise<string>
   /** Optional provider-native acknowledgement, after durable acceptance. */
@@ -92,7 +93,7 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
           await this.flushPublication(pending).catch(error => this.report(error, 'publish-retry'))
           continue
         }
-        if (pending.status !== 'queued') continue
+        if (pending.status !== 'queued' || !this.canDispatchTask(pending.taskId)) continue
         const session = getIntegrationSession(this.installation.id, pending.taskId)
         if (session && agentRegistry.get(this.installation.agentSlug).sessions.activity(session.sessionId) !== 'idle') continue
         const row = claimTaskEvent(pending.id)

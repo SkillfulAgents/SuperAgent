@@ -71,4 +71,25 @@ describe('Linear scoped task tools', () => {
     expect(fetchMock).toHaveBeenCalledOnce()
   })
 
+  it('retries a one-off lookup 5xx immediately before creating the same publication UUID', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ data: { comment: null } }))
+      .mockResolvedValueOnce(Response.json({ data: { commentCreate: { success: true, comment: { id: 'publication' } } } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const tasks = new LinearTasks(new LinearClient(undefined, 'token'))
+    expect(await tasks.publish({ id: 'event', taskId: 'issue', interactionId: '', kind: 'invocation', timestamp: '', text: '', payload: {}, replyTarget: {} },
+      { id: 'publication', kind: 'response', body: 'Done' })).toBe('publication')
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls.slice(0, 2).map(call => JSON.parse(call[1].body).variables)).toEqual([{ id: 'publication' }, { id: 'publication' }])
+  })
+  it('stops after one server-error retry without bypassing reconciliation', async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 503 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const tasks = new LinearTasks(new LinearClient(undefined, 'token'))
+    await expect(tasks.publish({ id: 'event', taskId: 'issue', interactionId: '', kind: 'invocation', timestamp: '', text: '', payload: {}, replyTarget: {} },
+      { id: 'publication', kind: 'response', body: 'Done' })).rejects.toThrow('503')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
 })

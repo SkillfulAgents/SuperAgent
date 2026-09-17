@@ -101,9 +101,3 @@ export function findTaskEvent(integrationId: string, externalEventId: string): S
 export function taskEventHistory(integrationId: string): StoredTaskEvent[] {
   return db.select().from(integrationTaskEvents).where(eq(integrationTaskEvents.integrationId, integrationId)).orderBy(asc(integrationTaskEvents.createdAt)).all()
 }
-
-export function taskTrackingHistory(integrationId: string) {
-  return db.select({ taskId: integrationTaskEvents.taskId, eventJson: integrationTaskEvents.eventJson,
-    publishedId: integrationTaskEvents.publishedId }).from(integrationTaskEvents)
-    .where(eq(integrationTaskEvents.integrationId, integrationId)).orderBy(asc(integrationTaskEvents.createdAt)).all()
-}

@@ -69,6 +69,7 @@ import {
   chatIntegrationSessions,
   chatIntegrationAccess,
   integrationTaskEvents,
+  linearIssueSync,
   slackThreadState,
   remoteMcpServers,
   agentRemoteMcps,
@@ -199,6 +200,7 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   // chat integrations (access + sessions + Slack state cascade from integrations)
   chatIntegrationAccess,
   integrationTaskEvents,
+  linearIssueSync,
   chatIntegrationSessions,
   slackThreadState,
   chatIntegrations,

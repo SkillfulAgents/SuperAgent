@@ -6,6 +6,7 @@ import { getLinearConfig, updateLinearConfig } from './store'
 export class LinearAuthorizationError extends Error {}
 export class LinearAccessError extends Error {}
 export class LinearNotFoundError extends LinearAccessError {}
+export class LinearServerError extends Error {}
 const tokenResponseSchema = z.object({
   access_token: z.string().min(1), refresh_token: z.string().min(1),
   expires_in: z.number().positive(), scope: z.string(),
@@ -78,6 +79,7 @@ export class LinearClient {
       if (!getLinearConfig(this.integrationId).tokens) updateChatIntegrationStatus(this.integrationId, 'disconnected', 'Linear authorization expired or was revoked. Reconnect the app.')
     }
     if (response.status === 403 || response.status === 404) throw new LinearAccessError('Linear issue is no longer accessible')
+    if (response.status >= 500) throw new LinearServerError(`Linear request failed (${response.status})`)
     if (!response.ok) throw new Error(`Linear request failed (${response.status})`)
     const result = z.object({ data: z.unknown().optional(), errors: z.array(z.object({ message: z.string().optional(), extensions: z.object({ code: z.string().optional() }).passthrough().optional() }).passthrough()).optional() }).parse(await response.json())
     if (result.errors?.some(error => ['NOT_FOUND', 'ENTITY_NOT_FOUND'].includes(error.extensions?.code ?? '') || (error.extensions?.code === 'INPUT_ERROR' && error.message?.startsWith('Entity not found:')))) throw new LinearNotFoundError('Linear entity was not found')

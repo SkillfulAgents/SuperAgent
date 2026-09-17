@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { IntegrationTool } from '../../agent-integrations/types'
 import type { TaskEvent, TaskPublication, TaskSnapshot } from '../types'
-import { LinearClient, LinearNotFoundError } from './client'
+import { LinearClient, LinearNotFoundError, LinearServerError } from './client'
 import { linearPublicationBody } from './attachments'
 import { reactionResultSchema } from './reaction-schema'
 
@@ -69,8 +69,14 @@ export class LinearTasks {
     // outcomes on retry with the same ID; never create a second comment UUID.
     let existing: { comment: { id: string; issue: { id: string } | null } | null } | undefined
     try {
-      existing = await client.request(`query($id:String!){comment(id:$id){id issue{id}}}`, { id: publication.id },
+      const lookup = () => client.request(`query($id:String!){comment(id:$id){id issue{id}}}`, { id: publication.id },
         z.object({ comment: z.object({ id: z.string(), issue: z.object({ id: z.string() }).nullable() }).nullable() }))
+      try { existing = await lookup() } catch (error) {
+        // One short server failure need not wait for the durable outbox tick.
+        // Still reconcile the same UUID; never skip the ownership check.
+        if (!(error instanceof LinearServerError)) throw error
+        existing = await lookup()
+      }
     } catch (error) { if (!(error instanceof LinearNotFoundError)) throw error }
     if (existing?.comment) {
       if (existing.comment.issue?.id !== event.taskId) throw new Error('Comment belongs to another issue')

@@ -13,7 +13,10 @@ export interface DirectSyncOptions {
   runOnStatusChange: boolean
   tracked: Map<string, TrackedLinearIssue>
   signal: AbortSignal
+  startedAt?: number
   shouldTrackEvent?: (event: TaskEvent) => boolean
+  onDiscover?: (event: TaskEvent) => TrackedLinearIssue | void
+  onIssueRead?: (taskId: string, issue: DirectIssue | null) => void
 }
 /** Read a complete recovery batch before dispatching any work: an offline
  * delegation and its later cancellation must be considered together. */
@@ -28,8 +31,9 @@ export async function collectDirectActions(options: DirectSyncOptions): Promise<
   for (const notification of notifications) {
     const event = notificationEvent(notification, appUserId)
     if (!event || event.timestamp < options.authorizedAt || options.shouldTrackEvent?.(event) === false) continue
+    const remembered = options.onDiscover?.(event)
     actions.push({ type: 'event', event })
-    const item = tracked.get(event.taskId) ?? { since: event.timestamp, threads: new Set<string>() }
+    const item = tracked.get(event.taskId) ?? remembered ?? { since: event.timestamp, syncedThrough: event.timestamp, threads: new Set<string>() }
     if (event.timestamp < item.since) item.since = event.timestamp
     if (event.replyTarget.commentId) item.threads.add(event.replyTarget.commentId)
     tracked.set(event.taskId, item)
@@ -38,14 +42,19 @@ export async function collectDirectActions(options: DirectSyncOptions): Promise<
   // never enter local storage. Chunk IDs to bound GraphQL complexity.
   const ids = [...tracked.keys()]
   for (let offset = 0; offset < ids.length; offset += 50) {
+    const batchIds = ids.slice(offset, offset + 50)
+    const commentsSince = batchIds.reduce((earliest, id) => {
+      const cursor = tracked.get(id)!.syncedThrough ?? since
+      return cursor < earliest ? cursor : earliest
+    }, tracked.get(batchIds[0])!.syncedThrough ?? since)
     const comments = await pages(async after => {
-      const result = await client.request(DIRECT_COMMENTS, { since, after, ids: ids.slice(offset, offset + 50) },
+      const result = await client.request(DIRECT_COMMENTS, { since: commentsSince, after, ids: batchIds },
         directCommentsResponseSchema, signal)
       return result.comments
     })
     for (const comment of comments) {
       const item = comment.issue && tracked.get(comment.issue.id)
-      if (!item) continue
+      if (!item || comment.updatedAt < (item.syncedThrough ?? since)) continue
       const event = commentEvent(comment, appUserId, item)
       if (event) actions.push({ type: 'event', event })
     }
@@ -62,23 +71,25 @@ export async function collectDirectActions(options: DirectSyncOptions): Promise<
   }
   for (const [id, item] of tracked) {
     const current = currentIssues.get(id)
+    options.onIssueRead?.(id, current ?? null)
     if (!current) {
-      actions.push({ type: 'stop', taskId: id, timestamp: new Date().toISOString(), retire: true })
+      actions.push({ type: 'stop', taskId: id, timestamp: item.inaccessibleSince ?? new Date(options.startedAt ?? Date.now()).toISOString() })
       continue
     }
     if (current.archivedAt || current.state.type === 'canceled') actions.push({ type: 'stop', taskId: id, timestamp: current.archivedAt ?? current.updatedAt })
-    if (current.updatedAt < since) continue
+    const issueSince = item.syncedThrough ?? since
+    if (current.updatedAt < issueSince) continue
     let after: string | null = null
     for (let page = 0; ; page++) {
       if (page >= 100) throw new Error('Linear history catch-up exceeded its page limit; checkpoint was not advanced')
       const result = await client.request(DIRECT_ISSUE_HISTORY, { id, after }, directHistoryResponseSchema, signal)
       const issue = result.issue
       for (const history of issue.history.nodes) {
-        if (history.updatedAt >= since && history.updatedAt >= item.since) actions.push(historyAction(history, issue, appUserId, options.runOnStatusChange))
+        if (history.updatedAt >= issueSince && history.updatedAt >= item.since) actions.push(historyAction(history, issue, appUserId, options.runOnStatusChange))
       }
       // Linear orders updatedAt descending. Stop once a complete page is older
       // than this checkpoint. Overlap is harmless because events have stable IDs.
-      if (!issue.history.pageInfo.hasNextPage || (issue.history.nodes.length > 0 && issue.history.nodes.every(row => row.updatedAt < since))) break
+      if (!issue.history.pageInfo.hasNextPage || (issue.history.nodes.length > 0 && issue.history.nodes.every(row => row.updatedAt < issueSince))) break
       after = nextCursor(issue.history.pageInfo.endCursor, after)
     }
   }

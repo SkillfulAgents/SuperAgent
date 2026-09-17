@@ -330,6 +330,13 @@
       "when": 1789590527958,
       "tag": "0046_task_manager_integrations",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1789603289009,
+      "tag": "0047_linear_issue_sync",
+      "breakpoints": true
     }
   ]
 }

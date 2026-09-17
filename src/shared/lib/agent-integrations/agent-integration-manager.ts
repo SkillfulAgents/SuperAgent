@@ -459,7 +459,7 @@ export class AgentIntegrationManager {
         if (event.type === 'input') this.enqueueMessage(integration.id, event)
         else if (event.type === 'cancel') {
           const session = getIntegrationSession(integration.id, event.externalId)
-          if (session && await agentRegistry.get(integration.agentSlug).messages.interrupt(session.sessionId)) event.onInterrupted?.()
+          if (session && (await agentRegistry.get(integration.agentSlug).messages.interrupt(session.sessionId)).interrupted) event.onInterrupted?.()
         }
         else if (event.type === 'response') await this.handleInteractiveResponse(integration.id, event)
         else if (this.isAllowed(integration.id, event.externalId)) this.preWarmContainer(integration.agentSlug)

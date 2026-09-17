@@ -178,6 +178,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   webhookTriggers: {},
   chatIntegrations: {},
   integrationTaskEvents: {},
+  linearIssueSync: {},
   chatIntegrationSessions: {},
   chatIntegrationAccess: {},
   slackThreadState: {},

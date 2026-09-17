@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { InterruptSessionResult } from '../container/types'
 import { AgentIntegration } from './agent-integration'
 import { AgentIntegrationManager } from './agent-integration-manager'
 import { AgentIntegrationRegistry } from './registry'
@@ -10,7 +11,7 @@ const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
   mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
   streams: new Map<string, (event: unknown) => void>(),
-  global: undefined as ((event: unknown) => void) | undefined, interrupt: vi.fn(),
+  global: undefined as ((event: unknown) => void) | undefined, interrupt: vi.fn<(sessionId: string) => Promise<InterruptSessionResult>>(),
   claim: vi.fn(), notify: vi.fn().mockResolvedValue(undefined),
   create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), register: vi.fn(), metadata: vi.fn(),
 }))
@@ -260,10 +261,10 @@ describe('AgentIntegration host contract', () => {
     expect(acknowledged).not.toHaveBeenCalled()
     await adapter.input('comment')
     await vi.waitFor(() => expect(state.mappings.size).toBe(1))
-    state.interrupt.mockResolvedValue(false)
+    state.interrupt.mockResolvedValue({ interrupted: false, processKept: true })
     await adapter.cancel(acknowledged)
     expect(acknowledged).not.toHaveBeenCalled()
-    state.interrupt.mockResolvedValue(true)
+    state.interrupt.mockResolvedValue({ interrupted: true, processKept: false })
     await adapter.cancel(acknowledged)
     expect(state.interrupt).toHaveBeenCalledWith('session-1')
     expect(acknowledged).toHaveBeenCalledOnce()

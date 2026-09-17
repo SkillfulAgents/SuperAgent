@@ -701,6 +701,19 @@ export const integrationTaskEvents = sqliteTable('integration_task_events', {
   workIndex: index('integration_task_events_work_idx').on(table.integrationId, table.taskId, table.status),
 }))
 
+// Per-issue recovery cursors and scheduling, independent of transcript retention.
+export const linearIssueSync = sqliteTable('linear_issue_sync', {
+  integrationId: text('integration_id').notNull().references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  taskId: text('task_id').notNull(),
+  firstSeenAt: text('first_seen_at').notNull(),
+  syncedThrough: text('synced_through').notNull(),
+  nextPollAt: integer('next_poll_at', { mode: 'timestamp_ms' }).notNull(),
+  inaccessibleSince: text('inaccessible_since'),
+}, table => ({
+  identity: primaryKey({ columns: [table.integrationId, table.taskId] }),
+  dueIndex: index('linear_issue_sync_due_idx').on(table.integrationId, table.nextPollAt),
+}))
+
 // Chat integration sessions - maps external chat IDs to agent sessions (supports multi-DM)
 export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', {
   id: text('id').primaryKey(),
