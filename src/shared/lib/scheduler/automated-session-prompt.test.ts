@@ -71,4 +71,10 @@ describe('buildAutomatedSessionPrompt', () => {
     expect(prompt).toContain('retry budget you have already spent stays spent')
     expect(prompt).not.toContain('drop these assumptions')
   })
+
+  it('routes the no-question, no-channel case to notify_user, once, while hidden', () => {
+    const prompt = buildAutomatedSessionPrompt('scheduled')
+    expect(prompt).toContain('call `mcp__user-input__notify_user` once')
+    expect(prompt).toContain('only works while this session is still hidden')
+  })
 })
