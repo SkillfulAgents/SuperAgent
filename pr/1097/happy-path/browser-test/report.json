@@ -1,23 +1,28 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title, and returned \"Example Domain\" as expected.",
+  "reason": "QA-20260917-002526-8qo8 agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the correct response within 9 seconds.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut home page with the agent sidebar visible.",
-    "Clicked the \"QA-20260916-235013-epb2\" agent in the sidebar — Successfully opened the agent configuration page.",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered in the input field and sent.",
-    "Waited up to 3 minutes for a response — Agent completed work within 7 seconds and returned the response.",
-    "Verified the response mentions \"Example Domain\" and took a screenshot — Screenshot confirms the agent's response: \"The page title is \"Example Domain\" (HTTP 200). Browser closed.\" The response correctly includes \"Example Domain\" as required."
+    "Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\"",
+    "Found \"QA-20260917-002526-8qo8\" agent in the sidebar by examining page content — Agent name found in sidebar list showing status \"Idle\"",
+    "Clicked on agent name to navigate to agent page — Successfully navigated to agent configuration page at http://localhost:47891/agents/qa-20260917-002526-8qo8-8m1rqq7zuo",
+    "Examined page structure to find message input interface — Discovered the page has a two-column layout with a form containing a contenteditable message composer div",
+    "Located the Send button in the message form with data-testid=\"home-send-button\" — Found button with aria-label \"Send message\"",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input field — Message entered in the contenteditable div",
+    "Clicked the Send button to submit the message — Page URL changed to session page: http://localhost:47891/agents/qa-20260917-002526-8qo8-8m1rqq7zuo/sessions/b19082d3-5705-466b-bc38-d02a71c7a249, page title changed to \"Browser Navigation and Page Title Test — QA-20260917-002526-8qo8\"",
+    "Waited for agent response (up to 3 minutes, checking every 5 seconds) — Agent response received in first check (after ~9 seconds)",
+    "Verified response contains \"Example Domain\" — Response text: \"The page title is \"Example Domain\" (HTTP 200). Browser closed.\" with metadata showing \"Worked for 9s · 3 tool calls · 148,202 tokens\"",
+    "Took screenshot of the response — Screenshot captured showing the complete chat interface with user message and agent response"
   ],
   "bugs": [],
-  "durationMs": 60023,
-  "sessionId": "ae293443-c20a-4158-b515-bf3039984613",
+  "durationMs": 683199,
+  "sessionId": "db7a4d4c-4aca-4666-93e1-ea5758382eb0",
   "cost": {
-    "inputTokens": 436,
-    "outputTokens": 9753,
-    "cacheCreationTokens": 78801,
-    "cacheReadTokens": 1386383,
+    "inputTokens": 1256,
+    "outputTokens": 47252,
+    "cacheCreationTokens": 126898,
+    "cacheReadTokens": 4753105,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.286341
+    "totalCostUsd": 0.871449
   }
 }
