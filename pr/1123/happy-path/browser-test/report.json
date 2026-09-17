@@ -1,17 +1,25 @@
 {
   "storyId": "browser-test",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: complete chat conversation and agent response.\n\n---\n\n**No bugs found.** All test steps executed successfully. The browser-use feature is functioning correctly — the agent successfully navigated to the URL, retrieved the correct page title, and reported the result with proper HTTP status indication.\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Verified that the agent can successfully open a browser, navigate to a specified URL, retrieve the page title, and report back with the correct information.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage with the agent list visible in the sidebar.",
+    "Located and clicked the \"QA-20260917-003105-mwrz\" agent in the sidebar — Successfully opened the agent page at /agents/qa-20260917-003105-mwrz-zguyn4kj1a with the chat interface displayed.",
+    "Typed message into input field — Successfully typed \"Open a browser and go to https://example.com. Tell me the page title.\" into the message input field.",
+    "Sent the message by clicking Send button — Successfully sent the message, creating a new session titled \"Browser Page Title Inspection Task\" and agent status changed to \"working\".",
+    "Waited for agent response up to 3 minutes — Agent completed the task in 8 seconds (well within the 3-minute timeout), made 3 tool calls, and consumed 148,081 tokens.",
+    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\" Agent status changed back to \"idle\" after completion.",
+    "Captured screenshot of final result — Screenshot shows the complete conversation with the agent's successful response visible on the screen."
+  ],
   "bugs": [],
-  "durationMs": 88744,
-  "sessionId": "411f4827-df92-4d9d-8525-02603ce91d76",
+  "durationMs": 80222,
+  "sessionId": "49395322-b790-47bf-9df5-884573c8d4c8",
   "cost": {
     "inputTokens": 340,
-    "outputTokens": 9346,
-    "cacheCreationTokens": 62843,
-    "cacheReadTokens": 913215,
+    "outputTokens": 9439,
+    "cacheCreationTokens": 63347,
+    "cacheReadTokens": 911482,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.216945
+    "totalCostUsd": 0.217867
   }
 }
