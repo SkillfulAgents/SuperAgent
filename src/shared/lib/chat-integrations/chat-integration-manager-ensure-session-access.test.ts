@@ -172,6 +172,7 @@ describe('ChatIntegrationManager.ensureSession — outbound access gate', () => 
     const actor = agentRegistry.get('test-agent')
     expect(actor.sessions.register).toHaveBeenCalledWith(sessionId, expect.stringContaining('Alice'))
     expect(actor.sessions.updateMetadata).toHaveBeenCalledWith(sessionId, {
+      isAgentIntegrationSession: true, agentIntegrationId: INT,
       isChatIntegrationSession: true, chatIntegrationId: INT, createdByUserId: 'owner-1',
     })
     expect(createChatIntegrationSession).toHaveBeenCalledWith({

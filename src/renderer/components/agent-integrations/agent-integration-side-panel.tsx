@@ -1,3 +1,5 @@
+import { isPublicLinearIntegration } from '@shared/lib/task-manager-integrations/linear/public'
+import { LinearConnectionSettings } from './linear-setup'
 import { IntegrationStatusCard } from './integration-status-card'
 import { IntegrationSettingsCard } from './integration-settings-card'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
@@ -16,6 +18,7 @@ export interface AgentIntegrationSidePanelProps {
 export function AgentIntegrationSidePanel({ integration, canManage, canManageAccess, connected }: AgentIntegrationSidePanelProps) {
   return (
     <div className="space-y-3">
+      {canManage && isPublicLinearIntegration(integration) && <LinearConnectionSettings integration={integration} />}
       {canManage && <IntegrationStatusCard integration={integration} connected={connected} />}
       {canManage && <IntegrationSettingsCard integration={integration} canManageAccess={canManageAccess} />}
       {canManage && (

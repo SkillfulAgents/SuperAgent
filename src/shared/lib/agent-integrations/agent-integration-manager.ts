@@ -361,6 +361,8 @@ export class AgentIntegrationManager {
     await actor.sessions.register(sessionId, policy.name)
     await actor.sessions.updateMetadata(sessionId, {
       ...policy.metadata,
+      isAgentIntegrationSession: true,
+      agentIntegrationId: integration.id,
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
     })
 
@@ -375,8 +377,9 @@ export class AgentIntegrationManager {
   }
 
   async pauseIntegration(id: string): Promise<void> {
-    await this.removeIntegration(id)
+    // Gate health-check reconnects before disconnect yields to provider cleanup.
     updateIntegrationStatus(id, 'paused')
+    await this.removeIntegration(id)
   }
 
   async resumeIntegration(id: string): Promise<void> {
@@ -454,6 +457,10 @@ export class AgentIntegrationManager {
     conn.eventUnsubscribe = connector.onEvent(async event => {
       try {
         if (event.type === 'input') this.enqueueMessage(integration.id, event)
+        else if (event.type === 'cancel') {
+          const session = getIntegrationSession(integration.id, event.externalId)
+          if (session && (await agentRegistry.get(integration.agentSlug).messages.interrupt(session.sessionId)).interrupted) event.onInterrupted?.()
+        }
         else if (event.type === 'response') await this.handleInteractiveResponse(integration.id, event)
         else if (this.isAllowed(integration.id, event.externalId)) this.preWarmContainer(integration.agentSlug)
       } catch (error) {
@@ -959,6 +966,8 @@ export class AgentIntegrationManager {
     await actor.sessions.register(sessionId, policy.name)
     await actor.sessions.updateMetadata(sessionId, {
       ...policy.metadata,
+      isAgentIntegrationSession: true,
+      agentIntegrationId: integration.id,
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
     })
 
@@ -1111,6 +1120,18 @@ export class AgentIntegrationManager {
     // Reviews are agent-scoped, so they never reach a session SSE stream —
     // the global registry event is the only place chat can see them. Same
     // wire the session cards come from, filtered to the review kinds.
+    if (data.type === 'user_request_resolved') {
+      const scope = data.scope as PendingUserInputRequest['scope'] | undefined
+      if (!scope?.agentSlug || typeof data.requestId !== 'string') return
+      if (data.kind !== 'proxy_review' && data.kind !== 'x_agent_review') return
+      for (const session of this.chatSessions.values()) {
+        if (session.integration.agentSlug !== scope.agentSlug || !session.sessionId) continue
+        if (scope.sessionId && scope.sessionId !== session.sessionId) continue
+        // The task family resumes only the persisted matching request ID.
+        await this.deliver(session.integration.id, session.chatId, { type: 'runtime', event: data }, session.sessionId)
+      }
+      return
+    }
     if (data.type !== 'user_request_created') return
     const request = data.request as PendingUserInputRequest | undefined
     if (!request) return
@@ -1135,7 +1156,7 @@ export class AgentIntegrationManager {
         if (chatSession) {
           const key = `${chatSession.integrationId}:${chatSession.externalId}`
           const managed = this.chatSessions.get(key)
-          if (managed) {
+          if (managed && (managed.connector.definition.family === 'chat' || request.scope.sessionId === managed.sessionId)) {
             await this.deliver(managed.integration.id, managed.chatId, { type: 'request', request }, sessionId)
             return
           }
@@ -1148,7 +1169,7 @@ export class AgentIntegrationManager {
 
     // Fallback: no sessionId match — send to first active session for this agent
     for (const [, conn] of this.connections) {
-      if (conn.integration.agentSlug !== agentSlug) continue
+      if (conn.integration.agentSlug !== agentSlug || conn.connector.definition.family !== 'chat') continue
       for (const [key, session] of this.chatSessions) {
         if (!key.startsWith(`${conn.integration.id}:`)) continue
         try {
@@ -1265,6 +1286,7 @@ export class AgentIntegrationManager {
         reportError(new Error(`Resolve input failed: ${resolveResponse.status}`), 'resolve-input', { integrationId, toolUseId, status: resolveResponse.status })
       } else {
         actor.inputs.complete(undefined, toolUseId, 'answered')
+        event.onAnswered?.()
       }
     } catch (err) {
       console.error(`[AgentIntegrationManager] Failed to handle interactive response:`, err)

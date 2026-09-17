@@ -13,12 +13,15 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
  *   Listening   — toggled on and the wire is up.
  *   Error       — toggled on but a connect attempt failed; retrying.
  */
-export type AgentIntegrationState = 'paused' | 'connecting' | 'working' | 'error'
+export type AgentIntegrationState = 'disconnected' | 'reconnect_needed' | 'paused' | 'connecting' | 'working' | 'error'
 
 export function deriveAgentIntegrationState(
   status: IntegrationStatus,
   connected?: boolean,
+  reconnectRequired = false,
 ): AgentIntegrationState {
+  if (reconnectRequired) return 'reconnect_needed'
+  if (status === 'disconnected') return 'disconnected'
   if (status === 'paused') return 'paused'
   if (status === 'error') return 'error'
   return connected ? 'working' : 'connecting'
@@ -38,6 +41,8 @@ export function isSettling(status: string, connected?: boolean): boolean {
 /** User-facing label per state. The one place these words live, so the Status
  *  card and the agent-home status tag can't drift apart. */
 export const AGENT_INTEGRATION_STATE_LABEL: Record<AgentIntegrationState, string> = {
+  disconnected: 'Setup required',
+  reconnect_needed: 'Reconnect needed',
   paused: 'Paused',
   connecting: 'Connecting…',
   working: 'Listening',
@@ -47,6 +52,8 @@ export const AGENT_INTEGRATION_STATE_LABEL: Record<AgentIntegrationState, string
 /** Pill colors per state, shared by the Status card tag and the agent-home tag
  *  so the two surfaces stay visually in sync. */
 export const AGENT_INTEGRATION_STATE_PILL: Record<AgentIntegrationState, string> = {
+  disconnected: 'bg-muted text-muted-foreground',
+  reconnect_needed: 'bg-amber-500/10 text-amber-700 dark:text-amber-400',
   paused: 'bg-muted text-muted-foreground',
   connecting: 'bg-green-500/10 text-green-700 dark:text-green-400',
   working: 'bg-green-500/10 text-green-700 dark:text-green-400',

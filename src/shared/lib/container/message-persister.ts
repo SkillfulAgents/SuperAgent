@@ -83,7 +83,7 @@ import {
   revertSessionActivity,
   type SessionActivityMark,
 } from '@shared/lib/services/session-summary-cache'
-import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
+import { isHiddenAutomatedSession, isAgentIntegrationSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -733,7 +733,7 @@ class MessagePersister {
         // Promote wins: its marker is set synchronously, this read may be stale.
         if (current.promotedToInteractive) return
         current.releaseStreamWhenIdle = isHiddenAutomatedSession(meta)
-        current.retainStateOnStreamRelease = Boolean(meta?.isChatIntegrationSession)
+        current.retainStateOnStreamRelease = isAgentIntegrationSession(meta)
         this.maybeReleaseSessionTransport(current)
       })
       .catch((error) => {

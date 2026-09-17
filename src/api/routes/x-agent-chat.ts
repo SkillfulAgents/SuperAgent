@@ -52,7 +52,7 @@ function getCallerSlug(c: { get: (k: 'callerSlug') => string }): string {
 xAgentChat.post('/list', async (c) => {
   try {
     const callerSlug = getCallerSlug(c)
-    const integrations = listChatIntegrations(callerSlug)
+    const integrations = listChatIntegrations(callerSlug).filter(row => row.provider !== 'linear')
 
     const result = await Promise.all(integrations.map(async (i) => {
       // Static (per-provider) lookups: label each chat with its conversation

@@ -126,7 +126,9 @@ vi.mock('@shared/lib/error-reporting', () => ({
   addErrorBreadcrumb: vi.fn(),
 }))
 
-import chatIntegrationsRouter from './chat-integrations'
+vi.mock('@shared/lib/agent-integrations/registry', () => ({ agentIntegrationRegistry: { cleanup: vi.fn() } }))
+
+import chatIntegrationsRouter from './agent-integration-crud'
 import { createChatIntegration, updateChatIntegration } from '@shared/lib/services/chat-integration-service'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 
