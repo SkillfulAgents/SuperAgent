@@ -8,7 +8,7 @@ const IDLE = { isActive: false, isAwaitingInput: false, isStreaming: false }
 
 const mockApiFetch = vi.fn()
 const mockDownloadBlob = vi.fn()
-const mockToastLoading = vi.fn(() => 'toast-raw-log')
+const mockToastLoading = vi.fn<(...args: unknown[]) => string>(() => 'toast-raw-log')
 const mockToastSuccess = vi.fn()
 const mockToastError = vi.fn()
 const mockToastDismiss = vi.fn()
