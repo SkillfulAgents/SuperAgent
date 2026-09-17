@@ -2,9 +2,9 @@
  * Chat Integration Service — CRUD operations for the chat_integrations table.
  */
 
-import { eq, and, inArray, count } from 'drizzle-orm'
+import { eq, and, inArray, count, ne, notExists, sql, type SQL } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { changesOf } from '@shared/lib/db/batch'
+import { changesOf, insertWhere } from '@shared/lib/db/batch'
 import { chatIntegrations, chatIntegrationSessions } from '@shared/lib/db/schema'
 import type { ChatIntegration, NewChatIntegration } from '@shared/lib/db/schema'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
@@ -53,15 +53,10 @@ export interface UpdateChatIntegrationParams {
 
 // ── Create ──────────────────────────────────────────────────────────────
 
+const MAX_UNIQUE_KEY_ATTEMPTS = 3
+
 export async function createChatIntegration(params: CreateChatIntegrationParams): Promise<string> {
   const newToken = extractUniqueKey(params.provider, params.config)
-  if (newToken) {
-    const duplicate = await findIntegrationByUniqueKey(params.provider, newToken)
-    if (duplicate) {
-      throw new DuplicateBotTokenError(duplicate.id, params.provider)
-    }
-  }
-
   const id = crypto.randomUUID()
   const now = new Date()
 
@@ -84,8 +79,40 @@ export async function createChatIntegration(params: CreateChatIntegrationParams)
     updatedAt: now,
   }
 
-  await db.insert(chatIntegrations).values(newRecord).run()
-  return id
+  if (!newToken) {
+    await db.insert(chatIntegrations).values(newRecord).run()
+    return id
+  }
+
+  // The uniqueness check is a condition on the insert itself, so two
+  // registrations racing with the same credential admit exactly one. Zero
+  // changes means the key is taken; the owner is looked up for the message.
+  for (let attempt = 0; attempt < MAX_UNIQUE_KEY_ATTEMPTS; attempt++) {
+    const inserted = await insertWhere(chatIntegrations, newRecord, noOtherIntegrationWith(params.provider, newToken)).run()
+    if (changesOf(inserted) > 0) return id
+    const duplicate = await findIntegrationByUniqueKey(params.provider, newToken)
+    if (duplicate) throw new DuplicateBotTokenError(duplicate.id, params.provider)
+    // The owner was deleted between the insert and the lookup: try again.
+  }
+  throw new Error('Chat integration changed concurrently; try again')
+}
+
+/**
+ * `NOT EXISTS` over the other integrations of `provider` whose config carries
+ * `key` in the unique-key field, evaluated by the driver inside the write that
+ * uses it. Rows whose config is not valid JSON are skipped, as
+ * findIntegrationByUniqueKey() skips them.
+ */
+function noOtherIntegrationWith(provider: string, key: string, excludeId?: string): SQL {
+  const field = provider === 'imessage' ? '$.phoneNumber' : '$.botToken'
+  const storedKey = sql`CASE WHEN json_valid(${chatIntegrations.config}) THEN json_extract(${chatIntegrations.config}, ${field}) END`
+  return notExists(
+    db.select({ one: sql`1` }).from(chatIntegrations).where(and(
+      eq(chatIntegrations.provider, provider as ChatIntegration['provider']),
+      sql`${storedKey} = ${key}`,
+      excludeId ? ne(chatIntegrations.id, excludeId) : undefined,
+    )),
+  )
 }
 
 /** Extract the unique key for duplicate detection: botToken for Telegram/Slack, phoneNumber for iMessage. */
@@ -245,6 +272,9 @@ export async function listChatIntegrationsByAgents(
 
 export async function updateChatIntegration(id: string, params: UpdateChatIntegrationParams): Promise<boolean> {
   let nextConfig: Record<string, unknown> | undefined
+  // Set when the PATCH moves the credential: the write is then conditional on
+  // no other integration owning the new one.
+  let uniqueKeyMove: { provider: string; key: string } | undefined
 
   // Guard against a PATCH moving a token to one that's already owned by
   // another integration — would re-create SUP-150's duplicate-poller scenario.
@@ -261,10 +291,7 @@ export async function updateChatIntegration(id: string, params: UpdateChatIntegr
     // Settings-only edits preserve the same unique key. Avoid re-checking those
     // against legacy duplicate rows that predate the create-time guard.
     if (newToken && newToken !== currentToken) {
-      const duplicate = await findIntegrationByUniqueKey(current.provider, newToken, id)
-      if (duplicate) {
-        throw new DuplicateBotTokenError(duplicate.id, current.provider)
-      }
+      uniqueKeyMove = { provider: current.provider, key: newToken }
     }
   }
 
@@ -286,10 +313,19 @@ export async function updateChatIntegration(id: string, params: UpdateChatIntegr
 
   const result = await db.update(chatIntegrations)
     .set(updates)
-    .where(eq(chatIntegrations.id, id))
+    .where(and(
+      eq(chatIntegrations.id, id),
+      uniqueKeyMove ? noOtherIntegrationWith(uniqueKeyMove.provider, uniqueKeyMove.key, id) : undefined,
+    ))
     .run()
+  if (changesOf(result) > 0) return true
+  if (!uniqueKeyMove) return false
 
-  return changesOf(result) > 0
+  // Nothing changed: the row is gone, or another integration owns the new
+  // credential. Tell them apart for the caller.
+  if (!(await getChatIntegration(id))) return false
+  const duplicate = await findIntegrationByUniqueKey(uniqueKeyMove.provider, uniqueKeyMove.key, id)
+  throw new DuplicateBotTokenError(duplicate?.id ?? 'another integration', uniqueKeyMove.provider)
 }
 
 export async function updateChatIntegrationStatus(

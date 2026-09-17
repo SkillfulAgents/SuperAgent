@@ -557,22 +557,29 @@ export class AgentIntegrationManager {
     session.sessionId = sessionId
     session.context = { ...session.context, sessionId }
     const actor = agentRegistry.get(agentSlug)
-    session.sseUnsubscribe = actor.messages.subscribe(sessionId, async (event: unknown) => {
-      if ((await this.isAllowed(integrationId, chatId))) session.connector.observeSession(session.context)
-      this.enqueueSSEEvent(integrationId, chatId, event, sessionId)
+    session.sseUnsubscribe = actor.messages.subscribe(sessionId, (event: unknown) => {
+      this.enqueueSSEEvent(integrationId, chatId, event, sessionId, session)
     })
     session.connector.observeSession(session.context)
   }
 
-  private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string): void {
+  // `observe` is the chat session to mark live before the event is handled.
+  // The access check behind it is a database read, so it runs on the queue:
+  // the broadcaster's callback stays synchronous, events keep the order they
+  // arrived in, and a failed check lands in the error boundary below instead
+  // of escaping as an unhandled rejection.
+  private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string, observe?: ManagedSession): void {
     const queueKey = `sse:${integrationId}:${chatId}`
     const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
-    const next = current.then(() =>
-      this.handleSSEEvent(integrationId, chatId, event, sessionId).catch((err) => {
+    const next = current.then(async () => {
+      try {
+        if (observe && (await this.isAllowed(integrationId, chatId))) observe.connector.observeSession(observe.context)
+        await this.handleSSEEvent(integrationId, chatId, event, sessionId)
+      } catch (err) {
         console.error(`[AgentIntegrationManager] Error handling SSE event:`, err)
         reportError(err, 'sse-event', { integrationId, chatId, eventType: (event as any)?.type })
-      })
-    )
+      }
+    })
     this.messageQueues.set(queueKey, next)
     this.scheduleQueueEviction(queueKey, next)
   }

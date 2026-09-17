@@ -71,6 +71,20 @@ describe('chat-integration-service', () => {
       expect(rows).toHaveLength(1)
     })
 
+    it('admits exactly one of two registrations racing with the same token', async () => {
+      // The duplicate check is a condition on the insert itself: two
+      // registrations that both read "no owner" before either writes cannot
+      // both land.
+      const results = await Promise.allSettled([
+        createChatIntegration({ agentSlug: 'agent-a', provider: 'telegram', config: { botToken: 'raced-token' } }),
+        createChatIntegration({ agentSlug: 'agent-b', provider: 'telegram', config: { botToken: 'raced-token' } }),
+      ])
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+      const rejected = results.find((result) => result.status === 'rejected') as PromiseRejectedResult
+      expect(rejected.reason).toBeInstanceOf(DuplicateBotTokenError)
+      expect(await testDb.select().from(chatIntegrations).all()).toHaveLength(1)
+    })
+
     it('allows different tokens for the same agent', async () => {
       await createChatIntegration({
         agentSlug: 'agent-a',
@@ -317,6 +331,21 @@ describe('chat-integration-service', () => {
       } catch (err) {
         expect((err as DuplicateBotTokenError).existingIntegrationId).toBe(firstId)
       }
+    })
+
+    it('admits exactly one of two PATCHes racing onto the same new token', async () => {
+      const first = await createChatIntegration({ agentSlug: 'agent-a', provider: 'telegram', config: { botToken: 'token-a' } })
+      const second = await createChatIntegration({ agentSlug: 'agent-b', provider: 'telegram', config: { botToken: 'token-b' } })
+      const results = await Promise.allSettled([
+        updateChatIntegration(first, { config: { botToken: 'token-moved' } }),
+        updateChatIntegration(second, { config: { botToken: 'token-moved' } }),
+      ])
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+      const rejected = results.find((result) => result.status === 'rejected') as PromiseRejectedResult
+      expect(rejected.reason).toBeInstanceOf(DuplicateBotTokenError)
+      const moved = (await testDb.select().from(chatIntegrations).all())
+        .filter((row) => JSON.parse(row.config).botToken === 'token-moved')
+      expect(moved).toHaveLength(1)
     })
 
     it('allows updating an integration to keep the same token (self-exclusion)', async () => {

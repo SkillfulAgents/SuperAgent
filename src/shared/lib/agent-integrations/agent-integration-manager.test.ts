@@ -137,6 +137,47 @@ describe('AgentIntegration host contract', () => {
     expect(adapter.outputs.some(item => item.output.type === 'runtime' && (item.output.event as { type: string }).type === 'stream_end')).toBe(true)
   })
 
+  it('handles stream events in arrival order even when the access check is slow', async () => {
+    await manager.start()
+    await adapter.input('comment-one')
+    await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
+    const handled = vi.spyOn(manager as unknown as { handleSSEEvent: (...args: unknown[]) => Promise<void> }, 'handleSSEEvent')
+    // The access check is a database read; a slow one must not let a later
+    // event overtake the one it guards.
+    let release!: () => void
+    vi.spyOn(adapter, 'isAllowed').mockImplementationOnce(() => new Promise<boolean>((resolve) => { release = () => resolve(true) }))
+    const emit = state.streams.get('session-1')!
+    emit({ type: 'stream_end' })
+    emit({ type: 'session_idle' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(handled).not.toHaveBeenCalled()
+    release()
+    await vi.waitFor(() => expect(handled).toHaveBeenCalledTimes(2))
+    expect(handled.mock.calls.map((call) => (call[2] as { type: string }).type)).toEqual(['stream_end', 'session_idle'])
+  })
+
+  it('keeps a failing access check inside the queue instead of rejecting the broadcaster', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
+      const handled = vi.spyOn(manager as unknown as { handleSSEEvent: (...args: unknown[]) => Promise<void> }, 'handleSSEEvent')
+      vi.spyOn(adapter, 'isAllowed').mockRejectedValueOnce(new Error('acl unavailable'))
+      const emit = state.streams.get('session-1')!
+      emit({ type: 'stream_end' }) // its check fails: reported, not thrown
+      emit({ type: 'session_idle' }) // the queue keeps going
+      await vi.waitFor(() => expect(handled).toHaveBeenCalledTimes(1))
+      expect((handled.mock.calls[0][2] as { type: string }).type).toBe('session_idle')
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
   it('blocks input before preparation or runtime startup and blocks output after revocation', async () => {
     await manager.start()
     adapter.allowed = false
