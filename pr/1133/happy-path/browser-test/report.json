@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser-use feature successfully executed: agent opened a browser, navigated to https://example.com, and returned the page title \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing the home screen with agent list in sidebar",
+    "Found and clicked on \"QA-20260917-231558-pds5\" agent in the sidebar — Agent page opened with chat interface ready",
+    "Clicked on message input textbox — Input field focused and ready for text entry",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" and sent with Ctrl+Enter — Message was sent and new session created with URL containing session ID 14653f4d-f01b-4687-845f-f2425183c264",
+    "Waited for agent response — Agent completed task in 7 seconds with 3 tool calls and 148,081 tokens",
+    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\"",
+    "Took screenshot documenting the successful response — Screenshot captured showing the user message and agent's response with the correct page title"
+  ],
+  "bugs": [],
+  "durationMs": 228405,
+  "sessionId": "d11eb4aa-652a-4615-b12c-4a5f9a007a8c",
+  "cost": {
+    "inputTokens": 260,
+    "outputTokens": 7798,
+    "cacheCreationTokens": 55643,
+    "cacheReadTokens": 665080,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.175312
+  }
+}
