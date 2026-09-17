@@ -1138,7 +1138,7 @@ class MessagePersister {
   ): void {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state) return
-    userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome)
+    userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome, agentSlug)
     this.syncSessionAwaiting(agentSlug, sessionId)
   }
 
@@ -1157,12 +1157,12 @@ class MessagePersister {
     toolUseId: string,
     outcome: UserInputRequestOutcome,
   ): void {
-    const scope = userInputRequestManager.getOpenRequest(toolUseId)?.scope
+    const scope = userInputRequestManager.getOpenRequest(toolUseId, agentSlug)?.scope
     const scopeSessionId = sessionId ?? scope?.sessionId
     const scopeAgentSlug = agentSlug ?? scope?.agentSlug
     if (!scopeSessionId || !scopeAgentSlug) return
     const state = this.streamingStates.get(sessionKeyOf(scopeAgentSlug, scopeSessionId))
-    const settled = userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome)
+    const settled = userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome, scopeAgentSlug)
     if (state && settled) {
       state.settledInputRequests.set(toolUseId, outcome)
     }
@@ -1188,7 +1188,7 @@ class MessagePersister {
     toolUseId: string,
     outcome: UserInputRequestOutcome = 'answered',
   ): void {
-    userInputRequestManager.resolveIfInStore(toolUseId, 'computer_use', outcome)
+    userInputRequestManager.resolveIfInStore(toolUseId, 'computer_use', outcome, agentSlug)
     this.syncSessionAwaiting(agentSlug, sessionId)
   }
 
@@ -1235,7 +1235,7 @@ class MessagePersister {
     // Clear the host-side computer_use bookkeeping explicitly — session_idle only clears
     // the stream store, so a leftover entry would replay a phantom approval card on reconnect.
     for (const id of computerUseIds) {
-      userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
+      userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded', agentSlug)
     }
 
     // Cleanup-reject each pending request on the CONTAINER: the query is already aborted, so the
@@ -1936,7 +1936,7 @@ class MessagePersister {
     // payload-less entry before the real delivery lands, and that delivery must
     // go through to upgrade the registry entry (register() replaces recovered
     // synthetics; clients never got a renderable event for the stub).
-    const existing = userInputRequestManager.getOpenRequest(toolUseId)
+    const existing = userInputRequestManager.getOpenRequest(toolUseId, agentSlug)
     if (existing && isReplayableUserInputRequest(existing)) return
 
     if (toolName === 'AskUserQuestion') {
@@ -1996,7 +1996,7 @@ class MessagePersister {
     }
     for (const { toolUseId, toolName } of unresolved) {
       const kind = MessagePersister.REQUEST_KIND_BY_TOOL_NAME[toolName]
-      if (!kind || userInputRequestManager.getOpenRequest(toolUseId)) continue
+      if (!kind || userInputRequestManager.getOpenRequest(toolUseId, agentSlug)) continue
       this.registerStreamRequest(
         sessionId,
         kind,
@@ -2154,7 +2154,7 @@ class MessagePersister {
           // read them as a live wait and flag the fresh turn as awaiting.
           // (Idle keeps them so a still-parked approval survives a reconnect.)
           for (const id of userInputRequestManager.getStoreIdsForSession(agentSlug, sessionId, 'computer_use')) {
-            userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
+            userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded', agentSlug)
           }
         }
       }
@@ -2968,7 +2968,7 @@ class MessagePersister {
         // aborted). No decision can land anymore: close the approval card
         // everywhere instead of leaving it dangling until reconnect cleanup.
         if (typeof content.toolUseId === 'string') {
-          if (userInputRequestManager.getOpenRequest(content.toolUseId)) {
+          if (userInputRequestManager.getOpenRequest(content.toolUseId, agentSlug)) {
             this.completeCapabilityReview(agentSlug, sessionId, content.toolUseId, 'cancelled')
           } else {
             // No card yet — handleCapabilityReviewTool is still awaiting its
@@ -3632,7 +3632,7 @@ class MessagePersister {
     parentToolId: string,
   ): void {
     const { agentSlug } = state
-    const orphaned = userInputRequestManager.resolveRequestsByParent(parentToolId, 'invalidated')
+    const orphaned = userInputRequestManager.resolveRequestsByParent(parentToolId, 'invalidated', agentSlug)
     if (orphaned.length === 0) return
     for (const request of orphaned) {
       if (state.agentSlug) {
@@ -5724,7 +5724,7 @@ ${continuation}`
           if (typeof context.url !== 'string') return
           userInputRequestManager.enrichOpenRequestPayload(toolUseId, 'browser_input', {
             browserContext: { url: context.url, capturedAt: Date.now() },
-          })
+          }, agentSlug)
         }).catch((error: unknown) => {
           console.warn(
             '[MessagePersister] Failed to capture browser input context:',
@@ -6112,6 +6112,7 @@ ${continuation}`
         block.tool_use_id,
         'stream',
         block.is_error ? 'declined' : 'answered',
+        agentSlug,
       )
       if (!settled) continue
       // Same broadcast the main path emits — the resolving tab already removed
@@ -6145,6 +6146,7 @@ ${continuation}`
               block.tool_use_id,
               'stream',
               block.is_error ? 'declined' : 'answered',
+              agentSlug,
             )
           }
 

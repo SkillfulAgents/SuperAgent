@@ -10,6 +10,10 @@ vi.mock('@shared/lib/container/message-persister', () => ({
 
 import { MCP_REAUTH_TIMEOUT_MS, McpReauthManager } from './mcp-reauth-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import {
+  attachInMemoryAgentState,
+  type InMemoryAgentStateDirectory,
+} from '@shared/lib/agent-actor/testing/in-memory-agent-state'
 import { isReauthDismissed } from './reauth-dismissal'
 import { getReplacementMcpId } from './mcp-replacement'
 
@@ -22,17 +26,23 @@ const DETAILS = {
 
 describe('McpReauthManager', () => {
   let manager: McpReauthManager
+  let agents: InMemoryAgentStateDirectory
 
   beforeEach(() => {
     vi.useFakeTimers()
-    userInputRequestManager.reset()
     mockSyncAgentSessionsAwaiting.mockReset()
+    // The waits live on the agents' actors; the manager under test routes to
+    // them. Build the actors' stores in memory, attached the way the registry
+    // attaches the real handles.
+    agents = attachInMemoryAgentState({ syncAwaiting: (slug) => mockSyncAgentSessionsAwaiting(slug) })
     manager = new McpReauthManager()
+    manager.attachAgents(agents.pick((state) => state.mcpReauth))
+    userInputRequestManager.reset()
   })
 
   afterEach(() => {
     manager.rejectAll()
-    userInputRequestManager.reset()
+    agents.reset()
     vi.useRealTimers()
   })
 

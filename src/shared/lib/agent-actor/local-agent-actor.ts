@@ -2,6 +2,7 @@ import type { containerHost } from '@shared/lib/container/container-host'
 import type { messagePersister } from '@shared/lib/container/message-persister'
 import type { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import type { reviewManager } from '@shared/lib/proxy/review-manager'
+import type { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import type { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import type { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import type * as sessionService from '@shared/lib/services/session-service'
@@ -15,12 +16,13 @@ import type {
   updateRemoteMcpEnvironment,
 } from '@shared/lib/container/connection-runtime-sync'
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
-import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import { WebSocket } from 'ws'
 import { createMemoryOps } from './memory-ops'
+import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
 import { transcriptPath, type SessionStore } from './session-store'
 import type {
+  AccountReauthOps,
   AgentActor,
   AgentSlug,
   ComputerUseOps,
@@ -44,12 +46,17 @@ import type {
  * construction, so a dependency is only touched by the call that uses it.
  * The container host hands out this agent's `ContainerRuntime`, which holds
  * the client and every cached fact about the container.
+ *
+ * The user-input, review, re-auth and computer-use managers are routers over
+ * state the actors own: the actor reports its request transitions to the
+ * first, and the registry hands all of them the way to every actor's stores.
  */
 export interface LocalActorDeps {
   readonly containerHost: typeof containerHost
   readonly messagePersister: typeof messagePersister
   readonly userInputRequestManager: typeof userInputRequestManager
   readonly reviewManager: typeof reviewManager
+  readonly accountReauthManager: typeof accountReauthManager
   readonly computerUsePermissionManager: typeof computerUsePermissionManager
   readonly mcpReauthManager: typeof mcpReauthManager
   readonly sessionService: typeof sessionService
@@ -68,9 +75,9 @@ export interface LocalActorDeps {
 /**
  * An agent whose container and files are managed by this process.
  *
- * Runtime methods delegate with the agent's store or slug. Storage
- * capabilities such as memories compose operations over this actor's files.
- * The ops are
+ * Runtime methods delegate with the agent's store or slug, or with the
+ * actor's own stores where the state is the actor's. Storage capabilities
+ * such as memories compose operations over this actor's files. The ops are
  * closures rather than class methods so a caller may destructure them
  * (`const { send } = actor.messages`).
  */
@@ -85,8 +92,19 @@ export class LocalAgentActor implements AgentActor {
   readonly config: ConfigOps
   /** Where this agent's sessions are: the files, the config documents, the transcripts directory. */
   readonly store: SessionStore
+  /**
+   * What this agent holds in memory: its pending user-input requests, the
+   * reviews and re-auth waits parked on them, its computer-use grants.
+   * Created with the handle and released by `dispose`.
+   */
+  readonly state: AgentState
 
-  constructor(readonly slug: AgentSlug, deps: LocalActorDeps) {
+  /**
+   * `state` is given when the handle is wrapping state that outlived an
+   * earlier handle for the slug (the registry rebuilding after a dev-server
+   * reload); otherwise the handle starts with none.
+   */
+  constructor(readonly slug: AgentSlug, deps: LocalActorDeps, state?: AgentState) {
     // Every write to a session goes through the store, so this is where the
     // container's idle clock learns of session activity — the persister's
     // stream frames, the transcript appends and `sessions.recordActivity`
@@ -94,14 +112,26 @@ export class LocalAgentActor implements AgentActor {
     this.store = createLocalSessionStore(slug, deps, {
       onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
     })
+    this.state =
+      state ??
+      createAgentState(slug, {
+        transitions: deps.userInputRequestManager,
+        // A test double of the persister may not carry the projection; the real one does.
+        syncAwaiting: () => deps.messagePersister.syncAgentSessionsAwaiting?.(slug),
+      })
     this.files = this.store.files
     this.memories = createMemoryOps(this.files)
     this.config = this.store.config
     this.container = createContainerOps(slug, deps)
     this.sessions = createSessionOps(slug, this.store, deps)
     this.messages = createMessageOps(slug, this.store, deps)
-    this.inputs = createInputOps(slug, deps)
+    this.inputs = createInputOps(slug, this.state, deps)
     this.usage = createUsageOps(this.store, deps)
+  }
+
+  /** The registry is dropping this handle: release everything it owns. */
+  dispose(): void {
+    releaseAgentState(this.state)
   }
 }
 
@@ -253,29 +283,19 @@ function createMessageOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
   }
 }
 
-function createInputOps(slug: AgentSlug, deps: LocalActorDeps): InputOps {
-  const manager = () => deps.userInputRequestManager
-  /** The open request when this agent owns it. Another agent's request is not found. */
-  const owned = (id: string): PendingUserInputRequest | null => {
-    const request = manager().getOpenRequest(id)
-    return request && request.scope.agentSlug === slug ? request : null
-  }
+function createInputOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps): InputOps {
+  const requests = state.inputRequests
   return {
-    register: (input) => manager().register({ ...input, scope: { ...input.scope, agentSlug: slug } }),
-    open: (sessionId) => manager().getOpenRequestsForSession(slug, sessionId),
-    openForAgent: () => manager().getOpenRequestsForAgent(slug),
-    get: (id) => owned(id),
-    claim: (id) => (owned(id) ? manager().claimRequest(id) : null),
-    releaseClaim: (id) => {
-      if (owned(id)) manager().releaseClaim(id)
-    },
-    resolve: (id, outcome) => (owned(id) ? manager().resolve(id, outcome) : null),
-    recentResolution: (id) => {
-      const settled = manager().getRecentResolution(id)
-      return settled && settled.scope.agentSlug === slug ? settled : undefined
-    },
-    snapshot: (...args) => manager().getSnapshotForScope(slug, ...args),
-    enrich: (id, kind, enrichment) => (owned(id) ? manager().enrichOpenRequestPayload(id, kind, enrichment) : false),
+    register: (input) => requests.register(input),
+    open: (sessionId) => requests.getOpenRequestsForSession(sessionId),
+    openForAgent: () => requests.getOpenRequests(),
+    get: (id) => requests.getOpenRequest(id),
+    claim: (id) => requests.claimRequest(id),
+    releaseClaim: (id) => requests.releaseClaim(id),
+    resolve: (id, outcome) => requests.resolve(id, outcome),
+    recentResolution: (id) => requests.getRecentResolution(id),
+    snapshot: (sessionId) => requests.getSnapshotForScope(sessionId),
+    enrich: (id, kind, enrichment) => requests.enrichOpenRequestPayload(id, kind, enrichment),
 
     complete: (sessionId, toolUseId, outcome) =>
       deps.messagePersister.completeInputRequest(slug, sessionId, toolUseId, outcome),
@@ -284,10 +304,18 @@ function createInputOps(slug: AgentSlug, deps: LocalActorDeps): InputOps {
     settled: (sessionId) => deps.messagePersister.getSettledInputRequests(slug, sessionId),
 
     reviews: createReviewOps(slug, deps),
-    computerUse: createComputerUseOps(slug, deps),
+    computerUse: createComputerUseOps(slug, state, deps),
     mcpReauth: createMcpReauthOps(slug, deps),
+    accountReauth: createAccountReauthOps(slug, deps),
   }
 }
+
+// The review and re-auth ops go through their routers rather than the store
+// the actor holds. The router is the process-wide API for these (the proxy
+// routes, the mock container client and startup call it with a slug), and it
+// dispatches straight back to this actor's store; the actor's ops are the
+// agent-scoped face of the same API. The store is still the actor's: it is
+// created with the handle and released with it.
 
 function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   return {
@@ -304,14 +332,15 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   }
 }
 
-function createComputerUseOps(slug: AgentSlug, deps: LocalActorDeps): ComputerUseOps {
+function createComputerUseOps(slug: AgentSlug, state: AgentState, deps: LocalActorDeps): ComputerUseOps {
+  const computerUse = state.computerUse
   return {
-    grabbedApp: () => deps.computerUsePermissionManager.getGrabbedApp(slug),
-    setGrabbedApp: (appName) => deps.computerUsePermissionManager.setGrabbedApp(slug, appName),
-    clearGrabbedApp: () => deps.computerUsePermissionManager.clearGrabbedApp(slug),
-    grant: (...args) => deps.computerUsePermissionManager.grantPermission(slug, ...args),
-    consumeOnce: (...args) => deps.computerUsePermissionManager.consumeOnceGrant(slug, ...args),
-    revokeGrant: (...args) => deps.computerUsePermissionManager.revokeGrant(slug, ...args),
+    grabbedApp: () => computerUse.grabbed(),
+    setGrabbedApp: (appName) => computerUse.setGrabbed(appName),
+    clearGrabbedApp: () => computerUse.clearGrabbed(),
+    grant: (...args) => computerUse.grant(...args),
+    consumeOnce: (...args) => computerUse.consumeOnce(...args),
+    revokeGrant: (...args) => computerUse.revoke(...args),
     clearPending: (...args) => deps.messagePersister.clearPendingComputerUseRequest(slug, ...args),
   }
 }
@@ -327,5 +356,15 @@ function createMcpReauthOps(slug: AgentSlug, deps: LocalActorDeps): McpReauthOps
     request: (details, ...rest) => deps.mcpReauthManager.requestReauth({ ...details, agentSlug: slug }, ...rest),
     dismiss: (entryId, ...rest) => deps.mcpReauthManager.dismiss(entryId, slug, ...rest),
     replace: (entryId, replacementMcpId) => deps.mcpReauthManager.replaceMcp(entryId, slug, replacementMcpId),
+  }
+}
+
+function createAccountReauthOps(slug: AgentSlug, deps: LocalActorDeps): AccountReauthOps {
+  return {
+    request: (details, ...rest) =>
+      deps.accountReauthManager.requestReauth({ ...details, agentSlug: slug }, ...rest),
+    dismiss: (entryId, ...rest) => deps.accountReauthManager.dismiss(entryId, slug, ...rest),
+    replace: (entryId, replacementAccountId) =>
+      deps.accountReauthManager.replaceAccount(entryId, slug, replacementAccountId),
   }
 }

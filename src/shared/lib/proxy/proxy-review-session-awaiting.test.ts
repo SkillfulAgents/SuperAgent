@@ -10,8 +10,13 @@ import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-m
 
 // The registry attaches the real stores; these tests drive the persister alone.
 messagePersister.attachSessionStores(createInMemorySessionStore)
+import { attachInMemoryAgentState } from '@shared/lib/agent-actor/testing/in-memory-agent-state'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { ReviewManager } from './review-manager'
+
+// Likewise the actors' in-memory stores (requests, reviews), which the
+// persister and the review manager route to.
+const agents = attachInMemoryAgentState({ syncAwaiting: (slug) => messagePersister.syncAgentSessionsAwaiting(slug) })
 
 const SESSION_ID = 'proxy-review-awaiting-session'
 const AGENT_SLUG = 'proxy-review-awaiting-agent'
@@ -34,11 +39,13 @@ describe('proxy review session awaiting', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     manager = new ReviewManager()
+    manager.attachAgents(agents.pick((state) => state.reviews))
     messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
   })
 
   afterEach(() => {
     manager.rejectAll()
+    agents.reset()
     vi.useRealTimers()
   })
 

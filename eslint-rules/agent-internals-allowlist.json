@@ -1,7 +1,4 @@
 {
-  "perf/harness.ts": [
-    "@shared/lib/services/session-summary-cache"
-  ],
   "src/api/routes/agent-bootstrap.ts": [
     "@shared/lib/container/message-persister"
   ],
@@ -10,6 +7,9 @@
   ],
   "src/api/routes/browser.ts": [
     "@shared/lib/container/message-persister"
+  ],
+  "src/api/routes/connected-accounts.ts": [
+    "@shared/lib/proxy/account-reauth-manager"
   ],
   "src/api/routes/mcp-proxy.ts": [
     "@shared/lib/proxy/mcp-reauth-manager"
@@ -32,9 +32,6 @@
   "src/shared/lib/notifications/channels/client-broadcast-channel.ts": [
     "@shared/lib/container/message-persister"
   ],
-  "src/shared/lib/proxy/account-reauth-manager.ts": [
-    "@shared/lib/user-input/request-manager"
-  ],
   "src/shared/lib/scheduler/platform-notifications-manager.ts": [
     "@shared/lib/container/message-persister"
   ],
@@ -48,6 +45,7 @@
     "@shared/lib/container/message-persister"
   ],
   "src/shared/lib/startup.ts": [
+    "@shared/lib/proxy/account-reauth-manager",
     "@shared/lib/proxy/mcp-reauth-manager",
     "@shared/lib/proxy/review-manager"
   ]

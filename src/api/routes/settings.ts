@@ -47,7 +47,7 @@ import {
   getWebProvider,
   resolveEffectiveWebVendor,
 } from '@shared/lib/web-provider'
-import { agentRegistry, containerHost } from '@shared/lib/agent-actor'
+import { containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, getRunnerDisplayName, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
@@ -538,9 +538,11 @@ settings.put(
         import('@shared/lib/auth/index').then(({ resetAuth }) => resetAuth()).catch(() => {})
       }
 
-      // If container runner changed, clear cached clients so new ones use the updated runner
+      // If container runner changed, forget the runtimes so the next client is
+      // built for the new runner. The actors keep what they own (pending
+      // inputs, reviews, grants): a runner change is not an agent going away.
       if (newSettings.container.containerRunner !== currentSettings.container.containerRunner) {
-        agentRegistry.evictAll()
+        containerHost.clearRuntimes()
       }
 
       // If image or runner changed, re-check readiness (may need to pull new image)
@@ -595,7 +597,7 @@ settings.post('/start-runner', async (c) => {
         mutateSettings((s) => {
           s.container.containerRunner = runner
         })
-        agentRegistry.evictAll()
+        containerHost.clearRuntimes()
       }
 
       // Wait a bit for the runtime to start, then refresh availability (clears cache first)
