@@ -573,7 +573,9 @@ export class AgentIntegrationManager {
     const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
     const next = current.then(async () => {
       try {
-        if (observe && (await this.isAllowed(integrationId, chatId))) observe.connector.observeSession(observe.context)
+        if (observe && (await this.isAllowed(integrationId, chatId)) && this.isCurrentSession(integrationId, chatId, observe, sessionId)) {
+          observe.connector.observeSession(observe.context)
+        }
         await this.handleSSEEvent(integrationId, chatId, event, sessionId)
       } catch (err) {
         console.error(`[AgentIntegrationManager] Error handling SSE event:`, err)
@@ -582,6 +584,17 @@ export class AgentIntegrationManager {
     })
     this.messageQueues.set(queueKey, next)
     this.scheduleQueueEviction(queueKey, next)
+  }
+
+  /**
+   * Whether `session` is still the live chat session for this chat, bound to
+   * `sessionId`. A queued observation waits behind earlier events; if the
+   * chat was cleared or re-pointed meanwhile, observing would revive a
+   * session the connector has already released.
+   */
+  private isCurrentSession(integrationId: string, chatId: string, session: ManagedSession, sessionId: string): boolean {
+    const live = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
+    return live === session && live.sessionId === sessionId
   }
 
   // ── Health monitoring ───────────────────────────────────────────────

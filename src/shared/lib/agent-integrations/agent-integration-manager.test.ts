@@ -178,6 +178,25 @@ describe('AgentIntegration host contract', () => {
     }
   })
 
+  it('does not revive a session that was cleared while its observation waited on the queue', async () => {
+    await manager.start()
+    await adapter.input('comment-one')
+    await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
+    const observed = vi.spyOn(adapter, 'observeSession')
+    let release!: () => void
+    vi.spyOn(adapter, 'isAllowed').mockImplementationOnce(() => new Promise<boolean>((resolve) => { release = () => resolve(true) }))
+    const emit = state.streams.get('session-1')!
+    emit({ type: 'stream_end' }) // stalls on its access check
+    emit({ type: 'session_idle' }) // waits behind it
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    manager.stop() // the chat is cleared: its session is released
+    expect(adapter.released).toHaveLength(1)
+    const observedBeforeRelease = observed.mock.calls.length
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(observed.mock.calls.length).toBe(observedBeforeRelease)
+  })
+
   it('blocks input before preparation or runtime startup and blocks output after revocation', async () => {
     await manager.start()
     adapter.allowed = false

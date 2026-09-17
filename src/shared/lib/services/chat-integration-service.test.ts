@@ -348,6 +348,54 @@ describe('chat-integration-service', () => {
       expect(moved).toHaveLength(1)
     })
 
+    it('redoes a stale settings-only edit on the fresh row instead of putting its old credential back', async () => {
+      const first = await createChatIntegration({ agentSlug: 'agent-a', provider: 'telegram', config: { botToken: 'token-x' } })
+      // Between this edit's read and its write the row moves to token-y and
+      // another integration claims token-x. Writing the snapshot back would
+      // leave both rows owning token-x.
+      const intrude = async () => {
+        await testDb.update(chatIntegrations).set({ config: JSON.stringify({ botToken: 'token-y' }) })
+          .where(eq(chatIntegrations.id, first)).run()
+        await createChatIntegration({ agentSlug: 'agent-b', provider: 'telegram', config: { botToken: 'token-x' } })
+      }
+      const afterRead = (builder: object): object => new Proxy(builder, {
+        get(target, prop, receiver) {
+          const value = Reflect.get(target, prop, receiver)
+          if (typeof value !== 'function') return value
+          if (prop === 'all' || prop === 'get') {
+            return async (...args: unknown[]) => {
+              const rows = await value.apply(target, args)
+              await intrude()
+              return rows
+            }
+          }
+          return (...args: unknown[]) => {
+            const out = value.apply(target, args)
+            return out && typeof out === 'object' ? afterRead(out) : out
+          }
+        },
+      })
+      const select = testDb.select.bind(testDb)
+      let intruded = false
+      const spy = vi.spyOn(testDb, 'select').mockImplementation(((...args: unknown[]) => {
+        const query = (select as (...a: unknown[]) => object)(...args)
+        if (intruded) return query
+        intruded = true
+        return afterRead(query)
+      }) as never)
+      try {
+        expect(await updateChatIntegration(first, { config: { draftStreaming: true } })).toBe(true)
+      } finally {
+        spy.mockRestore()
+      }
+
+      const rows = await testDb.select().from(chatIntegrations).all()
+      const owningX = rows.filter((row) => JSON.parse(row.config).botToken === 'token-x')
+      expect(owningX).toHaveLength(1)
+      expect(owningX[0].id).not.toBe(first)
+      expect(JSON.parse(rows.find((row) => row.id === first)!.config)).toEqual({ botToken: 'token-y', draftStreaming: true })
+    })
+
     it('allows updating an integration to keep the same token (self-exclusion)', async () => {
       const id = (await createChatIntegration({
         agentSlug: 'agent-a',

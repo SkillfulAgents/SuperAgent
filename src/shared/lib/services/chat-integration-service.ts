@@ -271,36 +271,59 @@ export async function listChatIntegrationsByAgents(
 // ── Update ──────────────────────────────────────────────────────────────
 
 export async function updateChatIntegration(id: string, params: UpdateChatIntegrationParams): Promise<boolean> {
-  let nextConfig: Record<string, unknown> | undefined
-  // Set when the PATCH moves the credential: the write is then conditional on
-  // no other integration owning the new one.
-  let uniqueKeyMove: { provider: string; key: string } | undefined
+  if (params.config === undefined) {
+    const result = await db.update(chatIntegrations)
+      .set(fieldUpdates(params))
+      .where(eq(chatIntegrations.id, id))
+      .run()
+    return changesOf(result) > 0
+  }
 
-  // Guard against a PATCH moving a token to one that's already owned by
-  // another integration — would re-create SUP-150's duplicate-poller scenario.
-  if (params.config !== undefined) {
+  // A config PATCH merges into the stored config, so it is a read then a
+  // write. The write replaces the config only if it is still the one that
+  // was read; otherwise the merge is redone on the fresh row, so a delayed
+  // edit cannot put back a credential the row has since moved away from.
+  // When the merge moves the credential, the write is also conditional on no
+  // other integration owning the new one (SUP-150's duplicate pollers). A
+  // settings-only edit keeps whatever credential the row has, legacy
+  // duplicates included.
+  for (let attempt = 0; attempt < MAX_UNIQUE_KEY_ATTEMPTS; attempt++) {
     const current = await getChatIntegration(id)
     if (!current) return false
 
-    nextConfig = mergeChatIntegrationConfig(current.provider, current.config, params.config)
+    const nextConfig = mergeChatIntegrationConfig(current.provider, current.config, params.config)
     const currentConfig = safeParseConfig(current)
     const currentToken = currentConfig
       ? extractUniqueKey(current.provider, currentConfig)
       : null
     const newToken = extractUniqueKey(current.provider, nextConfig)
-    // Settings-only edits preserve the same unique key. Avoid re-checking those
-    // against legacy duplicate rows that predate the create-time guard.
-    if (newToken && newToken !== currentToken) {
-      uniqueKeyMove = { provider: current.provider, key: newToken }
-    }
-  }
+    const movedTo = newToken && newToken !== currentToken ? newToken : null
 
-  const updates: Record<string, unknown> = {
-    updatedAt: new Date(),
-  }
+    const result = await db.update(chatIntegrations)
+      .set({ ...fieldUpdates(params), config: JSON.stringify(nextConfig) })
+      .where(and(
+        eq(chatIntegrations.id, id),
+        eq(chatIntegrations.config, current.config),
+        movedTo ? noOtherIntegrationWith(current.provider, movedTo, id) : undefined,
+      ))
+      .run()
+    if (changesOf(result) > 0) return true
 
+    // Nothing changed: the row is gone, its config moved on, or another
+    // integration owns the new credential. Tell them apart.
+    const latest = await getChatIntegration(id)
+    if (!latest) return false
+    if (latest.config !== current.config || !movedTo) continue
+    const duplicate = await findIntegrationByUniqueKey(current.provider, movedTo, id)
+    if (duplicate) throw new DuplicateBotTokenError(duplicate.id, current.provider)
+  }
+  throw new Error('Chat integration changed concurrently; try again')
+}
+
+/** The column updates a PATCH carries, config aside. */
+function fieldUpdates(params: UpdateChatIntegrationParams): Record<string, unknown> {
+  const updates: Record<string, unknown> = { updatedAt: new Date() }
   if (params.name !== undefined) updates.name = params.name
-  if (nextConfig !== undefined) updates.config = JSON.stringify(nextConfig)
   if (params.showToolCalls !== undefined) updates.showToolCalls = params.showToolCalls
   if (params.requireApproval !== undefined) updates.requireApproval = params.requireApproval
   if (params.sessionTimeout !== undefined) updates.sessionTimeout = params.sessionTimeout
@@ -309,23 +332,7 @@ export async function updateChatIntegration(id: string, params: UpdateChatIntegr
   if (params.speed !== undefined) updates.speed = params.speed
   if (params.status !== undefined) updates.status = params.status
   if (params.errorMessage !== undefined) updates.errorMessage = params.errorMessage
-
-
-  const result = await db.update(chatIntegrations)
-    .set(updates)
-    .where(and(
-      eq(chatIntegrations.id, id),
-      uniqueKeyMove ? noOtherIntegrationWith(uniqueKeyMove.provider, uniqueKeyMove.key, id) : undefined,
-    ))
-    .run()
-  if (changesOf(result) > 0) return true
-  if (!uniqueKeyMove) return false
-
-  // Nothing changed: the row is gone, or another integration owns the new
-  // credential. Tell them apart for the caller.
-  if (!(await getChatIntegration(id))) return false
-  const duplicate = await findIntegrationByUniqueKey(uniqueKeyMove.provider, uniqueKeyMove.key, id)
-  throw new DuplicateBotTokenError(duplicate?.id ?? 'another integration', uniqueKeyMove.provider)
+  return updates
 }
 
 export async function updateChatIntegrationStatus(
