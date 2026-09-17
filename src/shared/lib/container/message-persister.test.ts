@@ -54,6 +54,7 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
   notificationManager: {
     triggerSessionComplete: vi.fn(() => Promise.resolve()),
     triggerSessionWaitingInput: vi.fn(() => Promise.resolve()),
+    triggerAgentNotify: vi.fn(() => Promise.resolve()),
   },
 }))
 
@@ -3203,6 +3204,119 @@ describe('MessagePersister', () => {
       messagePersister.markSessionIdle(AGENT_SLUG, SESSION_ID)
 
       expect(sseEvents).toHaveLength(0)
+    })
+  })
+
+  // ============================================================================
+  // notify_user tool handling
+  // ============================================================================
+
+  describe('notify_user tool handling', () => {
+    function simulateNotifyUserToolUse(toolId: string, input: Record<string, unknown>) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: 'mcp__user-input__notify_user' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    function resolveCalls() {
+      return mockContainerClientFetch.mock.calls.filter((c) => String(c[0]).includes('/resolve'))
+    }
+
+    function rejectCalls() {
+      return mockContainerClientFetch.mock.calls.filter((c) => String(c[0]).includes('/reject'))
+    }
+
+    beforeEach(() => {
+      vi.mocked(notificationManager.triggerAgentNotify).mockClear()
+      vi.mocked(notificationManager.triggerAgentNotify).mockResolvedValue(undefined)
+    })
+
+    it('notifies with the message and title, then resolves the tool', async () => {
+      simulateNotifyUserToolUse('notify-1', { message: 'Gave up after 3 rate limits.', title: 'Sync failed' })
+
+      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
+
+      expect(notificationManager.triggerAgentNotify).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        'Gave up after 3 rate limits.',
+        'Sync failed',
+      )
+      const body = JSON.parse(resolveCalls()[0][1].body)
+      expect(body.value).toContain('notified')
+      expect(rejectCalls()).toHaveLength(0)
+    })
+
+    it('rejects when message is missing', async () => {
+      simulateNotifyUserToolUse('notify-2', { title: 'no body' })
+
+      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
+      expect(notificationManager.triggerAgentNotify).not.toHaveBeenCalled()
+      expect(resolveCalls()).toHaveLength(0)
+    })
+
+    it('rejects a non-string message instead of throwing out of the handler', async () => {
+      // Host parses the raw stream; a `.trim()` on a number used to escape as
+      // an unhandled rejection, which quits the Electron app.
+      simulateNotifyUserToolUse('notify-4', { message: 123 })
+
+      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
+      const body = JSON.parse(rejectCalls()[0][1].body)
+      expect(body.reason).toContain('Invalid tool input')
+      expect(notificationManager.triggerAgentNotify).not.toHaveBeenCalled()
+      expect(resolveCalls()).toHaveLength(0)
+    })
+
+    it('rejects a whitespace-only message', async () => {
+      simulateNotifyUserToolUse('notify-5', { message: '   ' })
+
+      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
+      expect(notificationManager.triggerAgentNotify).not.toHaveBeenCalled()
+    })
+
+    it('suppresses the completion notification for the notifying turn, not the next one', async () => {
+      vi.mocked(notificationManager.triggerSessionComplete).mockClear()
+      const emitSuccess = () =>
+        mockClient._sendMessage({
+          type: 'result', subtype: 'success', is_error: false, num_turns: 1,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        })
+
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      simulateNotifyUserToolUse('notify-6', { message: 'Done, needs a look.' })
+      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
+      emitSuccess()
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+
+      // Next turn: the user replied; its completion alerts as usual.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      emitSuccess()
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+    })
+
+    it('rejects when the notification manager throws', async () => {
+      vi.mocked(notificationManager.triggerAgentNotify).mockRejectedValueOnce(new Error('db locked'))
+      simulateNotifyUserToolUse('notify-3', { message: 'hello' })
+
+      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
+      const body = JSON.parse(rejectCalls()[0][1].body)
+      expect(body.reason).toContain('db locked')
+      expect(resolveCalls()).toHaveLength(0)
     })
   })
 

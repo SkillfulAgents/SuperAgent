@@ -476,6 +476,51 @@ describe('session_waiting promotes automated sessions to interactive', () => {
   })
 })
 
+describe('triggerAgentNotify (notify_user tool)', () => {
+  it('creates a session_notify record with the agent-name default title', async () => {
+    await notificationManager.triggerAgentNotify('sess-1', 'agent-x', 'Rate limited for 3 hours, gave up.')
+
+    expect(mockCreateNotification).toHaveBeenCalledWith({
+      type: 'session_notify',
+      sessionId: 'sess-1',
+      agentSlug: 'agent-x',
+      title: 'Demo Agent needs your attention',
+      body: 'Rate limited for 3 hours, gave up.',
+    })
+    expect(mockBroadcastGlobal).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'os_notification', notificationType: 'session_notify' }),
+    )
+  })
+
+  it('uses the agent-supplied title when present', async () => {
+    await notificationManager.triggerAgentNotify('sess-1', 'agent-x', 'body', '  Report ready  ')
+    expect(mockCreateNotification).toHaveBeenCalledWith(expect.objectContaining({ title: 'Report ready' }))
+  })
+
+  it('promotes the session before creating the notification', async () => {
+    await notificationManager.triggerAgentNotify('sess-1', 'agent-x', 'body')
+
+    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
+    expect(mockPromoteAutomatedSession.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCreateNotification.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('is gated by the sessionWaiting preference but still promotes when disabled', async () => {
+    mocks.getUserSettings.mockReturnValueOnce({
+      notifications: {
+        enabled: true,
+        sessionComplete: true,
+        sessionWaiting: false,
+        sessionScheduled: true,
+      },
+    })
+    await notificationManager.triggerAgentNotify('sess-1', 'agent-x', 'body')
+    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
+    expect(mockCreateNotification).not.toHaveBeenCalled()
+  })
+})
+
 describe('triggerSessionApiReviewWaiting — broadcast payload contract', () => {
   it('broadcasts actions + actionContext with index-aligned decisions', async () => {
     await notificationManager.triggerSessionApiReviewWaiting(

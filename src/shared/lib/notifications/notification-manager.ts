@@ -26,7 +26,7 @@ import { captureException } from '@shared/lib/error-reporting'
 import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { getNotificationChannels } from './channels'
-import { isNotificationTypeEnabled } from './notification-preferences'
+import { isNotificationTypeEnabled, SESSION_PROMOTING_NOTIFICATION_TYPES } from './notification-preferences'
 import type { NotificationEvent } from './notification-event'
 import { buildSessionCompleteBody } from './session-complete-summary'
 
@@ -123,12 +123,12 @@ class NotificationManager {
   }): Promise<void> {
     const { type, sessionId, agentSlug, title, body, actions, actionContext, extra } = params
 
-    // A blocked automated session must become visible: session lists exclude
-    // non-promoted automated sessions, so a session_waiting notification on one
-    // would raise unread indicators pointing at nothing — and could never be
-    // cleared. Promote first (idempotent, no-op for non-automated sessions),
+    // A blocked or self-reporting automated session must become visible:
+    // session lists exclude non-promoted automated sessions, so a notification
+    // on one would raise unread indicators pointing at nothing — and could never
+    // be cleared. Promote first (idempotent, no-op for non-automated sessions),
     // and before the settings check: visibility isn't a notification pref.
-    if (type === 'session_waiting') {
+    if (SESSION_PROMOTING_NOTIFICATION_TYPES.has(type)) {
       try {
         await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId)
       } catch (error) {
@@ -320,6 +320,23 @@ class NotificationManager {
       agentSlug,
       title: 'Action Required',
       body: `${displayName} ${waitingMessage}`,
+    })
+  }
+
+  // Agent-initiated `notify_user`: no input is awaited, the user just needs to see it.
+  async triggerAgentNotify(
+    sessionId: string,
+    agentSlug: string,
+    message: string,
+    title?: string,
+  ): Promise<void> {
+    const displayName = await this.getAgentDisplayName(agentSlug)
+    await this.triggerNotification({
+      type: 'session_notify',
+      sessionId,
+      agentSlug,
+      title: title?.trim() || `${displayName} needs your attention`,
+      body: message,
     })
   }
 

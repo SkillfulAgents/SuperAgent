@@ -343,7 +343,7 @@ export function GlobalNotificationHandler() {
             const notifyWhenUnfocused =
               userSettingsRef.current?.notifications?.notifyWhenUnfocused === true
             const isAppActive =
-              notificationType === 'session_waiting' || notifyWhenUnfocused
+              notificationType === 'session_waiting' || notificationType === 'session_notify' || notifyWhenUnfocused
                 ? isTabVisible && document.hasFocus()
                 : isTabVisible
 

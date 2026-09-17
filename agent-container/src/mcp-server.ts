@@ -22,6 +22,7 @@ import {
   resumeScheduledTaskTool,
 } from './tools/schedule-task'
 import { scheduleResumeTool } from './tools/schedule-resume'
+import { notifyUserTool } from './tools/notify-user'
 import {
   getAvailableTriggersTool,
   listTriggersTool,
@@ -87,7 +88,7 @@ export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTar
       scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, updateScheduledTaskTool,
       cancelScheduledTaskTool,
       pauseScheduledTaskTool, resumeScheduledTaskTool,
-      deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
+      deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool, notifyUserTool,
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeComposioTriggers ? [getAvailableTriggersTool, setupTriggerTool] : []),
       ...(includeComposioTriggers || includeWebhookEndpoints

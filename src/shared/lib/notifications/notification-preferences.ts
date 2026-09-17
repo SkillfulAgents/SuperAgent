@@ -10,7 +10,11 @@ import type { UserSettingsData } from '@shared/lib/services/user-settings-servic
  * the DB) so the renderer's optimistic unread-dot raise and the server's
  * unread queries share one list and can never drift.
  */
-export const USER_ACTIONABLE_NOTIFICATION_TYPES = ['session_complete', 'session_waiting'] as const
+export const USER_ACTIONABLE_NOTIFICATION_TYPES = ['session_complete', 'session_waiting', 'session_notify'] as const
+
+// Types that must first make a hidden automated session visible; an unread
+// row on a hidden session would point at nothing and could never be cleared.
+export const SESSION_PROMOTING_NOTIFICATION_TYPES: ReadonlySet<string> = new Set(['session_waiting', 'session_notify'])
 
 /**
  * Per-type notification preference check — the single source of truth for
@@ -36,6 +40,7 @@ export function isNotificationTypeEnabled(
     case 'session_complete':
       return notifications.sessionComplete !== false
     case 'session_waiting':
+    case 'session_notify':
       return notifications.sessionWaiting !== false
     case 'session_scheduled':
       return notifications.sessionScheduled !== false
