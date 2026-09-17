@@ -37,6 +37,8 @@ interface SessionCompleteNotificationOptions {
   responseTranscriptEndOffset?: Promise<number | null>
 }
 
+export type AgentNotifyResult = { ok: true } | { ok: false; reason: 'interactive_session' }
+
 type NotificationBody = string | {
   fallback: string
   resolve: () => Promise<string>
@@ -329,7 +331,17 @@ class NotificationManager {
     agentSlug: string,
     message: string,
     title?: string,
-  ): Promise<void> {
+  ): Promise<AgentNotifyResult> {
+    // Trade-off (SUP-884): the tool's purpose is "promote a hidden session and
+    // alert". An interactive session is already visible and the user reads
+    // its replies, so a notification there would only duplicate the chat.
+    // Refuse instead of silently degrading. Delete this check to allow
+    // notify_user everywhere; nothing else depends on it.
+    const meta = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
+    if (!isHiddenAutomatedSession(meta)) {
+      return { ok: false, reason: 'interactive_session' }
+    }
+
     const displayName = await this.getAgentDisplayName(agentSlug)
     await this.triggerNotification({
       type: 'session_notify',
@@ -338,6 +350,7 @@ class NotificationManager {
       title: title?.trim() || `${displayName} needs your attention`,
       body: message,
     })
+    return { ok: true }
   }
 
   /**

@@ -54,7 +54,7 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
   notificationManager: {
     triggerSessionComplete: vi.fn(() => Promise.resolve()),
     triggerSessionWaitingInput: vi.fn(() => Promise.resolve()),
-    triggerAgentNotify: vi.fn(() => Promise.resolve()),
+    triggerAgentNotify: vi.fn(() => Promise.resolve({ ok: true })),
   },
 }))
 
@@ -3243,7 +3243,7 @@ describe('MessagePersister', () => {
 
     beforeEach(() => {
       vi.mocked(notificationManager.triggerAgentNotify).mockClear()
-      vi.mocked(notificationManager.triggerAgentNotify).mockResolvedValue(undefined)
+      vi.mocked(notificationManager.triggerAgentNotify).mockResolvedValue({ ok: true })
     })
 
     it('notifies with the message and title, then resolves the tool', async () => {
@@ -3306,6 +3306,26 @@ describe('MessagePersister', () => {
       // Next turn: the user replied; its completion alerts as usual.
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       emitSuccess()
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+    })
+
+    it('rejects on an interactive session and still lets the turn completion alert', async () => {
+      vi.mocked(notificationManager.triggerSessionComplete).mockClear()
+      vi.mocked(notificationManager.triggerAgentNotify).mockResolvedValueOnce({ ok: false, reason: 'interactive_session' })
+
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      simulateNotifyUserToolUse('notify-7', { message: 'hello' })
+
+      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
+      const body = JSON.parse(rejectCalls()[0][1].body)
+      expect(body.reason).toContain('interactive')
+      expect(resolveCalls()).toHaveLength(0)
+
+      // Nothing was delivered, so the completion notification is not suppressed.
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
       expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
     })
 

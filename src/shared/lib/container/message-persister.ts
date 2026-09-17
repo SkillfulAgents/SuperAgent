@@ -4454,7 +4454,15 @@ class MessagePersister {
       const { message, title } = parsed.data
 
       try {
-        await notificationManager.triggerAgentNotify(sessionId, agentSlug, message, title)
+        const result = await notificationManager.triggerAgentNotify(sessionId, agentSlug, message, title)
+        if (!result.ok) {
+          await this.rejectContainerInput(
+            agentSlug,
+            toolUseId,
+            'notify_user is only for automated sessions nobody is watching. This session is interactive: the user reads your replies here, so state the outcome in this conversation instead.'
+          ).catch(console.error)
+          return
+        }
       } catch (error) {
         console.error('[MessagePersister] Error handling notify_user:', error)
         const msg = error instanceof Error ? error.message : String(error)
