@@ -20,7 +20,7 @@ beforeEach(() => {
   mocks.stream = { isActive: false, streamingMessage: null, activeStartTime: null, streamingToolUses: [], error: null }
   mocks.create.mockReset().mockImplementation(() => ({
     capabilities: { speechSpeed: false, spokenTranscript: false }, analyser: null,
-    start: vi.fn(async () => {}), close: vi.fn(), setPaused: vi.fn(), acceptAgentEvent: vi.fn(), pressMic: vi.fn(),
+    start: vi.fn(async () => {}), close: vi.fn(), setPaused: vi.fn(), setMicrophoneMuted: vi.fn(), setOutputMuted: vi.fn(), acceptAgentEvent: vi.fn(), pressMic: vi.fn(),
   }))
 })
 

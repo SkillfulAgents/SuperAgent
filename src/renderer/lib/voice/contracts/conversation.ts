@@ -66,9 +66,15 @@ export interface VoiceConversationAdapter {
   /** Omitted: the coordinator's strict defaults apply. */
   readonly turnPolicy?: Partial<VoiceTurnPolicy>
   readonly analyser: AnalyserNode | null
+  /** The reply's audio, where it plays in this window (Live); the reader-backed engine has none. */
+  readonly outputAnalyser?: AnalyserNode | null
   start(): Promise<void>
   acceptAgentEvent(event: VoiceAgentEvent): void
   setPaused(paused: boolean): void
+  /** Mute the person's microphone: the engine keeps running and hears silence. Independent of pausing. */
+  setMicrophoneMuted(muted: boolean): void
+  /** Silence the agent's voice: the reply still plays out, so turn-taking is unchanged. */
+  setOutputMuted(muted: boolean): void
   pressMic(): void
   close(): void
 }

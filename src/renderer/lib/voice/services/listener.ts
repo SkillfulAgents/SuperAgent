@@ -41,6 +41,7 @@ export class VoiceListener {
   private adapter: SttAdapter | null = null
   private capture: AudioCaptureHandle | null = null
   private stream: MediaStream | null = null
+  private muted = false
   private finalized = ''
   private interim = ''
   private running = false
@@ -95,6 +96,7 @@ export class VoiceListener {
         return
       }
       this.stream = stream
+      this.applyMute()
       const capture = await startAudioCapture(adapter, stream, { withAnalyser: true })
       if (generation !== this.generation) {
         capture.cleanup()
@@ -106,6 +108,16 @@ export class VoiceListener {
       if (generation === this.generation) this.stop()
       throw err instanceof Error ? err : new Error('Failed to start listening')
     }
+  }
+
+  /** Muted, the track delivers silence: nothing is transcribed, the meter reads nothing. Survives restarts. */
+  setMuted(muted: boolean): void {
+    this.muted = muted
+    this.applyMute()
+  }
+
+  private applyMute(): void {
+    this.stream?.getTracks().forEach((track) => { track.enabled = !this.muted })
   }
 
   stop(): void {

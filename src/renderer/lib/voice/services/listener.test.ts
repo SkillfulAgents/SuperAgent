@@ -204,6 +204,21 @@ describe('VoiceListener', () => {
     expect(stt.captures[0].cleanup).toHaveBeenCalled()
   })
 
+  it('setMuted() silences the track, now and on the next start', async () => {
+    const { listener } = await started()
+    const first = stt.tracks[stt.tracks.length - 1] as { enabled?: boolean }
+    listener.setMuted(true)
+    expect(first.enabled).toBe(false)
+    listener.stop()
+    await listener.start()
+    const second = stt.tracks[stt.tracks.length - 1] as { enabled?: boolean }
+    expect(second).not.toBe(first)
+    expect(second.enabled).toBe(false)
+    listener.setMuted(false)
+    expect(second.enabled).toBe(true)
+    listener.stop()
+  })
+
   it('stop() releases the mic and closes the socket', async () => {
     const { listener, adapter } = await started()
     listener.stop()

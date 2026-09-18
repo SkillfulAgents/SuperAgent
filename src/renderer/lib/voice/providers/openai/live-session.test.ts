@@ -139,6 +139,19 @@ describe('Live WebRTC lifecycle', () => {
     expect(callbacks.onSpeaking.mock.calls).toEqual([[true], [false]])
     adapter.setPaused(false)
     expect(track.enabled).toBe(true)
+
+    // The person's own mute is separate from the card's pause: releasing
+    // the pause does not reopen a muted mic, and Live is told each time.
+    channel.send.mockClear()
+    adapter.setMicrophoneMuted(true)
+    expect(track.enabled).toBe(false)
+    adapter.setPaused(true)
+    adapter.setPaused(false)
+    expect(track.enabled).toBe(false)
+    adapter.setMicrophoneMuted(false)
+    expect(track.enabled).toBe(true)
+    const gated = channel.send.mock.calls.map(([text]) => JSON.parse(text)).filter((event) => String(event.type).startsWith('session.input_audio'))
+    expect(gated.map((event) => event.type)).toEqual(['session.input_audio.mute', 'session.input_audio.mute', 'session.input_audio.mute', 'session.input_audio.unmute'])
     adapter.close()
   })
 
