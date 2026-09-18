@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
+import { LoginButton, useFocusAfterCancel } from '@renderer/components/connections/login-button'
 import { LoginWindowCancel } from '@renderer/components/connections/login-window-cancel'
 import { RequestError } from '@renderer/components/messages/request-error'
 import { ManualAccessKeyInput } from '@renderer/components/settings/manual-access-key-input'
@@ -50,6 +51,8 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
   }, [isPlatformConnected, onChoosePlatform])
 
   const isPlatformAvailable = !isLoadingPlatformAuth && Boolean(platformAuth?.platformBaseUrl)
+  // Cancel sits on the help line, which unmounts with it; focus returns to the launch area.
+  const { targetRef: launchAreaRef, arm: focusLaunchAreaAfterCancel } = useFocusAfterCancel<HTMLDivElement>(isLaunching)
 
   // Installer-carried enrollment: when the main process recovered a download
   // nonce, the primary button becomes one-click "Continue as <email>". No
@@ -96,7 +99,7 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
       <div className="flex flex-col gap-8">
         {isPlatformAvailable && (
           <div className="space-y-3">
-            <div className="flex items-center gap-3">
+            <div ref={launchAreaRef} tabIndex={-1} className="flex items-center gap-3 rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
               {nonceEmail ? (
                 <Button
                   type="button"
@@ -124,21 +127,21 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
                   )}
                 </Button>
               ) : (
-                <Button
+                // Cancel shares the help line below, so the wizard places it.
+                <LoginButton
                   type="button"
                   variant="default"
                   size="lg"
                   onClick={() => void handleConnect()}
                   data-testid="wizard-platform-login"
-                  disabled={isLaunching}
                   className="w-full max-w-[380px]"
-                >
-                  {isLaunching ? (
-                    <><Loader2 className="h-4 w-4 animate-spin mr-2" />Logging in...</>
-                  ) : (
-                    'Get Started'
-                  )}
-                </Button>
+                  label="Get Started"
+                  pendingLabel="Logging in…"
+                  pending={isLaunching}
+                  canCancel={canCancel}
+                  onCancel={cancelConnect}
+                  cancelSide="none"
+                />
               )}
             </div>
             {nonceEmail && !redeemNonce.isPending && (
@@ -157,7 +160,14 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
             {isLaunching && (
               <div className="flex items-center gap-3 max-w-[380px] text-sm text-muted-foreground">
                 <ManualAccessKeyInput prefixText="Log in issues?" className="flex-1" />
-                <LoginWindowCancel visible={canCancel} onCancel={cancelConnect} testId="wizard-cancel-login" />
+                <LoginWindowCancel
+                  visible={canCancel}
+                  onCancel={() => {
+                    focusLaunchAreaAfterCancel()
+                    cancelConnect()
+                  }}
+                  testId="wizard-cancel-login"
+                />
               </div>
             )}
           </div>

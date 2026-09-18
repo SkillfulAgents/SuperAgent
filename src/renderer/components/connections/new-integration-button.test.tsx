@@ -331,12 +331,14 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
     })
     expect(capturedOAuthCallback).not.toBeNull()
     expect(screen.queryByTestId('directory-cancel-api-slack')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(/^Connecting Slack…$/)
 
     act(() => {
       vi.advanceTimersByTime(LOGIN_WINDOW_CANCEL_DELAY_MS)
     })
 
     expect(screen.getByTestId('directory-cancel-api-slack')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Connecting Slack…, Cancel available')
 
     await act(async () => {
       fireEvent.click(screen.getByTestId('directory-cancel-api-slack'))
