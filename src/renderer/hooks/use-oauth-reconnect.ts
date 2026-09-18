@@ -12,8 +12,12 @@ export function useOAuthReconnect() {
   const queryClient = useQueryClient()
   const { open, close, pending, canCancel } = useLoginWindow()
   const [launchedAccountId, setLaunchedAccountId] = useState<string | null>(null)
-  // Settles the inline wait for the callback when the user cancels.
+  // Settles the inline wait for the callback when the user cancels. A wait
+  // that already settled (the callback landed, completion is in flight) is
+  // past canceling: its result stands.
   const abortWaitRef = useRef<(() => void) | null>(null)
+  // Only the latest reconnect may close the window.
+  const latestRef = useRef(0)
 
   const cancelReconnect = useCallback(() => {
     close()
@@ -24,6 +28,7 @@ export function useOAuthReconnect() {
     // One window at a time: a reconnect still waiting is superseded, so its
     // timeout cannot close the window this one is about to open.
     abortWaitRef.current?.()
+    const latest = ++latestRef.current
     setLaunchedAccountId(accountId)
     let canceled = false
     try {
@@ -63,8 +68,9 @@ export function useOAuthReconnect() {
             return true
           }
           abortWaitRef.current = () => {
+            if (!settle()) return
             canceled = true
-            if (settle()) resolve(false)
+            resolve(false)
           }
           // Bound the wait: if the user abandons the OAuth window (or only
           // mismatched-toolkit callbacks ever arrive), settle anyway so we don't
@@ -118,8 +124,9 @@ export function useOAuthReconnect() {
             }
           }
           abortWaitRef.current = () => {
+            if (!settle()) return
             canceled = true
-            if (settle()) resolve(false)
+            resolve(false)
           }
           timeout = window.setTimeout(() => {
             if (settle()) resolve(false)
@@ -129,7 +136,8 @@ export function useOAuthReconnect() {
       }
 
       if (canceled) return false
-      close()
+      // A reconnect started during completion owns the window by now.
+      if (latest === latestRef.current) close()
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
       queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
       queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })

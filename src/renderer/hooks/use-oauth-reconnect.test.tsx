@@ -110,4 +110,31 @@ describe('useOAuthReconnect', () => {
     expect(mockClose).toHaveBeenCalledTimes(1)
     expect(result.current.pendingAccountId).toBe('account-2')
   })
+
+  it('keeps the result of a reconnect whose completion is in flight when the next one starts', async () => {
+    let resolveComplete!: (res: Response) => void
+    mockApiFetch.mockImplementation(async (url: string) => {
+      if (url === '/api/connected-accounts/complete') {
+        return new Promise<Response>((resolve) => { resolveComplete = resolve })
+      }
+      return new Response(JSON.stringify({ redirectUrl: 'https://oauth.test' }), { status: 200 })
+    })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const { result } = renderHook(() => useOAuthReconnect(), { wrapper })
+
+    let first!: Promise<boolean>
+    await act(async () => { first = result.current.reconnect('account-1', 'gmail') })
+    await waitFor(() => expect(oauthCallback).toBeTypeOf('function'))
+    await act(async () => { oauthCallback?.({ connectionId: 'connection-new', toolkit: 'gmail' }) })
+
+    await act(async () => { void result.current.reconnect('account-2', 'github') })
+    mockClose.mockClear()
+    await act(async () => { resolveComplete(new Response(JSON.stringify({ success: true }), { status: 200 })) })
+
+    await expect(first).resolves.toBe(true)
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['connected-accounts'] })
+    // The second reconnect's window and pending state are untouched.
+    expect(mockClose).not.toHaveBeenCalled()
+    expect(result.current.pendingAccountId).toBe('account-2')
+  })
 })
