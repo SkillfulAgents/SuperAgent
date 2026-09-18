@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 
 import type {
   ProviderErrorPlacement as Placement,
@@ -87,23 +87,31 @@ interface ProviderErrorPlacementProps {
   children?: ReactNode
 }
 
-// Renders children, or the session's current provider error in their place when
-// its presentation targets this placement. The component gets the displaced
-// children and renders them back once it is resolved.
+// Renders the session's current provider error above children when its presentation
+// targets this placement. Children keep one tree position whether or not an error is
+// showing: the composer hosts voice mode, and a remount would drop it (SUP-890). A card
+// that must withhold children (paywall while blocked) hides the slot instead.
 export function ProviderErrorPlacement({ placement, sessionId, agentSlug, children }: ProviderErrorPlacementProps) {
   const { isActive, error, apiErrorCode, errorPresentation } = useMessageStream(sessionId, agentSlug)
   const { data: messages } = useMessages(sessionId, agentSlug)
+  const [displaced, setDisplaced] = useState(false)
   const current = useMemo(
     () => currentProviderError({ isActive, error, apiErrorCode, errorPresentation }, messages),
     [isActive, error, apiErrorCode, errorPresentation, messages],
   )
   const resolved = current ? resolveProviderError(current.presentation) : null
-  if (!current || !resolved || resolved.placement !== placement) return <>{children}</>
+  const showing = current !== null && resolved !== null && resolved.placement === placement
   return (
-    <div data-testid={`provider-error-placement-${placement}`}>
-      <resolved.Component message={current.message} presentation={current.presentation} live={current.live}>
-        {children}
-      </resolved.Component>
+    <div data-testid={showing ? `provider-error-placement-${placement}` : undefined}>
+      {showing && (
+        <resolved.Component
+          message={current.message}
+          presentation={current.presentation}
+          live={current.live}
+          onDisplaceChildren={setDisplaced}
+        />
+      )}
+      <div hidden={showing && displaced}>{children}</div>
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import type { ComponentType, ReactNode } from 'react'
+import type { ComponentType } from 'react'
 
 import {
   errorPlacement,
@@ -13,8 +13,8 @@ import { PlatformPaywallCard } from './platform-paywall-card'
 export interface ProviderErrorComponentProps {
   message: string
   presentation?: ProviderErrorPresentation
-  /** Content this error displaced (the composer, at `composer`). Render it to give it back. */
-  children?: ReactNode
+  /** Report whether the content this error sits above (the composer) must be withheld. */
+  onDisplaceChildren?: (displaced: boolean) => void
   /** True when this is the in-flight turn error, not a persisted history row. */
   live?: boolean
   /** When true, the card shows Dismiss. Default false. */

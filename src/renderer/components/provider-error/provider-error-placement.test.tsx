@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { render, screen } from '@testing-library/react'
+import { useEffect } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
@@ -7,6 +8,14 @@ import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 import { createAssistantMessage, createCompactBoundary, createUserMessage } from '@renderer/test/factories'
 
 import { currentProviderError, currentRoutedProviderError, ProviderErrorPlacement } from './provider-error-placement'
+import type { ProviderErrorComponentProps } from './provider-error-registry'
+
+const mockedRegistry = vi.hoisted(() => vi.fn())
+vi.mock('./provider-error-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./provider-error-registry')>()
+  mockedRegistry.mockImplementation(actual.resolveProviderError)
+  return { ...actual, resolveProviderError: mockedRegistry }
+})
 
 const mockStreamState = {
   isActive: false,
@@ -187,13 +196,45 @@ describe('ProviderErrorPlacement', () => {
     expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Routed: replaces the composer')
   })
 
-  it('hands the displaced children to the component (the default card renders them back)', () => {
+  it('keeps children visible below the default card', () => {
     mockStreamState.error = 'API Error: 402'
     mockStreamState.apiErrorCode = 'billing_error'
     mockStreamState.errorPresentation = composerError
     mount()
     const placement = screen.getByTestId('provider-error-placement-composer')
     expect(placement).toContainElement(screen.getByTestId('composer'))
+    expect(screen.getByTestId('composer')).toBeVisible()
+  })
+
+  it('does not remount children when the current error comes and goes (SUP-890)', () => {
+    const mounts = vi.fn()
+    function Composer() {
+      useEffect(() => { mounts() }, [])
+      return <div data-testid="composer">composer</div>
+    }
+    mockMessages.push(createUserMessage(), errorMessage(composerError))
+    const view = render(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a"><Composer /></ProviderErrorPlacement>)
+    expect(screen.getByTestId('provider-error-card')).toBeInTheDocument()
+
+    mockStreamState.isActive = true
+    view.rerender(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a"><Composer /></ProviderErrorPlacement>)
+    expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
+
+    mockStreamState.isActive = false
+    view.rerender(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a"><Composer /></ProviderErrorPlacement>)
+    expect(screen.getByTestId('provider-error-card')).toBeInTheDocument()
+    expect(mounts).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides the children slot while the component reports them displaced', () => {
+    const Displacing = ({ onDisplaceChildren }: ProviderErrorComponentProps) => {
+      useEffect(() => { onDisplaceChildren?.(true) }, [onDisplaceChildren])
+      return <div data-testid="provider-error-card" />
+    }
+    mockedRegistry.mockReturnValueOnce({ Component: Displacing, placement: 'composer' })
+    mockMessages.push(createUserMessage(), errorMessage(composerError))
+    mount()
+    expect(screen.getByTestId('composer')).not.toBeVisible()
   })
 
   it('renders a persisted error routed to composer once the session is idle', () => {

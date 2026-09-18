@@ -91,7 +91,6 @@ export function ProviderErrorView({
 export function ProviderErrorCard({
   message,
   presentation,
-  children,
   dismissible = false,
   'data-testid': testId,
 }: ProviderErrorComponentProps & { 'data-testid'?: string }) {
@@ -100,7 +99,7 @@ export function ProviderErrorCard({
     () => presentation ?? defaultParseErrorResponse(undefined, message),
     [presentation, message],
   )
-  if (dismissed) return <>{children}</>
+  if (dismissed) return null
   return (
     <>
       <ProviderErrorView
@@ -113,7 +112,6 @@ export function ProviderErrorCard({
           <Button size="sm" variant="ghost" onClick={() => setDismissed(true)}>Dismiss</Button>
         </div>
       )}
-      {children}
     </>
   )
 }
