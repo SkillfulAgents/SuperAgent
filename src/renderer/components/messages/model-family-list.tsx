@@ -107,12 +107,17 @@ function latestOf(models: ModelDefinition[]): ModelDefinition {
 }
 
 // Rows list strongest-first, using price as the proxy: output rate, then input
-// rate, descending. Unpriced entries sink to the bottom; ties keep catalog order.
+// rate, descending. Unpriced entries sink to the bottom; on a price tie the
+// family's latest wins, then catalog order.
 function comparePriceDesc(a: ModelDefinition, b: ModelDefinition): number {
   const ap = a.pricing
   const bp = b.pricing
   if (!ap || !bp) return (bp ? 1 : 0) - (ap ? 1 : 0)
-  return bp.outputPerMtok - ap.outputPerMtok || bp.inputPerMtok - ap.inputPerMtok
+  return (
+    bp.outputPerMtok - ap.outputPerMtok ||
+    bp.inputPerMtok - ap.inputPerMtok ||
+    Number(!!b.isLatest) - Number(!!a.isLatest)
+  )
 }
 
 /** The priciest member — what ranks a collapsed row among its siblings. */

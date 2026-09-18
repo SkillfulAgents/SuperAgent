@@ -204,6 +204,18 @@ describe('ModelFamilyList', () => {
     expect(opusChips).toEqual(['model-pinned-claude-opus-5', 'model-pinned-claude-opus-4-8'])
   })
 
+  it('puts the family latest first among same-priced rows even when authored newest-first', () => {
+    const grok: ModelDefinition[] = [
+      { id: 'grok-4.6', label: 'Grok 4.6', family: 'grok', isLatest: true, icon: 'xai', supportedEfforts: STD, pricing: { inputPerMtok: 2, outputPerMtok: 6 } },
+      { id: 'grok-4.5', label: 'Grok 4.5', family: 'grok', icon: 'xai', supportedEfforts: STD, pricing: { inputPerMtok: 2, outputPerMtok: 6 } },
+    ]
+    const { container } = render(<ModelFamilyList catalog={grok} value="grok-4.6" onPick={vi.fn()} />)
+    expect(testIds(container).filter((id) => id.startsWith('model-pinned-grok'))).toEqual([
+      'model-pinned-grok-4.6',
+      'model-pinned-grok-4.5',
+    ])
+  })
+
   it('orders non-lineage sub-lines by price, newest-first on ties', () => {
     const gpt: ModelDefinition[] = [
       { id: 'gpt-5.4', label: 'GPT-5.4', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 2.5, outputPerMtok: 15 } },
