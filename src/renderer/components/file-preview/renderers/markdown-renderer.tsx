@@ -1,7 +1,5 @@
 import { Loader2, AlertCircle } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { Markdown } from '@renderer/components/ui/markdown'
 import { useRef } from 'react'
 import { useTextSelection } from '../comments/use-text-selection'
 import { CommentOverlay } from '../comments/comment-overlay'
@@ -39,9 +37,7 @@ export function MarkdownRenderer({ url, filePath, agentSlug, commentsEnabled = t
           className="prose prose-sm max-w-none min-w-0 break-words dark:prose-invert [&_pre_code]:bg-transparent [&_pre_code]:p-0"
           data-testid="markdown-renderer"
         >
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            urlTransform={markdownUrlTransform}
+          <Markdown
             components={{
               // `prose` colours a code block for its own dark `pre` background
               // (--tw-prose-pre-code is gray-200). This one is a light tinted
@@ -73,15 +69,10 @@ export function MarkdownRenderer({ url, filePath, agentSlug, commentsEnabled = t
               td: ({ children }) => (
                 <td className="border-b border-border px-3 py-1.5">{children}</td>
               ),
-              a: ({ href, children }) => (
-                <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
-                  {children}
-                </a>
-              ),
             }}
           >
             {content || ''}
-          </ReactMarkdown>
+          </Markdown>
           {data?.truncated && (
             <div className="mt-3 pt-3 border-t text-xs text-muted-foreground text-center not-prose">
               File is larger than 5&nbsp;MB and was truncated. Download the file for the full content.
