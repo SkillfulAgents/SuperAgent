@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
+import { isShopifyGraphqlPath } from '@shared/lib/account-providers/shopify'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { agentRegistry } from '@shared/lib/agent-actor'
@@ -239,6 +240,21 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       },
       403
     )
+  }
+
+  // New public apps may only call the GraphQL Admin API (App Store rule 2.2.4).
+  if (account.toolkitSlug === 'shopify' && (method !== 'POST' || !isShopifyGraphqlPath('/' + targetPath))) {
+    const error = 'Shopify calls must use the GraphQL Admin API (POST /admin/api/<version>/graphql.json)'
+    await logAuditEntry({
+      agentSlug,
+      accountId,
+      toolkit: account.toolkitSlug,
+      targetHost,
+      targetPath,
+      method,
+      errorMessage: error,
+    })
+    return c.json({ error }, 403)
   }
 
   // 3.5 Policy enforcement

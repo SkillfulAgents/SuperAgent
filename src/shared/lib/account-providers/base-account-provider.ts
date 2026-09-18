@@ -27,6 +27,8 @@ export abstract class BaseAccountProvider {
     toolkitSlug: string,
     callbackUrl: string,
     userId?: string,
+    /** Provider subdomain to pre-fill (a Shopify store), skipping the page that asks for it. */
+    subdomain?: string,
   ): Promise<InitiateConnectionResult>
 
   abstract getConnection(connectionId: string, toolkitSlug?: string): Promise<ProviderConnection>

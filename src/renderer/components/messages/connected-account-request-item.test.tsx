@@ -14,6 +14,11 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
+const mockOpenExternal = vi.hoisted(() => vi.fn())
+vi.mock('@renderer/lib/open-external', () => ({
+  openExternalUrl: (...args: unknown[]) => mockOpenExternal(...args),
+}))
+
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({
   useConnectedAccountsByToolkit: vi.fn(() => ({
     data: {
@@ -293,6 +298,48 @@ describe('ConnectedAccountRequestItem', () => {
   it('shows add new account button', () => {
     renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
     expect(screen.getByText('Add New Account')).toBeInTheDocument()
+  })
+
+  // Shopify is unlisted until its App Store listing is live: an agent that names it
+  // anyway gets a card with nothing to click, not a link to a page that 404s.
+  it('offers no Connect for an unlisted provider', () => {
+    vi.mocked(useConnectedAccountsByToolkit).mockReturnValue({
+      data: { accounts: [] },
+      isLoading: false,
+      refetch: vi.fn(),
+    } as any)
+
+    renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} toolkit="shopify" />)
+
+    expect(screen.getByText('Shopify')).toBeInTheDocument()
+    expect(screen.getByText('New Shopify connections are not available yet.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Connect/ })).not.toBeInTheDocument()
+    expect(mockOpenExternal).not.toHaveBeenCalled()
+  })
+
+  it('still lets an existing account of an unlisted provider be allowed, without Add New Account', async () => {
+    vi.mocked(useConnectedAccountsByToolkit).mockReturnValue({
+      data: {
+        accounts: [{
+          id: 'shop-acc',
+          toolkitSlug: 'shopify',
+          displayName: 'gamut-dev.myshopify.com',
+          status: 'active',
+          providerConnectionId: 'ca_1',
+          providerName: 'composio',
+          createdAt: '2026-09-16T00:00:00.000Z',
+          updatedAt: '2026-09-16T00:00:00.000Z',
+        }],
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+    } as any)
+
+    renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} toolkit="shopify" />)
+
+    expect(screen.queryByRole('button', { name: /Add New Account/ })).not.toBeInTheDocument()
+    const allowButton = await screen.findByRole('button', { name: /Allow Access/ })
+    expect(allowButton).toBeEnabled()
   })
 
   it('does not auto-select expired accounts and shows reconnect button', () => {

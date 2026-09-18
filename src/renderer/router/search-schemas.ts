@@ -87,6 +87,8 @@ export const settingsSearchSchema = z
     from: internalPath.optional(),
     detail: connectionDetailKey.optional(),
     connectionView: z.literal('logs').optional(),
+    // Store handed back by platform's Shopify install (/install/shopify).
+    shop: z.string().regex(/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/).optional().catch(undefined),
   })
   .refine((s) => !s.connectionView || !!s.detail, {
     message: 'a connection subview requires detail',

@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useCallback } from 'react'
+import { useMemo, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Loader2, Zap } from 'lucide-react'
 import { PolicyDecisionDropdown } from '@renderer/components/ui/policy-decision-toggle'
@@ -6,6 +6,7 @@ import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user
 import {
   useConnectedAccounts,
   useTriggerCountsPerAccount,
+  useInitiateConnection,
 } from '@renderer/hooks/use-connected-accounts'
 import { useRemoteMcps } from '@renderer/hooks/use-remote-mcps'
 import { IntegrationList, RowHoverChevron } from '@renderer/components/connections/integration-row'
@@ -17,6 +18,8 @@ import { ConnectionDetailPage } from '@renderer/components/connections/connectio
 import { ConnectionLogsView } from '@renderer/components/connections/connection-logs-view'
 import { buildUnifiedRows, type UnifiedRow } from '@renderer/components/connections/unified-rows'
 import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
+import { isElectron } from '@renderer/lib/env'
+import { toast } from 'sonner'
 import { useConnectionActivityStats } from '@renderer/hooks/use-activity-stats'
 import { ActivitySparkChart, ActivitySparkChartSkeleton } from '@renderer/components/activity/activity-spark-chart'
 
@@ -208,6 +211,51 @@ export function ConnectionsTab() {
       </div>
     </div>
   )
+}
+
+/**
+ * The Connections header's "New connection" button. Platform hands every
+ * Shopify install and app open to /settings/connections?shop=<store>. A store
+ * that is already connected opens its account, since a second grant would break
+ * that connection. Any other store is connected from here: the grant runs in
+ * this tab with the store pre-filled, Shopify approves an installed app without
+ * a prompt, and the callback page returns to the new account.
+ */
+export function ConnectionsHeaderActions() {
+  const navigate = useNavigate()
+  const { shop } = useSearch({ strict: false }) as { shop?: string }
+  const { data: accountsData } = useConnectedAccounts()
+  const { mutateAsync: initiateConnection } = useInitiateConnection()
+  const started = useRef<string>()
+  useEffect(() => {
+    // Wait for the account list so a connected store is never granted again.
+    // A deeplink opens a browser tab, never the desktop app. The ref covers a
+    // StrictMode replay of this effect, before the URL change below has rendered.
+    if (!shop || !accountsData || isElectron() || started.current === shop) return
+    started.current = shop
+    const connected = accountsData.accounts.find(
+      (a) => a.toolkitSlug === 'shopify' && a.displayName === shop && a.status === 'active',
+    )
+    // `shop` leaves the URL first, so a remount or refetch cannot start a second grant.
+    void navigate({
+      to: '/settings/$tab',
+      params: { tab: 'connections' },
+      search: (prev) => ({
+        ...prev,
+        shop: undefined,
+        ...(connected ? { detail: `account-${connected.id}`, connectionView: undefined } : {}),
+      }),
+      replace: true,
+    })
+    if (connected) return
+    // No click to open a popup from, so the grant takes over this tab. The toast
+    // stays until the tab leaves; an error replaces it in place.
+    const toastId = toast.loading(`Connecting ${shop}…`)
+    initiateConnection({ providerSlug: 'shopify', shop, location: 'shopify_install' })
+      .then(({ redirectUrl }) => window.location.assign(redirectUrl))
+      .catch((error: Error) => toast.error(error.message, { id: toastId }))
+  }, [shop, accountsData, initiateConnection, navigate])
+  return <NewIntegrationButton />
 }
 
 function ConnectionsEmptyState() {

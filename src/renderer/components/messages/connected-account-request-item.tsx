@@ -1,5 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { openExternalUrl } from '@renderer/lib/open-external'
+import { SHOPIFY_APP_INSTALL_URL } from '@shared/lib/account-providers/shopify'
 import { warnIfLiveRefreshFailed } from '@renderer/lib/connection-live-refresh'
 import { useQueryClient } from '@tanstack/react-query'
 import { formatDistanceToNow } from 'date-fns'
@@ -219,6 +221,12 @@ export function ConnectedAccountRequestItem({
   }, [accounts, replacement])
 
   const handleConnectNew = async () => {
+    // A Shopify store is connected by installing Gamut from its App Store listing;
+    // the install hands the store to Connections, which connects it there.
+    if (toolkit === 'shopify') {
+      void openExternalUrl(SHOPIFY_APP_INSTALL_URL)
+      return
+    }
     setStatus('connecting')
     setError(null)
     track('account_added', { slug: toolkit, location: 'session' })
@@ -380,7 +388,9 @@ export function ConnectedAccountRequestItem({
       title={reason || `Connect to ${provider?.displayName || toolkit}`}
       subtitle={replacement
         ? 'Choose or connect an account you own. This replaces the connection for this agent. Active sessions will be interrupted and told to use the new account.'
-        : 'Selected accounts will be linked to this agent for future use.'}
+        : provider?.unlisted && accounts.length === 0
+          ? `New ${provider.displayName} connections are not available yet.`
+          : 'Selected accounts will be linked to this agent for future use.'}
       theme="blue"
       sessionId={sessionId}
       agentSlug={agentSlug}
@@ -456,22 +466,25 @@ export function ConnectedAccountRequestItem({
               </div>
               <p>{(provider?.displayName || toolkit).replace(/\b\w/g, (char) => char.toUpperCase())}</p>
             </div>
-            <Button
-              onClick={handleConnectNew}
-              loading={status === 'connecting'}
-              disabled={status !== 'pending'}
-              size="xs"
-              className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
-            >
-              <Plus className="h-4 w-4" />
-              Connect
-            </Button>
+            {/* An unlisted provider cannot be started from Gamut; the agent named it anyway. */}
+            {!provider?.unlisted && (
+              <Button
+                onClick={handleConnectNew}
+                loading={status === 'connecting'}
+                disabled={status !== 'pending'}
+                size="xs"
+                className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
+              >
+                <Plus className="h-4 w-4" />
+                Connect
+              </Button>
+            )}
           </div>
         </div>
       )}
 
       {/* Connect New button */}
-      {accounts.length > 0 && (
+      {accounts.length > 0 && !provider?.unlisted && (
         <div className="mt-1 ml-2">
           <Button
             onClick={handleConnectNew}
@@ -754,19 +767,22 @@ function AccountOption({
             className="w-32 p-1"
             onClick={(e) => e.stopPropagation()}
           >
-            <Button
-              size="xs"
-              variant="ghost"
-              className="w-full justify-start gap-2 text-foreground hover:bg-muted"
-              onClick={(e) => {
-                e.stopPropagation()
-                setMenuOpen(false)
-                onStartEdit()
-              }}
-            >
-              <Pencil className="h-3.5 w-3.5" />
-              Rename
-            </Button>
+            {/* A Shopify connection is named after its store. */}
+            {account.toolkitSlug !== 'shopify' && (
+              <Button
+                size="xs"
+                variant="ghost"
+                className="w-full justify-start gap-2 text-foreground hover:bg-muted"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setMenuOpen(false)
+                  onStartEdit()
+                }}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                Rename
+              </Button>
+            )}
             <Button
               size="xs"
               variant="ghost"

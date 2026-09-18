@@ -24,6 +24,7 @@ vi.stubGlobal('fetch', mockFetch)
 
 import {
   getConnectionToken,
+  getConnection,
   proxyExecute,
   getAccountDisplayName,
   initiateConnection,
@@ -740,6 +741,27 @@ describe('initiateConnection', () => {
     })
   }
 
+  // Only the create endpoint takes a pre-filled subdomain; Composio keeps it for
+  // custom auth configs. The user then lands on the provider, not on Composio.
+  it('POSTs to /connected_accounts with the subdomain pre-filled', async () => {
+    mockLinkOk({ id: 'ca_shop', redirect_url: 'https://backend.composio.dev/api/v3/s/abc' })
+
+    const result = await initiateConnection('ac_xyz', 'https://app/cb', 'user-42', 'gamut-dev')
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe('https://backend.composio.dev/api/v3/connected_accounts')
+    expect((init as RequestInit).method).toBe('POST')
+    expect(JSON.parse((init as { body: string }).body)).toEqual({
+      auth_config: { id: 'ac_xyz' },
+      connection: {
+        user_id: 'user-42',
+        callback_url: 'https://app/cb',
+        state: { authScheme: 'OAUTH2', val: { status: 'INITIALIZING', subdomain: 'gamut-dev' } },
+      },
+    })
+    expect(result).toEqual({ connectionId: 'ca_shop', redirectUrl: 'https://backend.composio.dev/api/v3/s/abc' })
+  })
+
   it('POSTs to /connected_accounts/link with flat body', async () => {
     mockLinkOk({
       link_token: 'lk_abc',
@@ -991,5 +1013,61 @@ describe('getOrCreateAuthConfig', () => {
 
     expect(result.id).toBe('ac_first')
     expect(mockFetch).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('getConnection shopDomain', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetEffectiveComposioApiKey.mockReturnValue('test-api-key')
+  })
+
+  it('returns the store the connection is authorized for', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ...makeComposioResponse({ authScheme: 'OAUTH2', val: { subdomain: 'gamut-dev', access_token: 'tok' } }),
+        toolkit: { slug: 'shopify' },
+      }),
+    })
+    expect((await getConnection('ca_shop')).shopDomain).toBe('gamut-dev.myshopify.com')
+  })
+
+  it('leaves shopDomain unset when the store is not a myshopify domain', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ...makeComposioResponse({ authScheme: 'OAUTH2', val: { subdomain: 'evil.com/x' } }),
+        toolkit: { slug: 'shopify' },
+      }),
+    })
+    expect((await getConnection('ca_shop')).shopDomain).toBeUndefined()
+  })
+
+  // A record can carry state with no val at all, and the status still matters:
+  // the proxy reads it to decide whether an account needs reconnecting.
+  it('still reports status when the connection carries no state val', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        id: 'ca_shop',
+        status: 'ACTIVE',
+        toolkit: { slug: 'shopify' },
+        auth_config: { id: 'ac-1', auth_scheme: 'OAUTH2', is_composio_managed: true },
+        state: { authScheme: 'OAUTH2' },
+      }),
+    })
+    const connection = await getConnection('ca_shop')
+    expect(connection.status).toBe('ACTIVE')
+    expect(connection.shopDomain).toBeUndefined()
+  })
+
+  // Another toolkit's subdomain is a tenant, not a store.
+  it('leaves shopDomain unset for a non-Shopify connection', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => makeComposioResponse({ authScheme: 'OAUTH2', val: { subdomain: 'acme' } }),
+    })
+    expect((await getConnection('conn-1')).shopDomain).toBeUndefined()
   })
 })

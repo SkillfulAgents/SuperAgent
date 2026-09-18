@@ -48,9 +48,10 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     toolkitSlug: string,
     callbackUrl: string,
     userId?: string,
+    subdomain?: string,
   ): Promise<InitiateConnectionResult> {
     const authConfig = await getOrCreateAuthConfig(getProviderSlug(toolkitSlug, 'composio'))
-    return composioInitiateConnection(authConfig.id, callbackUrl, userId)
+    return composioInitiateConnection(authConfig.id, callbackUrl, userId, subdomain)
   }
 
   async getConnection(connectionId: string): Promise<ProviderConnection> {
@@ -83,6 +84,13 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     toolkitSlug: string,
     fallbackName: string,
   ): Promise<string> {
+    // A Shopify account is named after the store it is authorized for, which
+    // also keeps it to one account per store. The routes refuse to save one
+    // whose store could not be verified.
+    if (toolkitSlug === 'shopify') {
+      const connection = await composioGetConnection(connectionId).catch(() => null)
+      return connection?.shopDomain ?? fallbackName
+    }
     return resolveDisplayName(
       (p) => this.makeApiCall(p),
       connectionId,
@@ -132,6 +140,7 @@ export class ComposioAccountProvider extends BaseAccountProvider {
   private async directForward(
     accessToken: string,
     params: {
+      toolkitSlug: string
       targetUrl: string
       method: string
       headers: Headers
@@ -144,7 +153,12 @@ export class ComposioAccountProvider extends BaseAccountProvider {
         forwardHeaders.set(key, value)
       }
     })
-    forwardHeaders.set('Authorization', `Bearer ${accessToken}`)
+    // Shopify's Admin API authenticates with its own header, not a Bearer token.
+    if (params.toolkitSlug === 'shopify') {
+      forwardHeaders.set('X-Shopify-Access-Token', accessToken)
+    } else {
+      forwardHeaders.set('Authorization', `Bearer ${accessToken}`)
+    }
 
     const init: RequestInit = { method: params.method, headers: forwardHeaders }
     if (params.method !== 'GET' && params.method !== 'HEAD' && params.body) {

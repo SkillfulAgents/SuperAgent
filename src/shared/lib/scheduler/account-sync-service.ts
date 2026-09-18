@@ -194,6 +194,9 @@ class AccountSyncService {
     for (const remote of remoteConnections) {
       if (remote.status !== 'ACTIVE') continue
       if (localByConnectionId.has(remote.id)) continue
+      // A reconnect's new Shopify grant replaces its store's account in the
+      // connect finalizer; importing it here first would duplicate the store.
+      if (remote.toolkitSlug === 'shopify') continue
 
       try {
         const serviceProvider = getProvider(remote.toolkitSlug)

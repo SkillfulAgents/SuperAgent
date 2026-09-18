@@ -10,7 +10,8 @@ import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-servi
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { ProxyExecuteResponseSchema } from './proxy-execute-schema'
-import { LinkResponseSchema } from './link-response-schema'
+import { CreateResponseSchema, LinkResponseSchema } from './link-response-schema'
+import { parseShopDomain } from '@shared/lib/account-providers/shopify'
 
 const COMPOSIO_HOST = 'https://backend.composio.dev'
 
@@ -238,6 +239,12 @@ export interface ComposioConnection {
   status: 'ACTIVE' | 'INITIATED' | 'INITIALIZING' | 'FAILED' | 'EXPIRED' | 'INACTIVE'
   toolkitSlug?: string
   createdAt?: string
+  /**
+   * For Shopify, the store the connection is authorized for, as
+   * `<store>.myshopify.com`. Composio reports it from the finished grant, so
+   * this is the account's identity, not the store Gamut asked for.
+   */
+  shopDomain?: string
 }
 
 // API response type for GET /connected_accounts/:id
@@ -325,7 +332,8 @@ interface InitiateConnectionResponse {
 export async function initiateConnection(
   authConfigId: string,
   callbackUrl: string,
-  userIdOverride?: string
+  userIdOverride?: string,
+  subdomain?: string,
 ): Promise<InitiateConnectionResponse> {
   const userId = userIdOverride || getComposioUserId()
   if (!userId && shouldUseLocalComposioKey()) {
@@ -333,6 +341,25 @@ export async function initiateConnection(
       'Composio User ID is required to initiate a connection',
       401
     )
+  }
+
+  // A pre-filled subdomain skips Composio's hosted page and sends the user
+  // straight to the provider. Only `POST /connected_accounts` takes one, and it
+  // is still served for custom auth configs (Shopify's is one).
+  if (subdomain) {
+    const raw = await composioFetch<unknown>('/connected_accounts', {
+      method: 'POST',
+      body: JSON.stringify({
+        auth_config: { id: authConfigId },
+        connection: {
+          ...(userId ? { user_id: userId } : {}),
+          callback_url: callbackUrl,
+          state: { authScheme: 'OAUTH2', val: { status: 'INITIALIZING', subdomain } },
+        },
+      }),
+    })
+    const parsed = CreateResponseSchema.parse(raw)
+    return { connectionId: parsed.id, redirectUrl: parsed.redirect_url }
   }
 
   const raw = await composioFetch<unknown>('/connected_accounts/link', {
@@ -358,12 +385,19 @@ export async function initiateConnection(
 export async function getConnection(
   connectionId: string
 ): Promise<ComposioConnection> {
-  const response = await composioFetch<ConnectedAccountGetResponse>(
+  const response = await composioFetch<ConnectedAccountWithTokenResponse>(
     `/connected_accounts/${connectionId}`
   )
+  // Only a Shopify grant carries a store; another toolkit's `subdomain` (a
+  // Zendesk or Atlassian tenant) is not one. `val` is absent on some records.
+  const subdomain = response.toolkit?.slug === 'shopify' ? response.state?.val?.subdomain : undefined
   return {
     id: response.id,
     status: response.status as ComposioConnection['status'],
+    // Shopify hosts are case-insensitive; the reported subdomain may not be.
+    shopDomain: typeof subdomain === 'string'
+      ? parseShopDomain(`${subdomain.toLowerCase()}.myshopify.com`) ?? undefined
+      : undefined,
   }
 }
 
@@ -389,7 +423,7 @@ interface ConnectionTokenResponse {
 interface ConnectedAccountWithTokenResponse extends ConnectedAccountGetResponse {
   state?: {
     authScheme: string
-    val: {
+    val?: {
       status?: string
       access_token?: string
       oauth_token?: string
