@@ -1,18 +1,9 @@
 // @vitest-environment jsdom
+import { fakeLoginWindow } from '@renderer/test/fake-login-window'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 
-const popupMocks = vi.hoisted(() => ({
-  prepare: vi.fn(),
-  navigate: vi.fn(async () => {}),
-  close: vi.fn(),
-}))
-vi.mock('@renderer/lib/oauth-popup', () => ({
-  prepareOAuthPopup: () => {
-    popupMocks.prepare()
-    return { navigate: popupMocks.navigate, close: popupMocks.close }
-  },
-}))
+vi.mock('@renderer/lib/oauth-popup', () => import('@renderer/test/fake-login-window'))
 
 import { LOGIN_WINDOW_CANCEL_DELAY_MS, useLoginWindow, type LoginWindowOutcome } from './use-login-window'
 
@@ -31,9 +22,9 @@ describe('useLoginWindow', () => {
   // Cleared before each test, not after: unmounting the previous test's hook
   // closes its window, and that call must not count toward the next test.
   beforeEach(() => {
-    popupMocks.prepare.mockClear()
-    popupMocks.navigate.mockClear()
-    popupMocks.close.mockClear()
+    fakeLoginWindow.prepare.mockClear()
+    fakeLoginWindow.navigate.mockClear()
+    fakeLoginWindow.close.mockClear()
   })
 
   it('opens the window before the URL request settles, then sends it to the login page', async () => {
@@ -44,7 +35,7 @@ describe('useLoginWindow', () => {
     let outcome!: Promise<LoginWindowOutcome>
     act(() => {
       outcome = result.current.open(() => {
-        windowsOpenAtRequest = popupMocks.prepare.mock.calls.length
+        windowsOpenAtRequest = fakeLoginWindow.prepare.mock.calls.length
         return request.promise
       })
     })
@@ -56,7 +47,7 @@ describe('useLoginWindow', () => {
     request.resolve('https://login.test')
     await act(async () => { await outcome })
     await expect(outcome).resolves.toBe('waiting')
-    expect(popupMocks.navigate).toHaveBeenCalledWith('https://login.test')
+    expect(fakeLoginWindow.navigate).toHaveBeenCalledWith('https://login.test')
     expect(result.current.waiting).toBe(true)
   })
 
@@ -72,7 +63,7 @@ describe('useLoginWindow', () => {
     expect(result.current.canCancel).toBe(true)
 
     act(() => { result.current.close() })
-    expect(popupMocks.close).toHaveBeenCalledTimes(1)
+    expect(fakeLoginWindow.close).toHaveBeenCalledTimes(1)
     expect(result.current).toMatchObject({ pending: false, waiting: false, canCancel: false })
   })
 
@@ -88,7 +79,7 @@ describe('useLoginWindow', () => {
     request.resolve('https://login.test')
     await act(async () => { await outcome })
     await expect(outcome).resolves.toBe('stale')
-    expect(popupMocks.navigate).not.toHaveBeenCalled()
+    expect(fakeLoginWindow.navigate).not.toHaveBeenCalled()
     expect(result.current.pending).toBe(false)
     // The canceled attempt's timer is gone too.
     act(() => { vi.advanceTimersByTime(LOGIN_WINDOW_CANCEL_DELAY_MS) })
@@ -107,7 +98,7 @@ describe('useLoginWindow', () => {
     await act(async () => { await firstOutcome })
     await expect(firstOutcome).resolves.toBe('stale')
     expect(result.current.waiting).toBe(true)
-    expect(popupMocks.navigate).toHaveBeenCalledTimes(1)
+    expect(fakeLoginWindow.navigate).toHaveBeenCalledTimes(1)
   })
 
   it('closes the window and rethrows when the request fails', async () => {
@@ -118,12 +109,12 @@ describe('useLoginWindow', () => {
     await act(async () => { await outcome.catch(() => {}) })
 
     await expect(outcome).rejects.toThrow('no login url')
-    expect(popupMocks.close).toHaveBeenCalledTimes(1)
+    expect(fakeLoginWindow.close).toHaveBeenCalledTimes(1)
     expect(result.current.pending).toBe(false)
   })
 
   it('closes the window and rethrows when the window cannot be sent to the login page', async () => {
-    popupMocks.navigate.mockRejectedValueOnce(new Error('openExternal failed'))
+    fakeLoginWindow.navigate.mockRejectedValueOnce(new Error('openExternal failed'))
     const { result } = renderHook(() => useLoginWindow())
 
     let outcome!: Promise<LoginWindowOutcome>
@@ -131,7 +122,7 @@ describe('useLoginWindow', () => {
     await act(async () => { await outcome.catch(() => {}) })
 
     await expect(outcome).rejects.toThrow('openExternal failed')
-    expect(popupMocks.close).toHaveBeenCalledTimes(1)
+    expect(fakeLoginWindow.close).toHaveBeenCalledTimes(1)
     expect(result.current).toMatchObject({ pending: false, waiting: false })
   })
 
@@ -142,7 +133,7 @@ describe('useLoginWindow', () => {
     await act(async () => { outcome = await result.current.open(async () => null) })
 
     expect(outcome).toBe('no-url')
-    expect(popupMocks.close).toHaveBeenCalledTimes(1)
+    expect(fakeLoginWindow.close).toHaveBeenCalledTimes(1)
     expect(result.current.pending).toBe(false)
   })
 
@@ -151,6 +142,6 @@ describe('useLoginWindow', () => {
     await act(async () => { await result.current.open(async () => 'https://login.test') })
 
     unmount()
-    expect(popupMocks.close).toHaveBeenCalledTimes(1)
+    expect(fakeLoginWindow.close).toHaveBeenCalledTimes(1)
   })
 })

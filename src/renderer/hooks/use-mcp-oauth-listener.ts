@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 
-type McpOAuthResult = { success: boolean; error?: string; mcpId?: string; state?: string }
+export type McpOAuthResult = { success: boolean; error?: string; mcpId?: string; state?: string }
 type McpOAuthCallbackMessage = {
   type?: unknown
   success?: unknown

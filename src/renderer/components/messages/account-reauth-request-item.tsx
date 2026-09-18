@@ -1,6 +1,7 @@
-import { useState } from 'react'
-import { Loader2, RefreshCw } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import { LoginButton } from '@renderer/components/connections/login-button'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
@@ -35,9 +36,12 @@ export function AccountReauthRequestItem({
   const [replacing, setReplacing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [dismissing, setDismissing] = useState(false)
-  const { reconnect, pendingAccountId } = useOAuthReconnect()
+  const { reconnect, pendingAccountId, canCancelPendingReconnect, cancelReconnect } = useOAuthReconnect()
   const { data: connectedAccounts } = useConnectedAccounts()
   const isReconnecting = pendingAccountId === accountId
+  // Cancel makes reconnect report false; that is not a failure to show. Cancel
+  // and a retry both move past the attempt, which then reports nothing.
+  const attemptRef = useRef(0)
   const providerName = getProvider(toolkit)?.displayName
     ?? `${toolkit.charAt(0).toUpperCase()}${toolkit.slice(1)}`
   const statusLabel = accountStatus === 'expired' ? 'expired' : 'been revoked'
@@ -48,12 +52,18 @@ export function AccountReauthRequestItem({
 
   const handleReconnect = async () => {
     setError(null)
+    const attempt = ++attemptRef.current
     const succeeded = await reconnect(accountId, toolkit)
     if (succeeded) {
       onComplete()
-    } else {
+    } else if (attempt === attemptRef.current) {
       setError('Reconnection was not completed. Try again to continue the request.')
     }
+  }
+
+  const handleCancelReconnect = () => {
+    attemptRef.current++
+    cancelReconnect()
   }
 
   const handleDismiss = async (reason?: string) => {
@@ -118,20 +128,20 @@ export function AccountReauthRequestItem({
             Replace connection
           </Button>
           {canReconnect && (
-            <Button
+            <LoginButton
               type="button"
               size="xs"
+              icon={<RefreshCw />}
+              label="Reconnect"
+              pendingLabel="Reconnecting…"
+              pending={isReconnecting}
+              canCancel={isReconnecting && canCancelPendingReconnect}
+              onCancel={handleCancelReconnect}
+              cancelSide="left"
               onClick={handleReconnect}
-              disabled={isReconnecting || dismissing}
+              disabled={dismissing}
               data-testid="account-reauth-reconnect-btn"
-            >
-              {isReconnecting ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-              )}
-              {isReconnecting ? 'Reconnecting…' : 'Reconnect'}
-            </Button>
+            />
           )}
         </RequestItemActions>
       )}
