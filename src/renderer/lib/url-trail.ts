@@ -1,19 +1,20 @@
-// Sentence punctuation and emphasis delimiters GFM also treats as trailing.
-const ASCII_TRAIL = new Set(['.', ',', ';', ':', '!', '?', '*', '_', '~'])
+/** Sentence punctuation prose puts after a URL. */
+export const PROSE_TRAIL: ReadonlySet<string> = new Set(['.', ',', ';', ':', '!', '?'])
+
+/** PROSE_TRAIL plus the emphasis delimiters GFM also treats as trailing. */
+export const MARKDOWN_TRAIL: ReadonlySet<string> = new Set([...PROSE_TRAIL, '*', '_', '~'])
 
 // A closing bracket is prose only when the kept URL has no opener for it.
 const BRACKET_OPENER: Record<string, string> = { ')': '(', ']': '[' }
 
-// CJK Symbols and Punctuation, plus the punctuation rows of Halfwidth and
-// Fullwidth Forms (letters and digits in that block are left alone).
-function isFullwidthPunctuation(code: number): boolean {
-  return (
-    (code >= 0x3000 && code <= 0x303f) ||
-    (code >= 0xff01 && code <= 0xff0f) ||
-    (code >= 0xff1a && code <= 0xff20) ||
-    (code >= 0xff3b && code <= 0xff40) ||
-    (code >= 0xff5b && code <= 0xff65)
-  )
+// Punctuation in CJK Symbols and Punctuation (、。「」…); letters and numerals in
+// that block (々〆〇) are path characters. Punctuation and symbols in the
+// fullwidth ASCII rows (！（），．：？～…); fullwidth letters and digits are not.
+const CJK_PUNCTUATION = /^(?=[\u3000-\u303f])\p{P}$/u
+const FULLWIDTH_PUNCTUATION = /^(?=[\uff01-\uff65])[\p{P}\p{S}]$/u
+
+function isFullwidthSeparator(ch: string): boolean {
+  return CJK_PUNCTUATION.test(ch) || FULLWIDTH_PUNCTUATION.test(ch)
 }
 
 function countOf(text: string, ch: string): number {
@@ -27,13 +28,13 @@ function countOf(text: string, ch: string): number {
  *
  * CJK prose puts no space between a URL and what follows, so the URL ends at
  * the first fullwidth punctuation mark — `（public，MIT）。` is never part of one.
- * ASCII trailing punctuation is then trimmed the way GFM does, with brackets
- * kept while balanced so https://en.wikipedia.org/wiki/Foo_(bar) survives.
+ * Trailing ASCII characters in `trail` are then trimmed, with brackets kept
+ * while balanced so https://en.wikipedia.org/wiki/Foo_(bar) survives.
  */
-export function splitUrlTrail(text: string): { url: string; trail: string } {
+export function splitUrlTrail(text: string, trail: ReadonlySet<string> = MARKDOWN_TRAIL): { url: string; trail: string } {
   let end = text.length
   for (let i = 0; i < text.length; i++) {
-    if (isFullwidthPunctuation(text.charCodeAt(i))) {
+    if (isFullwidthSeparator(text[i])) {
       end = i
       break
     }
@@ -42,7 +43,7 @@ export function splitUrlTrail(text: string): { url: string; trail: string } {
     const ch = text[end - 1]
     const kept = text.slice(0, end - 1)
     const opener = BRACKET_OPENER[ch]
-    const isTrail = opener !== undefined ? countOf(kept, opener) <= countOf(kept, ch) : ASCII_TRAIL.has(ch)
+    const isTrail = opener !== undefined ? countOf(kept, opener) <= countOf(kept, ch) : trail.has(ch)
     if (!isTrail) break
     end--
   }

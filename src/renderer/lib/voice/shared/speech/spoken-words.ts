@@ -134,7 +134,8 @@ const processor = unified().use(remarkParse).use(REMARK_PLUGINS).use(remarkRehyp
 
 /** Spoken words of a Markdown message, in the order the renderer shows them. */
 export function markdownToSpokenWords(markdown: string): SpokenWord[] {
-  const tree = processor.runSync(processor.parse(markdown)) as Root
+  // The source travels with the tree: remarkTrimAutolinkLiteral reads it.
+  const tree = processor.runSync(processor.parse(markdown), markdown) as Root
   return collectSpokenWords(tree)
 }
 

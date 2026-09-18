@@ -51,6 +51,23 @@ describe('remarkTrimAutolinkLiteral', () => {
     expect(screen.getByRole('link')).toHaveAttribute('href', 'https://example.com/a%E3%80%82')
   })
 
+  it('leaves an explicit link alone even when its label equals the URL suffix', () => {
+    render(<MarkdownBlock text="[report_](https://example.com/report_)" />)
+    expect(screen.getByRole('link', { name: 'report_' })).toHaveAttribute('href', 'https://example.com/report_')
+  })
+
+  it('leaves <url> autolinks alone', () => {
+    render(<MarkdownBlock text="<https://example.com/report_> and <https://example.com/a（b）>" />)
+    const links = screen.getAllByRole('link')
+    expect(links[0]).toHaveAttribute('href', 'https://example.com/report_')
+    expect(links[1]).toHaveAttribute('href', 'https://example.com/a%EF%BC%88b%EF%BC%89')
+  })
+
+  it('keeps a Japanese path whose characters live in the CJK Symbols block', () => {
+    render(<MarkdownBlock text="See https://example.com/people/佐々木" />)
+    expect(screen.getByRole('link')).toHaveAttribute('href', 'https://example.com/people/%E4%BD%90%E3%80%85%E6%9C%A8')
+  })
+
   it('keeps a CJK path that is not punctuation', () => {
     render(<MarkdownBlock text="See https://zh.wikipedia.org/wiki/中文" />)
     expect(screen.getByRole('link')).toHaveAttribute('href', 'https://zh.wikipedia.org/wiki/%E4%B8%AD%E6%96%87')

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { safeHref } from './markdown-url-transform'
-import { splitUrlTrail } from './url-trail'
+import { PROSE_TRAIL, splitUrlTrail } from './url-trail'
 
 // Agents write prose, not markdown, into request-card titles, so a URL there
 // arrives bare. Match the schemes the renderer is willing to link at all — the
@@ -39,7 +39,8 @@ export function linkify(text: string): ReactNode {
   for (const match of text.matchAll(URL_CANDIDATE)) {
     const raw = match[0]
     const index = match.index
-    const candidate = splitUrlTrail(raw).url
+    // Not markdown: a trailing `_` or `~` here is a URL character, not a delimiter.
+    const candidate = splitUrlTrail(raw, PROSE_TRAIL).url
     const href = safeHref(candidate)
     if (!href) continue
 

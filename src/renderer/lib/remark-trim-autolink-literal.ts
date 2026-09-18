@@ -1,5 +1,6 @@
 import type { Link, PhrasingContent, Root, Text } from 'mdast'
 import type { Point, Position } from 'unist'
+import type { VFile } from 'vfile'
 import { SKIP, visit } from 'unist-util-visit'
 import { splitUrlTrail } from './url-trail'
 
@@ -25,15 +26,22 @@ function span(position: Position | undefined, from: number, to: number): Positio
   return { start: shiftPoint(position.start, from), end: shiftPoint(position.start, to) }
 }
 
-function isAutolinkLiteral(node: Link): node is Link & { children: [Text] } {
+// A literal autolink is the only link whose source begins with the URL itself;
+// `[label](url)` and `<url>` start with a bracket and keep their authored href.
+function isAutolinkLiteral(node: Link, source: string): node is Link & { children: [Text] } {
   const [child] = node.children
-  return node.children.length === 1 && child.type === 'text' && node.url.endsWith(child.value)
+  const start = node.position?.start.offset
+  if (start === undefined || node.children.length !== 1 || child.type !== 'text') return false
+  return source[start] !== '[' && source[start] !== '<' && node.url.endsWith(child.value)
 }
 
 export function remarkTrimAutolinkLiteral() {
-  return (tree: Root) => {
+  return (tree: Root, file: VFile) => {
+    // Without the source there is no way to tell a literal from an authored link.
+    const source = String(file.value ?? '')
+    if (!source) return
     visit(tree, 'link', (node, index, parent) => {
-      if (index === undefined || !parent || !isAutolinkLiteral(node)) return
+      if (index === undefined || !parent || !isAutolinkLiteral(node, source)) return
       const [text] = node.children
       const { url, trail } = splitUrlTrail(text.value)
       if (!trail || !url) return
