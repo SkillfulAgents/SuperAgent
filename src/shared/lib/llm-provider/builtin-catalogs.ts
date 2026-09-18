@@ -24,9 +24,11 @@ const STANDARD_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 const CLAUDE_4_6_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'max']
 // gpt-5.4/5.5, grok-4.6, muse-spark ≤1.2: xhigh accepted, max rejected or clamped.
 const XHIGH_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh']
-// grok-4.5 and the Fireworks-served models: nothing above high is verified to
-// be honored (Fireworks accepts any value on its Anthropic shim; chat wire
-// drops effort), so they keep the standard three.
+// kimi-k3 on Fireworks' Anthropic wire: two real tiers, max ≈ 2.4× high (measured 2026-09-18).
+const KIMI_K3_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'max']
+// grok-4.5 and deepseek-v4.1-flash: nothing above high is verified to be
+// honored (Fireworks' Anthropic shim accepts any value; deepseek output is
+// flat across all tiers), so they keep the standard three.
 const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 
 /**
@@ -674,7 +676,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     isLatest: true,
     isDefault: true,
     icon: 'kimi',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedEfforts: KIMI_K3_EFFORTS,
     // Fireworks' fast path is a separate router resource the proxy swaps in;
     // it has no flex/slow equivalent.
     supportedSpeeds: PRIORITY_ONLY_SPEEDS,
@@ -702,7 +704,9 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     isLatest: true,
     isDefault: true,
     icon: 'zai',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
+    // Fireworks chat wire with reasoning_effort forwarded by the proxy: low ≈ 0
+    // reasoning chars, high ≈ 50, xhigh ≈ 500, max ≈ 800 (measured 2026-09-18).
+    supportedEfforts: ALL_EFFORTS,
     supportsWebSearch: false,
     supportsWebFetch: false,
     supportsImageInput: true,

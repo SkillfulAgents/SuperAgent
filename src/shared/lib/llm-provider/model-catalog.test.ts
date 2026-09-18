@@ -113,8 +113,8 @@ describe('getProviderCatalog', () => {
     ['muse-spark-1.3', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['muse-spark-1.2', ['low', 'medium', 'high', 'xhigh']],
     ['muse-spark-1.3-contributor', ['low', 'medium', 'high', 'xhigh']],
-    ['kimi-k3', ['low', 'medium', 'high']],
-    ['glm-5.3-flash', ['low', 'medium', 'high']],
+    ['kimi-k3', ['low', 'medium', 'high', 'max']],
+    ['glm-5.3-flash', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['deepseek-v4.1-flash', ['low', 'medium', 'high']],
   ])('platform %s accepts efforts %j', (id, efforts) => {
     const model = getProviderCatalog('platform').find((m) => m.id === id)!
