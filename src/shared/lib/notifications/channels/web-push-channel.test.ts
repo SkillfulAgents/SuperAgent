@@ -94,7 +94,7 @@ beforeEach(() => {
 })
 
 describe('type allowlist', () => {
-  it.each(['session_complete', 'session_waiting'] as const)('pushes %s', async (type) => {
+  it.each(['session_complete', 'session_waiting', 'session_notify'] as const)('pushes %s', async (type) => {
     await channel.deliver(makeEvent({ type }))
     expect(mocks.sendNotification).toHaveBeenCalledTimes(1)
   })
@@ -152,6 +152,12 @@ describe('declarative payload', () => {
     await channel.deliver(makeEvent({ type: 'session_waiting' }))
     const options = mocks.sendNotification.mock.calls[0][2] as { TTL: number }
     expect(options.TTL).toBe(10 * 60)
+  })
+
+  it('session_notify pushes carry the one-hour TTL', async () => {
+    await channel.deliver(makeEvent({ type: 'session_notify' }))
+    const options = mocks.sendNotification.mock.calls[0][2] as { TTL: number }
+    expect(options.TTL).toBe(60 * 60)
   })
 
   it('each subscription gets navigate built on its own origin', async () => {

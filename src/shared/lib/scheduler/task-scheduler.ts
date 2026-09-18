@@ -227,7 +227,7 @@ class TaskScheduler {
       model: resolved.model,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
-      metadata: { isAutomated: true },
+      metadata: { noninteractive: true },
       effort: resolved.effort,
       ...(resolved.speed ? { speed: resolved.speed } : {}),
     })
@@ -236,6 +236,7 @@ class TaskScheduler {
     const sessionName = task.name || 'Scheduled Task'
 
     await actor.sessions.register(sessionId, sessionName, {
+      noninteractive: true,
       isScheduledExecution: true,
       scheduledTaskId: task.id,
       scheduledTaskName: task.name || undefined,

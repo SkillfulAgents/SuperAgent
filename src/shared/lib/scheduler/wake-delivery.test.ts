@@ -132,7 +132,7 @@ describe('deliverSessionWake', () => {
     const [sessionId, content, , options] = mockSendMessage.mock.calls[0]
     expect(sessionId).toBe('sleeping-session-1')
     expect(content.startsWith('[SYSTEM] ')).toBe(true)
-    expect(options).toEqual({ shouldQuery: true })
+    expect(options).toEqual({ shouldQuery: true, noninteractive: true })
     expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
       expect.objectContaining({ slug: 'agent-one' }),
       'sleeping-session-1',

@@ -28,6 +28,7 @@ import {
 const ALL_TYPES: NotificationType[] = [
   'session_complete',
   'session_waiting',
+  'session_notify',
   'session_scheduled',
   'session_webhook',
   'session_chat_integration',
@@ -58,9 +59,10 @@ describe('notification-service', () => {
   })
 
   describe('USER_ACTIONABLE_NOTIFICATION_TYPES', () => {
-    it('contains exactly the two types that drive UI badges', () => {
+    it('contains exactly the three types that drive UI badges', () => {
       expect([...USER_ACTIONABLE_NOTIFICATION_TYPES].sort()).toEqual([
         'session_complete',
+        'session_notify',
         'session_waiting',
       ])
     })
@@ -76,8 +78,8 @@ describe('notification-service', () => {
   describe('getUnreadCount', () => {
     it('counts only user-actionable types — lifecycle events do not contribute', async () => {
       await seedOneOfEachType('agent-a', 'sess')
-      // 5 unread notifications inserted, but only 2 are user-actionable.
-      expect(await getUnreadCount()).toBe(2)
+      // 6 unread notifications inserted, but only 3 are user-actionable.
+      expect(await getUnreadCount()).toBe(3)
     })
 
     it('returns 0 when only lifecycle events are unread', async () => {
@@ -93,10 +95,11 @@ describe('notification-service', () => {
       expect(await getUnreadCount()).toBe(0)
     })
 
-    it('counts both session_complete and session_waiting', async () => {
+    it('counts session_complete, session_waiting and session_notify', async () => {
       await createNotification({ type: 'session_complete', sessionId: 's1', agentSlug: 'a', title: 't', body: 'b' })
       await createNotification({ type: 'session_waiting', sessionId: 's2', agentSlug: 'a', title: 't', body: 'b' })
-      expect(await getUnreadCount()).toBe(2)
+      await createNotification({ type: 'session_notify', sessionId: 's3', agentSlug: 'a', title: 't', body: 'b' })
+      expect(await getUnreadCount()).toBe(3)
     })
   })
 
@@ -104,10 +107,11 @@ describe('notification-service', () => {
     it('only returns session IDs whose unread notifications are user-actionable', async () => {
       await seedOneOfEachType('agent-a', 'sess')
       const sessionIds = await getSessionIdsWithUnreadNotifications('agent-a')
-      // Of the 5 we inserted, only the two actionable ones contribute.
-      expect(sessionIds.size).toBe(2)
+      // Of the 6 we inserted, only the three actionable ones contribute.
+      expect(sessionIds.size).toBe(3)
       expect(sessionIds.has('sess-session_complete')).toBe(true)
       expect(sessionIds.has('sess-session_waiting')).toBe(true)
+      expect(sessionIds.has('sess-session_notify')).toBe(true)
       expect(sessionIds.has('sess-session_scheduled')).toBe(false)
       expect(sessionIds.has('sess-session_webhook')).toBe(false)
       expect(sessionIds.has('sess-session_chat_integration')).toBe(false)
@@ -126,9 +130,9 @@ describe('notification-service', () => {
       await seedOneOfEachType('agent-a', 'sess-a')
       await seedOneOfEachType('agent-b', 'sess-b')
       const map = await getUnreadNotificationsByAgents(['agent-a', 'agent-b'])
-      // Each agent contributes exactly the two actionable session ids.
-      expect(map.get('agent-a')?.size).toBe(2)
-      expect(map.get('agent-b')?.size).toBe(2)
+      // Each agent contributes exactly the three actionable session ids.
+      expect(map.get('agent-a')?.size).toBe(3)
+      expect(map.get('agent-b')?.size).toBe(3)
       expect(map.get('agent-a')?.has('sess-a-session_complete')).toBe(true)
       expect(map.get('agent-a')?.has('sess-a-session_scheduled')).toBe(false)
     })
@@ -171,6 +175,7 @@ describe('notification-service', () => {
       const remaining = await listNotifications(50)
       expect(remaining.map((n) => n.sessionId).sort()).toEqual([
         'sess-session_chat_integration',
+        'sess-session_notify',
         'sess-session_scheduled',
         'sess-session_waiting',
       ])

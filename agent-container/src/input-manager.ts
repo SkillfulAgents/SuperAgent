@@ -35,6 +35,7 @@ type EarlyResult =
 const AUTOMATED_INPUT_TYPES: ReadonlySet<string> = new Set([
   'schedule_task',
   'schedule_resume',
+  'notify_user',
   'list_scheduled_tasks',
   'update_scheduled_task',
   'cancel_scheduled_task',

@@ -455,10 +455,10 @@ describe('session_waiting promotes automated sessions to interactive', () => {
     expect(mockPromoteAutomatedSession).not.toHaveBeenCalled()
   })
 
-  it('a promotion failure does not block the notification', async () => {
+  it('a promotion failure fails the notification instead of leaving the session hidden with a pending alert', async () => {
     mockPromoteAutomatedSession.mockRejectedValueOnce(new Error('disk full'))
-    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'question')
-    expect(mockCreateNotification).toHaveBeenCalledTimes(1)
+    await expect(notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'question')).rejects.toThrow('disk full')
+    expect(mockCreateNotification).not.toHaveBeenCalled()
   })
 
   it('promotes even when session_waiting notifications are disabled in settings', async () => {
@@ -473,6 +473,92 @@ describe('session_waiting promotes automated sessions to interactive', () => {
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'secret')
     expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).not.toHaveBeenCalled()
+  })
+})
+
+describe('triggerAgentNotify (notify_user tool)', () => {
+  beforeEach(() => {
+    mockGetSessionMetadata.mockResolvedValue({ noninteractive: true, isScheduledExecution: true })
+  })
+
+  it('creates a session_notify record with the agent-name default title', async () => {
+    const result = await notificationManager.triggerAgentNotify('sess-1', 'agent-x', 'Rate limited for 3 hours, gave up.')
+
+    expect(result).toEqual({ ok: true, outcome: 'created' })
+    expect(mockCreateNotification).toHaveBeenCalledWith({
+      type: 'session_notify',
+      sessionId: 'sess-1',
+      agentSlug: 'agent-x',
+      title: 'Demo Agent needs your attention',
+      body: 'Rate limited for 3 hours, gave up.',
+    })
+    expect(mockBroadcastGlobal).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'os_notification', notificationType: 'session_notify' }),
+    )
+  })
+
+  it('uses the agent-supplied title when present', async () => {
+    await notificationManager.triggerAgentNotify('sess-1', 'agent-x', 'body', '  Report ready  ')
+    expect(mockCreateNotification).toHaveBeenCalledWith(expect.objectContaining({ title: 'Report ready' }))
+  })
+
+  it('promotes the session before creating the notification', async () => {
+    await notificationManager.triggerAgentNotify('sess-1', 'agent-x', 'body')
+
+    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
+    expect(mockPromoteAutomatedSession.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCreateNotification.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('reports suppressed when the sessionWaiting preference is off, but still promotes', async () => {
+    mocks.getUserSettings.mockReturnValueOnce({
+      notifications: {
+        enabled: true,
+        sessionComplete: true,
+        sessionWaiting: false,
+        sessionScheduled: true,
+      },
+    })
+    const result = await notificationManager.triggerAgentNotify('sess-1', 'agent-x', 'body')
+    expect(result).toEqual({ ok: true, outcome: 'suppressed' })
+    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
+    expect(mockCreateNotification).not.toHaveBeenCalled()
+  })
+
+  it('rejects instead of reporting success when promotion fails', async () => {
+    mockPromoteAutomatedSession.mockRejectedValueOnce(new Error('metadata write failed'))
+    await expect(notificationManager.triggerAgentNotify('sess-1', 'agent-x', 'body')).rejects.toThrow('metadata write failed')
+    expect(mockCreateNotification).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a user-started session', { isScheduledExecution: false }],
+    ['a session with no metadata', null],
+    ['a promoted session (flag cleared)', { noninteractive: false, isScheduledExecution: true }],
+    ['a legacy automated session already promoted', { isScheduledExecution: true, promotedToInteractive: true }],
+    ['a chat integration session', { isChatIntegrationSession: true }],
+    ['an x-agent target session', { invokedByAgentSlug: 'caller' }],
+  ])('refuses %s without promoting or notifying', async (_label, meta) => {
+    mockGetSessionMetadata.mockResolvedValue(meta)
+
+    const result = await notificationManager.triggerAgentNotify('sess-1', 'agent-x', 'body')
+
+    expect(result).toEqual({ ok: false, reason: 'interactive_session' })
+    expect(mockPromoteAutomatedSession).not.toHaveBeenCalled()
+    expect(mockCreateNotification).not.toHaveBeenCalled()
+    expect(mockBroadcastGlobal).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['flagged', { noninteractive: true }],
+    ['legacy webhook', { isWebhookExecution: true }],
+    ['legacy widget repair', { isWidgetRepair: true }],
+  ])('accepts a %s noninteractive session', async (_label, meta) => {
+    mockGetSessionMetadata.mockResolvedValue(meta)
+    const result = await notificationManager.triggerAgentNotify('sess-1', 'agent-x', 'body')
+    expect(result).toEqual({ ok: true, outcome: 'created' })
+    expect(mockCreateNotification).toHaveBeenCalledTimes(1)
   })
 })
 

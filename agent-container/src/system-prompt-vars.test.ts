@@ -51,6 +51,39 @@ describe('buildSystemPromptVars', () => {
   })
 })
 
+describe('unattended-session section', () => {
+  const render = (noninteractive?: boolean) =>
+    generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, undefined, undefined, noninteractive)
+
+  it('is off by default and for an explicit false', () => {
+    expect(buildSystemPromptVars().noninteractive).toBe(false)
+    expect(render()).not.toContain('## Unattended Session')
+    expect(render(false)).not.toContain('## Unattended Session')
+  })
+
+  it('renders for a noninteractive session, before the agent-specific instructions', () => {
+    const out = generateSystemPrompt(undefined, 'Always answer in French.', undefined, undefined, undefined, undefined, undefined, true)
+    expect(out).toContain('## Unattended Session')
+    expect(out).toContain('Nobody is watching it live.')
+    expect(out.indexOf('## Unattended Session')).toBeLessThan(out.indexOf('## Agent-Specific Instructions'))
+  })
+
+  it('names the tools that end unattended mode and the recovery rules', () => {
+    const out = render(true)
+    for (const s of [
+      'calling `notify_user` makes this session visible to the user and ends unattended mode',
+      'A scheduled wake-up message is not a human reply.',
+      'Rate limited (429): honor Retry-After',
+      'call `mcp__user-input__schedule_resume` for that exact time',
+      'Failed is not the same as unknown',
+      'call `mcp__user-input__notify_user` once with a short message',
+      'do not also raise a notification for it',
+    ]) {
+      expect(out).toContain(s)
+    }
+  })
+})
+
 describe('generateSystemPrompt rendering', () => {
   it('renders the mounted-folders block only when mounts are present', () => {
     expect(generateSystemPrompt()).not.toContain('Mounted folders:')

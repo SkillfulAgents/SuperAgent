@@ -1404,6 +1404,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return response.ok
   }
 
+  // Tell the container the session is visible now: it drops the notify_user
+  // tool and the unattended prompt section on its next query.
+  async promoteSession(sessionId: string): Promise<void> {
+    const response = await this.fetch(`/sessions/${encodeURIComponent(sessionId)}/promote`, { method: 'POST' })
+    if (!response.ok) {
+      throw new Error(`Container refused session promotion: HTTP ${response.status}`)
+    }
+  }
+
   async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
     const port = await this.getPortOrThrow()
     const timeoutMs = 30000 // 30 second timeout
@@ -1411,7 +1420,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const speed = options?.speed
     const model = resolveContainerModel(options?.model, 'agent')
     const shouldQuery = options?.shouldQuery
-    const isAutomated = options?.isAutomated
+    const noninteractive = options?.noninteractive
     // Refreshed on every message so a long-lived session tracks settings
     // changes; the container restarts its query only on a block-boundary flip.
     const capabilityPolicies = getAgentCapabilitySettings()
@@ -1432,7 +1441,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             ...(speed ? { speed } : {}),
             ...(model ? { model } : {}),
             ...(shouldQuery !== undefined ? { shouldQuery } : {}),
-            ...(isAutomated !== undefined ? { isAutomated } : {}),
+            ...(noninteractive !== undefined ? { noninteractive } : {}),
             capabilityPolicies,
           }),
           signal: controller.signal,

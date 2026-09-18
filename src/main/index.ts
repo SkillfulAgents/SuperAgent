@@ -236,6 +236,7 @@ function isNotificationTypeAllowedLocally(notificationType: string | undefined):
       case 'session_complete':
         return n.sessionComplete !== false
       case 'session_waiting':
+      case 'session_notify':
         return n.sessionWaiting !== false
       case 'session_scheduled':
         return n.sessionScheduled !== false

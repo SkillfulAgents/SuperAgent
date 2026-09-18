@@ -181,12 +181,13 @@ async function startRepairSession(
       model: resolved.model,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
-      metadata: { isAutomated: true },
+      metadata: { noninteractive: true },
       effort: resolved.effort,
       ...(resolved.speed ? { speed: resolved.speed } : {}),
     })
 
     await actor.sessions.register(session.id, 'Invoked to fix widget', {
+      noninteractive: true,
       isWidgetRepair: true,
       widgetRepairSlug: widgetSlug,
       automationStatus: 'running',
