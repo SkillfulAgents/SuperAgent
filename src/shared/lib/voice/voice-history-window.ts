@@ -18,8 +18,10 @@ export const VOICE_HISTORY_LIMITS: VoiceHistoryLimits = {
 
 export const VOICE_HISTORY_TRUNCATION_MARKER = ' […]'
 
-type Tokenizer = { countTokens: (text: string) => number }
+type Tokenizer = { countTokens: (text: string, options?: { disallowedSpecial?: Set<string> }) => number }
 let tokenizer: Promise<Tokenizer> | null = null
+// Chat text may quote marker strings like <|endoftext|>; count them as ordinary text instead of throwing.
+const AS_ORDINARY_TEXT = { disallowedSpecial: new Set<string>() }
 
 // 2.3 MB of BPE ranks: load on the first voice session, not at API boot.
 function loadTokenizer(): Promise<Tokenizer> {
@@ -42,7 +44,7 @@ export async function windowVoiceHistory(history: VoiceHistory, limits = VOICE_H
   for (let i = history.length - 1; i >= 0; i--) {
     const content = clipVoiceHistoryTurn(history[i].content, limits.perMessageChars)
     if (!content) continue
-    const cost = countTokens(content) + limits.perMessageOverheadTokens
+    const cost = countTokens(content, AS_ORDINARY_TEXT) + limits.perMessageOverheadTokens
     if (kept.length >= limits.maxMessages || used + cost > limits.tokenBudget) break
     used += cost
     kept.push({ role: history[i].role, content })

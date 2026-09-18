@@ -3,6 +3,10 @@ import { z } from 'zod'
 // GPT-Live `input` accepts at most 128 messages; the host trims to its token budget.
 export const VOICE_HISTORY_MAX_MESSAGES = 128
 export const VOICE_HISTORY_MAX_MESSAGE_CHARS = 4000
+// The host rejects larger `/live/*` bodies; serialized history takes at most
+// VOICE_HISTORY_MAX_BYTES so the SDP offer or mapping transcript still fits.
+export const VOICE_LIVE_BODY_MAX_BYTES = 128 * 1024
+export const VOICE_HISTORY_MAX_BYTES = 40 * 1024
 
 export const voiceHistorySchema = z.array(z.object({
   role: z.enum(['user', 'assistant']),

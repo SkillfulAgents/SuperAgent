@@ -109,6 +109,16 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     expect(sent.history.every((m: { content: string }) => m.content.length < 1600)).toBe(true)
   })
 
+  it('starts and maps sessions whose history quotes tokenizer markers', async () => {
+    const history: VoiceHistory = [{ role: 'user', content: 'What does <|endoftext|> mean?' }, { role: 'assistant', content: 'It marks <|endoftext|> the end of a document.' }]
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ session: { id: 'live_test' }, transport: { sdp: 'answer' } })))
+    await provider.createLiveSession('offer', history)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).session.input).toHaveLength(2)
+    mocks.summarize.mockResolvedValue('{"action":"none","text":""}')
+    await provider.mapLiveConversation({ kind: 'request', transcript: 'user: ok', history, previousRequest: '', agentBusy: false })
+    expect(JSON.parse(mocks.summarize.mock.calls[0][1].messages[0].content).history).toEqual(history)
+  })
+
   it('omits empty and whitespace-only turns from upstream history', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ session: { id: 'live_test' }, transport: { sdp: 'answer' } })))
     await provider.createLiveSession('offer', [

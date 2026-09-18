@@ -41,6 +41,16 @@ describe('windowVoiceHistory', () => {
     expect(out[2].content.endsWith(VOICE_HISTORY_TRUNCATION_MARKER)).toBe(true)
   })
 
+  it.each(['<|endoftext|>', '<|endofprompt|>', '<|fim_prefix|>'])('counts chat text quoting the %s marker as ordinary text', async (marker) => {
+    const history: VoiceHistory = [
+      { role: 'user', content: `Why does the model emit ${marker} here?` },
+      { role: 'assistant', content: `${marker} is a tokenizer marker; your prompt should not contain it.` },
+    ]
+    const out = await windowVoiceHistory(history)
+    expect(out).toEqual(history)
+    expect(await windowVoiceHistory(history, { ...VOICE_HISTORY_LIMITS, tokenBudget: 1 })).toEqual([])
+  })
+
   it('stays under the GPT-Live 8,192-token input cap with a full window of dense text', async () => {
     const dense: VoiceHistory = Array.from({ length: 200 }, (_, i) => ({ role: role(i), content: '中文'.repeat(1000) }))
     const out = await windowVoiceHistory(dense)
