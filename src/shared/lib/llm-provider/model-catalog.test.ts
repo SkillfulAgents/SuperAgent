@@ -87,12 +87,38 @@ describe('getProviderCatalog', () => {
     expect(opusLatest[0].id).toBe('claude-opus-5')
   })
 
-  it('gives Opus/Fable all five efforts and Sonnet/Haiku the lower three', () => {
-    const catalog = getProviderCatalog('anthropic')
-    const opus = catalog.find((m) => m.id === 'claude-opus-4-8')!
-    const sonnet = catalog.find((m) => m.id === 'claude-sonnet-5')!
-    expect(opus.supportedEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
-    expect(sonnet.supportedEfforts).toEqual(['low', 'medium', 'high'])
+  // Effort lists mirror what each serving path accepted live on 2026-09-18.
+  it.each([
+    ['claude-haiku-4-5', ['low', 'medium', 'high']],
+    ['claude-sonnet-4-6', ['low', 'medium', 'high', 'max']],
+    ['claude-sonnet-5', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['claude-opus-4-6', ['low', 'medium', 'high', 'max']],
+    ['claude-opus-4-7', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['claude-opus-4-8', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['claude-fable-5-1', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ])('anthropic %s accepts efforts %j', (id, efforts) => {
+    const model = getProviderCatalog('anthropic').find((m) => m.id === id)!
+    expect(model.supportedEfforts).toEqual(efforts)
+  })
+
+  it.each([
+    ['gpt-5.4', ['low', 'medium', 'high', 'xhigh']],
+    ['gpt-5.5', ['low', 'medium', 'high', 'xhigh']],
+    ['gpt-5.6-luna', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['gpt-5.6-terra', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['gpt-5.6-sol', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['gpt-6-astra', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['grok-4.6', ['low', 'medium', 'high', 'xhigh']],
+    ['grok-4.5', ['low', 'medium', 'high']],
+    ['muse-spark-1.3', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['muse-spark-1.2', ['low', 'medium', 'high', 'xhigh']],
+    ['muse-spark-1.3-contributor', ['low', 'medium', 'high', 'xhigh']],
+    ['kimi-k3', ['low', 'medium', 'high']],
+    ['glm-5.3-flash', ['low', 'medium', 'high']],
+    ['deepseek-v4.1-flash', ['low', 'medium', 'high']],
+  ])('platform %s accepts efforts %j', (id, efforts) => {
+    const model = getProviderCatalog('platform').find((m) => m.id === id)!
+    expect(model.supportedEfforts).toEqual(efforts)
   })
 
   it('exposes the OpenRouter non-Claude built-ins (gpt, glm, grok) with their own icons', () => {
