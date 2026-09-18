@@ -1,6 +1,4 @@
-import ReactMarkdown from 'react-markdown'
-import { REMARK_PLUGINS } from '@renderer/lib/remark-plugins'
-import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { Markdown } from '@renderer/components/ui/markdown'
 import { ToolCallItem } from './tool-call-item'
 import type { ApiMessage, ApiMessageOrBoundary, ApiToolCall } from '@shared/lib/types/api'
 
@@ -38,9 +36,7 @@ export function flattenAssistantMessages(messages: ApiMessageOrBoundary[] | unde
 export function TranscriptText({ children }: { children: string }) {
   return (
     <div className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} urlTransform={markdownUrlTransform}>
-        {children}
-      </ReactMarkdown>
+      <Markdown>{children}</Markdown>
     </div>
   )
 }

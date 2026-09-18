@@ -1,7 +1,5 @@
 import { CheckCircle2 } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import { REMARK_PLUGINS } from '@renderer/lib/remark-plugins'
-import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { Markdown } from '@renderer/components/ui/markdown'
 import { useWorkflow } from '@renderer/context/workflow-context'
 import type { WorkflowResultNotification } from '@shared/lib/utils/task-notifications'
 
@@ -44,9 +42,7 @@ export function WorkflowResultCard({ notification }: { notification: WorkflowRes
         <div className="flex items-center gap-2 px-2 py-1.5 bg-muted/40">{header}</div>
       )}
       <div className="px-3 py-2 prose prose-sm max-w-none min-w-0 break-words dark:prose-invert prose-strong:font-medium">
-        <ReactMarkdown remarkPlugins={REMARK_PLUGINS} urlTransform={markdownUrlTransform}>
-          {notification.result}
-        </ReactMarkdown>
+        <Markdown>{notification.result}</Markdown>
       </div>
     </div>
   )
