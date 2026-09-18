@@ -9,22 +9,22 @@ describe('remarkTrimAutolinkLiteral', () => {
 
   it('keeps fullwidth punctuation and the closing ** out of a bare URL href', () => {
     const { container } = render(
-      <MarkdownBlock text="已经写到你的 GitHub 上了：**https://github.com/yiw190/reaper-mcp**（公开，MIT）。" />
+      <MarkdownBlock text="代码已经推到 GitHub：**https://github.com/acme/widget-kit**（公开，MIT）。" />
     )
     const link = screen.getByRole('link')
-    expect(link).toHaveAttribute('href', 'https://github.com/yiw190/reaper-mcp')
-    expect(link).toHaveTextContent('https://github.com/yiw190/reaper-mcp')
-    expect(container.textContent).toBe('已经写到你的 GitHub 上了：https://github.com/yiw190/reaper-mcp（公开，MIT）。')
+    expect(link).toHaveAttribute('href', 'https://github.com/acme/widget-kit')
+    expect(link).toHaveTextContent('https://github.com/acme/widget-kit')
+    expect(container.textContent).toBe('代码已经推到 GitHub：https://github.com/acme/widget-kit（公开，MIT）。')
   })
 
   it('restores the strong emphasis whose closing ** the autolink swallowed', () => {
     const { container } = render(
-      <MarkdownBlock text="见 **https://github.com/yiw190/reaper-mcp**（公开）。" />
+      <MarkdownBlock text="见 **https://github.com/acme/widget-kit**（公开）。" />
     )
     const strong = container.querySelector('strong')
     expect(strong).not.toBeNull()
-    expect(strong?.querySelector('a')).toHaveAttribute('href', 'https://github.com/yiw190/reaper-mcp')
-    expect(container.textContent).toBe('见 https://github.com/yiw190/reaper-mcp（公开）。')
+    expect(strong?.querySelector('a')).toHaveAttribute('href', 'https://github.com/acme/widget-kit')
+    expect(container.textContent).toBe('见 https://github.com/acme/widget-kit（公开）。')
   })
 
   it('restores single-asterisk emphasis the same way', () => {
