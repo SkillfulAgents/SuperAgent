@@ -17,6 +17,7 @@ import { useHoldSound } from '@renderer/hooks/use-hold-sound'
 import { readAloud } from '@renderer/lib/voice/services/read-aloud'
 import { clearVoiceModeRequest, isVoiceModeRequested, registerVoiceModeExit, setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
+import { VOICE_HISTORY_MAX_MESSAGE_CHARS, VOICE_HISTORY_MAX_MESSAGES } from '@shared/lib/voice/conversation-types'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { ComposerActionButton } from './composer-action-button'
 import { SlashCommandMenu } from './slash-command-menu'
@@ -346,11 +347,12 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     exitTimerRef.current = null
   }, [voiceModeOn])
   const { submitMessage } = composer
-  const voiceHistory = useMemo(() => (messages ?? []).slice(-24).flatMap((message) =>
+  // Transport bound only; the host trims to the voice model's token budget.
+  const voiceHistory = useMemo(() => (messages ?? []).flatMap((message) =>
       (message.type === 'user' || message.type === 'assistant') && message.content.text.trim()
-        ? [{ role: message.type, content: message.content.text.slice(-4000) }]
+        ? [{ role: message.type, content: message.content.text.slice(0, VOICE_HISTORY_MAX_MESSAGE_CHARS) }]
         : [],
-    ).slice(-24), [messages])
+    ).slice(-VOICE_HISTORY_MAX_MESSAGES), [messages])
   const voice = useVoiceMode({
     sessionId,
     agentSlug,

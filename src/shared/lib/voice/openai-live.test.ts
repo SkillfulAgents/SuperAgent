@@ -11,6 +11,7 @@ vi.mock('../config/settings', () => ({
 vi.mock('../llm-provider/helpers', () => ({ getConfiguredLlmClient: () => mocks.client, createSummarizerText: mocks.summarize }))
 vi.mock('../llm-provider', () => ({ resolveActiveProviderModel: mocks.resolve }))
 import { OpenaiVoiceProvider } from './openai-provider'
+import type { VoiceHistory } from './conversation-types'
 
 const provider = new OpenaiVoiceProvider()
 const fetchMock = vi.fn()
@@ -85,6 +86,29 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     expect((err as Error).message).toContain('GPT-Live access')
     expect((err as Error).message).not.toContain('sensitive')
   })
+  it('seeds Live with a token-budgeted window of recent turns, clipping long turns to their head', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ session: { id: 'live_test' }, transport: { sdp: 'answer' } })))
+    const history: VoiceHistory = Array.from({ length: 40 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `turn ${i} ${'detail '.repeat(20)}` }))
+    history.push({ role: 'assistant', content: 'CONCLUSION ' + 'x'.repeat(3900) })
+    await provider.createLiveSession('offer', history)
+    const input = JSON.parse(fetchMock.mock.calls[0][1].body).session.input as Array<{ role: string; content: Array<{ type: string; text: string }> }>
+    expect(input).toHaveLength(41)
+    expect(input[0].content[0].text.startsWith('turn 0')).toBe(true)
+    expect(input.at(-1)?.content[0].text.startsWith('CONCLUSION')).toBe(true)
+    expect(input.at(-1)?.content[0].text.length).toBeLessThan(1600)
+    expect(input.at(-1)?.content[0].type).toBe('text')
+    expect(input[0].content[0].type).toBe('input_text')
+  })
+
+  it('bounds the history handed to the request summarizer with the same window', async () => {
+    mocks.summarize.mockResolvedValue('{"action":"none","text":""}')
+    const history: VoiceHistory = Array.from({ length: 128 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: 'y'.repeat(4000) }))
+    await provider.mapLiveConversation({ kind: 'request', transcript: 'user: ok', history, previousRequest: '', agentBusy: false })
+    const sent = JSON.parse(mocks.summarize.mock.calls[0][1].messages[0].content)
+    expect(sent.history.length).toBeLessThan(128)
+    expect(sent.history.every((m: { content: string }) => m.content.length < 1600)).toBe(true)
+  })
+
   it('omits empty and whitespace-only turns from upstream history', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ session: { id: 'live_test' }, transport: { sdp: 'answer' } })))
     await provider.createLiveSession('offer', [

@@ -74,6 +74,7 @@
     "drizzle-orm": "^0.45.1",
     "electron-updater": "^6.7.3",
     "eventsource": "^4.1.0",
+    "gpt-tokenizer": "^4.0.0",
     "grammy": "^1.44.0",
     "hono": "^4.6.14",
     "jose": "^6.1.3",
