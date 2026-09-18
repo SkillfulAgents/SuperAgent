@@ -16,7 +16,7 @@ import { classifyUserText } from './user-message-kinds'
 import { SentAttachmentChip, imageSizeForCount } from './sent-attachment-chip'
 import { isPreviewableImage } from '@renderer/lib/file-types'
 import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { REMARK_PLUGINS } from '@renderer/lib/remark-plugins'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
 import { isProviderFacingError } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
@@ -73,8 +73,6 @@ function extractText(node: ReactNode): string {
   if (typeof node === 'object' && 'props' in node) return extractText(node.props.children)
   return ''
 }
-
-const REMARK_PLUGINS = [remarkGfm]
 
 // Side breathing room kept between an expanded table and the chat edges.
 const TABLE_BREAKOUT_GUTTER = 16

@@ -2,7 +2,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { ListTree, ChevronDown, ChevronRight } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { REMARK_PLUGINS } from '@renderer/lib/remark-plugins'
 import { useElapsedTimer, formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import { StatusIndicator } from './tool-call-item'
@@ -28,8 +28,6 @@ interface ThinkingBlockItemProps {
 // list's 80px tolerance since the card body is a small (max-h-64) scroller.
 const PIN_THRESHOLD_PX = 32
 
-const THINKING_REMARK_PLUGINS = [remarkGfm]
-
 // Thinking traces use the same safe URL policy as assistant messages. Keep the
 // renderer deliberately compact: these blocks live in a narrow, capped card,
 // where a wide table should scroll instead of widening the whole transcript.
@@ -54,7 +52,7 @@ const THINKING_MARKDOWN_COMPONENTS: Components = {
 const ThinkingMarkdownBlock = memo(function ThinkingMarkdownBlock({ text }: { text: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={THINKING_REMARK_PLUGINS}
+      remarkPlugins={REMARK_PLUGINS}
       components={THINKING_MARKDOWN_COMPONENTS}
       urlTransform={markdownUrlTransform}
     >
