@@ -17,7 +17,7 @@ describe('VoiceModeBoundary', () => {
     const renderMarkdown = vi.fn()
     render(<VoiceModeBoundary text={VOICE_MODE_ENTERED_MESSAGE} message={message} renderMarkdown={renderMarkdown} />)
     const boundary = screen.getByTestId('voice-mode-boundary')
-    expect(boundary).toHaveTextContent('Entered Voice Mode')
+    expect(boundary).toHaveTextContent('Voice mode: on')
     expect(boundary).toHaveAttribute('data-notice', 'entered')
     expect(screen.queryByText(/read aloud/)).not.toBeInTheDocument()
     expect(renderMarkdown).not.toHaveBeenCalled()
@@ -26,7 +26,7 @@ describe('VoiceModeBoundary', () => {
   it('draws the exit notice', () => {
     render(<VoiceModeBoundary text={VOICE_MODE_EXITED_MESSAGE} message={message} renderMarkdown={vi.fn()} />)
     const boundary = screen.getByTestId('voice-mode-boundary')
-    expect(boundary).toHaveTextContent('Exited Voice Mode')
+    expect(boundary).toHaveTextContent('Voice mode: off')
     expect(boundary).toHaveAttribute('data-notice', 'exited')
   })
 

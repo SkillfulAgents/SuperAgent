@@ -11,6 +11,8 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
 import { VoiceModeComposer } from './voice-mode-composer'
+import { AnimatedHeight } from './animated-height'
+import { useAgent } from '@renderer/hooks/use-agents'
 import { VoiceModeControls, useHoldSoundPreference } from './voice-mode-controls'
 import { useVoiceMode } from '@renderer/hooks/use-voice-mode'
 import { useHoldSound } from '@renderer/hooks/use-hold-sound'
@@ -57,6 +59,12 @@ interface MessageInputProps {
    * person left.
    */
   suspended?: boolean
+}
+
+/** Whether a key press belongs to the focused control rather than to the composer. */
+function isInteractive(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  return target.closest('button, input, textarea, select, a[href], [contenteditable=""], [contenteditable="true"], [role="menuitem"], [role="option"], [role="combobox"], [role="dialog"]') !== null
 }
 
 export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, registerSnapshot, suspended = false }: MessageInputProps) {
@@ -351,6 +359,8 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         ? [{ role: message.type, content: message.content.text.slice(-4000) }]
         : [],
     ).slice(-24), [messages])
+  // The agent's name labels its lines in the voice transcript.
+  const { data: voiceAgent } = useAgent(agentSlug)
   const voice = useVoiceMode({
     sessionId,
     agentSlug,
@@ -360,6 +370,33 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     startWithAgentTurn: openedByVoice,
     history: voiceHistory,
   })
+  // Keys while voice mode is on: Space interrupts the agent (the orb's own
+  // action while it has the floor), ⌘⇧M (Ctrl⇧M) mutes the microphone and
+  // ⌘⇧A (Ctrl⇧A) the agent's voice. Read from the latest render so the
+  // listener is bound once per voice session.
+  const voiceRef = useRef(voice)
+  voiceRef.current = voice
+  useEffect(() => {
+    if (!voiceModeOn || isViewOnly) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === ' ' && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+        // A control that has focus keeps its own Space (a button pressing, a menu choosing).
+        if (isInteractive(event.target)) return
+        if (voiceRef.current.phase === 'listening') return
+        voiceRef.current.pressMic()
+        event.preventDefault()
+        return
+      }
+      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey) return
+      const key = event.key.toLowerCase()
+      if (key === 'm') voiceRef.current.setMicMuted(!voiceRef.current.micMuted)
+      else if (key === 'a') voiceRef.current.setOutputMuted(!voiceRef.current.outputMuted)
+      else return
+      event.preventDefault()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [voiceModeOn, isViewOnly])
   // Something to hear while the agent works, unless the person muted it.
   const holdSoundWanted = useHoldSoundPreference()
   useHoldSound({
@@ -375,169 +412,183 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     return null
   }
 
+  // One frame around either form: it stays mounted across the swap so the
+  // height glides, and the incoming form gets the enter animation.
   if (voiceModeOn) {
     return (
-      <div
+      <AnimatedHeight>
+        <div
+          className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+          {...composer.dragHandlers}
+        >
+          <MountChoiceDialog
+            open={composer.mountDialog.open}
+            onChoice={composer.mountDialog.onChoice}
+            folderName={composer.mountDialog.folderName}
+          />
+          <VoiceModeComposer
+            phase={voice.phase}
+            ready={voice.ready}
+            agentName={voiceAgent?.name}
+            userSpeaking={voice.userSpeaking}
+            utterance={voice.utterance}
+            transcript={voice.transcript}
+            error={voice.error}
+            onClearError={voice.clearError}
+            onPressMic={voice.pressMic}
+            micMuted={voice.micMuted}
+            onToggleMicMuted={() => voice.setMicMuted(!voice.micMuted)}
+          outputMuted={voice.outputMuted}
+          onToggleOutputMuted={() => voice.setOutputMuted(!voice.outputMuted)}
+            getAnalyser={voice.getAnalyser}
+            getOutputAnalyser={voice.getOutputAnalyser}
+            onExit={exitVoiceMode}
+            attachments={composer.attachments}
+            onRemoveAttachment={composer.removeAttachment}
+            onRetryAttachment={composer.retryAttachment}
+            attachmentPicker={(
+              <AttachmentPicker
+                onFileSelect={composer.handleFileSelect}
+                onFolderSelect={composer.handleFolderSelect}
+                onRecentFileAttach={(file) => composer.addFiles([{ file }])}
+                disabled={isDisabled}
+              />
+            )}
+            composerOptions={(
+              <ComposerOptions
+                state={composerOptions}
+                disabled={isDisabled || isActive}
+                footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
+              />
+            )}
+            voiceControls={<VoiceModeControls showSpeed={voice.capabilities.speechSpeed} />}
+            footer={(
+              <>
+                {isOffline && (
+                  <div className="mt-2 flex items-center gap-1.5 text-xs text-destructive">
+                    <WifiOff className="h-3 w-3 shrink-0" />
+                    <span>No internet connection. Messages cannot be sent.</span>
+                  </div>
+                )}
+                <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2" />
+              </>
+            )}
+          />
+        </div>
+      </AnimatedHeight>
+    )
+  }
+
+  return (
+    <AnimatedHeight>
+      <form
+        onSubmit={composer.handleSubmit}
         className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
         {...composer.dragHandlers}
       >
+        <StopSessionDialog
+          open={stopDialogOpen}
+          onOpenChange={setStopDialogOpen}
+          tasks={stopDialogTasks}
+          // Waiting on background work means the response already ended; the
+          // only thing left to stop is the tasks themselves.
+          turnInProgress={!isWaitingBackground}
+          onStopTurn={() => { setStopDialogOpen(false); void runInterrupt('turn') }}
+          onStopAll={() => { setStopDialogOpen(false); void runInterrupt('all') }}
+        />
         <MountChoiceDialog
           open={composer.mountDialog.open}
           onChoice={composer.mountDialog.onChoice}
           folderName={composer.mountDialog.folderName}
         />
-        <VoiceModeComposer
-          phase={voice.phase}
-          utterance={voice.utterance}
-          transcript={voice.transcript}
-          error={voice.error}
-          onClearError={voice.clearError}
-          onPressMic={voice.pressMic}
-          getAnalyser={voice.getAnalyser}
-          onExit={exitVoiceMode}
+        <SlashCommandMenu
+          commands={filteredCommands}
+          selectedIndex={slashMenuIndex}
+          onSelect={selectSlashCommand}
+          visible={slashMenuOpen}
+          filter={slashFilter ?? ''}
+        />
+        <ChatComposerBox
+          className={`${FLOATING_COMPOSER_CLASS} composer-enter-contents`}
           attachments={composer.attachments}
           onRemoveAttachment={composer.removeAttachment}
           onRetryAttachment={composer.retryAttachment}
-          attachmentPicker={(
-            <AttachmentPicker
-              onFileSelect={composer.handleFileSelect}
-              onFolderSelect={composer.handleFolderSelect}
-              onRecentFileAttach={(file) => composer.addFiles([{ file }])}
-              disabled={isDisabled}
-            />
+          textareaRef={textareaRef}
+          value={composer.message}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onPaste={composer.handlePaste}
+          onFocus={() => { if (slashFilter !== null && slashCommands.length > 0) setSlashMenuOpen(true) }}
+          onBlur={() => setSlashMenuOpen(false)}
+          placeholder={
+            isOffline
+              ? 'No internet connection...'
+              : isActive
+                ? 'Type your next message...'
+                : 'Type a message...'
+          }
+          disabled={isDisabled}
+          rows={2}
+          enterKeyHint="enter"
+          dataTestId="message-input"
+          secureSecrets={{
+            agentSlug,
+            potentialSecrets: composer.potentialSecrets,
+            securedSecrets: composer.securedSecrets,
+            onDismiss: composer.dismissPotentialSecret,
+            onSecure: composer.securePotentialSecret,
+            onRemove: composer.removeSecuredSecrets,
+          }}
+          leftActions={(
+            <>
+              <AttachmentPicker
+                onFileSelect={composer.handleFileSelect}
+                onFolderSelect={composer.handleFolderSelect}
+                onRecentFileAttach={(file) => composer.addFiles([{ file }])}
+                disabled={isDisabled}
+              />
+              {/* Model/effort are locked while the agent works — changing them
+                  mid-turn would interrupt the running query. */}
+              <ComposerOptions
+                state={composerOptions}
+                disabled={isDisabled || isActive}
+                footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
+              />
+            </>
           )}
-          composerOptions={(
-            <ComposerOptions
-              state={composerOptions}
-              disabled={isDisabled || isActive}
-              footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
-            />
+          rightActions={(
+            <>
+              <VoiceInputButton
+                voiceInput={composer.voiceInput}
+                message={composer.message}
+                disabled={isDisabled}
+              />
+              {/* Not mid-dictation: that mic and socket would stay open under voice mode's own. */}
+              <VoiceModeButton onClick={enterVoiceMode} disabled={isDisabled || composer.voiceInput.isRecording || composer.voiceInput.isConnecting} />
+              <ComposerActionButton
+                isActive={isActive}
+                isWaitingBackground={isWaitingBackground}
+                canSubmit={composer.canSubmit}
+                isSending={sendMessage.isPending || composer.isUploading}
+                isInterrupting={interruptSession.isPending}
+                onInterrupt={handleInterrupt}
+              />
+            </>
           )}
-          voiceControls={<VoiceModeControls showSpeed={voice.capabilities.speechSpeed} />}
           footer={(
             <>
-              {isOffline && (
-                <div className="mt-2 flex items-center justify-center gap-1.5 text-xs text-destructive">
+              {isOffline && !isActive && (
+                <div className="mt-2 flex items-center gap-1.5 text-xs text-destructive">
                   <WifiOff className="h-3 w-3 shrink-0" />
                   <span>No internet connection. Messages cannot be sent.</span>
                 </div>
               )}
-              <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2 justify-center" />
+              <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2" />
+              <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2" />
             </>
           )}
         />
-      </div>
-    )
-  }
-
-  return (
-    <form
-      onSubmit={composer.handleSubmit}
-      className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
-      {...composer.dragHandlers}
-    >
-      <StopSessionDialog
-        open={stopDialogOpen}
-        onOpenChange={setStopDialogOpen}
-        tasks={stopDialogTasks}
-        // Waiting on background work means the response already ended; the
-        // only thing left to stop is the tasks themselves.
-        turnInProgress={!isWaitingBackground}
-        onStopTurn={() => { setStopDialogOpen(false); void runInterrupt('turn') }}
-        onStopAll={() => { setStopDialogOpen(false); void runInterrupt('all') }}
-      />
-      <MountChoiceDialog
-        open={composer.mountDialog.open}
-        onChoice={composer.mountDialog.onChoice}
-        folderName={composer.mountDialog.folderName}
-      />
-      <SlashCommandMenu
-        commands={filteredCommands}
-        selectedIndex={slashMenuIndex}
-        onSelect={selectSlashCommand}
-        visible={slashMenuOpen}
-        filter={slashFilter ?? ''}
-      />
-      <ChatComposerBox
-        className={FLOATING_COMPOSER_CLASS}
-        attachments={composer.attachments}
-        onRemoveAttachment={composer.removeAttachment}
-        onRetryAttachment={composer.retryAttachment}
-        textareaRef={textareaRef}
-        value={composer.message}
-        onChange={handleChange}
-        onKeyDown={handleKeyDown}
-        onPaste={composer.handlePaste}
-        onFocus={() => { if (slashFilter !== null && slashCommands.length > 0) setSlashMenuOpen(true) }}
-        onBlur={() => setSlashMenuOpen(false)}
-        placeholder={
-          isOffline
-            ? 'No internet connection...'
-            : isActive
-              ? 'Type your next message...'
-              : 'Type a message...'
-        }
-        disabled={isDisabled}
-        rows={2}
-        enterKeyHint="enter"
-        dataTestId="message-input"
-        secureSecrets={{
-          agentSlug,
-          potentialSecrets: composer.potentialSecrets,
-          securedSecrets: composer.securedSecrets,
-          onDismiss: composer.dismissPotentialSecret,
-          onSecure: composer.securePotentialSecret,
-          onRemove: composer.removeSecuredSecrets,
-        }}
-        leftActions={(
-          <>
-            <AttachmentPicker
-              onFileSelect={composer.handleFileSelect}
-              onFolderSelect={composer.handleFolderSelect}
-              onRecentFileAttach={(file) => composer.addFiles([{ file }])}
-              disabled={isDisabled}
-            />
-            {/* Model/effort are locked while the agent works — changing them
-                mid-turn would interrupt the running query. */}
-            <ComposerOptions
-              state={composerOptions}
-              disabled={isDisabled || isActive}
-              footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
-            />
-          </>
-        )}
-        rightActions={(
-          <>
-            <VoiceInputButton
-              voiceInput={composer.voiceInput}
-              message={composer.message}
-              disabled={isDisabled}
-            />
-            {/* Not mid-dictation: that mic and socket would stay open under voice mode's own. */}
-            <VoiceModeButton onClick={enterVoiceMode} disabled={isDisabled || composer.voiceInput.isRecording || composer.voiceInput.isConnecting} />
-            <ComposerActionButton
-              isActive={isActive}
-              isWaitingBackground={isWaitingBackground}
-              canSubmit={composer.canSubmit}
-              isSending={sendMessage.isPending || composer.isUploading}
-              isInterrupting={interruptSession.isPending}
-              onInterrupt={handleInterrupt}
-            />
-          </>
-        )}
-        footer={(
-          <>
-            {isOffline && !isActive && (
-              <div className="mt-2 flex items-center gap-1.5 text-xs text-destructive">
-                <WifiOff className="h-3 w-3 shrink-0" />
-                <span>No internet connection. Messages cannot be sent.</span>
-              </div>
-            )}
-            <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2" />
-            <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2" />
-          </>
-        )}
-      />
-    </form>
+      </form>
+    </AnimatedHeight>
   )
 }

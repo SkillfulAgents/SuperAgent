@@ -1,4 +1,5 @@
-import { AudioLines, AudioLinesOff } from 'lucide-react'
+import { Music2 } from 'lucide-react'
+import { Button } from '@renderer/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { ReadAloudSpeedSelect } from './read-aloud-controls'
 import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
@@ -19,33 +20,32 @@ export function useHoldSoundPreference(): boolean {
 export function VoiceModeControls({ showSpeed = true }: { showSpeed?: boolean }) {
   const holdSound = useHoldSoundPreference()
   const updateUserSettings = useUpdateUserSettings()
-  const label = holdSound ? 'Hold sound on' : 'Hold sound off'
+  const label = holdSound ? 'Mute hold music' : 'Unmute hold music'
 
   return (
-    <TooltipProvider>
-      <div className="flex items-center gap-0.5" data-testid="voice-mode-controls">
+    <TooltipProvider delayDuration={0}>
+      <div className="flex items-center gap-2" data-testid="voice-mode-controls">
         {showSpeed && <ReadAloudSpeedSelect testId="voice-mode-speed" align="center" />}
         <Tooltip>
           <TooltipTrigger asChild>
-            <button
+            <Button
               type="button"
+              size="icon"
+              variant="outline"
               aria-pressed={holdSound}
               aria-label={label}
               data-testid="voice-mode-hold-sound"
               // From the settings as they are when the write runs, not as
               // shown: two quick clicks toggle twice rather than cancel out.
               onClick={() => updateUserSettings.mutate((current) => ({ voice: { holdSound: !resolveHoldSound(current.voice?.holdSound) } }))}
-              className={cn(
-                'inline-flex h-6 w-6 items-center justify-center rounded transition-colors',
-                'hover:bg-black/[0.06] hover:text-foreground dark:hover:bg-white/[0.1]',
-                holdSound ? 'text-muted-foreground' : 'text-muted-foreground/50',
-              )}
+              // The same square as the exit button beside it; muted reads as off.
+              className={cn('h-[34px] w-[34px]', holdSound ? 'text-foreground' : 'text-muted-foreground/60')}
             >
-              {holdSound ? <AudioLines className="h-3.5 w-3.5" /> : <AudioLinesOff className="h-3.5 w-3.5" />}
-            </button>
+              <Music2 className="h-4 w-4" />
+            </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom">
-            {holdSound ? 'Hold sound while the agent works. Click to mute.' : 'Hold sound muted. Click to play it while the agent works.'}
+            {label}
           </TooltipContent>
         </Tooltip>
       </div>

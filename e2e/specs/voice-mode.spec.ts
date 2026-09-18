@@ -154,7 +154,7 @@ test.describe('voice mode', () => {
     await expect(composer).toHaveAttribute('data-phase', 'listening')
     await expect(page.getByTestId('message-input')).toHaveCount(0)
     // The agent is told, as a boundary in the transcript.
-    const entered = page.getByTestId('voice-mode-boundary').filter({ hasText: 'Entered Voice Mode' })
+    const entered = page.getByTestId('voice-mode-boundary').filter({ hasText: 'Voice mode: on' })
     await expect(entered).toBeVisible({ timeout: 10_000 })
     await expect(page.getByText('The user switched to voice mode')).toHaveCount(0)
 
@@ -208,7 +208,7 @@ test.describe('voice mode', () => {
     await page.getByTestId('voice-mode-exit').click()
     await expect(page.getByTestId('message-input')).toBeVisible()
     await expect(page.getByTestId('voice-mode-composer')).toHaveCount(0)
-    await expect(page.getByTestId('voice-mode-boundary').filter({ hasText: 'Exited Voice Mode' })).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId('voice-mode-boundary').filter({ hasText: 'Voice mode: off' })).toBeVisible({ timeout: 10_000 })
     // Neither notice is a message the person sent.
     await expect(sessionPage.getUserMessages()).toHaveCount(2)
   })
@@ -264,7 +264,7 @@ test.describe('voice mode', () => {
     await expect(page).toHaveURL(/\/sessions\//, { timeout: 15_000 })
     const composer = page.getByTestId('voice-mode-composer')
     await expect(composer).toBeVisible()
-    await expect(page.getByTestId('voice-mode-boundary').filter({ hasText: 'Entered Voice Mode' })).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId('voice-mode-boundary').filter({ hasText: 'Voice mode: on' })).toBeVisible({ timeout: 10_000 })
     // The notice named nothing: the session is still untitled by it.
     await expect(page.getByText('[SYSTEM]')).toHaveCount(0)
 
@@ -287,6 +287,6 @@ test.describe('voice mode', () => {
     expect((await exitNotice).status()).toBe(201)
     await page.goto(sessionUrl)
     await expect(page.getByTestId('message-input')).toBeVisible()
-    await expect(page.getByTestId('voice-mode-boundary').filter({ hasText: 'Exited Voice Mode' })).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId('voice-mode-boundary').filter({ hasText: 'Voice mode: off' })).toBeVisible({ timeout: 10_000 })
   })
 })

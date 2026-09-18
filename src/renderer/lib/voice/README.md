@@ -10,6 +10,7 @@ React hooks connect the UI and agent session to this package. Vendor protocols s
 | `registry/` | Select implementations by provider or engine and expose settings metadata; the only place that imports provider code | everything |
 | `services/` | App-wide services that compose providers through the registry: the read-aloud singleton and the microphone listener | `contracts/`, `shared/`, `registry/` |
 | `conversation/` | In-session voice: the coordinator that owns the agent loop, and the provider-independent chained engine (listener + read-aloud) | `contracts/`, `services/` |
+| `orb/` | The dot-orb renderer behind the voice-mode mic: lattice, projection, the designed states and their motion, level helpers. Plain maths on a 2D context; `components/messages/voice-orb.tsx` owns the canvas and the clock | nothing in this package |
 
 Two things are easy to confuse. A **voice agent** (`contracts/voice-agent.ts`) is the standalone spoken assistant used by agent creation and feedback aids: it has its own model and no session. A **conversation** (`contracts/conversation.ts`) is voice inside an agent session: the coordinator drives the agent, and an engine handles speech turn-taking. Both have a registry entrypoint and provider implementations.
 
