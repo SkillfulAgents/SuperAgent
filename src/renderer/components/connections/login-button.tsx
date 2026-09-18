@@ -18,6 +18,7 @@ export type LoginButtonProps = ButtonHTMLAttributes<HTMLButtonElement> &
      * moving. `'none'` renders the Button alone and leaves Cancel to the caller.
      */
     cancelSide: 'left' | 'right' | 'none'
+    cancelTestId?: string
   }
 
 /**
@@ -52,6 +53,7 @@ export function LoginButton({
   canCancel,
   onCancel,
   cancelSide,
+  cancelTestId,
   disabled,
   ...props
 }: LoginButtonProps) {
@@ -88,6 +90,7 @@ export function LoginButton({
   const cancel = (
     <LoginWindowCancel
       visible={canCancel}
+      testId={cancelTestId}
       onCancel={() => {
         focusAfterCancel()
         onCancel()

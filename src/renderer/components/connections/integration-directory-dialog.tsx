@@ -42,7 +42,7 @@ import type { Provider } from '@shared/lib/account-providers/service-catalog'
 import { COMMON_MCP_SERVERS, type CommonMcpServer } from '@shared/lib/mcp/common-servers'
 import { McpSetupGuide } from './mcp-setup-guide'
 import { McpAdvancedClientFields } from './mcp-advanced-client-fields'
-import { LoginWindowCancel } from './login-window-cancel'
+import { LoginButton } from './login-button'
 
 export type DirectoryTab = 'all' | 'apis' | 'mcps'
 
@@ -424,28 +424,23 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
                   name={provider.displayName}
                   subtitle={provider.description}
                   right={
-                    <div className="flex items-center gap-2">
-                      <LoginWindowCancel
-                        visible={pending && loginWindow.canCancel}
-                        onCancel={cancelOAuthFlow}
-                        testId={`directory-cancel-api-${provider.slug}`}
-                      />
-                      <Button
-                        size="icon"
-                        variant="outline"
-                        className="h-7 w-7"
-                        onClick={() => handleConnect(provider.slug)}
-                        disabled={connecting !== null}
-                        aria-label={`Connect ${provider.displayName}`}
-                        data-testid={`directory-connect-api-${provider.slug}`}
-                      >
-                        {pending ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Plus className="h-3.5 w-3.5" />
-                        )}
-                      </Button>
-                    </div>
+                    <LoginButton
+                      size="icon"
+                      variant="outline"
+                      className="h-7 w-7"
+                      onClick={() => handleConnect(provider.slug)}
+                      disabled={connecting !== null}
+                      aria-label={`Connect ${provider.displayName}`}
+                      data-testid={`directory-connect-api-${provider.slug}`}
+                      icon={<Plus className="h-3.5 w-3.5" />}
+                      // Icon-only, so the announcement carries the pending text.
+                      pendingLabel={<span className="sr-only">{`Connecting ${provider.displayName}…`}</span>}
+                      pending={pending}
+                      canCancel={pending && loginWindow.canCancel}
+                      onCancel={cancelOAuthFlow}
+                      cancelSide="left"
+                      cancelTestId={`directory-cancel-api-${provider.slug}`}
+                    />
                   }
                 />
               )
@@ -677,27 +672,21 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
             {error}
           </div>
         )}
-        <div className="flex items-center justify-end gap-3 pt-2">
-          <LoginWindowCancel
-            visible={loginWindow.canCancel}
+        <div className="flex justify-end pt-2">
+          <LoginButton
+            size="sm"
+            onClick={submitDraft}
+            disabled={!canSubmit}
+            data-testid="mcp-form-submit"
+            icon={<Plus className="h-3.5 w-3.5" />}
+            label="Connect Server"
+            pendingLabel={oauthPending ? 'Waiting for OAuth…' : draft.authType === 'oauth' ? 'Connecting…' : 'Adding…'}
+            pending={busy}
+            canCancel={loginWindow.canCancel}
             onCancel={cancelMcpOAuth}
-            testId="directory-cancel-mcp-oauth"
+            cancelSide="left"
+            cancelTestId="directory-cancel-mcp-oauth"
           />
-          <Button size="sm" onClick={submitDraft} disabled={!canSubmit || busy} data-testid="mcp-form-submit">
-            {busy ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                {oauthPending
-                  ? 'Waiting for OAuth...'
-                  : draft.authType === 'oauth' ? 'Connecting...' : 'Adding...'}
-              </>
-            ) : (
-              <>
-                <Plus className="h-3.5 w-3.5 mr-1.5" />
-                Connect Server
-              </>
-            )}
-          </Button>
         </div>
       </div>
     )
