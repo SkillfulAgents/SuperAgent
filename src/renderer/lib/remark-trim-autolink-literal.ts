@@ -4,8 +4,8 @@ import { SKIP, visit } from 'unist-util-visit'
 import { splitUrlTrail } from './url-trail'
 
 // GFM's autolink-literal only trims ASCII trailing punctuation, so a bare URL
-// glued to fullwidth punctuation — `**https://x.com**（公开）。` — keeps
-// `**（公开）。` in the href and eats the closing `**`, which leaves the opening
+// glued to fullwidth punctuation — `**https://x.com**（public）。` — keeps
+// `**（public）。` in the href and eats the closing `**`, which leaves the opening
 // `**` as literal text. This runs after remark-gfm, hands the trail back to the
 // prose, and rebuilds the emphasis the swallowed delimiter was meant to close.
 

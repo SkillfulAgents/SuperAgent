@@ -26,7 +26,7 @@ function countOf(text: string, ch: string): number {
  * Split the prose punctuation a bare URL collected on its right edge.
  *
  * CJK prose puts no space between a URL and what follows, so the URL ends at
- * the first fullwidth punctuation mark — `（公开，MIT）。` is never part of one.
+ * the first fullwidth punctuation mark — `（public，MIT）。` is never part of one.
  * ASCII trailing punctuation is then trimmed the way GFM does, with brackets
  * kept while balanced so https://en.wikipedia.org/wiki/Foo_(bar) survives.
  */

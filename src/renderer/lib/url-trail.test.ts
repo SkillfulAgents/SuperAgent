@@ -11,9 +11,9 @@ describe('splitUrlTrail', () => {
   })
 
   it('splits fullwidth punctuation glued to the URL', () => {
-    expect(splitUrlTrail('https://github.com/acme/widget-kit**（公开，MIT）。')).toEqual({
+    expect(splitUrlTrail('https://github.com/acme/widget-kit**（public，MIT）。')).toEqual({
       url: 'https://github.com/acme/widget-kit',
-      trail: '**（公开，MIT）。',
+      trail: '**（public，MIT）。',
     })
   })
 
