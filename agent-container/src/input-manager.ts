@@ -64,9 +64,18 @@ export const HUMAN_INPUT_TTL_MS = 24 * 60 * 60 * 1000
 // and since the buffer can hold secret values, it must not sit in memory.
 export const EARLY_RESULT_TTL_MS = 5 * 60 * 1000
 
+// Requests that put the session in front of the user: every human-answered
+// type, plus notify_user (host-answered, but its whole point is to surface
+// the session). Raising one ends the session's noninteractive mode.
+export function promotesSession(inputType: string): boolean {
+  return inputType === 'notify_user' || !AUTOMATED_INPUT_TYPES.has(inputType)
+}
+
 class InputManager {
   // Pending requests keyed by toolUseId
   private pending: Map<string, PendingInput<InputValue>> = new Map()
+
+  private promotionListener: ((sessionId: string, inputType: string) => void) | null = null
 
   // Buffered results for resolve/reject calls that arrive before createPending.
   // This handles the race condition where the UI responds to a tool call before
@@ -102,6 +111,20 @@ class InputManager {
       }
     }
     console.log(`[InputManager] Set current toolUseId: ${toolUseId}`)
+  }
+
+  /** Called with the owning session whenever a session-promoting request is raised. */
+  setPromotionListener(listener: ((sessionId: string, inputType: string) => void) | null): void {
+    this.promotionListener = listener
+  }
+
+  private notifyPromotion(sessionId: string | undefined, inputType: string): void {
+    if (!sessionId || !this.promotionListener || !promotesSession(inputType)) return
+    try {
+      this.promotionListener(sessionId, inputType)
+    } catch (error) {
+      console.error(`[InputManager] Promotion listener failed for session ${sessionId}:`, error)
+    }
   }
 
   /** Get and clear the session recorded for a toolUseId at hook time. */
@@ -154,6 +177,7 @@ class InputManager {
     // Session attribution: explicit param wins, else whatever the hook
     // recorded for this toolUseId. Consume the tag either way.
     const owner = sessionId ?? this.takeSessionIdFor(toolUseId)
+    this.notifyPromotion(owner, inputType)
 
     // Check if the user already responded before this pending was created
     const early = this.earlyResults.get(toolUseId)

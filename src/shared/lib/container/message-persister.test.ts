@@ -54,7 +54,7 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
   notificationManager: {
     triggerSessionComplete: vi.fn(() => Promise.resolve()),
     triggerSessionWaitingInput: vi.fn(() => Promise.resolve()),
-    triggerAgentNotify: vi.fn(() => Promise.resolve({ ok: true })),
+    triggerAgentNotify: vi.fn(() => Promise.resolve({ ok: true, outcome: 'created' })),
   },
 }))
 
@@ -3243,7 +3243,7 @@ describe('MessagePersister', () => {
 
     beforeEach(() => {
       vi.mocked(notificationManager.triggerAgentNotify).mockClear()
-      vi.mocked(notificationManager.triggerAgentNotify).mockResolvedValue({ ok: true })
+      vi.mocked(notificationManager.triggerAgentNotify).mockResolvedValue({ ok: true, outcome: 'created' })
     })
 
     it('notifies with the message and title, then resolves the tool', async () => {
@@ -3260,6 +3260,26 @@ describe('MessagePersister', () => {
       const body = JSON.parse(resolveCalls()[0][1].body)
       expect(body.value).toContain('notified')
       expect(rejectCalls()).toHaveLength(0)
+    })
+
+    it('tells the agent when the session was surfaced but the notification was suppressed by settings', async () => {
+      vi.mocked(notificationManager.triggerSessionComplete).mockClear()
+      vi.mocked(notificationManager.triggerAgentNotify).mockResolvedValueOnce({ ok: true, outcome: 'suppressed' })
+
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      simulateNotifyUserToolUse('notify-8', { message: 'Done, needs a look.' })
+
+      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
+      const body = JSON.parse(resolveCalls()[0][1].body)
+      expect(body.value).toContain('no notification was sent')
+      expect(body.value).not.toContain('has been notified')
+
+      // The outcome is surfaced (session visible), so the completion alert stays suppressed too.
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
     })
 
     it('rejects when message is missing', async () => {
@@ -5088,7 +5108,7 @@ describe('MessagePersister', () => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
           expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
-          { promotedToInteractive: true },
+          { noninteractive: false },
         )
       })
     })
@@ -5108,7 +5128,7 @@ describe('MessagePersister', () => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
           expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
-          { promotedToInteractive: true },
+          { noninteractive: false },
         )
       })
     })
@@ -5123,11 +5143,12 @@ describe('MessagePersister', () => {
         description: 'Upload a file',
       })
 
+      // Hidden by its own flag, so it still takes the legacy marker.
       await vi.waitFor(() => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
           expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
-          { promotedToInteractive: true },
+          { noninteractive: false, promotedToInteractive: true },
         )
       })
     })
@@ -5145,7 +5166,7 @@ describe('MessagePersister', () => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
           expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
-          { promotedToInteractive: true },
+          { noninteractive: false, promotedToInteractive: true },
         )
       })
     })
@@ -5210,7 +5231,7 @@ describe('MessagePersister', () => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
           expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
-          { promotedToInteractive: true },
+          { noninteractive: false },
         )
       })
       // The session genuinely awaits here, so the state assertion is correct.

@@ -23,7 +23,6 @@ import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { captureException } from '@shared/lib/error-reporting'
 import { deliverSessionWake } from './wake-delivery'
-import { buildAutomatedSessionPrompt } from './automated-session-prompt'
 
 /**
  * How long an overdue session wake keeps retrying (via the normal poll loop)
@@ -225,11 +224,10 @@ class TaskScheduler {
       availableEnvVars:
         availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
-      systemPrompt: buildAutomatedSessionPrompt('scheduled'),
       model: resolved.model,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
-      metadata: { isAutomated: true },
+      metadata: { noninteractive: true },
       effort: resolved.effort,
       ...(resolved.speed ? { speed: resolved.speed } : {}),
     })
@@ -238,6 +236,7 @@ class TaskScheduler {
     const sessionName = task.name || 'Scheduled Task'
 
     await actor.sessions.register(sessionId, sessionName, {
+      noninteractive: true,
       isScheduledExecution: true,
       scheduledTaskId: task.id,
       scheduledTaskName: task.name || undefined,

@@ -67,10 +67,16 @@ import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
  * one transport connection per server at a time. Reusing singletons across
  * sessions causes "Already connected to a transport" errors.
  */
-export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTarget | null = () => null) {
+export function createUserInputMcpServer(
+  getProcess: () => RemoteMcpInjectionTarget | null = () => null,
+  opts: { noninteractive?: boolean } = {},
+) {
   // Only expose script execution tool on supported host platforms (macOS/Windows)
   const hostPlatform = process.env.HOST_PLATFORM
   const includeScriptRun = hostPlatform === 'darwin' || hostPlatform === 'win32'
+  // notify_user exists to surface a session nobody is watching; an interactive
+  // session has the user reading replies, so the tool is not offered there.
+  const includeNotifyUser = opts.noninteractive === true
 
   // Composio-catalog trigger tools need platform Composio; custom webhook
   // endpoints only need platform auth (they live on the platform proxy, so a
@@ -88,7 +94,8 @@ export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTar
       scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, updateScheduledTaskTool,
       cancelScheduledTaskTool,
       pauseScheduledTaskTool, resumeScheduledTaskTool,
-      deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool, notifyUserTool,
+      deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
+      ...(includeNotifyUser ? [notifyUserTool] : []),
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeComposioTriggers ? [getAvailableTriggersTool, setupTriggerTool] : []),
       ...(includeComposioTriggers || includeWebhookEndpoints

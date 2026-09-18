@@ -577,7 +577,7 @@ describe('/invoke', () => {
     expect(mockCreateSession).toHaveBeenCalledWith(
       expect.objectContaining({
         initialMessage: 'hello',
-        metadata: { isAutomated: true },
+        metadata: { noninteractive: false },
       }),
     )
     expect(mockCreateSession.mock.calls[0][0]).not.toHaveProperty('initialMessageUuid')
@@ -820,7 +820,7 @@ describe('/invoke', () => {
       'existing-sess',
       'follow-up',
       expect.any(String),
-      { isAutomated: true },
+      { noninteractive: true },
     )
     const sentMessageUuid = mockSendMessage.mock.calls[0][2]
     const targetAuthors = await testDb
@@ -1407,7 +1407,7 @@ describe('/invoke', () => {
       'existing-sess',
       'follow-up',
       undefined,
-      { isAutomated: true },
+      { noninteractive: true },
     )
     expect(mockCreateSession).not.toHaveBeenCalled()
   })

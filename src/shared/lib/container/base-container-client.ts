@@ -1411,7 +1411,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const speed = options?.speed
     const model = resolveContainerModel(options?.model, 'agent')
     const shouldQuery = options?.shouldQuery
-    const isAutomated = options?.isAutomated
+    const noninteractive = options?.noninteractive
     // Refreshed on every message so a long-lived session tracks settings
     // changes; the container restarts its query only on a block-boundary flip.
     const capabilityPolicies = getAgentCapabilitySettings()
@@ -1432,7 +1432,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             ...(speed ? { speed } : {}),
             ...(model ? { model } : {}),
             ...(shouldQuery !== undefined ? { shouldQuery } : {}),
-            ...(isAutomated !== undefined ? { isAutomated } : {}),
+            ...(noninteractive !== undefined ? { noninteractive } : {}),
             capabilityPolicies,
           }),
           signal: controller.signal,

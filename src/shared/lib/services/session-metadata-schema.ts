@@ -60,6 +60,9 @@ export const sessionMetadataSchema = z
     webhookInvocationCount: z.number().optional(),
     isChatIntegrationSession: z.boolean().optional(),
     chatIntegrationId: z.string().optional(),
+    // Nobody is watching (cron / trigger / widget repair). Cleared on promotion.
+    // Absent on rows written before it existed: see isNoninteractiveSession.
+    noninteractive: z.boolean().optional(),
     promotedToInteractive: z.boolean().optional(),
     // Complex/structured fields are kept permissive on purpose — a strict shape
     // here risks false-rejecting a valid file and refusing to persist names.

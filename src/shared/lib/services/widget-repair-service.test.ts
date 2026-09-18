@@ -89,13 +89,14 @@ describe('openWidgetRepairSession', () => {
 
     expect(outcome).toEqual({ started: true, sessionId: 'session-new' })
     const created = mocks.createSession.mock.calls[0][0]
-    expect(created.metadata).toEqual({ isAutomated: true })
+    expect(created.metadata).toEqual({ noninteractive: true })
     expect(created.availableEnvVars).toEqual(['API_KEY'])
     expect(created.initialMessage).toContain('/workspace/artifacts/weather/')
     expect(created.initialMessage).toContain(ERROR)
     expect(created.initialMessage).toContain('TypeError: ...')
     expect(created.initialMessage).toContain('widgets` skill')
     expect(mocks.registerSession).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT }), 'session-new', 'Invoked to fix widget', {
+      noninteractive: true,
       isWidgetRepair: true,
       widgetRepairSlug: 'weather',
       automationStatus: 'running',

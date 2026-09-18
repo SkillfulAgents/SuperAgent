@@ -19,8 +19,8 @@ export class ContainerNotFoundError extends Error {
 }
 
 export interface SendMessageOptions extends RuntimeOptions {
-  /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
-  isAutomated?: boolean
+  /** Not from a human (scheduled wake, x-agent follow-up): the container must not promote the session. */
+  noninteractive?: boolean
 }
 
 export const CONTAINER_RUNNER_IDS = [

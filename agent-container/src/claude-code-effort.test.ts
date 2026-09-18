@@ -73,8 +73,12 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
 })
 
 // MCP server factories are invoked during createQuery; stub them to return empty servers.
+const userInputServerCalls: Array<{ noninteractive?: boolean } | undefined> = []
 vi.mock('./mcp-server', () => ({
-  createUserInputMcpServer: () => ({}),
+  createUserInputMcpServer: (_getProcess: unknown, opts?: { noninteractive?: boolean }) => {
+    userInputServerCalls.push(opts)
+    return {}
+  },
   createBrowserMcpServer: () => ({}),
   createComputerUseMcpServer: () => ({}),
   createDashboardsMcpServer: () => ({}),
@@ -108,6 +112,60 @@ vi.mock('./input-manager', () => ({
 }))
 
 import { ClaudeCodeProcess } from './claude-code'
+
+describe('ClaudeCodeProcess noninteractive mode', () => {
+  const promptOf = (call: MockQueryCall) => (call.options.systemPrompt as { prompt: string }).prompt
+
+  beforeEach(() => {
+    calls.length = 0
+    userInputServerCalls.length = 0
+  })
+
+  it('bakes the unattended section and notify_user into a noninteractive query', async () => {
+    const process = new ClaudeCodeProcess({ sessionId: 'ni-1', workingDirectory: '/tmp', noninteractive: true })
+    await process.start()
+
+    expect(process.isNoninteractive()).toBe(true)
+    expect(promptOf(calls[0])).toContain('## Unattended Session')
+    expect(userInputServerCalls).toEqual([{ noninteractive: true }])
+  })
+
+  it('leaves both out of an interactive query', async () => {
+    const process = new ClaudeCodeProcess({ sessionId: 'ni-2', workingDirectory: '/tmp' })
+    await process.start()
+
+    expect(process.isNoninteractive()).toBe(false)
+    expect(promptOf(calls[0])).not.toContain('## Unattended Session')
+    expect(userInputServerCalls).toEqual([{ noninteractive: false }])
+  })
+
+  it('rebuilds the query on the next send after promotion, without the tool or the section', { timeout: 15000 }, async () => {
+    const process = new ClaudeCodeProcess({ sessionId: 'ni-3', workingDirectory: '/tmp', noninteractive: true })
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    // Promotion happens mid-turn (a request was raised); nothing is rebuilt yet.
+    process.setNoninteractive(false)
+    expect(calls).toHaveLength(1)
+
+    await process.sendMessage('hello, human here')
+    expect(calls).toHaveLength(2)
+    expect(promptOf(calls[1])).not.toContain('## Unattended Session')
+    expect(userInputServerCalls[1]).toEqual({ noninteractive: false })
+
+    // Settled: no further rebuilds for the same mode.
+    await process.sendMessage('again')
+    expect(calls).toHaveLength(2)
+  })
+
+  it('setNoninteractive with the current value is a no-op', async () => {
+    const process = new ClaudeCodeProcess({ sessionId: 'ni-4', workingDirectory: '/tmp', noninteractive: true })
+    await process.start()
+    process.setNoninteractive(true)
+    await process.sendMessage('follow-up')
+    expect(calls).toHaveLength(1)
+  })
+})
 
 describe('ClaudeCodeProcess effort handling', () => {
   beforeEach(() => {

@@ -9,7 +9,7 @@ export const notifyUserTool = tool(
   'notify_user',
   `Alert the user to something they must see, without asking them for anything.
 
-Only for automated sessions (scheduled task, webhook trigger) that nobody is watching; the host rejects it in an interactive session, where you should simply reply in the conversation. Use it when the outcome would otherwise go unread: you could not complete the task and have nothing to ask, or you finished and the result needs a human look. The session becomes visible in the user's session list and they receive a notification pointing at it.
+This session was started automatically and nobody is watching it. Use this when the outcome would otherwise go unread: you could not complete the task and have nothing to ask, or you finished and the result needs a human look. The session becomes visible in the user's session list, they receive a notification pointing at it, and from then on it is an ordinary conversation the user reads.
 
 Do NOT use this for progress updates, for things you can still fix yourself (retry, or schedule_resume and try later), or when you need an answer (use request_secret / request_connected_account / AskUserQuestion instead — those already alert the user and wait).
 

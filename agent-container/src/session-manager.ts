@@ -1,7 +1,8 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from 'crypto';
 import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession } from '@anthropic-ai/claude-agent-sdk';
-import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies } from './types';
+import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies, isNoninteractive, normalizeSessionMetadata } from './types';
+import { inputManager } from './input-manager';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import { ClaudeCodeProcess, type InterruptScope } from './claude-code';
 import { SessionPersistence } from './session-persistence';
@@ -165,6 +166,26 @@ export class SessionManager extends EventEmitter {
     }
 
     this.ensureClaudeSettings();
+
+    // A human-answered request or notify_user means the user is now looking:
+    // the session leaves unattended mode on the container side too.
+    inputManager.setPromotionListener((sessionId, inputType) => {
+      this.promoteToInteractive(sessionId, `${inputType} request`);
+    });
+  }
+
+  /**
+   * Clear `noninteractive` on a live session. The process rebuilds its query
+   * (tool list + prompt) on the next send; an in-flight tool call finishes
+   * against the old query. Idempotent.
+   */
+  promoteToInteractive(sessionId: string, reason: string): void {
+    const sessionData = this.sessions.get(sessionId);
+    if (!sessionData || !isNoninteractive(sessionData.session.metadata)) return;
+    console.log(`[Session ${sessionId}] Promoting noninteractive session to interactive (${reason})`);
+    sessionData.session.metadata = { ...sessionData.session.metadata, noninteractive: false };
+    this.persistence.updateMetadata(sessionId, sessionData.session.metadata);
+    sessionData.process.setNoninteractive(false);
   }
 
   /**
@@ -242,8 +263,11 @@ export class SessionManager extends EventEmitter {
     // default must not look like two different profiles). The session's own
     // shape decides whether a parked process fits; the host's default shape
     // decides what to warm next.
+    const metadata = normalizeSessionMetadata(request.metadata);
+    const noninteractive = isNoninteractive(metadata);
     const normalized = {
       ...request,
+      metadata,
       speed,
       capabilityPolicies,
       subagentModels,
@@ -257,6 +281,7 @@ export class SessionManager extends EventEmitter {
       new ClaudeCodeProcess({
         sessionId: tempSessionId,
         workingDirectory,
+        noninteractive,
         userSystemPrompt: request.systemPrompt,
         modelPromptHints: request.modelPromptHints,
         availableEnvVars: request.availableEnvVars,
@@ -326,7 +351,7 @@ export class SessionManager extends EventEmitter {
       id: sessionId,
       createdAt: new Date(),
       lastActivity: new Date(),
-      metadata: request.metadata,
+      metadata,
       workingDirectory,
       envVars: request.envVars,
       systemPrompt: request.systemPrompt,
@@ -412,7 +437,7 @@ export class SessionManager extends EventEmitter {
       effort: request.effort,
       speed,
       capabilityPolicies,
-      metadata: request.metadata,
+      metadata,
     });
 
     this.sessions.set(sessionId, sessionData);
@@ -491,6 +516,7 @@ export class SessionManager extends EventEmitter {
       const process = new ClaudeCodeProcess({
         sessionId: uuidv4(),
         workingDirectory: profile.workingDirectory || this.baseWorkingDirectory,
+        noninteractive: profile.noninteractive,
         userSystemPrompt: profile.systemPrompt,
         modelPromptHints: profile.modelPromptHints,
         availableEnvVars: profile.availableEnvVars,
@@ -600,11 +626,13 @@ export class SessionManager extends EventEmitter {
     console.log(`Attempting to resume session ${sessionId} with Claude session ID ${persisted.claudeSessionId}`);
 
     try {
+      const metadata = normalizeSessionMetadata(persisted.metadata);
       // Create a new Claude Code process with resume
       const process = new ClaudeCodeProcess({
         sessionId,
         workingDirectory: persisted.workingDirectory,
         claudeSessionId: persisted.claudeSessionId,
+        noninteractive: isNoninteractive(metadata),
         userSystemPrompt: persisted.systemPrompt,
         modelPromptHints: persisted.modelPromptHints,
         availableEnvVars: persisted.availableEnvVars,
@@ -630,9 +658,9 @@ export class SessionManager extends EventEmitter {
         id: sessionId,
         createdAt: new Date(persisted.createdAt),
         lastActivity: new Date(),
-        // Restore metadata so a resumed automated session keeps its eviction
-        // class (and its release-browser-lock-on-result behavior).
-        metadata: persisted.metadata,
+        // Restore metadata so a resumed noninteractive session keeps its
+        // eviction class (and its release-browser-lock-on-result behavior).
+        metadata,
         workingDirectory: persisted.workingDirectory,
         systemPrompt: persisted.systemPrompt,
         modelPromptHints: persisted.modelPromptHints,
@@ -807,10 +835,10 @@ export class SessionManager extends EventEmitter {
         // with none, exactly like a new session.
         sessionCapabilityGrants: undefined,
         // A fork is a new interactive chat. Keep the source's other metadata,
-        // but drop the automation class so idle eviction and runtime class
-        // match a user session, not the scheduled/webhook/x-agent parent.
+        // but drop the unattended class so idle eviction, tools and prompt
+        // match a user session, not the scheduled/webhook parent.
         metadata: source.metadata
-          ? { ...source.metadata, isAutomated: undefined }
+          ? { ...normalizeSessionMetadata(source.metadata), noninteractive: undefined }
           : undefined,
       });
     } catch (error) {
@@ -841,7 +869,7 @@ export class SessionManager extends EventEmitter {
     sessionId: string,
     content: string,
     uuid?: UUID,
-    options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
+    options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; noninteractive?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
   ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
@@ -863,14 +891,12 @@ export class SessionManager extends EventEmitter {
     const expectsResponse = options?.shouldQuery !== false;
     sessionData.settlement.noteOutboundMessage({ expectsResponse });
 
-    // A real message into an automated session is human-originated unless the
-    // host explicitly marks it as another automated turn (x-agent follow-up).
-    // Human input promotes the session to the interactive eviction class so
-    // the conversation doesn't pay a cold restart after every turn.
-    if (expectsResponse && !options?.isAutomated && sessionData.session.metadata?.isAutomated) {
-      console.log(`[Session ${sessionId}] Promoting automated session to interactive (human message)`);
-      sessionData.session.metadata = { ...sessionData.session.metadata, isAutomated: false };
-      this.persistence.updateMetadata(sessionId, sessionData.session.metadata);
+    // A real message into a noninteractive session is human-originated unless
+    // the host marks it as not from a human (scheduled wake, x-agent
+    // follow-up). A human joining promotes the session for good: interactive
+    // eviction class, no notify_user tool, no unattended guidance.
+    if (expectsResponse && !options?.noninteractive) {
+      this.promoteToInteractive(sessionId, 'human message');
     }
 
     // Update last activity
@@ -971,14 +997,14 @@ export class SessionManager extends EventEmitter {
 
     sessionData.settlement.handleMessage(message);
 
-    // Release browser lock when an automated session's turn completes.
+    // Release browser lock when a noninteractive session's turn completes.
     // The SDK query keeps the for-await loop alive waiting for the next user
     // message, so the 'exit' event never fires for idle sessions. Releasing
     // on 'result' ensures the lock is freed as soon as the model finishes.
-    if (message.type === 'result' && sessionData.session.metadata?.isAutomated) {
+    if (message.type === 'result' && isNoninteractive(sessionData.session.metadata)) {
       const released = releaseBrowserLock(sessionId);
       if (released) {
-        console.log(`[Session ${sessionId}] Released browser lock (automated session turn completed)`);
+        console.log(`[Session ${sessionId}] Released browser lock (noninteractive session turn completed)`);
       }
     }
 
@@ -996,13 +1022,13 @@ export class SessionManager extends EventEmitter {
   }
 
   private idleThresholdMs(data: SessionData): number {
-    return data.session.metadata?.isAutomated
+    return isNoninteractive(data.session.metadata)
       ? this.automatedIdleEvictionMs
       : this.idleEvictionMs;
   }
 
   // Stop the claude subprocess of sessions idle past their class threshold.
-  // Interactive default 5m; automated (cron/webhook) default 0 = next sweep.
+  // Interactive default 5m; noninteractive (cron/webhook) default 0 = next sweep.
   // Eviction only stops the process — SessionData + claudeSessionId survive so
   // the next sendMessage restarts with --resume. Public for tests.
   async evictIdleSessions(): Promise<void> {

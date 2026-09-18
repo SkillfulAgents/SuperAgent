@@ -247,7 +247,7 @@ app.post('/sessions/:id/messages', async (c) => {
       speed: speedLevelSchema.parse(body.speed),
       model: body.model,
       shouldQuery: body.shouldQuery,
-      isAutomated: body.isAutomated,
+      noninteractive: body.noninteractive,
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
     });
 
