@@ -1196,6 +1196,9 @@ export class AgentIntegrationManager {
     if (session.sessionId !== sessionId) return // discard output queued before rotation
     const integration = await getIntegration(integrationId)
     if (!integration) return
+    // Both awaits above are windows in which the chat can be cleared; the
+    // session captured before them must still be the live one.
+    if (!this.isCurrentSession(integrationId, chatId, session, sessionId)) return
     const eventType = (event as { type?: string } | null)?.type
     const type = eventType === 'session_idle' ? 'turn-completed' : eventType === 'session_error' ? 'turn-failed' : 'runtime'
     await session.connector.deliver({ ...session.context, integration }, { type, event })
