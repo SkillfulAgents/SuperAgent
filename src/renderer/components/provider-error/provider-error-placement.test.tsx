@@ -155,9 +155,11 @@ describe('currentRoutedProviderError', () => {
 })
 
 describe('ProviderErrorPlacement', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     Object.assign(mockStreamState, idle)
     mockMessages.length = 0
+    const actual = await vi.importActual<typeof import('./provider-error-registry')>('./provider-error-registry')
+    mockedRegistry.mockReset().mockImplementation(actual.resolveProviderError)
   })
 
   const composer = <div data-testid="composer">composer</div>
@@ -231,10 +233,25 @@ describe('ProviderErrorPlacement', () => {
       useEffect(() => { onDisplaceChildren?.(true) }, [onDisplaceChildren])
       return <div data-testid="provider-error-card" />
     }
-    mockedRegistry.mockReturnValueOnce({ Component: Displacing, placement: 'composer' })
+    mockedRegistry.mockReturnValue({ Component: Displacing, placement: 'composer' })
     mockMessages.push(createUserMessage(), errorMessage(composerError))
     mount()
     expect(screen.getByTestId('composer')).not.toBeVisible()
+  })
+
+  it('tells function children when they are displaced, and when they are not', () => {
+    const Displacing = ({ onDisplaceChildren }: ProviderErrorComponentProps) => {
+      useEffect(() => { onDisplaceChildren?.(true) }, [onDisplaceChildren])
+      return null
+    }
+    const child = ({ displaced }: { displaced: boolean }) => <div data-testid="composer" data-displaced={String(displaced)} />
+    render(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a">{child}</ProviderErrorPlacement>)
+    expect(screen.getByTestId('composer')).toHaveAttribute('data-displaced', 'false')
+
+    mockedRegistry.mockReturnValue({ Component: Displacing, placement: 'composer' })
+    mockMessages.push(createUserMessage(), errorMessage(composerError))
+    render(<ProviderErrorPlacement placement="composer" sessionId="s2" agentSlug="a">{child}</ProviderErrorPlacement>)
+    expect(screen.getAllByTestId('composer')[1]).toHaveAttribute('data-displaced', 'true')
   })
 
   it('renders a persisted error routed to composer once the session is idle', () => {

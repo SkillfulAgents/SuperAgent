@@ -82,9 +82,14 @@ interface ProviderErrorPlacementProps {
   placement: Placement
   sessionId: string
   agentSlug: string
-  /** Everything that normally lives here, displaced while an error targets this placement. At
-   *  `composer` that is the composer plus its banners (pending wake, stale session), not just the input. */
-  children?: ReactNode
+  /** Everything that normally lives here. At `composer` that is the composer plus its banners.
+   *  Pass a function to learn when the current error withholds it, so voice can pause. */
+  children?: ReactNode | ((slot: ProviderErrorSlot) => ReactNode)
+}
+
+export interface ProviderErrorSlot {
+  /** True while the current error withholds the slot; it stays mounted, hidden. */
+  displaced: boolean
 }
 
 // Renders the session's current provider error above children when its presentation
@@ -101,6 +106,7 @@ export function ProviderErrorPlacement({ placement, sessionId, agentSlug, childr
   )
   const resolved = current ? resolveProviderError(current.presentation) : null
   const showing = current !== null && resolved !== null && resolved.placement === placement
+  const slot: ProviderErrorSlot = { displaced: showing && displaced }
   return (
     <div data-testid={showing ? `provider-error-placement-${placement}` : undefined}>
       {showing && (
@@ -111,7 +117,7 @@ export function ProviderErrorPlacement({ placement, sessionId, agentSlug, childr
           onDisplaceChildren={setDisplaced}
         />
       )}
-      <div hidden={showing && displaced}>{children}</div>
+      <div hidden={slot.displaced}>{typeof children === 'function' ? children(slot) : children}</div>
     </div>
   )
 }
