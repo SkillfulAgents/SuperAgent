@@ -23,9 +23,6 @@ vi.mock('@renderer/lib/oauth-popup', () => ({
   prepareOAuthPopup: () => ({ navigate: mockNavigate, close: mockClose }),
 }))
 
-vi.mock('@renderer/hooks/use-delayed-oauth-abort', () => ({
-  useDelayedOAuthAbort: () => false,
-}))
 
 describe('useOAuthReconnect', () => {
   let queryClient: QueryClient
@@ -95,5 +92,22 @@ describe('useOAuthReconnect', () => {
     })
 
     await expect(reconnectPromise).resolves.toBe(false)
+  })
+
+  it('supersedes a reconnect still waiting, so it cannot close the next one\'s window', async () => {
+    mockApiFetch.mockImplementation(async () =>
+      new Response(JSON.stringify({ redirectUrl: 'https://oauth.test' }), { status: 200 }))
+    const { result } = renderHook(() => useOAuthReconnect(), { wrapper })
+
+    let first!: Promise<boolean>
+    await act(async () => { first = result.current.reconnect('account-1', 'gmail') })
+    await waitFor(() => expect(oauthCallback).toBeTypeOf('function'))
+
+    await act(async () => { void result.current.reconnect('account-2', 'github') })
+    await expect(first).resolves.toBe(false)
+
+    // Only the second reconnect's own open() closed a window (the first's).
+    expect(mockClose).toHaveBeenCalledTimes(1)
+    expect(result.current.pendingAccountId).toBe('account-2')
   })
 })

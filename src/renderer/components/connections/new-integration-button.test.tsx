@@ -4,7 +4,7 @@ import { screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { NewIntegrationButton } from './connections-list'
-import { OAUTH_ABORT_DELAY_MS } from '@renderer/hooks/use-delayed-oauth-abort'
+import { LOGIN_WINDOW_CANCEL_DELAY_MS } from '@renderer/hooks/use-login-window'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 
 const MOCK_ACCOUNT_ID = 'new-account-123'
@@ -339,7 +339,7 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
     expect(screen.queryByTestId('directory-cancel-api-slack')).not.toBeInTheDocument()
 
     act(() => {
-      vi.advanceTimersByTime(OAUTH_ABORT_DELAY_MS)
+      vi.advanceTimersByTime(LOGIN_WINDOW_CANCEL_DELAY_MS)
     })
 
     expect(screen.getByTestId('directory-cancel-api-slack')).toBeInTheDocument()

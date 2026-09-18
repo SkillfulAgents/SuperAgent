@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { ArrowUpRight, Check, Pencil, RefreshCw, Trash2, Wrench, X, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -34,10 +34,9 @@ import {
 } from '@renderer/hooks/use-remote-mcps'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
-import { useDelayedOAuthAbort } from '@renderer/hooks/use-delayed-oauth-abort'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { useLoginWindow } from '@renderer/hooks/use-login-window'
 import { useQueryClient } from '@tanstack/react-query'
-import { OAuthFlowCancel } from './oauth-flow-cancel'
+import { LoginWindowCancel } from './login-window-cancel'
 
 export interface IntegrationRowActionsProps {
   type: 'oauth' | 'mcp'
@@ -65,9 +64,8 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
   const [actionError, setActionError] = useState<string | null>(null)
   const [mcpStatus, setMcpStatus] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
   const [toolsError, setToolsError] = useState<string | null>(null)
-  const [oauthPending, setOauthPending] = useState(false)
-  const mcpOAuthPopupRef = useRef<ReturnType<typeof prepareOAuthPopup> | null>(null)
-  const showMcpOAuthCancel = useDelayedOAuthAbort(oauthPending)
+  const mcpLoginWindow = useLoginWindow()
+  const oauthPending = mcpLoginWindow.waiting
 
   // Rename-button ref so dialogs can restore focus to the header after closing.
   const triggerRef = useRef<HTMLButtonElement | null>(null)
@@ -94,9 +92,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
   const showOAuthReconnectCancel = oauthReconnectPending && canCancelPendingReconnect
 
   useMcpOAuthListener(oauthPending, ({ success, error }) => {
-    mcpOAuthPopupRef.current?.close()
-    mcpOAuthPopupRef.current = null
-    setOauthPending(false)
+    mcpLoginWindow.close()
     if (success) {
       setMcpStatus({ kind: 'success', message: 'Connected' })
       invalidateRemoteMcps()
@@ -105,11 +101,6 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
       setMcpStatus({ kind: 'error', message: error || 'Reconnect failed' })
     }
   })
-
-  useEffect(() => () => {
-    mcpOAuthPopupRef.current?.close()
-    mcpOAuthPopupRef.current = null
-  }, [])
 
   const restoreFocus = (e: Event) => {
     e.preventDefault()
@@ -145,31 +136,18 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
   }
 
   const runReconnect = async () => {
-    const popup = prepareOAuthPopup()
-    mcpOAuthPopupRef.current = popup
     setMcpStatus(null)
     try {
-      const result = await initiateMcpOAuth.mutateAsync({
-        mcpId: id,
-        electron: !!window.electronAPI,
+      const outcome = await mcpLoginWindow.open(async () => {
+        const result = await initiateMcpOAuth.mutateAsync({
+          mcpId: id,
+          electron: !!window.electronAPI,
+        })
+        return result.redirectUrl
       })
-      if (result.redirectUrl) {
-        setOauthPending(true)
-        try {
-          await popup.navigate(result.redirectUrl)
-        } catch (err) {
-          setOauthPending(false)
-          throw err
-        }
-      } else {
-        popup.close()
-        mcpOAuthPopupRef.current = null
-        // Non-OAuth MCP (or already authed) — re-test so the button updates.
-        await runTestConnection()
-      }
+      // Non-OAuth MCP (or already authed) — re-test so the button updates.
+      if (outcome === 'no-url') await runTestConnection()
     } catch (err) {
-      popup.close()
-      mcpOAuthPopupRef.current = null
       setMcpStatus({
         kind: 'error',
         message: err instanceof Error ? err.message : 'Reconnect failed',
@@ -178,9 +156,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
   }
 
   const cancelMcpOAuth = () => {
-    mcpOAuthPopupRef.current?.close()
-    mcpOAuthPopupRef.current = null
-    setOauthPending(false)
+    mcpLoginWindow.close()
     setMcpStatus({ kind: 'error', message: 'Reconnect canceled' })
   }
 
@@ -241,8 +217,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
   const mcpActionPending =
     testMcpConnection.isPending ||
     discoverMcpTools.isPending ||
-    initiateMcpOAuth.isPending ||
-    oauthPending
+    mcpLoginWindow.pending
 
   return (
     <>
@@ -265,7 +240,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
               )}
               Reconnect
             </Button>
-            <OAuthFlowCancel
+            <LoginWindowCancel
               visible={showOAuthReconnectCancel}
               onCancel={cancelReconnect}
               testId={`integration-row-actions-cancel-reconnect-${type}-${id}`}
@@ -287,7 +262,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
               disabled={mcpActionPending}
               data-testid={`integration-row-actions-test-${type}-${id}`}
             >
-              {testMcpConnection.isPending || initiateMcpOAuth.isPending || oauthPending ? (
+              {testMcpConnection.isPending || mcpLoginWindow.pending ? (
                 <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
               ) : mcpStatus?.kind === 'success' ? (
                 <span className="mr-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-emerald-500/15">
@@ -313,8 +288,8 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
                 'Test connection'
               )}
             </Button>
-            <OAuthFlowCancel
-              visible={showMcpOAuthCancel}
+            <LoginWindowCancel
+              visible={mcpLoginWindow.canCancel}
               onCancel={cancelMcpOAuth}
               testId={`integration-row-actions-cancel-mcp-oauth-${id}`}
             />

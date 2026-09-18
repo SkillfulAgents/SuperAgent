@@ -29,7 +29,7 @@ vi.mock('@renderer/lib/oauth-popup', () => ({
 }))
 
 import { usePlatformConnect } from './use-platform-auth'
-import { OAUTH_ABORT_DELAY_MS } from './use-delayed-oauth-abort'
+import { LOGIN_WINDOW_CANCEL_DELAY_MS } from './use-login-window'
 
 async function renderConnected() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -73,7 +73,7 @@ describe('usePlatformConnect launching state in a browser window', () => {
   it('offers Cancel after the delay, and Cancel closes the window and ends the launch', async () => {
     const { result } = await renderLaunched({ fakeTimers: true })
 
-    act(() => { vi.advanceTimersByTime(OAUTH_ABORT_DELAY_MS - 1) })
+    act(() => { vi.advanceTimersByTime(LOGIN_WINDOW_CANCEL_DELAY_MS - 1) })
     expect(result.current.canCancel).toBe(false)
 
     act(() => { vi.advanceTimersByTime(1) })
