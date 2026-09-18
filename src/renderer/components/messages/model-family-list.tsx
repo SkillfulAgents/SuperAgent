@@ -88,7 +88,7 @@ function lineBase(label: string): string {
   return match ? match[1] : label
 }
 
-/** Partition models into label-derived lines, preserving order of first appearance. */
+/** Partition models into label-derived lines, strongest line first (ties keep first appearance). */
 function splitIntoLines(models: ModelDefinition[]): { base: string; models: ModelDefinition[] }[] {
   const byBase = new Map<string, ModelDefinition[]>()
   for (const m of models) {
@@ -96,7 +96,28 @@ function splitIntoLines(models: ModelDefinition[]): { base: string; models: Mode
     if (!byBase.has(base)) byBase.set(base, [])
     byBase.get(base)!.push(m)
   }
-  return [...byBase.entries()].map(([base, lineModels]) => ({ base, models: lineModels }))
+  return [...byBase.entries()]
+    .map(([base, lineModels]) => ({ base, models: lineModels }))
+    .sort((a, b) => comparePriceDesc(strongestOf(a.models), strongestOf(b.models)))
+}
+
+/** The entry a row picks: the declared latest, else the first (newest) listed. */
+function latestOf(models: ModelDefinition[]): ModelDefinition {
+  return models.find((m) => m.isLatest) ?? models[0]
+}
+
+// Rows list strongest-first, using price as the proxy: output rate, then input
+// rate, descending. Unpriced entries sink to the bottom; ties keep catalog order.
+function comparePriceDesc(a: ModelDefinition, b: ModelDefinition): number {
+  const ap = a.pricing
+  const bp = b.pricing
+  if (!ap || !bp) return (bp ? 1 : 0) - (ap ? 1 : 0)
+  return bp.outputPerMtok - ap.outputPerMtok || bp.inputPerMtok - ap.inputPerMtok
+}
+
+/** The priciest member — what ranks a collapsed row among its siblings. */
+function strongestOf(models: ModelDefinition[]): ModelDefinition {
+  return models.reduce((best, m) => (comparePriceDesc(m, best) < 0 ? m : best))
 }
 
 /** Row-suffix slug for a line base: "GPT-5.6" → "gpt-5.6". */
@@ -408,8 +429,9 @@ function LineRow({
  * — single-model vendors need no second click. Lineage families (Opus, Sonnet,
  * …) collapse to one row with per-version pin chips revealed on hover/selection,
  * and non-lineage models whose labels share a versioned base ("GPT-5.6
- * Sol/Terra/Luna") collapse the same way;
- * remaining models render one row each, newest-first. When `offerLatest` is set,
+ * Sol/Terra/Luna") collapse the same way; remaining models render one row each.
+ * Rows list strongest-first, ranked by each row's priciest model; version chips
+ * within a row stay newest-first. When `offerLatest` is set,
  * rows carry an explicit "Latest" chip storing the bare alias (rides upgrades) —
  * lit when the alias is the stored selection, while a lit version chip means a
  * pin; row clicks store the alias too. Otherwise labels pick the latest concrete
@@ -467,6 +489,9 @@ export function ModelFamilyList({
       versions: [...byFamily.get(family)!].reverse(),
       lineage: LINEAGE_FAMILIES.has(family),
     }))
+    // Strongest family first, ranked by its priciest version.
+    groups.sort((a, b) => comparePriceDesc(strongestOf(a.versions), strongestOf(b.versions)))
+    loose.sort(comparePriceDesc)
     return { families: groups, standalone: loose }
   }, [catalog, activeVendor])
   const isLatestSelected = offerLatest && value !== undefined && families.some((g) => g.family === value)
@@ -540,7 +565,7 @@ export function ModelFamilyList({
       {families.map((group) => {
         const familyHasSelection = selectedFamily === group.family
         if (group.lineage) {
-          const latestVersion = group.versions.find((v) => v.isLatest) ?? group.versions[0]
+          const latestVersion = latestOf(group.versions)
           return (
             <LineRow
               key={group.family}
@@ -590,7 +615,7 @@ export function ModelFamilyList({
             )}
             {splitIntoLines(group.versions).map((line) => {
               if (line.models.length > 1) {
-                const lineLatest = line.models.find((m) => m.isLatest) ?? line.models[0]
+                const lineLatest = latestOf(line.models)
                 return (
                   <LineRow
                     key={line.base}

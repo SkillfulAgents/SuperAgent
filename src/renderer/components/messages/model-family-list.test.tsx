@@ -32,6 +32,11 @@ const CATALOG: ModelDefinition[] = [
   { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt', isLatest: true, isDefault: true, icon: 'openai', supportedEfforts: STD, supportsWebSearch: false, contextWindow: 1_050_000, longContextPriceCliff: { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 } },
 ]
 
+/** All data-testids in DOM order. */
+function testIds(container: HTMLElement): string[] {
+  return Array.from(container.querySelectorAll('[data-testid]')).map((el) => el.getAttribute('data-testid')!)
+}
+
 describe('familyDisplayName', () => {
   it('title-cases normal families and upper-cases acronyms', () => {
     expect(familyDisplayName('opus')).toBe('Opus')
@@ -170,6 +175,56 @@ describe('ModelFamilyList', () => {
     // Clicking the row's empty stretch (not a chip) also picks the latest.
     await user.click(screen.getByTestId('model-family-opus-fill'))
     expect(onPick).toHaveBeenLastCalledWith('claude-opus-5')
+  })
+
+  it('lists family rows priciest-first regardless of catalog order, unpriced last', () => {
+    // Authored cheapest-first like the real Claude catalog, plus an unpriced custom family.
+    const priced: ModelDefinition[] = [
+      { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: STD, pricing: { inputPerMtok: 1, outputPerMtok: 5 } },
+      { id: 'claude-sonnet-5', label: 'Sonnet 5', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD, pricing: { inputPerMtok: 2, outputPerMtok: 10 } },
+      { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', icon: 'anthropic', supportedEfforts: ALL, pricing: { inputPerMtok: 5, outputPerMtok: 25 } },
+      { id: 'claude-opus-5', label: 'Opus 5', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL, pricing: { inputPerMtok: 5, outputPerMtok: 25 } },
+      { id: 'mystery-1', label: 'Mystery 1', family: 'mystery', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
+      { id: 'claude-fable-5-1', label: 'Fable 5.1', family: 'fable', isLatest: true, icon: 'anthropic', supportedEfforts: ALL, pricing: { inputPerMtok: 10, outputPerMtok: 50 } },
+    ]
+    const { container } = render(<ModelFamilyList catalog={priced} value="opus" onPick={vi.fn()} />)
+    // Lineage families render `model-family-*` rows; the unpriced non-lineage one is a plain pinned row.
+    const rows = testIds(container).filter((id) => /^model-family-[a-z]+$/.test(id) || id === 'model-pinned-mystery-1')
+    expect(rows).toEqual([
+      'model-family-fable',
+      'model-family-opus',
+      'model-family-sonnet',
+      'model-family-haiku',
+      'model-pinned-mystery-1',
+    ])
+    // Version chips inside a row stay newest-first (same price tier).
+    const opusChips = Array.from(container.querySelectorAll('[data-testid^="model-pinned-claude-opus"]')).map(
+      (el) => el.getAttribute('data-testid'),
+    )
+    expect(opusChips).toEqual(['model-pinned-claude-opus-5', 'model-pinned-claude-opus-4-8'])
+  })
+
+  it('orders non-lineage sub-lines by price, newest-first on ties', () => {
+    const gpt: ModelDefinition[] = [
+      { id: 'gpt-5.4', label: 'GPT-5.4', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 2.5, outputPerMtok: 15 } },
+      { id: 'gpt-5.5', label: 'GPT-5.5', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 5, outputPerMtok: 30 } },
+      { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 1, outputPerMtok: 6 } },
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 5, outputPerMtok: 30 } },
+      { id: 'gpt-6-astra', label: 'GPT-6 Astra', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 10, outputPerMtok: 50 } },
+      // A cheap newer tier must not float above the flagships just for being newest.
+      { id: 'gpt-6-mini', label: 'GPT-6 Mini', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 0.5, outputPerMtok: 2 } },
+    ]
+    const { container } = render(<ModelFamilyList catalog={gpt} value="gpt-5.5" onPick={vi.fn()} />)
+    const rows = testIds(container).filter(
+      (id) => /^model-family-gpt-[\d.]+$/.test(id) || /^model-pinned-gpt-5\.[45]$/.test(id),
+    )
+    // GPT-6 line (Astra, its priciest, ranks the line) → 5.6 line (Sol) → 5.5 → 5.4.
+    expect(rows).toEqual([
+      'model-family-gpt-6',
+      'model-family-gpt-5.6',
+      'model-pinned-gpt-5.5',
+      'model-pinned-gpt-5.4',
+    ])
   })
 
   it('picks the concrete id of a chosen version directly, no drill-in', async () => {
