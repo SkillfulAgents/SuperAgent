@@ -185,12 +185,14 @@ vi.mock('@shared/lib/db/schema', () => ({
 
 // Mock container-host (used by resolveContainerInput / rejectContainerInput)
 const mockContainerClientFetch = vi.fn<MockFn>(() => Promise.resolve({ ok: true }))
+const mockContainerPromoteSession = vi.fn<(sessionId: string) => Promise<void>>(() => Promise.resolve())
 vi.mock('./container-host', async () => {
   const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
   return {
     containerHost: hostFromManagerMock({
       getClient: () => ({
         fetch: (...args: unknown[]) => mockContainerClientFetch(...args),
+        promoteSession: (sessionId: string) => mockContainerPromoteSession(sessionId),
       }),
     }),
   }
@@ -5111,6 +5113,35 @@ describe('MessagePersister', () => {
           { noninteractive: false },
         )
       })
+      // The container holds its own copy of the flag; the host tells it once
+      // the session is really visible, after its own write.
+      await vi.waitFor(() => expect(mockContainerPromoteSession).toHaveBeenCalledWith(SESSION_ID))
+      expect(vi.mocked(updateSessionMetadata).mock.invocationCallOrder[0]).toBeLessThan(
+        mockContainerPromoteSession.mock.invocationCallOrder[0],
+      )
+    })
+
+    it('a failed container promotion is logged and does not undo the host promotion', async () => {
+      const PROMOTE_SESSION = 'container-down-session'
+      const PROMOTE_AGENT = 'container-down-agent'
+      const restoreMetadata = withHiddenScheduledMetadata(PROMOTE_AGENT, PROMOTE_SESSION)
+      mockContainerPromoteSession.mockRejectedValueOnce(new Error('container is not running'))
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        await expect(messagePersister.promoteAutomatedSession(PROMOTE_AGENT, PROMOTE_SESSION)).resolves.toBeUndefined()
+        expect(updateSessionMetadata).toHaveBeenCalledWith(
+          expect.objectContaining({ slug: PROMOTE_AGENT }),
+          PROMOTE_SESSION,
+          { noninteractive: false },
+        )
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('Container promotion failed'),
+          expect.any(Error),
+        )
+      } finally {
+        warn.mockRestore()
+        restoreMetadata()
+      }
     })
 
     it('promotes a webhook session when user input is requested', async () => {
@@ -5151,6 +5182,9 @@ describe('MessagePersister', () => {
           { noninteractive: false, promotedToInteractive: true },
         )
       })
+      // Never noninteractive on the container side: nothing to tell it.
+      await new Promise((r) => setTimeout(r, 20))
+      expect(mockContainerPromoteSession).not.toHaveBeenCalled()
     })
 
     it('promotes an x-agent session when user input is requested', async () => {

@@ -120,8 +120,9 @@ export interface SendMessageRequest {
 
 // `noninteractive: true` = nobody is watching this session (cron / trigger /
 // widget repair). It adds the notify_user tool + unattended guidance and picks
-// the eager idle-eviction class. Any human-answered request, notify_user, or a
-// human message clears it for good. Older records spelled it `isAutomated`.
+// the eager idle-eviction class. The host clears it for good once it has made
+// the session visible (POST /sessions/:id/promote). Older records spelled it
+// `isAutomated`.
 export function isNoninteractive(metadata: Record<string, unknown> | undefined): boolean {
   return metadata?.noninteractive === true;
 }

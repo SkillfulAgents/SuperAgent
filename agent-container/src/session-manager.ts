@@ -2,7 +2,6 @@ import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from 'crypto';
 import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession } from '@anthropic-ai/claude-agent-sdk';
 import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies, isNoninteractive, normalizeSessionMetadata } from './types';
-import { inputManager } from './input-manager';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import { ClaudeCodeProcess, type InterruptScope } from './claude-code';
 import { SessionPersistence } from './session-persistence';
@@ -166,26 +165,35 @@ export class SessionManager extends EventEmitter {
     }
 
     this.ensureClaudeSettings();
-
-    // A human-answered request or notify_user means the user is now looking:
-    // the session leaves unattended mode on the container side too.
-    inputManager.setPromotionListener((sessionId, inputType) => {
-      this.promoteToInteractive(sessionId, `${inputType} request`);
-    });
   }
 
   /**
-   * Clear `noninteractive` on a live session. The process rebuilds its query
-   * (tool list + prompt) on the next send; an in-flight tool call finishes
-   * against the old query. Idempotent.
+   * Clear `noninteractive`. The host decides when a session became visible
+   * (a request it actually showed, notify_user, a human message) and calls
+   * this; the container never infers it from a request being raised, since
+   * the host may auto-approve one without showing it. A live process rebuilds
+   * its query (tool list + prompt) on the next send; an in-flight tool call
+   * finishes against the old query. A cold session is updated in persistence
+   * so its resume picks the interactive class. Idempotent. False = unknown
+   * session.
    */
-  promoteToInteractive(sessionId: string, reason: string): void {
+  promoteToInteractive(sessionId: string, reason: string): boolean {
     const sessionData = this.sessions.get(sessionId);
-    if (!sessionData || !isNoninteractive(sessionData.session.metadata)) return;
-    console.log(`[Session ${sessionId}] Promoting noninteractive session to interactive (${reason})`);
-    sessionData.session.metadata = { ...sessionData.session.metadata, noninteractive: false };
-    this.persistence.updateMetadata(sessionId, sessionData.session.metadata);
-    sessionData.process.setNoninteractive(false);
+    if (sessionData) {
+      if (!isNoninteractive(sessionData.session.metadata)) return true;
+      console.log(`[Session ${sessionId}] Promoting noninteractive session to interactive (${reason})`);
+      sessionData.session.metadata = { ...sessionData.session.metadata, noninteractive: false };
+      this.persistence.updateMetadata(sessionId, sessionData.session.metadata);
+      sessionData.process.setNoninteractive(false);
+      return true;
+    }
+    const persisted = this.persistence.getSession(sessionId);
+    if (!persisted) return false;
+    const metadata = normalizeSessionMetadata(persisted.metadata);
+    if (!isNoninteractive(metadata)) return true;
+    console.log(`[Session ${sessionId}] Promoting cold noninteractive session to interactive (${reason})`);
+    this.persistence.updateMetadata(sessionId, { ...metadata, noninteractive: false });
+    return true;
   }
 
   /**
@@ -893,8 +901,8 @@ export class SessionManager extends EventEmitter {
 
     // A real message into a noninteractive session is human-originated unless
     // the host marks it as not from a human (scheduled wake, x-agent
-    // follow-up). A human joining promotes the session for good: interactive
-    // eviction class, no notify_user tool, no unattended guidance.
+    // follow-up). The host promotes before sending; this covers a container
+    // that was down for that call.
     if (expectsResponse && !options?.noninteractive) {
       this.promoteToInteractive(sessionId, 'human message');
     }

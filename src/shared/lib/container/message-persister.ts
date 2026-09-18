@@ -84,7 +84,7 @@ import {
   revertSessionActivity,
   type SessionActivityMark,
 } from '@shared/lib/services/session-summary-cache'
-import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
+import { isHiddenAutomatedSession, isNoninteractiveSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager, type NotificationOutcome } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -2024,10 +2024,29 @@ class MessagePersister {
     if (!isHiddenAutomatedSession(meta)) return
 
     const hiddenByOwnFlag = !!(meta?.isChatIntegrationSession || meta?.invokedByAgentSlug)
+    const wasNoninteractive = isNoninteractiveSession(meta)
     await updateSessionMetadata(this.storeOf(agentSlug), sessionId, {
       noninteractive: false,
       ...(hiddenByOwnFlag ? { promotedToInteractive: true } : {}),
     })
+
+    // The container keeps its own copy of the flag (it drives the notify_user
+    // tool and the unattended prompt). Host first: if this call fails, the
+    // session is visible and the host rejects a stray notify_user, which is
+    // the safe side. A container that is down for this call catches up when
+    // the human message reaches it (its sendMessage promotes too).
+    if (wasNoninteractive) {
+      try {
+        const client = (await getContainerHost()).runtime(agentSlug).getClient()
+        await client.promoteSession(sessionId)
+      } catch (error) {
+        console.warn(`[MessagePersister] Container promotion failed for session ${sessionId}:`, error)
+        captureException(error, {
+          tags: { area: 'sessions', op: 'promote-container-session' },
+          extra: { agentSlug, sessionId },
+        })
+      }
+    }
 
     // Promoted sessions behave interactive from here on — keep their stream
     // alive across settles like any other interactive session.

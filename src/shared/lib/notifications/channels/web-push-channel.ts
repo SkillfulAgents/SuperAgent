@@ -21,17 +21,18 @@ import type { NotificationEvent } from '../notification-event'
  * Typed against the union so a renamed or mistyped member fails typecheck
  * instead of silently never pushing.
  */
-const PUSHABLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting'])
+const PUSHABLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting', 'session_notify'])
 
 /**
  * How long the push service may hold an undelivered push for an offline
  * device (web-push's default is FOUR WEEKS). An "Action Required" prompt is
- * pointless once the review window has passed; a completion is stale after an
- * hour — better dropped than delivered days later.
+ * pointless once the review window has passed; a completion or an agent's
+ * notify_user is stale after an hour — better dropped than delivered days later.
  */
 const PUSH_TTL_SECONDS: Record<string, number> = {
   session_waiting: 10 * 60,
   session_complete: 60 * 60,
+  session_notify: 60 * 60,
 }
 const DEFAULT_PUSH_TTL_SECONDS = 60 * 60
 

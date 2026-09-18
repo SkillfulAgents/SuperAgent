@@ -208,6 +208,15 @@ app.post('/sessions/:id/interrupt', async (c) => {
   }
 });
 
+// The host calls this once it has made a noninteractive session visible.
+app.post('/sessions/:id/promote', (c) => {
+  const sessionId = c.req.param('id');
+  if (!sessionManager.promoteToInteractive(sessionId, 'host')) {
+    return c.json({ error: 'Session not found' }, 404);
+  }
+  return c.json({ success: true });
+});
+
 app.post('/sessions/:id/fork', async (c) => {
   const sessionId = c.req.param('id');
 

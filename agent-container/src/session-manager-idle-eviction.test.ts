@@ -652,36 +652,54 @@ describe('SessionManager idle eviction', () => {
     expect(metaOf(session.id)?.noninteractive).toBe(true)
   })
 
-  it('a session-promoting input request (via input-manager) promotes the session', async () => {
+  it('raising an input request does not promote: the host may auto-approve it without showing it', async () => {
     const session = await manager.createSession({
       initialMessage: 'hi',
       metadata: { noninteractive: true },
     })
     const proc = spawnedProcesses[spawnedProcesses.length - 1]
-
-    // Host-answered scheduler tools do not promote.
-    void inputManager.createPendingWithType('t-1', 'schedule_resume', undefined, session.id).catch(() => undefined)
+    for (const [id, type] of [['t-1', 'secret'], ['t-2', 'script_run'], ['t-3', 'notify_user']] as const) {
+      void inputManager.createPendingWithType(id, type, undefined, session.id).catch(() => undefined)
+    }
     expect(proc.setNoninteractiveCalls).toEqual([])
     expect(metaOf(session.id)?.noninteractive).toBe(true)
-
-    // A human-answered request does.
-    void inputManager.createPendingWithType('t-2', 'secret', undefined, session.id).catch(() => undefined)
-    expect(proc.setNoninteractiveCalls).toEqual([false])
-    expect(metaOf(session.id)?.noninteractive).toBe(false)
-    inputManager.reject('t-1', 'test done')
-    inputManager.reject('t-2', 'test done')
+    for (const id of ['t-1', 't-2', 't-3']) inputManager.reject(id, 'test done')
   })
 
-  it('notify_user promotes the session', async () => {
+  it('the host promotes a live session: process told, flag persisted, idempotent', async () => {
     const session = await manager.createSession({
       initialMessage: 'hi',
       metadata: { noninteractive: true },
     })
     const proc = spawnedProcesses[spawnedProcesses.length - 1]
-    void inputManager.createPendingWithType('t-3', 'notify_user', undefined, session.id).catch(() => undefined)
+
+    expect(manager.promoteToInteractive(session.id, 'host')).toBe(true)
     expect(proc.setNoninteractiveCalls).toEqual([false])
     expect(metaOf(session.id)?.noninteractive).toBe(false)
-    inputManager.reject('t-3', 'test done')
+
+    expect(manager.promoteToInteractive(session.id, 'host')).toBe(true)
+    expect(proc.setNoninteractiveCalls).toEqual([false])
+  })
+
+  it('the host promotes a cold session: persisted flag flips so the resume is interactive-class', async () => {
+    const session = await manager.createSession({
+      initialMessage: 'hi',
+      metadata: { noninteractive: true, other: 'keep' },
+    })
+    await manager.stopAll()
+    const spawnedBefore = spawnedProcesses.length
+
+    expect(manager.promoteToInteractive(session.id, 'host')).toBe(true)
+    expect(spawnedProcesses.length).toBe(spawnedBefore) // no resume just to flip a flag
+    expect(metaOf(session.id)).toEqual({ noninteractive: false, other: 'keep' })
+
+    const resumed = await manager.getSession(session.id)
+    expect(resumed?.metadata?.noninteractive).toBe(false)
+    expect(spawnedProcesses[spawnedProcesses.length - 1].noninteractive).toBe(false)
+  })
+
+  it('promoting an unknown session returns false', () => {
+    expect(manager.promoteToInteractive('nope', 'host')).toBe(false)
   })
 
   it('eviction stops the process GRACEFULLY (transcript-flush protection)', async () => {
