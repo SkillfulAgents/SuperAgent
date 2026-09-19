@@ -55,8 +55,6 @@ const externalExact = new Set([
   // grammy hardwires node-fetch@2, whose isAbortSignal checks constructor.name;
   // bundling renames abort-controller's class, so every Telegram call throws.
   'grammy',
-  // 2.3 MB BPE rank table; loaded lazily on the first voice session.
-  'gpt-tokenizer',
 ])
 const externalPrefix = ['@sentry/', '@opentelemetry/']
 

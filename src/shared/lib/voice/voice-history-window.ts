@@ -1,3 +1,4 @@
+import { estimateTokenCount } from 'tokenx'
 import { VOICE_HISTORY_MAX_MESSAGES, type VoiceHistory } from './conversation-types'
 
 export interface VoiceHistoryLimits {
@@ -7,27 +8,16 @@ export interface VoiceHistoryLimits {
   perMessageOverheadTokens: number
 }
 
-// GPT-Live caps startup `input` at 8,192 tokens; the budget leaves room for
-// per-message framing the API may count and for encoding differences.
+// GPT-Live caps startup `input` at 8,192 tokens. tokenx ~12% MAPE vs o200k;
+// 7,000 stayed under the cap on 1,996 sessions (max framed 8,174).
 export const VOICE_HISTORY_LIMITS: VoiceHistoryLimits = {
   maxMessages: VOICE_HISTORY_MAX_MESSAGES,
-  tokenBudget: 7500,
+  tokenBudget: 7000,
   perMessageChars: 1500,
   perMessageOverheadTokens: 4,
 }
 
 export const VOICE_HISTORY_TRUNCATION_MARKER = ' […]'
-
-type Tokenizer = { countTokens: (text: string, options?: { disallowedSpecial?: Set<string> }) => number }
-let tokenizer: Promise<Tokenizer> | null = null
-// Chat text may quote marker strings like <|endoftext|>; count them as ordinary text instead of throwing.
-const AS_ORDINARY_TEXT = { disallowedSpecial: new Set<string>() }
-
-// 2.3 MB of BPE ranks: load on the first voice session, not at API boot.
-function loadTokenizer(): Promise<Tokenizer> {
-  tokenizer ??= import('gpt-tokenizer/encoding/o200k_base')
-  return tokenizer
-}
 
 /** Keep the head of an over-long turn; the answer usually leads, caveats trail. */
 export function clipVoiceHistoryTurn(content: string, maxChars: number): string {
@@ -37,14 +27,13 @@ export function clipVoiceHistoryTurn(content: string, maxChars: number): string 
 }
 
 /** Newest-first fill under the token budget and message cap, returned oldest-first. */
-export async function windowVoiceHistory(history: VoiceHistory, limits = VOICE_HISTORY_LIMITS): Promise<VoiceHistory> {
-  const { countTokens } = await loadTokenizer()
+export function windowVoiceHistory(history: VoiceHistory, limits = VOICE_HISTORY_LIMITS): VoiceHistory {
   const kept: VoiceHistory = []
   let used = 0
   for (let i = history.length - 1; i >= 0; i--) {
     const content = clipVoiceHistoryTurn(history[i].content, limits.perMessageChars)
     if (!content) continue
-    const cost = countTokens(content, AS_ORDINARY_TEXT) + limits.perMessageOverheadTokens
+    const cost = estimateTokenCount(content) + limits.perMessageOverheadTokens
     if (kept.length >= limits.maxMessages || used + cost > limits.tokenBudget) break
     used += cost
     kept.push({ role: history[i].role, content })
