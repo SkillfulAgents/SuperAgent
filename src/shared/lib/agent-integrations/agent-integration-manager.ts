@@ -114,6 +114,9 @@ export class AgentIntegrationManager {
   private generations: Map<string, number> = new Map()
   // Bumped synchronously each time a chat session is cleared (see noteSessionClear).
   private sessionClears = 0
+  // Session row ids whose clear has begun (see noteSessionClear); the row may
+  // still read as active until the archive lands.
+  private clearedSessionRows = new Set<string>()
   // In-flight system-resume pass; concurrent reconnectAll calls coalesce onto it.
   private resumeReconcile: Promise<void> | null = null
   // A resume arrived while a pass was in flight: run one more FORCE pass when
@@ -212,6 +215,7 @@ export class AgentIntegrationManager {
     this.reconcilingIds.clear()
     this.generations.clear()
     this.sessionClears = 0
+    this.clearedSessionRows.clear()
     this.messageQueues.clear()
     this.isRunning = false
   }
@@ -237,8 +241,9 @@ export class AgentIntegrationManager {
    * overlapped is repeated. Counted for the whole manager: a clear by session
    * id does not know its chat until it has looked the row up itself.
    */
-  private noteSessionClear(): void {
+  private noteSessionClear(rowId?: string): void {
     this.sessionClears += 1
+    if (rowId) this.clearedSessionRows.add(rowId)
   }
 
   // ── Public API ──────────────────────────────────────────────────────
@@ -548,7 +553,9 @@ export class AgentIntegrationManager {
         const row = await getIntegrationSession(integration.id, session.externalId)
         if (this.sessionClears === clearsBefore) live = row
       }
-      if (live?.sessionId !== session.sessionId) continue
+      // A clear whose archive is still pending can leave the row reading as
+      // active through every retry; the row id it marked at the start says so.
+      if (live?.sessionId !== session.sessionId || this.clearedSessionRows.has(live.id)) continue
       if (this.generationOf(id) !== generation) return false
       this.subscribeChatSession(integration.id, session.externalId, session.sessionId)
     }
@@ -1070,7 +1077,7 @@ export class AgentIntegrationManager {
   }
 
   private async teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): Promise<void> {
-    this.noteSessionClear()
+    this.noteSessionClear(opts?.archive)
     const key = this.getChatSessionKey(integrationId, chatId)
     const managed = this.chatSessions.get(key)
     if (managed) this.stopSession(managed)
@@ -1100,7 +1107,7 @@ export class AgentIntegrationManager {
 
   /** Clear a chat session by its DB row ID (called from API route). */
   async clearSessionById(sessionId: string): Promise<void> {
-    this.noteSessionClear()
+    this.noteSessionClear(sessionId)
     for (const [key, managed] of this.chatSessions) {
       const { id: integrationId } = managed.integration
       const chatId = managed.chatId

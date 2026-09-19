@@ -457,3 +457,71 @@ it('review: clearing during the final restoration lookup must prevent stale outp
     expect(state.streams.has('session-1')).toBe(false)
   } finally { release(); lookup.mockRestore() }
 })
+
+it('review: a restoration retry cannot outlive a clear that is still in progress', async () => {
+  const otherAdapter = new ObjectIntegration()
+  state.rows.push(record('installation-b'))
+  registry = new AgentIntegrationRegistry([{
+    definition: adapter.definition,
+    policy: adapter,
+    create: async row => row.id === 'installation-a' ? adapter : otherAdapter,
+  }])
+  manager = new AgentIntegrationManager(registry)
+  await manager.start()
+  await adapter.input('first-chat')
+  await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
+  await otherAdapter.input('second-chat')
+  await vi.waitFor(() => expect(state.streams.has('session-2')).toBe(true))
+
+  const gate = () => {
+    let release!: () => void
+    const promise = new Promise<void>(resolve => { release = resolve })
+    return { promise, release }
+  }
+  const firstRead = gate(), retryRead = gate(), clearRead = gate()
+  const releaseFirst = gate(), releaseRetry = gate(), releaseClear = gate()
+  const original = integrationStore.getIntegrationSession
+  let restoringReads = 0
+  const lookup = vi.spyOn(integrationStore, 'getIntegrationSession').mockImplementation(async (id, externalId) => {
+    const snapshot = await original(id, externalId)
+    if (id === 'installation-b') {
+      // clearSessionById scans another live chat while the target is reconnecting.
+      clearRead.release()
+      await releaseClear.promise
+    } else if (++restoringReads === 1) {
+      firstRead.release()
+      await releaseFirst.promise
+    } else if (restoringReads === 2) {
+      retryRead.release()
+      await releaseRetry.promise
+    }
+    return snapshot
+  })
+  try {
+    const reconnecting = manager.addIntegration('installation-a')
+    await firstRead.promise
+    const clearing = (async () => {
+      await manager.clearSessionById('mapping-session-1')
+      // Same ordering as the API: archive only after live cleanup completes.
+      state.mappings.delete('installation-a:object-7')
+    })()
+    await clearRead.promise
+    releaseFirst.release()
+    // A cancelled restore may finish immediately without another database read.
+    await Promise.race([retryRead.promise, reconnecting])
+    releaseClear.release()
+    await clearing
+    expect(state.mappings.has('installation-a:object-7')).toBe(false)
+    releaseRetry.release()
+    await reconnecting
+    adapter.outputs = []
+    state.streams.get('session-1')?.({ type: 'stream_delta', text: 'output after completed clear' })
+    await vi.waitFor(() => expect((manager as unknown as { messageQueues: Map<string, Promise<void>> }).messageQueues.has('sse:installation-a:object-7')).toBe(false))
+    expect(adapter.outputs).toEqual([])
+    expect(state.streams.has('session-1')).toBe(false)
+    expect(state.streams.has('session-2')).toBe(true)
+  } finally {
+    releaseFirst.release(); releaseRetry.release(); releaseClear.release()
+    lookup.mockRestore()
+  }
+})
