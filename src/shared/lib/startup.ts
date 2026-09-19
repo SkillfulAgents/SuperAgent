@@ -140,7 +140,7 @@ async function initializeServicesInner() {
       if (isAuthMode()) {
         await validateAuthModeStartup()
         try {
-          clearPendingApprovalBans()
+          await clearPendingApprovalBans()
         } catch (error) {
           captureException(error, {
             tags: { component: 'startup', operation: 'clear-pending-approval-bans' },

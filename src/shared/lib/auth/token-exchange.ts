@@ -168,11 +168,11 @@ async function verifyGrant(assertion: string): Promise<DeploymentGrantClaims> {
  * Atomically consume the grant's jti. The INSERT's primary-key constraint is
  * the replay gate: only the request whose insert lands may continue.
  */
-function consumeJti(jti: string, expSec: number): void {
+async function consumeJti(jti: string, expSec: number): Promise<void> {
   try {
     // Opportunistic TTL cleanup keeps the table bounded.
-    db.delete(tokenExchangeJti).where(lt(tokenExchangeJti.expiresAt, new Date())).run()
-    const result = db
+    await db.delete(tokenExchangeJti).where(lt(tokenExchangeJti.expiresAt, new Date())).run()
+    const result = await db
       .insert(tokenExchangeJti)
       .values({ jti, expiresAt: new Date(expSec * 1000) })
       .onConflictDoNothing()
@@ -321,7 +321,7 @@ export async function exchangeDeploymentGrant(
   const claims = await verifyGrant(assertion)
 
   // Only after full cryptographic + claim validation: burn the jti.
-  consumeJti(claims.jti, claims.exp)
+  await consumeJti(claims.jti, claims.exp)
 
   const auth = getAuth()
   const ctx = await auth.$context

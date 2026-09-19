@@ -2128,7 +2128,7 @@ class MessagePersister {
   // Broadcast to SSE clients
   private broadcastToSSE(agentSlug: string, sessionId: string, data: unknown): void {
     const key = sessionKeyOf(agentSlug, sessionId)
-    this.capture?.recordOutput(sessionId, data)
+    void this.capture?.recordOutput(sessionId, data)
     // Turn boundaries settle whatever the last turn left parked. That is the
     // only request bookkeeping on the broadcast path — registration itself
     // lives in the per-kind handlers.
@@ -2177,7 +2177,7 @@ class MessagePersister {
     message: StreamMessage
   ): void {
     const { agentSlug, sessionId } = ctx
-    this.capture?.recordInput(sessionId, message)
+    void this.capture?.recordInput(sessionId, message)
     const state = this.streamingStates.get(ctx.key)
     if (!state) return
 
@@ -3331,7 +3331,7 @@ class MessagePersister {
               this.handleScriptRunRequestTool(sessionId, block.id, input, state.agentSlug, parentToolId)
             }
             if (block.name.startsWith('mcp__computer-use__')) {
-              this.handleComputerUseRequestTool(
+              void this.handleComputerUseRequestTool(
                 sessionId,
                 block.id,
                 block.name,
@@ -3740,7 +3740,7 @@ class MessagePersister {
           }
 
           if (sub.currentToolUse.name.startsWith('mcp__computer-use__')) {
-            this.handleComputerUseRequestTool(
+            void this.handleComputerUseRequestTool(
               sessionId,
               sub.currentToolUse.id,
               sub.currentToolUse.name,
@@ -4033,7 +4033,7 @@ class MessagePersister {
           }
 
           if (state.currentToolUse.name.startsWith('mcp__computer-use__')) {
-            this.handleComputerUseRequestTool(
+            void this.handleComputerUseRequestTool(
               sessionId,
               state.currentToolUse.id,
               state.currentToolUse.name,
@@ -4204,7 +4204,7 @@ class MessagePersister {
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
 
       // Parse the tool input
       let input: {
@@ -4323,7 +4323,7 @@ class MessagePersister {
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       let input: { wakeTime?: string; note?: string; timezone?: string }
       try {
         input = JSON.parse(toolInput)
@@ -4486,7 +4486,7 @@ ${continuation}`
     _toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         if (!agentSlug) {
           console.error('[MessagePersister] list_scheduled_tasks missing agentSlug')
@@ -4523,7 +4523,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: ScheduledTaskUpdateInput
         try {
@@ -4614,7 +4614,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: { task_id: string }
         try {
@@ -4679,7 +4679,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: { task_id: string }
         try {
@@ -4816,7 +4816,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         if (!isPlatformComposioActive()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
@@ -4873,7 +4873,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         if (!isPlatformComposioActive()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
@@ -5028,7 +5028,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         // Gate on platform auth, not Composio mode: custom endpoints live on
         // the platform proxy and must keep working when the user brings their
@@ -5168,7 +5168,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         // Gate on platform auth, not Composio mode: custom endpoints live on
         // the platform proxy and must keep working when the user brings their
@@ -5271,7 +5271,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         if (!getPlatformAccessToken()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
@@ -5354,7 +5354,7 @@ ${continuation}`
     _toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         const triggers = await listActiveWebhookTriggers(agentSlug)
         const formatted = triggers.length === 0
@@ -5384,7 +5384,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: WebhookTriggerUpdateInput
         try {
@@ -5442,7 +5442,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: { trigger_id: string }
         try {

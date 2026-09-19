@@ -442,7 +442,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     }
   }
 
-  audit({
+  await audit({
     statusCode: response.status,
     ...(response.status >= 400 ? { errorMessage: `Upstream returned ${response.status}` } : {}),
   })

@@ -741,7 +741,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       } catch (err) {
         console.warn('[mcp-proxy] Failed to cancel non-SSE GET body:', err)
       }
-      logMcpAuditEntry({
+      await logMcpAuditEntry({
         agentSlug,
         remoteMcpId: mcp.id,
         remoteMcpName: mcp.name,
@@ -760,7 +760,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     }
 
     // Fire-and-forget audit log
-    logMcpAuditEntry({
+    await logMcpAuditEntry({
       agentSlug,
       remoteMcpId: mcp.id,
       remoteMcpName: mcp.name,

@@ -29,15 +29,15 @@ describe('clearPendingApprovalBans', () => {
     mockUpdate.mockClear()
   })
 
-  it('is a no-op when not platform-controlled', () => {
-    expect(clearPendingApprovalBans()).toBe(0)
+  it('is a no-op when not platform-controlled', async () => {
+    expect(await clearPendingApprovalBans()).toBe(0)
     expect(mockUpdate).not.toHaveBeenCalled()
   })
 
-  it('clears pending-approval bans when platform-controlled', () => {
+  it('clears pending-approval bans when platform-controlled', async () => {
     mockIsPlatformControlledAuth.mockReturnValue(true)
     mockRun.mockReturnValue({ changes: 2 })
-    expect(clearPendingApprovalBans()).toBe(2)
+    expect(await clearPendingApprovalBans()).toBe(2)
     expect(mockUpdate).toHaveBeenCalled()
     expect(mockSet).toHaveBeenCalledWith({ banned: false, banReason: null })
     expect(PENDING_APPROVAL_BAN_REASON).toBe('Pending admin approval')

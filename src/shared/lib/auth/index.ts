@@ -147,7 +147,7 @@ function createAuthInstance() {
           after: async (createdUser) => {
             try {
               // Atomic: only promote if this is the sole user in the table
-              const result = db
+              const result = await db
                 .update(schema.user)
                 .set({ role: 'admin' })
                 .where(
@@ -166,7 +166,7 @@ function createAuthInstance() {
               // Fresh settings each time; platform-controlled forces approval off.
               const currentAuth = resolveAuthSettings(getSettings().auth)
               if (changesOf(result) === 0 && currentAuth.requireAdminApproval) {
-                db.update(schema.user)
+                await db.update(schema.user)
                   .set({ banned: true, banReason: PENDING_APPROVAL_BAN_REASON })
                   .where(eq(schema.user.id, createdUser.id))
                   .run()
@@ -187,7 +187,7 @@ function createAuthInstance() {
             // Admin setUserPassword uses updateMany (returns count, not row) — no-op.
             try {
               if (account && account.providerId === 'credential' && account.userId) {
-                db.update(schema.user)
+                await db.update(schema.user)
                   .set({ mustChangePassword: false })
                   .where(
                     and(
@@ -231,7 +231,7 @@ function createAuthInstance() {
           after: async (session, context) => {
             try {
               const sessAuth = resolveAuthSettings(getSettings().auth)
-              enforceMaxConcurrentSessions(session.userId, sessAuth.maxConcurrentSessions ?? 5)
+              await enforceMaxConcurrentSessions(session.userId, sessAuth.maxConcurrentSessions ?? 5)
             } catch (err) {
               console.error('Failed to enforce max concurrent sessions:', err)
             }

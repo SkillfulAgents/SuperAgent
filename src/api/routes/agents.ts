@@ -1016,7 +1016,7 @@ async function processImport(c: Context, zip: TemplateZipSource, formData: FormD
     hasOnboardingSkill(agent.slug),
     getAgentTemplatePrompt(agent.slug),
   ])
-  logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name } })
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name } })
   return c.json({
     ...agent,
     hasOnboarding: onboarding.hasOnboarding,
@@ -1075,7 +1075,7 @@ agents.post('/install-from-skillset', async (c) => {
       hasOnboardingSkill(agent.slug),
       getAgentTemplatePrompt(agent.slug),
     ])
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name, skillsetId } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name, skillsetId } })
     return c.json({
       ...agent,
       hasOnboarding: onboarding.hasOnboarding,
@@ -1378,7 +1378,7 @@ agents.post('/', async (c) => {
 
     await createOwnerAclOrRollback(c, agent.slug)
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'created', details: { name: name.trim() } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'created', details: { name: name.trim() } })
     return c.json(agent, 201)
   } catch (error) {
     console.error('Failed to create agent:', error)
@@ -1422,7 +1422,7 @@ agents.put('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     }
 
     const updatedFields = Object.keys(body).filter(k => body[k] !== undefined)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'updated', details: { fields: updatedFields } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'updated', details: { fields: updatedFields } })
     return c.json(agent)
   } catch (error) {
     console.error('Failed to update agent:', error)
@@ -1484,7 +1484,7 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       console.error('Failed to delete host-browser profile:', error)
     }
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'deleted', details: { name: agentBeforeDelete.frontmatter.name } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'deleted', details: { name: agentBeforeDelete.frontmatter.name } })
     return c.body(null, 204)
   } catch (error) {
     if (error instanceof AgentContainerStopError) {
@@ -1612,7 +1612,7 @@ agents.post('/:id/access', AgentAdmin(), async (c) => {
     })
 
     notifyAgentMembersChanged(slug)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'granted', details: { targetUserId: userId, role } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'granted', details: { targetUserId: userId, role } })
     return c.json({ ok: true }, 201)
   } catch (error) {
     console.error('Failed to add agent access:', error)
@@ -1637,7 +1637,7 @@ agents.patch('/:id/access/:userId', AgentAdmin(), async (c) => {
     if (outcome === 'not-a-member') return c.json({ error: 'User does not have access to this agent' }, 404)
     if (outcome === 'last-owner') return c.json({ error: 'Cannot change role: agent must have at least one owner' }, 400)
     notifyAgentMembersChanged(slug)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'changed', details: { targetUserId: targetUserId, role } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'changed', details: { targetUserId: targetUserId, role } })
     return c.json({ ok: true })
   } catch (error) {
     console.error('Failed to update agent access:', error)
@@ -1657,7 +1657,7 @@ agents.delete('/:id/access/:userId', AgentAdmin(), async (c) => {
     if (outcome === 'not-a-member') return c.json({ error: 'User does not have access to this agent' }, 404)
     if (outcome === 'last-owner') return c.json({ error: 'Cannot remove access: agent must have at least one owner' }, 400)
     notifyAgentMembersChanged(slug, targetUserId)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId } })
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to remove agent access:', error)
@@ -1675,7 +1675,7 @@ agents.post('/:id/leave', AgentRead(), async (c) => {
     if (outcome === 'not-a-member') return c.json({ error: 'You do not have access to this agent' }, 400)
     if (outcome === 'last-owner') return c.json({ error: 'Cannot leave: you are the only owner' }, 400)
     notifyAgentMembersChanged(slug, userId)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId: userId } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId: userId } })
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to leave agent:', error)
@@ -4738,7 +4738,7 @@ agents.post('/:id/secrets', AgentUser(), async (c) => {
       value,
     })
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${envVar}`, action: existing ? 'updated' : 'created', details: { key: key.trim() } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${envVar}`, action: existing ? 'updated' : 'created', details: { key: key.trim() } })
     return c.json({ id: envVar, key: key.trim(), envVar, hasValue: true }, 201)
   } catch (error) {
     console.error('Failed to create secret:', error)
@@ -4780,7 +4780,7 @@ agents.put('/:id/secrets/:secretId', AgentUser(), async (c) => {
     }
 
     const updated = result.secret
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${updated.envVar}`, action: 'updated', details: { key: updated.key } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${updated.envVar}`, action: 'updated', details: { key: updated.key } })
     return c.json({ id: updated.envVar, key: updated.key, envVar: updated.envVar, hasValue: true })
   } catch (error) {
     console.error('Failed to update secret:', error)
@@ -4801,7 +4801,7 @@ agents.delete('/:id/secrets/:secretId', AgentUser(), async (c) => {
       return c.json({ error: 'Secret not found' }, 404)
     }
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${envVar}`, action: 'deleted' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${envVar}`, action: 'deleted' })
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to delete secret:', error)
@@ -4913,7 +4913,7 @@ agents.post('/:id/connected-accounts', AgentUser(), async (c) => {
         getProvider(account.toolkitSlug),
       ))
 
-    for (const accountId of insertedAccountIds) { logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'assigned', details: { agentSlug: slug } }) }
+    for (const accountId of insertedAccountIds) { await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'assigned', details: { agentSlug: slug } }) }
     const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('connected-accounts')
     return c.json({ accounts, liveRefresh })
   } catch (error) {
@@ -4950,7 +4950,7 @@ agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
       .delete(agentConnectedAccounts)
       .where(eq(agentConnectedAccounts.id, found.id))
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'unassigned', details: { agentSlug: slug } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'unassigned', details: { agentSlug: slug } })
     const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('connected-accounts')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
@@ -4997,7 +4997,7 @@ agents.delete('/:id/connected-accounts/mapping/:mappingId', AgentAdmin(), async 
       .delete(agentConnectedAccounts)
       .where(eq(agentConnectedAccounts.id, found.id))
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: found.connectedAccountId, action: 'unassigned', details: { agentSlug: slug } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: found.connectedAccountId, action: 'unassigned', details: { agentSlug: slug } })
     const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('connected-accounts')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
@@ -5079,7 +5079,7 @@ agents.post('/:id/remote-mcps', AgentUser(), async (c) => {
 
     await db.insert(agentRemoteMcps).values(values).onConflictDoNothing()
 
-    for (const mcpId of newMcpIds) { logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'assigned', details: { agentSlug: slug } }) }
+    for (const mcpId of newMcpIds) { await logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'assigned', details: { agentSlug: slug } }) }
     const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('remote-mcps')
     return c.json({ success: true, added: newMcpIds.length, liveRefresh })
   } catch (error) {
@@ -5114,7 +5114,7 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
     }
 
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'unassigned', details: { agentSlug: slug } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'unassigned', details: { agentSlug: slug } })
     const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('remote-mcps')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
@@ -5144,7 +5144,7 @@ agents.delete('/:id/remote-mcps/mapping/:mappingId', AgentAdmin(), async (c) => 
     }
 
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mapping.remoteMcpId, action: 'unassigned', details: { agentSlug: slug } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mapping.remoteMcpId, action: 'unassigned', details: { agentSlug: slug } })
     const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('remote-mcps')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
@@ -5371,7 +5371,7 @@ agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
       skillVersion || '0.0.0',
     )
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${skillPath}`, action: 'created', details: { skillsetId, skillName: skillName || skillPath } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${skillPath}`, action: 'created', details: { skillsetId, skillName: skillName || skillPath } })
     return c.json({ installed: true })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to install skill'
@@ -5386,7 +5386,7 @@ agents.post('/:id/skills/:dir/update', AgentAdmin(), async (c) => {
     const agentSlug = getAgentId(c)
     const skillDir = c.req.param('dir')
     const result = await updateSkillFromSkillset(agentSlug, skillDir)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${skillDir}`, action: 'updated' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${skillDir}`, action: 'updated' })
     return c.json(result)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to update skill'
@@ -5421,7 +5421,7 @@ agents.post('/:id/skills/:dir/create-pr', AgentAdmin(), async (c) => {
     }
 
     const result = await createSkillPR(agentSlug, skillDir, { title, body, newVersion })
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${skillDir}`, action: 'exported', details: { method: 'pr', title } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${skillDir}`, action: 'exported', details: { method: 'pr', title } })
     return c.json(result)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create PR'
@@ -5474,7 +5474,7 @@ agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
     const result = await publishSkillToSkillset(agentSlug, skillDir, config, {
       title, body, newVersion,
     })
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${skillDir}`, action: 'exported', details: { method: 'publish', skillsetId, title } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${skillDir}`, action: 'exported', details: { method: 'publish', skillsetId, title } })
     return c.json(result)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to publish skill'
@@ -5533,7 +5533,7 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
     const agent = await getAgent(slug)
     const zipStream = await exportAgentTemplate(slug, c.req.raw.signal)
     return sendLockedExportStream(zipStream, () => {
-      logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
+      void logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
       return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
     })
   } catch (error) {
@@ -5548,7 +5548,7 @@ agents.post('/:id/export-full', AgentAdmin(), async (c) => {
     const agent = await getAgent(slug)
     const zipStream = await exportAgentFull(slug, c.req.raw.signal)
     return sendLockedExportStream(zipStream, () => {
-      logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
+      void logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
       return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
     })
   } catch (error) {
@@ -5698,7 +5698,7 @@ agents.post('/:id/skills/:dir/export', AgentAdmin(), async (c) => {
     const dir = c.req.param('dir')
     const { zipBuffer, skillName } = await exportSkill(agentSlug, dir)
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${dir}`, action: 'exported', details: { type: 'zip' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${dir}`, action: 'exported', details: { type: 'zip' } })
     return packageDownloadResponse(zipBuffer, `${skillName || dir}${SKILL_PACKAGE_EXTENSION}`)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export skill'
@@ -5714,7 +5714,7 @@ agents.delete('/:id/skills/:dir', AgentAdmin(), async (c) => {
     const dir = c.req.param('dir')
     await deleteSkill(agentSlug, dir)
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${dir}`, action: 'deleted' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${dir}`, action: 'deleted' })
     return c.body(null, 204)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to delete skill'
@@ -5746,7 +5746,7 @@ agents.post('/:id/skills/import-zip', AgentAdmin(), async (c) => {
     }
 
     const result = await importSkillFromZip(agentSlug, zipBuffer)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${result.skillDir}`, action: 'created', details: { skillName: result.skillName, source: 'zip-import' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${result.skillDir}`, action: 'created', details: { skillName: result.skillName, source: 'zip-import' } })
     return c.json(result, 201)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to import skill'
@@ -6064,7 +6064,7 @@ async function respondUploadFile(c: Context) {
       const outcome = await handleChunkedFileUpload(c, agentSlug, formData, chunk)
       if (outcome.pending) return outcome.pending
       const result = outcome.uploadResult!
-      logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.filename}`, action: 'uploaded' })
+      await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.filename}`, action: 'uploaded' })
       return c.json(result)
     }
 
@@ -6075,7 +6075,7 @@ async function respondUploadFile(c: Context) {
     }
 
     const result = await handleFileUpload(agentSlug, file, relativePath || undefined)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.filename}`, action: 'uploaded' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.filename}`, action: 'uploaded' })
     return c.json(result)
   } catch (error) {
     if (error instanceof UploadTooLargeError) {
@@ -6159,7 +6159,7 @@ agents.post('/:id/upload-folder', AgentUser(), async (c) => {
     const { sourcePath } = await c.req.json<{ sourcePath: string }>()
     if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
     const result = await handleFolderUpload(agentSlug, sourcePath)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.folderName}`, action: 'uploaded' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.folderName}`, action: 'uploaded' })
     return c.json(result)
   } catch (error) {
     console.error('Failed to upload folder:', error)
@@ -6175,7 +6175,7 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
     const { sourcePath } = await c.req.json<{ sourcePath: string }>()
     if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
     const result = await handleFolderUpload(agentSlug, sourcePath)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.folderName}`, action: 'uploaded' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.folderName}`, action: 'uploaded' })
     return c.json(result)
   } catch (error) {
     console.error('Failed to upload folder:', error)
@@ -6219,7 +6219,7 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
       }
     }
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { hostPath } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { hostPath } })
     return c.json(mount, 201)
   } catch (error) {
     console.error('Failed to add mount:', error)
@@ -6243,7 +6243,7 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
       }
     }
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mountId}`, action: 'deleted' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mountId}`, action: 'deleted' })
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to remove mount:', error)
@@ -7315,7 +7315,7 @@ async function cleanupStaleUploads() {
 }
 
 // Run cleanup on startup and every 30 minutes
-cleanupStaleUploads()
+void cleanupStaleUploads()
 setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 
 // =============================================================================

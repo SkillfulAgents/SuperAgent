@@ -92,7 +92,7 @@ function dispatchToTargets(targets: AnalyticsTarget[], event: string, properties
     switch (target.type) {
       case 'amplitude':
         if (target.config.apiKey) {
-          sendToAmplitude(target.config.apiKey, [{
+          void sendToAmplitude(target.config.apiKey, [{
             event_type: event,
             user_id: userId,
             event_properties: properties,
@@ -103,12 +103,12 @@ function dispatchToTargets(targets: AnalyticsTarget[], event: string, properties
         break
       case 'mixpanel':
         if (target.config.token) {
-          sendToMixpanel(target.config.token, event, { ...properties, user_id: userId })
+          void sendToMixpanel(target.config.token, event, { ...properties, user_id: userId })
         }
         break
       case 'google-analytics':
         if (target.config.measurementId) {
-          sendToGA(target.config.measurementId, event, properties)
+          void sendToGA(target.config.measurementId, event, properties)
         }
         break
     }
@@ -143,7 +143,7 @@ export function trackServerEvent(
 
   // Send to hardcoded Amplitude (Datawizz) only if shareAnalytics is enabled
   if (DEFAULT_AMPLITUDE_KEY && settings.shareAnalytics) {
-    sendToAmplitude(DEFAULT_AMPLITUDE_KEY, [{
+    void sendToAmplitude(DEFAULT_AMPLITUDE_KEY, [{
       event_type: event,
       user_id: effectiveUserId,
       event_properties: fullProperties,

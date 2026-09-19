@@ -75,8 +75,8 @@ mcpReauth.post('/:id/reauth-request/:requestId/replace-mcp', AgentUser(), async 
     if (changesOf(unlinked) === 0) return c.json({ error: 'Reconnection request is no longer available' }, 404)
     const result = { previousId: current.mcp.id, replacementId, name: current.mcp.name }
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: result.previousId, action: 'unassigned', details: { agentSlug } })
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: result.replacementId, action: 'assigned', details: { agentSlug } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: result.previousId, action: 'unassigned', details: { agentSlug } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: result.replacementId, action: 'assigned', details: { agentSlug } })
     const recovery = await finishConnectionReplacement({ agentSlug, kind: 'remote-mcps', ...result }, () => {
       const actor = agentRegistry.get(agentSlug)
       if (!actor.inputs.mcpReauth.replace(requestId, result.replacementId)) {
