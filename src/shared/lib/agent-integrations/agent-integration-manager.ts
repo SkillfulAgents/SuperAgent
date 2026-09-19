@@ -272,9 +272,13 @@ export class AgentIntegrationManager {
   }
 
   async addIntegration(id: string): Promise<void> {
+    // Claim the integration before the read: a pause or removal that lands
+    // while the row is being read must win, not be undone by this connect.
+    const generation = this.bumpGeneration(id)
     const integration = await getIntegration(id)
     if (!integration) throw new Error(`Chat integration ${id} not found`)
-    await this.connectIntegration(integration)
+    if (this.generationOf(id) !== generation) return
+    await this.connectIntegration(integration, generation)
   }
 
   async removeIntegration(id: string): Promise<void> {
@@ -380,10 +384,15 @@ export class AgentIntegrationManager {
   }
 
   async resumeIntegration(id: string): Promise<void> {
+    // Same claim-before-read as addIntegration: the row read and the status
+    // write are both windows in which a pause can land.
+    const generation = this.bumpGeneration(id)
     const integration = await getIntegration(id)
     if (!integration) throw new Error(`Chat integration ${id} not found`)
+    if (this.generationOf(id) !== generation) return
     await updateIntegrationStatus(id, 'active')
-    await this.connectIntegration({ ...integration, status: 'active' })
+    if (this.generationOf(id) !== generation) return
+    await this.connectIntegration({ ...integration, status: 'active' }, generation)
   }
 
   getConnector(integrationId: string): AgentIntegration | undefined {
@@ -429,12 +438,14 @@ export class AgentIntegrationManager {
    * we were mid-flight, and its socket (if one opened) has been torn down.
    * Callers must treat false as "stand down", not as success.
    *
-   * `expectedGeneration` is passed by rebuilds that captured the generation
-   * earlier; user-driven calls omit it and take ownership here via a bump.
+   * `expectedGeneration` is passed by callers that claimed the integration
+   * before their own reads (add, resume, rebuild); a call that omits it takes
+   * ownership here via a bump.
    */
   private async connectIntegration(integration: AgentIntegrationRecord, expectedGeneration?: number): Promise<boolean> {
     const id = integration.id
     const generation = expectedGeneration ?? this.bumpGeneration(id)
+    if (this.generationOf(id) !== generation) return false
 
     if (this.connections.has(id)) {
       await this.teardownConnection(id)
@@ -443,6 +454,8 @@ export class AgentIntegrationManager {
     }
 
     const connector = await this.createConnector(integration)
+    // Another window: creating the connector can await.
+    if (this.generationOf(id) !== generation) return false
 
     const conn: IntegrationConnection = {
       connector,
@@ -507,6 +520,12 @@ export class AgentIntegrationManager {
     const existingSessions = await listActiveIntegrationSessions(integration.id)
     for (const session of existingSessions) {
       if (!(await this.isAllowed(integration.id, session.externalId))) continue
+      // The access check is a window in which the chat can be cleared and its
+      // row archived: only a row that is still the live one is re-subscribed,
+      // and only while this connect still owns the integration.
+      const live = await getIntegrationSession(integration.id, session.externalId)
+      if (live?.sessionId !== session.sessionId) continue
+      if (this.generationOf(id) !== generation) return false
       this.subscribeChatSession(integration.id, session.externalId, session.sessionId)
     }
     return true
@@ -592,7 +611,7 @@ export class AgentIntegrationManager {
    * chat was cleared or re-pointed meanwhile, observing would revive a
    * session the connector has already released.
    */
-  private isCurrentSession(integrationId: string, chatId: string, session: ManagedSession, sessionId: string): boolean {
+  private isCurrentSession(integrationId: string, chatId: string, session: ManagedSession, sessionId: string | undefined): boolean {
     const live = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
     return live === session && live.sessionId === sessionId
   }
@@ -600,8 +619,11 @@ export class AgentIntegrationManager {
   // ── Health monitoring ───────────────────────────────────────────────
 
   private async runHealthChecks(): Promise<void> {
-    for (const session of this.chatSessions.values()) {
-      if ((await this.isAllowed(session.integration.id, session.chatId))) session.connector.observeSession(session.context)
+    for (const session of [...this.chatSessions.values()]) {
+      if (!(await this.isAllowed(session.integration.id, session.chatId))) continue
+      // The access check is a window in which the chat can be cleared.
+      if (!this.isCurrentSession(session.integration.id, session.chatId, session, session.sessionId)) continue
+      session.connector.observeSession(session.context)
     }
 
     await this.reconcileIntegrations({ force: false })
@@ -672,6 +694,9 @@ export class AgentIntegrationManager {
       // Fresh read: the user may have paused or deleted it since the list snapshot.
       const integration = await getIntegration(id)
       if (!integration || integration.status === 'paused') return
+      // The read is a window in which a user operation can take ownership; a
+      // teardown now would kill the connection that operation just made.
+      if (!this.isRunning || this.generationOf(id) !== generation) return
 
       // The teardown wipes the failure counter (correct for user-initiated
       // removal); capture it first so retry accounting survives.
@@ -683,6 +708,7 @@ export class AgentIntegrationManager {
         if (!this.isRunning || this.generationOf(id) !== generation) return
         const fresh = await getIntegration(id)
         if (!fresh || fresh.status === 'paused') return
+        if (!this.isRunning || this.generationOf(id) !== generation) return
 
         const connected = await this.connectIntegration(fresh, generation)
         if (!connected) return // ownership lost mid-connect — cancelled, not successful
