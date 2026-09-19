@@ -1,14 +1,14 @@
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@shared/lib/utils/cn'
 
-interface OAuthFlowCancelProps {
+interface LoginWindowCancelProps {
   visible: boolean
   onCancel: () => void
   className?: string
   testId?: string
 }
 
-export function OAuthFlowCancel({ visible, onCancel, className, testId }: OAuthFlowCancelProps) {
+export function LoginWindowCancel({ visible, onCancel, className, testId }: LoginWindowCancelProps) {
   if (!visible) return null
 
   return (
