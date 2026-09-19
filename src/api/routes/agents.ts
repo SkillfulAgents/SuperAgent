@@ -202,7 +202,7 @@ import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { JsonlEntry, JsonlMessageEntry, SessionInfo, SessionMetadata, SessionMetadataMap } from '@shared/lib/types/agent'
-import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
+import { toPublicAgentIntegration } from '@shared/lib/agent-integrations/serialization'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
 import {
   toAgentConnectedAccountDto,
@@ -4605,7 +4605,7 @@ agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
     // "Connecting…" from the same source of truth as the connector page, instead
     // of guessing from persisted status alone.
     const withConnection = integrations.map((integration) => ({
-      ...toPublicChatIntegration(integration),
+      ...toPublicAgentIntegration(integration),
       connected: agentIntegrationManager.isIntegrationConnected(integration.id),
     }))
     return c.json(withConnection)

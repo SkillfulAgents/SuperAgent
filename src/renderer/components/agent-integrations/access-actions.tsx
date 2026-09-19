@@ -4,7 +4,7 @@ import {
   useApproveChatAccess,
   useDenyChatAccess,
   useRevokeChatAccess,
-} from '@renderer/hooks/use-chat-integrations'
+} from '@renderer/hooks/use-agent-integrations'
 import type { ChatRow } from './chat-inbox-model'
 
 /** One access action with a per-button spinner while its own mutation is in flight.

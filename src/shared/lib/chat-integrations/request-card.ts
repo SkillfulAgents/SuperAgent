@@ -15,7 +15,7 @@ import type {
   PendingUserInputRequest,
   UserInputRequestKind,
 } from '@shared/lib/user-input/request-schema'
-import { formatProviderName } from './utils'
+import { formatProviderName } from '@shared/lib/agent-integrations/presentation'
 
 /**
  * Kind → the card `type` a connector switches on.

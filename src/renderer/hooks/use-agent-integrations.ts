@@ -1,31 +1,31 @@
 /**
- * Chat Integrations Hooks
+ * Agent Integration Hooks
  *
- * React Query hooks for managing external chat integrations (Telegram, Slack).
+ * React Query hooks for managing external agent integrations.
  */
 
 import type { ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
-import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
-import { isSettling } from '@shared/lib/chat-integrations/utils'
+import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
+import { isSettling } from '@shared/lib/agent-integrations/presentation'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
 export type { ChatIntegrationSession, ChatIntegrationAccess }
-export type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
+export type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 
 /** A list row plus the live transport state the list route computes, so the
  *  agent-home tag can derive its state from the same `(status, connected)` the
  *  connector page uses. */
-export type ChatIntegrationListItem = ChatIntegration & { connected: boolean }
+export type AgentIntegrationListItem = PublicAgentIntegration & { connected: boolean }
 
-export class ChatIntegrationApiError extends Error {
+export class AgentIntegrationApiError extends Error {
   readonly status: number
   readonly code?: string
   readonly existingIntegrationId?: string
   constructor(message: string, status: number, code?: string, existingIntegrationId?: string) {
     super(message)
-    this.name = 'ChatIntegrationApiError'
+    this.name = 'AgentIntegrationApiError'
     this.status = status
     this.code = code
     this.existingIntegrationId = existingIntegrationId
@@ -34,9 +34,10 @@ export class ChatIntegrationApiError extends Error {
 
 // ── Query keys ──────────────────────────────────────────────────────────
 
-export const chatIntegrationKeys = {
+export const agentIntegrationKeys = {
   all: ['chat-integrations'] as const,
-  list: (agentSlug: string | null, status?: string) => ['chat-integrations', agentSlug, status] as const,
+  lists: (agentSlug: string | null) => [...agentIntegrationKeys.all, agentSlug] as const,
+  list: (agentSlug: string | null, status?: string) => [...agentIntegrationKeys.lists(agentSlug), status] as const,
   detail: (id: string | null) => ['chat-integration', id] as const,
   status: (id: string | null) => ['chat-integration-status', id] as const,
   sessions: (integrationId: string | null) => ['chat-integration-sessions', integrationId] as const,
@@ -45,9 +46,9 @@ export const chatIntegrationKeys = {
 
 // ── List hooks ──────────────────────────────────────────────────────────
 
-export function useChatIntegrations(agentSlug: string | null, status?: string) {
-  return useQuery<ChatIntegrationListItem[]>({
-    queryKey: chatIntegrationKeys.list(agentSlug, status),
+export function useAgentIntegrations(agentSlug: string | null, status?: string) {
+  return useQuery<AgentIntegrationListItem[]>({
+    queryKey: agentIntegrationKeys.list(agentSlug, status),
     queryFn: async () => {
       const url = status
         ? `/api/agents/${agentSlug}/chat-integrations?status=${status}`
@@ -58,7 +59,7 @@ export function useChatIntegrations(agentSlug: string | null, status?: string) {
     },
     enabled: !!agentSlug,
     // Keep the live `connected` fresh so the home tag tracks the wire like the
-    // connector card does (same cadence as useChatIntegrationStatus): poll fast
+    // connector card does (same cadence as useAgentIntegrationStatus): poll fast
     // while any integration is still connecting, idle once all are settled. Only
     // while foregrounded - a stuck "Connecting…" shouldn't churn a backgrounded tab.
     refetchInterval: (query) =>
@@ -69,9 +70,9 @@ export function useChatIntegrations(agentSlug: string | null, status?: string) {
 
 // ── Detail hook ─────────────────────────────────────────────────────────
 
-export function useChatIntegration(id: string | null) {
-  return useQuery<ChatIntegration>({
-    queryKey: chatIntegrationKeys.detail(id),
+export function useAgentIntegration(id: string | null) {
+  return useQuery<PublicAgentIntegration>({
+    queryKey: agentIntegrationKeys.detail(id),
     queryFn: async () => {
       const res = await apiFetch(`/api/chat-integrations/${id}`)
       if (!res.ok) throw new Error('Failed to fetch chat integration')
@@ -83,13 +84,13 @@ export function useChatIntegration(id: string | null) {
 
 // ── Status hook ─────────────────────────────────────────────────────────
 
-export function useChatIntegrationStatus(id: string | null) {
+export function useAgentIntegrationStatus(id: string | null) {
   return useQuery<{
     status: string
     connected: boolean
     provider: string
   }>({
-    queryKey: chatIntegrationKeys.status(id),
+    queryKey: agentIntegrationKeys.status(id),
     queryFn: async () => {
       const res = await apiFetch(`/api/chat-integrations/${id}/status`)
       if (!res.ok) throw new Error('Failed to fetch status')
@@ -112,9 +113,9 @@ export function useChatIntegrationStatus(id: string | null) {
 
 // ── Sessions hook ──────────────────────────────────────────────────────
 
-export function useChatIntegrationSessions(integrationId: string | null) {
+export function useAgentIntegrationSessions(integrationId: string | null) {
   return useQuery<ChatIntegrationSession[]>({
-    queryKey: chatIntegrationKeys.sessions(integrationId),
+    queryKey: agentIntegrationKeys.sessions(integrationId),
     queryFn: async () => {
       const res = await apiFetch(`/api/chat-integrations/${integrationId}/sessions`)
       if (!res.ok) throw new Error('Failed to fetch chat integration sessions')
@@ -132,9 +133,9 @@ export function useChatIntegrationSessions(integrationId: string | null) {
 
 // ── Access hook ────────────────────────────────────────────────────────
 
-export function useChatIntegrationAccess(integrationId: string | null, enabled = true) {
+export function useAgentIntegrationAccess(integrationId: string | null, enabled = true) {
   return useQuery<ChatIntegrationAccess[]>({
-    queryKey: chatIntegrationKeys.access(integrationId ?? ''),
+    queryKey: agentIntegrationKeys.access(integrationId ?? ''),
     queryFn: async () => {
       const res = await apiFetch(`/api/chat-integrations/${integrationId}/access`)
       if (!res.ok) throw new Error('Failed to fetch chat integration access')
@@ -151,7 +152,7 @@ export function useChatIntegrationAccess(integrationId: string | null, enabled =
 
 // ── Create mutation ─────────────────────────────────────────────────────
 
-export function useCreateChatIntegration() {
+export function useCreateAgentIntegration() {
   const queryClient = useQueryClient()
 
   return useMutation({
@@ -179,18 +180,18 @@ export function useCreateChatIntegration() {
           code?: string
           existingIntegrationId?: string
         }
-        throw new ChatIntegrationApiError(
+        throw new AgentIntegrationApiError(
           payload.error ?? 'Failed to create',
           res.status,
           payload.code,
           payload.existingIntegrationId,
         )
       }
-      return res.json() as Promise<ChatIntegration>
+      return res.json() as Promise<PublicAgentIntegration>
     },
     onSuccess: (data) => {
       // Invalidate all list queries for this agent (regardless of status filter)
-      queryClient.invalidateQueries({ queryKey: ['chat-integrations', data.agentSlug] })
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(data.agentSlug) })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
     },
   })
@@ -198,7 +199,7 @@ export function useCreateChatIntegration() {
 
 // ── Update mutation ─────────────────────────────────────────────────────
 
-export function useUpdateChatIntegration() {
+export function useUpdateAgentIntegration() {
   const queryClient = useQueryClient()
 
   return useMutation({
@@ -223,20 +224,20 @@ export function useUpdateChatIntegration() {
         body: JSON.stringify(params),
       })
       if (!res.ok) throw new Error('Failed to update chat integration')
-      return res.json() as Promise<ChatIntegration>
+      return res.json() as Promise<PublicAgentIntegration>
     },
     onSuccess: (data) => {
-      queryClient.setQueryData(chatIntegrationKeys.detail(data.id), data)
-      queryClient.invalidateQueries({ queryKey: ['chat-integrations', data.agentSlug] })
-      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.detail(data.id) })
-      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.status(data.id) })
+      queryClient.setQueryData(agentIntegrationKeys.detail(data.id), data)
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(data.agentSlug) })
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(data.id) })
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.status(data.id) })
     },
   })
 }
 
 // ── Delete mutation ─────────────────────────────────────────────────────
 
-export function useDeleteChatIntegration() {
+export function useDeleteAgentIntegration() {
   const queryClient = useQueryClient()
 
   return useMutation({
@@ -246,8 +247,8 @@ export function useDeleteChatIntegration() {
       return { id, agentSlug }
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['chat-integrations', variables.agentSlug] })
-      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.detail(variables.id) })
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(variables.agentSlug) })
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(variables.id) })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
     },
   })
@@ -273,7 +274,7 @@ function useChatAccessAction(verb: ChatAccessVerb) {
       return { integrationId }
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.access(variables.integrationId) })
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.access(variables.integrationId) })
     },
   })
 }
@@ -296,13 +297,13 @@ export function useSetRequireApproval() {
         body: JSON.stringify({ requireApproval }),
       })
       if (!res.ok) throw new Error('Failed to update require approval')
-      return res.json() as Promise<ChatIntegration>
+      return res.json() as Promise<PublicAgentIntegration>
     },
     onSuccess: (data) => {
-      queryClient.setQueryData(chatIntegrationKeys.detail(data.id), data)
-      queryClient.invalidateQueries({ queryKey: ['chat-integrations', data.agentSlug] })
-      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.detail(data.id) })
-      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.access(data.id) })
+      queryClient.setQueryData(agentIntegrationKeys.detail(data.id), data)
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(data.agentSlug) })
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(data.id) })
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.access(data.id) })
     },
   })
 }
@@ -322,8 +323,8 @@ export function useClearChatSession() {
       return { integrationId }
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.sessions(variables.integrationId) })
-      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.detail(variables.integrationId) })
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.sessions(variables.integrationId) })
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(variables.integrationId) })
     },
   })
 }

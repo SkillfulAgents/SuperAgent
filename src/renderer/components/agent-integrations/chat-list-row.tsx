@@ -1,4 +1,4 @@
-import { formatSessionTimestamp } from '@shared/lib/chat-integrations/utils'
+import { formatSessionTimestamp } from '@shared/lib/agent-integrations/presentation'
 import { AccessActions } from './access-actions'
 import { isBrowsable, type ChatRow } from './chat-inbox-model'
 

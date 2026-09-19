@@ -15,23 +15,23 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { SettingsPageContainer, PageTitle } from '@renderer/components/layout/settings-page'
 import {
-  useChatIntegration,
-  useChatIntegrationStatus,
-  useChatIntegrationSessions,
+  useAgentIntegration,
+  useAgentIntegrationStatus,
+  useAgentIntegrationSessions,
   useClearChatSession,
-  useUpdateChatIntegration,
-} from '@renderer/hooks/use-chat-integrations'
+  useUpdateAgentIntegration,
+} from '@renderer/hooks/use-agent-integrations'
 import { useAgent, useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
-import { formatProviderName } from '@shared/lib/chat-integrations/utils'
+import { formatProviderName } from '@shared/lib/agent-integrations/presentation'
 import { chatFallbackTitle } from './chat-inbox-model'
 import { ConversationHistorySection } from './conversation-history-section'
-import { ChatIntegrationSidePanel } from './chat-integration-side-panel'
+import { AgentIntegrationSidePanel } from './agent-integration-side-panel'
 import { ClearConversationButton } from './clear-conversation-button'
 import { IntegrationDeleteButton } from './integration-delete-button'
 
-interface ChatIntegrationViewProps {
+interface AgentIntegrationViewProps {
   integrationId: string
   agentSlug: string
   /** Open conversation window from the route's `?session=` search (null = list). */
@@ -40,14 +40,14 @@ interface ChatIntegrationViewProps {
   chatNewConvId: string | null
 }
 
-export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId, chatNewConvId }: ChatIntegrationViewProps) {
-  const { data: integration, isLoading, error } = useChatIntegration(integrationId)
-  const { data: status } = useChatIntegrationStatus(integrationId)
-  const { data: sessions } = useChatIntegrationSessions(integrationId)
+export function AgentIntegrationView({ integrationId, agentSlug, chatSessionId, chatNewConvId }: AgentIntegrationViewProps) {
+  const { data: integration, isLoading, error } = useAgentIntegration(integrationId)
+  const { data: status } = useAgentIntegrationStatus(integrationId)
+  const { data: sessions } = useAgentIntegrationSessions(integrationId)
   const { data: agent } = useAgent(agentSlug)
   const { data: agents } = useAgents()
   const clearSession = useClearChatSession()
-  const updateIntegration = useUpdateChatIntegration()
+  const updateIntegration = useUpdateAgentIntegration()
   const navigate = useNavigate()
   const { canUseAgent, canAdminAgent } = useUser()
   const canManage = canUseAgent(agentSlug)
@@ -243,7 +243,7 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId, c
         </div>
 
         {canSeeSidePanel && (
-          <ChatIntegrationSidePanel
+          <AgentIntegrationSidePanel
             integration={integration}
             connected={status?.connected}
             canManage={canManage}

@@ -18,8 +18,8 @@ const CATALOG: ModelDefinition[] = [
 
 const mutateMock = vi.fn()
 
-vi.mock('@renderer/hooks/use-chat-integrations', () => ({
-  useUpdateChatIntegration: () => ({
+vi.mock('@renderer/hooks/use-agent-integrations', () => ({
+  useUpdateAgentIntegration: () => ({
     mutate: mutateMock,
     isPending: false,
   }),

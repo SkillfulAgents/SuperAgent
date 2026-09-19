@@ -11,18 +11,18 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import { useDeleteChatIntegration } from '@renderer/hooks/use-chat-integrations'
-import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
+import { useDeleteAgentIntegration } from '@renderer/hooks/use-agent-integrations'
+import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 
 /**
  * Header action that deletes the integration behind a confirm dialog.
  * Used in the chat integration page title actions, alongside Pause/Clear.
  */
 export function IntegrationDeleteButton({ integration, onDeleted }: {
-  integration: ChatIntegration
+  integration: PublicAgentIntegration
   onDeleted: () => void
 }) {
-  const deleteIntegration = useDeleteChatIntegration()
+  const deleteIntegration = useDeleteAgentIntegration()
   const [open, setOpen] = useState(false)
 
   return (

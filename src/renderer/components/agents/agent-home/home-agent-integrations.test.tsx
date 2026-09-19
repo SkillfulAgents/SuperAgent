@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { HomeChatIntegrations } from './home-chat-integrations'
+import { HomeAgentIntegrations } from './home-agent-integrations'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ChatIntegration, ChatIntegrationAccess } from '@shared/lib/db/schema'
 
@@ -14,9 +14,9 @@ type ListItem = ChatIntegration & { connected: boolean }
 const mockUseChatIntegrations = vi.fn()
 const mockUseChatIntegrationAccess = vi.fn()
 
-vi.mock('@renderer/hooks/use-chat-integrations', () => ({
-  useChatIntegrations: (...args: unknown[]) => mockUseChatIntegrations(...args),
-  useChatIntegrationAccess: (...args: unknown[]) => mockUseChatIntegrationAccess(...args),
+vi.mock('@renderer/hooks/use-agent-integrations', () => ({
+  useAgentIntegrations: (...args: unknown[]) => mockUseChatIntegrations(...args),
+  useAgentIntegrationAccess: (...args: unknown[]) => mockUseChatIntegrationAccess(...args),
 }))
 
 const mockNavigate = vi.fn()
@@ -33,8 +33,8 @@ vi.mock('@renderer/context/user-context', () => ({
   UserProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
-vi.mock('@renderer/components/chat-integrations/chat-integration-setup-dialog', () => ({
-  ChatIntegrationSetupDialog: () => null,
+vi.mock('@renderer/components/agent-integrations/agent-integration-setup-dialog', () => ({
+  AgentIntegrationSetupDialog: () => null,
 }))
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ const INTEGRATION: ListItem = {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe('HomeChatIntegrations', () => {
+describe('HomeAgentIntegrations', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION] })
@@ -71,13 +71,13 @@ describe('HomeChatIntegrations', () => {
   })
 
   it('does NOT render a per-row settings/actions kebab', () => {
-    renderWithProviders(<HomeChatIntegrations agentSlug="test-agent" />)
+    renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
     expect(screen.queryByLabelText(/actions for/i)).not.toBeInTheDocument()
   })
 
   it('navigates to the chat route when a row is clicked', async () => {
     const user = userEvent.setup()
-    renderWithProviders(<HomeChatIntegrations agentSlug="test-agent" />)
+    renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
 
     await user.click(screen.getByText('Test Bot'))
 
@@ -114,7 +114,7 @@ describe('HomeChatIntegrations', () => {
     mockUseChatIntegrations.mockReturnValue({ data: [integrationWithApproval] })
     mockUseChatIntegrationAccess.mockReturnValue({ data: [pendingAccess] })
 
-    renderWithProviders(<HomeChatIntegrations agentSlug="test-agent" />)
+    renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
 
     expect(await screen.findByText('1 pending')).toBeInTheDocument()
   })
@@ -130,7 +130,7 @@ describe('HomeChatIntegrations', () => {
     ['error', false, 'Error'],
   ])('renders the status tag from (status=%s, connected=%s) -> %s', (status, connected, label) => {
     mockUseChatIntegrations.mockReturnValue({ data: [{ ...INTEGRATION, status, connected }] })
-    renderWithProviders(<HomeChatIntegrations agentSlug="test-agent" />)
+    renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
     expect(screen.getByText(label)).toBeInTheDocument()
   })
 })
