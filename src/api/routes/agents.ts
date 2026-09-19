@@ -4599,7 +4599,7 @@ agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
     const slug = getAgentId(c)
     const status = c.req.query('status')
 
-    const integrations = listChatIntegrations(slug, status || undefined)
+    const integrations = await listChatIntegrations(slug, status || undefined)
     // Enrich each row with the live transport state (the same isIntegrationConnected
     // the /status route reads) so the agent-home list derives "Listening" vs
     // "Connecting…" from the same source of truth as the connector page, instead
@@ -7624,7 +7624,7 @@ async function callerCanSeeAgent(c: Context, agentSlug: string): Promise<boolean
 // GET /api/agents/:id/x-agent-policies - List policies where this agent is the caller
 agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   const slug = getAgentId(c)
-  const rows = listPoliciesForCaller(slug)
+  const rows = await listPoliciesForCaller(slug)
   // Enrich with target agent display name (best-effort; null target means "list" op)
   const targetSlugs = Array.from(
     new Set(rows.map((r) => r.targetAgentSlug).filter((s): s is string => s !== null)),
@@ -7690,7 +7690,7 @@ agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   }
 
   if (decision === 'default') {
-    const removed = deletePolicy(slug, operation, targetSlug)
+    const removed = await deletePolicy(slug, operation, targetSlug)
     return c.json({ ok: true, removed })
   }
   const result = await setPolicy(slug, operation, targetSlug, decision)
@@ -7756,7 +7756,7 @@ agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
 agents.delete('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
   const slug = getAgentId(c)
   const targetSlug = c.req.param('target')
-  const removed = deleteTargetPolicy(slug, 'invoke', targetSlug, { preserveBlock: true })
+  const removed = await deleteTargetPolicy(slug, 'invoke', targetSlug, { preserveBlock: true })
   return c.json({ ok: true, removed })
 })
 

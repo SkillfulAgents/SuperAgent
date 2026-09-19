@@ -126,7 +126,7 @@ async function waitFor(label: string, cond: () => boolean, timeoutMs: number, in
 }
 
 describe.runIf(LIVE)('ChatIntegrationManager live reconcile against real Slack', () => {
-  beforeAll(() => {
+  beforeAll(async () => {
     mgr.isRunning = true
   })
 
@@ -139,8 +139,8 @@ describe.runIf(LIVE)('ChatIntegrationManager live reconcile against real Slack',
 
   it('ORPHAN RECOVERY: a health tick rebuilds an integration missing from the map and clears the badge', async () => {
     const row = liveRow('error') // orphaned integrations end up badged 'error'
-    listStartupMock.mockReturnValue([row])
-    getIntegrationMock.mockReturnValue(row)
+    listStartupMock.mockResolvedValue([row])
+    getIntegrationMock.mockResolvedValue(row)
 
     expect(mgr.connections.has(INT)).toBe(false)
     await mgr.runHealthChecks()
@@ -154,8 +154,8 @@ describe.runIf(LIVE)('ChatIntegrationManager live reconcile against real Slack',
 
   it('MANAGER TAKEOVER: a dead socket past the grace window is torn down and rebuilt connected', async () => {
     const row = liveRow('active')
-    listStartupMock.mockReturnValue([row])
-    getIntegrationMock.mockReturnValue(row)
+    listStartupMock.mockResolvedValue([row])
+    getIntegrationMock.mockResolvedValue(row)
 
     const before = connectorOf(INT)!
     expect(before.isConnected()).toBe(true)
@@ -177,8 +177,8 @@ describe.runIf(LIVE)('ChatIntegrationManager live reconcile against real Slack',
 
   it('RESUME: reconnectAll force-rebuilds and the fresh socket receives real inbound events', async () => {
     const row = liveRow('active')
-    listStartupMock.mockReturnValue([row])
-    getIntegrationMock.mockReturnValue(row)
+    listStartupMock.mockResolvedValue([row])
+    getIntegrationMock.mockResolvedValue(row)
 
     const before = connectorOf(INT)!
     const resume = mgr.reconnectAll()

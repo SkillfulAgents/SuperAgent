@@ -6,13 +6,5 @@
   "src/api/routes/mcp-reauth.ts": 2,
   "src/api/routes/policies.ts": 2,
   "src/api/routes/profile.ts": 1,
-  "src/api/routes/settings.ts": 1,
-  "src/shared/lib/chat-integrations/slack-thread-state.ts": 3,
-  "src/shared/lib/container/mock-connection-replacement-scenario.ts": 1,
-  "src/shared/lib/services/agent-cleanup-service.ts": 1,
-  "src/shared/lib/services/chat-integration-access-service.ts": 12,
-  "src/shared/lib/services/chat-integration-service.ts": 10,
-  "src/shared/lib/services/chat-integration-session-service.ts": 11,
-  "src/shared/lib/services/webhook-trigger-service.ts": 5,
-  "src/shared/lib/services/x-agent-policy-service.ts": 4
+  "src/api/routes/settings.ts": 1
 }

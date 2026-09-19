@@ -335,7 +335,7 @@ describe('webhook-trigger-service', () => {
         prompt: 'No composio id yet',
       })
 
-      const ids = getActiveComposioTriggerIds()
+      const ids = (await getActiveComposioTriggerIds())
       expect(ids.sort()).toEqual(['ti_active_a', 'ti_active_b'])
     })
   })

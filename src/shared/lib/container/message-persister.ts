@@ -5016,7 +5016,7 @@ ${continuation}`
    */
   private async resolvePlatformMemberForSession(agentSlug: string, sessionId: string): Promise<string> {
     const ownerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
-    const resolved = resolvePlatformMemberForCandidates([ownerId])
+    const resolved = await resolvePlatformMemberForCandidates([ownerId])
     return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
   }
 
@@ -5223,7 +5223,7 @@ ${continuation}`
         // runs the update (SUP-765). Pre-column rows fall back to the creator.
         const memberId =
           trigger.mintedByMemberId ??
-          resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
+          (await resolvePlatformMemberForCandidates([trigger.createdByUserId]))?.memberId ??
           (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
         await updatePlatformWebhookEndpoint(memberId, trigger.composioTriggerId, patch)
 
@@ -5305,7 +5305,7 @@ ${continuation}`
         // Minting-member-first resolution, same as update/teardown (SUP-765).
         const memberId =
           trigger.mintedByMemberId ??
-          resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
+          (await resolvePlatformMemberForCandidates([trigger.createdByUserId]))?.memberId ??
           (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
 
         if (input.test_filter_exp) {

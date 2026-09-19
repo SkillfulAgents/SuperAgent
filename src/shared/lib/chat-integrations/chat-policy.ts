@@ -12,7 +12,7 @@ export function chatSettings(integration: AgentIntegrationRecord) {
 
 /** Shared policy for live adapters and session recording during reconnection. */
 export const chatIntegrationPolicy: Pick<AgentIntegration, 'isAllowed' | 'sessionPolicy'> = {
-  isAllowed(context: IntegrationSessionContext): boolean {
+  isAllowed(context: IntegrationSessionContext): Promise<boolean> {
     return isChatAllowed(context.integration.id, context.externalId)
   },
 

@@ -143,7 +143,7 @@ describe('upstream teardown attribution (SUP-765)', () => {
   // The attribution key active inside the upstream delete call.
   let deleteAttributionKey: string | null | undefined
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     deleteAttributionKey = undefined
     mockIsPlatformComposioActive.mockReturnValue(true)
@@ -163,7 +163,7 @@ describe('upstream teardown attribution (SUP-765)', () => {
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     testSqlite?.close()
   })
 
@@ -272,7 +272,7 @@ describe('upstream teardown attribution (SUP-765)', () => {
       await insertPlatformAccount('user-creator', 'sub_creator')
       await createComposioTrigger({ createdByUserId: 'user-creator', mintedByMemberId: 'sub_minted' })
 
-      expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual(['sub_minted', 'sub_creator'])
+      expect((await getDistinctPlatformMemberIdsForActiveTriggers())).toEqual(['sub_minted', 'sub_creator'])
     })
 
     it('collapses to one member when the minter is also the creator', async () => {
@@ -280,13 +280,13 @@ describe('upstream teardown attribution (SUP-765)', () => {
       await insertPlatformAccount('user-creator', 'sub_creator')
       await createComposioTrigger({ createdByUserId: 'user-creator', mintedByMemberId: 'sub_creator' })
 
-      expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual(['sub_creator'])
+      expect((await getDistinctPlatformMemberIdsForActiveTriggers())).toEqual(['sub_creator'])
     })
 
     it('polls the minting member alone when nothing else resolves', async () => {
       await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
 
-      expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual(['sub_minted'])
+      expect((await getDistinctPlatformMemberIdsForActiveTriggers())).toEqual(['sub_minted'])
     })
   })
 
@@ -296,7 +296,7 @@ describe('upstream teardown attribution (SUP-765)', () => {
       await insertPlatformAccount('user-creator', 'sub_creator')
       const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator', mintedByMemberId: 'sub_minted' })
 
-      expect(resolveTeardownMembers((await getWebhookTrigger(triggerId))!)).toEqual({
+      expect((await resolveTeardownMembers((await getWebhookTrigger(triggerId))!))).toEqual({
         memberIds: ['sub_minted'],
         known: true,
       })
@@ -311,7 +311,7 @@ describe('upstream teardown attribution (SUP-765)', () => {
       mockGetStoredPlatformMemberId.mockReturnValue('sub_stored')
       const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator', connectedAccountId: 'ca_1' })
 
-      expect(resolveTeardownMembers((await getWebhookTrigger(triggerId))!)).toEqual({
+      expect((await resolveTeardownMembers((await getWebhookTrigger(triggerId))!))).toEqual({
         memberIds: ['sub_creator', 'sub_owner', 'sub_stored'],
         known: false,
       })
@@ -321,7 +321,7 @@ describe('upstream teardown attribution (SUP-765)', () => {
       mockGetPlatformAccessToken.mockReturnValue('plat_sa_opaque_key')
       const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator' })
 
-      expect(resolveTeardownMembers((await getWebhookTrigger(triggerId))!)).toEqual({ memberIds: [], known: true })
+      expect((await resolveTeardownMembers((await getWebhookTrigger(triggerId))!))).toEqual({ memberIds: [], known: true })
     })
   })
 
