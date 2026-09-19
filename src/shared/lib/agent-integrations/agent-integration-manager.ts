@@ -112,6 +112,8 @@ export class AgentIntegrationManager {
   // paused integration or restoring pre-update credentials — and clobber the
   // status the user's operation just wrote.
   private generations: Map<string, number> = new Map()
+  // Bumped synchronously each time a chat session is cleared (see noteSessionClear).
+  private sessionClears = 0
   // In-flight system-resume pass; concurrent reconnectAll calls coalesce onto it.
   private resumeReconcile: Promise<void> | null = null
   // A resume arrived while a pass was in flight: run one more FORCE pass when
@@ -209,6 +211,7 @@ export class AgentIntegrationManager {
     this.consecutiveFailures.clear()
     this.reconcilingIds.clear()
     this.generations.clear()
+    this.sessionClears = 0
     this.messageQueues.clear()
     this.isRunning = false
   }
@@ -223,6 +226,19 @@ export class AgentIntegrationManager {
 
   private generationOf(id: string): number {
     return this.generations.get(id) ?? 0
+  }
+
+  // ── Chat clears ─────────────────────────────────────────────────────
+
+  /**
+   * Recorded synchronously the moment a chat session clear begins. A restore
+   * that issued its row lookup before the clear can otherwise get the
+   * pre-clear row back after the clear has completed; a lookup that a clear
+   * overlapped is repeated. Counted for the whole manager: a clear by session
+   * id does not know its chat until it has looked the row up itself.
+   */
+  private noteSessionClear(): void {
+    this.sessionClears += 1
   }
 
   // ── Public API ──────────────────────────────────────────────────────
@@ -522,8 +538,16 @@ export class AgentIntegrationManager {
       if (!(await this.isAllowed(integration.id, session.externalId))) continue
       // The access check is a window in which the chat can be cleared and its
       // row archived: only a row that is still the live one is re-subscribed,
-      // and only while this connect still owns the integration.
-      const live = await getIntegrationSession(integration.id, session.externalId)
+      // and only while this connect still owns the integration. The lookup is
+      // a window too: a clear that completes while it is in flight can leave
+      // it answering with the row it read before, so a lookup that a clear
+      // overlapped is repeated.
+      let live: Awaited<ReturnType<typeof getIntegrationSession>> | undefined
+      for (let attempt = 0; attempt < 3 && live === undefined; attempt++) {
+        const clearsBefore = this.sessionClears
+        const row = await getIntegrationSession(integration.id, session.externalId)
+        if (this.sessionClears === clearsBefore) live = row
+      }
       if (live?.sessionId !== session.sessionId) continue
       if (this.generationOf(id) !== generation) return false
       this.subscribeChatSession(integration.id, session.externalId, session.sessionId)
@@ -1046,6 +1070,7 @@ export class AgentIntegrationManager {
   }
 
   private async teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): Promise<void> {
+    this.noteSessionClear()
     const key = this.getChatSessionKey(integrationId, chatId)
     const managed = this.chatSessions.get(key)
     if (managed) this.stopSession(managed)
@@ -1075,6 +1100,7 @@ export class AgentIntegrationManager {
 
   /** Clear a chat session by its DB row ID (called from API route). */
   async clearSessionById(sessionId: string): Promise<void> {
+    this.noteSessionClear()
     for (const [key, managed] of this.chatSessions) {
       const { id: integrationId } = managed.integration
       const chatId = managed.chatId

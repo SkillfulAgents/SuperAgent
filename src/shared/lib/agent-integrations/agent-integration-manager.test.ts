@@ -423,3 +423,37 @@ it.each([1, 2])('review: stale rebuild read %i must not tear down a newer connec
     expect(manager.isIntegrationConnected('installation-a')).toBe(true)
   } finally { lookup.mockRestore() }
 })
+
+
+it('review: clearing during the final restoration lookup must prevent stale output', async () => {
+  await manager.start()
+  await adapter.input('review-comment')
+  await vi.waitFor(() => expect(state.streams.size).toBe(1))
+  let release!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  let reached!: () => void
+  const reading = new Promise<void>(resolve => { reached = resolve })
+  const original = integrationStore.getIntegrationSession
+  const lookup = vi.spyOn(integrationStore, 'getIntegrationSession').mockImplementationOnce(async (id, externalId) => {
+    // Capture a valid row, then delay the asynchronous read's completion.
+    const snapshot = await original(id, externalId)
+    reached()
+    await blocked
+    return snapshot
+  })
+  try {
+    const reconnecting = manager.addIntegration('installation-a')
+    await reading
+    // Match the API route: clear live state, then archive the stored mapping.
+    await manager.clearSessionById('mapping-session-1')
+    state.mappings.clear()
+    expect(state.streams.has('session-1')).toBe(false)
+    release()
+    await reconnecting
+    adapter.outputs = []
+    state.streams.get('session-1')?.({ type: 'stream_delta', text: 'output from archived session' })
+    await vi.waitFor(() => expect((manager as unknown as { messageQueues: Map<string, Promise<void>> }).messageQueues.has('sse:installation-a:object-7')).toBe(false))
+    expect(adapter.outputs).toEqual([])
+    expect(state.streams.has('session-1')).toBe(false)
+  } finally { release(); lookup.mockRestore() }
+})
