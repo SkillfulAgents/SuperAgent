@@ -8,6 +8,7 @@ import { getConfiguredLlmClient, createSummarizerText } from '../llm-provider/he
 import { resolveActiveProviderModel } from '../llm-provider'
 import { liveRequestSchema, type LiveAgentContext, type LiveConversationProvider, type LiveMappingInput, type LiveSessionAnswer, type VoiceHistory } from './live-types'
 import { buildLiveConversationPrompt, LIVE_REPLY_PROMPT, LIVE_REQUEST_PROMPT } from '../../prompts/voice-live'
+import { windowVoiceHistory } from './voice-history-window'
 import { BYOK_VOICE_MESSAGES, type OpenaiVoiceMessages } from './openai-voice-messages'
 import type { SttProtocol } from './stt-protocol'
 
@@ -87,6 +88,10 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
     if (!apiKey) throw new VoiceProviderError(this.messages().missingKey, 400)
     // Check the mapping dependency before creating a billable voice session.
     getConfiguredLlmClient()
+    const input = windowVoiceHistory(history).map((message) => ({
+      role: message.role,
+      content: [{ type: message.role === 'user' ? 'input_text' : 'text', text: message.content }],
+    }))
     const res = await fetch(`${this.apiBaseUrl()}/live/sessions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -102,10 +107,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
             'session.commentary.append', 'session.thinking.append', 'session.instructions.append',
             'session.input_audio.mute', 'session.input_audio.unmute', 'session.close',
           ] } },
-          input: history.filter((message) => message.content.trim()).slice(-12).map((message) => ({
-            role: message.role,
-            content: [{ type: message.role === 'user' ? 'input_text' : 'text', text: message.content.slice(-800) }],
-          })),
+          input,
         },
         transport: { type: 'webrtc', sdp },
       }),
@@ -131,10 +133,11 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
   /** Provider-owned translation using the app's configured summarizer. */
   async mapLiveConversation(input: LiveMappingInput, signal?: AbortSignal) {
     const deadline = AbortSignal.timeout(12_000)
+    const bounded = input.kind === 'request' ? { ...input, history: windowVoiceHistory(input.history) } : input
     const text = await createSummarizerText(getConfiguredLlmClient(), {
       model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
       system: input.kind === 'request' ? LIVE_REQUEST_PROMPT : LIVE_REPLY_PROMPT,
-      messages: [{ role: 'user', content: JSON.stringify(input) }],
+      messages: [{ role: 'user', content: JSON.stringify(bounded) }],
       ...(input.kind === 'request' ? { output_config: { format: {
         type: 'json_schema' as const,
         schema: {
