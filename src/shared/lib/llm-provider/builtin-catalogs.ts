@@ -642,7 +642,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'xAI Grok, served via Platform',
     family: 'grok',
     icon: 'xai',
-    supportedEfforts: XHIGH_EFFORTS,
+    supportedEfforts: NON_CLAUDE_EFFORTS,
     // xAI offers priority but no flex tier — cost-sensitive work goes to their Batch API.
     supportedSpeeds: PRIORITY_ONLY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
@@ -659,7 +659,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     isLatest: true,
     isDefault: true,
     icon: 'xai',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedEfforts: XHIGH_EFFORTS,
     supportedSpeeds: PRIORITY_ONLY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
