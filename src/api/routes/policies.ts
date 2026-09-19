@@ -22,7 +22,7 @@ policies.use('*', Authenticated())
 // GET /api/policies/scope/:accountId - List scope policies for an account
 policies.get('/scope/:accountId', OwnsAccountByParam('accountId'), async (c) => {
   const accountId = c.req.param('accountId')
-  const rows = db
+  const rows = await db
     .select()
     .from(apiScopePolicies)
     .where(eq(apiScopePolicies.accountId, accountId))
@@ -72,7 +72,7 @@ policies.put('/scope/:accountId', OwnsAccountByParam('accountId'), async (c) => 
 // GET /api/policies/tool/:mcpId - List tool policies for an MCP server
 policies.get('/tool/:mcpId', OwnsMcpByParam('mcpId'), async (c) => {
   const mcpId = c.req.param('mcpId')
-  const rows = db
+  const rows = await db
     .select()
     .from(mcpToolPolicies)
     .where(eq(mcpToolPolicies.mcpId, mcpId))

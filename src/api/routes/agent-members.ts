@@ -24,7 +24,7 @@ export const agentMembersBatch = new Hono().post('/',
     const slugs = [...new Set(c.req.valid('json').agentSlugs)]
     const resolved = await Promise.all(slugs.map(async slug => [slug, await agentCatalog.resolve(slug)] as const))
     const ids = [...new Set(resolved.flatMap(([, id]) => id ? [id] : []))]
-    const readable = getReadableAgentIds(c, ids)
+    const readable = await getReadableAgentIds(c, ids)
     const members = await listAgentMembersByAgent([...readable])
     return c.json(agentMembersBatchResponseSchema.parse(Object.fromEntries(resolved.map(([slug, id]) => [
       slug,
