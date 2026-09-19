@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { fakeLoginWindow } from '@renderer/test/fake-login-window'
 import type { ReactNode } from 'react'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -6,8 +7,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useOAuthReconnect } from './use-oauth-reconnect'
 
 const mockApiFetch = vi.fn()
-const mockNavigate = vi.fn()
-const mockClose = vi.fn()
 let oauthCallback: ((params: {
   connectionId?: string | null
   status?: string | null
@@ -19,9 +18,7 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
-vi.mock('@renderer/lib/oauth-popup', () => ({
-  prepareOAuthPopup: () => ({ navigate: mockNavigate, close: mockClose }),
-}))
+vi.mock('@renderer/lib/oauth-popup', () => import('@renderer/test/fake-login-window'))
 
 
 describe('useOAuthReconnect', () => {
@@ -29,8 +26,8 @@ describe('useOAuthReconnect', () => {
 
   beforeEach(() => {
     mockApiFetch.mockReset()
-    mockNavigate.mockReset().mockResolvedValue(undefined)
-    mockClose.mockReset()
+    fakeLoginWindow.navigate.mockReset().mockResolvedValue(undefined)
+    fakeLoginWindow.close.mockReset()
     oauthCallback = undefined
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     window.electronAPI = {
@@ -107,7 +104,7 @@ describe('useOAuthReconnect', () => {
     await expect(first).resolves.toBe(false)
 
     // Only the second reconnect's own open() closed a window (the first's).
-    expect(mockClose).toHaveBeenCalledTimes(1)
+    expect(fakeLoginWindow.close).toHaveBeenCalledTimes(1)
     expect(result.current.pendingAccountId).toBe('account-2')
   })
 
@@ -128,13 +125,13 @@ describe('useOAuthReconnect', () => {
     await act(async () => { oauthCallback?.({ connectionId: 'connection-new', toolkit: 'gmail' }) })
 
     await act(async () => { void result.current.reconnect('account-2', 'github') })
-    mockClose.mockClear()
+    fakeLoginWindow.close.mockClear()
     await act(async () => { resolveComplete(new Response(JSON.stringify({ success: true }), { status: 200 })) })
 
     await expect(first).resolves.toBe(true)
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['connected-accounts'] })
     // The second reconnect's window and pending state are untouched.
-    expect(mockClose).not.toHaveBeenCalled()
+    expect(fakeLoginWindow.close).not.toHaveBeenCalled()
     expect(result.current.pendingAccountId).toBe('account-2')
   })
 })

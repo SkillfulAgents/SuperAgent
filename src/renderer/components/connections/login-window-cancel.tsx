@@ -1,14 +1,12 @@
 import { Button } from '@renderer/components/ui/button'
-import { cn } from '@shared/lib/utils/cn'
 
 interface LoginWindowCancelProps {
   visible: boolean
   onCancel: () => void
-  className?: string
   testId?: string
 }
 
-export function LoginWindowCancel({ visible, onCancel, className, testId }: LoginWindowCancelProps) {
+export function LoginWindowCancel({ visible, onCancel, testId }: LoginWindowCancelProps) {
   if (!visible) return null
 
   return (
@@ -16,15 +14,13 @@ export function LoginWindowCancel({ visible, onCancel, className, testId }: Logi
       type="button"
       variant="link"
       size="sm"
-      className={cn(
-        'h-auto px-0 py-0 text-[11px] font-normal text-muted-foreground hover:text-foreground',
-        className,
-      )}
+      className="h-auto px-0 py-0 text-[11px] font-normal text-muted-foreground hover:text-foreground"
       onClick={(event) => {
         event.stopPropagation()
         onCancel()
       }}
       data-testid={testId}
+      aria-label="Cancel sign-in"
     >
       Cancel
     </Button>
