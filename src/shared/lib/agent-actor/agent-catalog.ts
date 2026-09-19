@@ -60,11 +60,11 @@ function toRecord(row: AgentRow): AgentRecord {
 }
 
 export function createAgentCatalog(): AgentCatalog {
-  const rowFor = (slug: AgentSlug): AgentRow | undefined =>
+  const rowFor = async (slug: AgentSlug): Promise<AgentRow | undefined> =>
     db.select().from(agents).where(eq(agents.slug, slug)).get()
 
   const records = async (): Promise<AgentRecord[]> =>
-    db.select().from(agents).orderBy(desc(agents.createdAt), agents.slug).all().map(toRecord)
+    (await db.select().from(agents).orderBy(desc(agents.createdAt), agents.slug).all()).map(toRecord)
 
   const mint = async (): Promise<AgentSlug> => {
     // Checked against the table and against every directory, legacy folders
@@ -73,7 +73,7 @@ export function createAgentCatalog(): AgentCatalog {
     const maxAttempts = 10
     for (let i = 0; i < maxAttempts; i++) {
       const slug = randomSlug(AGENT_ID_LENGTH)
-      if (rowFor(slug) === undefined && !(await directoryExists(getAgentDir(slug)))) {
+      if ((await rowFor(slug)) === undefined && !(await directoryExists(getAgentDir(slug)))) {
         return slug
       }
     }
@@ -85,23 +85,23 @@ export function createAgentCatalog(): AgentCatalog {
     list: async () => (await records()).map((record) => record.slug),
     records,
     get: async (slug) => {
-      const row = rowFor(slug)
+      const row = await rowFor(slug)
       return row === undefined ? null : toRecord(row)
     },
     getMany: async (slugs) => {
       if (slugs.length === 0) return []
-      return db
+      const rows = await db
         .select()
         .from(agents)
         .where(inArray(agents.slug, slugs))
         .orderBy(desc(agents.createdAt), agents.slug)
         .all()
-        .map(toRecord)
+      return rows.map(toRecord)
     },
-    exists: async (slug) => rowFor(slug) !== undefined,
+    exists: async (slug) => (await rowFor(slug)) !== undefined,
     mint,
     insert: async ({ slug, name, description, createdAt }) => {
-      db.insert(agents).values({
+      await db.insert(agents).values({
         slug,
         name,
         description: description ?? null,
@@ -109,32 +109,32 @@ export function createAgentCatalog(): AgentCatalog {
         runtime: LOCAL_RUNTIME,
         workspaceHandle: null,
       }).run()
-      return toRecord(rowFor(slug)!)
+      return toRecord((await rowFor(slug))!)
     },
     update: async (slug, changes: AgentIdentityChanges) => {
       const values: Partial<AgentRow> = {}
       if (changes.name !== undefined) values.name = changes.name
       if (changes.description !== undefined) values.description = changes.description
       if (Object.keys(values).length > 0) {
-        db.update(agents).set(values).where(eq(agents.slug, slug)).run()
+        await db.update(agents).set(values).where(eq(agents.slug, slug)).run()
       }
-      const row = rowFor(slug)
+      const row = await rowFor(slug)
       return row === undefined ? null : toRecord(row)
     },
     resolve: async (input) => {
       if (!input || !SAFE_AGENT_INPUT_RE.test(input)) return null
       // Exact match handles a bare minted slug and a legacy compound folder name.
-      if (rowFor(input) !== undefined) return input
+      if ((await rowFor(input)) !== undefined) return input
       // Otherwise the slug is the final hyphen-delimited segment (minted slugs
       // have no hyphen); the prefix is decorative and ignored.
       const dash = input.lastIndexOf('-')
       if (dash === -1) return null
       const candidate = input.slice(dash + 1)
-      if (isMintedSlug(candidate) && rowFor(candidate) !== undefined) return candidate
+      if (isMintedSlug(candidate) && (await rowFor(candidate)) !== undefined) return candidate
       return null
     },
     remove: async (slug) => {
-      const row = rowFor(slug)
+      const row = await rowFor(slug)
       if (row === undefined) return
       // The workspace goes first: a removal that fails (a busy mount, a
       // permission) leaves the row, so the agent still exists and the delete
@@ -144,7 +144,7 @@ export function createAgentCatalog(): AgentCatalog {
         assertPathWithinDir(getAgentsDir(), dir)
         await removeDirectory(dir)
       }
-      db.delete(agents).where(eq(agents.slug, slug)).run()
+      await db.delete(agents).where(eq(agents.slug, slug)).run()
     },
   }
 }

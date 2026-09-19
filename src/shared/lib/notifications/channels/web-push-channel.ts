@@ -132,7 +132,7 @@ export class WebPushChannel implements NotificationChannel {
     // including rows that retain a userId from a previous auth-mode life of
     // this database (that user's old per-user settings row is stale there).
     const ownerId = isAuthMode() ? (subscription.userId as string) : 'local'
-    const settings = getUserSettings(ownerId)
+    const settings = await getUserSettings(ownerId)
     if (!isNotificationTypeEnabled(settings.notifications, event.type)) {
       return
     }

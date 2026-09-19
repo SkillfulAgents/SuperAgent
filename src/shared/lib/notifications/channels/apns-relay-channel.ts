@@ -176,7 +176,7 @@ export class ApnsRelayChannel implements NotificationChannel {
       // including rows that retain a userId from a previous auth-mode life of
       // this database (that user's old per-user settings row is stale there).
       const ownerId = isAuthMode() ? (device.userId as string) : 'local'
-      const settings = getUserSettings(ownerId)
+      const settings = await getUserSettings(ownerId)
       if (isNotificationTypeEnabled(settings.notifications, event.type)) {
         // Alert AND background: the alert draws the banner but wakes no app
         // code on iOS, so the paired silent push is what refreshes the

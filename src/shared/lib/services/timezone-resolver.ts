@@ -16,12 +16,12 @@ import { getUserTimezone } from '@shared/lib/services/user-settings-service'
  * - In auth mode: looks up the first owner of the agent and uses their timezone
  * - Falls back to the system timezone
  */
-export function resolveTimezoneForAgent(agentSlug: string): string {
+export async function resolveTimezoneForAgent(agentSlug: string): Promise<string> {
   if (!isAuthMode()) {
     return getUserTimezone('local')
   }
 
-  const ownerUserId = getAgentOwnerUserId(agentSlug)
+  const ownerUserId = await getAgentOwnerUserId(agentSlug)
   if (ownerUserId) {
     return getUserTimezone(ownerUserId)
   }

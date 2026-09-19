@@ -8,9 +8,9 @@ import { isAuthMode } from '@shared/lib/auth/mode'
  * Ordered by createdAt (first owner) — this user is the acting member on billed proxy calls, so an
  * unordered pick can flip a seat-subscribed org between allowed and 402.
  */
-export function getAgentOwnerUserId(agentSlug: string): string | null {
+export async function getAgentOwnerUserId(agentSlug: string): Promise<string | null> {
   if (!isAuthMode()) return null
-  const rows = db
+  const rows = await db
     .select({ userId: agentAcl.userId })
     .from(agentAcl)
     .where(and(eq(agentAcl.agentSlug, agentSlug), eq(agentAcl.role, 'owner')))

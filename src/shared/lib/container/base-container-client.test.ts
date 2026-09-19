@@ -27,7 +27,7 @@ class TestContainerClient extends BaseContainerClient {
   public testExtractInaccessibleMountPath(error: unknown): string | null {
     return this.extractInaccessibleMountPath(error)
   }
-  public testBuildAgentEnv(extra?: Record<string, string>): Record<string, string> {
+  public testBuildAgentEnv(extra?: Record<string, string>): Promise<Record<string, string>> {
     return this.buildAgentEnv(extra)
   }
 }
@@ -38,12 +38,12 @@ describe('buildAgentEnv', () => {
     toolSearchEnv.mockReturnValue('true')
   })
 
-  it('merges provider env, constants, config.envVars and per-start extra (later wins)', () => {
+  it('merges provider env, constants, config.envVars and per-start extra (later wins)', async () => {
     const client = new TestContainerClient({
       agentId: 'a',
       envVars: { FROM_CONFIG: 'c', ANTHROPIC_API_KEY: 'from-config' }, // config beats provider
     })
-    const env = client.testBuildAgentEnv({ FROM_EXTRA: 'e', FROM_CONFIG: 'from-extra' }) // extra beats config
+    const env = await client.testBuildAgentEnv({ FROM_EXTRA: 'e', FROM_CONFIG: 'from-extra' }) // extra beats config
     expect(env.ANTHROPIC_API_KEY).toBe('from-config')
     expect(env.FROM_CONFIG).toBe('from-extra')
     expect(env.FROM_EXTRA).toBe('e')
@@ -51,29 +51,29 @@ describe('buildAgentEnv', () => {
     expect(env.ENABLE_TOOL_SEARCH).toBe('true')
   })
 
-  it('sets ENABLE_TOOL_SEARCH=false only when the setting is explicitly false', () => {
+  it('sets ENABLE_TOOL_SEARCH=false only when the setting is explicitly false', async () => {
     enableToolSearch.mockReturnValue(false)
-    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
 
-  it('leaves ENABLE_TOOL_SEARCH unset when the provider does not declare one', () => {
+  it('leaves ENABLE_TOOL_SEARCH unset when the provider does not declare one', async () => {
     toolSearchEnv.mockReturnValue(undefined)
-    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect('ENABLE_TOOL_SEARCH' in env).toBe(false)
   })
 
   // The setting is a master switch, not a way to force tool search onto an
   // endpoint that rejects deferred tools.
-  it('keeps ENABLE_TOOL_SEARCH=false over the provider value when the setting is off', () => {
+  it('keeps ENABLE_TOOL_SEARCH=false over the provider value when the setting is off', async () => {
     enableToolSearch.mockReturnValue(false)
     toolSearchEnv.mockReturnValue(undefined)
-    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
 
-  it('passes the agent identity to the provider so it can attribute LLM usage', () => {
-    new TestContainerClient({ agentId: 'my-agent', envVars: {} }).testBuildAgentEnv()
+  it('passes the agent identity to the provider so it can attribute LLM usage', async () => {
+    await new TestContainerClient({ agentId: 'my-agent', envVars: {} }).testBuildAgentEnv()
     expect(getContainerEnvVars).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'my-agent' })
     )

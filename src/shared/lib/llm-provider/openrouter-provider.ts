@@ -164,7 +164,7 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
     return OPENROUTER_CATALOG
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: OPENROUTER_BASE_URL,

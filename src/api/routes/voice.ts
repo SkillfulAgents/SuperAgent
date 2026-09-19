@@ -205,7 +205,7 @@ async function initializeTts(c: Context<LimitedJsonBodyEnv>, legacy = false) {
   if (provider instanceof Response) return provider
   try {
     const connection = await provider.getTtsConnection()
-    const own = getUserSettings(getCurrentUserId(c)).voice
+    const own = (await getUserSettings(getCurrentUserId(c))).voice
     const preferences = { provider: provider.id,
       voice: provider.resolveTtsVoice(own?.ttsVoice, getVoiceSettings().ttsVoice),
       speed: resolveTtsSpeed(own?.ttsSpeed),

@@ -150,10 +150,10 @@ describe('upstream teardown attribution (SUP-765)', () => {
     mockGetPlatformAccessToken.mockReturnValue(ORG_TOKEN)
     mockGetStoredPlatformMemberId.mockReturnValue(null)
     mockDeleteComposioTrigger.mockImplementation(async () => {
-      deleteAttributionKey = attribution.current()?.getKey() ?? null
+      deleteAttributionKey = (await attribution.current())?.getKey() ?? null
     })
     mockDisableEndpoint.mockImplementation(async () => {
-      deleteAttributionKey = attribution.current()?.getKey() ?? null
+      deleteAttributionKey = (await attribution.current())?.getKey() ?? null
     })
 
     testSqlite = new Database(':memory:')
@@ -366,7 +366,7 @@ describe('upstream teardown attribution (SUP-765)', () => {
       await insertConnectedAccount('ca_1', 'user-owner')
       const keys: Array<string | null> = []
       mockDeleteComposioTrigger.mockImplementation(async () => {
-        const key = attribution.current()?.getKey() ?? null
+        const key = (await attribution.current())?.getKey() ?? null
         keys.push(key)
         if (key !== 'member:sub_owner') throw new ComposioTriggerError('Trigger not found', 404)
       })

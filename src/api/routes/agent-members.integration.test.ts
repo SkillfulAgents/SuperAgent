@@ -128,10 +128,10 @@ describe('authorized agent roster', () => {
     expect(await (await batch('admin', [emptyAgent])).json()).toEqual({ [emptyAgent]: { status: 200, members: [] } })
   })
 
-  it('loads multiple rosters in two data queries with distinct per-agent roles and stable order', () => {
+  it('loads multiple rosters in two data queries with distinct per-agent roles and stable order', async () => {
     const prepare = vi.spyOn(Database.prototype, 'prepare')
     try {
-      const result = service.listAgentMembersByAgent([agentSlug, secondAgent, emptyAgent, agentSlug])
+      const result = await service.listAgentMembersByAgent([agentSlug, secondAgent, emptyAgent, agentSlug])
       expect(prepare).toHaveBeenCalledTimes(2) // One membership query and one shared user lookup.
       expect(result[agentSlug].map(member => member.id)).toEqual([people.owner.id, people.user.id, people.viewer.id])
       expect(result[secondAgent].map(member => [member.id, member.role])).toEqual([
@@ -140,7 +140,7 @@ describe('authorized agent roster', () => {
       expect(result[emptyAgent]).toEqual([])
       expect(result[secondAgent][0].image).toBe(result[agentSlug][2].image)
       prepare.mockClear()
-      expect(service.listAgentMembersByAgent([])).toEqual({})
+      expect(await service.listAgentMembersByAgent([])).toEqual({})
       expect(prepare).not.toHaveBeenCalled()
     } finally {
       prepare.mockRestore()
@@ -190,11 +190,11 @@ describe('authorized agent roster', () => {
     const stop = events.subscribeCollaborationEvents(people.admin.id, (event) => { received.push(event) })
     try {
       sqlite.prepare('DELETE FROM agent_acl WHERE agent_slug = ? AND user_id = ?').run(agentSlug, people.admin.id)
-      service.notifyAgentMembersChanged(agentSlug, people.admin.id)
+      await service.notifyAgentMembersChanged(agentSlug, people.admin.id)
       expect(received).toEqual([{ type: 'agent_members_changed', agentSlug }])
       expect((await get('admin')).status).toBe(200)
       expect((await get('admin', 'access')).status).toBe(200)
-      expect(service.listAgentMembers(agentSlug).some((member) => member.id === people.admin.id)).toBe(false)
+      expect((await service.listAgentMembers(agentSlug)).some((member) => member.id === people.admin.id)).toBe(false)
     } finally {
       stop()
       sqlite.prepare('DELETE FROM agent_acl WHERE agent_slug = ? AND user_id = ?').run(agentSlug, people.admin.id)
@@ -206,7 +206,7 @@ describe('authorized agent roster', () => {
     const stops = Object.keys(people).map((name) => events.subscribeCollaborationEvents(people[name].id, (event) => { received[name].push(event) }))
     try {
       sqlite.prepare('DELETE FROM agent_acl WHERE agent_slug = ? AND user_id = ?').run(agentSlug, people.viewer.id)
-      service.notifyAgentMembersChanged(agentSlug, people.viewer.id)
+      await service.notifyAgentMembersChanged(agentSlug, people.viewer.id)
       expect(received.owner).toEqual([{ type: 'agent_members_changed', agentSlug }])
       expect(received.user).toEqual([{ type: 'agent_members_changed', agentSlug }])
       expect(received.viewer).toEqual([{ type: 'agent_access_revoked', agentSlug }])

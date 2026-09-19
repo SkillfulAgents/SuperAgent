@@ -4244,7 +4244,7 @@ class MessagePersister {
       let timezone: string | undefined
       try {
         // Resolve timezone: agent tool override > agent owner's timezone
-        timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
+        timezone = input.timezone || (await resolveTimezoneForAgent(agentSlug))
         const sessionOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
         taskId = await createScheduledTask({
           agentSlug,
@@ -4351,7 +4351,7 @@ class MessagePersister {
       let replaced: ScheduledTask | null
       let timezone: string | undefined
       try {
-        timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
+        timezone = input.timezone || (await resolveTimezoneForAgent(agentSlug))
         const sessionOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
         ;({ taskId, replaced } = await createSessionWake({
           agentSlug,
@@ -4935,7 +4935,7 @@ ${continuation}`
         // of letting the call go out as a bare org token with nothing recorded.
         const sessionMemberId = await this.resolvePlatformMemberForSession(agentSlug, sessionId)
         const mintAttribution =
-          attribution.current() ??
+          (await attribution.current()) ??
           // Never mint as the opaque-key 'local' placeholder — that would send `token::local`.
           (sessionMemberId === 'local' ? null : attribution.fromMemberId(sessionMemberId))
         const mintedByMemberId = mintAttribution?.actingMemberId() ?? undefined
@@ -5061,7 +5061,7 @@ ${continuation}`
         // Minted explicitly as `token::memberId` below, so record that when no ALS
         // attribution is active; never persist the opaque-key 'local' placeholder.
         const mintedByMemberId =
-          attribution.current()?.actingMemberId() ?? (memberId === 'local' ? undefined : memberId)
+          (await attribution.current())?.actingMemberId() ?? (memberId === 'local' ? undefined : memberId)
 
         // 1. Mint the endpoint on the platform proxy
         const endpoint = await createPlatformWebhookEndpoint(memberId, {

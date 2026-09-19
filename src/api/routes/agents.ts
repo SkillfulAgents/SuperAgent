@@ -1564,7 +1564,7 @@ agents.get('/:id/access', AgentAdmin(), async (c) => {
       })
       .from(agentAcl)
       .where(eq(agentAcl.agentSlug, slug))
-    const profiles = getUserSummaries(rows.map(row => row.userId))
+    const profiles = await getUserSummaries(rows.map(row => row.userId))
     return c.json(rows.flatMap(row => {
       const profile = profiles.get(row.userId)
       return profile ? [{ ...row, userName: profile.name, userEmail: profile.email, image: profile.image }] : []
@@ -1589,7 +1589,7 @@ agents.post('/:id/access', AgentAdmin(), async (c) => {
     }
 
     // Check user exists
-    if (!userExists(userId)) {
+    if (!(await userExists(userId))) {
       return c.json({ error: 'User not found' }, 404)
     }
 
@@ -1611,7 +1611,7 @@ agents.post('/:id/access', AgentAdmin(), async (c) => {
       createdAt: new Date(),
     })
 
-    notifyAgentMembersChanged(slug)
+    await notifyAgentMembersChanged(slug)
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'granted', details: { targetUserId: userId, role } })
     return c.json({ ok: true }, 201)
   } catch (error) {
@@ -1636,7 +1636,7 @@ agents.patch('/:id/access/:userId', AgentAdmin(), async (c) => {
     const outcome = await changeMemberRole(slug, targetUserId, role)
     if (outcome === 'not-a-member') return c.json({ error: 'User does not have access to this agent' }, 404)
     if (outcome === 'last-owner') return c.json({ error: 'Cannot change role: agent must have at least one owner' }, 400)
-    notifyAgentMembersChanged(slug)
+    await notifyAgentMembersChanged(slug)
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'changed', details: { targetUserId: targetUserId, role } })
     return c.json({ ok: true })
   } catch (error) {
@@ -1656,7 +1656,7 @@ agents.delete('/:id/access/:userId', AgentAdmin(), async (c) => {
     const outcome = await removeMember(slug, targetUserId)
     if (outcome === 'not-a-member') return c.json({ error: 'User does not have access to this agent' }, 404)
     if (outcome === 'last-owner') return c.json({ error: 'Cannot remove access: agent must have at least one owner' }, 400)
-    notifyAgentMembersChanged(slug, targetUserId)
+    await notifyAgentMembersChanged(slug, targetUserId)
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId } })
     return c.body(null, 204)
   } catch (error) {
@@ -1674,7 +1674,7 @@ agents.post('/:id/leave', AgentRead(), async (c) => {
     const outcome = await removeMember(slug, userId)
     if (outcome === 'not-a-member') return c.json({ error: 'You do not have access to this agent' }, 400)
     if (outcome === 'last-owner') return c.json({ error: 'Cannot leave: you are the only owner' }, 400)
-    notifyAgentMembersChanged(slug, userId)
+    await notifyAgentMembersChanged(slug, userId)
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId: userId } })
     return c.body(null, 204)
   } catch (error) {
@@ -1699,7 +1699,7 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
 
     const excludeIds = existingUserIds.map((r) => r.userId)
 
-    return c.json(searchUserSummaries(query, excludeIds))
+    return c.json(await searchUserSummaries(query, excludeIds))
   } catch (error) {
     console.error('Failed to search users:', error)
     return c.json({ error: 'Failed to search users' }, 500)
@@ -2169,7 +2169,7 @@ async function annotateAndRecoverMessages(
     .from(messageAuthor)
     .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds)))
 
-  const profiles = getUserSummaries(authors.map(author => author.userId))
+  const profiles = await getUserSummaries(authors.map(author => author.userId))
   const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
   for (const msg of transformed) {
     if (msg.type !== 'user') continue
@@ -2346,7 +2346,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
           .from(messageAuthor)
           .where(eq(messageAuthor.sessionId, sessionId))
 
-        const profiles = getUserSummaries(authors.map(author => author.userId))
+        const profiles = await getUserSummaries(authors.map(author => author.userId))
         const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
 
         for (const msg of transformed) {

@@ -47,32 +47,32 @@ describe('resolveTimezoneForAgent', () => {
     vi.clearAllMocks()
   })
 
-  it('returns local user timezone in non-auth mode', () => {
+  it('returns local user timezone in non-auth mode', async () => {
     mockIsAuthMode.mockReturnValue(false)
     mockGetUserTimezone.mockReturnValue('America/Chicago')
 
-    const result = resolveTimezoneForAgent('my-agent')
+    const result = await resolveTimezoneForAgent('my-agent')
 
     expect(result).toBe('America/Chicago')
     expect(mockGetUserTimezone).toHaveBeenCalledWith('local')
   })
 
-  it('returns agent owner timezone in auth mode', () => {
+  it('returns agent owner timezone in auth mode', async () => {
     mockIsAuthMode.mockReturnValue(true)
     mockDbAll.mockReturnValue([{ userId: 'user-123' }])
     mockGetUserTimezone.mockReturnValue('Europe/London')
 
-    const result = resolveTimezoneForAgent('shared-agent')
+    const result = await resolveTimezoneForAgent('shared-agent')
 
     expect(result).toBe('Europe/London')
     expect(mockGetUserTimezone).toHaveBeenCalledWith('user-123')
   })
 
-  it('falls back to system timezone when no owner found in auth mode', () => {
+  it('falls back to system timezone when no owner found in auth mode', async () => {
     mockIsAuthMode.mockReturnValue(true)
     mockDbAll.mockReturnValue([])
 
-    const result = resolveTimezoneForAgent('orphan-agent')
+    const result = await resolveTimezoneForAgent('orphan-agent')
 
     // Should be a valid IANA timezone string (system default or UTC)
     expect(typeof result).toBe('string')

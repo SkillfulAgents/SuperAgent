@@ -8,3 +8,5 @@ src/shared/lib/db/testing/create-test-database.test.ts
 src/shared/lib/services/api-log-auto-delete.test.ts
 src/shared/lib/notifications/push/apns-device-service.test.ts
 src/shared/lib/notifications/push/push-subscription-service.test.ts
+src/shared/lib/agent-actor/agent-catalog.test.ts
+src/shared/lib/services/user-settings-service.test.ts
