@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can execute browser tools to navigate to https://example.com and return the page title \"Example Domain\"",
+  "reason": "Verified that the browser-use feature works correctly: agent successfully opened a browser, navigated to https://example.com, and reported the correct page title \"Example Domain\"",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Application loaded successfully, showing the agent dashboard with sidebar containing multiple agents including \"QA-20260918-234411-putl\"",
-    "Step 2: Clicked on \"QA-20260918-234411-putl\" agent in the sidebar — Agent configuration page opened successfully with message input box and settings panels",
-    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted, and the agent immediately began processing the request",
-    "Step 4: Waited for agent response — Agent completed the task within 6 seconds with 3 tool calls, consuming 148,094 tokens",
-    "Step 5: Verified response mentions \"Example Domain\" — Response clearly states: \"Loaded https://example.com — title is 'Example Domain'. Browser closed.\" The response successfully demonstrates the browser tool functionality working as expected"
+    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut home with agents sidebar",
+    "Found and clicked on \"QA-20260919-010912-1bk7\" agent in sidebar — Agent page opened, showing chat interface and configuration panels",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message sent successfully, agent began working",
+    "Waited for response mentioning \"Example Domain\" — Response appeared after 6 seconds showing complete browser session with page title",
+    "Verified response mentions \"Example Domain\" and took screenshot — Response clearly states: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\" - verification successful"
   ],
   "bugs": [],
-  "durationMs": 84008,
-  "sessionId": "01be56c7-352c-4eb5-89f4-2470f08f4194",
+  "durationMs": 90941,
+  "sessionId": "44b83ec4-4dc5-4b70-9779-b7c3fdb35fce",
   "cost": {
-    "inputTokens": 424,
-    "outputTokens": 11055,
-    "cacheCreationTokens": 84839,
-    "cacheReadTokens": 1351711,
+    "inputTokens": 440,
+    "outputTokens": 10455,
+    "cacheCreationTokens": 81508,
+    "cacheReadTokens": 1358624,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.296919
+    "totalCostUsd": 0.290462
   }
 }
