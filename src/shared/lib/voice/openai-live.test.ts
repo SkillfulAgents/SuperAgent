@@ -49,17 +49,35 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     expect(body.session.input).toEqual([])
   })
 
-  it('reuses the configured summarizer and validates its normalized request', async () => {
-    mocks.summarize.mockResolvedValue('{"action":"message","text":"Check Thursday instead of Friday."}')
-    expect(await provider.mapLiveConversation({ kind: 'request', transcript: 'user: Actually Thursday.', history: [], previousRequest: 'Check Friday.', agentBusy: true }))
-      .toEqual({ action: 'message', text: 'Check Thursday instead of Friday.' })
+  it('reuses the configured summarizer and validates its rewrite', async () => {
+    mocks.summarize.mockResolvedValue('{"text":"Check Thursday instead of Friday.","mode":"interrupt"}')
+    expect(await provider.mapLiveConversation({ kind: 'request', transcript: 'user: Actually Thursday.', userWords: 'Actually Thursday.', history: [], previousRequest: 'Check Friday.', agentBusy: true }))
+      .toEqual({ text: 'Check Thursday instead of Friday.', mode: 'interrupt' })
     expect(mocks.resolve).toHaveBeenCalledWith('configured-summary-model', 'summarizer')
-    expect(mocks.summarize).toHaveBeenCalledWith(mocks.client, expect.objectContaining({ model: 'resolved-summary-model', output_config: { format: expect.objectContaining({ type: 'json_schema', schema: expect.objectContaining({ required: ['action', 'text'], additionalProperties: false }) }) } }), expect.any(AbortSignal))
+    expect(mocks.summarize).toHaveBeenCalledWith(mocks.client, expect.objectContaining({ model: 'resolved-summary-model', output_config: { format: expect.objectContaining({ type: 'json_schema', schema: expect.objectContaining({ required: ['text', 'mode'], additionalProperties: false }) }) } }), expect.any(AbortSignal))
   })
 
-  it.each(['not JSON', '{"action":"execute","text":"bad"}', '{"action":"message","text":""}'])('rejects unusable mappings: %s', async (text) => {
+  it('passes the user\'s words and the labeled transcript to the summarizer as data', async () => {
+    mocks.summarize.mockResolvedValue('{"text":"And also send it to Dana.","mode":"queue"}')
+    const input = { kind: 'request' as const, transcript: 'user: Do the report.\nvoice_assistant: On it.\nuser: and also send it to dana', userWords: 'and also send it to dana', history: [], previousRequest: 'Do the report.', agentBusy: true }
+    expect(await provider.mapLiveConversation(input)).toEqual({ text: 'And also send it to Dana.', mode: 'queue' })
+    expect(mocks.summarize.mock.calls[0][1].messages).toEqual([{ role: 'user', content: JSON.stringify(input) }])
+  })
+
+  it('answers a client that sent no userWords with the legacy prompt and action shape', async () => {
+    mocks.summarize.mockResolvedValue('{"action":"clarify","text":"Which day?"}')
+    expect(await provider.mapLiveConversation({ kind: 'request', transcript: 'user: Check...', history: [], previousRequest: '', agentBusy: false }))
+      .toEqual({ action: 'clarify', text: 'Which day?' })
+    const call = mocks.summarize.mock.calls[0][1]
+    expect(call.system).toContain('action (message, cancel, clarify, or none)')
+    expect(call.output_config.format.schema.required).toEqual(['action', 'text'])
+    mocks.summarize.mockResolvedValue('{"action":"message","text":""}')
+    await expect(provider.mapLiveConversation({ kind: 'request', transcript: 'user: hello', history: [], previousRequest: '', agentBusy: false })).rejects.toThrow('invalid voice request')
+  })
+
+  it.each(['not JSON', '{"action":"message","text":"old shape"}', '{"text":"","mode":"interrupt"}', '{"text":"   ","mode":"queue"}', '{"text":"ok","mode":"clarify"}'])('rejects unusable mappings: %s', async (text) => {
     mocks.summarize.mockResolvedValue(text)
-    await expect(provider.mapLiveConversation({ kind: 'request', transcript: 'user: hello', history: [], previousRequest: '', agentBusy: false })).rejects.toThrow()
+    await expect(provider.mapLiveConversation({ kind: 'request', transcript: 'user: hello', userWords: 'hello', history: [], previousRequest: '', agentBusy: false })).rejects.toThrow('invalid voice request')
   })
 
   it('uses the summarizer for outgoing updates and propagates aborts', async () => {

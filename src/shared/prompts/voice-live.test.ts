@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildLiveConversationPrompt, LIVE_AGENT_INSTRUCTIONS_MAX_CHARS, LIVE_REQUEST_PROMPT } from './voice-live'
+import { buildLiveConversationPrompt, LIVE_AGENT_INSTRUCTIONS_MAX_CHARS, LIVE_REQUEST_PROMPT, LIVE_REQUEST_PROMPT_LEGACY } from './voice-live'
 import type { LiveAgentContext } from '../lib/voice/live-types'
 
 const agent: LiveAgentContext = {
@@ -40,10 +40,16 @@ describe('Live agent prompt', () => {
     expect(prompt).toContain('never ask the user to speak passwords or tokens')
   })
 
-  it('keeps capability checks and recall requests eligible for request mapping without inventing authorization', () => {
-    expect(LIVE_REQUEST_PROMPT).toContain('message requests for the backend, not none')
+  it('rewrites the user\'s words without deciding whether to send them or inventing authorization', () => {
+    expect(LIVE_REQUEST_PROMPT).toContain('it is always sent')
+    expect(LIVE_REQUEST_PROMPT).toContain('a rewrite of these words and nothing else')
+    expect(LIVE_REQUEST_PROMPT).toContain('an incomplete request is sent as is and the backend can ask')
+    expect(LIVE_REQUEST_PROMPT).toContain('requests to stop or cancel work are all messages for the backend')
     expect(LIVE_REQUEST_PROMPT).toContain('a capability question alone does not authorize execution')
-    expect(LIVE_REQUEST_PROMPT).toContain('Never infer authorization from the voice assistant')
+    expect(LIVE_REQUEST_PROMPT).toContain('Never add a task that appears only in voice_assistant lines')
+    expect(LIVE_REQUEST_PROMPT).toContain('mode: "queue" when the user is adding to work in progress')
+    expect(LIVE_REQUEST_PROMPT).not.toMatch(/\bclarify\b/)
+    expect(LIVE_REQUEST_PROMPT_LEGACY).toContain('action (message, cancel, clarify, or none)')
   })
 
   it('includes saved identity and instructions while preserving the voice delegation boundary', () => {

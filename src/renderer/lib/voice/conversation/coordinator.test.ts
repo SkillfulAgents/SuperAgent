@@ -307,6 +307,33 @@ describe('shared voice agent coordinator', () => {
     coordinator.close()
   })
 
+  it('queues words into a running turn without interrupting it or resetting its reply', async () => {
+    const { coordinator, dependencies, update, replies, events } = setup({ active: true, startedAt: 1, text: 'Drafting the report' })
+    update({ text: 'Drafting the report now' })
+    const before = events.length
+    expect(await coordinator.command({ type: 'submit', text: 'And also send it to Dana.', queue: true })).toEqual({ accepted: true })
+    expect(dependencies.interrupt).not.toHaveBeenCalled()
+    expect(dependencies.send).toHaveBeenCalledExactlyOnceWith('And also send it to Dana.')
+    expect(events.slice(before).filter((event) => event.type === 'reset')).toEqual([])
+    update({ text: 'Drafting the report now, then sending it to Dana.' })
+    expect(replies().at(-1)).toMatchObject({ text: 'Drafting the report now, then sending it to Dana.', complete: false })
+    await vi.advanceTimersByTimeAsync(VOICE_TURN_START_TIMEOUT_MS + 1)
+    expect(dependencies.onIssue).not.toHaveBeenCalledWith(expect.stringContaining('no agent activity'))
+    coordinator.close()
+  })
+
+  it('treats a queued request as a normal submission when the agent is idle or its turn was cancelled', async () => {
+    const { coordinator, dependencies, update } = setup()
+    expect(await coordinator.command({ type: 'submit', text: 'Start here.', queue: true })).toEqual({ accepted: true })
+    expect(dependencies.interrupt).not.toHaveBeenCalled()
+    update({ active: true, startedAt: 1 })
+    await coordinator.command({ type: 'cancel' })
+    expect(await coordinator.command({ type: 'submit', text: 'After the cancel.', queue: true })).toEqual({ accepted: true })
+    expect(dependencies.interrupt).toHaveBeenCalledOnce()
+    expect(dependencies.send).toHaveBeenLastCalledWith('After the cancel.')
+    coordinator.close()
+  })
+
   it('never calls the backend interrupt endpoint for an idle playback tail', async () => {
     const { coordinator, dependencies } = setup()
     expect(await coordinator.command({ type: 'cancel' })).toEqual({ accepted: true })
