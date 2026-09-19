@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can execute browser tools to navigate to a URL, retrieve the page title, and report back with the result containing \"Example Domain\"",
+  "reason": "Verified that the QA agent can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report back successfully.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut application with available agents",
-    "Clicked on the \"QA-20260919-012124-m5zb\" agent in the sidebar — Agent page opened successfully with chat interface",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was entered in the textbox and sent successfully, creating a new session",
-    "Waited for up to 3 minutes for agent response — Agent completed the task in 6 seconds and returned result",
-    "Verified response contains \"Example Domain\" and took screenshot — Response clearly shows \"Loaded https://example.com — title: Example Domain. Browser closed.\" confirming successful browser tool execution and page title retrieval"
+    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut application with sidebar containing agents list",
+    "Clicked on \"QA-20260919-013637-d83n\" agent in sidebar — Agent page opened successfully, showing chat interface and agent configuration panels",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message successfully entered into the textbox",
+    "Clicked Send message button — Message sent successfully, agent status changed to \"working\", session created with ID 768361ef-09a7-4abb-81c7-cfa217d3ed0b",
+    "Waited up to 3 minutes for response with text \"Example Domain\" — Agent completed in 7 seconds with response: \"The page title is \"Example Domain\". Browser closed.\" (3 tool calls, 148,063 tokens used)",
+    "Took screenshot of final state — Screenshot captured showing successful completion with agent response clearly visible containing \"Example Domain\""
   ],
   "bugs": [],
-  "durationMs": 57907,
-  "sessionId": "988463c3-ec18-4cc6-8067-a80481b24886",
+  "durationMs": 82139,
+  "sessionId": "97bc8af2-7847-4eeb-9d92-dac697fe9574",
   "cost": {
-    "inputTokens": 338,
-    "outputTokens": 10573,
-    "cacheCreationTokens": 69695,
-    "cacheReadTokens": 984532,
+    "inputTokens": 350,
+    "outputTokens": 8747,
+    "cacheCreationTokens": 68159,
+    "cacheReadTokens": 943458,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.238775
+    "totalCostUsd": 0.22363
   }
 }
