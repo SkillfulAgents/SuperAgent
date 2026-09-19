@@ -111,7 +111,7 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('$0.200')).toBe(composio)
     expect(out.includes('public reads included')).toBe(composio)
     expect(out.includes('/opt/gamut/docs/audio.md')).toBe(webhook)
-    expect(out.includes('Never invent a Deepgram or OpenAI endpoint')).toBe(webhook)
+    expect(out.includes('Never invent an OpenAI endpoint')).toBe(webhook)
     expect(out.includes('Before long recordings')).toBe(webhook)
     expect(out.includes('## Built-in Exa search')).toBe(webhook)
     expect(out.includes('/opt/gamut/docs/exa.md')).toBe(webhook)
@@ -181,27 +181,17 @@ describe('generateSystemPrompt rendering', () => {
     expect(guide).toContain('Never print either environment variable')
   })
 
-  it('teaches the Deepgram proxy contract in the audio guide', () => {
-    const guide = readFileSync(join(__dirname, '..', 'docs', 'audio.md'), 'utf8')
-    expect(guide).toContain('$ANTHROPIC_BASE_URL/v1/deepgram')
-    for (const endpoint of ['/listen', '/speak', '/read', '/auth/grant']) {
-      expect(guide).toContain(`\`${endpoint}\``)
-    }
-    expect(guide).toContain('Never print either environment variable')
-    expect(guide).toContain('WebSocket transcription is not supported through this proxy')
-    expect(guide).toContain('`callback` and `callback_method` are not supported')
-  })
-
-  it('teaches the OpenAI voice proxy contract and provider choice in the audio guide', () => {
+  it('teaches the OpenAI voice proxy contract in the audio guide', () => {
     const guide = readFileSync(join(__dirname, '..', 'docs', 'audio.md'), 'utf8')
     expect(guide).toContain('$ANTHROPIC_BASE_URL/v1/openai')
     for (const endpoint of ['/audio/transcriptions', '/audio/speech']) {
       expect(guide).toContain(`\`${endpoint}\``)
     }
-    expect(guide).toContain('## Choosing a Provider')
-    // Only the two data-plane routes are for agents; the app-side voice routes are named as off-limits.
-    expect(guide).toContain('do not call them from an agent')
+    expect(guide).toContain('Never print either environment variable')
+    expect(guide).toContain('do not call them')
     expect(guide).not.toMatch(/curl[^\n]*\/v1\/openai\/(realtime|live)/)
+    expect(guide).not.toMatch(/deepgram/i)
+    expect(guide).not.toContain('v1/deepgram')
     // Metering rates mirror platform/apps/proxy/src/service-pricing.ts.
     expect(guide).toContain('$0.006')
     expect(guide).toContain('$0.015')

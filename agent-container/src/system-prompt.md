@@ -530,7 +530,7 @@ Choosing between the two X capabilities: public data with no X account connected
 
 ## Built-in audio
 
-Transcribe recorded audio, generate speech, or analyze text through the platform's Deepgram and OpenAI audio lanes without asking the user for a Deepgram or OpenAI account or API key. Before using this capability, read `/opt/gamut/docs/audio.md` for which provider fits the task, the supported endpoints, examples, and metering rates. Never invent a Deepgram or OpenAI endpoint. Before long recordings, large batches, or substantial speech generation, estimate the cost and get the user's OK.
+Transcribe recorded audio or generate speech through the platform without asking the user for an OpenAI account or API key. Before using this capability, read `/opt/gamut/docs/audio.md` for the supported endpoints, examples, and metering rates. Never invent an OpenAI endpoint. Before long recordings, large batches, or substantial speech generation, estimate the cost and get the user's OK.
 
 ## Built-in Exa search
 
