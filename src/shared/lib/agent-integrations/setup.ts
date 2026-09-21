@@ -1,7 +1,6 @@
 import { z } from 'zod'
 import { agentIntegrationRegistry } from './registry'
 import { IntegrationSetupError, type IntegrationSetupContext } from './setup-types'
-import type { AgentIntegrationRecord } from './types'
 
 export function getIntegrationSetup(provider: string) {
   const setup = agentIntegrationRegistry.getDefinition(provider) && agentIntegrationRegistry.getProvider(provider).setup
@@ -21,11 +20,6 @@ export async function testIntegrationCredentials(provider: string, input: unknow
   const setup = getIntegrationSetup(provider)
   if (!setup.testCredentials) throw new IntegrationSetupError('This provider requires interactive authorization')
   return setup.testCredentials(input)
-}
-export async function authorizeIntegration(record: AgentIntegrationRecord, input: unknown, context: IntegrationSetupContext) {
-  const setup = getIntegrationSetup(record.provider)
-  if (!setup.authorize) throw new IntegrationSetupError('This provider does not use external authorization')
-  return setup.authorize(record, input, context)
 }
 export function setupError(error: unknown): { error: string; status: 400 | 401 | 403 | 404 | 429 } | undefined {
   if (error instanceof IntegrationSetupError) return { error: error.message, status: error.status }

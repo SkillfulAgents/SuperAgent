@@ -14,6 +14,8 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ age
   addIntegration: runtime.add, pauseIntegration: runtime.pause, integrationCreated: vi.fn(), isIntegrationConnected: () => false,
 } }))
 vi.mock('../middleware/auth', () => ({
+  getAuthorizedAgentRole: () => owner ? 'owner' : 'user',
+  hasMinRole: (role: string, minimum: string) => ({ viewer: 0, user: 1, owner: 2 }[role]! >= { viewer: 0, user: 1, owner: 2 }[minimum]!),
   Authenticated: () => async (c: any, next: () => Promise<void>) => c.req.header('Authorization') ? next() : c.json({ error: 'Unauthorized' }, 401),
   AgentRead: () => async (_c: unknown, next: () => Promise<void>) => next(),
   AgentUser: () => async (_c: unknown, next: () => Promise<void>) => next(),
@@ -41,11 +43,10 @@ agentIntegrationRegistry.register({
   serialize: row => ({ ...row, config: undefined, settings: {}, hasCredentials: row.status === 'active' }),
   setup: {
     prepare,
-    async authorize(row, input) {
-      z.object({ clientId: z.string().min(1) }).parse(input)
+    authorize: { inputSchema: z.object({ clientId: z.string().min(1) }), async run(row) {
       const state = crypto.randomUUID(); pending.set(state, row.id)
       return { url: `https://provider.invalid/authorize?state=${state}` }
-    },
+    } },
     async callback(input) {
       const id = pending.get(input.state)
       if (!id) throw new IntegrationSetupError('Invalid state')
@@ -106,4 +107,11 @@ it('handles denial and malformed callbacks without starting an account', async (
   expect(await denied.text()).toContain('cancelled')
   expect((await app.request('/api/agent-integrations/providers/test-oauth/callback?code=valid')).status).toBe(400)
   expect(runtime.add).not.toHaveBeenCalled()
+})
+
+it('validates replacement credentials before pausing the existing account', async () => {
+  const row = await (await create()).json()
+  const response = await app.request(`/api/agent-integrations/${row.id}/authorize`, { method: 'POST', headers, body: JSON.stringify({ clientId: '' }) })
+  expect(response.status).toBe(400)
+  expect(runtime.pause).not.toHaveBeenCalled()
 })

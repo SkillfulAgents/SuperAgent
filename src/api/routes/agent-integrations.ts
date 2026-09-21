@@ -28,7 +28,7 @@ import { listAgentIntegrationSessions, archiveAgentIntegrationSession, getAgentI
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/cleanup'
 import { listAgentIntegrationsHandler } from './agent-integration-list'
-import { getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, authorizeIntegration, setupError } from '@shared/lib/agent-integrations/setup'
+import { getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, setupError } from '@shared/lib/agent-integrations/setup'
 import { toPublicAgentIntegration, publicIntegrationStatus } from '@shared/lib/agent-integrations/serialization'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -225,9 +225,11 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
 agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('user'), RequireProviderManagement, async c => {
   const row = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
   try {
-    if (!getIntegrationSetup(row.provider).authorize) return c.json({ error: 'This provider does not use external authorization' }, 400)
+    const authorization = getIntegrationSetup(row.provider).authorize
+    if (!authorization) return c.json({ error: 'This provider does not use external authorization' }, 400)
+    const input = authorization.inputSchema.parse(await c.req.json())
     await agentIntegrationManager.pauseIntegration(row.id)
-    return c.json(await authorizeIntegration(row, await c.req.json(), integrationSetupContext(row.provider, new URL(c.req.url).origin, row.agentSlug, getCurrentUserId(c))))
+    return c.json(await authorization.run(row, input, integrationSetupContext(row.provider, new URL(c.req.url).origin, row.agentSlug, getCurrentUserId(c))))
   } catch (error) {
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)

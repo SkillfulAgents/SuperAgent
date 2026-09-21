@@ -1,3 +1,4 @@
+import type { z } from 'zod'
 import type { AgentIntegrationRecord, IntegrationStatus } from './types'
 
 export interface IntegrationSetupContext {
@@ -11,7 +12,10 @@ export interface IntegrationProviderSetup {
   allowAgentCreation?: boolean
   prepare(input: unknown, context: IntegrationSetupContext): Promise<{ config: Record<string, unknown>; status?: IntegrationStatus }>
   testCredentials?(input: unknown): Promise<Record<string, unknown>>
-  authorize?(record: AgentIntegrationRecord, input: unknown, context: IntegrationSetupContext): Promise<{ url: string }>
+  authorize?: {
+    inputSchema: z.ZodType
+    run(record: AgentIntegrationRecord, input: unknown, context: IntegrationSetupContext): Promise<{ url: string }>
+  }
   /** Provider validates and consumes its own expiring OAuth state before returning an installation ID. */
   callback?(input: { state: string; code?: string; error?: string }): Promise<{ integrationId?: string; cancelled?: boolean }>
 }
