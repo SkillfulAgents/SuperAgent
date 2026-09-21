@@ -521,5 +521,13 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1790024171033,
     "hash": "29c080092059c291e131cd559c995ac0748b16bf6a0cef6ee00bd65d560d9d45"
+  },
+  {
+    "sql": [
+      "DROP TABLE IF EXISTS `linear_issue_sync`;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1790031377205,
+    "hash": "f3ff8940ff2b749c9694571fcc329f0c9fba0592d55d738da672d528bae8b8a5"
   }
 ]

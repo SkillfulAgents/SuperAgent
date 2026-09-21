@@ -1,7 +1,7 @@
 import type { TaskEvent } from '../types'
 import type { DirectComment, DirectHistory, DirectIssue, DirectNotification } from './direct-schema'
 
-export interface TrackedLinearIssue { since: string; threads: Set<string>; syncedThrough?: string; inaccessibleSince?: string | null }
+export interface TrackedLinearIssue { threads: Set<string> }
 export type DirectAction = { type: 'event'; event: TaskEvent } | { type: 'stop'; taskId: string; timestamp: string }
 function event(issue: DirectIssue, id: string, timestamp: string, text: string, payload: unknown, commentId?: string, sourceCommentId?: string): TaskEvent {
   return { id, taskId: issue.id, interactionId: issue.id, timestamp, text, payload,
@@ -10,9 +10,9 @@ function event(issue: DirectIssue, id: string, timestamp: string, text: string, 
 
 export function notificationEvent(notification: DirectNotification, appUserId: string): TaskEvent | null {
   const issue = notification.issue
-  if (!issue || notification.actor?.id === appUserId || notification.actor?.app) return null
+  if (!issue || notification.user.id !== appUserId || notification.actor?.app !== false || notification.actor.id === appUserId) return null
   if (notification.type === 'issueAssignedToYou') {
-    // An assignment that was withdrawn while offline must not start old work.
+    // Ignore a notification whose delegation is already withdrawn.
     if (issue.delegate?.id !== appUserId || issue.archivedAt || issue.state.type === 'canceled') return null
     return event(issue, `assignment:${notification.id}`, notification.createdAt, 'This issue was delegated to you. Review it and carry out the requested work.', notification)
   }
@@ -23,12 +23,12 @@ export function notificationEvent(notification: DirectNotification, appUserId: s
     comment?.body ?? 'You were mentioned in this issue. Review the issue and respond to the request.', notification, comment ? comment.parent?.id ?? comment.id : undefined, comment?.id)
 }
 
-export function commentEvent(comment: DirectComment, appUserId: string, tracked: TrackedLinearIssue): TaskEvent | null {
+export function commentEvent(comment: DirectComment, appUserId: string, tracked: TrackedLinearIssue, created = true): TaskEvent | null {
   const issue = comment.issue
-  if (!issue || comment.archivedAt || comment.user?.id === appUserId || comment.updatedAt < tracked.since) return null
+  if (!issue || comment.archivedAt || comment.user?.id === appUserId) return null
   const root = comment.parent?.id ?? comment.id
   // Other apps remain context, but cannot implicitly start or answer a turn.
-  const invoke = comment.user?.app === false && comment.createdAt >= tracked.since && (issue.delegate?.id === appUserId || tracked.threads.has(root))
+  const invoke = created && comment.user?.app === false && (issue.delegate?.id === appUserId || tracked.threads.has(root))
   const result = event(issue, invoke ? `comment:${comment.id}` : `comment-context:${comment.id}:${comment.updatedAt}`,
     invoke ? comment.createdAt : comment.updatedAt, comment.body, comment, root, comment.id)
   result.kind = invoke ? 'invocation' : 'context'

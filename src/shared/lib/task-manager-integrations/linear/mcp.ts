@@ -54,8 +54,8 @@ export async function linearMcpConnection(record: AgentIntegrationRecord): Promi
   }
 }
 
-/** Probe discovery on boot and at most every five minutes while healthy. Failed
- * probes retry at the inbound polling cadence; accepted work stays queued. */
+/** Discover on connection or when accepted work needs tools. Cache healthy results
+ * for five minutes; no periodic discovery or event polling runs while idle. */
 export async function checkLinearMcp(id: string): Promise<boolean> {
   const existing = checking.get(id)
   if (existing) return existing

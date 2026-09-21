@@ -17,7 +17,6 @@ export const linearConfigSchema = z.object({
   authorizationPending: z.boolean().default(false),
   authorizationError: z.string().optional(),
   authorizedAt: z.number().optional(),
-  syncedThrough: z.string().datetime().optional(),
   authorizationVersion: z.string().optional(),
   oauth: z.object({ stateHash: z.string(), verifier: z.string(), expiresAt: z.number(), claimed: z.boolean().optional() }).optional(),
   mcp: z.object({ available: z.boolean(), checkedAt: z.number(), tools: linearMcpToolsSchema.optional() }).optional(),

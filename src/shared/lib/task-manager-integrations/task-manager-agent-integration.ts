@@ -18,6 +18,8 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
   protected connected = false
   protected dispatchSuspended = false
   private draining = false
+  private retryTimer?: ReturnType<typeof setTimeout>
+  private retryAt = Infinity
   private deliveries = new Map<string, Promise<void>>()
   private publishingFailures = new Set<string>()
   private restoringSessions = new Set<string>()
@@ -51,15 +53,18 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
     if (this.draining || !this.isConnected() || this.dispatchSuspended) return
     this.draining = true
     try {
-      if (!await this.readyToDispatch()) return
+      const pendingEvents = await pendingTaskEvents(this.installation.id)
+      if (!pendingEvents.some(row => row.status === 'queued') || !await this.readyToDispatch()) return
       const integration = await getIntegration(this.installation.id)
       if (!integration || !await this.isAllowed({ integration, externalId: '' })) return
       const considered = new Set<string>()
-      for (const pending of await pendingTaskEvents(this.installation.id)) {
+      for (const pending of pendingEvents) {
         if (!this.connected || this.dispatchSuspended) return
         if (considered.has(pending.taskId)) continue
         considered.add(pending.taskId)
         if (pending.status !== 'queued' || !this.canDispatchTask(pending.taskId)) continue
+        const cooldown = pending.updatedAt.getTime() + 30000 * pending.dispatchAttempts - Date.now()
+        if (pending.dispatchAttempts > 0 && cooldown > 0) { this.requestTaskRetry(cooldown); continue }
         const session = await getIntegrationSession(this.installation.id, pending.taskId)
         if (session && agentRegistry.get(this.installation.agentSlug).sessions.activity(session.sessionId) !== 'idle') continue
         const row = await claimTaskEvent(pending.id)
@@ -98,7 +103,8 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
     if (output.type === 'turn-started') { await updateActiveTaskEvent(row.id, { sessionId: context.sessionId }); return }
     if (output.type === 'message') {
       const failed = await failTaskDispatch(row.id, output.text, output.retryable ?? false)
-      if (failed?.status === 'responding') await this.deliverFailure(failed)
+      if (failed?.status === 'responding') { await this.deliverFailure(failed); await this.drainTasks() }
+      else if (failed?.status === 'queued') this.requestTaskRetry(30000 * failed.dispatchAttempts)
       return
     }
     if (!row.sessionId || row.sessionId !== context.sessionId) return
@@ -131,16 +137,21 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
   }
   protected async recoverTasks(): Promise<void> {
     if (!this.isConnected() || this.dispatchSuspended) return
-    // On boot, catch-up must apply external stops before resuming old sessions.
+    // Restore only locally accepted work; providers do not need to replay remote history.
     const observations = [...this.deferredObservations.values()]
     this.deferredObservations.clear()
-    for (const context of observations) await this.restoreSession(context).catch(error => this.report(error, 'restore-stream'))
+    for (const context of observations) await this.restoreSession(context).catch(error => {
+      this.deferredObservations.set(context.externalId, context)
+      this.requestTaskRetry()
+      this.report(error, 'restore-stream')
+    })
     for (const row of await pendingTaskEvents(this.installation.id)) {
       if (row.status === 'queued') continue
       if (row.status === 'responding') { await this.deliverFailure(row); continue }
       const sessionId = row.sessionId ?? (await getIntegrationSession(this.installation.id, row.taskId))?.sessionId
       if (sessionId && agentRegistry.get(this.installation.agentSlug).sessions.activity(sessionId) !== 'idle') continue
-      if (Date.now() - row.updatedAt.getTime() < (sessionId ? 120000 : 600000)) continue
+      const remaining = (sessionId ? 120000 : 600000) - (Date.now() - row.updatedAt.getTime())
+      if (remaining > 0) { this.requestTaskRetry(remaining); continue }
       await finishTaskEvent(row.id, 'failed')
     }
     await this.drainTasks()
@@ -166,9 +177,28 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
         if (notice.attempts >= MAX_FAILURE_NOTICE_ATTEMPTS) {
           await finishTaskEvent(row.id, 'failed')
           this.report(error, 'failure-notice')
-        }
+        } else this.requestTaskRetry()
       }
     } finally { this.publishingFailures.delete(row.id) }
+  }
+  /** One-shot retries for accepted work. Idle integrations schedule no checks. */
+  protected requestTaskRetry(delay = 30000): void {
+    if (!this.connected) return
+    const retryAt = Date.now() + delay
+    if (this.retryTimer && this.retryAt <= retryAt) return
+    clearTimeout(this.retryTimer)
+    this.retryAt = retryAt
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined
+      this.retryAt = Infinity
+      if (this.connected) void this.recoverTasks().catch(error => this.report(error, 'retry'))
+    }, delay)
+    this.retryTimer.unref()
+  }
+  protected stopTaskRetries(): void {
+    clearTimeout(this.retryTimer)
+    this.retryTimer = undefined
+    this.retryAt = Infinity
   }
   releaseSession(context: IntegrationSessionContext): void {
     this.deferredObservations.delete(context.externalId)

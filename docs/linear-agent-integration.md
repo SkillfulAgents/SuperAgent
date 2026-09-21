@@ -30,43 +30,35 @@ Refresh tokens rotate with one renewal in flight per installation. Removing an
 integration attempts token revocation and removes local access even when Linear is offline. Remove the OAuth application in Linear settings
 if it is no longer needed.
 
-## Direct events and recovery
+## Live events
 
 Each app identity has an authenticated `graphql-transport-ws` connection to
 `wss://api.linear.app/graphql`. The bearer is supplied in the HTTP upgrade header.
-The host catches up through paginated GraphQL queries on boot, subscribes, then
-scans again to cover the connection gap. Subscriptions carry small identifiers
-that wake the same recovery path; they do not start runs directly.
+Subscriptions include the notification, comment or issue-history event payload.
+Each received event is routed directly into its issue session; there are no
+notification scans, issue-history queries, recovery cursors or periodic checks.
 
-The app's own assignment and mention notifications discover newly involved
-issues, including a first mention on an undelegated issue. Comments and issue
-history supply updates for involved issues. Human replies in an involved thread
-and human comments on delegated issues invoke the agent. Other comments and
-property changes are context. Status changes invoke work only when enabled in
-the integration's settings. Self-authored comments and status changes do not
-invoke the agent again. Human assignment and agent delegation remain separate.
+There is no startup or reconnect catch-up and no polling fallback. Messages and
+changes that occur while disconnected are not recovered. Reconnecting restores
+the socket and local thread participation, then handles newly received events,
+matching the Slack connector's delivery model. Opening a task session can still
+fetch the current issue and discussion for context; that snapshot does not create
+new invocations from missed messages.
 
-The recovery cursor is persisted only after a complete batch has been durably
-accepted. Queries overlap by one minute; stable event IDs deduplicate replay.
-Pagination failures and transient errors retain the previous cursor. Removed
-delegation and canceled/archived issues stop work before accepting a recovered
-backlog. A transient access error does not cancel a turn. Inaccessible, completed
-and archived issues move to slower checks; subscription hints or a new mention
-wake them immediately. Routine reconciliation reads at most 25 involved issues
-per pass and keeps per-issue cursors, rather than rescanning full histories.
-`issue-cursor-store.ts` stores inbound checkpoints and scheduling metadata; it does
-not synchronize ticket state with Gamut. Stop timestamps prevent old requests from
-starting and prevent replayed stops from canceling newer work.
+The app's live assignment and mention notifications discover newly involved
+issues, including a first mention on an undelegated issue. Notifications for other
+recipients are ignored. Human replies in an involved thread and human comments on
+delegated issues invoke the agent. Comment edits and other discussions provide
+context; editing an old comment does not replay it as a new request. Status
+changes invoke work only when enabled. External unassignment, cancellation and
+archival events stop work, while the agent's own state changes let it finish its
+reply. Human assignment and agent delegation remain separate.
 
-Sockets pace subscription registration (burst registration closed with code 4003
-in live testing), use heartbeat checks, renew tokens, and reconnect with bounded
-backoff.
-Periodic reconciliation runs every five minutes while the socket is available;
-when it is unavailable, direct polling runs every thirty seconds, backing off
-after errors. A host that is asleep or offline handles work after reconnecting.
-Recovery depends on notifications, comments, and history still retained and
-accessible in Linear; this is not an unlimited event log. Large numbers of
-involved issues increase query cost and remain subject to Linear's API limits.
+Stable event IDs deduplicate overlapping comment and mention deliveries. Local
+accepted work and thread participation survive restarts. Retrying a failed run or
+failure notice does not query Linear for missed events. Sockets pace registration,
+maintain heartbeats, renew tokens and reconnect with bounded backoff. Subscription
+failure is reported as an unhealthy connection; it never enables a polling path.
 
 ## Sessions, tools and output
 
@@ -151,13 +143,13 @@ The integration does not stage files or maintain a second publication outbox.
 
 ## Outbound availability
 
-Discovery runs on connect and refreshes every five minutes while healthy. Failed
-probes retry with the thirty-second event poll. Incoming requests remain in the
-durable inbox until outbound discovery succeeds. The shared integration UI shows
-**Degraded** when inbound events work but MCP is unavailable; credentials are not
-cleared for transient failures. Proxy failures also update outbound health. A 401
-requires reconnecting the parent identity. No platform login or webhook relay is
-needed for either direction.
+Discovery runs once on connection and when accepted work needs tools, using a
+five-minute cache for healthy results. It does not run periodically while idle.
+Requests already accepted into the local inbox retry dispatch if MCP is
+unavailable. The shared integration UI shows **Degraded** when inbound events work
+but MCP is unavailable; transient failures do not clear credentials. Proxy
+failures also update outbound health. A 401 requires reconnecting the parent
+identity. Neither direction needs platform login or a webhook relay.
 
 ## Native agent panel and follow-ups
 
@@ -202,12 +194,11 @@ OAuth attempt with stored app credentials; **Edit app credentials** replaces the
 The setup page can restart an unfinished attempt after a reload. Credentials and
 provider error bodies are never returned to the browser.
 
-After verifying the app identity, the integration reports connected while initial
-catch-up runs in the background. Dispatch and session restoration wait for that
-catch-up to finish. Three consecutive failed recovery passes mark it unhealthy
-and notify once per outage, while bounded retries continue. A successful recovery
-restores connection health; the shared manager clears the error. WebSocket failures alone
-do not mark it unhealthy while direct polling still succeeds.
+After verifying the app identity, the integration opens its subscriptions and
+reports connected only when they are ready. A socket outage reports unhealthy
+until reconnect succeeds; repeated errors in the same outage are reported once.
+The shared manager retains its standard connection health checks. These checks
+rebuild failed connections but never fetch missed issues or messages.
 
 App-authored comments are retained as issue context, but cannot implicitly invoke
 an agent or answer its pending question. App-authored mentions and assignments do
@@ -216,9 +207,9 @@ Human requests and cancellation controls continue to work normally.
 
 ## Migration compatibility
 
-The unreleased task inbox and issue-cursor migrations are consolidated into
-`0046_linear_agent_integrations`. Its journal timestamp follows all previous PR
-migrations, and its table/index creation is idempotent. Fresh installs and earlier
-PR test installations keep their credentials, sessions, queued work, cursors and
-audit history. A redundant audit column from a previous test build may remain in
-that database; current code uses the existing connection ID for attribution.
+The task inbox migrations preserve credentials, sessions, accepted work and audit
+history from earlier PR test installations. `0048_remove_linear_polling_cursors`
+removes the obsolete `linear_issue_sync` table; it contained only recovery
+checkpoints, which live-only delivery no longer uses. The removal is idempotent.
+A redundant audit column from an earlier test build may remain; current code uses
+the existing connection ID for attribution.

@@ -344,6 +344,13 @@
       "when": 1790024171033,
       "tag": "0048_task_dispatch_attempts",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "6",
+      "when": 1790031377205,
+      "tag": "0049_remove_linear_polling_cursors",
+      "breakpoints": true
     }
   ]
 }

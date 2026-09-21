@@ -145,7 +145,7 @@ describe('shared integration API', () => {
     expect((await app.request(`/api/agent-integrations/${id}`, { method: 'DELETE' })).status).toBe(204)
   })
 
-  it('keeps successful authorization when initial event sync fails transiently', async () => {
+  it('keeps successful authorization when the initial connection fails transiently', async () => {
     const start = await app.request(`/api/agent-integrations/${id}/authorize`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
     const state = new URL((await start.json()).url).searchParams.get('state')!
     vi.stubGlobal('fetch', vi.fn(async (url: string) => Response.json(url.endsWith('/oauth/token')

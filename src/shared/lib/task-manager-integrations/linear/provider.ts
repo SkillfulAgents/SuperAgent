@@ -1,4 +1,4 @@
-import { integrationTaskEvents, linearIssueCursors } from '../../db/schema'
+import { integrationTaskEvents } from '../../db/schema'
 import { linearSetup } from './setup'
 import type { IntegrationProvider } from '../../agent-integrations/registry'
 import type { PublicLinearIntegration } from './public'
@@ -11,7 +11,7 @@ import { publicLinearIntegration } from './presentation'
 
 export const linearProvider: IntegrationProvider = {
   definition: linearDefinition, policy: taskManagerPolicy,
-  storage: () => [integrationTaskEvents, linearIssueCursors],
+  storage: () => [integrationTaskEvents],
   get setup() { return linearSetup },
   configuration: {
     identityPaths: ['$.identity.workspaceId', '$.identity.appUserId'],

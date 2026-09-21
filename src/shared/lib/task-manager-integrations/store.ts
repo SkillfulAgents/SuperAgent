@@ -129,3 +129,19 @@ export async function claimTaskFailureNotice(row: StoredTaskEvent): Promise<Stor
     sql`(${notice.attempts} = 0 or ${integrationTaskEvents.updatedAt} + 30000 <= ${Date.now()})`,
   )).returning().get()
 }
+
+/** Restore thread participation from accepted requests, without fetching Linear history. */
+export async function taskParticipation(integrationId: string): Promise<Map<string, Set<string>>> {
+  const rows = await db.selectDistinct({ taskId: integrationTaskEvents.taskId,
+    root: sql<string | null>`json_extract(${integrationTaskEvents.eventJson}, '$.replyTarget.commentId')`,
+  }).from(integrationTaskEvents).where(and(eq(integrationTaskEvents.integrationId, integrationId),
+    sql`json_extract(${integrationTaskEvents.eventJson}, '$.kind') in ('invocation', 'status')`,
+  )).all()
+  const issues = new Map<string, Set<string>>()
+  for (const row of rows) {
+    const threads = issues.get(row.taskId) ?? new Set<string>()
+    if (row.root) threads.add(row.root)
+    issues.set(row.taskId, threads)
+  }
+  return issues
+}

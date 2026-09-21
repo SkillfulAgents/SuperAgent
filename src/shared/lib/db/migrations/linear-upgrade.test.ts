@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { sql } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../testing/create-test-database'
 import { migrationBundle } from './bundle'
-import { chatIntegrations, integrationTaskEvents, linearIssueCursors, mcpAuditLog } from '../schema'
+import { chatIntegrations, integrationTaskEvents, mcpAuditLog } from '../schema'
 
 let handle: TestDatabase | undefined
 afterEach(async () => { await handle?.close() })
@@ -16,7 +16,6 @@ describe('consolidated Linear migration', () => {
     const migration = migrationBundle.find(entry => entry.sql.some(statement => statement.includes('CREATE TABLE IF NOT EXISTS `integration_task_events`')))!
     const previousTimestamps = [1789590527958, 1789603289009, 1790010549802]
     expect(migration.folderMillis).toBeGreaterThan(previousTimestamps.at(-1)!)
-    if (stage < 2) await db.run(sql`drop table linear_issue_sync`)
     if (stage < 1) await db.run(sql`drop table integration_task_events`)
     else await db.run(sql`alter table integration_task_events drop column dispatch_attempts`)
     if (stage === 3) await db.run(sql`alter table mcp_audit_log add integration_id text`)
@@ -27,7 +26,10 @@ describe('consolidated Linear migration', () => {
     if (stage >= 1) await db.run(sql`insert into integration_task_events
       (id, integration_id, external_event_id, task_id, interaction_id, event_json, created_at, updated_at)
       values ('queued', 'kept', 'event', 'task', 'thread', '{}', ${now.getTime()}, ${now.getTime()})`)
-    if (stage >= 2) await db.insert(linearIssueCursors).values({ integrationId: 'kept', taskId: 'task', firstSeenAt: now.toISOString(), syncedThrough: now.toISOString(), nextPollAt: now })
+    if (stage >= 2) {
+      for (const statement of migration.sql.filter(statement => statement.includes('linear_issue_sync'))) await db.run(sql.raw(statement))
+      await db.run(sql`insert into linear_issue_sync (integration_id, task_id, first_seen_at, synced_through, next_poll_at) values ('kept', 'task', ${now.toISOString()}, ${now.toISOString()}, ${now.getTime()})`)
+    }
 
     for (const statement of migration.sql) await db.run(sql.raw(statement))
     const retryMigration = migrationBundle.find(entry => entry.sql.some(statement => statement.includes('ADD `dispatch_attempts`')))!
@@ -40,7 +42,11 @@ describe('consolidated Linear migration', () => {
     const preserved = await db.select().from(integrationTaskEvents)
     expect(preserved).toHaveLength(stage >= 1 ? 1 : 0)
     if (stage >= 1) expect(preserved[0]).toMatchObject({ id: 'queued', dispatchAttempts: 0 })
-    expect(await db.select().from(linearIssueCursors)).toHaveLength(stage >= 2 ? 1 : 0)
+    const removal = migrationBundle.find(entry => entry.sql.some(statement => statement.includes('DROP TABLE IF EXISTS `linear_issue_sync`')))!
+    for (const statement of removal.sql) await db.run(sql.raw(statement))
+    for (const statement of removal.sql) await db.run(sql.raw(statement))
+    expect(await db.all(sql`select name from sqlite_master where type = 'table' and name = 'linear_issue_sync'`)).toEqual([])
+    expect(await db.select().from(integrationTaskEvents)).toHaveLength(stage >= 1 ? 1 : 0)
     // The upgraded tables remain writable even when they existed before migration.
     await db.insert(integrationTaskEvents).values({ id: 'next', integrationId: 'kept', externalEventId: 'next', taskId: 'task', interactionId: 'thread', eventJson: '{}', createdAt: now, updatedAt: now })
   })

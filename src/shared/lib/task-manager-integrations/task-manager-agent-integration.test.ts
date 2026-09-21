@@ -23,7 +23,7 @@ class FakeTasks extends TaskManagerAgentIntegration {
   publishFailure = vi.fn(async (_event: TaskEvent, _notice: { id: string; body: string }) => {})
   constructor(row: AgentIntegrationRecord) { super(row) }
   async connect() { this.connected = true }
-  async disconnect() { this.connected = false }
+  async disconnect() { this.connected = false; this.stopTaskRetries() }
   protected async acknowledgeTask(event: TaskEvent) { this.acknowledged.push(event); if (this.failAcknowledgement) throw new Error('Reaction failed') }
   protected async hydrateTask() { return snapshot }
   protected taskGuidance() { return 'Use your own MCP identity to reply. Final text is not automatically posted.' }
@@ -49,7 +49,7 @@ beforeEach(async () => {
   tasks.onEvent(event => { events.push(event) })
   await tasks.connect()
 })
-afterEach(async () => { await handle.close(); vi.restoreAllMocks(); vi.useRealTimers() })
+afterEach(async () => { await tasks.disconnect(); await handle.close(); vi.restoreAllMocks(); vi.useRealTimers() })
 describe('TaskManagerAgentIntegration with MCP outbound', () => {
   it('acknowledges durable requests once while preserving per-issue ordering', async () => {
     await tasks.accept(event('one')); await tasks.accept(event('two')); await tasks.accept(event('one'))
@@ -245,4 +245,31 @@ it('atomically claims a legacy failure notice and fences competing recovery and 
   await tasks.stop('issue')
   await vi.advanceTimersByTimeAsync(30000)
   expect(await claimTaskFailureNotice(claimed)).toBeUndefined()
+})
+
+it('schedules bounded retries for a failed accepted request without an external polling loop', async () => {
+  expect(vi.getTimerCount()).toBe(0)
+  await tasks.accept(event('one')); const ctx = context()
+  await tasks.deliver(ctx, { type: 'message', retryable: true, text: 'Startup failed' })
+  expect(vi.getTimerCount()).toBe(1)
+  await vi.advanceTimersByTimeAsync(30000)
+  await vi.waitFor(async () => expect(await getTaskEvent(ctx.replyTarget!.eventId)).toMatchObject({ dispatchAttempts: 2, status: 'running' }))
+  expect(vi.getTimerCount()).toBe(0)
+  tasks.publishFailure.mockRejectedValue(new Error('Cannot publish'))
+  await tasks.deliver(ctx, { type: 'message', text: 'Failed permanently' })
+  for (let attempt = 2; attempt <= 3; attempt++) {
+    await vi.advanceTimersByTimeAsync(30000)
+    await vi.waitFor(() => expect(tasks.publishFailure).toHaveBeenCalledTimes(attempt))
+  }
+  await vi.waitFor(async () => expect(await getTaskEvent(ctx.replyTarget!.eventId)).toMatchObject({ status: 'failed' }))
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+it('cancels retries for accepted work when the connector is paused', async () => {
+  await tasks.accept(event('one')); const ctx = context()
+  await tasks.deliver(ctx, { type: 'message', retryable: true, text: 'Startup failed' })
+  await tasks.disconnect()
+  await vi.advanceTimersByTimeAsync(300000)
+  expect(events.filter(event => event.type === 'input')).toHaveLength(1)
+  expect(vi.getTimerCount()).toBe(0)
 })

@@ -1,15 +1,13 @@
 import WebSocket from 'ws'
 import type { LinearClient } from './client'
-import { directFrameSchema, directWakeResponseSchema } from './direct-schema'
+import { directFrameSchema, directSubscriptionEventSchema, directSubscriptionResponseSchema, type DirectSubscriptionEvent } from './direct-schema'
 import { DIRECT_SUBSCRIPTIONS } from './direct-queries'
 
 interface Options {
   client: LinearClient
-  appUserId: string
-  isTracked: (id: string) => boolean
-  onWake: (issueId?: string) => void
+  onEvent: (event: DirectSubscriptionEvent) => void | Promise<void>
+  onReady: () => void
   onError: (error: Error) => void
-  onUnavailable?: () => void
 }
 /** One authenticated socket per Linear app identity. The bearer goes in the
  * upgrade header, as verified against Linear's public subscription endpoint. */
@@ -59,7 +57,7 @@ export class LinearSubscriptions {
             this.lastPong = Date.now()
             const operations = Object.entries(DIRECT_SUBSCRIPTIONS).filter(([id]) => !this.unavailableOperations.has(id))
             // Linear closed burst registration with code 4003 in live testing.
-            // Pace registrations and reconcile once the whole set is installed.
+            // Pace registrations and report ready once the whole set is installed.
             const subscribeNext = () => {
               if (this.stopped || generation !== this.generation || socket.readyState !== WebSocket.OPEN) return
               const operation = operations.shift()
@@ -72,7 +70,7 @@ export class LinearSubscriptions {
                 this.registration.unref()
               } else {
                 this.ready = this.unavailableOperations.size === 0
-                this.options.onWake()
+                if (this.ready) this.options.onReady()
               }
             }
             subscribeNext()
@@ -88,14 +86,15 @@ export class LinearSubscriptions {
           else if (frame.type === 'error' || frame.type === 'complete') {
             if (frame.id && frame.id in DIRECT_SUBSCRIPTIONS) this.operationUnavailable(frame.id)
             else {
-              this.options.onError(new Error('Linear subscription ended; recovering through direct API queries'))
+              this.options.onError(new Error('Linear subscription ended; reconnecting'))
               socket.close(1000)
             }
           } else if (frame.type === 'next' && frame.id) {
-            const result = directWakeResponseSchema.parse(frame.payload)
+            if (!(frame.id in DIRECT_SUBSCRIPTIONS)) return
+            const result = directSubscriptionResponseSchema.parse(frame.payload)
             if (result.errors?.length) { this.operationUnavailable(frame.id); return }
             const data = result.data?.[frame.id]
-            if (data && (frame.id.startsWith('notification') || (frame.id === 'userUpdated' ? data.id === this.options.appUserId : this.options.isTracked(data.issue?.id ?? data.id ?? '')))) this.options.onWake(frame.id.startsWith('notification') || frame.id === 'userUpdated' ? undefined : data.issue?.id ?? data.id)
+            if (data) void Promise.resolve(this.options.onEvent(directSubscriptionEventSchema.parse({ type: frame.id, data }))).catch(error => this.options.onError(error instanceof Error ? error : new Error('Could not handle Linear event')))
           }
         } catch {
           this.options.onError(new Error('Linear subscription returned an invalid response'))
@@ -109,15 +108,13 @@ export class LinearSubscriptions {
         clearTimeout(this.refresh); clearTimeout(this.registration); clearInterval(this.heartbeat)
         this.ready = false; this.socket = undefined
         if (!this.stopped) {
-          this.options.onUnavailable?.()
-          if (code !== 1000) this.options.onError(new Error(`Linear subscription disconnected (${code}); recovering through direct API queries`))
+          if (code !== 1000) this.options.onError(new Error(`Linear subscription disconnected (${code}); reconnecting`))
           if (Date.now() - startedAt >= 60000) this.failures = 0
           this.reconnect()
         }
       })
     } catch {
       if (this.stopped || generation !== this.generation) return
-      this.options.onUnavailable?.()
       this.options.onError(new Error('Could not authenticate the Linear subscription connection'))
       this.reconnect()
     }
@@ -126,8 +123,7 @@ export class LinearSubscriptions {
     this.ready = false
     if (this.unavailableOperations.has(id)) return
     this.unavailableOperations.add(id)
-    this.options.onUnavailable?.()
-    this.options.onError(new Error(`Linear subscription ${id} is unavailable; using direct API polling for this operation`))
+    this.options.onError(new Error(`Linear subscription ${id} is unavailable. Check app access and reconnect the integration.`))
   }
   private reconnect(): void {
     clearTimeout(this.timer)

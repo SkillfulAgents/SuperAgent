@@ -13,7 +13,7 @@ export const directCommentSchema = z.object({
 })
 export const directNotificationSchema = z.object({
   id: z.string(), type: z.string(), createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
-  issue: directIssueSchema.optional(), actor: actor.nullable().optional(),
+  user: id, issue: directIssueSchema.optional(), actor: actor.nullable().optional(),
   comment: directCommentSchema.omit({ issue: true }).nullable().optional(),
 })
 export const directHistorySchema = z.object({
@@ -30,12 +30,15 @@ export type DirectComment = z.infer<typeof directCommentSchema>
 export type DirectNotification = z.infer<typeof directNotificationSchema>
 export type DirectHistory = z.infer<typeof directHistorySchema>
 
-export const directNotificationsResponseSchema = z.object({ notifications: z.object({ nodes: z.array(directNotificationSchema), pageInfo: directPageSchema }) })
-export const directCommentsResponseSchema = z.object({ comments: z.object({ nodes: z.array(directCommentSchema), pageInfo: directPageSchema }) })
-export const directHistoryResponseSchema = z.object({ issue: directIssueSchema.extend({ history: z.object({ nodes: z.array(directHistorySchema), pageInfo: directPageSchema }) }) })
-const wakeSchema = z.object({ id: z.string().optional(), issue: z.object({ id: z.string() }).nullable().optional() })
-export const directWakeResponseSchema = z.object({ data: z.record(z.string(), wakeSchema.nullable()).nullish(), errors: z.array(z.unknown()).optional() })
-
-export const directIssuesResponseSchema = z.object({ issues: z.object({ nodes: z.array(directIssueSchema), pageInfo: directPageSchema }) })
+export const directSubscriptionEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('notificationCreated'), data: directNotificationSchema }),
+  z.object({ type: z.literal('commentCreated'), data: directCommentSchema }),
+  z.object({ type: z.literal('commentUpdated'), data: directCommentSchema }),
+  z.object({ type: z.literal('issueHistoryCreated'), data: directHistorySchema.extend({ issue: directIssueSchema }) }),
+])
+export type DirectSubscriptionEvent = z.infer<typeof directSubscriptionEventSchema>
+export const directSubscriptionResponseSchema = z.object({
+  data: z.record(z.string(), z.unknown()).nullish(), errors: z.array(z.unknown()).optional(),
+})
 
 export const reactionResultSchema = z.object({ reactionCreate: z.object({ success: z.boolean() }) })
