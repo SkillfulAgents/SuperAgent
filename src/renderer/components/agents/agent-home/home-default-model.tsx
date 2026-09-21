@@ -17,7 +17,7 @@ interface HomeDefaultModelProps {
  */
 export function HomeDefaultModel({ agentSlug }: HomeDefaultModelProps) {
   // Picker-safe endpoint — the card renders for every agent member, admin or not.
-  const { data: settings } = useModelSettings()
+  const { data: settings } = useModelSettings(agentSlug)
   const { data: prefs } = useAgentPreferences(agentSlug)
   const updatePreferences = useUpdateAgentPreferences(agentSlug)
 
@@ -33,7 +33,10 @@ export function HomeDefaultModel({ agentSlug }: HomeDefaultModelProps) {
     >
       <span className="text-sm font-medium text-muted-foreground">Agent Default Model</span>
       <SettingsModelSelect
+        agentSlug={agentSlug}
         model={displayModel}
+        connectionId={prefs?.defaultConnectionId}
+        onSelectionChange={s => updatePreferences.mutate({ defaultModel: s.model, defaultConnectionId: s.connectionId })}
         onModelChange={(m) => updatePreferences.mutate({ defaultModel: m })}
         includeEffort
         effort={displayEffort as EffortLevel}
@@ -48,7 +51,7 @@ export function HomeDefaultModel({ agentSlug }: HomeDefaultModelProps) {
         appDefault={{
           isOverride: hasCustom,
           onUseAppDefault: () =>
-            updatePreferences.mutate({ defaultModel: null, defaultEffort: null, defaultSpeed: null }),
+            updatePreferences.mutate({ defaultModel: null, defaultConnectionId: null, defaultEffort: null, defaultSpeed: null }),
         }}
       />
     </div>

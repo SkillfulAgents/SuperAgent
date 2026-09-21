@@ -14,6 +14,7 @@ export interface AgentIntegrationRecord {
   status: IntegrationStatus
   errorMessage: string | null
   createdByUserId: string | null
+  connectionId: string | null
   model: string | null
   effort: string | null
   speed: string | null

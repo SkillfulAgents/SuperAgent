@@ -1,3 +1,4 @@
+import { connectionRuntimeSchema, rememberConnectionRuntime, cachedConnectionRuntime, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from 'crypto';
 import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession } from '@anthropic-ai/claude-agent-sdk';
@@ -242,6 +243,10 @@ export class SessionManager extends EventEmitter {
     // default must not look like two different profiles). The session's own
     // shape decides whether a parked process fits; the host's default shape
     // decides what to warm next.
+    if (request.llmRuntime) {
+      request.llmRuntime = connectionRuntimeSchema.parse(request.llmRuntime);
+      rememberConnectionRuntime(request.llmRuntime);
+    }
     const normalized = {
       ...request,
       speed,
@@ -260,6 +265,7 @@ export class SessionManager extends EventEmitter {
         userSystemPrompt: request.systemPrompt,
         modelPromptHints: request.modelPromptHints,
         availableEnvVars: request.availableEnvVars,
+        llmRuntime: request.llmRuntime,
         model: request.model,
         browserModel: request.browserModel,
         dashboardBuilderModel: request.dashboardBuilderModel,
@@ -397,6 +403,7 @@ export class SessionManager extends EventEmitter {
       systemPrompt: request.systemPrompt,
       modelPromptHints: request.modelPromptHints,
       availableEnvVars: request.availableEnvVars,
+      connectionId: request.connectionId,
       model: request.model,
       browserModel: request.browserModel,
       dashboardBuilderModel: request.dashboardBuilderModel,
@@ -466,6 +473,7 @@ export class SessionManager extends EventEmitter {
    */
   async prewarm(profile: WarmProfile): Promise<void> {
     if (!this.prewarmEnabled || this.shuttingDown) return;
+    if (profile.connectionId && !cachedConnectionRuntime(profile.connectionId, profile.credentialGeneration, profile.model, profile.runtimeFingerprint)) return;
 
     const key = warmProfileKey(profile);
     // Recorded even when a warm-up is already in flight, so that one can see
@@ -494,6 +502,7 @@ export class SessionManager extends EventEmitter {
         userSystemPrompt: profile.systemPrompt,
         modelPromptHints: profile.modelPromptHints,
         availableEnvVars: profile.availableEnvVars,
+        llmRuntime: cachedConnectionRuntime(profile.connectionId, profile.credentialGeneration, profile.model, profile.runtimeFingerprint),
         model: profile.model,
         browserModel: profile.browserModel,
         dashboardBuilderModel: profile.dashboardBuilderModel,
@@ -600,6 +609,11 @@ export class SessionManager extends EventEmitter {
     console.log(`Attempting to resume session ${sessionId} with Claude session ID ${persisted.claudeSessionId}`);
 
     try {
+      // Pre-upgrade files have no connectionId. The host normalizes their
+      // legacy selection too; container-wide credentials are no longer baked.
+      const hasCredentialService = globalThis.process.env.SUPERAGENT_HOST_API_URL && globalThis.process.env.PROXY_TOKEN;
+      const llmRuntime = persisted.connectionId || hasCredentialService
+        ? await resolveSessionRuntime(sessionId) : undefined;
       // Create a new Claude Code process with resume
       const process = new ClaudeCodeProcess({
         sessionId,
@@ -608,7 +622,8 @@ export class SessionManager extends EventEmitter {
         userSystemPrompt: persisted.systemPrompt,
         modelPromptHints: persisted.modelPromptHints,
         availableEnvVars: persisted.availableEnvVars,
-        model: persisted.model,
+        llmRuntime,
+        model: llmRuntime?.model ?? persisted.model,
         browserModel: persisted.browserModel,
         dashboardBuilderModel: persisted.dashboardBuilderModel,
         subagentModels: persisted.subagentModels,
@@ -841,7 +856,7 @@ export class SessionManager extends EventEmitter {
     sessionId: string,
     content: string,
     uuid?: UUID,
-    options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
+    options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
   ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
@@ -877,6 +892,10 @@ export class SessionManager extends EventEmitter {
     sessionData.session.lastActivity = new Date();
     this.persistence.updateLastActivity(sessionId);
 
+    if (options?.llmRuntime) {
+      rememberConnectionRuntime(options.llmRuntime);
+      this.persistence.updateConnection(sessionId, options.llmRuntime.connectionId);
+    }
     // Persist runtime-options changes so resume after eviction uses the latest values
     if (options?.effort !== undefined) {
       this.persistence.updateEffort(sessionId, options.effort);

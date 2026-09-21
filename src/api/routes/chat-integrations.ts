@@ -1,3 +1,4 @@
+import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Chat Integrations API Routes
  *
@@ -135,7 +136,7 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const body = await c.req.json()
-    const { provider, name, config, showToolCalls, sessionTimeout, model, effort } = body
+    const { provider, name, config, showToolCalls, sessionTimeout, connectionId, model, effort } = body
     const parsedSpeed = speedOverrideSchema.safeParse(body.speed)
     if (!parsedSpeed.success) {
       return c.json({ error: `Invalid speed. Must be one of: ${SPEED_LEVELS.join(', ')}` }, 400)
@@ -194,6 +195,7 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
     const user = c.get('user' as never) as { id: string } | undefined
     const createdByUserId = user?.id
 
+    await assertConnectionSelectionAccess(connectionId)
     let id: string
     try {
       id = await createChatIntegration({
@@ -203,6 +205,7 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
         config,
         showToolCalls: showToolCalls ?? false,
         sessionTimeout: sessionTimeout ?? null,
+        connectionId,
         model: model ?? null,
         effort: effort ?? null,
         speed: parsedSpeed.data ?? null,
@@ -260,7 +263,7 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
   try {
     const id = c.req.param('integrationId')
     const body = await c.req.json()
-    const { name, config, showToolCalls, sessionTimeout, model, effort, status } = body
+    const { name, config, showToolCalls, sessionTimeout, connectionId, model, effort, status } = body
     const parsedSpeed = speedOverrideSchema.safeParse(body.speed)
     if (!parsedSpeed.success) {
       return c.json({ error: `Invalid speed. Must be one of: ${SPEED_LEVELS.join(', ')}` }, 400)
@@ -272,6 +275,8 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     if (config !== undefined) updates.config = config
     if (showToolCalls !== undefined) updates.showToolCalls = showToolCalls
     if (sessionTimeout !== undefined) updates.sessionTimeout = sessionTimeout
+    await assertConnectionSelectionAccess(connectionId, (await getChatIntegration(id))?.connectionId)
+    if (connectionId !== undefined) updates.connectionId = connectionId
     if (model !== undefined) updates.model = model
     if (effort !== undefined) updates.effort = effort
     if (body.speed !== undefined) updates.speed = parsedSpeed.data ?? null

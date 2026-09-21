@@ -94,6 +94,7 @@ export function QuickDispatch() {
   const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(agentSlug)
   const composerOptions = useComposerOptions({
     agentDefaultModel: agentPrefs?.defaultModel,
+    agentDefaultConnectionId: agentPrefs?.defaultConnectionId,
     agentDefaultEffort: agentPrefs?.defaultEffort,
     agentDefaultSpeed: agentPrefs?.defaultSpeed,
     agentKey: agentSlug,

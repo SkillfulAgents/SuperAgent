@@ -1,3 +1,5 @@
+import { resolveHelperSelection } from './connections'
+import { getSettings } from '../config/settings'
 /**
  * LLM Provider Helpers
  *
@@ -13,12 +15,19 @@ import type Anthropic from '@anthropic-ai/sdk'
  * Get a configured Anthropic client from the active LLM provider.
  * Throws if the API key is not configured.
  */
-export function getConfiguredLlmClient(): Anthropic {
-  const provider = getActiveLlmProvider()
+const helperModels = new WeakMap<Anthropic, string>()
+export function configuredHelperModel(client: Anthropic): string | undefined {
+  return helperModels.get(client)
+}
+export async function getConfiguredLlmClient(): Promise<Anthropic> {
+  const selection = getSettings().llmDefault ? await resolveHelperSelection() : null
+  const provider = selection?.provider ?? getActiveLlmProvider()
   if (!provider.getApiKeyStatus().isConfigured) {
     throw new Error('LLM API key not configured')
   }
-  return provider.createClient()
+  const client = provider.createClient()
+  if (selection) helperModels.set(client, selection.wireModel)
+  return client
 }
 
 /**
@@ -63,6 +72,7 @@ export async function createSummarizerText(
   request: Omit<Anthropic.MessageCreateParamsNonStreaming, 'max_tokens'>,
   signal?: AbortSignal,
 ): Promise<string | null> {
+  request = { ...request, model: helperModels.get(client) ?? request.model }
   const create = async (
     params: Anthropic.MessageCreateParamsNonStreaming,
   ): Promise<Anthropic.Message> => {

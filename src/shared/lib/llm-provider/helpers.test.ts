@@ -23,20 +23,20 @@ import type Anthropic from '@anthropic-ai/sdk'
 describe('getConfiguredLlmClient', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  it('returns client when API key is configured', () => {
+  it('returns client when API key is configured', async () => {
     const fakeClient = { messages: {} }
     mockGetApiKeyStatus.mockReturnValue({ isConfigured: true })
     mockCreateClient.mockReturnValue(fakeClient)
 
-    const client = getConfiguredLlmClient()
+    const client = await getConfiguredLlmClient()
     expect(client).toBe(fakeClient)
     expect(mockCreateClient).toHaveBeenCalledOnce()
   })
 
-  it('throws when API key is not configured', () => {
+  it('throws when API key is not configured', async () => {
     mockGetApiKeyStatus.mockReturnValue({ isConfigured: false })
 
-    expect(() => getConfiguredLlmClient()).toThrow('LLM API key not configured')
+    await expect(getConfiguredLlmClient()).rejects.toThrow('LLM API key not configured')
     expect(mockCreateClient).not.toHaveBeenCalled()
   })
 })

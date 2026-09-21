@@ -492,5 +492,18 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1789574400000,
     "hash": "0d2efc5a8980924af6cee3527d6a3271144086f77256dff2907f499b7e61e02c"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `llm_connections` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text,\n\t`name` text NOT NULL,\n\t`provider` text NOT NULL,\n\t`managed` integer DEFAULT false NOT NULL,\n\t`config` text NOT NULL,\n\t`catalog` text NOT NULL,\n\t`browser_model` text,\n\t`dashboard_model` text,\n\t`credentials` text,\n\t`generation` integer DEFAULT 0 NOT NULL,\n\t`state` text DEFAULT 'ready' NOT NULL,\n\t`refresh_lease` text,\n\t`refresh_lease_until` integer,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE INDEX `llm_connections_owner_idx` ON `llm_connections` (`user_id`);",
+      "\nCREATE UNIQUE INDEX `llm_connections_platform_unique` ON `llm_connections` (`provider`) WHERE provider = 'platform';",
+      "\nALTER TABLE `chat_integrations` ADD `connection_id` text REFERENCES llm_connections(id) ON DELETE SET NULL;",
+      "\nALTER TABLE `scheduled_tasks` ADD `connection_id` text REFERENCES llm_connections(id) ON DELETE SET NULL;",
+      "\nALTER TABLE `webhook_triggers` ADD `connection_id` text REFERENCES llm_connections(id) ON DELETE SET NULL;"
+    ],
+    "bps": true,
+    "folderMillis": 1790008886456,
+    "hash": "4a5312821c498500be928f93f8072115ae679a392508f341ba7572646e4b1a31"
   }
 ]

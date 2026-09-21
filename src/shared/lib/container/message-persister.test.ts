@@ -1,3 +1,4 @@
+import { isQueuedSessionSend } from './session-send-context'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ContainerClient, ContainerInfo, StreamMessage } from './types'
 import { WebSocketServer } from 'ws'
@@ -2869,6 +2870,18 @@ describe('MessagePersister', () => {
 
     beforeEach(() => {
       mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'process-1' })
+    })
+
+    it('keeps queued automation delivery on the running connection and isolates the context by session', async () => {
+      await send(async () => {
+        expect(isQueuedSessionSend(AGENT_SLUG, SESSION_ID)).toBe(false)
+      })
+      await send(async () => {
+        expect(isQueuedSessionSend(AGENT_SLUG, SESSION_ID)).toBe(true)
+        expect(isQueuedSessionSend(AGENT_SLUG, 'other-session')).toBe(false)
+        expect(isQueuedSessionSend('other-agent', SESSION_ID)).toBe(false)
+      })
+      expect(isQueuedSessionSend(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
     it.each(['before', 'after'] as const)('preserves an active turn when its final idle arrives %s a follow-up fails', async (timing) => {

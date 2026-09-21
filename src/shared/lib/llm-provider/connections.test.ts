@@ -1,0 +1,582 @@
+import { calculateCost } from '../services/usage-service'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { eq } from 'drizzle-orm'
+import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
+import {
+  llmConnections,
+  user,
+  scheduledTasks,
+  webhookTriggers,
+  chatIntegrations,
+} from '../db/schema'
+import type { AppSettings } from '../config/settings'
+import { resolveSelection } from './connection-schema'
+
+const state = vi.hoisted(() => ({
+  settings: {} as AppSettings,
+  db: null as TestDatabase['db'] | null,
+  platformToken: undefined as string | undefined,
+}))
+vi.mock('../db', () => ({
+  get db() {
+    return state.db
+  },
+}))
+vi.mock('../config/settings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config/settings')>()),
+  getSettings: () => state.settings,
+  getModelCatalogSettings: () => state.settings.modelCatalog ?? {},
+  getEffectiveModels: () => ({
+    agentModel: 'opus',
+    summarizerModel: 'haiku',
+    browserModel: 'sonnet',
+    dashboardBuilderModel: 'sonnet',
+    ...state.settings.models,
+  }),
+  mutateSettings: (work: (s: AppSettings) => void) => work(state.settings),
+}))
+vi.mock('../services/platform-auth-service', () => ({
+  getPlatformAccessToken: () => state.platformToken,
+  getPlatformAuthStatus: () => ({ connected: false }),
+}))
+import {
+  saveConnection,
+  getConnection,
+  providerForConnection,
+  deleteConnection,
+  setGlobalSelection,
+  resolveExecutionSelection,
+  resolveHelperSelection,
+  resolveSelectionHierarchy,
+  storedSelection,
+  listConnections,
+  connectionCatalog,
+} from './connections'
+import { importLlmConnections } from '../db/data-migrations/0003-import-llm-connections'
+import { runDataMigrations } from '../db/data-migrations'
+import { syncProviderSettings, ensureManagedPlatformConnection } from './connection-settings'
+import { connectionRuntime, withSessionSelection } from './connection-runtime'
+import {
+  registerCredentialRefresher,
+  replaceConnectionCredentials,
+  getAccessCredential,
+} from './connection-credentials'
+
+let handle: TestDatabase
+const admin = { userId: null, admin: true }
+const catalog = [
+  { id: 'model-a', label: 'A', family: 'a', isLatest: true, supportedEfforts: ['low' as const] },
+]
+async function add(name = 'First', userId: string | null = null) {
+  return saveConnection(
+    {
+      name,
+      provider: 'generic',
+      userId,
+      config: {
+        apiKeys: {
+          genericApiKey: `key-${name}`,
+          genericBaseUrl: `https://${name.toLowerCase()}.example`,
+        },
+      },
+      catalog,
+    },
+    { ...admin, userId }
+  )
+}
+beforeEach(async () => {
+  handle = await createTestDatabase()
+  state.platformToken = undefined
+  state.db = handle.db
+  state.settings = {
+    container: {
+      containerRunner: 'docker',
+      agentImage: 'test',
+      resourceLimits: { cpu: 1, memory: '1g' },
+    },
+    llmLegacyConnectionId: 'imported',
+  }
+  vi.stubEnv('AUTH_MODE', 'true')
+})
+afterEach(async () => {
+  await handle.close()
+  vi.unstubAllEnvs()
+})
+
+describe('LLM connections', () => {
+  it('stores no connection prices and reads one global rate across accounts and deletion', async () => {
+    state.settings.modelPricing = { 'model-a': { inputPerMtok: 2, outputPerMtok: 3 } }
+    const first = await add('First')
+    const second = await add('Second')
+    await saveConnection({ name: 'Second', provider: 'generic', config: {}, catalog: [
+      { ...catalog[0], pricing: { inputPerMtok: 99, outputPerMtok: 99 } },
+    ] }, admin, second)
+    const firstRow = (await getConnection(first))!
+    const secondRow = (await getConnection(second))!
+    expect(JSON.parse(secondRow.catalog)[0]).not.toHaveProperty('pricing')
+    expect(connectionCatalog(firstRow)[0].pricing).toEqual(connectionCatalog(secondRow)[0].pricing)
+    expect(calculateCost('model-a', 1_000_000, 1_000_000, 0, 0)).toBe(5)
+    state.settings.modelPricing['model-a'] = { inputPerMtok: 4, outputPerMtok: 6 }
+    expect(connectionCatalog(firstRow)[0].pricing?.inputPerMtok).toBe(4)
+    expect(connectionCatalog(secondRow)[0].pricing?.inputPerMtok).toBe(4)
+    await deleteConnection(second, admin)
+    expect(calculateCost('model-a', 1_000_000, 1_000_000, 0, 0)).toBe(10)
+  })
+
+  it('resolves aliases and clears the entire selection when either reference disappears', () => {
+    expect(
+      resolveSelection({ connectionId: 'one', model: 'a' }, [{ id: 'one', catalog }])?.wireModel
+    ).toBe('model-a')
+    expect(
+      resolveSelection({ connectionId: 'missing', model: 'model-a' }, [{ id: 'one', catalog }])
+    ).toBeNull()
+    expect(
+      resolveSelection({ connectionId: 'one', model: 'removed-4' }, [{ id: 'one', catalog }])
+    ).toBeNull()
+  })
+  it('isolates two accounts of the same provider from ambient settings and each other', async () => {
+    vi.stubEnv('GENERIC_API_KEY', 'ambient-secret')
+    const [first, second] = [await add('First'), await add('Second')]
+    const a = providerForConnection((await getConnection(first))!)
+    const b = providerForConnection((await getConnection(second))!)
+    expect(await a.getContainerEnvVars()).toMatchObject({
+      ANTHROPIC_AUTH_TOKEN: 'key-First',
+      ANTHROPIC_BASE_URL: 'https://first.example',
+    })
+    expect(await b.getContainerEnvVars()).toMatchObject({
+      ANTHROPIC_AUTH_TOKEN: 'key-Second',
+      ANTHROPIC_BASE_URL: 'https://second.example',
+    })
+    expect(a.getEffectiveApiKey()).toBe('key-First')
+  })
+  it('protects the global app default and its model, with ordinary missing overrides inheriting', async () => {
+    const first = await add()
+    await setGlobalSelection('default', { connectionId: first, model: 'a' })
+    await expect(deleteConnection(first, admin)).rejects.toThrow('app default')
+    await expect(
+      saveConnection({ name: 'First', provider: 'generic', config: {}, catalog: [] }, admin, first)
+    ).rejects.toThrow('app default')
+    expect(
+      (await resolveExecutionSelection({ connectionId: 'gone', model: 'model-a' })).connectionId
+    ).toBe(first)
+    expect(storedSelection('a', null)).toBeNull()
+    expect(storedSelection('a')).toEqual({ connectionId: 'imported', model: 'a' })
+  })
+  it('rejects personal defaults and only exposes another owner through the attached session', async () => {
+    await state
+      .db!.insert(user)
+      .values({ id: 'alice', name: 'Alice', email: 'alice@example.com' })
+      .run()
+    const personal = await add('Personal', 'alice')
+    await expect(
+      setGlobalSelection('default', { connectionId: personal, model: 'a' })
+    ).rejects.toThrow('global')
+    await expect(
+      setGlobalSelection('summarizer', { connectionId: personal, model: 'a' })
+    ).rejects.toThrow('global')
+    expect(await listConnections({ userId: 'bob', admin: false })).toEqual([])
+    const attached = await listConnections({ userId: 'bob', admin: false }, personal)
+    expect(attached[0]).toMatchObject({ ownerName: 'Alice', canManage: false })
+    expect(JSON.stringify(attached)).not.toContain('key-Personal')
+    await expect(deleteConnection(personal, { userId: 'bob', admin: true })).rejects.toThrow(
+      'not found'
+    )
+  })
+  it('cascades user deletion and SET NULL on all three automation references', async () => {
+    await state
+      .db!.insert(user)
+      .values({ id: 'alice', name: 'Alice', email: 'alice@example.com' })
+      .run()
+    const personal = await add('Personal', 'alice')
+    await state
+      .db!.insert(scheduledTasks)
+      .values({
+        id: 'task',
+        agentSlug: 'agent',
+        scheduleType: 'at',
+        scheduleExpression: 'tomorrow',
+        prompt: 'hello',
+        nextExecutionAt: new Date(),
+        createdAt: new Date(),
+        model: 'a',
+        connectionId: personal,
+      })
+      .run()
+    await state
+      .db!.insert(webhookTriggers)
+      .values({
+        id: 'trigger',
+        agentSlug: 'agent',
+        kind: 'custom',
+        triggerType: 'test',
+        prompt: 'hello',
+        createdAt: new Date(),
+        model: 'a',
+        connectionId: personal,
+      })
+      .run()
+    await state
+      .db!.insert(chatIntegrations)
+      .values({
+        id: 'chat',
+        agentSlug: 'agent',
+        provider: 'telegram',
+        config: '{}',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        model: 'a',
+        connectionId: personal,
+      })
+      .run()
+    await state.db!.delete(user).where(eq(user.id, 'alice')).run()
+    expect(await getConnection(personal)).toBeNull()
+    for (const table of [scheduledTasks, webhookTriggers, chatIntegrations]) {
+      const row = await state
+        .db!.select({ connectionId: table.connectionId, model: table.model })
+        .from(table)
+        .get()
+      expect(row).toEqual({ connectionId: null, model: 'a' })
+    }
+  })
+  it('imports legacy settings idempotently and preserves effective helper defaults and environment references', async () => {
+    state.settings.llmLegacyConnectionId = undefined
+    state.settings.apiKeys = { anthropicApiKey: 'saved-key' }
+    vi.stubEnv('ANTHROPIC_API_KEY', 'env-key')
+    await runDataMigrations(handle.db, [importLlmConnections])
+    await runDataMigrations(handle.db, [importLlmConnections])
+    const rows = await state.db!.select().from(llmConnections).all()
+    expect(rows).toHaveLength(1)
+    expect(state.settings.llmDefault).toEqual({ connectionId: 'legacy-anthropic', model: 'opus' })
+    expect(state.settings.llmSummarizer).toEqual({
+      connectionId: 'legacy-anthropic',
+      model: 'haiku',
+    })
+    expect(rows[0]).toMatchObject({ browserModel: 'sonnet', dashboardModel: 'sonnet' })
+    expect(rows[0].config).not.toContain('env-key')
+    expect(providerForConnection(rows[0]).getEffectiveApiKey()).toBe('saved-key')
+  })
+  it('does not recreate an imported connection after deletion', async () => {
+    state.settings.llmLegacyConnectionId = undefined
+    state.settings.apiKeys = { anthropicApiKey: 'saved-key' }
+    await runDataMigrations(handle.db, [importLlmConnections])
+    const root = await add('Other')
+    await setGlobalSelection('default', { connectionId: root, model: 'a' })
+    await deleteConnection('legacy-anthropic', admin)
+    await runDataMigrations(handle.db, [importLlmConnections])
+    expect(await getConnection('legacy-anthropic')).toBeNull()
+  })
+})
+
+describe('app-owned refresh', () => {
+  it('coalesces concurrent refresh and reuses a newer generation after a late rejection', async () => {
+    const id = await add()
+    await replaceConnectionCredentials(id, {
+      accessToken: 'expired',
+      refreshToken: 'refresh-1',
+      expiresAt: 1,
+    })
+    const refresh = vi.fn(async () => ({
+      accessToken: 'new-access',
+      refreshToken: 'refresh-2',
+      expiresAt: Date.now() + 3_600_000,
+    }))
+    registerCredentialRefresher('generic', refresh)
+    const values = await Promise.all(Array.from({ length: 8 }, () => getAccessCredential(id)))
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(new Set(values.map((v) => v.generation)).size).toBe(1)
+    expect(values[0]).not.toHaveProperty('refreshToken')
+    expect(await getAccessCredential(id, 1)).toEqual(values[0])
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+  it('cannot resurrect a connection deleted during refresh', async () => {
+    const id = await add()
+    await replaceConnectionCredentials(id, {
+      accessToken: 'expired',
+      refreshToken: 'refresh',
+      expiresAt: 1,
+    })
+    let finish!: (value: { accessToken: string; expiresAt: number }) => void
+    let entered!: () => void
+    const started = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    registerCredentialRefresher('generic', () => {
+      entered()
+      return new Promise((resolve) => {
+        finish = resolve
+      })
+    })
+    const request = getAccessCredential(id)
+    await started
+    await deleteConnection(id, admin)
+    finish({ accessToken: 'late', expiresAt: Date.now() + 3_600_000 })
+    await expect(request).rejects.toThrow('no longer exists')
+    expect(await getConnection(id)).toBeNull()
+  })
+})
+
+it('uses session connection overrides and falls back to its main model when removed', async () => {
+  const id = await add()
+  await setGlobalSelection('default', { connectionId: id, model: 'a' })
+  await state
+    .db!.update(llmConnections)
+    .set({ browserModel: 'gone', dashboardModel: 'a' })
+    .where(eq(llmConnections.id, id))
+    .run()
+  const runtime = await connectionRuntime(await resolveExecutionSelection(), 'test-agent')
+  expect(runtime).toMatchObject({
+    connectionId: id,
+    model: 'model-a',
+    browserModel: 'model-a',
+    dashboardBuilderModel: 'model-a',
+  })
+  expect(runtime.env).toMatchObject({
+    ANTHROPIC_AUTH_TOKEN: 'key-First',
+    CLAUDE_CODE_USE_BEDROCK: '',
+    AWS_SECRET_ACCESS_KEY: '',
+  })
+})
+
+it('uses one current credential for both execution and helpers, without refreshing on a reference read', async () => {
+  const id = await add()
+  await setGlobalSelection('default', { connectionId: id, model: 'a' })
+  await replaceConnectionCredentials(id, {
+    accessToken: 'expired',
+    refreshToken: 'refresh',
+    expiresAt: 1,
+  })
+  const refresh = vi.fn(async () => ({
+    accessToken: 'fresh',
+    refreshToken: 'rotated',
+    expiresAt: Date.now() + 3600000,
+  }))
+  registerCredentialRefresher('generic', refresh)
+  expect((await resolveSelectionHierarchy()).connectionId).toBe(id)
+  expect(refresh).not.toHaveBeenCalled()
+  const [session, helper] = await Promise.all([
+    resolveExecutionSelection(),
+    resolveHelperSelection(),
+  ])
+  expect(session.provider.getEffectiveApiKey()).toBe('fresh')
+  expect(helper.provider.getEffectiveApiKey()).toBe('fresh')
+  expect(refresh).toHaveBeenCalledTimes(1)
+})
+
+it('keeps a reconnect that wins against an in-flight refresh', async () => {
+  const id = await add()
+  await replaceConnectionCredentials(id, {
+    accessToken: 'old',
+    refreshToken: 'old-refresh',
+    expiresAt: 1,
+  })
+  let finish!: (value: { accessToken: string; expiresAt: number }) => void
+  let entered!: () => void
+  const started = new Promise<void>((resolve) => {
+    entered = resolve
+  })
+  registerCredentialRefresher('generic', () => {
+    entered()
+    return new Promise((resolve) => {
+      finish = resolve
+    })
+  })
+  const pending = getAccessCredential(id)
+  await started
+  await replaceConnectionCredentials(id, {
+    accessToken: 'reconnected',
+    refreshToken: 'new-refresh',
+    expiresAt: Date.now() + 3600000,
+  })
+  finish({ accessToken: 'stale-result', expiresAt: Date.now() + 3600000 })
+  expect((await pending).accessToken).toBe('reconnected')
+})
+
+it('reports a refresh failure without inheriting another account', async () => {
+  const id = await add()
+  await setGlobalSelection('default', { connectionId: id, model: 'a' })
+  const personal = await add('Second')
+  await replaceConnectionCredentials(personal, {
+    accessToken: 'old',
+    refreshToken: 'bad',
+    expiresAt: 1,
+  })
+  registerCredentialRefresher('generic', async () => {
+    throw new Error('rejected')
+  })
+  await expect(resolveExecutionSelection({ connectionId: personal, model: 'a' })).rejects.toThrow(
+    'Reconnect'
+  )
+  expect((await getConnection(personal))?.state).toBe('reconnect')
+})
+
+it('serializes edits for one session without serializing independent sessions', async () => {
+  const order: string[] = []
+  let release!: () => void
+  const first = withSessionSelection('agent', 'session', async () => {
+    order.push('first')
+    await new Promise<void>((resolve) => {
+      release = resolve
+    })
+    order.push('first-done')
+  })
+  const second = withSessionSelection('agent', 'session', async () => {
+    order.push('second')
+  })
+  await withSessionSelection('agent', 'other-session', async () => {
+    order.push('independent')
+  })
+  expect(order).toEqual(['first', 'independent'])
+  release()
+  await Promise.all([first, second])
+  expect(order).toEqual(['first', 'independent', 'first-done', 'second'])
+})
+
+it('migrates version pins in SQL and old file selections before applying strict membership', async () => {
+  state.settings.llmLegacyConnectionId = undefined
+  state.settings.apiKeys = { anthropicApiKey: 'key' }
+  await state
+    .db!.insert(scheduledTasks)
+    .values({
+      id: 'legacy-task',
+      agentSlug: 'agent',
+      scheduleType: 'at',
+      scheduleExpression: 'tomorrow',
+      prompt: 'hello',
+      nextExecutionAt: new Date(),
+      createdAt: new Date(),
+      model: 'claude-previous-1',
+    })
+    .run()
+  await runDataMigrations(handle.db, [importLlmConnections])
+  const task = await state.db!.select().from(scheduledTasks).get()
+  expect(task).toMatchObject({ model: 'claude-previous-1', connectionId: 'legacy-anthropic' })
+  expect(
+    (await resolveExecutionSelection(storedSelection(task!.model, task!.connectionId))).wireModel
+  ).toBe('claude-previous-1')
+  const file = await resolveExecutionSelection(storedSelection('claude-previous-2'))
+  expect(file).toMatchObject({ connectionId: 'legacy-anthropic', model: 'claude-previous-2' })
+  await state
+    .db!.update(llmConnections)
+    .set({
+      catalog: JSON.stringify(
+        JSON.parse(file.connection.catalog).filter(
+          (m: { id: string }) => m.id !== 'claude-previous-2'
+        )
+      ),
+    })
+    .where(eq(llmConnections.id, file.connectionId))
+    .run()
+  expect(
+    (await resolveExecutionSelection(storedSelection(file.model, file.connectionId))).model
+  ).toBe('opus')
+})
+
+it('keeps one managed Platform account and prevents deletion while logged in', async () => {
+  state.platformToken = 'platform-test-token'
+  await ensureManagedPlatformConnection()
+  await ensureManagedPlatformConnection()
+  const rows = await state
+    .db!.select()
+    .from(llmConnections)
+    .where(eq(llmConnections.provider, 'platform'))
+    .all()
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({ managed: true, userId: null })
+  await expect(deleteConnection(rows[0].id, admin)).rejects.toThrow('while connected')
+  await expect(
+    saveConnection({ name: 'Duplicate', provider: 'platform', config: {} }, admin)
+  ).rejects.toThrow('Platform login')
+})
+
+it('preserves legacy environment overrides only on the migrated account and honors later key removal', async () => {
+  state.settings.llmLegacyConnectionId = undefined
+  state.settings.apiKeys = { anthropicApiKey: 'saved' }
+  state.settings.customEnvVars = {
+    ANTHROPIC_AUTH_TOKEN: 'legacy-custom',
+    ANTHROPIC_BASE_URL: 'https://legacy.example',
+    TOOL_SETTING: 'unrelated',
+  }
+  await runDataMigrations(handle.db, [importLlmConnections])
+  const migrated = await connectionRuntime(await resolveExecutionSelection(), 'agent')
+  expect(migrated.env).toMatchObject({
+    ANTHROPIC_AUTH_TOKEN: 'legacy-custom',
+    ANTHROPIC_BASE_URL: 'https://legacy.example',
+  })
+  const other = await add()
+  expect(
+    (await connectionRuntime(await resolveExecutionSelection({ connectionId: other, model: 'a' }), 'agent'))
+      .env.ANTHROPIC_AUTH_TOKEN
+  ).toBe('key-First')
+  state.settings.apiKeys.anthropicApiKey = ''
+  await syncProviderSettings({ providers: ['anthropic'], credentials: true })
+  expect(
+    providerForConnection((await getConnection('legacy-anthropic'))!).getEffectiveApiKey()
+  ).toBeUndefined()
+})
+
+it('editing a migrated key replaces the custom bearer without losing its endpoint', async () => {
+  state.settings.llmLegacyConnectionId = undefined
+  state.settings.apiKeys = { anthropicApiKey: 'saved' }
+  state.settings.customEnvVars = {
+    ANTHROPIC_AUTH_TOKEN: 'old-bearer',
+    ANTHROPIC_BASE_URL: 'https://legacy.example',
+  }
+  await runDataMigrations(handle.db, [importLlmConnections])
+  await saveConnection(
+    { name: 'Updated', provider: 'anthropic', config: { apiKeys: { anthropicApiKey: 'new-key' } } },
+    admin,
+    'legacy-anthropic'
+  )
+  const runtime = await connectionRuntime(await resolveExecutionSelection(), 'agent')
+  expect(runtime.env.ANTHROPIC_AUTH_TOKEN).toBe('')
+  expect(runtime.env.ANTHROPIC_API_KEY).toBe('new-key')
+  expect(runtime.env.ANTHROPIC_BASE_URL).toBe('https://legacy.example')
+})
+
+it('a legacy browser-only settings edit preserves the app and summarizer selections', async () => {
+  state.settings.llmLegacyConnectionId = undefined
+  state.settings.apiKeys = { anthropicApiKey: 'saved' }
+  await runDataMigrations(handle.db, [importLlmConnections])
+  const root = state.settings.llmDefault
+  const helper = await add('Helper')
+  await setGlobalSelection('summarizer', { connectionId: helper, model: 'a' })
+  await syncProviderSettings({ providers: ['anthropic'], models: ['browserModel'] })
+  expect(state.settings.llmDefault).toEqual(root)
+  expect(state.settings.llmSummarizer).toEqual({ connectionId: helper, model: 'a' })
+})
+
+it('legacy model updates preserve explicit pins without replacing connection-local catalog edits', async () => {
+  state.settings.llmLegacyConnectionId = undefined
+  state.settings.apiKeys = { anthropicApiKey: 'saved' }
+  await runDataMigrations(handle.db, [importLlmConnections])
+  state.settings.models = {
+    agentModel: 'claude-explicit-1',
+    summarizerModel: 'haiku',
+    browserModel: 'sonnet',
+    dashboardBuilderModel: 'sonnet',
+  }
+  await syncProviderSettings({ providers: ['anthropic'], models: ['agentModel'] })
+  expect((await resolveExecutionSelection()).wireModel).toBe('claude-explicit-1')
+  expect((await resolveHelperSelection()).model).toBe('haiku')
+})
+
+it('keeps registry reads free of legacy import and Platform creation', async () => {
+  state.settings.llmLegacyConnectionId = undefined
+  state.settings.apiKeys = { anthropicApiKey: 'saved' }
+  state.platformToken = 'platform-test-token'
+  expect(await listConnections(admin)).toEqual([])
+  await expect(resolveSelectionHierarchy()).rejects.toThrow('Configure a global default')
+  expect(await state.db!.select().from(llmConnections).all()).toEqual([])
+  expect(state.settings.llmDefault).toBeUndefined()
+})
+
+it('onboarding configures the first account after the empty migration has completed', async () => {
+  state.settings.llmLegacyConnectionId = undefined
+  await runDataMigrations(handle.db, [importLlmConnections])
+  state.settings.apiKeys = { anthropicApiKey: 'onboarding-key' }
+  await syncProviderSettings({ providers: ['anthropic'], credentials: true, selectDefault: true })
+  expect((await resolveExecutionSelection()).connectionId).toBe('legacy-anthropic')
+  expect(state.settings.llmSummarizer).toEqual({ connectionId: 'legacy-anthropic', model: 'haiku' })
+  expect(state.settings.llmLegacyConnectionId).toBeUndefined()
+  expect(await runDataMigrations(handle.db, [importLlmConnections])).toEqual([])
+})

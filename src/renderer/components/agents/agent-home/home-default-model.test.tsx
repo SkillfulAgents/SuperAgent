@@ -4,6 +4,8 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 const useSettingsMock = vi.fn()
+vi.mock('@renderer/hooks/use-llm-connections', () => ({ useLlmConnections: () => ({ data: undefined }) }))
+
 vi.mock('@renderer/hooks/use-settings', () => ({
   useModelSettings: () => useSettingsMock(),
 }))
@@ -134,6 +136,6 @@ describe('HomeDefaultModel overrides', () => {
     await user.click(screen.getByTestId('settings-model-trigger'))
     await user.click(screen.getByTestId('settings-model-app-default'))
 
-    expect(mutateMock).toHaveBeenCalledWith({ defaultModel: null, defaultEffort: null, defaultSpeed: null })
+    expect(mutateMock).toHaveBeenCalledWith({ defaultModel: null, defaultConnectionId: null, defaultEffort: null, defaultSpeed: null })
   })
 })

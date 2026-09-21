@@ -83,8 +83,9 @@ export function useUpdateWebhookTriggerRuntimeOptions() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ triggerId, model, effort, speed }: { triggerId: string; agentSlug: string; model?: string | null; effort?: string | null; speed?: string | null }) => {
+    mutationFn: async ({ triggerId, connectionId, model, effort, speed }: { triggerId: string; agentSlug: string; connectionId?: string | null; model?: string | null; effort?: string | null; speed?: string | null }) => {
       const body: Record<string, string | null> = {}
+      if (connectionId !== undefined) body.connectionId = connectionId
       if (model !== undefined) body.model = model
       if (effort !== undefined) body.effort = effort
       if (speed !== undefined) body.speed = speed

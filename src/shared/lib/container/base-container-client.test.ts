@@ -1,3 +1,4 @@
+vi.mock('./host-token-store', () => ({ getOrCreateHostToken: () => 'host-test-token' }))
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'

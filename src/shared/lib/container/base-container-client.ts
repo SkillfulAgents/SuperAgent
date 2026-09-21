@@ -1,3 +1,6 @@
+import { isQueuedSessionSend } from './session-send-context'
+import { connectionRuntime, rememberSessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { resolveExecutionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { exec, execSync, spawn } from 'child_process'
 import path from 'path'
 import { promisify } from 'util'
@@ -31,13 +34,11 @@ import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { z } from 'zod'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
-import { getActiveLlmProvider, getModelContextWindowMap } from '@shared/lib/llm-provider'
+import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
-import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { getOrCreateHostToken } from './host-token-store'
-import { getSubagentModelCatalog } from './subagent-model-catalog'
 
 const execAsync = promisify(exec)
 
@@ -1240,21 +1241,18 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
     // Resolve stored selections (bare aliases or concrete ids) to the active
     // provider's concrete wire id before the container ever sees them.
-    const resolvedModel = resolveContainerModel(options.model, 'agent')
-    // Resolved on the same path as the session's own model, so the prompt
-    // hints the container pre-warms with match what a default session would
-    // actually be built with.
-    const resolvedPrewarmModel = resolveContainerModel(options.prewarmDefaults?.model, 'agent')
-    const prewarmPromptHints = getContainerModelPromptHints(resolvedPrewarmModel)
-    const resolvedBrowserModel = resolveContainerModel(options.browserModel, 'browser')
-    const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
-    const modelPromptHints = getContainerModelPromptHints(resolvedModel)
-    const subagentModels = getSubagentModelCatalog(getActiveLlmProvider().id)
+    const selected = await resolveExecutionSelection(storedSelection(options.model, options.connectionId))
+    const llmRuntime = await connectionRuntime(selected, this.config.agentId)
+    const resolvedModel = llmRuntime.model
+    const resolvedBrowserModel = llmRuntime.browserModel
+    const resolvedDashboardBuilderModel = llmRuntime.dashboardBuilderModel
+    const modelPromptHints = llmRuntime.modelPromptHints
+    const subagentModels = llmRuntime.subagentModels
     // Catalog windows for ALL models (not just isLatest like subagentModels):
     // the container passes the session model's window to the Claude Agent SDK
     // via CLAUDE_CODE_MAX_CONTEXT_TOKENS, else non-Claude models compact at
     // the SDK's 200k default (grok: 500k real, gpt-5.x: 1.05M real).
-    const modelContextWindows = getModelContextWindowMap(getActiveLlmProvider().id)
+    const modelContextWindows = llmRuntime.modelContextWindows
     // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
     // Resolved once here from global settings so every session-creation caller inherits it. One
     // stored vendor backs both tools; the two ids sent to the container are the per-tool enablement
@@ -1278,6 +1276,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         headers: { 'Content-Type': 'application/json', ...this.getHostAuthHeaders() },
         body: JSON.stringify({
           metadata: options.metadata,
+          connectionId: selected.connectionId,
+          llmRuntime,
           systemPrompt: options.systemPrompt,
           modelPromptHints: modelPromptHints.length > 0 ? modelPromptHints : undefined,
           availableEnvVars: options.availableEnvVars,
@@ -1299,12 +1299,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           effort: options.effort,
           speed: options.speed,
           capabilityPolicies,
-          prewarmDefaults: options.prewarmDefaults && {
-            model: resolvedPrewarmModel,
-            modelPromptHints: prewarmPromptHints.length > 0 ? prewarmPromptHints : undefined,
+          prewarmDefaults: options.prewarmDefaults?.model === selected.model && options.prewarmDefaults?.connectionId === selected.connectionId ? {
+            model: resolvedModel,
+            modelPromptHints,
             effort: options.prewarmDefaults.effort,
             speed: options.prewarmDefaults.speed,
-          },
+          } : undefined,
         }),
         signal: controller.signal,
       })
@@ -1354,7 +1354,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         )
       }
 
-      return response.json()
+      const session = await response.json()
+      rememberSessionRuntime(this.config.agentId, session.id, llmRuntime)
+      return session
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error))
 
@@ -1409,7 +1411,25 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const timeoutMs = 30000 // 30 second timeout
     const effort = options?.effort
     const speed = options?.speed
-    const model = resolveContainerModel(options?.model, 'agent')
+    // A queued follow-up belongs to the running turn. It must not resolve a
+    // deleted connection, rotate credentials, or rebuild the active query.
+    const preserveRuntime = options?.preserveRuntime || isQueuedSessionSend(this.config.agentId, sessionId)
+    let llmRuntime: Awaited<ReturnType<typeof connectionRuntime>> | undefined
+    if (!preserveRuntime) {
+      const { agentRegistry } = await import('@shared/lib/agent-actor')
+      const actor = agentRegistry.get(this.config.agentId)
+      const metadata = await actor.sessions.metadata(sessionId)
+      const prefs = await actor.config.get('preferences')
+      const selected = await resolveExecutionSelection(
+        storedSelection(options?.model, options?.connectionId !== undefined ? options.connectionId : metadata?.connectionId),
+        storedSelection(metadata?.model, metadata?.connectionId),
+        storedSelection(prefs?.defaultModel, prefs?.defaultConnectionId),
+      )
+      llmRuntime = await connectionRuntime(selected, this.config.agentId)
+      rememberSessionRuntime(this.config.agentId, sessionId, llmRuntime)
+      await actor.sessions.updateMetadata(sessionId, { connectionId: selected.connectionId, model: selected.model })
+    }
+    const model = llmRuntime?.model
     const shouldQuery = options?.shouldQuery
     const isAutomated = options?.isAutomated
     // Refreshed on every message so a long-lived session tracks settings
@@ -1427,10 +1447,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           headers: { 'Content-Type': 'application/json', ...this.getHostAuthHeaders() },
           body: JSON.stringify({
             content,
+            ...(llmRuntime ? { connectionId: llmRuntime.connectionId, llmRuntime } : {}),
             ...(uuid ? { uuid } : {}),
             ...(effort ? { effort } : {}),
             ...(speed ? { speed } : {}),
-            ...(model ? { model } : {}),
+            ...(model && !preserveRuntime ? { model } : {}),
             ...(shouldQuery !== undefined ? { shouldQuery } : {}),
             ...(isAutomated !== undefined ? { isAutomated } : {}),
             capabilityPolicies,
@@ -1874,7 +1895,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const settings = getSettings()
     const provider = getActiveLlmProvider()
     const merged: Record<string, string | undefined> = {
-      ...(await provider.getContainerEnvVars(this.agentIdentityForEnv(agentName))),
+      ...(settings.llmDefault ? {} : await provider.getContainerEnvVars(this.agentIdentityForEnv(agentName))),
+      SUPERAGENT_AGENT_ID: this.config.agentId,
+      ...(agentName ? { SUPERAGENT_AGENT_NAME: agentName } : {}),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       // The setting only switches tool search OFF; whether it may be on is the
       // provider's call, because it depends on the endpoint expanding deferred

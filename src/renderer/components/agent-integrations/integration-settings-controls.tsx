@@ -144,7 +144,10 @@ export function IntegrationModelEffort({ integration }: { integration: PublicAge
   // Drive display off the inherit ladder; writes stay on pick. Clamp is display-only.
   return (
     <SettingsModelSelect
+      agentSlug={integration.agentSlug}
       model={selection.model}
+      connectionId={integration.connectionId}
+      onSelectionChange={s => updateIntegration.mutate({ id: integration.id, ...s })}
       onModelChange={(m) => updateIntegration.mutate({ id: integration.id, model: m })}
       includeEffort
       effort={selection.displayEffort}

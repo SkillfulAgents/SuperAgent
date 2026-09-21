@@ -1,3 +1,4 @@
+import { resolveSelection, type ModelSelection } from '@shared/lib/llm-provider/connection-schema'
 import { memo, useContext, useMemo } from 'react'
 import { ChevronDown, RotateCcw, Settings } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
@@ -13,6 +14,10 @@ import { EFFORT_LEVELS, type EffortLevel, type SpeedLevel } from '@shared/lib/co
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
 interface SettingsModelSelectProps {
+  agentSlug?: string
+  connectionId?: string | null
+  globalOnly?: boolean
+  onSelectionChange?: (selection: ModelSelection) => void
   /** Currently-selected model — a concrete id (pinned) or a bare family alias (latest); undefined while loading. */
   model: string | undefined
   onModelChange: (model: string) => void
@@ -57,7 +62,11 @@ interface SettingsModelSelectProps {
  * Reads and writes the raw selection string — resolution happens host-side.
  */
 function SettingsModelSelectImpl({
+  agentSlug,
   model,
+  connectionId,
+  globalOnly,
+  onSelectionChange,
   onModelChange,
   includeEffort = false,
   effort = 'medium',
@@ -71,17 +80,24 @@ function SettingsModelSelectImpl({
 }: SettingsModelSelectProps) {
   // Picker-safe endpoint — this select also serves non-admin surfaces (the
   // agent-home Default Model card), where the admin-gated settings 403.
-  const { data: settings } = useModelSettings()
+  const { data: settings } = useModelSettings(agentSlug, connectionId)
+  const connections = settings?.connections ? { connections: settings.connections, defaultSelection: settings.defaultSelection } : undefined
+  const choices = connections?.connections.filter(c => !globalOnly || c.userId === null) ?? []
+  const selected = resolveSelection(model && connectionId ? { model, connectionId } : null, choices)
+    ?? resolveSelection(connections?.defaultSelection, choices)
+  const selectedConnection = choices.find(c => c.id === selected?.connectionId)
+    ?? (!connections?.defaultSelection && choices.length === 1 ? choices[0] : undefined)
+  const selectedModel = onSelectionChange && connections ? selected?.model : model
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const catalog = useMemo(
-    () => settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
-    [settings, activeProvider],
+    () => onSelectionChange && selectedConnection ? selectedConnection.catalog : settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
+    [settings, activeProvider, selectedConnection, onSelectionChange],
   )
 
   // Resolve the current selection for the trigger label.
-  const resolved = findCatalogModel(model, catalog)
-  const isLatestSelected = model !== undefined && catalog.some((m) => m.family === model)
-  const selectedFamily = isLatestSelected ? model : resolved?.family
+  const resolved = findCatalogModel(selectedModel, catalog)
+  const isLatestSelected = selectedModel !== undefined && catalog.some((m) => m.family === selectedModel)
+  const selectedFamily = isLatestSelected ? selectedModel : resolved?.family
 
   useEffortClamp(includeEffort ? resolved : undefined, effort, onEffortChange)
   useSpeedClamp(includeSpeed ? resolved : undefined, speed, onSpeedChange)
@@ -131,10 +147,16 @@ function SettingsModelSelectImpl({
         // it pops its name tooltip instantly. Keyboard users can Tab in.
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
+        {onSelectionChange && choices.length > 1 && <label className="px-2 pb-2 text-xs">Connection
+          <select aria-label="Connection" className="mt-1 w-full rounded border bg-background p-2" value={selectedConnection?.id ?? ''} onChange={e => {
+            const next = choices.find(c => c.id === e.target.value)
+            if (next?.catalog[0]) onSelectionChange({ connectionId: next.id, model: next.catalog.find(m => m.isDefault)?.id ?? next.catalog[0].id })
+          }}>{choices.map(c => <option key={c.id} value={c.id}>{c.name}{c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}</option>)}</select>
+        </label>}
         <ModelFamilyList
           catalog={catalog}
-          value={model}
-          onPick={onModelChange}
+          value={selectedModel}
+          onPick={m => onSelectionChange && selectedConnection ? onSelectionChange({ connectionId: selectedConnection.id, model: m }) : onModelChange(m)}
           offerLatest
           webProvider={settings?.webProvider}
         />

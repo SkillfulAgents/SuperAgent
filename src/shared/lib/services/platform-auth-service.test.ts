@@ -34,6 +34,11 @@ vi.mock('@shared/lib/container/container-host', async () => {
   return { containerHost: hostFromManagerMock({ markAgentsStale: mockMarkAgentsStale }) }
 })
 
+const mockEnsureManagedPlatformConnection = vi.fn(async () => {})
+vi.mock('@shared/lib/llm-provider/connection-settings', () => ({
+  ensureManagedPlatformConnection: () => mockEnsureManagedPlatformConnection(),
+}))
+
 const mockDbGet = vi.fn()
 vi.mock('@shared/lib/db', () => ({
   db: {
@@ -133,6 +138,7 @@ describe('platform-auth-service', () => {
     _setOidcJwksResolverForTest(testJwksResolver as unknown as Parameters<typeof _setOidcJwksResolverForTest>[0])
     _resetEnvManagedPlatformStatusForTest()
     mockDbGet.mockReturnValue(null)
+    mockEnsureManagedPlatformConnection.mockClear()
   })
 
   afterEach(() => {
@@ -153,6 +159,12 @@ describe('platform-auth-service', () => {
     process.env.PLATFORM_TOKEN = 'env-managed-platform-token'
 
     expect(getPlatformAccessToken('local')).toBe('env-managed-platform-token')
+  })
+
+  it('creates the managed connection on login before returning', async () => {
+    process.env.AUTH_MODE = 'false'
+    await savePlatformAuth('local', { token: 'platform-login-test-token', orgId: 'org_test' })
+    expect(mockEnsureManagedPlatformConnection).toHaveBeenCalledTimes(1)
   })
 
   it('returns null when not in auth mode and no settings record exists', async () => {
@@ -515,6 +527,7 @@ describe('platform-auth-service', () => {
     await initEnvManagedPlatformStatus()
 
     mockDbGet.mockReturnValue(null)
+    mockEnsureManagedPlatformConnection.mockClear()
 
     const status = (await getPlatformAuthStatusForUser('ba-user-id'))
     expect(status.userId).toBeNull()

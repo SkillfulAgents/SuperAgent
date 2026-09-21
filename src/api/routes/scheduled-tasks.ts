@@ -1,3 +1,5 @@
+import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Scheduled Tasks API Routes
  *
@@ -29,7 +31,7 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
-import { RuntimeOptionsPatchSchema, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
+import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { deliverSessionWake } from '@shared/lib/scheduler/wake-delivery'
@@ -250,11 +252,13 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { model?: string | null; effort?: string | null; speed?: string | null } = {}
+    const updates: { connectionId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
+    if ('connectionId' in body) updates.connectionId = parsed.data.connectionId ?? null
     if ('model' in body) updates.model = parsed.data.model ?? null
     if ('effort' in body) updates.effort = parsed.data.effort ?? null
     if ('speed' in body) updates.speed = parsed.data.speed ?? null
 
+    await assertConnectionSelectionAccess(parsed.data.connectionId, task?.connectionId)
     const updated = await updateTaskRuntimeOptions(task!.id, updates)
     if (!updated) {
       return c.json({ error: 'Task not found or not editable' }, 404)
@@ -306,8 +310,9 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(task.agentSlug)
-    const resolved = resolveRuntimeInherit(
-      { model: task.model, effort: task.effort, speed: task.speed },
+    const resolved = await resolveConnectionRuntimeInherit(
+      { model: task.model,
+      connectionId: task.connectionId, effort: task.effort, speed: task.speed },
       agentPrefs,
       models,
     )
@@ -316,6 +321,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
       model: resolved.model,
+      connectionId: resolved.connectionId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       effort: resolved.effort,
@@ -364,7 +370,7 @@ scheduledTasksRouter.post('/:taskId/describe-schedule', TaskAgentRole('viewer'),
       return c.json({ error: 'Task is not a recurring cron task' }, 400)
     }
 
-    const client = getConfiguredLlmClient()
+    const client = await getConfiguredLlmClient()
     const description = await createSummarizerText(client, {
       model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
       messages: [
@@ -406,7 +412,7 @@ scheduledTasksRouter.post('/:taskId/parse-schedule', TaskAgentRole('user'), asyn
       return c.json({ error: 'description is required' }, 400)
     }
 
-    const client = getConfiguredLlmClient()
+    const client = await getConfiguredLlmClient()
     const expression = await createSummarizerText(client, {
       model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
       messages: [

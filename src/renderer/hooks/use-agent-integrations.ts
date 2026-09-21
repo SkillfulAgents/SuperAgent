@@ -164,7 +164,7 @@ export function useCreateAgentIntegration() {
       config: Record<string, unknown>
       showToolCalls?: boolean
       sessionTimeout?: number | null
-      model?: string | null
+      connectionId?: string | null; model?: string | null
       effort?: string | null
       speed?: string | null
     }) => {
@@ -213,7 +213,7 @@ export function useUpdateAgentIntegration() {
       config?: Record<string, unknown>
       showToolCalls?: boolean
       sessionTimeout?: number | null
-      model?: string | null
+      connectionId?: string | null; model?: string | null
       effort?: string | null
       speed?: string | null
       status?: 'active' | 'paused'

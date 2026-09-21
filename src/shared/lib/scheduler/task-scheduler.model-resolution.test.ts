@@ -34,6 +34,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
 })
 
 vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: () => ({}),
   getEffectiveModels: () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-browser',
@@ -125,6 +126,7 @@ function createTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     createdByUserId: 'user-1',
     timezone: 'America/Los_Angeles',
     model: null,
+  connectionId: null,
     effort: null,
     speed: null,
     resumeSessionId: null,

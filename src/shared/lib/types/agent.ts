@@ -123,6 +123,7 @@ export interface SessionMetadata {
   // Last model used by the user on this session (seeds the composer on reload).
   // Stored as the provider's pinned ID, not the family.
   model?: string
+  connectionId?: string | null
   // X-Agent: present when this session was created by another agent invoking this one.
   // Such sessions are hidden as automated until promoted for human input.
   invokedByAgentSlug?: string
@@ -174,6 +175,7 @@ export interface JsonlMessageEntry {
     role: string
     content: string | ContentBlock[]
     model?: string
+  connectionId?: string | null
     id?: string
     usage?: {
       input_tokens: number

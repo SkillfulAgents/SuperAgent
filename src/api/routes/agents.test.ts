@@ -1171,6 +1171,7 @@ describe('GET /:id/webhook-triggers', () => {
     createdByUserId: 'owner-private-id',
     mintedByMemberId: 'sub_member-private-id',
     model: null,
+  connectionId: null,
     effort: null,
     speed: null,
     createdAt: new Date('2026-07-17T00:00:00Z'),
@@ -1230,6 +1231,7 @@ describe('GET /:id/chat-integrations', () => {
       requireApproval: true,
       sessionTimeout: null,
       model: null,
+  connectionId: null,
       effort: null,
       speed: null,
       status: 'active',
@@ -3850,7 +3852,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body).toMatchObject({ success: true, queued: false })
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '[SYSTEM] note', body.uuid, { shouldQuery: false })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '[SYSTEM] note', body.uuid, { shouldQuery: false, preserveRuntime: true })
     // No turn starts, so the session must not be left looking busy, and an
     // append is never "queued" behind one: the agent reads it with its next turn.
     expect(messagePersister.isSessionActive).not.toHaveBeenCalled()
@@ -3979,7 +3981,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body.queued).toBe(true)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {})
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { preserveRuntime: true })
     expect(updateSessionMetadata).not.toHaveBeenCalled()
     expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
   })
@@ -8375,8 +8377,8 @@ describe('agent preferences — PUT /:id/preferences', () => {
     const res = await putJson(PREFS_URL, { defaultModel: null })
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ defaultEffort: 'high' })
-    expect(persistedPreferences()).toEqual({ defaultEffort: 'high' })
+    expect(await res.json()).toEqual({ defaultEffort: 'high', defaultConnectionId: null })
+    expect(persistedPreferences()).toEqual({ defaultEffort: 'high', defaultConnectionId: null })
   })
 
   it('trims surrounding whitespace before storing defaultModel', async () => {

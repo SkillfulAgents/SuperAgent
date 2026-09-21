@@ -1,3 +1,4 @@
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Task Scheduler
  *
@@ -17,7 +18,6 @@ import {
   updateNextExecution,
 } from '@shared/lib/services/scheduled-task-service'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
-import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
@@ -215,8 +215,9 @@ class TaskScheduler {
     // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(task.agentSlug)
-    const resolved = resolveRuntimeInherit(
-      { model: task.model, effort: task.effort, speed: task.speed },
+    const resolved = await resolveConnectionRuntimeInherit(
+      { model: task.model,
+      connectionId: task.connectionId, effort: task.effort, speed: task.speed },
       agentPrefs,
       models,
     )
@@ -225,6 +226,7 @@ class TaskScheduler {
         availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
       model: resolved.model,
+      connectionId: resolved.connectionId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },

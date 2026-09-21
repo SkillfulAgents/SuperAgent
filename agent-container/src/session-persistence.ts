@@ -149,6 +149,11 @@ export class SessionPersistence {
     }
   }
 
+  updateConnection(sessionId: string, connectionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session) { session.connectionId = connectionId; this.save(); }
+  }
+
   updateModel(sessionId: string, model: string | undefined): void {
     const session = this.sessions.get(sessionId);
     if (session) {

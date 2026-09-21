@@ -1,8 +1,9 @@
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
-import { getConfiguredLlmClient } from '@shared/lib/llm-provider/helpers'
+import { getConfiguredLlmClient, configuredHelperModel } from '@shared/lib/llm-provider/helpers'
 import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
-import { getEffectiveModels } from '@shared/lib/config/settings'
+import { resolveHelperSelection } from '@shared/lib/llm-provider/connections'
+import { getEffectiveModels, getSettings } from '@shared/lib/config/settings'
 
 const llm = new Hono()
 
@@ -42,11 +43,12 @@ function getDefaultModel(): string {
 }
 
 // GET /api/llm/config
-llm.get('/config', (c) => {
-  const provider = getActiveLlmProvider()
+llm.get('/config', async (c) => {
+  const selected = getSettings().llmDefault ? await resolveHelperSelection() : null
+  const provider = selected?.provider ?? getActiveLlmProvider()
   return c.json({
     configured: provider.getApiKeyStatus().isConfigured,
-    defaultModel: getDefaultModel(),
+    defaultModel: selected?.wireModel ?? getDefaultModel(),
     provider: provider.id,
   })
 })
@@ -77,12 +79,13 @@ llm.post('/v1/messages', async (c) => {
     return c.json({ error: 'Missing required field: messages' }, 400)
   }
 
-  const model = (body.model as string) || getDefaultModel()
+  let model = (body.model as string) || getDefaultModel()
   const stream = !!body.stream
 
   let client
   try {
-    client = getConfiguredLlmClient()
+    client = await getConfiguredLlmClient()
+    if (!body.model) model = configuredHelperModel(client) ?? model
   } catch {
     return c.json({ error: 'LLM provider not configured. Check Gamut settings.' }, 503)
   }

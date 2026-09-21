@@ -1,3 +1,4 @@
+import { withoutProviderCredentials, runtimeFingerprint } from './connection-runtime';
 import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
@@ -20,6 +21,9 @@ export const warmProfileSchema = z.object({
   modelPromptHints: z.array(z.string()).optional(),
   availableEnvVars: z.array(z.string()).optional(),
   model: z.string().optional(),
+  connectionId: z.string().optional(),
+  credentialGeneration: z.number().optional(),
+  runtimeFingerprint: z.string().optional(),
   browserModel: z.string().optional(),
   dashboardBuilderModel: z.string().optional(),
   subagentModels: subagentModelCatalogSchema,
@@ -30,7 +34,7 @@ export const warmProfileSchema = z.object({
   maxThinkingTokens: z.number().optional(),
   maxTurns: z.number().optional(),
   maxBudgetUsd: z.number().optional(),
-  customEnvVars: z.record(z.string(), z.string()).optional(),
+  customEnvVars: z.record(z.string(), z.string()).transform(withoutProviderCredentials).optional(),
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   speed: speedLevelSchema,
   capabilityPolicies: agentCapabilityPoliciesSchema,
@@ -67,6 +71,9 @@ function buildProfile(
     systemPrompt: request.systemPrompt,
     modelPromptHints: defaults ? defaults.modelPromptHints : request.modelPromptHints,
     availableEnvVars: request.availableEnvVars,
+    connectionId: request.connectionId,
+    credentialGeneration: request.llmRuntime?.generation,
+    runtimeFingerprint: request.llmRuntime ? runtimeFingerprint(request.llmRuntime) : undefined,
     model: defaults ? defaults.model : request.model,
     browserModel: request.browserModel,
     dashboardBuilderModel: request.dashboardBuilderModel,

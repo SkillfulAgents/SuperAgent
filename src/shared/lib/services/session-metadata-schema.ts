@@ -70,6 +70,7 @@ export const sessionMetadataSchema = z
     effort: z.string().optional(),
     speed: z.string().optional(),
     model: z.string().optional(),
+    connectionId: z.string().nullish(),
     invokedByAgentSlug: z.string().optional(),
     // Widget repair session: automated, and the slug is the dedupe key that
     // stops a permanently broken widget opening one session per refresh.

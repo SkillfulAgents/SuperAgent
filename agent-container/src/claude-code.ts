@@ -1,3 +1,4 @@
+import { withoutProviderCredentials, type ConnectionRuntime } from './connection-runtime';
 import {
   query,
   startup,
@@ -531,6 +532,7 @@ export interface ClaudeCodeProcessOptions {
   maxThinkingTokens?: number;
   maxTurns?: number;
   maxBudgetUsd?: number;
+  llmRuntime?: ConnectionRuntime;
   customEnvVars?: Record<string, string>;
   effort?: EffortLevel;
   speed?: SpeedLevel;
@@ -559,6 +561,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
   private maxBudgetUsd: number | undefined;
+  private llmRuntime: ConnectionRuntime | undefined;
   private customEnvVars: Record<string, string> | undefined;
   private effort: EffortLevel | undefined;
   private speed: SpeedLevel | undefined;
@@ -657,11 +660,11 @@ export class ClaudeCodeProcess extends EventEmitter {
     // The host resolves selections to a concrete wire id (family aliases →
     // their latest concrete id) before they reach the container, so we pass
     // the model straight through — including '/'-style OpenRouter ids.
-    this.model = options.model;
-    this.browserModel = options.browserModel;
-    this.dashboardBuilderModel = options.dashboardBuilderModel;
-    this.subagentModels = options.subagentModels ?? [];
-    this.modelContextWindows = options.modelContextWindows ?? {};
+    this.model = options.llmRuntime?.model ?? options.model;
+    this.browserModel = options.llmRuntime?.browserModel ?? options.browserModel;
+    this.dashboardBuilderModel = options.llmRuntime?.dashboardBuilderModel ?? options.dashboardBuilderModel;
+    this.subagentModels = options.llmRuntime?.subagentModels ?? options.subagentModels ?? [];
+    this.modelContextWindows = options.llmRuntime?.modelContextWindows ?? options.modelContextWindows ?? {};
     this.webSearchProvider = options.webSearchProvider;
     this.webFetchProvider = options.webFetchProvider;
     this.maxOutputTokens = options.maxOutputTokens;
@@ -669,13 +672,14 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.maxTurns = options.maxTurns;
     this.maxBudgetUsd = options.maxBudgetUsd;
     this.customEnvVars = options.customEnvVars;
+    this.llmRuntime = options.llmRuntime;
     this.effort = options.effort;
     this.speed = options.speed;
     this.capabilityPolicies = options.capabilityPolicies;
     this.sessionCapabilityGrants = new Set(options.sessionCapabilityGrants ?? []);
     this.availableEnvVars = options.availableEnvVars;
     this.userSystemPrompt = options.userSystemPrompt;
-    this.modelPromptHints = options.modelPromptHints;
+    this.modelPromptHints = options.llmRuntime?.modelPromptHints ?? options.modelPromptHints;
     this.refreshSystemPrompt();
   }
 
@@ -1009,6 +1013,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       model: this.model,
       cwd: this.workingDirectory,
       abortController: this.abortController!,
+      // The SDK preserves tool/conversation history and repairs rejected
+      // thinking signatures on the wire when the destination account differs.
       resume: this.claudeSessionId || undefined,
       // A fresh session runs under the id we already hold (tempSessionId /
       // the prewarm uuid) instead of one the CLI mints at init. That is what
@@ -1072,8 +1078,9 @@ export class ClaudeCodeProcess extends EventEmitter {
         // overlaying it, so we must spread process.env explicitly or the Claude
         // subprocess loses PATH, HOME, ANTHROPIC_API_KEY, connected-account env
         // vars, and anything else set on the container.
-        ...process.env,
-        ...this.customEnvVars,
+        ...(this.llmRuntime ? withoutProviderCredentials(process.env) : process.env),
+        ...(this.llmRuntime ? withoutProviderCredentials(this.customEnvVars ?? {}) : this.customEnvVars),
+        ...Object.fromEntries(Object.entries(this.llmRuntime?.env ?? {}).map(([key, value]) => [key, value || undefined])),
         // Emit `session_state_changed` system events (idle/running/requires_action).
         // The host treats `idle` as the authoritative end-of-session signal (a
         // 'result' alone doesn't end it — queued messages can keep the run going).
@@ -1611,10 +1618,26 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
+    const nextRuntime = options?.llmRuntime;
+    const connectionChanged = nextRuntime !== undefined && (
+      nextRuntime.connectionId !== this.llmRuntime?.connectionId ||
+      nextRuntime.model !== this.llmRuntime?.model ||
+      nextRuntime.generation !== this.llmRuntime?.generation ||
+      JSON.stringify(nextRuntime.env) !== JSON.stringify(this.llmRuntime?.env)
+    );
+    if (nextRuntime) {
+      this.llmRuntime = nextRuntime;
+      this.browserModel = nextRuntime.browserModel;
+      this.dashboardBuilderModel = nextRuntime.dashboardBuilderModel;
+      this.subagentModels = nextRuntime.subagentModels;
+      this.modelContextWindows = nextRuntime.modelContextWindows;
+      this.modelPromptHints = nextRuntime.modelPromptHints;
+      this.refreshSystemPrompt();
+    }
     const effort = options?.effort;
     const speed = options?.speed;
-    const model = options?.model;
+    const model = nextRuntime?.model ?? options?.model;
     const connectedAccountsChanged =
       connectedAccountsSnapshot() !== this.connectedAccountsSnapshot;
     const remoteMcpsChanged = remoteMcpsSnapshot() !== this.remoteMcpsSnapshot;
@@ -1692,6 +1715,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       await this.restart();
       queryRebuilt = true;
     } else if (
+      connectionChanged ||
       effortChanged ||
       speedChanged ||
       capabilityBlockChanged ||

@@ -1,3 +1,4 @@
+import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Webhook Triggers API Routes
  *
@@ -132,11 +133,13 @@ webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('use
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { model?: string | null; effort?: string | null; speed?: string | null } = {}
+    const updates: { connectionId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
+    if ('connectionId' in body) updates.connectionId = parsed.data.connectionId ?? null
     if ('model' in body) updates.model = parsed.data.model ?? null
     if ('effort' in body) updates.effort = parsed.data.effort ?? null
     if ('speed' in body) updates.speed = parsed.data.speed ?? null
 
+    await assertConnectionSelectionAccess(updates.connectionId, trigger?.connectionId)
     const updated = await updateWebhookTriggerRuntimeOptions(trigger!.id, updates)
     if (!updated) {
       return c.json({ error: 'Trigger not found or cancelled' }, 404)
