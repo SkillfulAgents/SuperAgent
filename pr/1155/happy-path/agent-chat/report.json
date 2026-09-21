@@ -1,0 +1,17 @@
+{
+  "storyId": "agent-chat",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ion\n\n---\n\n**Test Result Summary:**\n- ✅ All 6 steps completed successfully\n- ✅ Agent transitioned through correct status states: idle → working → idle\n- ✅ Message delivery and response capture working correctly\n- ✅ Mathematical response accurate (2+2=4)\n- ✅ No bugs or unexpected behavior encountered\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 94851,
+  "sessionId": "74c1d807-9ddc-4529-9235-c8b94bffa412",
+  "cost": {
+    "inputTokens": 50,
+    "outputTokens": 2736,
+    "cacheCreationTokens": 67864,
+    "cacheReadTokens": 43604,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.10292
+  }
+}
