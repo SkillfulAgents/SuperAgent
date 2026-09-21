@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent can execute browser tools, navigate to a URL, retrieve the page title, and return the results in the chat interface.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing home page with list of agents",
+    "Clicked on \"QA-20260921-181917-cyl0\" agent in sidebar — Successfully navigated to the agent's configuration page",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input box — Message appeared in the text field",
+    "Clicked \"Send message\" button — Message was sent and a new session was created; agent status changed to \"working\"",
+    "Waited for agent to complete (up to 3 minutes) — Agent completed in 8 seconds with 3 tool calls",
+    "Verified response mentions \"Example Domain\" — Response displayed: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser is closed again.\"",
+    "Took final screenshot — Screenshot captured showing the complete response with \"Example Domain\" clearly visible"
+  ],
+  "bugs": [],
+  "durationMs": 114638,
+  "sessionId": "7ac58f14-509e-4dd1-b44a-c7a9a86469d8",
+  "cost": {
+    "inputTokens": 484,
+    "outputTokens": 13288,
+    "cacheCreationTokens": 133145,
+    "cacheReadTokens": 1533629,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.386718
+  }
+}
