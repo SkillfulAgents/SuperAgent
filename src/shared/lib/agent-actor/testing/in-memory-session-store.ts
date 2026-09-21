@@ -2,6 +2,7 @@
  * A `SessionStore` over an in-memory workspace: for tests that drive the
  * message persister, or the session service, without a directory on disk.
  */
+import { SessionSummaryCache } from '@shared/lib/services/session-summary-slot'
 import { CLI_TRANSCRIPTS_DIR, type SessionStore } from '../session-store'
 import type { AgentSlug } from '../types'
 import { createInMemoryConfigOps } from './in-memory-config-ops'
@@ -15,5 +16,6 @@ export function createInMemorySessionStore(slug: AgentSlug): SessionStore & { fi
     config: createInMemoryConfigOps(files),
     transcriptsDir: CLI_TRANSCRIPTS_DIR,
     key: `memory:${slug}:${Math.random().toString(36).slice(2)}`,
+    summaryCache: new SessionSummaryCache(),
   }
 }

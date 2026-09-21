@@ -27,6 +27,17 @@ const DATABASE_PACKAGE_PREFIX = 'src/shared/lib/db/'
 // Identifiers a drizzle handle is bound to: the app singleton and a nested
 // transaction handle, which is the same primitive one level down.
 const HANDLE_NAMES = new Set(['db', 'tx'])
+// Accessors that return the handle: `getDb().transaction(` is the same call.
+const HANDLE_ACCESSORS = new Set(['getDb'])
+
+function isHandle(node) {
+  if (node.type === 'Identifier') return HANDLE_NAMES.has(node.name)
+  return (
+    node.type === 'CallExpression' &&
+    node.callee.type === 'Identifier' &&
+    HANDLE_ACCESSORS.has(node.callee.name)
+  )
+}
 
 function toPosix(p) {
   return p.split(path.sep).join('/')
@@ -76,7 +87,7 @@ module.exports = {
         const callee = node.callee
         if (callee.type !== 'MemberExpression' || callee.computed) return
         if (callee.property.type !== 'Identifier' || callee.property.name !== 'transaction') return
-        if (callee.object.type !== 'Identifier' || !HANDLE_NAMES.has(callee.object.name)) return
+        if (!isHandle(callee.object)) return
         calls.push(node)
       },
       'Program:exit'(node) {

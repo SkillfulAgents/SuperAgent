@@ -1,8 +1,7 @@
 import { useMemo } from 'react'
 import { Globe, Search } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { markdownUrlTransform, safeHref } from '@renderer/lib/markdown-url-transform'
+import { Markdown } from '@renderer/components/ui/markdown'
+import { safeHref } from '@renderer/lib/markdown-url-transform'
 import { SiteFavicon, useVendorFavicon } from '@renderer/components/ui/site-favicon'
 import { TileStack } from '@renderer/components/ui/tile-stack'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
@@ -125,13 +124,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
                     // One paragraph, with the title repeat dropped: the raw snippet is page text
                     // that opens with the same title this row already links.
                     <div className={`${PROSE} mt-0.5 text-muted-foreground`}>
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        urlTransform={markdownUrlTransform}
-                        components={NO_MARKDOWN_IMAGES}
-                      >
-                        {s.snippet}
-                      </ReactMarkdown>
+                      <Markdown components={NO_MARKDOWN_IMAGES}>{s.snippet}</Markdown>
                     </div>
                   )}
                 </div>
@@ -142,13 +135,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       )}
       {leftover && (
         <div className={PROSE}>
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            urlTransform={markdownUrlTransform}
-            components={NO_MARKDOWN_IMAGES}
-          >
-            {leftover}
-          </ReactMarkdown>
+          <Markdown components={NO_MARKDOWN_IMAGES}>{leftover}</Markdown>
         </div>
       )}
     </div>

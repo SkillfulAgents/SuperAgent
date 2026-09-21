@@ -94,7 +94,7 @@ describe('agent-service deleteAgent — container stop failure (SUP-209)', () =>
     const workspaceDir = path.join(testDir, 'agents', slug, 'workspace')
     await fs.promises.mkdir(workspaceDir, { recursive: true })
     await fs.promises.writeFile(path.join(workspaceDir, 'CLAUDE.md'), claudeMdContent)
-    importAgentDirectories(testDb)
+    await importAgentDirectories(testDb)
   }
 
   it('does not delete the workspace when stopping the container fails', async () => {

@@ -401,7 +401,7 @@ export async function cancelScheduledTask(taskId: string): Promise<boolean> {
       )
     )
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -436,7 +436,7 @@ export async function pauseScheduledTask(taskId: string): Promise<boolean> {
       )
     )
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -458,7 +458,7 @@ export async function resumeScheduledTask(taskId: string): Promise<boolean> {
     })
     .where(eq(scheduledTasks.id, taskId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -539,7 +539,7 @@ export async function resetScheduledTask(taskId: string): Promise<boolean> {
     })
     .where(eq(scheduledTasks.id, taskId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -562,7 +562,7 @@ export async function updateTaskTimezone(taskId: string, timezone: string): Prom
     .set({ timezone, nextExecutionAt })
     .where(eq(scheduledTasks.id, taskId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 // ============================================================================
@@ -596,7 +596,7 @@ export async function patchScheduledTask(
       inArray(scheduledTasks.status, ['pending', 'paused']),
     ))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -626,7 +626,7 @@ export async function updateTaskName(
     .set({ name })
     .where(eq(scheduledTasks.id, taskId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -688,7 +688,7 @@ export async function updateTaskRuntimeOptions(
     .set(updates)
     .where(eq(scheduledTasks.id, taskId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -699,5 +699,5 @@ export async function deleteScheduledTask(taskId: string): Promise<boolean> {
     .delete(scheduledTasks)
     .where(eq(scheduledTasks.id, taskId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }

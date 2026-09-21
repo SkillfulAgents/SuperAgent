@@ -5,6 +5,7 @@
  * `/workspace`.
  */
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
+import { SessionSummaryCache } from '@shared/lib/services/session-summary-slot'
 import { createLocalConfigOps } from './local-config-ops'
 import { createLocalFileOps } from './local-file-ops'
 import { CLI_TRANSCRIPTS_DIR, type SessionStore } from './session-store'
@@ -30,6 +31,7 @@ export function createLocalSessionStore(
     files,
     config,
     transcriptsDir: CLI_TRANSCRIPTS_DIR,
+    summaryCache: new SessionSummaryCache(),
     onActivity: hooks.onActivity,
     // Read at call time, like the file operations' root: tests and embedded
     // deployments change the data directory in-process, and cached state must

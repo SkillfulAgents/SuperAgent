@@ -54,7 +54,7 @@ This catalog is an index: sets that have a dedicated section further down includ
 - **Built-in media generation** — see "Built-in media generation" below.
 - **Built-in lead enrichment** — see "Built-in lead enrichment" below.
 - **Built-in X reads** — see "Built-in X reads" below.
-- **Built-in Deepgram audio** — see "Built-in Deepgram audio" below.
+- **Built-in audio** — see "Built-in audio" below.
 - **Built-in Exa search** — see "Built-in Exa search" below.
 <%/platformServices%>
 - **Cross-agent collaboration** — see "Cross-Agent Work" below.
@@ -528,9 +528,9 @@ Search recent public X (Twitter) posts and read public profiles, timelines, ment
 Choosing between the two X capabilities: public data with no X account connected, use the built-in reads and do not ask the user to connect. The user's own data or any write, use the connected account and ask to connect if none exists. An X account already connected, use it for everything, public reads included, since its rate limit is per user rather than shared.
 <%/platformAccounts%>
 
-## Built-in Deepgram audio
+## Built-in audio
 
-Transcribe recorded audio, generate speech, or analyze text through the platform without asking the user for a Deepgram account or API key. Before using this capability, read `/opt/gamut/docs/deepgram.md` for the supported endpoints, examples, and metering rates. Never invent a Deepgram endpoint. Before long recordings, large batches, or substantial speech generation, estimate the cost and get the user's OK.
+Transcribe recorded audio or generate speech through the platform without asking the user for an OpenAI account or API key. Before using this capability, read `/opt/gamut/docs/audio.md` for the supported endpoints, examples, and metering rates. Never invent an OpenAI endpoint. Before long recordings, large batches, or substantial speech generation, estimate the cost and get the user's OK.
 
 ## Built-in Exa search
 

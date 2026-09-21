@@ -118,7 +118,7 @@ describe('agent-service', () => {
       path.join(workspaceDir, 'CLAUDE.md'),
       claudeMdContent
     )
-    importAgentDirectories(testDb)
+    await importAgentDirectories(testDb)
   }
 
   // ============================================================================
@@ -133,7 +133,7 @@ describe('agent-service', () => {
 
     it('returns null when a directory exists but CLAUDE.md is missing, so it was never imported', async () => {
       await fs.promises.mkdir(path.join(testDir, 'agents', 'hollow', 'workspace'), { recursive: true })
-      importAgentDirectories(testDb)
+      await importAgentDirectories(testDb)
 
       const agent = await getAgent('hollow')
 
@@ -146,7 +146,7 @@ describe('agent-service', () => {
     it('returns null when the slug names a regular file in the agents dir', async () => {
       await fs.promises.mkdir(path.join(testDir, 'agents'), { recursive: true })
       await fs.promises.writeFile(path.join(testDir, 'agents', 'stray-file'), 'not an agent')
-      importAgentDirectories(testDb)
+      await importAgentDirectories(testDb)
 
       await expect(getAgent('stray-file')).resolves.toBeNull()
     })

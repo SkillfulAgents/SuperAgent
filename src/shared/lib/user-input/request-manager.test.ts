@@ -1,6 +1,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type { AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
+import { AgentInputRequests } from './agent-input-requests'
 import { UserInputRequestManager } from './request-manager'
 import type { PendingUserInputRequestInput } from './request-schema'
+
+/** The actors' stores without the actors: one per slug, created on first use, as the registry would. */
+function inMemoryStores(manager: UserInputRequestManager): AgentStoreDirectory<AgentInputRequests> {
+  const stores = new Map<string, AgentInputRequests>()
+  return {
+    get: (slug) => {
+      let store = stores.get(slug)
+      if (!store) {
+        store = new AgentInputRequests(slug, manager)
+        stores.set(slug, store)
+      }
+      return store
+    },
+    peek: (slug) => stores.get(slug),
+    all: () => [...stores.values()],
+  }
+}
 
 function secretRequest(overrides: Partial<PendingUserInputRequestInput> = {}): PendingUserInputRequestInput {
   return {
@@ -15,9 +34,12 @@ function secretRequest(overrides: Partial<PendingUserInputRequestInput> = {}): P
 
 describe('UserInputRequestManager', () => {
   let manager: UserInputRequestManager
+  let agents: AgentStoreDirectory<AgentInputRequests>
 
   beforeEach(() => {
     manager = new UserInputRequestManager()
+    agents = inMemoryStores(manager)
+    manager.attachAgents(agents)
   })
 
   afterEach(() => {
@@ -480,6 +502,108 @@ describe('UserInputRequestManager', () => {
     })
   })
 
+  describe('routing', () => {
+    it('registers into the store of the agent the scope names and finds it again by id alone', () => {
+      manager.register(secretRequest())
+      expect(agents.peek('agent-a')!.getOpenRequest('tool-1')?.id).toBe('tool-1')
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.claimRequest('tool-1')?.id).toBe('tool-1')
+      expect(manager.resolve('tool-1', 'answered')?.id).toBe('tool-1')
+      expect(manager.getOpenRequest('tool-1')).toBeNull()
+      expect(manager.getRecentResolution('tool-1')?.outcome).toBe('answered')
+    })
+
+    it('drops an envelope that names no agent: there is no store for it', () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      expect(manager.register(secretRequest({ scope: { sessionId: 'session-1' } }))).toBeNull()
+      expect(manager.stats.open).toBe(0)
+      expect(consoleError).toHaveBeenCalledTimes(1)
+    })
+
+    it('a read for an agent nothing has registered under finds nothing and creates no store', () => {
+      expect(manager.getOpenRequestsForSession('agent-z', 'session-1')).toEqual([])
+      expect(manager.isSessionAwaiting('agent-z', 'session-1')).toBe(false)
+      expect(manager.getSnapshotForScope('agent-z')).toEqual([])
+      expect(agents.peek('agent-z')).toBeUndefined()
+    })
+
+    it('an id open in two agents is addressed by agent; a bare id goes to the first registrant still holding it', () => {
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-a', sessionId: 's' } }))
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-b', sessionId: 's' } }))
+      expect(manager.getOpenRequestsForAgent('agent-a')).toHaveLength(1)
+      expect(manager.getOpenRequestsForAgent('agent-b')).toHaveLength(1)
+
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.getOpenRequest('tool-1', 'agent-b')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.claimRequest('tool-1', 'agent-b')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.claimRequest('tool-1', 'agent-a')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.enrichOpenRequestPayload('tool-1', 'secret', { note: 1 }, 'agent-b')).toBe(true)
+      expect(manager.getOpenRequest('tool-1', 'agent-a')?.payload).not.toHaveProperty('note')
+
+      // Settling the named agent's copy leaves the other's open, and the bare
+      // id now answers with the survivor.
+      expect(manager.resolveIfInStore('tool-1', 'stream', 'answered', 'agent-b')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.getOpenRequestsForAgent('agent-b')).toHaveLength(0)
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.resolve('tool-1', 'declined')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.getOpenRequest('tool-1')).toBeNull()
+      expect(manager.stats.open).toBe(0)
+    })
+
+    it('attaching stores that already hold requests rebuilds the id index without re-announcing them', () => {
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-a', sessionId: 's' } }))
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-b', sessionId: 's' } }))
+      manager.register(secretRequest({ id: 'tool-2', scope: { agentSlug: 'agent-b', sessionId: 's' } }))
+      const transitions: string[] = []
+      const stop = manager.onTransition((t) => transitions.push(t.type))
+
+      // What a registry rebuilt over surviving state does: attach the same
+      // stores to the router again. Nothing was created, so nothing is
+      // announced, and the index answers as it did before.
+      manager.attachAgents(agents)
+      stop()
+
+      expect(transitions).toEqual([])
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.getOpenRequest('tool-2')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.getOpenRequest('tool-1', 'agent-b')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.resolve('tool-1', 'answered')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-b')
+    })
+
+    it('the rebuilt index keeps registration order, not the order the stores were made in', () => {
+      // agent-a's store exists first, but agent-b registers the shared id first.
+      manager.register(secretRequest({ id: 'tool-0', scope: { agentSlug: 'agent-a', sessionId: 's' } }))
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-b', sessionId: 's' } }))
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-a', sessionId: 's' } }))
+      expect(agents.all().map((store) => store.slug)).toEqual(['agent-a', 'agent-b'])
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-b')
+
+      manager.attachAgents(agents)
+
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.resolve('tool-1', 'answered')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
+    })
+
+    it('a named agent that does not hold the id is a miss, not a fallback to whoever does', () => {
+      manager.register(secretRequest())
+      expect(manager.getOpenRequest('tool-1', 'agent-z')).toBeNull()
+      expect(manager.resolveIfInStore('tool-1', 'stream', 'answered', 'agent-z')).toBeNull()
+      expect(manager.resolveRequestsByParent('task-1', 'invalidated', 'agent-z')).toEqual([])
+      expect(manager.getOpenRequest('tool-1')?.scope.agentSlug).toBe('agent-a')
+    })
+
+    it('sweeps that span agents reach every store', () => {
+      manager.register(secretRequest({ id: 'a-1', parentToolUseId: 'task-1' }))
+      manager.register(secretRequest({ id: 'b-1', scope: { agentSlug: 'agent-b', sessionId: 's' }, parentToolUseId: 'task-1' }))
+      manager.register({ id: 'r-1', kind: 'proxy_review', scope: { agentSlug: 'agent-b' }, blocking: true, payload: {} })
+      expect(manager.getOpenRequestsForStore('review').map((r) => r.id)).toEqual(['r-1'])
+      expect(manager.resolveRequestsByParent('task-1').map((r) => r.id).sort()).toEqual(['a-1', 'b-1'])
+      expect(manager.stats.open).toBe(1)
+    })
+  })
+
   describe('shadow diagnostics', () => {
     it('verifyReviewSettlerParity accepts settlers backed by open review entries', () => {
       manager.register({
@@ -489,7 +613,7 @@ describe('UserInputRequestManager', () => {
         blocking: true,
         payload: { toolkit: 'slack' },
       })
-      manager.verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-1'] })
+      agents.get('agent-a').verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-1'] })
       expect(manager.stats.mismatches).toBe(0)
     })
 
@@ -503,7 +627,7 @@ describe('UserInputRequestManager', () => {
         blocking: true,
         payload: { toolkit: 'slack' },
       })
-      manager.verifyReviewSettlerParity({ context: 'test', settlerIds: [] })
+      agents.get('agent-a').verifyReviewSettlerParity({ context: 'test', settlerIds: [] })
       expect(manager.stats.mismatches).toBe(0)
     })
 
@@ -511,7 +635,7 @@ describe('UserInputRequestManager', () => {
       // A settler without a registry entry is a parked proxied call no sweep
       // can ever reach.
       expect(() =>
-        manager.verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-orphan'] }),
+        agents.get('agent-a').verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-orphan'] }),
       ).toThrow(/shadow mismatch/)
       expect(manager.stats.mismatches).toBe(1)
     })

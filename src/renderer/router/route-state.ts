@@ -17,6 +17,7 @@ export type AgentView =
   | { kind: 'dashboard'; slug: string }
   | { kind: 'apiLogs' }
   | { kind: 'secrets' }
+  | { kind: 'memories' }
   | { kind: 'xAgentPermissions' }
   | {
       kind: 'connections'
@@ -92,6 +93,8 @@ export function encodeLocation(loc: AppLocation): NavigateOptions {
       return { to: '/agents/$slug/dashboards/$dashSlug', params: { slug, dashSlug: view.slug } }
     case 'apiLogs':
       return { to: '/agents/$slug/api-logs', params: { slug } }
+    case 'memories':
+      return { to: '/agents/$slug/memories', params: { slug } }
     case 'secrets':
       return { to: '/agents/$slug/secrets', params: { slug } }
     case 'xAgentPermissions':
@@ -150,6 +153,8 @@ export function decodeLocation(snap: RouteSnapshot): AppLocation {
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'dashboard', slug: p.dashSlug ?? '' } }
     case '/agents/$slug/api-logs':
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'apiLogs' } }
+    case '/agents/$slug/memories':
+      return { selectedAgentSlug: p.slug ?? null, view: { kind: 'memories' } }
     case '/agents/$slug/secrets':
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'secrets' } }
     case '/agents/$slug/x-agent-permissions':

@@ -15,23 +15,23 @@ function sessionRecord(row: StoredSession): IntegrationSessionRecord {
   return { ...rest, externalId: externalChatId }
 }
 
-export function listStartupIntegrations(): AgentIntegrationRecord[] { return installations.listStartupChatIntegrations() }
-export function getIntegration(id: string): AgentIntegrationRecord | null { return installations.getChatIntegration(id) }
+export function listStartupIntegrations(): Promise<AgentIntegrationRecord[]> { return installations.listStartupChatIntegrations() }
+export function getIntegration(id: string): Promise<AgentIntegrationRecord | null> { return installations.getChatIntegration(id) }
 export function updateIntegrationStatus(...args: [id: string, status: IntegrationStatus, error?: string | null]) {
   return installations.updateChatIntegrationStatus(...args)
 }
-export function getIntegrationSession(id: string, externalId: string) {
-  const row = sessions.getChatIntegrationSession(id, externalId)
+export async function getIntegrationSession(id: string, externalId: string) {
+  const row = await sessions.getChatIntegrationSession(id, externalId)
   return row ? sessionRecord(row) : null
 }
-export function getIntegrationSessionBySessionId(agentSlug: string, sessionId: string) {
-  const row = sessions.getChatIntegrationSessionBySessionId(agentSlug, sessionId)
+export async function getIntegrationSessionBySessionId(agentSlug: string, sessionId: string) {
+  const row = await sessions.getChatIntegrationSessionBySessionId(agentSlug, sessionId)
   return row ? sessionRecord(row) : null
 }
-export function listIntegrationSessions(id: string) { return sessions.listChatIntegrationSessions(id).map(sessionRecord) }
-export function listActiveIntegrationSessions(id: string) { return sessions.listActiveChatIntegrationSessions(id).map(sessionRecord) }
-export function resolveActiveSession(id: string, externalId: string, timeoutHours: number | null | undefined, onArchive: (id: string) => void) {
-  const row = sessions.resolveActiveSession(id, externalId, timeoutHours, onArchive)
+export async function listIntegrationSessions(id: string) { return (await sessions.listChatIntegrationSessions(id)).map(sessionRecord) }
+export async function listActiveIntegrationSessions(id: string) { return (await sessions.listActiveChatIntegrationSessions(id)).map(sessionRecord) }
+export async function resolveActiveSession(id: string, externalId: string, timeoutHours: number | null | undefined, onArchive: (id: string) => void) {
+  const row = await sessions.resolveActiveSession(id, externalId, timeoutHours, onArchive)
   return row ? sessionRecord(row) : null
 }
 export function createIntegrationSession({ externalId, ...rest }: { integrationId: string; externalId: string; sessionId: string; displayName?: string }) {

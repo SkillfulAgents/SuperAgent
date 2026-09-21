@@ -3,7 +3,7 @@ import { readAgentPreferences } from '@shared/lib/services/agent-preferences-ser
 import { getSettings } from '@shared/lib/config/settings'
 import { resolveApiLogAutoDeleteDays } from '@shared/lib/config/api-log-auto-delete'
 import { pruneExpiredApiLogsForAgent } from '@shared/lib/services/api-log-auto-delete'
-import { sqlite } from '@shared/lib/db'
+import { db } from '@shared/lib/db'
 import { captureException } from '@shared/lib/error-reporting'
 
 class ApiLogAutoDeleteMonitor {
@@ -75,7 +75,7 @@ class ApiLogAutoDeleteMonitor {
 
           const cutoff = Date.now() - effectiveDays * 86_400_000
           const { proxyDeleted, mcpDeleted } = await pruneExpiredApiLogsForAgent(
-            sqlite,
+            db,
             agent.slug,
             cutoff,
           )

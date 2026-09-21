@@ -51,7 +51,7 @@ export async function resolveApiPolicy(
   toolkit?: string
 ): Promise<PolicyResult> {
   // Fetch all policies for this account
-  const rows = db
+  const rows = await db
     .select({ policy: apiScopePolicies })
     .from(apiScopePolicies)
     .where(eq(apiScopePolicies.accountId, accountId))
@@ -62,7 +62,7 @@ export async function resolveApiPolicy(
     policyMap.set(row.policy.scope, row.policy.decision as PolicyDecision)
   }
 
-  const globalDefault = getUserSettings(userId).defaultApiPolicy as PolicyDecision
+  const globalDefault = (await getUserSettings(userId)).defaultApiPolicy as PolicyDecision
   const accountDefault = policyMap.get('*')
 
   // If no scopes matched, fall to account default → global default
@@ -141,7 +141,7 @@ export async function resolveMcpPolicy(
   toolName: string | null,
   userId: string
 ): Promise<PolicyResult> {
-  const rows = db
+  const rows = await db
     .select({ policy: mcpToolPolicies })
     .from(mcpToolPolicies)
     .where(eq(mcpToolPolicies.mcpId, mcpId))
@@ -152,7 +152,7 @@ export async function resolveMcpPolicy(
     policyMap.set(row.policy.toolName, row.policy.decision as PolicyDecision)
   }
 
-  const settings = getUserSettings(userId)
+  const settings = await getUserSettings(userId)
   const globalDefault = (settings.defaultMcpPolicy ?? settings.defaultApiPolicy) as PolicyDecision
   const mcpDefault = policyMap.get('*')
 

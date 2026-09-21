@@ -6,6 +6,7 @@
  */
 
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
 import {
   webhookTriggers,
   connectedAccounts,
@@ -24,8 +25,8 @@ import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/s
 
 const PLATFORM_PROVIDER_ID = 'platform'
 
-function lookupPlatformMemberId(userId: string): string | null {
-  const rows = db
+async function lookupPlatformMemberId(userId: string): Promise<string | null> {
+  const rows = await db
     .select({ accountId: authAccount.accountId })
     .from(authAccount)
     .where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, PLATFORM_PROVIDER_ID)))
@@ -46,22 +47,22 @@ function lookupPlatformMemberId(userId: string): string | null {
  * trigger creator is preferred, but the connected-account owner is a fallback
  * when the creator has no platform member (SUP-226).
  */
-export function resolvePlatformMemberForCandidates(
+export async function resolvePlatformMemberForCandidates(
   candidates: Array<string | null | undefined>,
-): { userId: string; memberId: string } | null {
+): Promise<{ userId: string; memberId: string } | null> {
   const seen = new Set<string>()
   for (const userId of candidates) {
     if (!userId || seen.has(userId)) continue
     seen.add(userId)
-    const memberId = lookupPlatformMemberId(userId)
+    const memberId = await lookupPlatformMemberId(userId)
     if (memberId) return { userId, memberId }
   }
   return null
 }
 
 /** Distinct member IDs of active/paused trigger owners; used by TriggerManager to poll per-member. */
-export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
-  const rows = db
+export async function getDistinctPlatformMemberIdsForActiveTriggers(): Promise<string[]> {
+  const rows = await db
     .select({
       mintedByMemberId: webhookTriggers.mintedByMemberId,
       createdByUserId: webhookTriggers.createdByUserId,
@@ -83,7 +84,7 @@ export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
     // Prefer the creator, but fall back to the connected-account owner when the
     // creator has no platform member — otherwise the trigger is silently dropped
     // from the poll set even though the owner could claim its events (SUP-226).
-    const resolved = resolvePlatformMemberForCandidates([row.createdByUserId, row.ownerUserId])
+    const resolved = await resolvePlatformMemberForCandidates([row.createdByUserId, row.ownerUserId])
     if (resolved) {
       ids.add(resolved.memberId)
       continue
@@ -99,8 +100,8 @@ export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
 }
 
 // Active composio trigger IDs registered on this host (no per-member filter — the access key / acting member is the auth boundary at the proxy).
-export function getActiveComposioTriggerIds(): string[] {
-  return db
+export async function getActiveComposioTriggerIds(): Promise<string[]> {
+  const rows = await db
     .select({ composioTriggerId: webhookTriggers.composioTriggerId })
     .from(webhookTriggers)
     .where(
@@ -110,7 +111,7 @@ export function getActiveComposioTriggerIds(): string[] {
       ),
     )
     .all()
-    .map((r) => r.composioTriggerId!)
+  return rows.map((r) => r.composioTriggerId!)
 }
 
 /**
@@ -121,8 +122,8 @@ export function getActiveComposioTriggerIds(): string[] {
  * acks/discards them, instead of letting them accumulate pending and fire a
  * session on resume (SUP-225).
  */
-export function getSubscribedComposioTriggerIds(): string[] {
-  const ids = db
+export async function getSubscribedComposioTriggerIds(): Promise<string[]> {
+  const rows = await db
     .selectDistinct({ composioTriggerId: webhookTriggers.composioTriggerId })
     .from(webhookTriggers)
     .where(
@@ -132,8 +133,7 @@ export function getSubscribedComposioTriggerIds(): string[] {
       ),
     )
     .all()
-    .map((r) => r.composioTriggerId!)
-  return ids
+  return rows.map((r) => r.composioTriggerId!)
 }
 
 export type { WebhookTrigger, NewWebhookTrigger }
@@ -374,7 +374,7 @@ export async function cancelWebhookTrigger(triggerId: string): Promise<boolean> 
       )
     )
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -396,7 +396,7 @@ export async function pauseWebhookTrigger(triggerId: string): Promise<boolean> {
       )
     )
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -416,7 +416,7 @@ export async function resumeWebhookTrigger(triggerId: string): Promise<boolean> 
       )
     )
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 export async function markTriggerFired(
@@ -535,12 +535,12 @@ export interface TeardownMembers {
 
 // Minting member when recorded (the only guaranteed principal); pre-column rows
 // guess via the SUP-226 chain (creator, owner) then the stored member.
-export function resolveTeardownMembers(trigger: WebhookTrigger): TeardownMembers {
+export async function resolveTeardownMembers(trigger: WebhookTrigger): Promise<TeardownMembers> {
   if (!attribution.requiresActingMember()) return { memberIds: [], known: true }
   if (trigger.mintedByMemberId) return { memberIds: [trigger.mintedByMemberId], known: true }
   const candidates = [
-    resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId,
-    resolvePlatformMemberForCandidates([getConnectedAccountOwnerUserId(trigger.connectedAccountId)])?.memberId,
+    (await resolvePlatformMemberForCandidates([trigger.createdByUserId]))?.memberId,
+    (await resolvePlatformMemberForCandidates([await getConnectedAccountOwnerUserId(trigger.connectedAccountId)]))?.memberId,
     getStoredPlatformMemberId(),
   ]
   return { memberIds: [...new Set(candidates.filter((m): m is string => Boolean(m)))], known: false }
@@ -549,7 +549,7 @@ export function resolveTeardownMembers(trigger: WebhookTrigger): TeardownMembers
 // Delete as the minting member via ALS (the interceptor overrides explicit auth).
 // 404 = gone only for a known member; guessed members are tried in turn, all-404 throws.
 async function tearDownUpstream(trigger: WebhookTrigger, upstreamId: string): Promise<void> {
-  const { memberIds, known } = resolveTeardownMembers(trigger)
+  const { memberIds, known } = await resolveTeardownMembers(trigger)
   const attempts: Array<string | null> = memberIds.length > 0 ? memberIds : [null]
   for (const memberId of attempts) {
     try {
@@ -584,18 +584,18 @@ async function tearDownUpstream(trigger: WebhookTrigger, upstreamId: string): Pr
 
 // SUP-226 candidate order (creator, then connected-account owner), shared by
 // polling and session attribution so the two chains cannot drift.
-export function resolveTriggerPrincipal(
+export async function resolveTriggerPrincipal(
   trigger: Pick<WebhookTrigger, 'createdByUserId' | 'connectedAccountId'>,
-): { userId: string; memberId: string } | null {
+): Promise<{ userId: string; memberId: string } | null> {
   return resolvePlatformMemberForCandidates([
     trigger.createdByUserId,
-    getConnectedAccountOwnerUserId(trigger.connectedAccountId),
+    await getConnectedAccountOwnerUserId(trigger.connectedAccountId),
   ])
 }
 
-export function getConnectedAccountOwnerUserId(connectedAccountId: string | null): string | null {
+export async function getConnectedAccountOwnerUserId(connectedAccountId: string | null): Promise<string | null> {
   if (!connectedAccountId) return null
-  const rows = db
+  const rows = await db
     .select({ userId: connectedAccounts.userId })
     .from(connectedAccounts)
     .where(eq(connectedAccounts.id, connectedAccountId))
@@ -660,7 +660,7 @@ export async function updateWebhookTriggerPrompt(
     .set({ prompt })
     .where(eq(webhookTriggers.id, triggerId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 export async function updateWebhookTriggerName(
@@ -675,7 +675,7 @@ export async function updateWebhookTriggerName(
     .set({ name })
     .where(eq(webhookTriggers.id, triggerId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -699,5 +699,5 @@ export async function updateWebhookTriggerRuntimeOptions(
     .set(updates)
     .where(eq(webhookTriggers.id, triggerId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }

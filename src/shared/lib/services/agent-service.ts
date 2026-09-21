@@ -45,12 +45,14 @@ function toApiAgent(
   containerPort: number | null,
   instructions?: string,
 ): ApiAgent {
-  const healthWarnings = agentRegistry.get(record.slug).container.health()
+  const container = agentRegistry.get(record.slug).container
+  const healthWarnings = container.health()
   return {
     ...newAgentResponse(record, instructions),
     status,
     containerPort,
     ...(healthWarnings.length > 0 ? { healthWarnings } : {}),
+    ...(container.stale() ? { stale: true } : {}),
   }
 }
 

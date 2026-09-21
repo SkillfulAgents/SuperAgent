@@ -209,7 +209,7 @@ async function checkAgentPolicy(
   preview?: string,
 ): Promise<{ allowed: boolean; reason?: string }> {
   if (operation !== 'create') {
-    const decision = evaluatePolicy(callerSlug, operation, targetSlug)
+    const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
     if (decision === 'allow') return { allowed: true }
     if (decision === 'block') return { allowed: false, reason: 'Blocked by policy' }
     // 'review' → fall through to interactive prompt

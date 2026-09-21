@@ -9,6 +9,7 @@
  */
 
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
 import { notifications, agentAcl, type Notification, type NewNotification } from '@shared/lib/db/schema'
 import { eq, desc, and, lt, inArray } from 'drizzle-orm'
 import { count } from 'drizzle-orm'
@@ -258,7 +259,7 @@ export async function markAsRead(notificationId: string): Promise<boolean> {
     })
     .where(eq(notifications.id, notificationId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -285,7 +286,7 @@ export async function markSessionNotificationsRead(sessionId: string, userId?: s
     })
     .where(and(...conditions))
 
-  return result.changes ?? 0
+  return changesOf(result)
 }
 
 /**
@@ -303,7 +304,7 @@ export async function markAllAsRead(userId?: string): Promise<number> {
         readAt: new Date(),
       })
       .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs)))
-    return result.changes ?? 0
+    return changesOf(result)
   }
 
   const result = await db
@@ -314,7 +315,7 @@ export async function markAllAsRead(userId?: string): Promise<number> {
     })
     .where(eq(notifications.isRead, false))
 
-  return result.changes ?? 0
+  return changesOf(result)
 }
 
 // ============================================================================
@@ -329,7 +330,7 @@ export async function deleteNotification(notificationId: string): Promise<boolea
     .delete(notifications)
     .where(eq(notifications.id, notificationId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -350,7 +351,7 @@ export async function deleteNotificationsBySessionIds(sessionIds: string[]): Pro
     .delete(notifications)
     .where(inArray(notifications.sessionId, sessionIds))
 
-  return result.changes ?? 0
+  return changesOf(result)
 }
 
 /**
@@ -364,5 +365,5 @@ export async function deleteOldNotifications(olderThanDays: number = 30): Promis
     .delete(notifications)
     .where(lt(notifications.createdAt, cutoffDate))
 
-  return result.changes ?? 0
+  return changesOf(result)
 }

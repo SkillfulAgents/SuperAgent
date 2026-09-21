@@ -1,6 +1,7 @@
 import { lt } from 'drizzle-orm'
 import { captureException } from '@shared/lib/error-reporting'
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
 import { tokenExchangeJti } from '@shared/lib/db/schema'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 import { PLATFORM_AUTH_PROVIDER_ID } from '@shared/lib/services/platform-auth-service'
@@ -167,16 +168,16 @@ async function verifyGrant(assertion: string): Promise<DeploymentGrantClaims> {
  * Atomically consume the grant's jti. The INSERT's primary-key constraint is
  * the replay gate: only the request whose insert lands may continue.
  */
-function consumeJti(jti: string, expSec: number): void {
+async function consumeJti(jti: string, expSec: number): Promise<void> {
   try {
     // Opportunistic TTL cleanup keeps the table bounded.
-    db.delete(tokenExchangeJti).where(lt(tokenExchangeJti.expiresAt, new Date())).run()
-    const result = db
+    await db.delete(tokenExchangeJti).where(lt(tokenExchangeJti.expiresAt, new Date())).run()
+    const result = await db
       .insert(tokenExchangeJti)
       .values({ jti, expiresAt: new Date(expSec * 1000) })
       .onConflictDoNothing()
       .run()
-    if (result.changes === 0) {
+    if (changesOf(result) === 0) {
       throw new TokenExchangeError('invalid_grant')
     }
   } catch (error) {
@@ -320,7 +321,7 @@ export async function exchangeDeploymentGrant(
   const claims = await verifyGrant(assertion)
 
   // Only after full cryptographic + claim validation: burn the jti.
-  consumeJti(claims.jti, claims.exp)
+  await consumeJti(claims.jti, claims.exp)
 
   const auth = getAuth()
   const ctx = await auth.$context

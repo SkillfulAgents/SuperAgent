@@ -40,8 +40,8 @@ const mgr = chatIntegrationManager as unknown as ManagerInternals
 
 const sendFile = vi.fn<(...args: unknown[]) => Promise<string>>()
 
-function registerConnector(): void {
-  const connector = getChatIntegration(INT)?.provider === 'telegram' ? new MockChatClientConnector() : new IMessageConnector({ gatewayUrl: 'https://example.com', phoneNumber: '+15551234567', token: 'test' })
+async function registerConnector(): Promise<void> {
+  const connector = (await getChatIntegration(INT))?.provider === 'telegram' ? new MockChatClientConnector() : new IMessageConnector({ gatewayUrl: 'https://example.com', phoneNumber: '+15551234567', token: 'test' })
   connector.sendFile = sendFile
   mgr.connections.set(INT, { connector })
 }
@@ -55,21 +55,21 @@ function mockAgent(): void {
 }
 
 describe('integrationCreated', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     mgr.connections.delete(INT)
     sendFile.mockResolvedValue('file-1')
     delete process.env.HOST_PUBLIC_URL
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     if (originalHostPublicUrl === undefined) delete process.env.HOST_PUBLIC_URL
     else process.env.HOST_PUBLIC_URL = originalHostPublicUrl
   })
 
   it('sends only for iMessage', async () => {
     mockIntegration('telegram')
-    registerConnector()
+    await registerConnector()
     mockAgent()
 
     await chatIntegrationManager.integrationCreated(INT)
@@ -88,7 +88,7 @@ describe('integrationCreated', () => {
 
   it('returns quietly when the agent is gone', async () => {
     mockIntegration('imessage')
-    registerConnector()
+    await registerConnector()
     vi.mocked(getAgentRecord).mockResolvedValue(null as never)
 
     await chatIntegrationManager.integrationCreated(INT)
@@ -98,7 +98,7 @@ describe('integrationCreated', () => {
 
   it('uploads the vCard with an empty chatId so the gateway can create the chat', async () => {
     mockIntegration('imessage')
-    registerConnector()
+    await registerConnector()
     mockAgent()
 
     await chatIntegrationManager.integrationCreated(INT)
@@ -113,7 +113,7 @@ describe('integrationCreated', () => {
 
   it('uses the Bot Name on the card when setup stored one, not the agent name', async () => {
     mockIntegration('imessage', 'Phone Ada')
-    registerConnector()
+    await registerConnector()
     mockAgent()
 
     await chatIntegrationManager.integrationCreated(INT)
@@ -128,7 +128,7 @@ describe('integrationCreated', () => {
 
   it('strips path characters out of the agent name before it becomes a filename', async () => {
     mockIntegration('imessage')
-    registerConnector()
+    await registerConnector()
     vi.mocked(getAgentRecord).mockResolvedValue({ name: 'Sales/Support "bot"' } as never)
 
     await chatIntegrationManager.integrationCreated(INT)
@@ -139,7 +139,7 @@ describe('integrationCreated', () => {
   it('links to the pretty display slug while the card UID keeps the minted id', async () => {
     process.env.HOST_PUBLIC_URL = 'https://app.example.com'
     vi.mocked(getChatIntegration).mockReturnValue({ provider: 'imessage', agentSlug: MINTED_ID } as never)
-    registerConnector()
+    await registerConnector()
     mockAgent()
 
     await chatIntegrationManager.integrationCreated(INT)
@@ -151,7 +151,7 @@ describe('integrationCreated', () => {
 
   it('never throws when the upload fails', async () => {
     mockIntegration('imessage')
-    registerConnector()
+    await registerConnector()
     mockAgent()
     sendFile.mockRejectedValue(new Error('gateway down'))
 

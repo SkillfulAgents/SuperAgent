@@ -1138,7 +1138,7 @@ class MessagePersister {
   ): void {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state) return
-    userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome)
+    userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome, agentSlug)
     this.syncSessionAwaiting(agentSlug, sessionId)
   }
 
@@ -1157,12 +1157,12 @@ class MessagePersister {
     toolUseId: string,
     outcome: UserInputRequestOutcome,
   ): void {
-    const scope = userInputRequestManager.getOpenRequest(toolUseId)?.scope
+    const scope = userInputRequestManager.getOpenRequest(toolUseId, agentSlug)?.scope
     const scopeSessionId = sessionId ?? scope?.sessionId
     const scopeAgentSlug = agentSlug ?? scope?.agentSlug
     if (!scopeSessionId || !scopeAgentSlug) return
     const state = this.streamingStates.get(sessionKeyOf(scopeAgentSlug, scopeSessionId))
-    const settled = userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome)
+    const settled = userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome, scopeAgentSlug)
     if (state && settled) {
       state.settledInputRequests.set(toolUseId, outcome)
     }
@@ -1188,7 +1188,7 @@ class MessagePersister {
     toolUseId: string,
     outcome: UserInputRequestOutcome = 'answered',
   ): void {
-    userInputRequestManager.resolveIfInStore(toolUseId, 'computer_use', outcome)
+    userInputRequestManager.resolveIfInStore(toolUseId, 'computer_use', outcome, agentSlug)
     this.syncSessionAwaiting(agentSlug, sessionId)
   }
 
@@ -1235,7 +1235,7 @@ class MessagePersister {
     // Clear the host-side computer_use bookkeeping explicitly — session_idle only clears
     // the stream store, so a leftover entry would replay a phantom approval card on reconnect.
     for (const id of computerUseIds) {
-      userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
+      userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded', agentSlug)
     }
 
     // Cleanup-reject each pending request on the CONTAINER: the query is already aborted, so the
@@ -1936,7 +1936,7 @@ class MessagePersister {
     // payload-less entry before the real delivery lands, and that delivery must
     // go through to upgrade the registry entry (register() replaces recovered
     // synthetics; clients never got a renderable event for the stub).
-    const existing = userInputRequestManager.getOpenRequest(toolUseId)
+    const existing = userInputRequestManager.getOpenRequest(toolUseId, agentSlug)
     if (existing && isReplayableUserInputRequest(existing)) return
 
     if (toolName === 'AskUserQuestion') {
@@ -1996,7 +1996,7 @@ class MessagePersister {
     }
     for (const { toolUseId, toolName } of unresolved) {
       const kind = MessagePersister.REQUEST_KIND_BY_TOOL_NAME[toolName]
-      if (!kind || userInputRequestManager.getOpenRequest(toolUseId)) continue
+      if (!kind || userInputRequestManager.getOpenRequest(toolUseId, agentSlug)) continue
       this.registerStreamRequest(
         sessionId,
         kind,
@@ -2128,7 +2128,7 @@ class MessagePersister {
   // Broadcast to SSE clients
   private broadcastToSSE(agentSlug: string, sessionId: string, data: unknown): void {
     const key = sessionKeyOf(agentSlug, sessionId)
-    this.capture?.recordOutput(sessionId, data)
+    void this.capture?.recordOutput(sessionId, data)
     // Turn boundaries settle whatever the last turn left parked. That is the
     // only request bookkeeping on the broadcast path — registration itself
     // lives in the per-kind handlers.
@@ -2154,7 +2154,7 @@ class MessagePersister {
           // read them as a live wait and flag the fresh turn as awaiting.
           // (Idle keeps them so a still-parked approval survives a reconnect.)
           for (const id of userInputRequestManager.getStoreIdsForSession(agentSlug, sessionId, 'computer_use')) {
-            userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
+            userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded', agentSlug)
           }
         }
       }
@@ -2177,7 +2177,7 @@ class MessagePersister {
     message: StreamMessage
   ): void {
     const { agentSlug, sessionId } = ctx
-    this.capture?.recordInput(sessionId, message)
+    void this.capture?.recordInput(sessionId, message)
     const state = this.streamingStates.get(ctx.key)
     if (!state) return
 
@@ -2968,7 +2968,7 @@ class MessagePersister {
         // aborted). No decision can land anymore: close the approval card
         // everywhere instead of leaving it dangling until reconnect cleanup.
         if (typeof content.toolUseId === 'string') {
-          if (userInputRequestManager.getOpenRequest(content.toolUseId)) {
+          if (userInputRequestManager.getOpenRequest(content.toolUseId, agentSlug)) {
             this.completeCapabilityReview(agentSlug, sessionId, content.toolUseId, 'cancelled')
           } else {
             // No card yet — handleCapabilityReviewTool is still awaiting its
@@ -3331,7 +3331,7 @@ class MessagePersister {
               this.handleScriptRunRequestTool(sessionId, block.id, input, state.agentSlug, parentToolId)
             }
             if (block.name.startsWith('mcp__computer-use__')) {
-              this.handleComputerUseRequestTool(
+              void this.handleComputerUseRequestTool(
                 sessionId,
                 block.id,
                 block.name,
@@ -3632,7 +3632,7 @@ class MessagePersister {
     parentToolId: string,
   ): void {
     const { agentSlug } = state
-    const orphaned = userInputRequestManager.resolveRequestsByParent(parentToolId, 'invalidated')
+    const orphaned = userInputRequestManager.resolveRequestsByParent(parentToolId, 'invalidated', agentSlug)
     if (orphaned.length === 0) return
     for (const request of orphaned) {
       if (state.agentSlug) {
@@ -3740,7 +3740,7 @@ class MessagePersister {
           }
 
           if (sub.currentToolUse.name.startsWith('mcp__computer-use__')) {
-            this.handleComputerUseRequestTool(
+            void this.handleComputerUseRequestTool(
               sessionId,
               sub.currentToolUse.id,
               sub.currentToolUse.name,
@@ -4033,7 +4033,7 @@ class MessagePersister {
           }
 
           if (state.currentToolUse.name.startsWith('mcp__computer-use__')) {
-            this.handleComputerUseRequestTool(
+            void this.handleComputerUseRequestTool(
               sessionId,
               state.currentToolUse.id,
               state.currentToolUse.name,
@@ -4204,7 +4204,7 @@ class MessagePersister {
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
 
       // Parse the tool input
       let input: {
@@ -4244,7 +4244,7 @@ class MessagePersister {
       let timezone: string | undefined
       try {
         // Resolve timezone: agent tool override > agent owner's timezone
-        timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
+        timezone = input.timezone || (await resolveTimezoneForAgent(agentSlug))
         const sessionOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
         taskId = await createScheduledTask({
           agentSlug,
@@ -4323,7 +4323,7 @@ class MessagePersister {
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       let input: { wakeTime?: string; note?: string; timezone?: string }
       try {
         input = JSON.parse(toolInput)
@@ -4351,7 +4351,7 @@ class MessagePersister {
       let replaced: ScheduledTask | null
       let timezone: string | undefined
       try {
-        timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
+        timezone = input.timezone || (await resolveTimezoneForAgent(agentSlug))
         const sessionOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
         ;({ taskId, replaced } = await createSessionWake({
           agentSlug,
@@ -4486,7 +4486,7 @@ ${continuation}`
     _toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         if (!agentSlug) {
           console.error('[MessagePersister] list_scheduled_tasks missing agentSlug')
@@ -4523,7 +4523,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: ScheduledTaskUpdateInput
         try {
@@ -4614,7 +4614,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: { task_id: string }
         try {
@@ -4679,7 +4679,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: { task_id: string }
         try {
@@ -4816,7 +4816,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         if (!isPlatformComposioActive()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
@@ -4873,7 +4873,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         if (!isPlatformComposioActive()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
@@ -4935,7 +4935,7 @@ ${continuation}`
         // of letting the call go out as a bare org token with nothing recorded.
         const sessionMemberId = await this.resolvePlatformMemberForSession(agentSlug, sessionId)
         const mintAttribution =
-          attribution.current() ??
+          (await attribution.current()) ??
           // Never mint as the opaque-key 'local' placeholder — that would send `token::local`.
           (sessionMemberId === 'local' ? null : attribution.fromMemberId(sessionMemberId))
         const mintedByMemberId = mintAttribution?.actingMemberId() ?? undefined
@@ -5016,7 +5016,7 @@ ${continuation}`
    */
   private async resolvePlatformMemberForSession(agentSlug: string, sessionId: string): Promise<string> {
     const ownerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
-    const resolved = resolvePlatformMemberForCandidates([ownerId])
+    const resolved = await resolvePlatformMemberForCandidates([ownerId])
     return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
   }
 
@@ -5028,7 +5028,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         // Gate on platform auth, not Composio mode: custom endpoints live on
         // the platform proxy and must keep working when the user brings their
@@ -5061,7 +5061,7 @@ ${continuation}`
         // Minted explicitly as `token::memberId` below, so record that when no ALS
         // attribution is active; never persist the opaque-key 'local' placeholder.
         const mintedByMemberId =
-          attribution.current()?.actingMemberId() ?? (memberId === 'local' ? undefined : memberId)
+          (await attribution.current())?.actingMemberId() ?? (memberId === 'local' ? undefined : memberId)
 
         // 1. Mint the endpoint on the platform proxy
         const endpoint = await createPlatformWebhookEndpoint(memberId, {
@@ -5168,7 +5168,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         // Gate on platform auth, not Composio mode: custom endpoints live on
         // the platform proxy and must keep working when the user brings their
@@ -5223,7 +5223,7 @@ ${continuation}`
         // runs the update (SUP-765). Pre-column rows fall back to the creator.
         const memberId =
           trigger.mintedByMemberId ??
-          resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
+          (await resolvePlatformMemberForCandidates([trigger.createdByUserId]))?.memberId ??
           (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
         await updatePlatformWebhookEndpoint(memberId, trigger.composioTriggerId, patch)
 
@@ -5271,7 +5271,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         if (!getPlatformAccessToken()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
@@ -5305,7 +5305,7 @@ ${continuation}`
         // Minting-member-first resolution, same as update/teardown (SUP-765).
         const memberId =
           trigger.mintedByMemberId ??
-          resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
+          (await resolvePlatformMemberForCandidates([trigger.createdByUserId]))?.memberId ??
           (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
 
         if (input.test_filter_exp) {
@@ -5354,7 +5354,7 @@ ${continuation}`
     _toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         const triggers = await listActiveWebhookTriggers(agentSlug)
         const formatted = triggers.length === 0
@@ -5384,7 +5384,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: WebhookTriggerUpdateInput
         try {
@@ -5442,7 +5442,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: { trigger_id: string }
         try {
@@ -5724,7 +5724,7 @@ ${continuation}`
           if (typeof context.url !== 'string') return
           userInputRequestManager.enrichOpenRequestPayload(toolUseId, 'browser_input', {
             browserContext: { url: context.url, capturedAt: Date.now() },
-          })
+          }, agentSlug)
         }).catch((error: unknown) => {
           console.warn(
             '[MessagePersister] Failed to capture browser input context:',
@@ -6112,6 +6112,7 @@ ${continuation}`
         block.tool_use_id,
         'stream',
         block.is_error ? 'declined' : 'answered',
+        agentSlug,
       )
       if (!settled) continue
       // Same broadcast the main path emits — the resolving tab already removed
@@ -6145,6 +6146,7 @@ ${continuation}`
               block.tool_use_id,
               'stream',
               block.is_error ? 'declined' : 'answered',
+              agentSlug,
             )
           }
 

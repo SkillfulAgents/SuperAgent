@@ -71,6 +71,20 @@ describe('linkify', () => {
     }
   })
 
+  it('keeps a trailing _ ~ or * — URL characters in plain prose, not markdown delimiters', () => {
+    for (const url of ['https://example.com/auth?token=abc_', 'https://example.com/~user', 'https://example.com/a*']) {
+      const { unmount } = render(<>{linkify(`Open ${url} now`)}</>)
+      expect(screen.getByRole('link')).toHaveAttribute('href', url)
+      unmount()
+    }
+  })
+
+  it('ends a URL at glued fullwidth punctuation', () => {
+    const { container } = render(<>{linkify('Open https://example.com/auth（now）。')}</>)
+    expect(screen.getByRole('link')).toHaveAttribute('href', 'https://example.com/auth')
+    expect(container.textContent).toBe('Open https://example.com/auth（now）。')
+  })
+
   it('keeps a single quote that is legal inside the URL', () => {
     // RFC 3986 sub-delim. Excluding it to catch 'https://x'-style wrappers cost
     // more than it bought: real API URLs carry raw quotes, agents do not wrap in

@@ -39,7 +39,7 @@ export async function cleanupAgentData(agentSlug: string): Promise<void> {
 // Delegates per-trigger cancel + upstream teardown to the shared path so the
 // minting-member-attributed delete (SUP-765) applies to agent deletion too.
 async function cleanupWebhookTriggers(agentSlug: string): Promise<void> {
-  const triggers = db
+  const triggers = await db
     .select({ id: webhookTriggers.id })
     .from(webhookTriggers)
     .where(

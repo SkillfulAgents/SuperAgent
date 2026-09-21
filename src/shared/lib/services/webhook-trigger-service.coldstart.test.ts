@@ -24,9 +24,14 @@ beforeAll(async () => {
   process.env.SUPERAGENT_DATA_DIR = tempDataDir
   // Keep trackServerEvent from emitting real analytics for the created trigger.
   process.env.E2E_MOCK = 'true'
+  // Open after SUPERAGENT_DATA_DIR points at the temp dir, as an entry point would.
+  const { openDatabase } = await import('@shared/lib/db')
+  await openDatabase()
 })
 
 afterAll(async () => {
+  const { closeDatabase } = await import('@shared/lib/db')
+  await closeDatabase()
   if (prevDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
   else process.env.SUPERAGENT_DATA_DIR = prevDataDir
   if (prevE2eMock === undefined) delete process.env.E2E_MOCK
@@ -38,8 +43,6 @@ describe('createWebhookTrigger cold-start nudge (unmocked)', () => {
   it('completes the fire-and-forget trigger-manager import and poll', async () => {
     const logSpy = vi.spyOn(console, 'log')
     const warnSpy = vi.spyOn(console, 'warn')
-    // Import after SUPERAGENT_DATA_DIR points at the temp dir so the db
-    // singleton binds to it.
     const { createWebhookTrigger } = await import('./webhook-trigger-service')
 
     const id = await createWebhookTrigger({

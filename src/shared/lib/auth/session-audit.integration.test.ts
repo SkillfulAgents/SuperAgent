@@ -9,6 +9,7 @@
  * mapping is keyed on are the ones Better Auth actually reports.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import Database from 'better-sqlite3'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -26,6 +27,7 @@ let tmpDir: string
 let privateKey: CryptoKey
 let audience: string
 let dbModule: typeof import('@shared/lib/db')
+let sqlite: Database.Database
 let authModule: typeof import('./index')
 let app: Hono
 
@@ -45,7 +47,7 @@ function auditRows(object?: string): AuditRow[] {
   const sql = object
     ? `SELECT object, action, object_id, user_id, details FROM audit_log WHERE object = ? ORDER BY rowid`
     : `SELECT object, action, object_id, user_id, details FROM audit_log ORDER BY rowid`
-  const stmt = dbModule.sqlite.prepare(sql)
+  const stmt = sqlite.prepare(sql)
   return (object ? stmt.all(object) : stmt.all()) as AuditRow[]
 }
 
@@ -104,6 +106,9 @@ beforeAll(async () => {
   audience = getAppBaseUrl()
 
   dbModule = await import('@shared/lib/db')
+  await dbModule.openDatabase()
+  // A second connection to the same file for raw seeding and assertions.
+  sqlite = new Database(path.join(tmpDir, 'superagent.db'))
   authModule = await import('./index')
 
   const tokenExchangeRoute = (await import('../../../api/routes/token-exchange')).default
@@ -112,6 +117,8 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  sqlite.close()
+  await dbModule.closeDatabase()
   const { _setOidcJwksResolverForTest } = await import('./oidc-jwt')
   _setOidcJwksResolverForTest(null)
   delete process.env.SUPERAGENT_DATA_DIR
@@ -123,7 +130,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   for (const table of ['session', 'account', 'user', 'token_exchange_jti', 'audit_log']) {
-    dbModule.sqlite.prepare(`DELETE FROM ${table}`).run()
+    sqlite.prepare(`DELETE FROM ${table}`).run()
   }
   // Approval defaults to on, which bans every user after the first and would
   // make "two users, two methods" fail for a reason that has nothing to do
@@ -161,7 +168,7 @@ describe('browser password login', () => {
     await auth.api.signUpEmail({ body: { email, password: PASSWORD, name: 'Attributed' } })
 
     const [row] = auditRows('session')
-    const session = dbModule.sqlite
+    const session = sqlite
       .prepare(`SELECT id, user_id FROM session WHERE id = ?`)
       .get(row.object_id) as { id: string; user_id: string } | undefined
 
@@ -205,7 +212,7 @@ describe('admin impersonation', () => {
       body: { email: 'target@example.com', password: PASSWORD, name: 'Target' },
     })
     const row = (email: string) =>
-      (dbModule.sqlite.prepare(`SELECT id FROM user WHERE email = ?`).get(email) as { id: string })
+      (sqlite.prepare(`SELECT id FROM user WHERE email = ?`).get(email) as { id: string })
         .id
     return { adminId: row('admin@example.com'), targetId: row('target@example.com') }
   }
@@ -213,7 +220,7 @@ describe('admin impersonation', () => {
   it('credits the impersonating admin as the actor and keeps the target in details', async () => {
     const { adminId, targetId } = await seedAdminAndTarget()
     const adminToken = await signInAs('admin@example.com')
-    dbModule.sqlite.prepare(`DELETE FROM audit_log`).run()
+    sqlite.prepare(`DELETE FROM audit_log`).run()
 
     await authModule.getAuth().api.impersonateUser({
       body: { userId: targetId },
@@ -232,7 +239,7 @@ describe('admin impersonation', () => {
   it('survives revocation of the impersonation session', async () => {
     const { adminId, targetId } = await seedAdminAndTarget()
     const adminToken = await signInAs('admin@example.com')
-    dbModule.sqlite.prepare(`DELETE FROM audit_log`).run()
+    sqlite.prepare(`DELETE FROM audit_log`).run()
 
     await authModule.getAuth().api.impersonateUser({
       body: { userId: targetId },
@@ -240,7 +247,7 @@ describe('admin impersonation', () => {
     })
 
     const [row] = auditRows('session')
-    dbModule.sqlite.prepare(`DELETE FROM session WHERE id = ?`).run(row.object_id)
+    sqlite.prepare(`DELETE FROM session WHERE id = ?`).run(row.object_id)
 
     // The whole point of the trail: with the session gone, who did it and to
     // whom is still on record.
@@ -251,7 +258,7 @@ describe('admin impersonation', () => {
 
   it('does not confuse an ordinary login by the same admin with impersonation', async () => {
     const { adminId } = await seedAdminAndTarget()
-    dbModule.sqlite.prepare(`DELETE FROM audit_log`).run()
+    sqlite.prepare(`DELETE FROM audit_log`).run()
 
     await signInAs('admin@example.com')
 
@@ -277,7 +284,7 @@ describe('token exchange', () => {
     const body = await res.json()
 
     const [row] = auditRows('session')
-    const session = dbModule.sqlite
+    const session = sqlite
       .prepare(`SELECT id, user_id FROM session WHERE token = ?`)
       .get(body.access_token) as { id: string; user_id: string }
 
@@ -328,7 +335,7 @@ describe('persisted creation method', () => {
   }
 
   function sessionRows(): SessionRow[] {
-    return dbModule.sqlite
+    return sqlite
       .prepare(`SELECT id, user_id, creation_method FROM session ORDER BY rowid`)
       .all() as SessionRow[]
   }
@@ -360,7 +367,7 @@ describe('persisted creation method', () => {
       asResponse: true,
     })
     const targetId = (
-      dbModule.sqlite.prepare(`SELECT id FROM user WHERE email = ?`).get('target2@example.com') as {
+      sqlite.prepare(`SELECT id FROM user WHERE email = ?`).get('target2@example.com') as {
         id: string
       }
     ).id
@@ -390,7 +397,7 @@ describe('concurrent-session cap', () => {
   const CAP = 2
 
   function liveSessions(userId: string): { id: string; creation_method: string | null }[] {
-    return dbModule.sqlite
+    return sqlite
       .prepare(`SELECT id, creation_method FROM session WHERE user_id = ? ORDER BY created_at`)
       .all(userId) as { id: string; creation_method: string | null }[]
   }
@@ -410,7 +417,7 @@ describe('concurrent-session cap', () => {
       body: { email: 'member@example.com', password: PASSWORD, name: 'Member One' },
     })
     return (
-      dbModule.sqlite.prepare(`SELECT id FROM user WHERE email = ?`).get('member@example.com') as {
+      sqlite.prepare(`SELECT id FROM user WHERE email = ?`).get('member@example.com') as {
         id: string
       }
     ).id

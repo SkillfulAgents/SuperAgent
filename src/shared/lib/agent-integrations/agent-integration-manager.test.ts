@@ -1,3 +1,4 @@
+import * as integrationStore from './store'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentIntegration } from './agent-integration'
 import { AgentIntegrationManager } from './agent-integration-manager'
@@ -72,7 +73,7 @@ class ObjectIntegration extends AgentIntegration {
     return { externalId: (event.payload as { objectId: string }).objectId, interactionId: event.id, replyTarget: { comment: event.externalId }, action: 'run' as const }
   }
   async authorize() { return this.allowed }
-  isAllowed() { return this.allowed }
+  async isAllowed() { return this.allowed }
   sessionPolicy() { return { name: 'Object session', timeoutHours: null, metadata: {} } }
   async deliver(context: IntegrationSessionContext, output: IntegrationOutput) { this.outputs.push({ context, output }) }
   releaseSession(context: IntegrationSessionContext) { this.released.push(context) }
@@ -94,7 +95,7 @@ function record(id: string): AgentIntegrationRecord {
 let manager: AgentIntegrationManager
 let adapter: ObjectIntegration
 let registry: AgentIntegrationRegistry
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks()
   state.rows = [record('installation-a')]
   state.mappings.clear()
@@ -135,6 +136,88 @@ describe('AgentIntegration host contract', () => {
     expect(completed).toHaveLength(1)
     expect(completed[0].context).toMatchObject({ integration: { id: 'installation-a' }, externalId: 'object-7', sessionId: 'session-1', interactionId: 'comment-one', replyTarget: { comment: 'comment-one' } })
     expect(adapter.outputs.some(item => item.output.type === 'runtime' && (item.output.event as { type: string }).type === 'stream_end')).toBe(true)
+  })
+
+  it('handles stream events in arrival order even when the access check is slow', async () => {
+    await manager.start()
+    await adapter.input('comment-one')
+    await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
+    const handled = vi.spyOn(manager as unknown as { handleSSEEvent: (...args: unknown[]) => Promise<void> }, 'handleSSEEvent')
+    // The access check is a database read; a slow one must not let a later
+    // event overtake the one it guards.
+    let release!: () => void
+    vi.spyOn(adapter, 'isAllowed').mockImplementationOnce(() => new Promise<boolean>((resolve) => { release = () => resolve(true) }))
+    const emit = state.streams.get('session-1')!
+    emit({ type: 'stream_end' })
+    emit({ type: 'session_idle' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(handled).not.toHaveBeenCalled()
+    release()
+    await vi.waitFor(() => expect(handled).toHaveBeenCalledTimes(2))
+    expect(handled.mock.calls.map((call) => (call[2] as { type: string }).type)).toEqual(['stream_end', 'session_idle'])
+  })
+
+  it('keeps a failing access check inside the queue instead of rejecting the broadcaster', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
+      const handled = vi.spyOn(manager as unknown as { handleSSEEvent: (...args: unknown[]) => Promise<void> }, 'handleSSEEvent')
+      vi.spyOn(adapter, 'isAllowed').mockRejectedValueOnce(new Error('acl unavailable'))
+      const emit = state.streams.get('session-1')!
+      emit({ type: 'stream_end' }) // its check fails: reported, not thrown
+      emit({ type: 'session_idle' }) // the queue keeps going
+      await vi.waitFor(() => expect(handled).toHaveBeenCalledTimes(1))
+      expect((handled.mock.calls[0][2] as { type: string }).type).toBe('session_idle')
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  it('does not revive a session that was cleared while its observation waited on the queue', async () => {
+    await manager.start()
+    await adapter.input('comment-one')
+    await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
+    const observed = vi.spyOn(adapter, 'observeSession')
+    let release!: () => void
+    vi.spyOn(adapter, 'isAllowed').mockImplementationOnce(() => new Promise<boolean>((resolve) => { release = () => resolve(true) }))
+    const emit = state.streams.get('session-1')!
+    emit({ type: 'stream_end' }) // stalls on its access check
+    emit({ type: 'session_idle' }) // waits behind it
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    manager.stop() // the chat is cleared: its session is released
+    expect(adapter.released).toHaveLength(1)
+    const observedBeforeRelease = observed.mock.calls.length
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(observed.mock.calls.length).toBe(observedBeforeRelease)
+  })
+
+  it('does not deliver an event whose chat was cleared during its own access check', async () => {
+    await manager.start()
+    await adapter.input('comment-one')
+    await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
+    let checks = 0
+    let release!: () => void
+    vi.spyOn(adapter, 'isAllowed').mockImplementation(() => {
+      checks += 1
+      // The queued observation's check resolves; the handler's own check stalls.
+      if (checks === 1) return Promise.resolve(true)
+      return new Promise<boolean>((resolve) => { release = () => resolve(true) })
+    })
+    const outputsBefore = adapter.outputs.length
+    state.streams.get('session-1')!({ type: 'session_idle' })
+    await vi.waitFor(() => expect(checks).toBe(2))
+    manager.stop() // the chat is cleared while the handler waits
+    expect(adapter.released).toHaveLength(1)
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(adapter.outputs.length).toBe(outputsBefore)
   })
 
   it('blocks input before preparation or runtime startup and blocks output after revocation', async () => {
@@ -242,7 +325,7 @@ describe('AgentIntegration host contract', () => {
     await expect(manager.ensureSession('installation-a', 'object-7')).rejects.toThrow('not allowed')
   })
 
-  it('exposes provider metadata without creating a connection and rejects duplicate registration', () => {
+  it('exposes provider metadata without creating a connection and rejects duplicate registration', async () => {
     const create = vi.fn()
     const metadataOnly = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create }])
     expect(metadataOnly.getDefinition('test-objects')?.family).toBe('objects')
@@ -250,4 +333,195 @@ describe('AgentIntegration host contract', () => {
     expect(create).not.toHaveBeenCalled()
     expect(() => metadataOnly.register({ definition: adapter.definition, policy: adapter, create })).toThrow('Duplicate integration provider')
   })
+})
+
+it('review: a health check does not re-observe a session cleared during its access check', async () => {
+  await manager.start()
+  await adapter.input('review-comment')
+  await vi.waitFor(() => expect(state.streams.size).toBe(1))
+  let release!: (value: boolean) => void
+  const blocked = new Promise<boolean>(resolve => { release = resolve })
+  let reached!: () => void
+  const checking = new Promise<void>(resolve => { reached = resolve })
+  const observed = vi.spyOn(adapter, 'observeSession')
+  vi.spyOn(adapter, 'isAllowed').mockImplementationOnce(() => { reached(); return blocked })
+  const healthCheck = (manager as unknown as { runHealthChecks: () => Promise<void> }).runHealthChecks()
+  await checking
+  await manager.clearSessionById('mapping-session-1')
+  expect(adapter.released).toHaveLength(1)
+  observed.mockClear()
+  release(true)
+  await healthCheck
+  expect(observed).not.toHaveBeenCalled()
+})
+
+
+it('review: reconnect must not restore a session cleared during its access read', async () => {
+  await manager.start()
+  await adapter.input('review-comment')
+  await vi.waitFor(() => expect(state.streams.size).toBe(1))
+  let release!: (value: boolean) => void
+  const blocked = new Promise<boolean>(resolve => { release = resolve })
+  let reached!: () => void
+  const checking = new Promise<void>(resolve => { reached = resolve })
+  vi.spyOn(adapter, 'isAllowed').mockImplementationOnce(() => { reached(); return blocked })
+  const reconnecting = manager.addIntegration('installation-a')
+  await checking
+  // Match the clear route: stop live state, then archive the stored mapping.
+  await manager.clearSessionById('mapping-session-1')
+  state.mappings.clear()
+  expect(state.streams.has('session-1')).toBe(false)
+  release(true)
+  await reconnecting
+  adapter.outputs = []
+  state.streams.get('session-1')?.({ type: 'stream_delta', text: 'output from archived session' })
+  await vi.waitFor(() => expect((manager as unknown as { messageQueues: Map<string, Promise<void>> }).messageQueues.has('sse:installation-a:object-7')).toBe(false))
+  expect(adapter.outputs).toEqual([])
+  expect(state.streams.has('session-1')).toBe(false)
+})
+
+it.each(['addIntegration', 'resumeIntegration'] as const)('review: a pause supersedes %s waiting for its integration row', async operation => {
+  await manager.start()
+  let release!: (value: AgentIntegrationRecord) => void
+  const blocked = new Promise<AgentIntegrationRecord>(resolve => { release = resolve })
+  let reached!: () => void
+  const reading = new Promise<void>(resolve => { reached = resolve })
+  const lookup = vi.spyOn(integrationStore, 'getIntegration').mockImplementationOnce(() => { reached(); return blocked })
+  try {
+    const snapshot = state.rows[0]
+    const connecting = manager[operation]('installation-a')
+    await reading
+    await manager.pauseIntegration('installation-a')
+    state.rows[0] = { ...snapshot, status: 'paused' }
+    expect(manager.isIntegrationConnected('installation-a')).toBe(false)
+    release(snapshot)
+    await connecting
+    expect(manager.isIntegrationConnected('installation-a')).toBe(false)
+  } finally { lookup.mockRestore() }
+})
+
+it.each([1, 2])('review: stale rebuild read %i must not tear down a newer connection', async pausedRead => {
+  await manager.start()
+  let release!: (value: AgentIntegrationRecord) => void
+  const blocked = new Promise<AgentIntegrationRecord>(resolve => { release = resolve })
+  let reached!: () => void
+  const reading = new Promise<void>(resolve => { reached = resolve })
+  const original = integrationStore.getIntegration
+  let reads = 0
+  const lookup = vi.spyOn(integrationStore, 'getIntegration').mockImplementation(id => {
+    if (++reads === pausedRead) { reached(); return blocked }
+    return original(id)
+  })
+  try {
+    const rebuilding = (manager as unknown as { rebuildIntegration: (id: string, operation: string) => Promise<void> }).rebuildIntegration('installation-a', 'review')
+    await reading
+    await manager.removeIntegration('installation-a')
+    await manager.addIntegration('installation-a')
+    expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+    release(state.rows[0])
+    await rebuilding
+    expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+  } finally { lookup.mockRestore() }
+})
+
+
+it('review: clearing during the final restoration lookup must prevent stale output', async () => {
+  await manager.start()
+  await adapter.input('review-comment')
+  await vi.waitFor(() => expect(state.streams.size).toBe(1))
+  let release!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  let reached!: () => void
+  const reading = new Promise<void>(resolve => { reached = resolve })
+  const original = integrationStore.getIntegrationSession
+  const lookup = vi.spyOn(integrationStore, 'getIntegrationSession').mockImplementationOnce(async (id, externalId) => {
+    // Capture a valid row, then delay the asynchronous read's completion.
+    const snapshot = await original(id, externalId)
+    reached()
+    await blocked
+    return snapshot
+  })
+  try {
+    const reconnecting = manager.addIntegration('installation-a')
+    await reading
+    // Match the API route: clear live state, then archive the stored mapping.
+    await manager.clearSessionById('mapping-session-1')
+    state.mappings.clear()
+    expect(state.streams.has('session-1')).toBe(false)
+    release()
+    await reconnecting
+    adapter.outputs = []
+    state.streams.get('session-1')?.({ type: 'stream_delta', text: 'output from archived session' })
+    await vi.waitFor(() => expect((manager as unknown as { messageQueues: Map<string, Promise<void>> }).messageQueues.has('sse:installation-a:object-7')).toBe(false))
+    expect(adapter.outputs).toEqual([])
+    expect(state.streams.has('session-1')).toBe(false)
+  } finally { release(); lookup.mockRestore() }
+})
+
+it('review: a restoration retry cannot outlive a clear that is still in progress', async () => {
+  const otherAdapter = new ObjectIntegration()
+  state.rows.push(record('installation-b'))
+  registry = new AgentIntegrationRegistry([{
+    definition: adapter.definition,
+    policy: adapter,
+    create: async row => row.id === 'installation-a' ? adapter : otherAdapter,
+  }])
+  manager = new AgentIntegrationManager(registry)
+  await manager.start()
+  await adapter.input('first-chat')
+  await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
+  await otherAdapter.input('second-chat')
+  await vi.waitFor(() => expect(state.streams.has('session-2')).toBe(true))
+
+  const gate = () => {
+    let release!: () => void
+    const promise = new Promise<void>(resolve => { release = resolve })
+    return { promise, release }
+  }
+  const firstRead = gate(), retryRead = gate(), clearRead = gate()
+  const releaseFirst = gate(), releaseRetry = gate(), releaseClear = gate()
+  const original = integrationStore.getIntegrationSession
+  let restoringReads = 0
+  const lookup = vi.spyOn(integrationStore, 'getIntegrationSession').mockImplementation(async (id, externalId) => {
+    const snapshot = await original(id, externalId)
+    if (id === 'installation-b') {
+      // clearSessionById scans another live chat while the target is reconnecting.
+      clearRead.release()
+      await releaseClear.promise
+    } else if (++restoringReads === 1) {
+      firstRead.release()
+      await releaseFirst.promise
+    } else if (restoringReads === 2) {
+      retryRead.release()
+      await releaseRetry.promise
+    }
+    return snapshot
+  })
+  try {
+    const reconnecting = manager.addIntegration('installation-a')
+    await firstRead.promise
+    const clearing = (async () => {
+      await manager.clearSessionById('mapping-session-1')
+      // Same ordering as the API: archive only after live cleanup completes.
+      state.mappings.delete('installation-a:object-7')
+    })()
+    await clearRead.promise
+    releaseFirst.release()
+    // A cancelled restore may finish immediately without another database read.
+    await Promise.race([retryRead.promise, reconnecting])
+    releaseClear.release()
+    await clearing
+    expect(state.mappings.has('installation-a:object-7')).toBe(false)
+    releaseRetry.release()
+    await reconnecting
+    adapter.outputs = []
+    state.streams.get('session-1')?.({ type: 'stream_delta', text: 'output after completed clear' })
+    await vi.waitFor(() => expect((manager as unknown as { messageQueues: Map<string, Promise<void>> }).messageQueues.has('sse:installation-a:object-7')).toBe(false))
+    expect(adapter.outputs).toEqual([])
+    expect(state.streams.has('session-1')).toBe(false)
+    expect(state.streams.has('session-2')).toBe(true)
+  } finally {
+    releaseFirst.release(); releaseRetry.release(); releaseClear.release()
+    lookup.mockRestore()
+  }
 })

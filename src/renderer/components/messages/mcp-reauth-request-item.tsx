@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, RefreshCw } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@renderer/components/ui/button'
+import { LoginButton } from '@renderer/components/connections/login-button'
 import { Input } from '@renderer/components/ui/input'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
-import { useCanManageRemoteMcp, useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
-import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
+import { useMcpLoginWindow } from '@renderer/hooks/use-mcp-login-window'
+import { useRemoteMcps, useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
 import { apiFetch } from '@renderer/lib/api'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 import { dismissReauthRequest } from '@renderer/lib/reauth-dismiss'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { DeclineButton } from './decline-button'
@@ -38,19 +38,31 @@ export function McpReauthRequestItem({
 }: McpReauthRequestItemProps) {
   const queryClient = useQueryClient()
   const initiateOAuth = useInitiateMcpOAuth()
-  const { data: canManage } = useCanManageRemoteMcp(mcpId)
-  const [pending, setPending] = useState(false)
+  const { data: ownMcps } = useRemoteMcps()
+  // The list is owner-scoped, whereas the single-server endpoint also allows admins.
+  const isOwner = ownMcps?.servers.some((server) => server.id === mcpId)
+  const loginWindow = useMcpLoginWindow(({ success, error: oauthError }) => {
+    loginWindow.close()
+    if (success) {
+      setError(null)
+      finish()
+    } else {
+      setError(oauthError || 'MCP reconnection failed')
+    }
+  })
+  // The bearer and no-auth branches reconnect without a login window.
+  const [submitting, setSubmitting] = useState(false)
+  const pending = submitting || loginWindow.pending
   const [loadingReplacement, setLoadingReplacement] = useState(false)
   const [replacementUrl, setReplacementUrl] = useState<string | null>(null)
   const [dismissing, setDismissing] = useState(false)
   const [bearerToken, setBearerToken] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const popupRef = useRef<ReturnType<typeof prepareOAuthPopup> | null>(null)
   const serviceSlug = useMemo(
     () => COMMON_MCP_SERVERS.find((server) => server.displayName === mcpName)?.slug,
     [mcpName],
   )
-  const canReconnect = !readOnly && canManage === true
+  const canReconnect = !readOnly && isOwner === true
   // See the account twin: the card blocks every session of the agent, so a
   // viewer who cannot reconnect still needs a way to let the agent move on.
   const canDismiss = !readOnly
@@ -60,23 +72,6 @@ export function McpReauthRequestItem({
     queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
     onComplete()
   }
-
-  useMcpOAuthListener(pending && authType === 'oauth', ({ success, error: oauthError }) => {
-    popupRef.current?.close()
-    popupRef.current = null
-    setPending(false)
-    if (success) {
-      setError(null)
-      finish()
-    } else {
-      setError(oauthError || 'MCP reconnection failed')
-    }
-  })
-
-  useEffect(() => () => {
-    popupRef.current?.close()
-    popupRef.current = null
-  }, [])
 
   const dismiss = async (reason?: string) => {
     setError(null)
@@ -98,26 +93,20 @@ export function McpReauthRequestItem({
 
   const reconnect = async () => {
     setError(null)
-    setPending(true)
 
     if (authType === 'oauth') {
-      const popup = prepareOAuthPopup()
-      popupRef.current = popup
       try {
-        const result = await initiateOAuth.mutateAsync({
+        await loginWindow.open(() => initiateOAuth.mutateAsync({
           mcpId,
           electron: !!window.electronAPI,
-        })
-        await popup.navigate(result.redirectUrl)
+        }))
       } catch (reconnectError) {
-        popup.close()
-        popupRef.current = null
-        setPending(false)
         setError(reconnectError instanceof Error ? reconnectError.message : 'MCP reconnection failed')
       }
       return
     }
 
+    setSubmitting(true)
     try {
       if (authType === 'bearer') {
         const patchResponse = await apiFetch(`/api/remote-mcps/${mcpId}`, {
@@ -140,7 +129,7 @@ export function McpReauthRequestItem({
     } catch (reconnectError) {
       setError(reconnectError instanceof Error ? reconnectError.message : 'MCP reconnection failed')
     } finally {
-      setPending(false)
+      setSubmitting(false)
     }
   }
 
@@ -178,7 +167,7 @@ export function McpReauthRequestItem({
   return (
     <RequestItemShell
       title={`This request needs ${mcpName}, which requires re-authentication.`}
-      subtitle={canManage === false
+      subtitle={isOwner === false
         ? 'Replace it with a connection you own to continue, or dismiss this request.'
         : 'Reconnect to continue. The original MCP request will resume automatically.'}
       icon={<ServiceIcon slug={serviceSlug} fallback="mcp" className="h-4 w-4" />}
@@ -221,20 +210,20 @@ export function McpReauthRequestItem({
             Replace connection
           </Button>
           {canReconnect && (
-            <Button
+            <LoginButton
               type="button"
               size="xs"
+              icon={<RefreshCw />}
+              label={authType === 'none' ? 'Retry' : 'Reconnect'}
+              pendingLabel="Reconnecting…"
+              pending={pending}
+              canCancel={loginWindow.canCancel}
+              onCancel={loginWindow.close}
+              cancelSide="left"
               onClick={() => void reconnect()}
-              disabled={pending || dismissing || loadingReplacement || (authType === 'bearer' && !bearerToken.trim())}
+              disabled={dismissing || loadingReplacement || (authType === 'bearer' && !bearerToken.trim())}
               data-testid="mcp-reauth-reconnect-btn"
-            >
-              {pending ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-              )}
-              {pending ? 'Reconnecting…' : authType === 'none' ? 'Retry' : 'Reconnect'}
-            </Button>
+            />
           )}
         </RequestItemActions>
       )}

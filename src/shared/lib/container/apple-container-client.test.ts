@@ -145,6 +145,32 @@ describe('AppleContainerClient recovery hooks', () => {
     expect(mockExecWithPath).toHaveBeenCalledWith('container delete --force superagent-abc123', { timeoutMs: 10_000 })
   })
 
+  it('removeOldImages lists with --quiet, one reference per line (the JSON form overflows exec\'s stdout buffer on a backlog)', async () => {
+    // `container image list --format json` carries every variant's config and
+    // history: 1.85 MB for 84 images on CLI 1.1.0, past exec's 1 MiB default,
+    // so the list call threw and nothing was deleted. `--quiet` is 4.5 KB.
+    const listed = [
+      'alpine:latest',
+      'ghcr.io/skillfulagents/superagent-agent-container-base:0.5.24',
+      'ghcr.io/skillfulagents/superagent-agent-container-base:0.5.25',
+      'ghcr.io/skillfulagents/superagent-agent-container-base:0.5.26',
+      '',
+    ].join('\n')
+    const calls: string[] = []
+    mockExecWithPath.mockImplementation(async (cmd: string) => {
+      calls.push(cmd)
+      // One failed delete (an image still in use) must not stop the rest.
+      if (cmd.endsWith(`:0.5.24'`)) throw new Error('image in use')
+      return { stdout: cmd === 'container image list --quiet' ? listed : '', stderr: '' }
+    })
+    await AppleContainerClient.removeOldImages('container', 'ghcr.io/skillfulagents/superagent-agent-container-base', '0.5.26')
+    expect(calls).toEqual([
+      'container image list --quiet',
+      `container image delete 'ghcr.io/skillfulagents/superagent-agent-container-base:0.5.24'`,
+      `container image delete 'ghcr.io/skillfulagents/superagent-agent-container-base:0.5.25'`,
+    ])
+  })
+
   it('collectStopFailureDiagnostics degrades failed probes to markers instead of throwing', async () => {
     mockExecWithPath.mockImplementation(async (cmd: string) => {
       if (cmd.startsWith('container inspect')) throw new Error('inspect hung')

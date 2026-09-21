@@ -52,7 +52,7 @@ const IntegrationAgentRole = EntityAgentRole({
 // GET /api/chat-integrations/:integrationId - Get a single integration
 chatIntegrationsRouter.get('/:integrationId', IntegrationAgentRole('viewer'), async (c) => {
   try {
-    const integration = c.get('chatIntegration' as never) as NonNullable<ReturnType<typeof getChatIntegration>>
+    const integration = c.get('chatIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getChatIntegration>>>
     return c.json(toPublicAgentIntegration(integration))
   } catch (error) {
     console.error('Failed to fetch chat integration:', error)
@@ -196,7 +196,7 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
 
     let id: string
     try {
-      id = createChatIntegration({
+      id = await createChatIntegration({
         agentSlug,
         provider,
         name,
@@ -236,7 +236,7 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
         tags: { ...SENTRY_TAGS, operation: 'create-integration-connect' },
         extra: { integrationId: id, agentSlug, provider },
       })
-      updateChatIntegrationStatus(id, 'error', errMsg)
+      await updateChatIntegrationStatus(id, 'error', errMsg)
     }
 
     // Outside the connect try/catch: a contact-card failure is cosmetic and must
@@ -244,9 +244,9 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
     // own 30s timeout and setup must not block on it.
     void agentIntegrationManager.integrationCreated(id)
 
-    const integration = getChatIntegration(id)
+    const integration = await getChatIntegration(id)
     if (!integration) throw new Error('Chat integration disappeared after creation')
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
     return c.json(toPublicAgentIntegration(integration), 201)
   } catch (error) {
     console.error('Failed to create chat integration:', error)
@@ -277,7 +277,7 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     if (body.speed !== undefined) updates.speed = parsedSpeed.data ?? null
 
     if (Object.keys(updates).length > 0) {
-      if (!updateChatIntegration(id, updates)) {
+      if (!(await updateChatIntegration(id, updates))) {
         throw new Error('Chat integration disappeared during update')
       }
     }
@@ -293,9 +293,9 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
       await agentIntegrationManager.addIntegration(id)
     }
 
-    const updated = getChatIntegration(id)
+    const updated = await getChatIntegration(id)
     if (!updated) throw new Error('Chat integration disappeared after update')
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated' })
     return c.json(toPublicAgentIntegration(updated))
   } catch (error) {
     if (error instanceof DuplicateBotTokenError) {
@@ -329,7 +329,7 @@ chatIntegrationsRouter.patch('/:integrationId/require-approval', IntegrationAgen
     if (!z.boolean().safeParse(requireApproval).success) {
       return c.json({ error: 'requireApproval must be a boolean' }, 400)
     }
-    if (!updateChatIntegration(id, { requireApproval })) {
+    if (!(await updateChatIntegration(id, { requireApproval }))) {
       throw new Error('Chat integration disappeared during approval update')
     }
     // Secure-by-default: enabling approval must gate already-running sessions whose
@@ -337,9 +337,9 @@ chatIntegrationsRouter.patch('/:integrationId/require-approval', IntegrationAgen
     if (requireApproval === true) {
       await agentIntegrationManager.reconcileAccess(id)
     }
-    const updated = getChatIntegration(id)
+    const updated = await getChatIntegration(id)
     if (!updated) throw new Error('Chat integration disappeared after approval update')
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated', details: { requireApproval } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated', details: { requireApproval } })
     return c.json(toPublicAgentIntegration(updated))
   } catch (error) {
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'set-require-approval' }, extra: { integrationId: c.req.param('integrationId') } })
@@ -356,14 +356,14 @@ chatIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), a
     await agentIntegrationManager.removeIntegration(id)
 
     // Clean up session mappings
-    deleteChatIntegrationSessionsByIntegration(id)
+    await deleteChatIntegrationSessionsByIntegration(id)
 
-    const deleted = deleteChatIntegration(id)
+    const deleted = await deleteChatIntegration(id)
     if (!deleted) {
       return c.json({ error: 'Chat integration not found' }, 404)
     }
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'deleted' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'deleted' })
 
     return c.body(null, 204)
   } catch (error) {
@@ -416,7 +416,7 @@ chatIntegrationsRouter.get('/:integrationId/status', IntegrationAgentRole('viewe
 chatIntegrationsRouter.get('/:integrationId/sessions', IntegrationAgentRole('viewer'), async (c) => {
   try {
     const id = c.req.param('integrationId')
-    const sessions = listChatIntegrationSessions(id)
+    const sessions = await listChatIntegrationSessions(id)
     return c.json(sessions)
   } catch (error) {
     console.error('Failed to list chat integration sessions:', error)
@@ -430,7 +430,7 @@ chatIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', Integration
   try {
     const integrationId = c.req.param('integrationId')
     const sessionId = c.req.param('sessionId')
-    const session = getChatIntegrationSessionById(sessionId)
+    const session = await getChatIntegrationSessionById(sessionId)
     // Scope the session to the authorized integration. `IntegrationAgentRole`
     // only authorizes :integrationId; the session is loaded by primary key, so
     // we must verify it belongs to that integration before mutating it.
@@ -441,10 +441,10 @@ chatIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', Integration
       return c.json({ error: 'Session not found' }, 404)
     }
     // Notify the manager to clean up SSE subscriptions
-    agentIntegrationManager.clearSessionById(sessionId)
+    await agentIntegrationManager.clearSessionById(sessionId)
 
     // Archive the session mapping (keeps it visible in sidebar as archived)
-    archiveChatIntegrationSession(sessionId)
+    await archiveChatIntegrationSession(sessionId)
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to clear chat session:', error)
@@ -469,7 +469,7 @@ chatIntegrationsRouter.get('/:integrationId/access', IntegrationAgentRole('owner
       if (!parsed.success) return c.json({ error: 'Invalid status' }, 400)
       status = parsed.data
     }
-    return c.json(listChatAccess(integrationId, status))
+    return c.json(await listChatAccess(integrationId, status))
   } catch (error) {
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'list-access' } })
     return c.json({ error: 'Failed to list access' }, 500)
@@ -483,15 +483,15 @@ for (const verb of ['approve', 'deny', 'revoke'] as const) {
     try {
       const integrationId = c.req.param('integrationId')
       const accessId = c.req.param('accessId')
-      const row = getChatAccessById(accessId)
+      const row = await getChatAccessById(accessId)
       // BOLA guard: scope the access row to the authorized integration.
       // IntegrationAgentRole authorizes :integrationId only; the access row is
       // loaded by primary key, so we must verify it belongs to that integration.
       // Return 404 so foreign access IDs are not enumerable (SUP-229 pattern).
       if (!row || row.integrationId !== integrationId) return c.json({ error: 'Access entry not found' }, 404)
-      const ok = accessActions[verb](accessId, getCurrentUserId(c))
+      const ok = await accessActions[verb](accessId, getCurrentUserId(c))
       if (ok) {
-        logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: integrationId, action: 'updated', details: { access: verb, accessId } })
+        await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: integrationId, action: 'updated', details: { access: verb, accessId } })
         if (verb === 'approve') void agentIntegrationManager.notifyAccessApproved(integrationId, row.externalChatId)
         if (verb === 'revoke' || verb === 'deny') await agentIntegrationManager.releaseExternalSession(integrationId, row.externalChatId)
       }

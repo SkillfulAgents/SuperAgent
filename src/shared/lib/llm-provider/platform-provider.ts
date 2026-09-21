@@ -66,7 +66,7 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     return PLATFORM_CATALOG
   }
 
-  getContainerEnvVars(agent?: AgentIdentity): Record<string, string | undefined> {
+  async getContainerEnvVars(agent?: AgentIdentity): Promise<Record<string, string | undefined>> {
     const proxyUrl = getPlatformProxyBaseUrl()
     const containerUrl = rewriteLoopbackForContainer(proxyUrl)
 
@@ -74,7 +74,7 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     // in it, so an empty ambient scope here (scheduler / trigger / recovery
     // start) must still resolve a member — a bare org JWT is admitted by the
     // proxy as org_runtime and bills to the org pool instead of a seat (SUP-805).
-    const auth = agent ? attribution.forAgent(agent.id) : attribution.current()
+    const auth = await (agent ? attribution.forAgent(agent.id) : attribution.current())
     if (!auth && attribution.requiresActingMember()) {
       console.warn(`[PlatformLlmProvider] No acting member resolved for agent ${agent?.id ?? '(none)'}; baking bare org token`)
       captureMessage('platform container env built without acting member', {

@@ -38,6 +38,7 @@ export type FakeAgentActor = {
   readonly inputs: FakeOps<AgentActor['inputs']>
   readonly usage: FakeOps<AgentActor['usage']>
   readonly files: FakeOps<AgentActor['files']>
+  readonly memories: FakeOps<AgentActor['memories']>
   readonly config: FakeOps<AgentActor['config']>
 }
 
@@ -46,7 +47,7 @@ type DeepPartial<T> = { [K in keyof T]?: T[K] extends Fn ? T[K] : T[K] extends o
 export type FakeActorOverrides = DeepPartial<Omit<AgentActor, 'slug'>>
 
 /** The input sub-groups; anything else accessed on `inputs` is a method. */
-const INPUT_GROUPS = new Set(['reviews', 'computerUse', 'mcpReauth'])
+const INPUT_GROUPS = new Set(['reviews', 'computerUse', 'mcpReauth', 'accountReauth'])
 
 function fakeGroup(overrides: Record<string, unknown> = {}, nested: Set<string> = new Set()): Record<string, unknown> {
   const members = new Map<string, unknown>(Object.entries(overrides))
@@ -98,6 +99,7 @@ export function createFakeAgentActor(slug: AgentSlug, overrides: FakeActorOverri
     ) as FakeAgentActor['inputs'],
     usage: fakeGroup(overrides.usage as Record<string, unknown>) as FakeAgentActor['usage'],
     files: fakeGroup(overrides.files as Record<string, unknown>) as FakeAgentActor['files'],
+    memories: fakeGroup(overrides.memories as Record<string, unknown>) as FakeAgentActor['memories'],
     config: fakeGroup(overrides.config as Record<string, unknown>) as FakeAgentActor['config'],
   }
 }

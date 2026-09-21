@@ -180,7 +180,7 @@ describe('PlatformNotificationsManager', () => {
     expect(mockGetRealtimeConfig).toHaveBeenCalledWith('sub_member_1')
 
     // The seed row (already existing before subscribe) must never OS-notify.
-    onEvent(record('ntf_seed', '2026-07-01T00:00:00Z'))
+    await onEvent(record('ntf_seed', '2026-07-01T00:00:00Z'))
     expect(osNotificationBroadcasts()).toHaveLength(0)
   })
 
@@ -276,12 +276,12 @@ describe('PlatformNotificationsManager', () => {
     // stands between a replayed INSERT (created_at equal to the watermark)
     // and a duplicate OS notification.
     const onEvent = await startWithDefaults()
-    onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
+    await onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
     expect(osNotificationBroadcasts()).toHaveLength(1)
 
     platformNotificationsManager.stop()
     const onEventAfterRestart = await startWithDefaults()
-    onEventAfterRestart(record('ntf_new', '2026-07-02T00:00:00Z'))
+    await onEventAfterRestart(record('ntf_new', '2026-07-02T00:00:00Z'))
 
     expect(osNotificationBroadcasts()).toHaveLength(1)
   })
@@ -289,7 +289,7 @@ describe('PlatformNotificationsManager', () => {
   it('fires one OS notification per INSERT and always signals the inbox', async () => {
     const onEvent = await startWithDefaults()
 
-    onEvent(
+    await onEvent(
       record('ntf_new', '2026-07-02T00:00:00Z', {
         body: 'This is **markdown** with a [link](https://example.com).\n\n- bullet',
       }),
@@ -315,9 +315,9 @@ describe('PlatformNotificationsManager', () => {
   it('dedups reconnect replays by id and backdated inserts by watermark', async () => {
     const onEvent = await startWithDefaults()
 
-    onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
-    onEvent(record('ntf_new', '2026-07-02T00:00:00Z')) // replay
-    onEvent(record('ntf_backdated', '2026-06-01T00:00:00Z')) // older than watermark
+    await onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
+    await onEvent(record('ntf_new', '2026-07-02T00:00:00Z')) // replay
+    await onEvent(record('ntf_backdated', '2026-06-01T00:00:00Z')) // older than watermark
 
     expect(osNotificationBroadcasts()).toHaveLength(1)
     // The inbox signal still fires for every INSERT (live page update).
@@ -326,7 +326,7 @@ describe('PlatformNotificationsManager', () => {
 
   it('persists the advanced watermark', async () => {
     const onEvent = await startWithDefaults()
-    onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
+    await onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
 
     expect(
       (mockSettings.platformNotifications as { lastNotifiedAt?: string }).lastNotifiedAt,
@@ -338,10 +338,10 @@ describe('PlatformNotificationsManager', () => {
     const onEvent = await startWithDefaults()
     // No list seed needed — and an insert older than the persisted watermark
     // stays silent.
-    onEvent(record('ntf_old', '2026-07-02T12:00:00Z'))
+    await onEvent(record('ntf_old', '2026-07-02T12:00:00Z'))
     expect(osNotificationBroadcasts()).toHaveLength(0)
 
-    onEvent(record('ntf_newer', '2026-07-04T00:00:00Z'))
+    await onEvent(record('ntf_newer', '2026-07-04T00:00:00Z'))
     expect(osNotificationBroadcasts()).toHaveLength(1)
   })
 
@@ -349,7 +349,7 @@ describe('PlatformNotificationsManager', () => {
     mockUserNotificationSettings = { enabled: true, platformNotification: false }
     const onEvent = await startWithDefaults()
 
-    onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
+    await onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
 
     expect(osNotificationBroadcasts()).toHaveLength(0)
     expect(changedBroadcasts()).toHaveLength(1) // inbox still updates
@@ -358,7 +358,7 @@ describe('PlatformNotificationsManager', () => {
   it('drops records that fail schema validation', async () => {
     const onEvent = await startWithDefaults()
 
-    onEvent({ id: 'ntf_bad' }) // missing title/body/created_at
+    await onEvent({ id: 'ntf_bad' }) // missing title/body/created_at
 
     expect(osNotificationBroadcasts()).toHaveLength(0)
     expect(changedBroadcasts()).toHaveLength(0)

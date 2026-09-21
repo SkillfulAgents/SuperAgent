@@ -1,99 +1,25 @@
-import { drizzle, BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
-import Database from 'better-sqlite3'
-import * as schema from './schema'
-import { runDataMigrations } from './data-migrations'
-import fs from 'fs'
-import path from 'path'
-import { getDatabasePath, getDataDir } from '@shared/lib/config/data-dir'
-import { captureException } from '@shared/lib/error-reporting'
+/**
+ * The app's database handle.
+ *
+ * `openDatabase()` is the entry point's first boot step; after it `getDb()`
+ * returns the handle and `db` forwards to it. Nothing here names a driver:
+ * the choice lives in `open-database.ts`, the driver packages are imported
+ * only under `drivers/`.
+ */
+import type { SyncAppDatabase } from './drivers/types'
+import { getDb } from './open-database'
 
-// Run migrations on startup
-// This is safe to run on every start - it only applies pending migrations
-function getMigrationsFolder(): string {
-  // In packaged Electron app, use resources path
-  if (process.type === 'browser' && !process.defaultApp) {
-    // We're in packaged Electron main process
-    return path.join(process.resourcesPath, 'migrations')
-  }
-  // Development: use source path
-  return path.join(process.cwd(), 'src/shared/lib/db/migrations')
-}
+export { closeDatabase, getDb, isDatabaseOpen, openDatabase } from './open-database'
+export type { AppDatabase, DatabaseDriver, SyncAppDatabase } from './drivers/types'
 
-// Lazy initialization: defer DB creation until first access so that
-// SUPERAGENT_DATA_DIR / SUPERAGENT_DB_PATH (set at startup) are available.
-let _sqlite: InstanceType<typeof Database> | null = null
-let _db: BetterSQLite3Database<typeof schema> | null = null
-
-function initDb() {
-  if (_db) return
-
-  const dbPath = getDatabasePath()
-  const dataDir = getDataDir()
-
-  // Data dir (settings/agents) and DB parent may differ when SUPERAGENT_DB_PATH is set.
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true })
-  }
-  const dbParent = path.dirname(dbPath)
-  if (!fs.existsSync(dbParent)) {
-    fs.mkdirSync(dbParent, { recursive: true })
-  }
-
-  try {
-    _sqlite = new Database(dbPath)
-    _sqlite.pragma('journal_mode = WAL')
-    _sqlite.pragma('foreign_keys = ON')
-  } catch (err) {
-    captureException(err, {
-      tags: { component: 'database', operation: 'open' },
-      extra: { dbPath, dataDir },
-      level: 'fatal',
-    })
-    throw err
-  }
-
-  _db = drizzle(_sqlite, { schema })
-
-  try {
-    migrate(_db, { migrationsFolder: getMigrationsFolder() })
-  } catch (err) {
-    captureException(err, {
-      tags: { component: 'database', operation: 'migrate' },
-      extra: { dbPath, migrationsFolder: getMigrationsFolder() },
-      level: 'fatal',
-    })
-    throw err
-  }
-
-  // One-time data moves, after the schema is current and before anything
-  // reads: nothing observes a database that is missing one.
-  try {
-    const applied = runDataMigrations(_db)
-    if (applied.length > 0) {
-      console.log(`[database] Applied data migrations: ${applied.join(', ')}`)
-    }
-  } catch (err) {
-    captureException(err, {
-      tags: { component: 'database', operation: 'data-migrate' },
-      extra: { dbPath },
-      level: 'fatal',
-    })
-    throw err
-  }
-}
-
-export const db = new Proxy({} as BetterSQLite3Database<typeof schema>, {
+/**
+ * The handle `getDb()` returns, reached through a proxy so importers bind to
+ * the module, not to one open. Typed as the synchronous view until every
+ * statement is awaited (SUP-865); a run result is opaque, so a change count
+ * is read with `changesOf()` from `./batch`.
+ */
+export const db = new Proxy({} as SyncAppDatabase, {
   get(_target, prop, receiver) {
-    initDb()
-    return Reflect.get(_db!, prop, receiver)
-  },
-})
-
-// Export for direct SQL access if needed
-export const sqlite = new Proxy({} as InstanceType<typeof Database>, {
-  get(_target, prop, receiver) {
-    initDb()
-    return Reflect.get(_sqlite!, prop, receiver)
+    return Reflect.get(getDb(), prop, receiver)
   },
 })

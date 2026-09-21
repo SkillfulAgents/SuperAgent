@@ -61,18 +61,19 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
   // E2E_MOCK at construction and the db resolves its path on first access.
   // Opening the database also runs the data migrations, which import the
   // seeded agent directories into the catalog table the listing reads.
-  const { sqlite } = await import('@shared/lib/db')
-  sqlite.prepare('select 1').get()
+  const { openDatabase } = await import('@shared/lib/db')
+  await openDatabase()
   const { Hono: HonoCtor } = await import('hono')
   const agentsRouter = (await import('@/api/routes/agents')).default
-  const { invalidateSessionSummaryCache } = await import('@shared/lib/services/session-summary-cache')
-  const { createLocalSessionStore } = await import('@shared/lib/agent-actor/local-session-store')
+  const { agentRegistry } = await import('@shared/lib/agent-actor')
 
   const app = new HonoCtor()
   app.route('/api/agents', agentsRouter)
 
+  // The summary cache is the actor's: dropping the actor drops it, and the
+  // next request builds a fresh handle (no I/O) and a cold cache.
   const invalidateSummaryCaches = () => {
-    for (const slug of seeded.agentSlugs) invalidateSessionSummaryCache(createLocalSessionStore(slug))
+    for (const slug of seeded.agentSlugs) agentRegistry.evict(slug)
   }
 
   // One throwaway request, unmeasured: pays Hono's first-request setup and

@@ -5,6 +5,20 @@ import {
   userInputRequestManager,
   type UserInputRequestTransition,
 } from '@shared/lib/user-input/request-manager'
+import {
+  attachInMemoryAgentState,
+  type InMemoryAgentStateDirectory,
+} from '@shared/lib/agent-actor/testing/in-memory-agent-state'
+
+// The reviews live on the agents' actors; the manager under test is a router
+// over them. These build the actors' stores in memory, attached to the
+// singletons the way the registry attaches the real handles, and route the
+// manager under test to the same stores.
+let agents: InMemoryAgentStateDirectory
+function attachAgents(manager: ReviewManager) {
+  agents = attachInMemoryAgentState()
+  manager.attachAgents(agents.pick((state) => state.reviews))
+}
 
 /**
  * What the UI actually sees when a review opens or settles: the registry
@@ -29,10 +43,12 @@ describe('ReviewManager', () => {
     vi.clearAllMocks()
     recordTransitions()
     manager = new ReviewManager()
+    attachAgents(manager)
   })
 
   afterEach(() => {
     manager.rejectAll()
+    agents.reset()
     stopRecording?.()
     vi.useRealTimers()
   })
@@ -700,11 +716,13 @@ describe('ReviewManager shadow registry write-through (Phase 2)', () => {
     vi.useFakeTimers()
     vi.clearAllMocks()
     manager = new ReviewManager()
+    attachAgents(manager)
     userInputRequestManager.reset()
   })
 
   afterEach(() => {
     manager.rejectAll()
+    agents.reset()
     vi.useRealTimers()
   })
 
@@ -810,11 +828,13 @@ describe('ReviewManager as registry adapter (Phase 5)', () => {
     vi.useFakeTimers()
     vi.clearAllMocks()
     manager = new ReviewManager()
+    attachAgents(manager)
     userInputRequestManager.reset()
   })
 
   afterEach(() => {
     manager.rejectAll()
+    agents.reset()
     vi.useRealTimers()
   })
 
