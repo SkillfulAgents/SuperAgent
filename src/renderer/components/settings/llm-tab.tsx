@@ -288,9 +288,10 @@ export function LlmTab() {
                   builtinCatalog={builtinOptions}
                   effectiveCatalog={modelOptions}
                   modelCatalog={settings?.modelCatalog}
+                  modelPricing={settings?.modelPricing}
                   supportsModelSearch={provider.capabilities?.modelSearch}
                   disabled={isLoading}
-                  onChange={(modelCatalog) => updateSettings.mutate({ modelCatalog })}
+                  onChange={(change) => updateSettings.mutate(change)}
                 />
               )}
             </ProviderCard>

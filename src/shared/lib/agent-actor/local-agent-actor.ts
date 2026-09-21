@@ -195,8 +195,8 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
       deps.sessionService.finalizeAutomationStatus(store, sessionId, status),
     ensureDirectory: () => deps.sessionService.ensureSessionsDirectory(store),
     fileRealPathWithinAgent: (sessionId) => deps.sessionService.sessionFileRealPathWithinAgent(store, sessionId),
-    usage: (sessionId, options) =>
-      deps.loadSessionUsageTotals({ files: store.files, transcript: transcriptPath(store, sessionId), ...options }),
+    usage: (sessionId) =>
+      deps.loadSessionUsageTotals({ files: store.files, transcript: transcriptPath(store, sessionId) }),
     byScheduledTask: (taskId) => deps.sessionService.getSessionsByScheduledTask(store, taskId),
     byWebhookTrigger: (triggerId) => deps.sessionService.getSessionsByWebhookTrigger(store, triggerId),
     forScheduledExecution: (taskId, executionAt) =>

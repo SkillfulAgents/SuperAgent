@@ -50,6 +50,7 @@ const BUILTIN: ModelDefinition[] = [
 ]
 
 function renderWithSettings(options?: {
+  modelPricing?: Record<string, { inputPerMtok: number; outputPerMtok: number }>
   modelCatalog?: Record<string, { overrides: unknown[] }>
   catalog?: ModelDefinition[]
   providerId?: TestProvider
@@ -76,6 +77,7 @@ function renderWithSettings(options?: {
         },
       ],
       modelCatalog: options?.modelCatalog ?? {},
+      modelPricing: options?.modelPricing ?? {},
       models: {
         agentModel: 'gpt',
         summarizerModel: 'gpt',
@@ -109,6 +111,45 @@ beforeEach(() => {
 })
 
 describe('LlmTab model catalog editor', () => {
+  it('keeps a shared long-context cliff when a custom model without one is only renamed', async () => {
+    const user = userEvent.setup()
+    // The cliff came from another provider's entry for the same model id; this provider's entry has none.
+    const shared = {
+      inputPerMtok: 1,
+      outputPerMtok: 2,
+      cacheReadPerMtok: 0.05,
+      longContextPriceCliff: { thresholdTokens: 200_000, inputMultiplier: 2, outputMultiplier: 1.5 },
+    }
+    const custom = { id: 'shared-model', label: 'Shared', supportedEfforts: ['low'] }
+    renderWithSettings({
+      modelPricing: { 'shared-model': shared },
+      modelCatalog: { anthropic: { overrides: [custom] } },
+      catalog: [BUILTIN[0], { ...custom, pricing: shared } as ModelDefinition],
+    })
+    await openCatalog(user)
+    await user.click(screen.getByTestId('catalog-customize-shared-model'))
+    const labelField = screen.getByLabelText('Display label')
+    await user.clear(labelField)
+    await user.type(labelField, 'Renamed')
+    await user.click(screen.getByTestId('catalog-save-custom-model'))
+
+    expect(mutateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ modelPricing: { 'shared-model': shared } }),
+    )
+  })
+
+  it('retains the global price when editing a disabled custom model', async () => {
+    const user = userEvent.setup()
+    renderWithSettings({
+      modelPricing: { 'disabled-model': { inputPerMtok: 7, outputPerMtok: 21 } },
+      modelCatalog: { anthropic: { overrides: [{ id: 'disabled-model', label: 'Disabled', supportedEfforts: ['low'], disabled: true }] } },
+    })
+    await openCatalog(user)
+    await user.click(screen.getByTestId('catalog-customize-disabled-model'))
+    expect(screen.getByLabelText('Input price')).toHaveValue(7)
+    expect(screen.getByLabelText('Output price')).toHaveValue(21)
+  })
+
   it('keeps the catalog collapsed until the disclosure is opened', async () => {
     const user = userEvent.setup()
     renderWithSettings()
@@ -156,27 +197,21 @@ describe('LlmTab model catalog editor', () => {
     })
     await user.click(screen.getByTestId('catalog-save-builtin-pricing'))
 
+    // A price edit patches the price alone; it never rewrites the catalog.
     expect(mutateMock).toHaveBeenCalledWith({
-      modelCatalog: {
-        anthropic: {
-          overrides: [{ id: 'gpt-5.5', pricing: { inputPerMtok: 6, outputPerMtok: 30 } }],
-        },
-      },
+      modelPricing: { 'gpt-5.5': { inputPerMtok: 6, outputPerMtok: 30 } },
     })
 
     mutateMock.mockClear()
     firstRender.unmount()
     renderWithSettings({
-      modelCatalog: {
-        anthropic: {
-          overrides: [{ id: 'gpt-5.5', pricing: { inputPerMtok: 6, outputPerMtok: 30 } }],
-        },
-      },
+      modelCatalog: {},
+      modelPricing: { 'gpt-5.5': { inputPerMtok: 6, outputPerMtok: 30 } },
     })
     fireEvent.click(screen.getByTestId('catalog-disclosure-trigger'))
     fireEvent.click(screen.getByTestId('catalog-customize-gpt-5.5'))
     fireEvent.click(screen.getByTestId('catalog-reset-pricing-gpt-5.5'))
-    expect(mutateMock).toHaveBeenCalledWith({ modelCatalog: {} })
+    expect(mutateMock).toHaveBeenCalledWith({ modelPricing: { 'gpt-5.5': null } })
   })
 
   it('requires a label and effort before adding a custom model', async () => {
@@ -294,6 +329,7 @@ describe('LlmTab model catalog editor', () => {
     await user.click(screen.getByTestId('catalog-add-custom-model'))
 
     expect(mutateMock).toHaveBeenCalledWith({
+      modelPricing: { 'qwen/qwen3-max': { inputPerMtok: 0.4, outputPerMtok: 1.2 } },
       modelCatalog: {
         openrouter: {
           overrides: [
@@ -303,7 +339,6 @@ describe('LlmTab model catalog editor', () => {
               family: 'qwen',
               blurb: 'Qwen model from OpenRouter.',
               supportedEfforts: ['low', 'medium', 'high'],
-              pricing: { inputPerMtok: 0.4, outputPerMtok: 1.2 },
               contextWindow: 262144,
               supportsWebSearch: false,
               supportsImageInput: true,
@@ -329,6 +364,7 @@ describe('LlmTab model catalog editor', () => {
       pricing: { inputPerMtok: 1, outputPerMtok: 2 },
     }
     renderWithSettings({
+      modelPricing: { 'custom-model-1': { inputPerMtok: 1, outputPerMtok: 2 } },
       modelCatalog: { anthropic: { overrides: [custom] } },
       catalog: [BUILTIN[0], custom],
     })
@@ -347,6 +383,7 @@ describe('LlmTab model catalog editor', () => {
     await user.click(screen.getByTestId('catalog-save-custom-model'))
 
     expect(mutateMock).toHaveBeenCalledWith({
+      modelPricing: { 'custom-model-1': { inputPerMtok: 1, outputPerMtok: 2 } },
       modelCatalog: {
         anthropic: {
           overrides: [
@@ -356,7 +393,6 @@ describe('LlmTab model catalog editor', () => {
               family: 'custom',
               icon: 'uploaded:test-icon.svg',
               supportedEfforts: ['low'],
-              pricing: { inputPerMtok: 1, outputPerMtok: 2 },
               blurb: 'A carried-through blurb.',
               contextWindow: 100000,
               isDefault: true,
@@ -378,6 +414,7 @@ describe('LlmTab model catalog editor', () => {
     }
 
     renderWithSettings({
+      modelPricing: { 'custom-model-1': { inputPerMtok: 1, outputPerMtok: 2 } },
       modelCatalog: {
         anthropic: {
           overrides: [
@@ -443,6 +480,7 @@ describe('LlmTab model catalog editor', () => {
     mutateMock.mockClear()
     firstRender.unmount()
     renderWithSettings({
+      modelPricing: { 'custom-model-1': { inputPerMtok: 1, outputPerMtok: 2 } },
       modelCatalog: {
         anthropic: {
           overrides: [{ ...customOverride, disabled: true }],

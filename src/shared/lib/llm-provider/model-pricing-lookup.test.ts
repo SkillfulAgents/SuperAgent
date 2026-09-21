@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import MODEL_PRICING from '../services/model-pricing.json'
-import { pricingFor } from './model-pricing-lookup'
+import { pricingFor, restatesBuiltinRate } from './model-pricing-lookup'
 
 vi.mock('../services/model-pricing.json', async (importOriginal) => {
   const actual = await importOriginal<{ default: typeof MODEL_PRICING }>()
@@ -26,6 +26,29 @@ vi.mock('../services/model-pricing.json', async (importOriginal) => {
       },
     },
   }
+})
+
+describe('restatesBuiltinRate', () => {
+  it('recognizes the current card and a historical one, through an alias, and nothing else', () => {
+    const id = 'vendor/synthetic-effective-dated-model-20260101'
+    expect(restatesBuiltinRate(id, { inputPerMtok: 3, outputPerMtok: 15 })).toBe(true)
+    expect(restatesBuiltinRate(id, { inputPerMtok: 2, outputPerMtok: 10, cacheReadPerMtok: 0.2 })).toBe(true)
+    // Mixing the two cards, or changing any rate, is a real override.
+    expect(restatesBuiltinRate(id, { inputPerMtok: 3, outputPerMtok: 10 })).toBe(false)
+    expect(restatesBuiltinRate(id, { inputPerMtok: 3, outputPerMtok: 15, cacheReadPerMtok: 0 })).toBe(false)
+    expect(restatesBuiltinRate('unknown-model', { inputPerMtok: 3, outputPerMtok: 15 })).toBe(false)
+  })
+
+  it('treats a changed speed multiplier as an override even at the built-in token rates', () => {
+    const builtin = pricingFor('claude-opus-4-8')!
+    const rates = { inputPerMtok: builtin.inputPerMtok, outputPerMtok: builtin.outputPerMtok }
+    expect(builtin.speedMultipliers).toEqual({ fast: 2 })
+    expect(restatesBuiltinRate('claude-opus-4-8', { ...rates, speedMultipliers: { fast: 2 } })).toBe(true)
+    expect(restatesBuiltinRate('claude-opus-4-8', { ...rates, speedMultipliers: { fast: 9 } })).toBe(false)
+    expect(restatesBuiltinRate('claude-opus-4-8', { ...rates, speedMultipliers: { slow: 0.5, fast: 2 } })).toBe(false)
+    // A model whose card has no speed tiers: declaring one is an override.
+    expect(restatesBuiltinRate('claude-sonnet-5', { inputPerMtok: 2, outputPerMtok: 10, speedMultipliers: { fast: 2 } })).toBe(false)
+  })
 })
 
 describe('pricingFor', () => {

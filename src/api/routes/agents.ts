@@ -2564,8 +2564,7 @@ agents.get('/:id/sessions/:sessionId/usage', AgentRead(), async (c) => {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const providerId = getSettings().llmProvider ?? 'anthropic'
-    const totals = await actor.sessions.usage(sessionId, { providerId })
+    const totals = await actor.sessions.usage(sessionId)
     return c.json(totals)
   } catch (error) {
     console.error('Failed to calculate session usage:', error)
