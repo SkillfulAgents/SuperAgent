@@ -14,10 +14,10 @@ describe('getDeliveredFileSize', () => {
     expect(getDeliveredFileSize(REAL_RESULT)).toBe(12345)
   })
 
-  it('reads the integrity digest from current delivery metadata', () => {
+  it('ignores obsolete digests in existing delivery metadata', () => {
     const sha256 = 'a'.repeat(64)
     expect(getDeliveredFileMetadata(`Delivered: {"sizeBytes":12345,"sha256":"${sha256}"}`))
-      .toEqual({ sizeBytes: 12345, sha256 })
+      .toEqual({ sizeBytes: 12345 })
   })
 
   it('prefers the contract line over the prose', () => {

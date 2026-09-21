@@ -54,7 +54,7 @@ const resultEntry = (
 const currentResult = (sizeBytes: number, proseSize = sizeBytes): string =>
   `File "output.bin" (${proseSize} bytes) has been delivered to the user.\n\nDelivered: {"sizeBytes":${sizeBytes}}`
 
-const currentResultWithHash = (sizeBytes: number, sha256: string): string =>
+const legacyResultWithHash = (sizeBytes: number, sha256: string): string =>
   `File "output.bin" (${sizeBytes} bytes) has been delivered to the user.\n\nDelivered: ${JSON.stringify({ sizeBytes, sha256 })}`
 
 const legacyResult = (filename: string, sizeBytes: number): string =>
@@ -180,17 +180,17 @@ describe('collectDeliveredFiles', () => {
     }])
   })
 
-  it('projects current delivery integrity metadata', () => {
+  it('accepts existing delivery metadata without exposing obsolete digests', () => {
     const sha256 = 'b'.repeat(64)
     const entries = [
       assistantEntry('assistant-1', 'message-1', [{
         id: 'delivery-1',
         input: { filePath: '/workspace/output.bin' },
       }]),
-      resultEntry('result-1', 'delivery-1', currentResultWithHash(42, sha256)),
+      resultEntry('result-1', 'delivery-1', legacyResultWithHash(42, sha256)),
     ]
 
-    expect(collectDeliveredFiles(entries)).toEqual([expect.objectContaining({ sizeBytes: 42, sha256 })])
+    expect(collectDeliveredFiles(entries)).toEqual([{ deliveryId: 'delivery-1', filename: 'output.bin', sizeBytes: 42 }])
   })
 
   it('accepts legacy prose in block-array results and safely represents traversal-looking names', () => {

@@ -14,7 +14,7 @@ import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from '@shared/li
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
-import { createHash, randomUUID } from 'crypto'
+import { randomUUID } from 'crypto'
 import { and, desc, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
@@ -675,25 +675,6 @@ function attachmentDisposition(filename: string): string {
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`
 }
 
-function verifyDeliveredFileBody(
-  body: ReadableStream<Uint8Array> | null,
-  expectedSha256: string,
-): ReadableStream<Uint8Array> {
-  const hash = createHash('sha256')
-  return (body ?? new ReadableStream<Uint8Array>({ start: (controller) => controller.close() }))
-    .pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        hash.update(chunk)
-        controller.enqueue(chunk)
-      },
-      flush() {
-        if (hash.digest('hex') !== expectedSha256) {
-          throw new XAgentAttachmentError('Delivered file changed after it was published', 409)
-        }
-      },
-    }))
-}
-
 xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), async (c) => {
   const callerSlug = getCallerSlug(c)
   const { slug: rawTargetSlug, sessionId, deliveryId } = c.req.valid('json')
@@ -736,16 +717,11 @@ xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), 
       await upstream.body.cancel().catch(() => {})
       return c.json({ error: 'Delivered file changed after it was published' }, 409)
     }
-    const body = delivery.sha256
-      ? verifyDeliveredFileBody(upstream.body, delivery.sha256)
-      : upstream.body
-    return new Response(body, {
+    return new Response(upstream.body, {
       status: 200,
       headers: {
         'Content-Type': 'application/octet-stream',
-        // Digest validation runs at EOF. Fixed-length HTTP responses can finish
-        // before that validation fails; streaming framing must signal completion.
-        ...(delivery.sha256 ? {} : { 'Content-Length': String(currentSize) }),
+        'Content-Length': String(currentSize),
         'Content-Disposition': attachmentDisposition(delivery.filename),
         'Cache-Control': 'private, no-store, max-age=0',
       },

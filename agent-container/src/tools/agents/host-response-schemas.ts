@@ -43,7 +43,6 @@ export const deliveredFileSchema = z.object({
   filename: z.string(),
   description: z.string().optional(),
   sizeBytes: z.number().int().nonnegative(),
-  sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 })
 
 export const transcriptResultSchema = z.object({

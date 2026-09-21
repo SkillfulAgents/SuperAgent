@@ -26,7 +26,6 @@ export const deliverFileResultBlocksSchema = z.array(z.object({
  */
 export const deliveredFileSchema = z.object({
   sizeBytes: z.number().int().nonnegative(),
-  sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 })
 
 export type DeliveredFile = z.infer<typeof deliveredFileSchema>

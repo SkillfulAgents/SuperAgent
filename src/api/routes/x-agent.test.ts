@@ -15,7 +15,7 @@ import Database from 'better-sqlite3'
 import { eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
-import { createHash, randomUUID } from 'crypto'
+import { randomUUID } from 'crypto'
 import { agentRegistry } from '@shared/lib/agent-actor/registry'
 import type { FileOps, OpenFile } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
@@ -2296,7 +2296,7 @@ describe('/download-file', () => {
     expect((await res.json()).error).toMatch(/changed/i)
   })
 
-  it('aborts a same-size download whose bytes differ from the delivery digest', async () => {
+  it('downloads current same-size contents even when an old delivery recorded a digest', async () => {
     reviewDecisions.push('allow')
     const original = Buffer.from('good')
     const replacement = Buffer.from('evil')
@@ -2304,7 +2304,7 @@ describe('/download-file', () => {
       '/workspace/output/result.bin',
       original.length,
       'delivery-1',
-      createHash('sha256').update(original).digest('hex'),
+      'a'.repeat(64),
     ))
     mockTargetOpen.mockResolvedValue(openBytes(replacement))
 
@@ -2315,21 +2315,22 @@ describe('/download-file', () => {
     })
 
     expect(res.status).toBe(200)
-    await expect(res.arrayBuffer()).rejects.toThrow(/changed after it was published/i)
+    expect(res.headers.get('Content-Length')).toBe(String(replacement.length))
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(replacement)
   })
 
-  it.each([false, true])('validates the digest over real HTTP (changed: %s)', async (changed) => {
+  it.each([false, true])('streams current bytes over real HTTP (truncated: %s)', async (truncated) => {
     const { serve } = await import('@hono/node-server')
     reviewDecisions.push('allow')
     const original = Buffer.alloc(128 * 1024, 65)
-    const bytes = changed ? Buffer.alloc(original.length, 66) : original
+    const bytes = Buffer.alloc(truncated ? original.length / 2 : original.length, 66)
     mockGetTranscript.mockResolvedValue(deliveredFileTranscript(
       '/workspace/output/result.bin', original.length, 'delivery-1',
-      createHash('sha256').update(original).digest('hex'),
+      'a'.repeat(64),
     ))
     let finishUpstream!: () => void
     const upstreamFinished = new Promise<void>((resolve) => { finishUpstream = resolve })
-    mockTargetOpen.mockResolvedValue(openBytes(bytes, bytes.length, new ReadableStream<Uint8Array>({
+    mockTargetOpen.mockResolvedValue(openBytes(bytes, original.length, new ReadableStream<Uint8Array>({
       async start(controller) {
         controller.enqueue(bytes)
         await upstreamFinished
@@ -2353,10 +2354,10 @@ describe('/download-file', () => {
         expect(chunk.done).toBe(false)
         received += chunk.value!.byteLength
       }
-      // The advertised byte count has arrived, but the upstream EOF/digest has
-      // not. The HTTP adapter must not turn those bytes into a successful EOF.
+      // Truncation must fail at EOF; a complete download can finish as soon
+      // as the declared byte count arrives, without a digest pass.
       const completion = reader.read()
-      const assertion = changed
+      const assertion = truncated
         ? expect(completion).rejects.toThrow()
         : expect(completion).resolves.toMatchObject({ done: true })
       finishUpstream()

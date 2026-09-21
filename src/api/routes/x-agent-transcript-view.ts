@@ -20,7 +20,6 @@ export interface DeliveredAgentFile {
   filename: string
   description?: string
   sizeBytes: number
-  sha256?: string
 }
 
 export interface ResolvedDeliveredAgentFile extends DeliveredAgentFile {
@@ -59,7 +58,6 @@ function collectResolvedDeliveredFiles(
         filename: sanitizeUploadFilename(input.data.filePath),
         ...(input.data.description !== undefined ? { description: input.data.description } : {}),
         sizeBytes: metadata.sizeBytes,
-        ...(metadata.sha256 ? { sha256: metadata.sha256 } : {}),
       })
     }
   }
