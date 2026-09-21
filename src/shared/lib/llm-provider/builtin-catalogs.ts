@@ -22,7 +22,7 @@ const ALL_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const STANDARD_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 // Sonnet 4.6 / Opus 4.6: Anthropic accepts max but rejects xhigh (400).
 const CLAUDE_4_6_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'max']
-// gpt-5.4/5.5, grok-4.6, muse-spark ≤1.2: xhigh accepted, max rejected or clamped.
+// gpt-5.4/5.5, grok-4.6/4.7, muse-spark ≤1.2: xhigh accepted, max rejected or clamped.
 const XHIGH_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh']
 // kimi-k3 on Fireworks' Anthropic wire: two real tiers, max ≈ 2.4× high (measured 2026-09-18).
 const KIMI_K3_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'max']
@@ -378,10 +378,24 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     label: 'Grok 4.6',
     blurb: 'xAI Grok, routed via OpenRouter',
     family: 'grok',
+    icon: 'xai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
+    pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+    contextWindow: 500_000,
+    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
+    promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
+  },
+  {
+    id: 'x-ai/grok-4.7',
+    label: 'Grok 4.7',
+    blurb: 'xAI Grok, routed via OpenRouter',
+    family: 'grok',
     isLatest: true,
     isDefault: true,
     icon: 'xai',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
+    // OpenRouter's grok-4.7 card lists low/medium/high/xhigh (fetched 2026-09-21).
+    supportedEfforts: XHIGH_EFFORTS,
     supportsWebSearch: false,
     pricing: { inputPerMtok: 2, outputPerMtok: 6 },
     contextWindow: 500_000,
@@ -442,7 +456,7 @@ export const OPENROUTER_CATALOG: ModelDefinition[] = [
 
 /**
  * Non-Claude models the Platform proxy can serve. Unlike OpenRouter these use
- * BARE ids (`gpt-5.5`, `grok-4.6`): the proxy's routing/pricing all key off bare
+ * BARE ids (`gpt-5.5`, `grok-4.7`): the proxy's routing/pricing all key off bare
  * ids, so a vendor-prefixed slug would miss every match.
  */
 // Responses hosts web_search but not web_fetch — fetch needs a Settings → Web vendor (Exa).
@@ -654,6 +668,20 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   {
     id: 'grok-4.6',
     label: 'Grok 4.6',
+    blurb: 'xAI Grok, served via Platform',
+    family: 'grok',
+    icon: 'xai',
+    supportedEfforts: XHIGH_EFFORTS,
+    supportedSpeeds: PRIORITY_ONLY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
+    contextWindow: 500_000,
+    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
+    promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
+  },
+  {
+    id: 'grok-4.7',
+    label: 'Grok 4.7',
     blurb: 'xAI Grok, served via Platform',
     family: 'grok',
     isLatest: true,

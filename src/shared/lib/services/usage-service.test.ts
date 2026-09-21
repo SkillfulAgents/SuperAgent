@@ -799,6 +799,17 @@ describe('usage-service', () => {
   })
 
   describe('calculateCost — Grok 200K long-context cliff', () => {
+    it('bills grok-4.7 on the same card as grok-4.6', () => {
+      expect(calculateCost('grok-4.7', 100_000, 1_000, 0, 0)).toBeCloseTo(
+        (100_000 * 2 + 1_000 * 6) / 1_000_000,
+        9,
+      )
+      expect(calculateCost('grok-4.7', 250_000, 2_000, 0, 0)).toBeCloseTo(
+        (250_000 * 4 + 2_000 * 12) / 1_000_000,
+        9,
+      )
+    })
+
     it('bills grok-4.6 below 200k at $2 / $6', () => {
       expect(calculateCost('grok-4.6', 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * 2 + 1_000 * 6) / 1_000_000,
@@ -953,6 +964,9 @@ describe('usage-service', () => {
       ['x-ai/grok-build-latest', 2, 6],
       ['grok-4.6', 2, 6],
       ['x-ai/grok-4.6', 2, 6],
+      ['grok-4.7', 2, 6],
+      ['x-ai/grok-4.7', 2, 6],
+      ['x-ai/grok-4.7-20260916', 2, 6],
     ])('prices %s through its canonical rate card', (model, inputRate, outputRate) => {
       expect(
         calculateCost(model, 100_000, 1_000, 0, 0, undefined, aliasPricingTimestamp),
@@ -1287,6 +1301,7 @@ describe('usage-service', () => {
       const grokBase = (100_000 * 2 + 1_000 * 6) / 1_000_000
       expect(await costOf('grok-4.5', { speed: 'fast' }, 'platform')).toBeCloseTo(grokBase * 2, 9)
       expect(await costOf('grok-4.6', { speed: 'fast' }, 'platform')).toBeCloseTo(grokBase * 2, 9)
+      expect(await costOf('grok-4.7', { speed: 'fast' }, 'platform')).toBeCloseTo(grokBase * 2, 9)
     })
 
     it('bills kimi-k3 on the Fireworks fast router at 1.5x', async () => {
