@@ -8,6 +8,7 @@ import { Authenticated, ResolveAgent, AgentUser, getAgentId } from '../middlewar
 import { getVoiceSettings, getAgentCapabilitySettings, type VoiceProvider } from '@shared/lib/config/settings'
 import { getVoiceProvider } from '@shared/lib/voice'
 import { liveMappingSchema, voiceHistorySchema, type LiveAgentContext } from '@shared/lib/voice/live-types'
+import { VOICE_LIVE_BODY_MAX_BYTES } from '@shared/lib/voice/conversation-types'
 import { resolveTtsSpeed } from '@shared/lib/voice/tts-preferences'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
@@ -42,7 +43,7 @@ voice.get('/configured', (c) => {
 
 // Resolve capability through the configured provider; transport and mapping
 // behavior stay in its implementation.
-voice.use('/live/*', limitJsonBody(128 * 1024))
+voice.use('/live/*', limitJsonBody(VOICE_LIVE_BODY_MAX_BYTES))
 function requireConfiguredProvider(c: Context<LimitedJsonBodyEnv>, selected = getVoiceSettings().sttProvider) {
   if (!selected) return c.json({ error: 'No voice provider configured. Set one in Settings > Voice.' }, 400)
   return getVoiceProvider(selected)
