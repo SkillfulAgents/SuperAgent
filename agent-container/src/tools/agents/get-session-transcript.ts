@@ -1,18 +1,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { callHost, textResult, XAgentError } from './host-client'
-
-interface TranscriptMessage {
-  role: string
-  content: string
-  toolName?: string
-}
-
-interface TranscriptResult {
-  status: 'running' | 'idle' | 'awaiting_input'
-  messages: TranscriptMessage[]
-  total: number
-}
+import { transcriptResultSchema } from './host-response-schemas'
 
 export const getSessionTranscriptTool = tool(
   'get_agent_session_transcript',
@@ -32,28 +21,39 @@ If sync=true and the session is currently running, the tool waits up to ~2 minut
   },
   async (args) => {
     try {
-      const data = await callHost<TranscriptResult>('get-transcript', {
+      const data = await callHost('get-transcript', {
         slug: args.slug,
         sessionId: args.session_id,
         sync: args.sync ?? false,
         ...(args.limit ? { limit: args.limit } : {}),
         ...(args.full_transcript ? { fullTranscript: true } : {}),
-      })
+      }, transcriptResultSchema)
       const shown = data.messages.length
       const header = shown < data.total
         ? `status: ${data.status}\nmessages: showing last ${shown} of ${data.total}`
         : `status: ${data.status}\nmessages: ${data.total}`
-      if (data.messages.length === 0) {
-        return textResult(`${header}\n(no messages)`)
-      }
       const offset = data.total - shown
-      const body = data.messages
+      const messageBody = data.messages.length === 0
+        ? '(no messages)'
+        : data.messages
         .map((m, i) => {
           const tool = m.toolName ? ` [${m.toolName}]` : ''
           return `--- #${offset + i + 1} ${m.role}${tool} ---\n${m.content}`
         })
         .join('\n\n')
-      return textResult(`${header}\n\n${body}`)
+      const deliveredFiles = data.deliveredFiles.map((file) => {
+        const instruction = JSON.stringify({
+          slug: args.slug,
+          session_id: args.session_id,
+          delivery_id: file.deliveryId,
+        })
+        const description = file.description ? ` — ${file.description}` : ''
+        return `- ${JSON.stringify(file.filename)} (${file.sizeBytes} bytes)${description}\n  download_agent_file arguments: ${instruction}`
+      })
+      const filesBody = deliveredFiles.length > 0
+        ? `\n\n--- delivered files ---\n${deliveredFiles.join('\n')}`
+        : ''
+      return textResult(`${header}\n\n${messageBody}${filesBody}`)
     } catch (error) {
       const msg = error instanceof XAgentError ? error.message : String(error)
       return textResult(`Failed to read transcript: ${msg}`, true)

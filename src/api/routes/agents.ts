@@ -1,3 +1,4 @@
+import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember } from '@shared/lib/services/agent-members-service'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
@@ -7459,6 +7460,11 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 
   if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
     return c.json({ error: 'Invalid decision' }, 400)
+  }
+
+  const pendingReview = agentRegistry.get(slug).inputs.reviews.pending().find((review) => review.id === reviewId)
+  if (body.decision === 'allow' && requiresOneTimeXAgentReview(pendingReview?.xAgent)) {
+    return c.json({ error: 'File-sharing reviews can only be allowed once' }, 400)
   }
 
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'

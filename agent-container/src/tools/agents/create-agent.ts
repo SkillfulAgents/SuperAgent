@@ -1,11 +1,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { callHost, textResult, XAgentError } from './host-client'
-
-interface CreateAgentResult {
-  slug: string
-  name: string
-}
+import { createAgentResultSchema } from './host-response-schemas'
 
 export const createAgentTool = tool(
   'create_agent',
@@ -21,7 +17,7 @@ Provide a short, descriptive name. Optionally provide a description (one line, w
   },
   async (args) => {
     try {
-      const data = await callHost<CreateAgentResult>('create', args)
+      const data = await callHost('create', args, createAgentResultSchema)
       return textResult(`Created agent "${data.name}" with slug "${data.slug}". You can now invoke it with invoke_agent.`)
     } catch (error) {
       const msg = error instanceof XAgentError ? error.message : String(error)

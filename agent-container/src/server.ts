@@ -41,6 +41,7 @@ import {
   type DeleteWorkspaceEntryRequest,
   type RenameWorkspaceEntryRequest,
 } from './workspace-entry-operations';
+import { registerLegacyFileRoutes } from './legacy-file-routes';
 
 import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
@@ -326,77 +327,7 @@ app.delete('/workspace/entries', async (c) => {
   }
 });
 
-app.get('/files/*', async (c) => {
-  const filePath = c.req.param('*') || '';
-  const fullPath = path.join('/workspace', filePath);
-
-  try {
-    const stats = await fs.promises.stat(fullPath);
-
-    if (stats.isDirectory()) {
-      const files = await fs.promises.readdir(fullPath);
-      const fileInfos = await Promise.all(
-        files.map(async (file) => {
-          const fileFullPath = path.join(fullPath, file);
-          const fileStats = await fs.promises.stat(fileFullPath);
-          return {
-            name: file,
-            path: path.join(filePath, file),
-            type: fileStats.isDirectory() ? 'directory' : 'file',
-            size: fileStats.isFile() ? fileStats.size : undefined,
-            modifiedAt: fileStats.mtime,
-          };
-        })
-      );
-      return c.json(fileInfos);
-    } else {
-      return c.json({
-        name: path.basename(filePath),
-        path: filePath,
-        type: 'file',
-        size: stats.size,
-        modifiedAt: stats.mtime,
-      });
-    }
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      return c.json({ error: 'File or directory not found' }, 404);
-    }
-    console.error('Error accessing file:', error);
-    return c.json({ error: error.message || 'Failed to access file' }, 500);
-  }
-});
-
-app.get('/files/*/content', async (c) => {
-  const filePath = (c.req.param('*') || '').replace('/content', '');
-  const fullPath = path.join('/workspace', filePath);
-
-  try {
-    const content = await fs.promises.readFile(fullPath, 'utf-8');
-    return c.text(content);
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      return c.json({ error: 'File not found' }, 404);
-    }
-    console.error('Error reading file:', error);
-    return c.json({ error: error.message || 'Failed to read file' }, 500);
-  }
-});
-
-app.post('/files/*/upload', async (c) => {
-  const filePath = (c.req.param('*') || '').replace('/upload', '');
-  const fullPath = path.join('/workspace', filePath);
-
-  try {
-    const body = await c.req.text();
-    await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
-    await fs.promises.writeFile(fullPath, body);
-    return c.json({ success: true, path: filePath });
-  } catch (error: any) {
-    console.error('Error uploading file:', error);
-    return c.json({ error: error.message || 'Failed to upload file' }, 500);
-  }
-});
+registerLegacyFileRoutes(app);
 
 app.delete('/files/*', async (c) => {
   const filePath = c.req.param('*') || '';

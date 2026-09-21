@@ -149,6 +149,8 @@ export class InMemoryFileOps implements FileOps {
     const rel = normalizeWorkspacePath(workspacePath)
     if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root is not a file')
     if (this.dirs.has(rel)) throw new WorkspaceFileError('not-a-file')
+    options?.signal?.throwIfAborted()
+    if (options?.overwrite === false && this.files.has(rel)) throw new WorkspaceFileError('already-exists')
     this.ensureDirs(workspaceDirname(rel))
     this.files.set(rel, typeof bytes === 'string' ? new TextEncoder().encode(bytes) : new Uint8Array(bytes))
     this.mtimes.set(rel, Date.now())

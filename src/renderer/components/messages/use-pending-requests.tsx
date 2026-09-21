@@ -1,3 +1,4 @@
+import { xAgentFileTransferSchema, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
@@ -232,12 +233,7 @@ export interface PendingReview {
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
   displayText?: string
-  xAgent?: {
-    targetAgentSlug: string
-    targetAgentName: string
-    operation: 'list' | 'read' | 'invoke' | 'create'
-    preview?: string
-  }
+  xAgent?: XAgentReview
 }
 
 export interface PendingAccountReauth {
@@ -337,6 +333,10 @@ export function reviewFromEnvelope(
       targetAgentName: raw.targetAgentName,
       operation: raw.operation,
       preview: typeof raw.preview === 'string' ? raw.preview : undefined,
+      fileTransfer: xAgentFileTransferSchema.safeParse(raw.fileTransfer).data,
+      attachments: Array.isArray(raw.attachments)
+        ? raw.attachments.filter((item): item is string => typeof item === 'string')
+        : undefined,
     }
   }
   return {

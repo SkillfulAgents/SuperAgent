@@ -1,3 +1,4 @@
+import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 import { AttachedStores, type AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import type { AgentReviews, ReviewDecision, XAgentOperation } from './agent-reviews'
@@ -67,9 +68,10 @@ export class ReviewManager {
     targetAgentName: string,
     operation: XAgentOperation,
     preview?: string,
+    fileTransfer?: XAgentFileTransfer,
     signal?: AbortSignal,
   ): Promise<ReviewDecision> {
-    return this.agents.get(callerAgentSlug).requestXAgent(targetAgentSlug, targetAgentName, operation, preview, signal)
+    return this.agents.get(callerAgentSlug).requestXAgent(targetAgentSlug, targetAgentName, operation, preview, fileTransfer, signal)
   }
 
   denyAllForAgent(agentSlug: string): void {

@@ -11,6 +11,7 @@
 import path from 'path'
 
 export type WorkspaceFileErrorCode =
+  | 'already-exists'
   | 'invalid-path'
   | 'outside-workspace'
   | 'not-found'
@@ -18,7 +19,8 @@ export type WorkspaceFileErrorCode =
   | 'not-a-directory'
   | 'not-accessible'
 
-const STATUS: Record<WorkspaceFileErrorCode, 400 | 403 | 404> = {
+const STATUS: Record<WorkspaceFileErrorCode, 400 | 403 | 404 | 409> = {
+  'already-exists': 409,
   'invalid-path': 400,
   'outside-workspace': 400,
   'not-found': 404,
@@ -28,6 +30,7 @@ const STATUS: Record<WorkspaceFileErrorCode, 400 | 403 | 404> = {
 }
 
 const MESSAGE: Record<WorkspaceFileErrorCode, string> = {
+  'already-exists': 'File already exists',
   'invalid-path': 'Invalid path',
   'outside-workspace': 'Invalid path',
   'not-found': 'File not found',
@@ -38,7 +41,7 @@ const MESSAGE: Record<WorkspaceFileErrorCode, string> = {
 
 export class WorkspaceFileError extends Error {
   /** The HTTP status a route answers with when it lets this error through. */
-  readonly status: 400 | 403 | 404
+  readonly status: 400 | 403 | 404 | 409
 
   constructor(
     readonly code: WorkspaceFileErrorCode,

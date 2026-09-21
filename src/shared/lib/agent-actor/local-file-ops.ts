@@ -8,7 +8,8 @@
  * way the filesystem follows them. `resolve` answers where a path really
  * leads, for the callers that served a file by its real location or scoped a
  * shared sub-tree by it before; checking every operation by real location is
- * tracked separately.
+ * tracked separately. Cross-agent transfers opt into `confined` operations,
+ * which validate canonical paths and opened file handles.
  *
  * Writes go through the same temp-file, fsync, rename core as every other
  * atomic write in the app: a crash never leaves a torn or empty file, a
@@ -50,6 +51,8 @@ function fromFsError(error: unknown): never {
     case 'ENOTDIR':
     case 'ELOOP':
       throw new WorkspaceFileError('not-found')
+    case 'EEXIST':
+      throw new WorkspaceFileError('already-exists')
     case 'EISDIR':
       throw new WorkspaceFileError('not-a-file')
     case 'ENAMETOOLONG':
@@ -231,6 +234,34 @@ export class LocalFileOps implements FileOps {
     return { rel, abs }
   }
 
+  /** Canonical destination parents are checked before creating each child. */
+  private async confinedDestination(workspacePath: string): Promise<{ rel: string; abs: string; root: string }> {
+    const { rel, root } = this.absolute(workspacePath)
+    if (!rel) throw new WorkspaceFileError('invalid-path')
+    const canonicalRoot = await fs.promises.realpath(root).catch(fromFsError)
+    let parent = canonicalRoot
+    for (const segment of path.posix.dirname(rel).split('/').filter((part) => part !== '.')) {
+      const candidate = path.join(parent, segment)
+      await fs.promises.mkdir(candidate).catch((error) => { if (errnoCode(error) !== 'EEXIST') throw error })
+      parent = await fs.promises.realpath(candidate)
+      if (!isPathWithinDir(canonicalRoot, parent)) throw new WorkspaceFileError('outside-workspace')
+    }
+    return { rel, abs: path.join(parent, path.posix.basename(rel)), root: canonicalRoot }
+  }
+
+  private async assertConfinedHandle(handle: fs.promises.FileHandle, location: string, root: string): Promise<void> {
+    // Linux proves the opened inode's location. Other supported hosts additionally
+    // compare the open inode with the canonical pathname before any bytes are read.
+    const opened = await fs.promises.realpath(process.platform === 'linux' ? `/proc/self/fd/${handle.fd}` : location)
+    if (!isPathWithinDir(root, opened) || opened === root) throw new WorkspaceFileError('outside-workspace')
+    const stats = await handle.stat()
+    if (!stats.isFile()) throw new WorkspaceFileError('not-a-file')
+    if (process.platform !== 'linux') {
+      const current = await fs.promises.stat(opened)
+      if (stats.ino !== current.ino || stats.dev !== current.dev) throw new WorkspaceFileError('outside-workspace')
+    }
+  }
+
   /**
    * Run a write, creating the target's parent directories only when the
    * write finds them missing: the common case, the parent in place, costs
@@ -352,13 +383,25 @@ export class LocalFileOps implements FileOps {
     return null
   }
 
-  async open(workspacePath: string): Promise<OpenFile> {
-    const { rel, abs } = this.absolute(workspacePath)
+  async open(workspacePath: string, options?: { confined?: boolean }): Promise<OpenFile> {
+    const { rel, abs, root } = this.absolute(workspacePath)
     if (rel === '') throw new WorkspaceFileError('not-a-file')
-    // One open, nothing else: a directory opens like a file on POSIX and is
-    // refused by the first read or stat of the handle instead.
-    const handle = await fs.promises.open(abs, 'r').catch(fromFsError)
-    return new LocalOpenFile(handle)
+    if (!options?.confined) {
+      return new LocalOpenFile(await fs.promises.open(abs, 'r').catch(fromFsError))
+    }
+    const canonicalRoot = await fs.promises.realpath(root).catch(fromFsError)
+    const canonicalPath = await fs.promises.realpath(abs).catch(fromFsError)
+    if (!isPathWithinDir(canonicalRoot, canonicalPath)) throw new WorkspaceFileError('outside-workspace')
+    const stats = await fs.promises.stat(canonicalPath).catch(fromFsError)
+    if (!stats.isFile()) throw new WorkspaceFileError('not-a-file')
+    const handle = await fs.promises.open(canonicalPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK).catch(fromFsError)
+    try {
+      await this.assertConfinedHandle(handle, canonicalPath, canonicalRoot)
+      return new LocalOpenFile(handle)
+    } catch (error) {
+      await handle.close().catch(() => {})
+      throw error
+    }
   }
 
   async read(workspacePath: string, range?: ByteRange): Promise<ReadableStream<Uint8Array>> {
@@ -385,6 +428,10 @@ export class LocalFileOps implements FileOps {
   }
 
   async putDoc(workspacePath: string, bytes: Uint8Array | string, options?: WriteOptions): Promise<void> {
+    if (options?.confined || options?.overwrite === false || options?.signal) {
+      await this.write(workspacePath, typeof bytes === 'string' ? Buffer.from(bytes) : bytes, { ...options, flush: true })
+      return
+    }
     const { abs } = this.forWrite(workspacePath)
     const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : asBuffer(bytes)
     await this.writing(abs, () => writeFileAtomicStream(abs, [data], atomicWriteOptions(options))).catch(fromWriteError)
@@ -395,9 +442,9 @@ export class LocalFileOps implements FileOps {
     body: ReadableStream<Uint8Array> | Uint8Array,
     options?: WriteOptions,
   ): Promise<{ size: number }> {
-    let target: { rel: string; abs: string }
+    let target: { rel: string; abs: string; root?: string }
     try {
-      target = this.forWrite(workspacePath)
+      target = options?.confined ? await this.confinedDestination(workspacePath) : this.forWrite(workspacePath)
     } catch (error) {
       // The caller may already hold the source open; a refused destination
       // must not leave it dangling.
@@ -406,7 +453,7 @@ export class LocalFileOps implements FileOps {
     }
     const source = body instanceof Uint8Array
       ? null
-      : Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>)
+      : Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>, { signal: options?.signal })
     // The source can fail before the writer reads it: a zip entry that
     // inflates past its declared size is failed by the reader at once, while
     // the writer is still opening its temp file. A stream failing with no
@@ -415,9 +462,22 @@ export class LocalFileOps implements FileOps {
     source?.on('error', () => {})
     const chunks = source ?? [asBuffer(body as Uint8Array)]
     try {
-      await this.writing(target.abs, () =>
-        writeFileAtomicStream(target.abs, chunks, { ...atomicWriteOptions(options), fsync: options?.flush === true }),
-      )
+      options?.signal?.throwIfAborted()
+      const attempt = () => writeFileAtomicStream(target.abs, chunks, {
+        ...atomicWriteOptions(options),
+        fsync: options?.flush === true,
+        overwrite: options?.overwrite,
+        validate: async (handle, temporaryPath) => {
+          options?.signal?.throwIfAborted()
+          if (target.root) {
+            await this.assertConfinedHandle(handle, temporaryPath, target.root)
+            const parent = path.dirname(target.abs)
+            if (await fs.promises.realpath(parent) !== parent) throw new WorkspaceFileError('outside-workspace')
+          }
+        },
+      })
+      if (options?.confined) await attempt()
+      else await this.writing(target.abs, attempt)
     } catch (error) {
       // A destination that could not be opened (or written) leaves the
       // source unread; end it, or the file behind it stays open.
@@ -428,8 +488,8 @@ export class LocalFileOps implements FileOps {
     return { size: stat.size }
   }
 
-  async delete(workspacePath: string, options?: { recursive?: boolean }): Promise<void> {
-    const { rel, abs } = this.absolute(workspacePath)
+  async delete(workspacePath: string, options?: { recursive?: boolean; confined?: boolean }): Promise<void> {
+    const { rel, abs, root } = this.absolute(workspacePath)
     if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root cannot be deleted')
     // lstat, not stat: a link is removed as a link, never followed.
     let stat: fs.Stats
@@ -442,7 +502,20 @@ export class LocalFileOps implements FileOps {
     if (stat.isDirectory() && !options?.recursive) {
       throw new WorkspaceFileError('not-a-file', 'Path is a directory; delete it with recursive')
     }
-    await fs.promises.rm(abs, { recursive: stat.isDirectory(), force: true }).catch(fromFsError)
+    let destination = abs
+    if (options?.confined) {
+      if (stat.isSymbolicLink()) throw new WorkspaceFileError('outside-workspace')
+      const canonicalRoot = await fs.promises.realpath(root).catch(fromFsError)
+      destination = await fs.promises.realpath(abs).catch(fromFsError)
+      if (!isPathWithinDir(canonicalRoot, destination) || destination === canonicalRoot) {
+        throw new WorkspaceFileError('outside-workspace')
+      }
+      const current = await fs.promises.lstat(destination).catch(fromFsError)
+      if (current.ino !== stat.ino || current.dev !== stat.dev || current.isSymbolicLink()) {
+        throw new WorkspaceFileError('outside-workspace')
+      }
+    }
+    await fs.promises.rm(destination, { recursive: stat.isDirectory(), force: true }).catch(fromFsError)
   }
 
   async mkdir(workspacePath: string): Promise<void> {
