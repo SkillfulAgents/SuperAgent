@@ -1,3 +1,4 @@
+import { withGlobalModelPricing } from '@shared/lib/llm-provider/global-pricing'
 import { canonicalPricingId } from '@shared/lib/llm-provider/model-pricing-ids'
 import type { GlobalModelPricing, GlobalModelPricingPatch } from '@shared/lib/llm-provider/global-pricing-schema'
 import { useMemo, useState } from 'react'
@@ -166,10 +167,10 @@ export function CatalogEditor({
       }
     }
 
-    return customIds
+    return withGlobalModelPricing(customIds
       .map((id) => effectiveById.get(id) ?? modelFromOverride(overrideById.get(id)!))
-      .filter((model): model is ModelDefinition => model !== null)
-  }, [builtinIds, effectiveCatalog, overrideById, overrides])
+      .filter((model): model is ModelDefinition => model !== null), modelPricing)
+  }, [builtinIds, effectiveCatalog, overrideById, overrides, modelPricing])
 
   const [customDialog, setCustomDialog] = useState<CustomDialogState>(null)
   const [editingBuiltin, setEditingBuiltin] = useState<ModelDefinition | null>(null)

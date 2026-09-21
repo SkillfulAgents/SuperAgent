@@ -111,6 +111,18 @@ beforeEach(() => {
 })
 
 describe('LlmTab model catalog editor', () => {
+  it('retains the global price when editing a disabled custom model', async () => {
+    const user = userEvent.setup()
+    renderWithSettings({
+      modelPricing: { 'disabled-model': { inputPerMtok: 7, outputPerMtok: 21 } },
+      modelCatalog: { anthropic: { overrides: [{ id: 'disabled-model', label: 'Disabled', supportedEfforts: ['low'], disabled: true }] } },
+    })
+    await openCatalog(user)
+    await user.click(screen.getByTestId('catalog-customize-disabled-model'))
+    expect(screen.getByLabelText('Input price')).toHaveValue(7)
+    expect(screen.getByLabelText('Output price')).toHaveValue(21)
+  })
+
   it('keeps the catalog collapsed until the disclosure is opened', async () => {
     const user = userEvent.setup()
     renderWithSettings()
@@ -325,6 +337,7 @@ describe('LlmTab model catalog editor', () => {
       pricing: { inputPerMtok: 1, outputPerMtok: 2 },
     }
     renderWithSettings({
+      modelPricing: { 'custom-model-1': { inputPerMtok: 1, outputPerMtok: 2 } },
       modelCatalog: { anthropic: { overrides: [custom] } },
       catalog: [BUILTIN[0], custom],
     })
@@ -374,6 +387,7 @@ describe('LlmTab model catalog editor', () => {
     }
 
     renderWithSettings({
+      modelPricing: { 'custom-model-1': { inputPerMtok: 1, outputPerMtok: 2 } },
       modelCatalog: {
         anthropic: {
           overrides: [
@@ -439,6 +453,7 @@ describe('LlmTab model catalog editor', () => {
     mutateMock.mockClear()
     firstRender.unmount()
     renderWithSettings({
+      modelPricing: { 'custom-model-1': { inputPerMtok: 1, outputPerMtok: 2 } },
       modelCatalog: {
         anthropic: {
           overrides: [{ ...customOverride, disabled: true }],
