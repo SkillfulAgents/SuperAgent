@@ -38,6 +38,9 @@ import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { getOrCreateHostToken } from './host-token-store'
 import { getSubagentModelCatalog } from './subagent-model-catalog'
+import { getPlatformContainerToken } from '../platform-attribution/container-token'
+import { getPlatformProxyBaseUrl } from '../platform-auth/config'
+import { rewriteLoopbackForContainer } from '../llm-provider/container-url'
 
 const execAsync = promisify(exec)
 
@@ -1873,6 +1876,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   protected async buildAgentEnv(extra?: Record<string, string>, agentName?: string): Promise<Record<string, string>> {
     const settings = getSettings()
     const provider = getActiveLlmProvider()
+    const platformToken = await getPlatformContainerToken(this.config.agentId)
     const merged: Record<string, string | undefined> = {
       ...(await provider.getContainerEnvVars(this.agentIdentityForEnv(agentName))),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
@@ -1883,6 +1887,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       ENABLE_TOOL_SEARCH: settings.enableToolSearch === false ? 'false' : provider.toolSearchEnv,
       ...this.config.envVars,
       ...extra,
+      // Platform services stay available with any LLM provider. Pin these after
+      // custom config, including clearing stale overrides when disconnected.
+      PLATFORM_BASE_URL: platformToken ? rewriteLoopbackForContainer(getPlatformProxyBaseUrl()) : undefined,
+      PLATFORM_AUTH_TOKEN: platformToken,
     }
     const out: Record<string, string> = {}
     for (const [key, value] of Object.entries(merged)) {

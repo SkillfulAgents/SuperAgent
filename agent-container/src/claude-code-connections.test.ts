@@ -174,6 +174,28 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
   let claudeProcess: ClaudeCodeProcess | undefined
   useRuntimeEnv()
 
+  it.each([true, false])('pins Platform credentials with Platform connected=%s', async (connected) => {
+    vi.stubEnv('PLATFORM_BASE_URL', connected ? 'https://platform.example' : undefined)
+    vi.stubEnv('PLATFORM_AUTH_TOKEN', connected ? 'platform-token::owner' : undefined)
+    try {
+      claudeProcess = new ClaudeCodeProcess({
+        sessionId: 'platform-services', workingDirectory: '/tmp',
+        customEnvVars: {
+          ANTHROPIC_BASE_URL: 'https://other-llm.example', ANTHROPIC_AUTH_TOKEN: 'llm-token',
+          PLATFORM_BASE_URL: 'https://wrong.example', PLATFORM_AUTH_TOKEN: 'wrong-token',
+        },
+      })
+      await claudeProcess.start()
+      expect(calls[0].options.env).toMatchObject({
+        ANTHROPIC_BASE_URL: 'https://other-llm.example', ANTHROPIC_AUTH_TOKEN: 'llm-token',
+        PLATFORM_BASE_URL: connected ? 'https://platform.example' : undefined,
+        PLATFORM_AUTH_TOKEN: connected ? 'platform-token::owner' : undefined,
+      })
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   async function startProcess(sessionId: string): Promise<ClaudeCodeProcess> {
     claudeProcess = new ClaudeCodeProcess({ sessionId, workingDirectory: '/tmp' })
     await claudeProcess.start()

@@ -1074,6 +1074,10 @@ export class ClaudeCodeProcess extends EventEmitter {
         // vars, and anything else set on the container.
         ...process.env,
         ...this.customEnvVars,
+        // Platform services use the host-injected credentials across every
+        // session, regardless of its LLM provider or custom env overrides.
+        PLATFORM_BASE_URL: process.env.PLATFORM_BASE_URL,
+        PLATFORM_AUTH_TOKEN: process.env.PLATFORM_AUTH_TOKEN,
         // Emit `session_state_changed` system events (idle/running/requires_action).
         // The host treats `idle` as the authoritative end-of-session signal (a
         // 'result' alone doesn't end it — queued messages can keep the run going).

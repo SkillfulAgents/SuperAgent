@@ -24,7 +24,8 @@ docker run -p 3000:3000 \
 
 - `PORT` - Server port (default: 3000)
 - `ANTHROPIC_API_KEY` - Your Anthropic API key
-- `ANTHROPIC_BASE_URL` - Custom API base URL (optional)
+- `ANTHROPIC_BASE_URL` - Custom LLM API base URL (optional)
+- `PLATFORM_BASE_URL` / `PLATFORM_AUTH_TOKEN` - Platform service proxy URL and attributed token, supplied by the host whenever Platform is connected, independently of the LLM provider
 
 ## API Reference
 
