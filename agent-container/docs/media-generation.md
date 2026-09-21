@@ -12,8 +12,8 @@ not require the user to create a Replicate account or supply an API key.
 Use:
 
 ```text
-Base: $ANTHROPIC_BASE_URL/v1/replicate
-Authorization: Bearer $ANTHROPIC_AUTH_TOKEN
+Base: $PLATFORM_BASE_URL/v1/replicate
+Authorization: Bearer $PLATFORM_AUTH_TOKEN
 ```
 
 Never print either environment variable.
@@ -26,8 +26,8 @@ works, and there is no separate Gamut allowlist to consult.
 ### 1. List
 
 ```bash
-curl -sS "$ANTHROPIC_BASE_URL/v1/replicate/models?kind=image" \
-  -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN"
+curl -sS "$PLATFORM_BASE_URL/v1/replicate/models?kind=image" \
+  -H "Authorization: Bearer $PLATFORM_AUTH_TOKEN"
 ```
 
 Always pass `kind`. Valid values are `image`, `video`, `audio`,

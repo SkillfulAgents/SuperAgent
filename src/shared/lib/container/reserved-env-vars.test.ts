@@ -16,6 +16,8 @@ describe('reserved-env-vars', () => {
     for (const key of [
       'PROXY_BASE_URL',
       'PROXY_TOKEN',
+      'PLATFORM_BASE_URL',
+      'PLATFORM_AUTH_TOKEN',
       'SUPERAGENT_HOST_API_URL',
       'SUPERAGENT_AGENT_SLUG',
       'CONNECTED_ACCOUNTS',
