@@ -4,7 +4,7 @@
  */
 
 import { IMESSAGE_PHONE_E164 } from './config-schema'
-import { resolveAppLinkContext } from './utils'
+import { resolveAppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { GAMUT_CONTACT_PHOTO_JPEG_BASE64 } from './gamut-contact-photo'
 
 const GAMUT_MARKETING_URL = 'https://gamut.so'

@@ -6,8 +6,8 @@ import { IntegrationDeleteButton } from './integration-delete-button'
 import { makeChatIntegration as makeIntegration } from './test-factories'
 
 const deleteAsync = vi.fn().mockResolvedValue(undefined)
-vi.mock('@renderer/hooks/use-chat-integrations', () => ({
-  useDeleteChatIntegration: () => ({ mutateAsync: deleteAsync, isPending: false }),
+vi.mock('@renderer/hooks/use-agent-integrations', () => ({
+  useDeleteAgentIntegration: () => ({ mutateAsync: deleteAsync, isPending: false }),
 }))
 
 describe('IntegrationDeleteButton', () => {

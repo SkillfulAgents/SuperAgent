@@ -1,5 +1,5 @@
 /**
- * Chat Integration Setup Dialog — standalone per-provider setup flow.
+ * Chat integration setup form — provider-specific instructions and credentials.
  *
  * Opened from the agent home "Chat via …" rows or the Chat settings tab.
  * Renders provider-specific instructions, credential fields, credential
@@ -15,16 +15,14 @@ import { Switch } from '@renderer/components/ui/switch'
 import { SessionTimeoutSelect } from './integration-settings-controls'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import {
-  Dialog,
-  DialogContent,
   DialogHeader,
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import {
-  useCreateChatIntegration,
+  useCreateAgentIntegration,
   useTestChatIntegrationCredentials,
-  ChatIntegrationApiError,
-} from '@renderer/hooks/use-chat-integrations'
+  AgentIntegrationApiError,
+} from '@renderer/hooks/use-agent-integrations'
 import { Loader2, CheckCircle, AlertCircle, Copy, Check, Eye, EyeOff } from 'lucide-react'
 import { IMESSAGE_PHONE_E164, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 
@@ -151,35 +149,7 @@ const PROVIDER_INFO: Record<ChatProvider, {
   },
 }
 
-interface ChatIntegrationSetupDialogProps {
-  agentSlug: string
-  /** Non-null opens the dialog for that provider; null is closed. */
-  provider: ChatProvider | null
-  onOpenChange: (open: boolean) => void
-}
-
-export function ChatIntegrationSetupDialog({
-  agentSlug,
-  provider,
-  onOpenChange,
-}: ChatIntegrationSetupDialogProps) {
-  return (
-    <Dialog open={!!provider} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[85vh] overflow-hidden">
-        {provider && (
-          <SetupForm
-            key={provider}
-            agentSlug={agentSlug}
-            provider={provider}
-            onClose={() => onOpenChange(false)}
-          />
-        )}
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function SetupForm({
+export function ChatIntegrationSetupForm({
   agentSlug,
   provider,
   onClose,
@@ -188,7 +158,7 @@ function SetupForm({
   provider: ChatProvider
   onClose: () => void
 }) {
-  const createIntegration = useCreateChatIntegration()
+  const createIntegration = useCreateAgentIntegration()
   const testCredentials = useTestChatIntegrationCredentials()
 
   const [formData, setFormData] = useState<Record<string, string>>({})
@@ -477,7 +447,7 @@ function SetupForm({
 
         {createIntegration.error && (
           <p className="text-xs text-red-500">
-            {createIntegration.error instanceof ChatIntegrationApiError && createIntegration.error.code === 'duplicate_bot_token'
+            {createIntegration.error instanceof AgentIntegrationApiError && createIntegration.error.code === 'duplicate_bot_token'
               ? provider === 'imessage'
                 ? 'This phone number is already connected to another integration. Remove the existing one first.'
                 : 'This bot is already connected to another integration. Remove the existing one first, or use a different bot.'
