@@ -7,19 +7,14 @@ import {
   connectionRuntime,
   rememberSessionRuntime,
 } from '@shared/lib/llm-provider/connection-runtime'
-import { getAccessCredential } from '@shared/lib/llm-provider/connection-credentials'
 
 const routes = new Hono()
 routes.use('*', IsAgent())
 const requestSchema = z.object({
   sessionId: z.string().min(1),
   connectionId: z.string().optional(),
-  rejectedGeneration: z.number().int().optional(),
 })
-routes.post('/:operation', async (c) => {
-  const operation = c.req.param('operation')
-  if (operation !== 'resolve' && operation !== 'credentials')
-    return c.json({ error: 'Not found' }, 404)
+routes.post('/resolve', async (c) => {
   const parsed = requestSchema.safeParse(await c.req.json())
   if (!parsed.success) return c.json({ error: 'Invalid credential request' }, 400)
   const input = parsed.data
@@ -38,16 +33,6 @@ routes.post('/:operation', async (c) => {
   c.header('Cache-Control', 'no-store')
   if (input.connectionId && input.connectionId !== selected.connectionId)
     return c.json({ error: 'Session connection changed' }, 409)
-  if (operation === 'credentials') {
-    const credential = await getAccessCredential(selected.connectionId, input.rejectedGeneration)
-    // Platform continues using the agent/member-attributed bearer.
-    if (selected.provider.id === 'platform') {
-      credential.accessToken =
-        (await selected.provider.getContainerEnvVars({ id: slug })).ANTHROPIC_AUTH_TOKEN ??
-        credential.accessToken
-    }
-    return c.json(credential)
-  }
   const runtime = await connectionRuntime(selected, slug)
   rememberSessionRuntime(slug, input.sessionId, runtime)
   return c.json(runtime)

@@ -22,7 +22,6 @@ import { LLM_PROVIDER_IDS } from './provider-types'
 import { type ModelDefinition } from './model-catalog-schema'
 import {
   connectionConfigSchema,
-  connectionCredentialsSchema,
   connectionInputSchema,
   modelSelectionSchema,
   resolveSelection,
@@ -35,15 +34,10 @@ export type ConnectionViewer = { userId: string | null; admin: boolean }
 const providerSchema = z.enum(LLM_PROVIDER_IDS)
 
 export function providerForConnection(
-  row: Pick<ConnectionRow, 'provider' | 'config' | 'credentials'>
+  row: Pick<ConnectionRow, 'provider' | 'config'>
 ) {
   const config = parseConnectionJson(connectionConfigSchema, row.config)
   const apiKeys = { ...config.apiKeys }
-  if (row.credentials) {
-    const credential = parseConnectionJson(connectionCredentialsSchema, row.credentials)
-    const key = providerCredentialFields[providerSchema.parse(row.provider)][0]
-    if (key) apiKeys[key] = credential.accessToken
-  }
   return createLlmProvider(providerSchema.parse(row.provider), {
     apiKeys,
     env: Object.fromEntries(
@@ -97,7 +91,6 @@ export async function listConnections(
       ownerName,
       managed: row.managed,
       isConfigured: provider.getApiKeyStatus().isConfigured,
-      state: row.state,
       catalog: connectionCatalog(row),
       browserModel: row.browserModel,
       dashboardModel: row.dashboardModel,
@@ -198,12 +191,6 @@ export async function saveConnection(
     ) {
       throw new Error('Change the app default before removing its model')
     }
-    const credentialsChanged = providerCredentialFields[input.provider].some(
-      (key) =>
-        key !== 'genericBaseUrl' &&
-        key !== 'bedrockRegion' &&
-        Object.hasOwn(input.config.apiKeys, key)
-    )
     const values = {
       name: input.name,
       provider: input.provider,
@@ -212,8 +199,6 @@ export async function saveConnection(
       catalog: JSON.stringify(catalog),
       browserModel: input.browserModel ?? null,
       dashboardModel: input.dashboardModel ?? null,
-      state: credentialsChanged ? ('ready' as const) : (previous?.state ?? ('ready' as const)),
-      ...(credentialsChanged ? { credentials: null } : {}),
       updatedAt: new Date(),
     }
     if (previous) {
@@ -222,8 +207,6 @@ export async function saveConnection(
         .set({
           ...values,
           generation: sql`${llmConnections.generation} + 1`,
-          refreshLease: null,
-          refreshLeaseUntil: null,
         })
         .where(eq(llmConnections.id, connectionId))
         .run()
@@ -341,26 +324,10 @@ export async function resolveSelectionHierarchy(
   return root
 }
 
-export async function resolveExecutionSelection(
-  ...candidates: (ModelSelection | null | undefined)[]
-): Promise<ResolvedConnection> {
-  return withCurrentCredentials(await resolveSelectionHierarchy(...candidates))
-}
+export const resolveExecutionSelection = resolveSelectionHierarchy
 
 export async function resolveHelperSelection(): Promise<ResolvedConnection> {
   const override = await resolveConnectionSelection(getSettings().llmSummarizer)
-  if (override?.connection.userId === null) return withCurrentCredentials(override)
-  return resolveExecutionSelection()
-}
-
-/** Refresh only for execution; UI/reference reads never trigger an exchange. */
-export async function withCurrentCredentials(
-  selection: ResolvedConnection
-): Promise<ResolvedConnection> {
-  if (!selection.connection.credentials) return selection
-  const { getAccessCredential } = await import('./connection-credentials')
-  await getAccessCredential(selection.connectionId)
-  const current = await getConnection(selection.connectionId)
-  if (!current) throw new Error('Connection no longer exists')
-  return { ...selection, connection: current, provider: providerForConnection(current) }
+  if (override?.connection.userId === null) return override
+  return resolveSelectionHierarchy()
 }

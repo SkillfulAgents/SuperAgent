@@ -1,4 +1,3 @@
-import { getAccessCredential } from '@shared/lib/llm-provider/connection-credentials'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { Authenticated, IsAdmin } from '../middleware/auth'
@@ -66,11 +65,10 @@ routes.post('/validate', async (c) => {
   const body = z
     .object({ id: z.string().optional(), connection: z.unknown() })
     .parse(await c.req.json())
-  const { input, previous, config } = await prepareConnection(body.connection, viewer(c), body.id)
+  const { input, config } = await prepareConnection(body.connection, viewer(c), body.id)
   const provider = providerForConnection({
     provider: input.provider,
     config: JSON.stringify(config),
-    credentials: previous?.credentials ?? null,
   })
   if (provider instanceof BedrockLlmProvider && !provider.getEffectiveApiKey()) {
     const env = await provider.getContainerEnvVars()
@@ -89,14 +87,9 @@ routes.post('/validate', async (c) => {
   )
 })
 routes.get('/:id/models/search', async (c) => {
-  let row = await getConnection(c.req.param('id'))
+  const row = await getConnection(c.req.param('id'))
   if (!row) return c.json({ error: 'Connection not found' }, 404)
   assertManageConnection(row, viewer(c))
-  if (row.credentials) {
-    await getAccessCredential(row.id)
-    row = await getConnection(row.id)
-    if (!row) return c.json({ error: 'Connection not found' }, 404)
-  }
   return c.json({ data: await providerForConnection(row).searchModels(c.req.query('q') ?? '') })
 })
 export default routes

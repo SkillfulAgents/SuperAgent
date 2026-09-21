@@ -43,11 +43,7 @@ export const llmConnections = sqliteTable('llm_connections', {
   catalog: text('catalog').notNull(),
   browserModel: text('browser_model'),
   dashboardModel: text('dashboard_model'),
-  credentials: text('credentials'),
   generation: integer('generation').notNull().default(0),
-  state: text('state', { enum: ['ready', 'reconnect'] }).notNull().default('ready'),
-  refreshLease: text('refresh_lease'),
-  refreshLeaseUntil: integer('refresh_lease_until'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, table => ({

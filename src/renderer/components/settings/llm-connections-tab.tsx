@@ -110,11 +110,7 @@ export function LlmConnectionsTab() {
             <div className="text-xs text-muted-foreground">
               {connection.userId ? (connection.ownerName ?? 'Personal') : 'Global'}
               {connection.managed ? ' · Managed by your Platform login' : ''}
-              {connection.state === 'reconnect'
-                ? ' · Reconnect needed'
-                : !connection.isConfigured
-                  ? ' · Not configured'
-                  : ''}
+              {!connection.isConfigured ? ' · Not configured' : ''}
             </div>
           </div>
           {connection.canManage && (

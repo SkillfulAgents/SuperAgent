@@ -56,11 +56,6 @@ import { importLlmConnections } from '../db/data-migrations/0003-import-llm-conn
 import { runDataMigrations } from '../db/data-migrations'
 import { syncProviderSettings, ensureManagedPlatformConnection } from './connection-settings'
 import { connectionRuntime, withSessionSelection } from './connection-runtime'
-import {
-  registerCredentialRefresher,
-  replaceConnectionCredentials,
-  getAccessCredential,
-} from './connection-credentials'
 
 let handle: TestDatabase
 const admin = { userId: null, admin: true }
@@ -267,54 +262,6 @@ describe('LLM connections', () => {
   })
 })
 
-describe('app-owned refresh', () => {
-  it('coalesces concurrent refresh and reuses a newer generation after a late rejection', async () => {
-    const id = await add()
-    await replaceConnectionCredentials(id, {
-      accessToken: 'expired',
-      refreshToken: 'refresh-1',
-      expiresAt: 1,
-    })
-    const refresh = vi.fn(async () => ({
-      accessToken: 'new-access',
-      refreshToken: 'refresh-2',
-      expiresAt: Date.now() + 3_600_000,
-    }))
-    registerCredentialRefresher('generic', refresh)
-    const values = await Promise.all(Array.from({ length: 8 }, () => getAccessCredential(id)))
-    expect(refresh).toHaveBeenCalledTimes(1)
-    expect(new Set(values.map((v) => v.generation)).size).toBe(1)
-    expect(values[0]).not.toHaveProperty('refreshToken')
-    expect(await getAccessCredential(id, 1)).toEqual(values[0])
-    expect(refresh).toHaveBeenCalledTimes(1)
-  })
-  it('cannot resurrect a connection deleted during refresh', async () => {
-    const id = await add()
-    await replaceConnectionCredentials(id, {
-      accessToken: 'expired',
-      refreshToken: 'refresh',
-      expiresAt: 1,
-    })
-    let finish!: (value: { accessToken: string; expiresAt: number }) => void
-    let entered!: () => void
-    const started = new Promise<void>((resolve) => {
-      entered = resolve
-    })
-    registerCredentialRefresher('generic', () => {
-      entered()
-      return new Promise((resolve) => {
-        finish = resolve
-      })
-    })
-    const request = getAccessCredential(id)
-    await started
-    await deleteConnection(id, admin)
-    finish({ accessToken: 'late', expiresAt: Date.now() + 3_600_000 })
-    await expect(request).rejects.toThrow('no longer exists')
-    expect(await getConnection(id)).toBeNull()
-  })
-})
-
 it('uses session connection overrides and falls back to its main model when removed', async () => {
   const id = await add()
   await setGlobalSelection('default', { connectionId: id, model: 'a' })
@@ -335,78 +282,6 @@ it('uses session connection overrides and falls back to its main model when remo
     CLAUDE_CODE_USE_BEDROCK: '',
     AWS_SECRET_ACCESS_KEY: '',
   })
-})
-
-it('uses one current credential for both execution and helpers, without refreshing on a reference read', async () => {
-  const id = await add()
-  await setGlobalSelection('default', { connectionId: id, model: 'a' })
-  await replaceConnectionCredentials(id, {
-    accessToken: 'expired',
-    refreshToken: 'refresh',
-    expiresAt: 1,
-  })
-  const refresh = vi.fn(async () => ({
-    accessToken: 'fresh',
-    refreshToken: 'rotated',
-    expiresAt: Date.now() + 3600000,
-  }))
-  registerCredentialRefresher('generic', refresh)
-  expect((await resolveSelectionHierarchy()).connectionId).toBe(id)
-  expect(refresh).not.toHaveBeenCalled()
-  const [session, helper] = await Promise.all([
-    resolveExecutionSelection(),
-    resolveHelperSelection(),
-  ])
-  expect(session.provider.getEffectiveApiKey()).toBe('fresh')
-  expect(helper.provider.getEffectiveApiKey()).toBe('fresh')
-  expect(refresh).toHaveBeenCalledTimes(1)
-})
-
-it('keeps a reconnect that wins against an in-flight refresh', async () => {
-  const id = await add()
-  await replaceConnectionCredentials(id, {
-    accessToken: 'old',
-    refreshToken: 'old-refresh',
-    expiresAt: 1,
-  })
-  let finish!: (value: { accessToken: string; expiresAt: number }) => void
-  let entered!: () => void
-  const started = new Promise<void>((resolve) => {
-    entered = resolve
-  })
-  registerCredentialRefresher('generic', () => {
-    entered()
-    return new Promise((resolve) => {
-      finish = resolve
-    })
-  })
-  const pending = getAccessCredential(id)
-  await started
-  await replaceConnectionCredentials(id, {
-    accessToken: 'reconnected',
-    refreshToken: 'new-refresh',
-    expiresAt: Date.now() + 3600000,
-  })
-  finish({ accessToken: 'stale-result', expiresAt: Date.now() + 3600000 })
-  expect((await pending).accessToken).toBe('reconnected')
-})
-
-it('reports a refresh failure without inheriting another account', async () => {
-  const id = await add()
-  await setGlobalSelection('default', { connectionId: id, model: 'a' })
-  const personal = await add('Second')
-  await replaceConnectionCredentials(personal, {
-    accessToken: 'old',
-    refreshToken: 'bad',
-    expiresAt: 1,
-  })
-  registerCredentialRefresher('generic', async () => {
-    throw new Error('rejected')
-  })
-  await expect(resolveExecutionSelection({ connectionId: personal, model: 'a' })).rejects.toThrow(
-    'Reconnect'
-  )
-  expect((await getConnection(personal))?.state).toBe('reconnect')
 })
 
 it('serializes edits for one session without serializing independent sessions', async () => {

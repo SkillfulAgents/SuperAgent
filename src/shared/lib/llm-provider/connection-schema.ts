@@ -30,13 +30,6 @@ export const connectionConfigSchema = z.object({
 })
 export type ConnectionConfig = z.infer<typeof connectionConfigSchema>
 
-export const connectionCredentialsSchema = z.object({
-  accessToken: z.string().min(1),
-  refreshToken: z.string().min(1).optional(),
-  expiresAt: z.number().optional(),
-})
-export type ConnectionCredentials = z.infer<typeof connectionCredentialsSchema>
-
 /** Connections own model availability and capabilities; prices are global settings. */
 export const connectionCatalogSchema = modelCatalogSchema.transform(models =>
   models.map(({ pricing: _pricing, ...model }) => model)
@@ -63,7 +56,6 @@ export const connectionInfoSchema = z.object({
   ownerName: z.string().nullable(),
   managed: z.boolean(),
   isConfigured: z.boolean(),
-  state: z.enum(['ready', 'reconnect']),
   catalog: modelCatalogSchema,
   browserModel: z.string().nullable(),
   dashboardModel: z.string().nullable(),

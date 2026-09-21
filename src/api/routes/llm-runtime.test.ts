@@ -43,10 +43,6 @@ vi.mock('@shared/lib/agent-actor', () => ({
 }))
 import routes from './llm-runtime'
 import { saveConnection, setGlobalSelection } from '@shared/lib/llm-provider/connections'
-import {
-  replaceConnectionCredentials,
-  registerCredentialRefresher,
-} from '@shared/lib/llm-provider/connection-credentials'
 import { sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 
 let handle: TestDatabase
@@ -84,7 +80,7 @@ it('scopes resolution to the authenticated agent session and rejects arbitrary a
   expect((await request('resolve', { sessionId: 'own-session' }, 'wrong')).status).toBe(401)
   expect((await request('resolve', { sessionId: 'another-agent-session' })).status).toBe(404)
   expect(
-    (await request('credentials', { sessionId: 'own-session', connectionId: 'other-account' }))
+    (await request('resolve', { sessionId: 'own-session', connectionId: 'other-account' }))
       .status
   ).toBe(409)
   const response = await request('resolve', { sessionId: 'own-session' })
@@ -96,32 +92,4 @@ it('scopes resolution to the authenticated agent session and rejects arbitrary a
     env: { ANTHROPIC_AUTH_TOKEN: 'static-key' },
   })
   expect(sessionRuntime('alpha', 'own-session')?.env).toEqual({})
-})
-
-it('returns only the current access credential after one shared refresh', async () => {
-  const refresh = vi.fn(async () => ({
-    accessToken: 'next-access',
-    refreshToken: 'next-refresh',
-    expiresAt: Date.now() + 3600000,
-  }))
-  registerCredentialRefresher('generic', refresh)
-  await replaceConnectionCredentials(state.currentId, {
-    accessToken: 'old-access',
-    refreshToken: 'old-refresh',
-    expiresAt: 0,
-  })
-  const responses = await Promise.all(
-    Array.from({ length: 3 }, () =>
-      request('credentials', { sessionId: 'own-session', connectionId: state.currentId })
-    )
-  )
-  expect(refresh).toHaveBeenCalledOnce()
-  for (const response of responses) {
-    expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({
-      accessToken: 'next-access',
-      expiresAt: expect.any(Number),
-      generation: 2,
-    })
-  }
 })

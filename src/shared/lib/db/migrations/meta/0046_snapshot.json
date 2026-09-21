@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "18d7b72a-375b-49d5-9092-5e574f42cd69",
+  "id": "0f3707e0-e0a2-4a51-bf8f-146b50584eda",
   "prevId": "a130796e-409a-4784-8066-034495a60826",
   "tables": {
     "agent_acl": {
@@ -1416,13 +1416,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "credentials": {
-          "name": "credentials",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "generation": {
           "name": "generation",
           "type": "integer",
@@ -1430,28 +1423,6 @@
           "notNull": true,
           "autoincrement": false,
           "default": 0
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'ready'"
-        },
-        "refresh_lease": {
-          "name": "refresh_lease",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "refresh_lease_until": {
-          "name": "refresh_lease_until",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
         },
         "created_at": {
           "name": "created_at",

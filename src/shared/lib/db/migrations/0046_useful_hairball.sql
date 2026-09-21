@@ -8,11 +8,7 @@ CREATE TABLE `llm_connections` (
 	`catalog` text NOT NULL,
 	`browser_model` text,
 	`dashboard_model` text,
-	`credentials` text,
 	`generation` integer DEFAULT 0 NOT NULL,
-	`state` text DEFAULT 'ready' NOT NULL,
-	`refresh_lease` text,
-	`refresh_lease_until` integer,
 	`created_at` integer NOT NULL,
 	`updated_at` integer NOT NULL,
 	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
