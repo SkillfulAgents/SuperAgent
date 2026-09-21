@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   extractCatalogPricing,
+  findGlobalPrice,
   patchGlobalModelPricing,
   withGlobalModelPricing,
 } from './global-pricing'
@@ -20,11 +21,61 @@ describe('global model pricing', () => {
       expect(prices).toEqual({ 'claude-sonnet-5': price })
       expect(
         withGlobalModelPricing([{ id, label: id, supportedEfforts: ['low'] }], prices)[0].pricing,
-      ).toEqual(price)
+      ).toMatchObject(price)
     }
     expect(canonicalPricingId('openai/gpt-5.5')).toBe('gpt-5.5')
     expect(canonicalPricingId('private-deployment-west')).toBe('private-deployment-west')
     expect(canonicalPricingId('openai/gpt-5.5:thinking')).toBe('openai/gpt-5.5:thinking')
+  })
+
+  it('prices a dated or suffixed runtime id from its custom model, most specific key first', () => {
+    const prices = patchGlobalModelPricing({}, { 'qwen/qwen3-max': price })
+    expect(prices).toEqual({ 'qwen/qwen3-max': price })
+    for (const runtimeId of ['qwen/qwen3-max', 'qwen/qwen3-max-20260101', 'qwen/qwen3-max@2026-01-01']) {
+      expect(findGlobalPrice(runtimeId, prices)).toEqual(price)
+    }
+    expect(findGlobalPrice('qwen/qwen3-coder', prices)).toBeUndefined()
+    // Object keys are not prices.
+    expect(findGlobalPrice('constructor', prices)).toBeUndefined()
+  })
+
+  it('keeps a foreign-prefixed deployment off the built-in model key', () => {
+    const shared = { inputPerMtok: 5, outputPerMtok: 30 }
+    expect(canonicalPricingId('azure/gpt-5.5')).toBe('azure/gpt-5.5')
+    expect(canonicalPricingId('azure/gpt-5.5-20260423')).toBe('azure/gpt-5.5-20260423')
+
+    // Pricing the deployment leaves the shared gpt-5.5 override alone...
+    const prices = patchGlobalModelPricing({ 'gpt-5.5': shared }, { 'azure/gpt-5.5': price })
+    expect(prices).toEqual({ 'gpt-5.5': shared, 'azure/gpt-5.5': price })
+    expect(findGlobalPrice('azure/gpt-5.5-20260423', prices)).toEqual(price)
+    expect(findGlobalPrice('openai/gpt-5.5', prices)).toEqual(shared)
+
+    // ...and so does clearing it, after which it falls back to the shared rate.
+    const cleared = patchGlobalModelPricing(prices, { 'azure/gpt-5.5': null })
+    expect(cleared).toEqual({ 'gpt-5.5': shared })
+    expect(findGlobalPrice('azure/gpt-5.5', cleared)).toEqual(shared)
+  })
+
+  it('shows an input/output override with the cache ratios and speed tiers that are billed', () => {
+    const builtin = pricingFor('gpt-5.5')!
+    const [model] = withGlobalModelPricing(
+      [{ id: 'openai/gpt-5.5', label: 'GPT', supportedEfforts: ['low'] }],
+      { 'gpt-5.5': { inputPerMtok: builtin.inputPerMtok * 2, outputPerMtok: 1 } },
+    )
+    expect(model.pricing?.outputPerMtok).toBe(1)
+    expect(model.pricing?.cacheReadPerMtok).toBeCloseTo(builtin.cacheReadPerMtok! * 2, 9)
+    expect(model.pricing?.cacheCreationPerMtok).toBeCloseTo(builtin.cacheCreationPerMtok! * 2, 9)
+    expect(model.pricing?.speedMultipliers).toEqual(builtin.speedMultipliers)
+
+    // An explicit cache rate is never re-derived, and a model with no built-in card shows the override as is.
+    const explicit = { inputPerMtok: 9, outputPerMtok: 9, cacheReadPerMtok: 0 }
+    expect(
+      withGlobalModelPricing([{ id: 'gpt-5.5', label: 'GPT', supportedEfforts: ['low'] }], { 'gpt-5.5': explicit })[0]
+        .pricing?.cacheReadPerMtok,
+    ).toBe(0)
+    expect(
+      withGlobalModelPricing([{ id: 'private', label: 'P', supportedEfforts: ['low'] }], { private: price })[0].pricing,
+    ).toEqual(price)
   })
 
   it('shares base rates, including speed multipliers, across providers', () => {
@@ -60,5 +111,27 @@ describe('global model pricing', () => {
     expect(result.catalog.anthropic.overrides).toEqual([{ id: 'claude-sonnet-5', disabled: true }])
     expect(JSON.stringify(result.catalog)).not.toContain('pricing')
     expect(legacy.anthropic.overrides[0].pricing).toEqual(price)
+  })
+
+  it('does not import a legacy price that only restates the built-in rate', () => {
+    const current = pricingFor('claude-sonnet-5')!
+    const legacy = {
+      anthropic: {
+        overrides: [
+          {
+            id: 'claude-sonnet-5',
+            disabled: true,
+            pricing: { inputPerMtok: current.inputPerMtok, outputPerMtok: current.outputPerMtok },
+          },
+          { id: 'claude-opus-4-8', pricing: { inputPerMtok: 1, outputPerMtok: 1 } },
+        ],
+      },
+    }
+    const result = extractCatalogPricing(legacy, 'anthropic')
+    expect(result.pricing).toEqual({ 'claude-opus-4-8': { inputPerMtok: 1, outputPerMtok: 1 } })
+    expect(result.catalog.anthropic.overrides).toEqual([
+      { id: 'claude-sonnet-5', disabled: true },
+      { id: 'claude-opus-4-8' },
+    ])
   })
 })

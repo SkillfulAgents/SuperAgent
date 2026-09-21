@@ -13,6 +13,26 @@ const MODEL_PRICING_ALIASES: Record<string, string> = {
 }
 
 /**
+ * Vendor namespaces that name the same billed model as the bare id
+ * (OpenRouter's `openai/gpt-5.5` is Platform's `gpt-5.5`). Any other prefix
+ * (`azure/gpt-5.5`, a LiteLLM route, a private deployment) is somebody's own
+ * deployment: it may fall back to the bare model's rate when it has none, but
+ * it never shares an override key with it. `model-pricing-ids.test.ts` checks
+ * every slash-qualified built-in id against this list.
+ */
+export const VENDOR_PREFIXES: ReadonlySet<string> = new Set([
+  'anthropic',
+  'deepseek',
+  'moonshotai',
+  'openai',
+  'x-ai',
+  'z-ai',
+])
+
+const CANDIDATE_CACHE_LIMIT = 2000
+const candidateCache = new Map<string, readonly string[]>()
+
+/**
  * Return every plausible pricing key for a runtime-reported model id.
  *
  * Provider proxies can report the concrete upstream deployment rather than the
@@ -27,7 +47,16 @@ const MODEL_PRICING_ALIASES: Record<string, string> = {
  * ids still win and historical dated ids already present in the static table
  * remain available.
  */
-export function modelPricingCandidates(model: string): string[] {
+export function modelPricingCandidates(
+  model: string,
+  options: { vendorPrefixesOnly?: boolean } = {},
+): readonly string[] {
+  // The expansion is pure and a load sees a handful of distinct ids, while the
+  // catalog and the usage loader ask for the same ones over and over.
+  const cacheKey = `${options.vendorPrefixesOnly ? 'v' : 'a'}:${model}`
+  const cached = candidateCache.get(cacheKey)
+  if (cached) return cached
+
   const candidates: string[] = []
   const seen = new Set<string>()
   const queue: string[] = []
@@ -46,10 +75,15 @@ export function modelPricingCandidates(model: string): string[] {
 
     add(candidate.replace(MODEL_SNAPSHOT_SUFFIX, ''))
     add(candidate.replace(BEDROCK_VERSION_SUFFIX, ''))
-    if (MODEL_PRICING_ALIASES[candidate]) add(MODEL_PRICING_ALIASES[candidate])
+    // hasOwn: a runtime id is arbitrary text, and `constructor` is not an alias.
+    if (Object.hasOwn(MODEL_PRICING_ALIASES, candidate)) add(MODEL_PRICING_ALIASES[candidate])
 
-    if (candidate.includes('/')) {
-      add(candidate.split('/').pop()!)
+    const slash = candidate.lastIndexOf('/')
+    if (
+      slash !== -1 &&
+      (!options.vendorPrefixesOnly || VENDOR_PREFIXES.has(candidate.slice(0, slash)))
+    ) {
+      add(candidate.slice(slash + 1))
     }
 
     const bedrockMatch = candidate.match(/^(?:[\w-]+\.)?anthropic\.(.+)$/)
@@ -75,12 +109,19 @@ export function modelPricingCandidates(model: string): string[] {
     }
   }
 
+  if (candidateCache.size >= CANDIDATE_CACHE_LIMIT) candidateCache.clear()
+  candidateCache.set(cacheKey, candidates)
   return candidates
 }
 
-/** Known wire aliases share one override key. Arbitrary private IDs stay exact. */
+/**
+ * The key a price override is WRITTEN under. Known wire aliases (snapshot
+ * dates, Bedrock ids, vendor namespaces) share one key; arbitrary private ids,
+ * including a foreign prefix in front of a known model, stay exact. Reads go
+ * through `findGlobalPrice`, which probes every candidate most-specific-first.
+ */
 export function canonicalPricingId(model: string): string {
-  const candidates = modelPricingCandidates(model)
+  const candidates = modelPricingCandidates(model, { vendorPrefixesOnly: true })
   const known = candidates.filter((id) => Object.hasOwn(MODEL_PRICING, id) && !id.includes('/'))
   if (known.length)
     return (

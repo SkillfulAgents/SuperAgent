@@ -170,8 +170,8 @@ describe('LlmTab model catalog editor', () => {
     })
     await user.click(screen.getByTestId('catalog-save-builtin-pricing'))
 
+    // A price edit patches the price alone; it never rewrites the catalog.
     expect(mutateMock).toHaveBeenCalledWith({
-      modelCatalog: {},
       modelPricing: { 'gpt-5.5': { inputPerMtok: 6, outputPerMtok: 30 } },
     })
 
@@ -184,7 +184,7 @@ describe('LlmTab model catalog editor', () => {
     fireEvent.click(screen.getByTestId('catalog-disclosure-trigger'))
     fireEvent.click(screen.getByTestId('catalog-customize-gpt-5.5'))
     fireEvent.click(screen.getByTestId('catalog-reset-pricing-gpt-5.5'))
-    expect(mutateMock).toHaveBeenCalledWith({ modelCatalog: {}, modelPricing: { 'gpt-5.5': null } })
+    expect(mutateMock).toHaveBeenCalledWith({ modelPricing: { 'gpt-5.5': null } })
   })
 
   it('requires a label and effort before adding a custom model', async () => {

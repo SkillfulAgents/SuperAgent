@@ -1,4 +1,4 @@
-import { globalModelPricingSchema, type GlobalModelPricing } from '../llm-provider/global-pricing-schema'
+import { parseStoredGlobalPricing, type GlobalModelPricing } from '../llm-provider/global-pricing-schema'
 import type { VoiceProvider } from '../voice/provider-types'
 import fs from 'fs'
 import path from 'path'
@@ -580,7 +580,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
       }
     })(),
     modelCatalog,
-    modelPricing: globalModelPricingSchema.parse(loaded.modelPricing ?? {}),
+    modelPricing: parseStoredGlobalPricing(loaded.modelPricing),
     agentLimits: loaded.agentLimits,
     customEnvVars: loaded.customEnvVars,
     // Deep-clone the default when defaulting: callers mutate `s.skillsets` in

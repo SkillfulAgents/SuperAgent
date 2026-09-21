@@ -410,6 +410,11 @@ export const providerSettingsComponent = {
       if (defaults) models = { ...before.models, ...defaults }
     }
 
+    // Older clients still put prices in the catalog they send; move them to the
+    // global map so none is stored per provider. This is best effort by nature:
+    // such a client cannot express a reset (the catalog it gets back carries no
+    // price to remove), and a price it resends is indistinguishable from a new
+    // edit. An explicit `modelPricing` patch always wins over an imported price.
     const imported = patch.modelCatalog
       ? extractCatalogPricing(patch.modelCatalog, patch.llmProvider ?? before.llmProvider)
       : undefined

@@ -291,7 +291,7 @@ export function LlmTab() {
                   modelPricing={settings?.modelPricing}
                   supportsModelSearch={provider.capabilities?.modelSearch}
                   disabled={isLoading}
-                  onChange={(modelCatalog, modelPricing) => updateSettings.mutate({ modelCatalog, ...(modelPricing ? { modelPricing } : {}) })}
+                  onChange={(change) => updateSettings.mutate(change)}
                 />
               )}
             </ProviderCard>

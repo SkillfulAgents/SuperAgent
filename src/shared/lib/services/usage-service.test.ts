@@ -1303,5 +1303,38 @@ describe('usage-service', () => {
         rmSync(dir, { recursive: true, force: true })
       }
     })
+
+    it('prices dated runtime ids from the custom model, and a foreign-prefixed deployment from its own key', async () => {
+      settingsMock.mockReturnValue({
+        modelPricing: {
+          'qwen/qwen3-max': { inputPerMtok: 1, outputPerMtok: 2 },
+          'gpt-5.5': { inputPerMtok: 50, outputPerMtok: 300 },
+          'azure/gpt-5.5': { inputPerMtok: 4, outputPerMtok: 8 },
+        },
+      })
+
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-global-keys-'))
+      try {
+        mkdirSync(path.join(dir, 'projects'), { recursive: true })
+        const models = ['qwen/qwen3-max-20260101', 'azure/gpt-5.5-20260423', 'openai/gpt-5.5']
+        const lines = models.map((model, index) =>
+          JSON.stringify({
+            timestamp: '2026-06-20T12:00:00.000Z',
+            requestId: `req-${index}`,
+            message: { id: `msg-${index}`, model, usage: { input_tokens: 100_000, output_tokens: 1_000 } },
+          }),
+        )
+        writeFileSync(path.join(dir, 'projects', 'session.jsonl'), `${lines.join('\n')}\n`)
+
+        const [day] = await loadDailyUsageDataLightweight({ ...dailyOptions(dir) })
+        const costs = new Map(day.modelBreakdowns.map((entry) => [entry.modelName, entry.cost]))
+        const cost = (input: number, output: number) => (100_000 * input + 1_000 * output) / 1_000_000
+        expect(costs.get('qwen/qwen3-max-20260101')).toBeCloseTo(cost(1, 2), 9)
+        expect(costs.get('azure/gpt-5.5-20260423')).toBeCloseTo(cost(4, 8), 9)
+        expect(costs.get('openai/gpt-5.5')).toBeCloseTo(cost(50, 300), 9)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
   })
 })

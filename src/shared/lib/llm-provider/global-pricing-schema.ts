@@ -40,3 +40,24 @@ export const globalModelPricingPatchSchema = z.record(
 export type ModelPricing = z.infer<typeof modelPricingSchema>
 export type GlobalModelPricing = z.infer<typeof globalModelPricingSchema>
 export type GlobalModelPricingPatch = z.infer<typeof globalModelPricingPatchSchema>
+
+/**
+ * Read the stored price map tolerantly, entry by entry. One unreadable price
+ * (a hand edit, a future version's shape) costs that one price: throwing here
+ * would fail the whole settings load, and dropping the map would let the next
+ * settings write erase every other price.
+ */
+export function parseStoredGlobalPricing(value: unknown): GlobalModelPricing {
+  if (value === undefined || value === null) return {}
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    console.warn('Invalid modelPricing in settings.json; ignoring global model prices')
+    return {}
+  }
+  const prices: GlobalModelPricing = {}
+  for (const [id, raw] of Object.entries(value)) {
+    const parsed = modelPricingSchema.safeParse(raw)
+    if (id && parsed.success) prices[id] = parsed.data
+    else console.warn(`Invalid modelPricing["${id}"] in settings.json; ignoring that price`)
+  }
+  return prices
+}

@@ -1,4 +1,4 @@
-import { withGlobalModelPricing } from '@shared/lib/llm-provider/global-pricing'
+import { findGlobalPrice, withGlobalModelPricing } from '@shared/lib/llm-provider/global-pricing'
 import { canonicalPricingId } from '@shared/lib/llm-provider/model-pricing-ids'
 import type { GlobalModelPricing, GlobalModelPricingPatch } from '@shared/lib/llm-provider/global-pricing-schema'
 import { useMemo, useState } from 'react'
@@ -124,7 +124,13 @@ export interface CatalogEditorProps {
   modelPricing?: GlobalModelPricing
   supportsModelSearch?: boolean
   disabled?: boolean
-  onChange: (modelCatalog: ModelCatalogSettings, prices?: GlobalModelPricingPatch) => void
+  onChange: (change: CatalogChange) => void
+}
+
+/** One settings patch: only the part that changed is sent, so a price edit never rewrites the catalog. */
+export interface CatalogChange {
+  modelCatalog?: ModelCatalogSettings
+  modelPricing?: GlobalModelPricingPatch
 }
 
 /**
@@ -177,7 +183,7 @@ export function CatalogEditor({
   const [modelPendingDeletion, setModelPendingDeletion] = useState<ModelDefinition | null>(null)
 
   const persistOverrides = (nextOverrides: CatalogOverrideEntry[]) => {
-    onChange(setProviderOverrides(modelCatalog, providerId, nextOverrides))
+    onChange({ modelCatalog: setProviderOverrides(modelCatalog, providerId, nextOverrides) })
   }
 
   const upsertOverride = (entry: CatalogOverrideEntry | null, id: string) => {
@@ -212,22 +218,41 @@ export function CatalogEditor({
   const submitCustomModel = (entry: CatalogOverrideEntry) => {
     const wasDisabled = overrideById.get(entry.id)?.disabled === true
     const { pricing, ...model } = entry
-    const pricePatch = pricing
-      ? { [canonicalPricingId(entry.id)]: { ...modelPricing[canonicalPricingId(entry.id)], ...pricing, ...(entry.longContextPriceCliff ? { longContextPriceCliff: entry.longContextPriceCliff } : {}) } }
-      : modelPricing[canonicalPricingId(entry.id)] ? { [canonicalPricingId(entry.id)]: null } : undefined
-    onChange(setProviderOverrides(modelCatalog, providerId,
-      replaceOverride(overrides, cleanOverride({ ...model, ...(wasDisabled ? { disabled: true } : {}) }), entry.id)), pricePatch)
+    const key = canonicalPricingId(entry.id)
+    let modelPricingPatch: GlobalModelPricingPatch | undefined
+    if (pricing) {
+      // Keep rates this dialog does not edit (cache, speed tiers); the cliff follows the model.
+      const next = { ...modelPricing[key], ...pricing }
+      if (entry.longContextPriceCliff) next.longContextPriceCliff = entry.longContextPriceCliff
+      else delete next.longContextPriceCliff
+      modelPricingPatch = { [key]: next }
+    } else if (modelPricing[key]) {
+      modelPricingPatch = { [key]: null }
+    }
+    onChange({
+      modelCatalog: setProviderOverrides(
+        modelCatalog,
+        providerId,
+        replaceOverride(
+          overrides,
+          cleanOverride({ ...model, ...(wasDisabled ? { disabled: true } : {}) }),
+          entry.id,
+        ),
+      ),
+      ...(modelPricingPatch ? { modelPricing: modelPricingPatch } : {}),
+    })
   }
 
   const saveBuiltinPricing = (
     model: ModelDefinition,
     pricing: { inputPerMtok: number; outputPerMtok: number },
   ) => {
-    onChange(modelCatalog ?? {}, { [canonicalPricingId(model.id)]: { ...modelPricing[canonicalPricingId(model.id)], ...pricing } })
+    const key = canonicalPricingId(model.id)
+    onChange({ modelPricing: { [key]: { ...modelPricing[key], ...pricing } } })
   }
 
   const resetBuiltinPricing = (model: ModelDefinition) => {
-    onChange(modelCatalog ?? {}, { [canonicalPricingId(model.id)]: null })
+    onChange({ modelPricing: { [canonicalPricingId(model.id)]: null } })
   }
 
   const confirmRemoveCustomModel = () => {
@@ -280,7 +305,7 @@ export function CatalogEditor({
                       <CatalogRow
                         key={model.id}
                         model={model}
-                        priceText={priceLabel(modelPricing[canonicalPricingId(model.id)] ?? model.pricing)}
+                        priceText={priceLabel(findGlobalPrice(model.id, modelPricing) ?? model.pricing)}
                         enabled={override?.disabled !== true}
                         disabled={disabled}
                         onToggle={(enabled) => updateBuiltinDisabled(model, enabled)}

@@ -1,5 +1,6 @@
 import { getSettings } from '../config/settings'
-import { canonicalPricingId, modelPricingCandidates } from '../llm-provider/model-pricing-ids'
+import { findGlobalPrice } from '../llm-provider/global-pricing'
+import { modelPricingCandidates } from '../llm-provider/model-pricing-ids'
 import type { GlobalModelPricing, ModelPricing } from '../llm-provider/global-pricing-schema'
 import pLimit from 'p-limit'
 import type { FileOps } from '@shared/lib/agent-actor/types'
@@ -223,15 +224,15 @@ function rateCardFromOverride(
   override: ModelPricing,
   staticPricing: PricingEntry | undefined,
 ): PricingEntry {
-  const catalogPricing = override
-
-  const input = catalogPricing.inputPerMtok
-  const output = catalogPricing.outputPerMtok
-  const cacheCreation = (catalogPricing.cacheCreationPerMtok ??
-      deriveInputRelatedRate(input, staticPricing, 'cacheCreation'))
-  const cacheCreation1h = (catalogPricing.cacheCreation1hPerMtok ??
-      deriveInputRelatedRate(input, staticPricing, 'cacheCreation1h'))
-  const cacheRead = (catalogPricing.cacheReadPerMtok ?? deriveInputRelatedRate(input, staticPricing, 'cacheRead'))
+  const input = override.inputPerMtok
+  const output = override.outputPerMtok
+  const cacheCreation =
+    override.cacheCreationPerMtok ?? deriveInputRelatedRate(input, staticPricing, 'cacheCreation')
+  const cacheCreation1h =
+    override.cacheCreation1hPerMtok ??
+    deriveInputRelatedRate(input, staticPricing, 'cacheCreation1h')
+  const cacheRead =
+    override.cacheReadPerMtok ?? deriveInputRelatedRate(input, staticPricing, 'cacheRead')
   const pricing: PricingEntry = {
     input,
     output,
@@ -243,7 +244,7 @@ function rateCardFromOverride(
   // Global override multipliers win; fall back to the static table's (same
   // pattern as the cache rates above) so a pricing patch that only overrides
   // the per-Mtok rates keeps billing speed tiers correctly.
-  const speedMultipliers = catalogPricing.speedMultipliers ?? staticPricing?.speedMultipliers
+  const speedMultipliers = override.speedMultipliers ?? staticPricing?.speedMultipliers
   if (speedMultipliers) pricing.speedMultipliers = speedMultipliers
 
   if (override.longContextPriceCliff) {
@@ -266,11 +267,17 @@ function rateCardFromOverride(
   return pricing
 }
 
-
+/**
+ * A model's rate card: the global override when one prices it (see
+ * `findGlobalPrice`), rebased over the static card, else the static card.
+ * Returns null when nothing prices the model.
+ */
 function resolveRateCard(model: string, overrides: GlobalModelPricing): PricingEntry | null {
-  const candidates = modelPricingCandidates(model)
-  const base = candidates.map(id => (MODEL_PRICING as Record<string, PricingEntry>)[id]).find(Boolean)
-  const override = overrides[canonicalPricingId(model)]
+  const table = MODEL_PRICING as Record<string, PricingEntry>
+  // hasOwn: a transcript's model id is arbitrary text, and `constructor` is not a rate card.
+  const baseId = modelPricingCandidates(model).find((id) => Object.hasOwn(table, id))
+  const base = baseId === undefined ? undefined : table[baseId]
+  const override = findGlobalPrice(model, overrides)
   if (override) return rateCardFromOverride(override, base)
   return base ?? null
 }

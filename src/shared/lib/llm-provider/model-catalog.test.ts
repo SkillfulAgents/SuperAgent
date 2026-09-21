@@ -395,8 +395,17 @@ describe('getEffectiveCatalog', () => {
       modelPricing: { 'glm-5.2': { inputPerMtok: 2, outputPerMtok: 6 } },
       modelCatalog: { openrouter: { overrides: [{ id: 'z-ai/glm-5.2', pricing: { inputPerMtok: 99, outputPerMtok: 99 } }] } },
     })
-    expect(getEffectiveCatalog('openrouter').find(model => model.id === 'z-ai/glm-5.2')?.pricing)
-      .toEqual({ inputPerMtok: 2, outputPerMtok: 6 })
+    // Input/output come from the global override; the cache rates it leaves
+    // unset keep the built-in card's ratios (free writes, reads at 10% of
+    // input), which is what usage accounting bills.
+    const pricing = getEffectiveCatalog('openrouter').find(model => model.id === 'z-ai/glm-5.2')?.pricing
+    expect(pricing).toMatchObject({
+      inputPerMtok: 2,
+      outputPerMtok: 6,
+      cacheCreationPerMtok: 0,
+      cacheCreation1hPerMtok: 0,
+    })
+    expect(pricing?.cacheReadPerMtok).toBeCloseTo(0.2, 9)
   })
 
   it('appends valid net-new models after built-ins', () => {
