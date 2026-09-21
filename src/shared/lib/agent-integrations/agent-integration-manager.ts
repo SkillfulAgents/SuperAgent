@@ -797,7 +797,10 @@ export class AgentIntegrationManager {
         if (failures >= HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES) {
           console.error(`[AgentIntegrationManager] ${id}: ${failures} consecutive reconnect failures — pausing`)
           reportError(new Error(`Auto-paused after ${failures} failures`), 'health-check-auto-pause', { integrationId: id, provider: integration.provider, failures }, 'warning')
-          try { await this.writeStatus(id, generation, 'paused', `Auto-paused after ${failures} failed reconnection attempts`) } catch { /* best-effort */ }
+          try {
+            await this.writeStatus(id, generation, 'paused', `Auto-paused after ${failures} failed reconnection attempts`)
+            if (this.isRunning && this.generationOf(id) === generation) await this.syncMcpEnvironment(integration)
+          } catch { /* best-effort */ }
           this.emitNotification(integration, 'error', `Auto-paused after ${failures} failed reconnect attempts`)
           this.disconnectedSince.delete(id)
           this.consecutiveFailures.delete(id)

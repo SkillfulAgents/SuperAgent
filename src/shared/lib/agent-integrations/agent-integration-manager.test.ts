@@ -608,3 +608,37 @@ it('allows explicit setup activation after pausing without reconnecting a still-
   await manager.addIntegration('installation-a')
   expect(manager.isIntegrationConnected('installation-a')).toBe(true)
 })
+
+
+it('auto-pause refreshes the MCP environment after the paused status is persisted', async () => {
+  (adapter.definition.capabilities as string[]).push('mcp')
+  const connecting = vi.spyOn(adapter, 'connect').mockRejectedValue(new Error('upstream unavailable'))
+  const status = vi.mocked(updateChatIntegrationStatus)
+  status.mockImplementation(async (id, next) => {
+    state.rows.find(row => row.id === id)!.status = next
+    return true
+  })
+  const projectedStatuses: string[] = []
+  state.syncMcp.mockImplementation(async () => {
+    projectedStatuses.push(state.rows[0].status)
+    return true
+  })
+  const health = manager as unknown as { runHealthChecks(): Promise<void> }
+  try {
+    await manager.start()
+    for (let attempt = 0; attempt < 14; attempt++) await health.runHealthChecks()
+    expect(projectedStatuses).toEqual([])
+    await health.runHealthChecks()
+    expect(state.rows[0].status).toBe('paused')
+    expect(projectedStatuses).toEqual(['paused'])
+    expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a'])
+    const attempts = connecting.mock.calls.length
+    await health.runHealthChecks()
+    expect(connecting).toHaveBeenCalledTimes(attempts)
+    expect(projectedStatuses).toEqual(['paused'])
+  } finally {
+    connecting.mockRestore()
+    status.mockReset()
+    state.syncMcp.mockReset().mockResolvedValue(true)
+  }
+})
