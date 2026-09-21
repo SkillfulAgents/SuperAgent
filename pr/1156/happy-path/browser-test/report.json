@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: tions \"Example Domain\" and took screenshot — The response clearly stated: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\" Screenshot captured showing the complete response with the \"Example Domain\" text visible.\n\n**Test completed successfully. No bugs found.**\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 65586,
+  "sessionId": "09484fb2-bc1e-41bb-8d43-11553982fbc2",
+  "cost": {
+    "inputTokens": 370,
+    "outputTokens": 10760,
+    "cacheCreationTokens": 75012,
+    "cacheReadTokens": 1074357,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.255371
+  }
+}
