@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import type { AppDatabase } from '@shared/lib/db/drivers/types'
-import { mcpAuditLog, remoteMcpServers } from '@shared/lib/db/schema'
+import { agentRemoteMcps, mcpAuditLog, remoteMcpServers } from '@shared/lib/db/schema'
 import { createChatIntegration, deleteChatIntegration, getChatIntegration, updateChatIntegrationStatus } from '@shared/lib/services/chat-integration-service'
 import { agentIntegrationRegistry, AgentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { integrationMcpName, integrationMcpProjection, resolveIntegrationMcp } from '@shared/lib/agent-integrations/mcp'
+import { listAgentMcpConnections } from '@shared/lib/container/connection-runtime-projections'
 import mcpProxy from './mcp-proxy'
 
 let handle: TestDatabase
@@ -182,4 +183,41 @@ it.each([401, 503])('classifies handshake HTTP %i separately from cancellation a
   expect((await call(undefined, undefined, sessionId)).status).toBe(502)
   if (status === 503) expect(reportHealth).toHaveBeenCalledExactlyOnceWith(false)
   else { expect(reportHealth).not.toHaveBeenCalled(); expect(authRequired).toHaveBeenCalledOnce() }
+})
+
+
+it('discovers both ownership types together and keeps their credentials and permissions separate', async () => {
+  const now = new Date()
+  await testDb.insert(remoteMcpServers).values([
+    { id: 'account', name: 'Personal account', url: 'https://mcp.example.com/personal',
+      authType: 'bearer', accessToken: 'personal-secret', createdAt: now, updatedAt: now,
+      toolsJson: JSON.stringify([{ name: 'send_message' }, { invalid: true }]) },
+    { id: 'foreign', name: 'Unassigned account', url: 'https://mcp.example.com/foreign', createdAt: now, updatedAt: now },
+  ])
+  await testDb.insert(agentRemoteMcps).values({ id: 'mapping', agentSlug: 'agent', remoteMcpId: 'account', createdAt: now })
+  const projected = await listAgentMcpConnections('agent', 'http://host')
+  expect(projected.map(connection => connection.id)).toEqual(['account', `integration:${id}`])
+  expect(projected[0]).toMatchObject({ name: 'Personal account', tools: [{ name: 'send_message' }] })
+  expect(JSON.stringify(projected)).not.toContain('secret')
+
+  policy.resolve.mockResolvedValue({ decision: 'block', matchedScopes: [], scopeDescriptions: {} })
+  expect((await call('account')).status).toBe(403)
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect((await call()).status).toBe(200)
+  expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get('Authorization')).toBe('Bearer agent-secret')
+
+  policy.resolve.mockResolvedValue({ decision: 'allow', matchedScopes: [], scopeDescriptions: {} })
+  expect((await call('account')).status).toBe(200)
+  expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get('Authorization')).toBe('Bearer personal-secret')
+  expect(fetchMock.mock.calls[1][0]).toBe('https://mcp.example.com/personal')
+  expect(beforeAuthorization).toHaveBeenCalledTimes(1)
+  expect((await call('foreign')).status).toBe(404)
+  expect(await testDb.select().from(mcpAuditLog)).toMatchObject([
+    { remoteMcpId: 'account', policyDecision: 'block' },
+    { remoteMcpId: `integration:${id}`, policyDecision: 'integration_identity' },
+    { remoteMcpId: 'account', policyDecision: 'allow' },
+  ])
+
+  await updateChatIntegrationStatus(id, 'paused')
+  expect((await listAgentMcpConnections('agent', 'http://host')).map(connection => connection.id)).toEqual(['account'])
 })

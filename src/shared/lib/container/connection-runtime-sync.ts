@@ -1,17 +1,11 @@
-import { integrationMcpProjection } from '../agent-integrations/mcp'
 import { db } from '@shared/lib/db'
 import {
   agentConnectedAccounts,
-  agentRemoteMcps,
   connectedAccounts,
-  remoteMcpServers,
 } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import type { ContainerClient, ContainerInfo } from './types'
-import {
-  buildConnectedAccountsProjection,
-  buildRemoteMcpProjection,
-} from './connection-runtime-projections'
+import { buildConnectedAccountsProjection, listAgentMcpConnections } from './connection-runtime-projections'
 
 type RuntimeClient = Pick<ContainerClient, 'fetch' | 'getHostApiBaseUrl'>
 
@@ -55,22 +49,7 @@ export async function updateRemoteMcpEnvironment(
   client: RuntimeClient,
 ): Promise<Response> {
   const hostApiBaseUrl = await client.getHostApiBaseUrl()
-  const mappings = await db
-    .select({ mcp: remoteMcpServers })
-    .from(agentRemoteMcps)
-    .innerJoin(
-      remoteMcpServers,
-      eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id),
-    )
-    .where(eq(agentRemoteMcps.agentSlug, agentSlug))
-
-  const configs = buildRemoteMcpProjection(
-    mappings.map(({ mcp }) => mcp),
-    agentSlug,
-    hostApiBaseUrl,
-  )
-
-  configs.push(...await integrationMcpProjection(agentSlug, hostApiBaseUrl))
+  const configs = await listAgentMcpConnections(agentSlug, hostApiBaseUrl)
 
   return client.fetch('/env', {
     method: 'POST',
