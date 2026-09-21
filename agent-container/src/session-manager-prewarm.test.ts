@@ -30,6 +30,7 @@ vi.mock('./session-persistence', () => ({
       return Array.from(persistedSessions.values())
     }
     updateSession() {}
+    updateLastActivity() {}
     deleteSession(id: string) {
       persistedSessions.delete(id)
     }
@@ -177,6 +178,28 @@ describe('SessionManager pre-warm pool', () => {
     expect(error).not.toBeInstanceOf(SessionInputNotAcceptedError)
     expect(sessionCreationFailure(error)).toEqual({ error: 'init response lost' })
     expect(MockClaudeProcess.spawned[0].disposeCalls).toBe(1)
+  })
+
+  it('resolves the migrated account when resuming a legacy file without a connection ID', async () => {
+    const runtime = { connectionId: 'migrated-account', generation: 0, provider: 'anthropic', model: 'new-wire-model',
+      browserModel: 'browser', dashboardBuilderModel: 'dashboard', modelPromptHints: [], subagentModels: [],
+      modelContextWindows: {}, env: { ANTHROPIC_API_KEY: 'current-test-key' } }
+    const fetchCredential = vi.fn(async () => new Response(JSON.stringify(runtime)))
+    vi.stubEnv('SUPERAGENT_HOST_API_URL', 'http://host.test/api')
+    vi.stubEnv('PROXY_TOKEN', 'agent-test-token')
+    vi.stubGlobal('fetch', fetchCredential)
+    try {
+      persistedSessions.set('old-session', { sessionId: 'old-session', claudeSessionId: 'old-claude-id',
+        workingDirectory: workDir, model: 'legacy-model', createdAt: new Date().toISOString() })
+      expect(await manager.getSession('old-session')).not.toBeNull()
+      expect(fetchCredential).toHaveBeenCalledWith('http://host.test/api/llm-runtime/resolve', expect.objectContaining({
+        body: JSON.stringify({ sessionId: 'old-session' }),
+      }))
+      expect(MockClaudeProcess.spawned.at(-1)?.options).toMatchObject({ llmRuntime: runtime, model: 'new-wire-model' })
+    } finally {
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+    }
   })
 
   // The whole point: the second session skips the boot the first one paid for.

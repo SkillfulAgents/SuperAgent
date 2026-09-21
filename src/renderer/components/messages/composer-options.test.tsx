@@ -5,7 +5,9 @@ import { useComposerOptions, type UseComposerOptionsArgs } from './composer-opti
 
 // Mutable settings the mocked useModelSettings reads at call time, so tests can
 // simulate the query resolving (undefined → loaded) and later refetches.
-const state = vi.hoisted(() => ({ settings: undefined as unknown }))
+const state = vi.hoisted(() => ({ settings: undefined as unknown, connections: undefined as unknown }))
+
+vi.mock('@renderer/hooks/use-llm-connections', () => ({ useLlmConnections: () => ({ data: state.connections }) }))
 
 vi.mock('@renderer/hooks/use-settings', () => ({
   useModelSettings: () => ({ data: state.settings }),
@@ -288,5 +290,39 @@ describe('useComposerOptions web provider', () => {
     state.settings = { ...LOADED_SETTINGS, webProvider: 'platform', webProviderIsDefault: true }
     const { result } = render({ agentKey: 'a', agentDefaultsReady: true })
     expect(result.current.webProvider).toBe('platform')
+  })
+})
+
+
+describe('connection/model selection', () => {
+  const model = (id: string) => ({ id, label: id, supportedEfforts: ['low', 'medium', 'high'] })
+  const first = { id: 'global', catalog: [model('same'), model('global-default')] }
+  const second = { id: 'personal', catalog: [model('same'), model('personal-other')] }
+  beforeEach(() => {
+    state.settings = LOADED_SETTINGS
+    state.connections = { connections: [first, second], defaultSelection: { connectionId: 'global', model: 'global-default' } }
+  })
+  it('changes accounts even when both expose the same model ID', () => {
+    const { result } = render({ initialConnectionId: 'global', initialModel: 'same' })
+    act(() => result.current.setConnection?.('personal'))
+    expect(result.current.toRuntimeOptions()).toMatchObject({ connectionId: 'personal', model: 'same' })
+    expect(result.current.catalog).toEqual(second.catalog)
+  })
+  it('drops the whole deleted pair instead of charging another account for the orphaned model', () => {
+    const { result, rerender } = render({ initialConnectionId: 'personal', initialModel: 'same' })
+    state.connections = { connections: [first], defaultSelection: { connectionId: 'global', model: 'global-default' } }
+    rerender({ initialConnectionId: 'personal', initialModel: 'same' })
+    expect(result.current.toRuntimeOptions()).toMatchObject({ connectionId: 'global', model: 'global-default' })
+  })
+  it('drops a removed model before considering an agent default', () => {
+    const { result } = render({ initialConnectionId: 'personal', initialModel: 'removed', agentDefaultConnectionId: 'personal', agentDefaultModel: 'personal-other' })
+    expect(result.current.connectionId).toBe('personal')
+    expect(result.current.model).toBe('personal-other')
+  })
+  it('protects an unsent account change from an authoritative refetch', () => {
+    const { result, rerender } = render({ initialConnectionId: 'global', initialModel: 'same' })
+    act(() => result.current.setConnection?.('personal'))
+    rerender({ initialConnectionId: 'global', initialModel: 'global-default' })
+    expect(result.current.toRuntimeOptions()).toMatchObject({ connectionId: 'personal', model: 'same' })
   })
 })

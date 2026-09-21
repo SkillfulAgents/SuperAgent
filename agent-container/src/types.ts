@@ -1,3 +1,4 @@
+import type { ConnectionRuntime } from './connection-runtime';
 import type { UUID } from 'crypto';
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import type { SubagentModelDefinition } from './subagent-model-catalog';
@@ -70,6 +71,8 @@ export interface AgentCapabilityPolicies {
 }
 
 export interface CreateSessionRequest {
+  connectionId?: string;
+  llmRuntime?: ConnectionRuntime;
   metadata?: Record<string, any>;
   workingDirectory?: string;
   envVars?: Record<string, string>;
@@ -99,6 +102,7 @@ export interface CreateSessionRequest {
   // session's own possibly one-off pick. Used to pre-warm a CLI subprocess for
   // the right configuration; absent on non-interactive callers.
   prewarmDefaults?: {
+    connectionId?: string
     model?: string;
     modelPromptHints?: string[];
     effort?: EffortLevel;
@@ -107,6 +111,8 @@ export interface CreateSessionRequest {
 }
 
 export interface SendMessageRequest {
+  connectionId?: string;
+  llmRuntime?: ConnectionRuntime;
   content: any;
   type?: 'user' | 'system';
   uuid?: UUID;

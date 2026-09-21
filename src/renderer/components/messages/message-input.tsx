@@ -48,6 +48,7 @@ interface MessageInputProps {
   /** Speed last used on this session; seeds the composer selector. Defaults to 'normal' when absent. */
   initialSpeed?: SpeedLevel
   /** Model last used on this session; seeds the composer selector. Defaults to provider's agent default. */
+  initialConnectionId?: string | null
   initialModel?: string
   /** Registers a getter so the stale-session prompt can move the live draft. */
   registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
@@ -60,7 +61,7 @@ interface MessageInputProps {
   suspended?: boolean
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, registerSnapshot, suspended = false }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, initialConnectionId, registerSnapshot, suspended = false }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -72,6 +73,9 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     initialEffort,
     initialSpeed,
     initialModel,
+    initialConnectionId,
+    sessionId,
+    agentDefaultConnectionId: agentPrefs?.defaultConnectionId,
     agentDefaultModel: agentPrefs?.defaultModel,
     agentDefaultEffort: agentPrefs?.defaultEffort,
     agentDefaultSpeed: agentPrefs?.defaultSpeed,

@@ -1,8 +1,7 @@
 import { withGlobalModelPricing } from './global-pricing'
+import { normalizeCatalog, mergeCatalog } from './catalog-merge'
 import type { LlmProviderId, ModelPurpose } from './base-llm-provider'
 import {
-  modelDefinitionSchema,
-  type CatalogOverrideEntry,
   type ModelDefinition,
 } from './model-catalog-schema'
 import { getLlmProvider } from './index'
@@ -30,104 +29,12 @@ export function hasVersionSegment(s: string): boolean {
  * custom entries are appended after built-ins, so this lets a custom model
  * deliberately become the family alias target.
  */
-function normalizeCatalog(catalog: ModelDefinition[]): ModelDefinition[] {
-  const latestIndexByFamily = new Map<string, number>()
-  catalog.forEach((model, index) => {
-    if (model.isLatest && model.family) {
-      latestIndexByFamily.set(model.family, index)
-    }
-  })
-
-  return catalog.map((model, index) => {
-    if (model.isLatest && model.family) {
-      if (latestIndexByFamily.get(model.family) !== index) {
-        return { ...model, isLatest: false }
-      }
-    }
-    return model
-  })
-}
-
-/** A provider's built-in catalog, normalized to ≤1 isLatest per family. */
 export function getProviderCatalog(providerId: LlmProviderId): ModelDefinition[] {
   return normalizeCatalog(getLlmProvider(providerId).getBuiltinCatalog())
 }
 
-function withoutDisabled(entry: CatalogOverrideEntry): Partial<ModelDefinition> & { id: string } {
-  const model = { ...entry }
-  delete model.disabled
-  return model
-}
-
-function mergeModelPatch(
-  base: Partial<ModelDefinition> & { id: string },
-  patch: Partial<ModelDefinition> & { id: string },
-): Partial<ModelDefinition> & { id: string } {
-  const next = { ...base, ...patch }
-  if (base.pricing && patch.pricing) {
-    next.pricing = {
-      ...base.pricing,
-      ...patch.pricing,
-      ...(base.pricing.speedMultipliers && patch.pricing.speedMultipliers
-        ? {
-            speedMultipliers: {
-              ...base.pricing.speedMultipliers,
-              ...patch.pricing.speedMultipliers,
-            },
-          }
-        : {}),
-    }
-  }
-  return next
-}
-
-/**
- * A provider's user-effective catalog:
- * built-ins → per-id overrides (with nested pricing merged) → disabled
- * entries removed → structural validation → family latest normalization.
- */
 export function getEffectiveCatalog(providerId: LlmProviderId): ModelDefinition[] {
-  const builtins = getProviderCatalog(providerId)
-  const builtinById = new Map(builtins.map(model => [model.id, model]))
-  const byId = new Map<string, Partial<ModelDefinition> & { id: string }>(
-    builtins.map(model => [model.id, model]),
-  )
-  const order = builtins.map(model => model.id)
-  const overrides = getModelCatalogSettings()[providerId]?.overrides ?? []
-
-  for (const entry of overrides) {
-    const current = byId.get(entry.id)
-    const builtin = builtinById.get(entry.id)
-
-    if (entry.disabled === true) {
-      if (current || builtin) byId.delete(entry.id)
-      continue
-    }
-
-    const patch = withoutDisabled(entry)
-    const base = current ?? builtin
-    const next = base ? mergeModelPatch(base, patch) : patch
-    if (!base && !order.includes(entry.id)) order.push(entry.id)
-    byId.set(entry.id, next)
-  }
-
-  const valid: ModelDefinition[] = []
-  for (const id of order) {
-    const model = byId.get(id)
-    if (!model) continue
-
-    const parsed = modelDefinitionSchema.safeParse(model)
-    if (!parsed.success) {
-      console.warn(
-        `Dropping invalid model catalog entry "${id}" for provider "${providerId}":`,
-        parsed.error.issues[0]?.message ?? parsed.error.message,
-      )
-      continue
-    }
-    valid.push(parsed.data)
-  }
-
-  return withGlobalModelPricing(normalizeCatalog(valid), getSettings().modelPricing)
+  return withGlobalModelPricing(mergeCatalog(getProviderCatalog(providerId), getModelCatalogSettings()[providerId]?.overrides ?? []), getSettings().modelPricing)
 }
 
 /** Look up a concrete model definition by id within a provider's catalog. */

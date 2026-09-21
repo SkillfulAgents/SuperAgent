@@ -160,6 +160,10 @@ async function initializeServicesInner() {
     })(),
     listAgents(),
   ])
+  // The deployment may add Platform credentials after the one-time import.
+  // Keep its managed connection lifecycle separate from historical migration.
+  const { ensureManagedPlatformConnection } = await import('./llm-provider/connection-settings')
+  await ensureManagedPlatformConnection()
   markBoot('dbReady')
   const slugs = agents.map((a) => a.slug)
   await containerHost.initializeAgents(slugs)

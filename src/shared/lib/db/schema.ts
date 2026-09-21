@@ -32,6 +32,29 @@ export const user = sqliteTable('user', {
   avatarOverrideIdx: index('user_avatar_override_idx').on(table.avatarOverride),
 }))
 
+// One registry for global (NULL owner) and personal LLM accounts.
+export const llmConnections = sqliteTable('llm_connections', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  provider: text('provider').notNull(),
+  managed: integer('managed', { mode: 'boolean' }).notNull().default(false),
+  config: text('config').notNull(),
+  catalog: text('catalog').notNull(),
+  browserModel: text('browser_model'),
+  dashboardModel: text('dashboard_model'),
+  credentials: text('credentials'),
+  generation: integer('generation').notNull().default(0),
+  state: text('state', { enum: ['ready', 'reconnect'] }).notNull().default('ready'),
+  refreshLease: text('refresh_lease'),
+  refreshLeaseUntil: integer('refresh_lease_until'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({
+  ownerIdx: index('llm_connections_owner_idx').on(table.userId),
+  platformUnique: uniqueIndex('llm_connections_platform_unique').on(table.provider).where(sql`provider = 'platform'`),
+}))
+
 /**
  * Stable installed-mobile-device identity. Access sessions rotate underneath
  * this row; the refresh secret is stored only as a SHA-256 hash and deleting
@@ -243,6 +266,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   timezone: text('timezone'),
 
   // Runtime options (override global defaults when set)
+  connectionId: text('connection_id').references(() => llmConnections.id, { onDelete: 'set null' }),
   model: text('model'),
   effort: text('effort'),
   speed: text('speed'),
@@ -638,6 +662,7 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   mintedByMemberId: text('minted_by_member_id'),
 
   // Runtime options (override global defaults when set)
+  connectionId: text('connection_id').references(() => llmConnections.id, { onDelete: 'set null' }),
   model: text('model'),
   effort: text('effort'),
   speed: text('speed'),
@@ -666,6 +691,7 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   showToolCalls: integer('show_tool_calls', { mode: 'boolean' }).notNull().default(false),
   requireApproval: integer('require_approval', { mode: 'boolean' }).notNull().default(true),
   sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
+  connectionId: text('connection_id').references(() => llmConnections.id, { onDelete: 'set null' }),
   model: text('model'), // Claude model override; null = use default
   effort: text('effort'), // Effort level override; null = use default
   speed: text('speed'), // Speed level override; null = use default

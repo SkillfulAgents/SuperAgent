@@ -207,6 +207,29 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     claudeProcess = undefined
   })
 
+  it('rebuilds credentials, endpoint, subagents and context when changing LLM accounts', async () => {
+    const runtime = (connectionId: string, model: string, generation = 0) => ({
+      connectionId, generation, provider: 'generic', model,
+      browserModel: model, dashboardBuilderModel: model, modelPromptHints: [], subagentModels: [],
+      modelContextWindows: { [model]: connectionId === 'first' ? 500000 : 100000 },
+      env: { ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: `secret-${connectionId}-${generation}`, ANTHROPIC_BASE_URL: `https://${connectionId}.example`, CLAUDE_CODE_USE_BEDROCK: '' },
+    })
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'llm-switch', workingDirectory: '/tmp', llmRuntime: runtime('first', 'shared-model'), customEnvVars: { ANTHROPIC_AUTH_TOKEN: 'must-not-win' } })
+    await claudeProcess.start()
+    expect(calls[0].options.env).toMatchObject({ ANTHROPIC_AUTH_TOKEN: 'secret-first-0', CLAUDE_CODE_MAX_CONTEXT_TOKENS: '500000' })
+    await claudeProcess.sendMessage('continue on second account', undefined, { llmRuntime: runtime('second', 'shared-model') })
+    expect(calls).toHaveLength(2)
+    expect(calls[1].options.env).toMatchObject({ ANTHROPIC_AUTH_TOKEN: 'secret-second-0', ANTHROPIC_BASE_URL: 'https://second.example', CLAUDE_CODE_MAX_CONTEXT_TOKENS: '100000' })
+    expect(JSON.stringify(calls[1].options)).not.toContain('secret-first')
+    await claudeProcess.sendMessage('credentials rotated', undefined, { llmRuntime: runtime('second', 'shared-model', 1) })
+    expect(calls).toHaveLength(3)
+    expect(calls[2].options.env).toMatchObject({ ANTHROPIC_AUTH_TOKEN: 'secret-second-1' })
+    await claudeProcess.sendMessage('another model', undefined, { llmRuntime: runtime('second', 'different-model', 1) })
+    expect(calls).toHaveLength(4)
+    expect(calls[3].options.model).toBe('different-model')
+    expect(JSON.stringify(calls[3].options.agents)).toContain('different-model')
+  })
+
   it('keeps an integration identity separate from a user MCP with the same name', async () => {
     const claude = await startProcess('test-integration-name-collision')
     const owned = { id: 'integration:one', name: 'agent_integration_one', status: 'active', proxyUrl: 'http://host/owned', tools: [], integration: { id: 'one', provider: 'Test', name: 'Bot', workspace: 'Test' } }

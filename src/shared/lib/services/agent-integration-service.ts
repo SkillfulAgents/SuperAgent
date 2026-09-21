@@ -1,3 +1,4 @@
+import { getSettings } from '@shared/lib/config/settings'
 /**
  * Agent integration persistence. Physical table names are retained for upgrades.
  */
@@ -41,6 +42,7 @@ export interface CreateAgentIntegrationParams {
   config: Record<string, unknown>
   showToolCalls?: boolean
   sessionTimeout?: number | null
+  connectionId?: string | null
   model?: string | null
   effort?: string | null
   speed?: string | null
@@ -53,6 +55,7 @@ export interface UpdateAgentIntegrationParams {
   showToolCalls?: boolean
   requireApproval?: boolean
   sessionTimeout?: number | null
+  connectionId?: string | null
   model?: string | null
   effort?: string | null
   speed?: string | null
@@ -82,6 +85,7 @@ export async function createAgentIntegration(params: CreateAgentIntegrationParam
     // dedicated PATCH /:integrationId/require-approval endpoint.
     requireApproval: true,
     sessionTimeout: params.sessionTimeout ?? null,
+    connectionId: params.model ? (params.connectionId === undefined ? getSettings().llmDefault?.connectionId : params.connectionId) : null,
     model: params.model ?? null,
     effort: params.effort ?? null,
     speed: params.speed ?? null,
@@ -337,7 +341,12 @@ function fieldUpdates(params: UpdateAgentIntegrationParams): Record<string, unkn
   if (params.showToolCalls !== undefined) updates.showToolCalls = params.showToolCalls
   if (params.requireApproval !== undefined) updates.requireApproval = params.requireApproval
   if (params.sessionTimeout !== undefined) updates.sessionTimeout = params.sessionTimeout
-  if (params.model !== undefined) updates.model = params.model
+  if (params.connectionId !== undefined) updates.connectionId = params.connectionId
+  if (params.model !== undefined) {
+    updates.model = params.model
+    if (!params.model) updates.connectionId = null
+    else if (params.connectionId === undefined && getSettings().llmDefault) updates.connectionId = sql`coalesce(${chatIntegrations.connectionId}, ${getSettings().llmDefault!.connectionId})`
+  }
   if (params.effort !== undefined) updates.effort = params.effort
   if (params.speed !== undefined) updates.speed = params.speed
   if (params.status !== undefined) updates.status = params.status

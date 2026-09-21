@@ -17,7 +17,7 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
   createClient(): Anthropic {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new Error('Anthropic API key not configured')
-    return new Anthropic({ apiKey })
+    return new Anthropic({ apiKey, ...(this.configuration ? { baseURL: 'https://api.anthropic.com', authToken: null } : {}) })
   }
 
   getBuiltinCatalog(): ModelDefinition[] {

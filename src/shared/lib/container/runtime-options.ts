@@ -15,6 +15,7 @@ export const RuntimeOptionsSchema = z
     effort: z.enum(EFFORT_LEVELS).optional(),
     speed: z.enum(SPEED_LEVELS).optional(),
     model: z.string().optional(),
+    connectionId: z.string().min(1).nullable().optional(),
     shouldQuery: z.boolean().optional(),
   })
   .strict()
@@ -32,6 +33,7 @@ export const RuntimeOptionsPatchSchema = z
     effort: z.enum(EFFORT_LEVELS).nullish(),
     speed: z.enum(SPEED_LEVELS).nullish(),
     model: z.string().nullish(),
+    connectionId: z.string().min(1).nullish(),
   })
   .strict()
 
@@ -53,6 +55,10 @@ export function parseRuntimeOptions(raw: unknown): RuntimeOptions {
 
   if (typeof obj.model === 'string' && obj.model.length > 0) {
     result.model = obj.model
+  }
+
+  if (obj.connectionId === null || (typeof obj.connectionId === 'string' && obj.connectionId.length > 0)) {
+    result.connectionId = obj.connectionId
   }
 
   if (typeof obj.shouldQuery === 'boolean') {
@@ -88,6 +94,7 @@ function asRecord(raw: unknown): Record<string, unknown> | null {
 
 export type RuntimeInherit = {
   model: string
+  connectionId?: string | null
   effort?: EffortLevel
   speed?: SpeedLevel
 }
@@ -112,6 +119,9 @@ export function resolveRuntimeInherit(
 
   return {
     model,
+    ...(s.model ? { connectionId: s.connectionId as string | null | undefined }
+      : agent?.defaultModel ? { connectionId: agent.defaultConnectionId }
+      : { connectionId: raw.connectionId as string | null | undefined }),
     ...(effort ? { effort } : {}),
     ...(speed ? { speed } : {}),
   }

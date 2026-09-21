@@ -1,3 +1,5 @@
+import { useLlmConnections } from '@renderer/hooks/use-llm-connections'
+import { resolveSelection, type ConnectionInfo } from '@shared/lib/llm-provider/connection-schema'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useModelSettings } from '@renderer/hooks/use-settings'
 import { ComposerOptionsPopover } from './composer-options-popover'
@@ -21,6 +23,9 @@ const DEFAULT_EFFORT: EffortLevel = 'medium'
 const DEFAULT_SPEED: SpeedLevel = 'normal'
 
 export interface ComposerOptionsState {
+  connectionId?: string
+  connections?: ConnectionInfo[]
+  setConnection?: (connectionId: string) => void
   effort: EffortLevel
   setEffort: (e: EffortLevel) => void
   speed: SpeedLevel
@@ -43,7 +48,7 @@ export interface ComposerOptionsState {
    * a still-loading preferences query — and would override the actual model of
    * a session that carries none in its metadata (e.g. trigger-created).
    */
-  toRuntimeOptions(): { effort?: EffortLevel; speed?: SpeedLevel; model?: string }
+  toRuntimeOptions(): { effort?: EffortLevel; speed?: SpeedLevel; model?: string; connectionId?: string }
 }
 
 /** Submit lifecycle used by composer hosts; presentation-only consumers only need the state above. */
@@ -54,7 +59,7 @@ export interface ComposerOptionsController extends ComposerOptionsState {
    * must not be overwritten by a session-detail refetch. Afterwards, newer
    * initial values are authoritative (another window may have spoken).
    */
-  markSubmitted(options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string }): void
+  markSubmitted(options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; connectionId?: string }): void
 }
 
 /**
@@ -74,6 +79,9 @@ export function findCatalogModel(
 }
 
 export interface UseComposerOptionsArgs {
+  initialConnectionId?: string | null
+  agentDefaultConnectionId?: string | null
+  sessionId?: string
   /** Effort last used on this session, seeds the selector if provided. */
   initialEffort?: EffortLevel
   /** Speed last used on this session, seeds the selector if provided. */
@@ -114,6 +122,9 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     initialEffort,
     initialSpeed,
     initialModel,
+    initialConnectionId,
+    agentDefaultConnectionId,
+    sessionId,
     agentDefaultModel,
     agentDefaultEffort,
     agentDefaultSpeed,
@@ -125,6 +136,26 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   // Picker-safe endpoint — readable by non-admin users too, unlike the
   // admin-gated full settings (which would leave them an empty catalog).
   const { data: settings } = useModelSettings()
+
+  const { data: connectionData } = useLlmConnections(agentKey, sessionId, initialConnectionId)
+  const [connectionId, setConnectionId] = useState<string | undefined>(initialConnectionId ?? undefined)
+  const connectionDirty = useRef(false)
+  const connections = useMemo(() => connectionData?.connections ?? [], [connectionData])
+  const [model, setModelState] = useState<string | undefined>(initialModel)
+  const legacyConnectionId = connectionData?.legacyConnectionId
+  const currentSelection = resolveSelection(initialModel && initialConnectionId !== null ? { model: initialModel, connectionId: initialConnectionId ?? legacyConnectionId ?? '' } : null, connections)
+  const agentSelection = resolveSelection(agentDefaultModel && agentDefaultConnectionId !== null ? { model: agentDefaultModel, connectionId: agentDefaultConnectionId ?? legacyConnectionId ?? '' } : null, connections)
+  const inheritedSelection = currentSelection ?? agentSelection ?? resolveSelection(connectionData?.defaultSelection, connections)
+  const inheritedConnectionId = inheritedSelection?.connectionId
+  const localSelection = resolveSelection(connectionId && model ? { connectionId, model } : null, connections)
+  // Validate the pair before falling back. Never combine a removed account's
+  // model with another account merely because both happen to expose that ID.
+  const effectiveSelection = localSelection ?? inheritedSelection
+  const effectiveConnectionId = effectiveSelection?.connectionId
+  const selectedConnection = connections.find(c => c.id === effectiveConnectionId)
+  useEffect(() => {
+    if (!connectionDirty.current) setConnectionId(initialConnectionId ?? undefined)
+  }, [initialConnectionId, agentKey])
 
   // ---- Effort ----
   const [effort, setEffortState] = useState<EffortLevel>(initialEffort ?? DEFAULT_EFFORT)
@@ -173,21 +204,20 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     () => settings?.llmProviderStatus?.find((p) => p.id === activeProvider),
     [settings, activeProvider],
   )
-  const catalog = useMemo(() => providerInfo?.catalog ?? [], [providerInfo])
+  const catalog = useMemo(() => selectedConnection?.catalog ?? providerInfo?.catalog ?? [], [selectedConnection, providerInfo])
   // Fallback hierarchy: the agent's own default → user's "Default Model" →
   // provider's catalog default → first catalog entry. The first non-empty
   // wins. Aliases and concrete ids are both valid selection strings.
   const fallbackModel = useMemo(
     () =>
-      agentDefaultModel ??
+      currentSelection?.model ?? agentSelection?.model ?? connectionData?.defaultSelection?.model ?? agentDefaultModel ??
       settings?.models?.agentModel ??
       providerInfo?.defaultModels?.agent ??
       catalog[0]?.id,
-    [agentDefaultModel, settings, providerInfo, catalog],
+    [currentSelection?.model, agentSelection?.model, connectionData?.defaultSelection?.model, agentDefaultModel, settings, providerInfo, catalog],
   )
 
   // ---- Model ----
-  const [model, setModelState] = useState<string | undefined>(initialModel ?? fallbackModel)
   const modelSeededRef = useRef(initialModel !== undefined)
   // `initialModel` is authoritative session state, but the first render may
   // contain a stale React Query cache entry while a background refetch is in
@@ -210,8 +240,17 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     setModelState(m)
   }, [])
 
+  const setConnection = useCallback((id: string) => {
+    const next = connections.find(c => c.id === id)
+    if (!next?.catalog[0]) return
+    connectionDirty.current = true
+    setConnectionId(id)
+    setModel(next.catalog.find(m => m.isDefault)?.id ?? next.catalog[0].id)
+  }, [connections, setModel])
+
   const markSubmitted = useCallback(
-    (options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string }) => {
+    (options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; connectionId?: string }) => {
+      if (options.connectionId === effectiveConnectionId) connectionDirty.current = false
       // Do not clear a newer selection if a request somehow completed after
       // the picker changed again. MessageInput disables the picker in flight,
       // but the equality check keeps this helper correct for other callers.
@@ -225,7 +264,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
         modelDirtyRef.current = false
       }
     },
-    [effort, speed, model],
+    [effort, speed, model, effectiveConnectionId],
   )
 
   // ---- Default adoption ----
@@ -248,8 +287,9 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       adoptionLockedRef.current = false
     }
     if (adoptionLockedRef.current) return
-    if (!modelSeededRef.current && fallbackModel && model !== fallbackModel) {
+    if (!modelSeededRef.current && fallbackModel) {
       setModelState(fallbackModel)
+      if (inheritedConnectionId) setConnectionId(inheritedConnectionId)
     }
     if (
       !effortSeededRef.current &&
@@ -267,11 +307,13 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     ) {
       setSpeedState(fallbackSpeed)
     }
-    if (!followDefaults && settings && agentDefaultsReady) {
+    if (!followDefaults && settings && (connectionData !== undefined || !settings.connections) && agentDefaultsReady) {
       adoptionLockedRef.current = true
     }
   }, [
     agentKey,
+    connectionData,
+    inheritedConnectionId,
     model,
     fallbackModel,
     effort,
@@ -287,22 +329,26 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
 
   // Seeded refs are read at submit time: only a user pick or a session-seeded
   // value counts as an explicit choice worth putting on the wire.
+  const displayedModel = connectionData ? effectiveSelection?.model : model
   const toRuntimeOptions = useCallback(
     () => ({
       ...(effortSeededRef.current ? { effort } : {}),
       ...(speedSeededRef.current ? { speed } : {}),
-      ...(modelSeededRef.current && model ? { model } : {}),
+      ...(modelSeededRef.current && displayedModel ? { model: displayedModel, ...(effectiveConnectionId ? { connectionId: effectiveConnectionId } : {}) } : {}),
     }),
-    [effort, speed, model],
+    [effort, speed, displayedModel, effectiveConnectionId],
   )
 
   return useMemo(
     () => ({
+      connectionId: effectiveConnectionId,
+      connections,
+      setConnection,
       effort,
       setEffort,
       speed,
       setSpeed,
-      model,
+      model: displayedModel,
       setModel,
       catalog,
       defaultModel: fallbackModel,
@@ -310,7 +356,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       toRuntimeOptions,
       markSubmitted,
     }),
-    [effort, setEffort, speed, setSpeed, model, setModel, catalog, fallbackModel, settings, toRuntimeOptions, markSubmitted],
+    [effectiveConnectionId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, setModel, catalog, fallbackModel, settings, toRuntimeOptions, markSubmitted],
   )
 }
 

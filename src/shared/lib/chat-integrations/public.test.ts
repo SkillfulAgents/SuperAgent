@@ -14,6 +14,7 @@ function integration(provider: ChatIntegration['provider'], config: Record<strin
     requireApproval: true,
     sessionTimeout: null,
     model: null,
+  connectionId: null,
     effort: null,
     speed: null,
     status: 'active',

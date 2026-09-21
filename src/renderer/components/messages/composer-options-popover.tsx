@@ -88,6 +88,11 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
         // it pops its name tooltip instantly. Keyboard users can Tab in.
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
+        {(state.connections?.length ?? 0) > 1 && <label className="px-2 pb-2 text-xs">Connection
+          <select aria-label="Connection" className="mt-1 w-full rounded border bg-background p-2" value={state.connectionId ?? ''} onChange={e => state.setConnection?.(e.target.value)}>
+            {state.connections?.map(c => <option key={c.id} value={c.id}>{c.name}{c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}</option>)}
+          </select>
+        </label>}
         {selectedModel && (
           <>
             {/* Flat list, no "latest" — per-message picks a concrete version.

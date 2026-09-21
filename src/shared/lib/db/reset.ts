@@ -13,6 +13,7 @@ import {
   webhookTriggers,
   chatIntegrations,
   integrationDeliveries,
+  llmConnections,
   remoteMcpServers,
   agentRemoteMcps,
   mcpAuditLog,
@@ -66,6 +67,7 @@ function factoryResetTables(): SQLiteTable[] { return [
   ...agentIntegrationRegistry.storageTables(),
   integrationDeliveries,
   chatIntegrations,
+  llmConnections,
   // connected accounts + dependents (api scope policies + agent mappings cascade)
   agentConnectedAccounts,
   apiScopePolicies,

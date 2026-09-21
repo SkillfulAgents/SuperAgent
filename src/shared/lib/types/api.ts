@@ -156,6 +156,7 @@ export interface ApiSession {
   speed?: SpeedLevel
   // Last model used on this session (seeds the composer selector)
   model?: string
+  connectionId?: string | null
   // Present when the session has a pending scheduled wake (long sleep):
   // it will auto-resume at pendingWakeAt with pendingWakeNote echoed back.
   pendingWakeAt?: string
@@ -424,6 +425,7 @@ export interface ApiScheduledTask {
   lastSessionId: string | null
   createdBySessionId: string | null
   timezone: string | null
+  connectionId?: string | null
   model: string | null
   effort: string | null
   speed: string | null

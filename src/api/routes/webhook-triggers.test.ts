@@ -79,6 +79,7 @@ const trigger: WebhookTrigger = {
   createdByUserId: 'owner-private-id',
   mintedByMemberId: 'sub_member-private-id',
   model: null,
+  connectionId: null,
   effort: null,
   speed: null,
   createdAt: new Date('2026-07-17T00:00:00Z'),

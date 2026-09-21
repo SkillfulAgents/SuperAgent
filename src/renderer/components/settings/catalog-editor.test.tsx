@@ -23,7 +23,7 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: { connected: true } }),
 }))
 
-import { LlmTab } from './llm-tab'
+import { CatalogEditor } from './model-catalog/catalog-editor'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 
 type TestProvider = 'anthropic' | 'openrouter' | 'platform'
@@ -55,6 +55,7 @@ function renderWithSettings(options?: {
   catalog?: ModelDefinition[]
   providerId?: TestProvider
   modelSearch?: boolean
+  canEditPricing?: boolean
 }) {
   // Default to a self-managed provider so the catalog editor is rendered (the
   // platform provider intentionally hides it).
@@ -88,7 +89,13 @@ function renderWithSettings(options?: {
       enableToolSearch: true,
     },
   })
-  return render(<LlmTab />)
+  return render(providerId === 'platform' ? null : <CatalogEditor
+    providerId={providerId} builtinCatalog={BUILTIN} effectiveCatalog={options?.catalog ?? BUILTIN}
+    modelCatalog={options?.modelCatalog as never} supportsModelSearch={options?.modelSearch}
+    modelPricing={options?.modelPricing}
+    canEditPricing={options?.canEditPricing}
+    onChange={mutateMock}
+  />)
 }
 
 /** The catalog editor is collapsed by default; open it before touching rows. */
@@ -110,7 +117,7 @@ beforeEach(() => {
   })
 })
 
-describe('LlmTab model catalog editor', () => {
+describe('Model catalog editor', () => {
   it('keeps a shared long-context cliff when a custom model without one is only renamed', async () => {
     const user = userEvent.setup()
     // The cliff came from another provider's entry for the same model id; this provider's entry has none.
@@ -136,6 +143,21 @@ describe('LlmTab model catalog editor', () => {
     expect(mutateMock).toHaveBeenCalledWith(
       expect.objectContaining({ modelPricing: { 'shared-model': shared } }),
     )
+  })
+
+  it('lets members manage models without editing shared prices', async () => {
+    const user = userEvent.setup()
+    renderWithSettings({ canEditPricing: false })
+    await openCatalog(user)
+    expect(screen.queryByTestId('catalog-customize-gpt-5.5')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('catalog-open-add-custom-model'))
+    expect(screen.getByLabelText('Input price')).toBeDisabled()
+    expect(screen.getByLabelText('Output price')).toBeDisabled()
+    await user.type(screen.getByLabelText('Model ID'), 'private-model')
+    await user.type(screen.getByLabelText('Display label'), 'Private model')
+    await user.click(screen.getByTestId('catalog-add-custom-model'))
+    expect(mutateMock).toHaveBeenCalledWith({ modelCatalog: { anthropic: { overrides: [expect.objectContaining({ id: 'private-model' })] } } })
+    expect(mutateMock.mock.calls.at(-1)?.[0]).not.toHaveProperty('modelPricing')
   })
 
   it('retains the global price when editing a disabled custom model', async () => {

@@ -117,6 +117,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     initialEffort: carryover?.effort,
     initialSpeed: carryover?.speed,
     agentDefaultModel: agentPrefs?.defaultModel,
+    agentDefaultConnectionId: agentPrefs?.defaultConnectionId,
     agentDefaultEffort: agentPrefs?.defaultEffort,
     agentDefaultSpeed: agentPrefs?.defaultSpeed,
     agentKey: agent.slug,
