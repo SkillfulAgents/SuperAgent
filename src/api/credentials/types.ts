@@ -1,9 +1,17 @@
-export type CredentialProviderStatus =
-  | 'unconfigured'
-  | 'ready'
-  | 'unavailable'
-  | 'locked'
-  | 'error'
+import type {
+  CredentialProviderConnection,
+  CredentialProviderStatus,
+} from '@shared/lib/credentials/schemas'
+
+export type {
+  CredentialProviderConnection,
+  CredentialProviderConnectionStatus,
+  CredentialProviderRemediation,
+  CredentialProviderStatus,
+  CredentialSuggestion,
+  CredentialSuggestionsResponse,
+  PasswordManagerCard,
+} from '@shared/lib/credentials/schemas'
 
 export interface CredentialLookupContext {
   url: string
@@ -12,8 +20,8 @@ export interface CredentialLookupContext {
 
 export interface CredentialProviderItem {
   providerKey: string
-  username: string
-  domain: string
+  username?: string
+  domain?: string
   title?: string
 }
 
@@ -62,55 +70,20 @@ export function isPairableCredentialProvider(
     typeof candidate.completePairing === 'function'
 }
 
-export type CredentialProviderConnectionStatus =
-  | 'connected'
-  | 'disconnected'
-  | 'unavailable'
-  | 'error'
-
-export interface CredentialProviderRemediation {
-  code: string
-  title: string
-  instructions: string[]
-  action?: {
-    kind: 'open_url' | 'open_in_chrome'
-    label: string
-    url: string
-  }
+export interface SearchableCredentialProvider extends CredentialProvider {
+  search(query: string): Promise<CredentialProviderItem[]>
 }
 
-export interface CredentialProviderConnection {
-  provider: string
-  providerLabel: string
-  /** Whether this provider can be configured on the current host. */
-  installable: boolean
-  status: CredentialProviderConnectionStatus
-  message?: string
-  remediation?: CredentialProviderRemediation
+export function isSearchableCredentialProvider(
+  provider: CredentialProvider,
+): provider is SearchableCredentialProvider {
+  return typeof (provider as Partial<SearchableCredentialProvider>).search === 'function'
 }
 
 export interface CredentialRequestScope {
   agentSlug: string
   sessionId: string
   toolUseId: string
-}
-
-export interface CredentialSuggestion {
-  id: string
-  username: string
-  domain: string
-  title?: string
-}
-
-export interface CredentialSuggestionsResponse {
-  provider: string
-  providerLabel: string
-  status: CredentialProviderStatus
-  /** False when no provider can be configured on this host. */
-  installable: boolean
-  origin: string
-  message?: string
-  suggestions: CredentialSuggestion[]
 }
 
 export class CredentialBrokerError extends Error {
