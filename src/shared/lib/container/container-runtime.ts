@@ -1,3 +1,4 @@
+import { integrationMcpProjection } from '../agent-integrations/mcp'
 /**
  * One agent's container on this machine: its client, cached status, start and
  * stop, health warnings, and recovery from an unexpected death.
@@ -566,6 +567,8 @@ export class ContainerRuntime {
       slug,
       hostApiBaseUrl,
     )
+
+    mcpConfigs.push(...await integrationMcpProjection(slug, hostApiBaseUrl))
 
     if (mcpConfigs.length > 0) {
       envVars['REMOTE_MCPS'] = JSON.stringify(mcpConfigs)

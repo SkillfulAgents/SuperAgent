@@ -1,3 +1,4 @@
+import { syncRemoteMcpAgents } from '../services/connection-sync-service'
 /**
  * Application-wide integration lifecycle, serialized input, and actor sessions.
  * Families decide routing, authorization policy, context, and delivery. The
@@ -400,8 +401,11 @@ export class AgentIntegrationManager {
   }
 
   async pauseIntegration(id: string): Promise<void> {
-    await this.removeIntegration(id)
+    // Gate health-check reconnects before disconnect yields to provider cleanup.
     await updateIntegrationStatus(id, 'paused')
+    await this.removeIntegration(id)
+    const record = await getIntegration(id)
+    if (record) await this.syncMcpEnvironment(record)
   }
 
   async resumeIntegration(id: string): Promise<void> {
@@ -559,7 +563,14 @@ export class AgentIntegrationManager {
       if (this.generationOf(id) !== generation) return false
       this.subscribeChatSession(integration.id, session.externalId, session.sessionId)
     }
-    return true
+    await this.syncMcpEnvironment(integration)
+    return this.generationOf(id) === generation
+  }
+
+  private async syncMcpEnvironment(integration: AgentIntegrationRecord): Promise<void> {
+    if (!this.registry.getDefinition(integration.provider)?.capabilities.includes('mcp')) return
+    try { await syncRemoteMcpAgents([integration.agentSlug]) }
+    catch (error) { reportError(error, 'sync-mcp', { integrationId: integration.id }) }
   }
 
   private async createConnector(integration: AgentIntegrationRecord): Promise<AgentIntegration> {

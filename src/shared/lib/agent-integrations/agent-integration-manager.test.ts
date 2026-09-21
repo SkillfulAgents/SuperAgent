@@ -11,9 +11,11 @@ const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
   mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
   streams: new Map<string, (event: unknown) => void>(),
+  syncMcp: vi.fn(async () => true),
   claim: vi.fn(), notify: vi.fn().mockResolvedValue(undefined),
   create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), register: vi.fn(), metadata: vi.fn(),
 }))
+vi.mock('@shared/lib/services/connection-sync-service', () => ({ syncRemoteMcpAgents: state.syncMcp }))
 vi.mock('@shared/lib/services/chat-integration-service', () => ({
   listStartupChatIntegrations: () => state.rows,
   getChatIntegration: (id: string) => state.rows.find(row => row.id === id),
@@ -524,4 +526,24 @@ it('review: a restoration retry cannot outlive a clear that is still in progress
     releaseFirst.release(); releaseRetry.release(); releaseClear.release()
     lookup.mockRestore()
   }
+})
+
+
+describe('integration-owned MCP lifecycle', () => {
+  it('refreshes the owning runtime on connect, pause and resume', async () => {
+    (adapter.definition.capabilities as string[]).push('mcp')
+    await manager.start()
+    expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a'])
+    await manager.pauseIntegration('installation-a')
+    expect(state.syncMcp).toHaveBeenCalledTimes(2)
+    expect(updateChatIntegrationStatus).toHaveBeenCalledWith('installation-a', 'paused')
+    await manager.resumeIntegration('installation-a')
+    expect(state.syncMcp).toHaveBeenCalledTimes(3)
+  })
+
+  it('leaves runtime MCP state alone for providers without the capability', async () => {
+    await manager.start()
+    await manager.pauseIntegration('installation-a')
+    expect(state.syncMcp).not.toHaveBeenCalled()
+  })
 })

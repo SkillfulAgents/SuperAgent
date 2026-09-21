@@ -43,6 +43,26 @@ The Slack provider factory supplies an installation-scoped store for joined-thre
 
 Application startup, desktop resume, and API lifecycle calls use the same `agentIntegrationManager` singleton. The old manager and `ChatClientConnector` import paths re-export compatibility aliases; they do not create another runtime. Existing chat HTTP paths, tool names, and UI setup flows remain compatible.
 
+## Integration-owned MCP
+
+Providers may register `mcp(record)` to return an `IntegrationMcpConnection` without
+constructing a live inbound connector. The integration owns credentials, refresh
+and lifecycle; its `authorization()` callback must revalidate ownership and parent
+state when called, including after asynchronous refresh. The shared MCP proxy
+owns transport and audits. Its existing `remoteMcpId` records
+`integration:<installation-id>` and `policyDecision` records `integration_identity`,
+so attribution requires no additional audit column or migration.
+
+Runtime projections expose these connections to every session of the owning agent
+without creating a user-owned MCP account, assignment or independent
+permission/delete control. Connect and pause refresh the running agent's MCP
+environment. The provider reports authentication and availability changes through
+its callbacks. Prompts explain the agent's identity and direct reconnection to the
+parent integration. Existing chat providers do not opt in and retain their current
+outbound behavior.
+
 ## Next phase
 
-SUP-832 will add `TaskManagerAgentIntegration` and Linear's identity/setup, event transport, issue context, tools, and final-comment policy. They are intentionally absent from this refactor. The provider-neutral tests use a small test adapter with no chat methods to exercise routing, completion delivery, access enforcement, installation isolation, and teardown through the common host.
+SUP-832 adds the task-manager family and Linear as the first provider of an
+integration-owned MCP. Those implementations and their setup UI are separate from
+this foundation.

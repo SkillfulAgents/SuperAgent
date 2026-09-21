@@ -1,3 +1,5 @@
+import { INTEGRATION_MCP_PREFIX, resolveIntegrationMcp } from '@shared/lib/agent-integrations/mcp'
+import type { RemoteMcpServer } from '@shared/lib/db/schema'
 import { Hono } from 'hono'
 import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
@@ -320,8 +322,22 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     return c.json({ error: 'Token does not match agent' }, 403)
   }
 
+  // Integration connections are derived from their parent, never assigned or
+  // managed through the user-owned remote-MCP CRUD/policy tables.
+  const integrationConnection = mcpId.startsWith(INTEGRATION_MCP_PREFIX)
+    ? await resolveIntegrationMcp(agentSlug, mcpId) : null
+  if (mcpId.startsWith(INTEGRATION_MCP_PREFIX) && !integrationConnection) return c.json({ error: 'Agent integration unavailable' }, 403)
+
   // 2. Verify agent-MCP mapping exists
-  const loadMappedMcp = async () => {
+  const loadMappedMcp = async (): Promise<RemoteMcpServer | null> => {
+    if (integrationConnection) return {
+      id: mcpId, name: `${integrationConnection.identity.provider}: ${integrationConnection.identity.name}`,
+      url: integrationConnection.url, userId: null, authType: 'bearer', accessToken: null, refreshToken: null,
+      tokenExpiresAt: null, oauthTokenEndpoint: null, oauthClientId: null, oauthClientSecret: null, oauthResource: null,
+      toolsJson: JSON.stringify(integrationConnection.tools), toolsDiscoveredAt: null,
+      status: integrationConnection.status, errorMessage: null, createdAt: new Date(0), updatedAt: new Date(0),
+    }
+
     const [mapping] = await db
       .select({ mcp: remoteMcpServers })
       .from(agentRemoteMcps)
@@ -391,6 +407,8 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     | { ok: false; reason: 'timeout' | 'dismissed' | 'missing' | 'inactive'; dismissReason?: string }
 
   const holdForReauth = async (): Promise<ReauthResult> => {
+    if (integrationConnection) return { ok: false, reason: 'inactive' }
+
     try {
       await agentRegistry.get(agentSlug).inputs.mcpReauth.request({
         mcpId,
@@ -417,6 +435,11 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   const reauthFailureResponse = async (
     result: Exclude<ReauthResult, { ok: true }>,
   ) => {
+    if (integrationConnection) {
+      await logMcpAuditEntry({ agentSlug, remoteMcpId: mcpId, remoteMcpName: mcp!.name, method, requestPath: mcpMethodInfo,
+        statusCode: 409, errorMessage: 'Reconnect the parent agent integration', matchedTool: toolName ?? undefined })
+      return c.json({ error: 'integration_reconnect_required', message: `Reconnect ${integrationConnection.identity.provider} from this agent’s integration settings.`, integrationId: integrationConnection.integrationId }, 409)
+    }
     if (result.reason === 'replaced') {
       const message = `This MCP connection was replaced. Use the tools for MCP ID ${result.replacementMcpId} instead of ${mcpId}.`
       await logMcpAuditEntry({
@@ -446,6 +469,8 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   }
 
   const markAuthRequired = async (errorMessage: string) => {
+    if (integrationConnection) { await integrationConnection.authRequired(); return }
+
     await db
       .update(remoteMcpServers)
       .set({
@@ -558,9 +583,9 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     mcpMethodInfo.startsWith('notifications/')
 
   const userId = mcp.userId ?? 'local'
-  let resolvedPolicyDecision: string = 'allow'
+  let resolvedPolicyDecision: string = integrationConnection ? 'integration_identity' : 'allow'
 
-  if (!isProtocolMethod) {
+  if (!isProtocolMethod && !integrationConnection) {
     let policyResult
     try {
       policyResult = await resolveMcpPolicy(mcpId, toolName, userId)
@@ -637,7 +662,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
 
   // 3. Get access token, refreshing if expired
   let accessToken = mcp.accessToken
-  if (mcp.authType !== 'none') {
+  if (!integrationConnection && mcp.authType !== 'none') {
     if (
       mcp.tokenExpiresAt &&
       mcp.tokenExpiresAt.getTime() < Date.now() &&
@@ -694,6 +719,10 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   const syntheticSession = getSyntheticMcpSession(mcpId, clientMcpSessionId)
 
   const forwardRequest = async () => {
+    // Recheck ownership, pause/delete and current authorization immediately
+    // before forwarding, including after an upstream handshake or retry.
+    if (integrationConnection) accessToken = await integrationConnection.authorization()
+
     const headers = new Headers(forwardHeaders)
     if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
     if (syntheticSession) {
@@ -706,7 +735,11 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       headers.delete('Mcp-Session-Id')
       if (upstreamSessionId) headers.set('Mcp-Session-Id', upstreamSessionId)
     }
-    const init: RequestInit = { method, headers }
+    if (integrationConnection) {
+      accessToken = await integrationConnection.authorization()
+      headers.set('Authorization', `Bearer ${accessToken}`)
+    }
+    const init: RequestInit = { method, headers, signal: c.req.raw.signal }
     if (bodyBuffer) init.body = bodyBuffer
     return mcpSafeFetch(targetUrl, init)
   }
@@ -732,6 +765,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       response = await forwardRequest()
     }
 
+    if (integrationConnection && method === 'POST') await integrationConnection.reportHealth(response.status < 500).catch(() => {})
     const durationMs = Date.now() - startTime
 
     if (shouldRewriteNonSseGet(method, response)) {
@@ -800,6 +834,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       headers: responseHeaders,
     })
   } catch (error) {
+    await integrationConnection?.reportHealth(false).catch(() => {})
     const durationMs = Date.now() - startTime
     const sessionInitializationFailed = error instanceof McpSessionInitializationError
     if (sessionInitializationFailed && error.status === 401) {

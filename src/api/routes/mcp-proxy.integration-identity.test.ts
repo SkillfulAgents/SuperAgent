@@ -1,0 +1,115 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Hono } from 'hono'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
+import type { AppDatabase } from '@shared/lib/db/drivers/types'
+import { mcpAuditLog, remoteMcpServers } from '@shared/lib/db/schema'
+import { createChatIntegration, deleteChatIntegration, getChatIntegration, updateChatIntegrationStatus } from '@shared/lib/services/chat-integration-service'
+import { agentIntegrationRegistry, AgentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
+import { integrationMcpProjection, resolveIntegrationMcp } from '@shared/lib/agent-integrations/mcp'
+import mcpProxy from './mcp-proxy'
+
+let handle: TestDatabase
+let testDb: AppDatabase
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
+vi.mock('node:dns/promises', () => ({ lookup: vi.fn(async () => [{ address: '8.8.8.8', family: 4 }]) }))
+vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn(async () => 'agent') }))
+const policy = vi.hoisted(() => ({ resolve: vi.fn(), review: vi.fn(), reauth: vi.fn() }))
+vi.mock('@shared/lib/proxy/policy-resolver', () => ({ resolveMcpPolicy: policy.resolve }))
+vi.mock('@shared/lib/agent-actor', () => ({ agentRegistry: { get: () => ({ inputs: { reviews: { request: policy.review }, mcpReauth: { request: policy.reauth } } }) } }))
+const fetchMock = vi.fn<typeof fetch>()
+const authRequired = vi.fn<() => Promise<void>>()
+const reportHealth = vi.fn<(available: boolean) => Promise<void>>()
+const beforeAuthorization = vi.fn<() => Promise<void>>()
+let id: string
+let app: Hono
+
+beforeEach(async () => {
+  handle = await createTestDatabase(); testDb = handle.db
+  vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock)
+  fetchMock.mockResolvedValue(Response.json({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: 'done' }] } }))
+  authRequired.mockResolvedValue(undefined); reportHealth.mockResolvedValue(undefined); beforeAuthorization.mockResolvedValue(undefined)
+  // An opt-in test provider exercises the contract without a Linear dependency.
+  const registry = new AgentIntegrationRegistry([{
+    definition: { provider: 'telegram', name: 'Test identity', family: 'test', capabilities: ['mcp'], settings: [], setup: { kind: 'test', credentialFields: [] } },
+    policy: { isAllowed: async () => true, sessionPolicy: () => ({ name: 'Test', metadata: {} }) },
+    create: async () => { throw new Error('Outbound discovery must not start inbound connectors') },
+    mcp: async record => {
+      if (record.name === 'Broken') throw new Error('Invalid provider configuration')
+      return {
+        integrationId: record.id, agentSlug: record.agentSlug, name: 'test_identity', url: 'https://mcp.example.com/mcp',
+        identity: { provider: 'Test', name: 'Agent Identity', workspace: 'Test workspace' }, status: 'active',
+        tools: [{ name: 'send_message', inputSchema: { type: 'object' } }],
+        async authorization() {
+          await beforeAuthorization()
+          const current = await getChatIntegration(record.id)
+          if (!current || current.agentSlug !== record.agentSlug || current.status === 'paused') throw new Error('Parent unavailable')
+          return 'agent-secret'
+        },
+        authRequired, reportHealth,
+      }
+    },
+  }])
+  vi.spyOn(agentIntegrationRegistry, 'getMcpConnection').mockImplementation(record => registry.getMcpConnection(record))
+  id = await createChatIntegration({ agentSlug: 'agent', provider: 'telegram', config: { botToken: 'test-token' } })
+  app = new Hono().route('/api/mcp-proxy', mcpProxy)
+})
+afterEach(async () => { await handle.close(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+function call(connectionId = `integration:${id}`) {
+  return app.request(`/api/mcp-proxy/agent/${connectionId}`, { method: 'POST', headers: {
+    Authorization: 'Bearer container-token', 'Content-Type': 'application/json',
+  }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'send_message', arguments: { text: 'Test' } } }) })
+}
+
+describe('integration-owned MCP through the shared proxy', () => {
+  it('exposes a token-free connection to the owning agent without a user MCP record', async () => {
+    const projected = await integrationMcpProjection('agent', 'http://host')
+    expect(projected).toMatchObject([{ id: `integration:${id}`, integration: { id, provider: 'Test', name: 'Agent Identity', workspace: 'Test workspace' }, tools: [{ name: 'send_message' }] }])
+    expect(JSON.stringify(projected)).not.toContain('secret')
+    expect(await testDb.select().from(remoteMcpServers)).toEqual([])
+    expect(await integrationMcpProjection('other-agent', 'http://host')).toEqual([])
+  })
+  it('uses parent authorization without user policy/review and attributes the existing audit record', async () => {
+    expect((await call()).status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('https://mcp.example.com/mcp')
+    expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get('Authorization')).toBe('Bearer agent-secret')
+    expect(policy.resolve).not.toHaveBeenCalled(); expect(policy.review).not.toHaveBeenCalled()
+    expect(await testDb.select().from(mcpAuditLog)).toMatchObject([{ remoteMcpId: `integration:${id}`, agentSlug: 'agent', policyDecision: 'integration_identity', matchedTool: 'send_message', statusCode: 200 }])
+  })
+  it.each(['paused', 'deleted', 'foreign'] as const)('rejects a %s integration even from an existing session', async state => {
+    const connection = await resolveIntegrationMcp('agent', `integration:${id}`)
+    if (state === 'paused') await updateChatIntegrationStatus(id, 'paused')
+    if (state === 'deleted') await deleteChatIntegration(id)
+    if (state === 'foreign') id = await createChatIntegration({ agentSlug: 'other-agent', provider: 'telegram', config: { botToken: 'other-token' } })
+    expect((await call()).status).toBe(403)
+    expect(fetchMock).not.toHaveBeenCalled()
+    if (state !== 'foreign') await expect(connection!.authorization()).rejects.toThrow()
+    if (state === 'paused') expect(await integrationMcpProjection('agent', 'http://host')).toEqual([])
+  })
+  it('delegates revocation to the parent without opening a separate MCP reauth flow', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 401 }))
+    const response = await call()
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ error: 'integration_reconnect_required', integrationId: id })
+    expect(authRequired).toHaveBeenCalledOnce()
+    expect(policy.reauth).not.toHaveBeenCalled()
+    expect(await testDb.select().from(remoteMcpServers)).toEqual([])
+  })
+  it('reports an outage without revoking credentials', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 503 }))
+    expect((await call()).status).toBe(503)
+    expect(reportHealth).toHaveBeenCalledWith(false)
+    expect(authRequired).not.toHaveBeenCalled()
+  })
+  it('does not forward if parent authorization rejects after an asynchronous pause', async () => {
+    beforeAuthorization.mockImplementation(async () => { await updateChatIntegrationStatus(id, 'paused') })
+    expect((await call()).status).toBe(502)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+  it('isolates damaged and unsupported providers while projecting healthy connections', async () => {
+    await createChatIntegration({ agentSlug: 'agent', provider: 'telegram', name: 'Broken', config: { botToken: 'broken-token' } })
+    const unsupported = await createChatIntegration({ agentSlug: 'agent', provider: 'slack', config: { botToken: 'slack-token', appToken: 'app-token' } })
+    expect(await integrationMcpProjection('agent', 'http://host')).toHaveLength(1)
+    expect(await resolveIntegrationMcp('agent', `integration:${unsupported}`)).toBeNull()
+  })
+})

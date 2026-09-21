@@ -782,19 +782,29 @@ or request that it be added again.
 
 <%#remoteMcps%>
 ### <%name%>
+<%#agentOwned%>
+You have your own <%identityProvider%> identity, "<%identityName%>", in workspace "<%identityWorkspace%>". This MCP belongs to your agent integration and acts as you. You can use it from general sessions as well as tasks started by the integration. Use its tools to search, read, create, edit and communicate when requested. Select the exact destination and check each tool's result before reporting success. Do not request a personal account or a duplicate MCP for this identity. Connection lifecycle is managed from this agent's integration settings.
+<%#needsReauth%>
+This identity needs reconnection through the parent agent integration. Tell the user to reconnect it there; independent MCP reauthorization is unavailable.
+<%/needsReauth%>
+<%/agentOwned%>
 <%#hasTools%>
 Tools: <%tools%>
 Use these tools via mcp__<%sanitizedName%>__<tool_name>
 <%#needsReauth%>
+<%^agentOwned%>
 This server needs re-authentication. Calling one of its listed tools will pause
 the request and ask the user to reconnect, then resume the call.
+<%/agentOwned%>
 <%/needsReauth%>
 <%/hasTools%>
 <%^hasTools%>
 No cached tools are available for this server.
 <%#needsReauth%>
+<%^agentOwned%>
 Ask the user to reconnect it from Connections before trying to use it. There is
 no callable tool available yet to open the in-chat reconnect flow.
+<%/agentOwned%>
 <%/needsReauth%>
 <%/hasTools%>
 

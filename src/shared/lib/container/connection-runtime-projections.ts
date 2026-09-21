@@ -25,6 +25,7 @@ export interface RemoteMcpRuntimeConfig {
   name: string
   status: 'active' | 'auth_required'
   proxyUrl: string
+  integration?: { id: string; provider: string; name: string; workspace: string }
   tools: Array<{ name: string }>
 }
 

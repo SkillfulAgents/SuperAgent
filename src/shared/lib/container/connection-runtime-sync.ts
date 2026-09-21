@@ -1,3 +1,4 @@
+import { integrationMcpProjection } from '../agent-integrations/mcp'
 import { db } from '@shared/lib/db'
 import {
   agentConnectedAccounts,
@@ -68,6 +69,8 @@ export async function updateRemoteMcpEnvironment(
     agentSlug,
     hostApiBaseUrl,
   )
+
+  configs.push(...await integrationMcpProjection(agentSlug, hostApiBaseUrl))
 
   return client.fetch('/env', {
     method: 'POST',

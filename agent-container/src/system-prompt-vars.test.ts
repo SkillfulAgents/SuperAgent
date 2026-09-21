@@ -52,6 +52,18 @@ describe('buildSystemPromptVars', () => {
 })
 
 describe('generateSystemPrompt rendering', () => {
+  it.each(['active', 'auth_required'])('explains agent-owned identities and parent lifecycle (%s)', status => {
+    process.env.REMOTE_MCPS = JSON.stringify([{ id: 'integration:id', name: 'agent_integration_id', status,
+      proxyUrl: 'http://host/api/mcp-proxy/agent/integration:id', tools: [{ name: 'save_comment' }],
+      integration: { id: 'id', provider: 'Linear', name: 'Task Agent', workspace: 'Test' } }])
+    const out = generateSystemPrompt()
+    expect(out).toContain('your own Linear identity, "Task Agent", in workspace "Test"')
+    expect(out).toContain('general sessions as well as tasks started by the integration')
+    expect(out).toContain('mcp__agent_integration_id__<tool_name>')
+    expect(out).not.toContain('Calling one of its listed tools will pause')
+    expect(out.includes('independent MCP reauthorization is unavailable')).toBe(status === 'auth_required')
+  })
+
   it('renders the mounted-folders block only when mounts are present', () => {
     expect(generateSystemPrompt()).not.toContain('Mounted folders:')
     process.env.SUPERAGENT_MOUNTS = JSON.stringify(['/mounts/project'])

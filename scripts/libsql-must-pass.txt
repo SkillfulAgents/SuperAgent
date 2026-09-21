@@ -15,3 +15,4 @@ src/shared/lib/services/chat-integration-service.test.ts
 src/shared/lib/services/chat-integration-session-service.test.ts
 src/shared/lib/services/x-agent-policy-service.test.ts
 src/shared/lib/services/x-agent-policy-service.sup223.test.ts
+src/api/routes/mcp-proxy.integration-identity.test.ts

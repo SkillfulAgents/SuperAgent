@@ -114,6 +114,7 @@ interface RemoteMcpConfig {
   name: string;
   status?: 'active' | 'auth_required';
   proxyUrl: string;
+  integration?: { id: string; provider: string; name: string; workspace: string };
   tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
 }
 
@@ -213,6 +214,10 @@ interface RemoteMcpView {
   sanitizedName: string;
   hasTools: boolean;
   needsReauth: boolean;
+  agentOwned: boolean;
+  identityName: string;
+  identityProvider: string;
+  identityWorkspace: string;
 }
 
 function connectedAccountGroups(): ConnectedAccountGroup[] {
@@ -229,6 +234,10 @@ function remoteMcpViews(): RemoteMcpView[] {
     sanitizedName: sanitizeMcpName(mcp.name),
     hasTools: mcp.tools.length > 0,
     needsReauth: mcp.status === 'auth_required',
+    agentOwned: !!mcp.integration,
+    identityName: mcp.integration?.name ?? '',
+    identityProvider: mcp.integration?.provider ?? '',
+    identityWorkspace: mcp.integration?.workspace ?? '',
   }));
 }
 
