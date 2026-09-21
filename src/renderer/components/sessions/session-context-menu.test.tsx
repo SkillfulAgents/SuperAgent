@@ -7,6 +7,12 @@ import { SessionContextMenu } from './session-context-menu'
 const IDLE = { isActive: false, isAwaitingInput: false, isStreaming: false }
 
 const mockApiFetch = vi.fn()
+const mockDownloadBlob = vi.fn()
+const mockToastLoading = vi.fn<(...args: unknown[]) => string>(() => 'toast-raw-log')
+const mockToastSuccess = vi.fn()
+const mockToastError = vi.fn()
+const mockToastDismiss = vi.fn()
+const mockWriteText = vi.fn().mockResolvedValue(undefined)
 const {
   mockFork,
   mockForkAndCompact,
@@ -37,6 +43,19 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
+vi.mock('@renderer/lib/download', () => ({
+  downloadBlob: (...args: unknown[]) => mockDownloadBlob(...args),
+}))
+
+vi.mock('sonner', () => ({
+  toast: {
+    loading: (...args: unknown[]) => mockToastLoading(...args),
+    success: (...args: unknown[]) => mockToastSuccess(...args),
+    error: (...args: unknown[]) => mockToastError(...args),
+    dismiss: (...args: unknown[]) => mockToastDismiss(...args),
+  },
+}))
+
 // Keep this test focused on the menu's lazy request behavior. The worktree test
 // harness can otherwise resolve Radix and React through different real paths
 // when node_modules is shared from the primary checkout.
@@ -60,12 +79,14 @@ vi.mock('@renderer/components/ui/context-menu', () => ({
   ContextMenuItem: ({
     children,
     onClick,
+    onSelect,
     disabled,
     'data-testid': testId,
     ...props
   }: {
     children: React.ReactNode
     onClick?: () => void
+    onSelect?: (event: { preventDefault: () => void }) => void
     disabled?: boolean
     'data-testid'?: string
   }) => (
@@ -74,7 +95,10 @@ vi.mock('@renderer/components/ui/context-menu', () => ({
       data-testid={testId}
       data-disabled={disabled ? '' : undefined}
       disabled={disabled}
-      onClick={disabled ? undefined : onClick}
+      onClick={disabled ? undefined : () => {
+        onSelect?.({ preventDefault() {} })
+        onClick?.()
+      }}
       {...props}
     >
       {children}
@@ -443,4 +467,100 @@ describe('Fork Session item', () => {
     expect(mockFork).not.toHaveBeenCalled()
   })
 
+})
+
+describe('SessionContextMenu raw log', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockCanUse.value = true
+    mockCanAdminAgent.mockReturnValue(true)
+    mockCanUseAgent.mockReturnValue(true)
+    mockDownloadBlob.mockResolvedValue(undefined)
+    mockWriteText.mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: mockWriteText },
+    })
+  })
+
+  it('copies the session transcript and updates the loading toast', async () => {
+    mockApiFetch.mockResolvedValue({ ok: true, text: async () => 'log-line\n' })
+
+    render(
+      <SessionContextMenu sessionId="session-1" sessionName="Code PR Review" agentSlug="agent-1" activity={IDLE}>
+        <button type="button">Code PR Review</button>
+      </SessionContextMenu>,
+    )
+
+    fireEvent.click(screen.getByTestId('copy-session-raw-log-item'))
+
+    await waitFor(() => {
+      expect(mockWriteText).toHaveBeenCalledWith('log-line\n')
+    })
+    expect(mockToastLoading).toHaveBeenCalledWith('Copying raw log')
+    expect(mockToastSuccess).toHaveBeenCalledWith('Copied', { id: 'toast-raw-log' })
+    expect(mockToastError).not.toHaveBeenCalled()
+  })
+
+  it('toasts when copy fails', async () => {
+    mockApiFetch.mockResolvedValue({ ok: false })
+
+    render(
+      <SessionContextMenu sessionId="session-1" sessionName="Code PR Review" agentSlug="agent-1" activity={IDLE}>
+        <button type="button">Code PR Review</button>
+      </SessionContextMenu>,
+    )
+
+    fireEvent.click(screen.getByTestId('copy-session-raw-log-item'))
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith('Could not copy raw log', {
+        id: 'toast-raw-log',
+        description: 'Failed to fetch raw log',
+      })
+    })
+    expect(mockWriteText).not.toHaveBeenCalled()
+    expect(mockToastSuccess).not.toHaveBeenCalled()
+  })
+
+  it('downloads the session transcript as a jsonl file', async () => {
+    const response = { ok: true, text: async () => 'log-line\n' }
+    mockApiFetch.mockResolvedValue(response)
+
+    render(
+      <SessionContextMenu sessionId="session-1" sessionName="Code PR Review" agentSlug="agent-1" activity={IDLE}>
+        <button type="button">Code PR Review</button>
+      </SessionContextMenu>,
+    )
+
+    fireEvent.click(screen.getByTestId('download-session-raw-log-item'))
+
+    await waitFor(() => {
+      expect(mockDownloadBlob).toHaveBeenCalledWith(response, 'Code-PR-Review.jsonl')
+    })
+    expect(mockToastLoading).toHaveBeenCalledWith('Downloading raw log')
+    expect(mockToastDismiss).toHaveBeenCalledWith('toast-raw-log')
+    expect(mockToastSuccess).not.toHaveBeenCalled()
+  })
+
+  it('toasts when download fails', async () => {
+    mockApiFetch.mockResolvedValue({ ok: false })
+
+    render(
+      <SessionContextMenu sessionId="session-1" sessionName="Code PR Review" agentSlug="agent-1" activity={IDLE}>
+        <button type="button">Code PR Review</button>
+      </SessionContextMenu>,
+    )
+
+    fireEvent.click(screen.getByTestId('download-session-raw-log-item'))
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith('Could not download raw log', {
+        id: 'toast-raw-log',
+        description: 'Failed to fetch raw log',
+      })
+    })
+    expect(mockDownloadBlob).not.toHaveBeenCalled()
+    expect(mockToastDismiss).not.toHaveBeenCalled()
+  })
 })

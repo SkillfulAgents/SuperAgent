@@ -112,6 +112,11 @@ export class AgentIntegrationManager {
   // paused integration or restoring pre-update credentials — and clobber the
   // status the user's operation just wrote.
   private generations: Map<string, number> = new Map()
+  // Bumped synchronously each time a chat session is cleared (see noteSessionClear).
+  private sessionClears = 0
+  // Session row ids whose clear has begun (see noteSessionClear); the row may
+  // still read as active until the archive lands.
+  private clearedSessionRows = new Set<string>()
   // In-flight system-resume pass; concurrent reconnectAll calls coalesce onto it.
   private resumeReconcile: Promise<void> | null = null
   // A resume arrived while a pass was in flight: run one more FORCE pass when
@@ -127,20 +132,20 @@ export class AgentIntegrationManager {
   private messageQueues: Map<string, Promise<void>> = new Map()
   private lastSessionTouch: Map<string, number> = new Map()
 
-  private context(integrationId: string, externalId: string): IntegrationSessionContext | undefined {
-    const integration = getIntegration(integrationId)
+  private async context(integrationId: string, externalId: string): Promise<IntegrationSessionContext | undefined> {
+    const integration = await getIntegration(integrationId)
     return integration ? { integration, externalId } : undefined
   }
 
-  private isAllowed(integrationId: string, externalId: string): boolean {
-    const context = this.context(integrationId, externalId)
-    return !!context && !!this.connections.get(integrationId)?.connector.isAllowed(context)
+  private async isAllowed(integrationId: string, externalId: string): Promise<boolean> {
+    const context = await this.context(integrationId, externalId)
+    return !!context && !!(await this.connections.get(integrationId)?.connector.isAllowed(context))
   }
 
   private async deliver(integrationId: string, externalId: string, output: IntegrationOutput, sessionId?: string): Promise<void> {
     const connector = this.connections.get(integrationId)?.connector
-    const context = this.context(integrationId, externalId)
-    if (!connector || !context || !connector.isAllowed(context)) return
+    const context = await this.context(integrationId, externalId)
+    if (!connector || !context || !(await connector.isAllowed(context))) return
     const managed = this.chatSessions.get(this.getChatSessionKey(integrationId, externalId))
     const routed = managed && (!sessionId || managed.sessionId === sessionId) ? managed.context : context
     await connector.deliver({ ...routed, integration: context.integration, sessionId: sessionId ?? routed.sessionId }, output)
@@ -156,19 +161,19 @@ export class AgentIntegrationManager {
     if (this.isRunning) return
     this.isRunning = true
 
-    const integrations = listStartupIntegrations()
+    const integrations = await listStartupIntegrations()
 
     for (const integration of integrations) {
       try {
         const connected = await this.connectIntegration(integration)
         // Clear error status on successful reconnect
         if (connected && integration.status === 'error') {
-          try { updateIntegrationStatus(integration.id, 'active', null) } catch { /* best-effort */ }
+          try { await updateIntegrationStatus(integration.id, 'active', null) } catch { /* best-effort */ }
         }
       } catch (err) {
         console.error(`[AgentIntegrationManager] Failed to connect integration ${integration.id}:`, err)
         reportError(err, 'start-connect', { integrationId: integration.id, provider: integration.provider, agentSlug: integration.agentSlug })
-        try { updateIntegrationStatus(integration.id, 'error', String(err)) } catch { /* best-effort */ }
+        try { await updateIntegrationStatus(integration.id, 'error', String(err)) } catch { /* best-effort */ }
       }
     }
 
@@ -209,6 +214,8 @@ export class AgentIntegrationManager {
     this.consecutiveFailures.clear()
     this.reconcilingIds.clear()
     this.generations.clear()
+    this.sessionClears = 0
+    this.clearedSessionRows.clear()
     this.messageQueues.clear()
     this.isRunning = false
   }
@@ -223,6 +230,20 @@ export class AgentIntegrationManager {
 
   private generationOf(id: string): number {
     return this.generations.get(id) ?? 0
+  }
+
+  // ── Chat clears ─────────────────────────────────────────────────────
+
+  /**
+   * Recorded synchronously the moment a chat session clear begins. A restore
+   * that issued its row lookup before the clear can otherwise get the
+   * pre-clear row back after the clear has completed; a lookup that a clear
+   * overlapped is repeated. Counted for the whole manager: a clear by session
+   * id does not know its chat until it has looked the row up itself.
+   */
+  private noteSessionClear(rowId?: string): void {
+    this.sessionClears += 1
+    if (rowId) this.clearedSessionRows.add(rowId)
   }
 
   // ── Public API ──────────────────────────────────────────────────────
@@ -251,7 +272,7 @@ export class AgentIntegrationManager {
           // quick follow-ups while anything is still down.
           for (const delayMs of AgentIntegrationManager.RESUME_RETRY_DELAYS_MS) {
             if (this.resumeQueued) break // a fresh wake wants a full force pass instead
-            if (!this.hasDisconnectedIntegrations()) break
+            if (!(await this.hasDisconnectedIntegrations())) break
             await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
             if (!this.isRunning) return
             await this.reconcileIntegrations({ force: false })
@@ -265,16 +286,20 @@ export class AgentIntegrationManager {
     return this.resumeReconcile
   }
 
-  private hasDisconnectedIntegrations(): boolean {
-    return listStartupIntegrations().some(
+  private async hasDisconnectedIntegrations(): Promise<boolean> {
+    return (await listStartupIntegrations()).some(
       (i) => !(this.connections.get(i.id)?.connector.isConnected() ?? false),
     )
   }
 
   async addIntegration(id: string): Promise<void> {
-    const integration = getIntegration(id)
+    // Claim the integration before the read: a pause or removal that lands
+    // while the row is being read must win, not be undone by this connect.
+    const generation = this.bumpGeneration(id)
+    const integration = await getIntegration(id)
     if (!integration) throw new Error(`Chat integration ${id} not found`)
-    await this.connectIntegration(integration)
+    if (this.generationOf(id) !== generation) return
+    await this.connectIntegration(integration, generation)
   }
 
   async removeIntegration(id: string): Promise<void> {
@@ -338,18 +363,18 @@ export class AgentIntegrationManager {
    * Used by outbound sends so they can log messages into the session JSONL.
    */
   async ensureSession(integrationId: string, chatId: string): Promise<string> {
-    const integration = getIntegration(integrationId)
+    const integration = await getIntegration(integrationId)
     if (!integration) throw new Error(`Chat integration ${integrationId} not found`)
     // An outbound send may finish while its connection is being rebuilt. Access
     // and session policy still come from the current persisted installation.
-    if (!this.registry.isAllowed({ integration, externalId: chatId })) throw new Error(`Chat ${chatId} is not allowed for integration ${integrationId}`)
+    if (!(await this.registry.isAllowed({ integration, externalId: chatId }))) throw new Error(`Chat ${chatId} is not allowed for integration ${integrationId}`)
 
-    const displayName = getLastDisplayName(integrationId, chatId)
+    const displayName = await getLastDisplayName(integrationId, chatId)
     const policy = this.registry.sessionPolicy(integration, { externalId: chatId, displayName: displayName ?? undefined })
-    const existing = resolveActiveSession(
+    const existing = await resolveActiveSession(
       integrationId, chatId, policy.timeoutHours,
       (archivedId) => {
-        this.teardownManagedSession(integrationId, chatId)
+        void this.teardownManagedSession(integrationId, chatId)
         this.lastSessionTouch.delete(archivedId)
       },
     )
@@ -364,7 +389,7 @@ export class AgentIntegrationManager {
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
     })
 
-    createIntegrationSession({
+    await createIntegrationSession({
       integrationId,
       externalId: chatId,
       sessionId,
@@ -376,14 +401,19 @@ export class AgentIntegrationManager {
 
   async pauseIntegration(id: string): Promise<void> {
     await this.removeIntegration(id)
-    updateIntegrationStatus(id, 'paused')
+    await updateIntegrationStatus(id, 'paused')
   }
 
   async resumeIntegration(id: string): Promise<void> {
-    const integration = getIntegration(id)
+    // Same claim-before-read as addIntegration: the row read and the status
+    // write are both windows in which a pause can land.
+    const generation = this.bumpGeneration(id)
+    const integration = await getIntegration(id)
     if (!integration) throw new Error(`Chat integration ${id} not found`)
-    updateIntegrationStatus(id, 'active')
-    await this.connectIntegration({ ...integration, status: 'active' })
+    if (this.generationOf(id) !== generation) return
+    await updateIntegrationStatus(id, 'active')
+    if (this.generationOf(id) !== generation) return
+    await this.connectIntegration({ ...integration, status: 'active' }, generation)
   }
 
   getConnector(integrationId: string): AgentIntegration | undefined {
@@ -402,7 +432,7 @@ export class AgentIntegrationManager {
    */
   async integrationCreated(integrationId: string): Promise<void> {
     try {
-      const integration = getIntegration(integrationId)
+      const integration = await getIntegration(integrationId)
       if (integration) await this.getConnector(integrationId)?.onCreated(integration)
     } catch (err) {
       reportError(err, 'integration-created', { integrationId })
@@ -429,12 +459,14 @@ export class AgentIntegrationManager {
    * we were mid-flight, and its socket (if one opened) has been torn down.
    * Callers must treat false as "stand down", not as success.
    *
-   * `expectedGeneration` is passed by rebuilds that captured the generation
-   * earlier; user-driven calls omit it and take ownership here via a bump.
+   * `expectedGeneration` is passed by callers that claimed the integration
+   * before their own reads (add, resume, rebuild); a call that omits it takes
+   * ownership here via a bump.
    */
   private async connectIntegration(integration: AgentIntegrationRecord, expectedGeneration?: number): Promise<boolean> {
     const id = integration.id
     const generation = expectedGeneration ?? this.bumpGeneration(id)
+    if (this.generationOf(id) !== generation) return false
 
     if (this.connections.has(id)) {
       await this.teardownConnection(id)
@@ -443,6 +475,8 @@ export class AgentIntegrationManager {
     }
 
     const connector = await this.createConnector(integration)
+    // Another window: creating the connector can await.
+    if (this.generationOf(id) !== generation) return false
 
     const conn: IntegrationConnection = {
       connector,
@@ -455,7 +489,7 @@ export class AgentIntegrationManager {
       try {
         if (event.type === 'input') this.enqueueMessage(integration.id, event)
         else if (event.type === 'response') await this.handleInteractiveResponse(integration.id, event)
-        else if (this.isAllowed(integration.id, event.externalId)) this.preWarmContainer(integration.agentSlug)
+        else if ((await this.isAllowed(integration.id, event.externalId))) this.preWarmContainer(integration.agentSlug)
       } catch (error) {
         // Processing failures concern this event, not the health of the transport.
         console.error(`[AgentIntegrationManager] Failed to handle ${event.type} event for ${integration.id}:`, error)
@@ -463,10 +497,10 @@ export class AgentIntegrationManager {
       }
     })
 
-    conn.errorUnsubscribe = connector.onError((error) => {
+    conn.errorUnsubscribe = connector.onError(async (error) => {
       console.error(`[AgentIntegrationManager] Connector error for ${integration.id}:`, error)
       reportError(error, 'connector-error', { integrationId: integration.id, provider: integration.provider, agentSlug: integration.agentSlug })
-      try { updateIntegrationStatus(integration.id, 'error', error.message) } catch { /* best-effort */ }
+      try { await updateIntegrationStatus(integration.id, 'error', error.message) } catch { /* best-effort */ }
       this.emitNotification(integration, 'error', error.message)
     })
 
@@ -504,9 +538,25 @@ export class AgentIntegrationManager {
     // cleared/timed-out sessions must not be re-subscribed, or stale agent output
     // could be forwarded back to the external chat (SUP-233); unapproved chats are
     // skipped by the access check below.
-    const existingSessions = listActiveIntegrationSessions(integration.id)
+    const existingSessions = await listActiveIntegrationSessions(integration.id)
     for (const session of existingSessions) {
-      if (!this.isAllowed(integration.id, session.externalId)) continue
+      if (!(await this.isAllowed(integration.id, session.externalId))) continue
+      // The access check is a window in which the chat can be cleared and its
+      // row archived: only a row that is still the live one is re-subscribed,
+      // and only while this connect still owns the integration. The lookup is
+      // a window too: a clear that completes while it is in flight can leave
+      // it answering with the row it read before, so a lookup that a clear
+      // overlapped is repeated.
+      let live: Awaited<ReturnType<typeof getIntegrationSession>> | undefined
+      for (let attempt = 0; attempt < 3 && live === undefined; attempt++) {
+        const clearsBefore = this.sessionClears
+        const row = await getIntegrationSession(integration.id, session.externalId)
+        if (this.sessionClears === clearsBefore) live = row
+      }
+      // A clear whose archive is still pending can leave the row reading as
+      // active through every retry; the row id it marked at the start says so.
+      if (live?.sessionId !== session.sessionId || this.clearedSessionRows.has(live.id)) continue
+      if (this.generationOf(id) !== generation) return false
       this.subscribeChatSession(integration.id, session.externalId, session.sessionId)
     }
     return true
@@ -558,30 +608,53 @@ export class AgentIntegrationManager {
     session.context = { ...session.context, sessionId }
     const actor = agentRegistry.get(agentSlug)
     session.sseUnsubscribe = actor.messages.subscribe(sessionId, (event: unknown) => {
-      if (this.isAllowed(integrationId, chatId)) session.connector.observeSession(session.context)
-      this.enqueueSSEEvent(integrationId, chatId, event, sessionId)
+      this.enqueueSSEEvent(integrationId, chatId, event, sessionId, session)
     })
     session.connector.observeSession(session.context)
   }
 
-  private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string): void {
+  // `observe` is the chat session to mark live before the event is handled.
+  // The access check behind it is a database read, so it runs on the queue:
+  // the broadcaster's callback stays synchronous, events keep the order they
+  // arrived in, and a failed check lands in the error boundary below instead
+  // of escaping as an unhandled rejection.
+  private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string, observe?: ManagedSession): void {
     const queueKey = `sse:${integrationId}:${chatId}`
     const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
-    const next = current.then(() =>
-      this.handleSSEEvent(integrationId, chatId, event, sessionId).catch((err) => {
+    const next = current.then(async () => {
+      try {
+        if (observe && (await this.isAllowed(integrationId, chatId)) && this.isCurrentSession(integrationId, chatId, observe, sessionId)) {
+          observe.connector.observeSession(observe.context)
+        }
+        await this.handleSSEEvent(integrationId, chatId, event, sessionId)
+      } catch (err) {
         console.error(`[AgentIntegrationManager] Error handling SSE event:`, err)
         reportError(err, 'sse-event', { integrationId, chatId, eventType: (event as any)?.type })
-      })
-    )
+      }
+    })
     this.messageQueues.set(queueKey, next)
     this.scheduleQueueEviction(queueKey, next)
+  }
+
+  /**
+   * Whether `session` is still the live chat session for this chat, bound to
+   * `sessionId`. A queued observation waits behind earlier events; if the
+   * chat was cleared or re-pointed meanwhile, observing would revive a
+   * session the connector has already released.
+   */
+  private isCurrentSession(integrationId: string, chatId: string, session: ManagedSession, sessionId: string | undefined): boolean {
+    const live = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
+    return live === session && live.sessionId === sessionId
   }
 
   // ── Health monitoring ───────────────────────────────────────────────
 
   private async runHealthChecks(): Promise<void> {
-    for (const session of this.chatSessions.values()) {
-      if (this.isAllowed(session.integration.id, session.chatId)) session.connector.observeSession(session.context)
+    for (const session of [...this.chatSessions.values()]) {
+      if (!(await this.isAllowed(session.integration.id, session.chatId))) continue
+      // The access check is a window in which the chat can be cleared.
+      if (!this.isCurrentSession(session.integration.id, session.chatId, session, session.sessionId)) continue
+      session.connector.observeSession(session.context)
     }
 
     await this.reconcileIntegrations({ force: false })
@@ -608,7 +681,7 @@ export class AgentIntegrationManager {
    */
   private async reconcileIntegrations(opts: { force: boolean }): Promise<void> {
     const now = Date.now()
-    for (const integration of listStartupIntegrations()) {
+    for (const integration of await listStartupIntegrations()) {
       // A stop() mid-pass (app shutdown) must not resurrect connections it
       // just tore down.
       if (!this.isRunning) return
@@ -623,7 +696,7 @@ export class AgentIntegrationManager {
         this.consecutiveFailures.delete(id)
         if (integration.status === 'error') {
           // The connector recovered on its own — clear the stale error badge.
-          try { updateIntegrationStatus(id, 'active', null) } catch { /* best-effort */ }
+          try { await updateIntegrationStatus(id, 'active', null) } catch { /* best-effort */ }
         }
         continue
       }
@@ -650,8 +723,11 @@ export class AgentIntegrationManager {
       const generation = this.generationOf(id)
 
       // Fresh read: the user may have paused or deleted it since the list snapshot.
-      const integration = getIntegration(id)
+      const integration = await getIntegration(id)
       if (!integration || integration.status === 'paused') return
+      // The read is a window in which a user operation can take ownership; a
+      // teardown now would kill the connection that operation just made.
+      if (!this.isRunning || this.generationOf(id) !== generation) return
 
       // The teardown wipes the failure counter (correct for user-initiated
       // removal); capture it first so retry accounting survives.
@@ -661,15 +737,16 @@ export class AgentIntegrationManager {
         // Re-read after the teardown await — a user operation may have landed
         // in the gap, and the manager may have been stopped.
         if (!this.isRunning || this.generationOf(id) !== generation) return
-        const fresh = getIntegration(id)
+        const fresh = await getIntegration(id)
         if (!fresh || fresh.status === 'paused') return
+        if (!this.isRunning || this.generationOf(id) !== generation) return
 
         const connected = await this.connectIntegration(fresh, generation)
         if (!connected) return // ownership lost mid-connect — cancelled, not successful
         this.disconnectedSince.delete(id)
         this.consecutiveFailures.delete(id)
         if (fresh.status === 'error') {
-          try { updateIntegrationStatus(id, 'active', null) } catch { /* best-effort */ }
+          try { await updateIntegrationStatus(id, 'active', null) } catch { /* best-effort */ }
         }
       } catch (err) {
         // A cancelled rebuild reports nothing: the failure was (or may have
@@ -685,14 +762,14 @@ export class AgentIntegrationManager {
         if (failures >= HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES) {
           console.error(`[AgentIntegrationManager] ${id}: ${failures} consecutive reconnect failures — pausing`)
           reportError(new Error(`Auto-paused after ${failures} failures`), 'health-check-auto-pause', { integrationId: id, provider: integration.provider, failures }, 'warning')
-          try { updateIntegrationStatus(id, 'paused', `Auto-paused after ${failures} failed reconnection attempts`) } catch { /* best-effort */ }
+          try { await updateIntegrationStatus(id, 'paused', `Auto-paused after ${failures} failed reconnection attempts`) } catch { /* best-effort */ }
           this.emitNotification(integration, 'error', `Auto-paused after ${failures} failed reconnect attempts`)
           this.disconnectedSince.delete(id)
           this.consecutiveFailures.delete(id)
           return
         }
 
-        try { updateIntegrationStatus(id, 'error', `Reconnect failed (attempt ${failures}): ${err}`) } catch { /* best-effort */ }
+        try { await updateIntegrationStatus(id, 'error', `Reconnect failed (attempt ${failures}): ${err}`) } catch { /* best-effort */ }
         // Notify once per outage, not once per 5-minute tick.
         if (failures === 1) this.emitNotification(integration, 'error', 'Connection lost')
       }
@@ -741,7 +818,7 @@ export class AgentIntegrationManager {
   // ── Incoming message handling ─────────────────────────────────────
 
   private async handleIncomingMessage(integrationId: string, message: IntegrationInputEvent, route?: IntegrationRoute): Promise<void> {
-    const integration = getIntegration(integrationId)
+    const integration = await getIntegration(integrationId)
     if (!integration) return
     return runWithOptionalUser(integration.createdByUserId ?? undefined, () =>
       this.handleIncomingMessageInner(integrationId, message, integration, route),
@@ -762,7 +839,7 @@ export class AgentIntegrationManager {
     if (!chatId) return
     const context = { integration, externalId: chatId, interactionId: route.interactionId, replyTarget: route.replyTarget }
     if (!await conn.connector.authorize(context, message)) return
-    if (!this.isAllowed(integrationId, chatId)) return
+    if (!(await this.isAllowed(integrationId, chatId))) return
     if (route.notice) await this.deliver(integrationId, chatId, { type: 'message', text: route.notice })
     if (route.action === 'ignore') return
     if (route.action === 'reset') {
@@ -778,12 +855,12 @@ export class AgentIntegrationManager {
       await this.deliver(integrationId, chatId, { type: 'message',
         text: 'Error: The agent no longer exists.',
       })
-      try { updateIntegrationStatus(integrationId, 'error', 'Agent no longer exists') } catch { /* best-effort */ }
+      try { await updateIntegrationStatus(integrationId, 'error', 'Agent no longer exists') } catch { /* best-effort */ }
       return
     }
 
     // Revoke can land mid-flight (during the awaits above). Re-check before spending.
-    if (!this.isAllowed(integrationId, chatId)) return
+    if (!(await this.isAllowed(integrationId, chatId))) return
 
     // Ensure container is running
     const actor = agentRegistry.get(integration.agentSlug)
@@ -797,11 +874,11 @@ export class AgentIntegrationManager {
     }
 
     // Look up existing session, rotating if timed out
-    const chatSession = resolveActiveSession(
+    const chatSession = await resolveActiveSession(
       integrationId, chatId, conn.connector.sessionPolicy(integration, route).timeoutHours,
       (archivedId) => {
         breadcrumb('Session timed out, rotating', { integrationId, chatId, timeoutHours: conn.connector.sessionPolicy(integration, route).timeoutHours })
-        this.teardownManagedSession(integrationId, chatId)
+        void this.teardownManagedSession(integrationId, chatId)
         this.lastSessionTouch.delete(archivedId)
       },
     )
@@ -813,7 +890,7 @@ export class AgentIntegrationManager {
         if (input.skip) return
 
         // Revoke can land mid-flight (during the awaits above). Re-check before spending.
-        if (!this.isAllowed(integrationId, chatId)) return
+        if (!(await this.isAllowed(integrationId, chatId))) return
 
         await this.startNewChatSession(integration, actor, route, input)
         return // initialMessage already sent via createSession
@@ -832,7 +909,7 @@ export class AgentIntegrationManager {
     // (covers the case where resolveUserName failed on first message but succeeds later)
     const resolvedName = route.displayName
     if (resolvedName && resolvedName !== chatSession.displayName && conn.connector.shouldUpdateDisplayName(chatSession.displayName)) {
-      try { updateIntegrationSessionName(chatSession.id, resolvedName) } catch { /* best-effort */ }
+      try { await updateIntegrationSessionName(chatSession.id, resolvedName) } catch { /* best-effort */ }
     }
 
     const sessionId = chatSession.sessionId
@@ -850,7 +927,7 @@ export class AgentIntegrationManager {
       if (input.skip) return
 
       // Revoke can land mid-flight (during the awaits above). Re-check before spending.
-      if (!this.isAllowed(integrationId, chatId)) return
+      if (!(await this.isAllowed(integrationId, chatId))) return
 
       // A plain-text reply to an open single-question card continues the same turn as the
       // free-form "Other" answer; anything else cancels the pending request (and strips its
@@ -866,7 +943,7 @@ export class AgentIntegrationManager {
       const now = Date.now()
       const lastTouch = this.lastSessionTouch.get(chatSession.id) ?? 0
       if (now - lastTouch > 60_000) {
-        try { touchIntegrationSession(chatSession.id) } catch { /* best-effort */ }
+        try { await touchIntegrationSession(chatSession.id) } catch { /* best-effort */ }
         this.lastSessionTouch.set(chatSession.id, now)
       }
     } catch (err) {
@@ -879,14 +956,14 @@ export class AgentIntegrationManager {
       if (this.isSessionGoneError(err)) {
         console.warn(`[AgentIntegrationManager] Agent session ${sessionId} gone in container; rotating chat ${chatId} to a fresh session`)
         breadcrumb('Chat agent session gone, self-healing', { integrationId, chatId, sessionId })
-        this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
+        await this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
         try {
           // messageText is already built unless we failed before it (e.g. the
           // subscribe threw); rebuild in that rare case so the message isn't lost.
           input ??= await conn.connector.prepareInput(message, { ...context, actor })
           if (input.skip) return
           // Revoke can land mid-flight (during the awaits above). Re-check before spending.
-          if (!this.isAllowed(integrationId, chatId)) return
+          if (!(await this.isAllowed(integrationId, chatId))) return
           await this.startNewChatSession(integration, actor, route, input)
           return
         } catch (healErr) {
@@ -962,7 +1039,7 @@ export class AgentIntegrationManager {
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
     })
 
-    createIntegrationSession({
+    await createIntegrationSession({
       integrationId: integration.id,
       externalId: chatId,
       sessionId,
@@ -999,14 +1076,15 @@ export class AgentIntegrationManager {
     session.connector.releaseSession(session.context)
   }
 
-  private teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): void {
+  private async teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): Promise<void> {
+    this.noteSessionClear(opts?.archive)
     const key = this.getChatSessionKey(integrationId, chatId)
     const managed = this.chatSessions.get(key)
     if (managed) this.stopSession(managed)
     this.chatSessions.delete(key)
     if (opts?.archive) {
       this.lastSessionTouch.delete(opts.archive)
-      try { archiveIntegrationSession(opts.archive) } catch { /* best-effort */ }
+      try { await archiveIntegrationSession(opts.archive) } catch { /* best-effort */ }
     }
   }
 
@@ -1015,9 +1093,9 @@ export class AgentIntegrationManager {
     chatId: string,
   ): Promise<void> {
     try {
-      const chatSession = getIntegrationSession(integrationId, chatId)
+      const chatSession = await getIntegrationSession(integrationId, chatId)
       if (chatSession) {
-        this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
+        await this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
       }
     } catch (err) {
       console.error('[AgentIntegrationManager] Error during session clear:', err)
@@ -1028,11 +1106,12 @@ export class AgentIntegrationManager {
   }
 
   /** Clear a chat session by its DB row ID (called from API route). */
-  clearSessionById(sessionId: string): void {
+  async clearSessionById(sessionId: string): Promise<void> {
+    this.noteSessionClear(sessionId)
     for (const [key, managed] of this.chatSessions) {
       const { id: integrationId } = managed.integration
       const chatId = managed.chatId
-      const chatSession = getIntegrationSession(integrationId, chatId)
+      const chatSession = await getIntegrationSession(integrationId, chatId)
       if (chatSession?.id === sessionId) {
         this.stopSession(managed)
         this.chatSessions.delete(key)
@@ -1060,10 +1139,10 @@ export class AgentIntegrationManager {
    * unsubscribes SSE delivery and archives the DB session row.
    */
   async releaseExternalSession(integrationId: string, externalId: string): Promise<void> {
-    const session = getIntegrationSession(integrationId, externalId)
+    const session = await getIntegrationSession(integrationId, externalId)
     if (!session) return
-    this.teardownManagedSession(integrationId, externalId)
-    archiveIntegrationSession(session.id)
+    await this.teardownManagedSession(integrationId, externalId)
+    await archiveIntegrationSession(session.id)
   }
 
   /**
@@ -1072,10 +1151,10 @@ export class AgentIntegrationManager {
    * a flip to require-approval immediately gates previously-public conversations.
    */
   async reconcileAccess(integrationId: string): Promise<void> {
-    const sessions = listIntegrationSessions(integrationId)
+    const sessions = await listIntegrationSessions(integrationId)
     for (const session of sessions) {
       if (session.archivedAt) continue
-      if (!this.isAllowed(integrationId, session.externalId)) {
+      if (!(await this.isAllowed(integrationId, session.externalId))) {
         await this.releaseExternalSession(integrationId, session.externalId)
       }
     }
@@ -1131,7 +1210,7 @@ export class AgentIntegrationManager {
     // If we know the sessionId, send only to the chat session that owns it
     if (sessionId) {
       try {
-        const chatSession = getIntegrationSessionBySessionId(agentSlug, sessionId)
+        const chatSession = await getIntegrationSessionBySessionId(agentSlug, sessionId)
         if (chatSession) {
           const key = `${chatSession.integrationId}:${chatSession.externalId}`
           const managed = this.chatSessions.get(key)
@@ -1171,11 +1250,14 @@ export class AgentIntegrationManager {
     // Fail closed: never forward agent output to a chat that is no longer allowed.
     // Teardown normally unsubscribes on revoke/deny, but this guards the window
     // where an event is already in flight when access is revoked.
-    if (!this.isAllowed(integrationId, chatId)) return
+    if (!(await this.isAllowed(integrationId, chatId))) return
 
     if (session.sessionId !== sessionId) return // discard output queued before rotation
-    const integration = getIntegration(integrationId)
+    const integration = await getIntegration(integrationId)
     if (!integration) return
+    // Both awaits above are windows in which the chat can be cleared; the
+    // session captured before them must still be the live one.
+    if (!this.isCurrentSession(integrationId, chatId, session, sessionId)) return
     const eventType = (event as { type?: string } | null)?.type
     const type = eventType === 'session_idle' ? 'turn-completed' : eventType === 'session_error' ? 'turn-failed' : 'runtime'
     await session.connector.deliver({ ...session.context, integration }, { type, event })
@@ -1188,9 +1270,9 @@ export class AgentIntegrationManager {
     event: IntegrationResponseEvent,
   ): Promise<void> {
     const { requestId: toolUseId, externalId: chatId, value: response } = event
-    if (!this.isAllowed(integrationId, chatId ?? '')) return // revoked/stale keyboard, or missing identity → fail closed
+    if (!(await this.isAllowed(integrationId, chatId ?? ''))) return // revoked/stale keyboard, or missing identity → fail closed
 
-    const integration = getIntegration(integrationId)
+    const integration = await getIntegration(integrationId)
     if (!integration) return
 
     // Handle proxy review decisions (tool approval requests)
@@ -1245,7 +1327,7 @@ export class AgentIntegrationManager {
       // earlyResult nothing will ever collect, which is the phantom this gate
       // exists to prevent. What remains after this is the container round trip
       // itself, which only the container can arbitrate.
-      if (!this.isAllowed(integrationId, chatId) || !actor.inputs.get(toolUseId)) {
+      if (!(await this.isAllowed(integrationId, chatId)) || !actor.inputs.get(toolUseId)) {
         await this.replyAlreadyHandled(integrationId, chatId)
         return
       }

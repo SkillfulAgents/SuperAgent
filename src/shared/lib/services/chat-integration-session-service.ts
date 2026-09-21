@@ -6,6 +6,7 @@
 
 import { eq, and, isNull, desc } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
 import { chatIntegrationSessions, chatIntegrations } from '@shared/lib/db/schema'
 import type { ChatIntegrationSession, NewChatIntegrationSession } from '@shared/lib/db/schema'
 
@@ -14,11 +15,11 @@ export type { ChatIntegrationSession, NewChatIntegrationSession }
 // ── Read ────────────────────────────────────────────────────────────────
 
 /** Get the most recently active (non-archived) session for a chat. Used for message routing. */
-export function getChatIntegrationSession(
+export async function getChatIntegrationSession(
   integrationId: string,
   externalChatId: string,
-): ChatIntegrationSession | null {
-  const results = db.select().from(chatIntegrationSessions)
+): Promise<ChatIntegrationSession | null> {
+  const results = await db.select().from(chatIntegrationSessions)
     .where(and(
       eq(chatIntegrationSessions.integrationId, integrationId),
       eq(chatIntegrationSessions.externalChatId, externalChatId),
@@ -30,8 +31,8 @@ export function getChatIntegrationSession(
   return results[0] || null
 }
 
-export function getChatIntegrationSessionById(id: string): ChatIntegrationSession | null {
-  const results = db.select().from(chatIntegrationSessions)
+export async function getChatIntegrationSessionById(id: string): Promise<ChatIntegrationSession | null> {
+  const results = await db.select().from(chatIntegrationSessions)
     .where(eq(chatIntegrationSessions.id, id))
     .all()
   return results[0] || null
@@ -46,11 +47,11 @@ export function getChatIntegrationSessionById(id: string): ChatIntegrationSessio
  * to the owning integration and filtering on its agent keeps the answer inside
  * the asking agent.
  */
-export function getChatIntegrationSessionBySessionId(
+export async function getChatIntegrationSessionBySessionId(
   agentSlug: string,
   sessionId: string,
-): ChatIntegrationSession | null {
-  const results = db.select().from(chatIntegrationSessions)
+): Promise<ChatIntegrationSession | null> {
+  const results = await db.select().from(chatIntegrationSessions)
     .innerJoin(chatIntegrations, eq(chatIntegrationSessions.integrationId, chatIntegrations.id))
     .where(and(
       eq(chatIntegrationSessions.sessionId, sessionId),
@@ -60,7 +61,7 @@ export function getChatIntegrationSessionBySessionId(
   return results[0]?.chat_integration_sessions ?? null
 }
 
-export function listChatIntegrationSessions(integrationId: string): ChatIntegrationSession[] {
+export async function listChatIntegrationSessions(integrationId: string): Promise<ChatIntegrationSession[]> {
   return db.select().from(chatIntegrationSessions)
     .where(eq(chatIntegrationSessions.integrationId, integrationId))
     .all()
@@ -74,7 +75,7 @@ export function listChatIntegrationSessions(integrationId: string): ChatIntegrat
  * intentionally returns archived rows too — the UI/x-agent surfaces filter at
  * the call site — so it is left unchanged.
  */
-export function listActiveChatIntegrationSessions(integrationId: string): ChatIntegrationSession[] {
+export async function listActiveChatIntegrationSessions(integrationId: string): Promise<ChatIntegrationSession[]> {
   return db.select().from(chatIntegrationSessions)
     .where(and(
       eq(chatIntegrationSessions.integrationId, integrationId),
@@ -85,12 +86,12 @@ export function listActiveChatIntegrationSessions(integrationId: string): ChatIn
 
 // ── Create ──────────────────────────────────────────────────────────────
 
-export function createChatIntegrationSession(params: {
+export async function createChatIntegrationSession(params: {
   integrationId: string
   externalChatId: string
   sessionId: string
   displayName?: string
-}): string {
+}): Promise<string> {
   const id = crypto.randomUUID()
   const now = new Date()
 
@@ -104,27 +105,27 @@ export function createChatIntegrationSession(params: {
     updatedAt: now,
   }
 
-  db.insert(chatIntegrationSessions).values(record).run()
+  await db.insert(chatIntegrationSessions).values(record).run()
   return id
 }
 
 // ── Update ──────────────────────────────────────────────────────────────
 
-export function updateChatIntegrationSessionName(id: string, displayName: string): boolean {
-  const result = db.update(chatIntegrationSessions)
+export async function updateChatIntegrationSessionName(id: string, displayName: string): Promise<boolean> {
+  const result = await db.update(chatIntegrationSessions)
     .set({ displayName, updatedAt: new Date() })
     .where(eq(chatIntegrationSessions.id, id))
     .run()
-  return result.changes > 0
+  return changesOf(result) > 0
 }
 
 /** Bump updatedAt to record last activity (used by session timeout). */
-export function touchChatIntegrationSession(id: string): boolean {
-  const result = db.update(chatIntegrationSessions)
+export async function touchChatIntegrationSession(id: string): Promise<boolean> {
+  const result = await db.update(chatIntegrationSessions)
     .set({ updatedAt: new Date() })
     .where(eq(chatIntegrationSessions.id, id))
     .run()
-  return result.changes > 0
+  return changesOf(result) > 0
 }
 
 // ── Session Resolution ────────────────────────────────────────────────
@@ -137,18 +138,18 @@ export function touchChatIntegrationSession(id: string): boolean {
  * the caller to create a new session. The archived session's ID is returned
  * via `onArchive` so the caller can do additional cleanup (e.g. SSE teardown).
  */
-export function resolveActiveSession(
+export async function resolveActiveSession(
   integrationId: string,
   chatId: string,
   timeoutHours: number | null | undefined,
   onArchive?: (archivedSessionId: string) => void,
-): ChatIntegrationSession | null {
-  const session = getChatIntegrationSession(integrationId, chatId)
+): Promise<ChatIntegrationSession | null> {
+  const session = await getChatIntegrationSession(integrationId, chatId)
   if (!session) return null
 
   if (isSessionTimedOut(session, timeoutHours)) {
     onArchive?.(session.id)
-    archiveChatIntegrationSession(session.id)
+    await archiveChatIntegrationSession(session.id)
     return null
   }
 
@@ -169,8 +170,8 @@ function isSessionTimedOut(
  * Derive display name for a new session from the most recent session for this chat.
  * Falls back to undefined if no prior sessions exist.
  */
-export function getLastDisplayName(integrationId: string, chatId: string): string | undefined {
-  const allSessions = listChatIntegrationSessions(integrationId)
+export async function getLastDisplayName(integrationId: string, chatId: string): Promise<string | undefined> {
+  const allSessions = await listChatIntegrationSessions(integrationId)
   return allSessions
     .filter((s) => s.externalChatId === chatId && s.displayName)
     .sort((a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0))[0]
@@ -179,26 +180,26 @@ export function getLastDisplayName(integrationId: string, chatId: string): strin
 
 // ── Archive ────────────────────────────────────────────────────────────
 
-export function archiveChatIntegrationSession(id: string): boolean {
-  const result = db.update(chatIntegrationSessions)
+export async function archiveChatIntegrationSession(id: string): Promise<boolean> {
+  const result = await db.update(chatIntegrationSessions)
     .set({ archivedAt: new Date(), updatedAt: new Date() })
     .where(eq(chatIntegrationSessions.id, id))
     .run()
-  return result.changes > 0
+  return changesOf(result) > 0
 }
 
 // ── Delete ──────────────────────────────────────────────────────────────
 
-export function deleteChatIntegrationSession(id: string): boolean {
-  const result = db.delete(chatIntegrationSessions)
+export async function deleteChatIntegrationSession(id: string): Promise<boolean> {
+  const result = await db.delete(chatIntegrationSessions)
     .where(eq(chatIntegrationSessions.id, id))
     .run()
-  return result.changes > 0
+  return changesOf(result) > 0
 }
 
-export function deleteChatIntegrationSessionsByIntegration(integrationId: string): number {
-  const result = db.delete(chatIntegrationSessions)
+export async function deleteChatIntegrationSessionsByIntegration(integrationId: string): Promise<number> {
+  const result = await db.delete(chatIntegrationSessions)
     .where(eq(chatIntegrationSessions.integrationId, integrationId))
     .run()
-  return result.changes
+  return changesOf(result)
 }

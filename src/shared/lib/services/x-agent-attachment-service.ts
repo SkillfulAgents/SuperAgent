@@ -1,11 +1,11 @@
 import { randomUUID } from 'crypto'
 import path from 'path'
-import type { ContainerClient } from '@shared/lib/container/types'
+import type { FileOps } from '@shared/lib/agent-actor/types'
+import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
 import {
   MAX_X_AGENT_ATTACHMENT_BYTES,
   MAX_X_AGENT_ATTACHMENTS_TOTAL_BYTES,
-  xAgentAttachmentErrorResponseSchema,
   xAgentAttachmentsSchema,
 } from './x-agent-attachment-schema'
 
@@ -50,24 +50,6 @@ function normalizeSourcePath(rawPath: string): string {
   return path.posix.join(WORKSPACE_ROOT, relative)
 }
 
-export function xAgentWorkspaceFileRoute(filePath: string, operation: 'content' | 'upload' | 'delete'): string {
-  const relative = path.posix.relative(WORKSPACE_ROOT, filePath)
-  const encoded = relative.split('/').map(encodeURIComponent).join('/')
-  return `/workspace-files/${operation}/${encoded}`
-}
-
-function parseContentLength(response: Response, sourcePath: string): number {
-  const raw = response.headers.get('Content-Length')
-  const size = Number(raw)
-  if (!raw || !Number.isSafeInteger(size) || size < 0) {
-    throw new XAgentAttachmentError(`Could not determine attachment size: ${sourcePath}`, 502)
-  }
-  if (size > MAX_X_AGENT_ATTACHMENT_BYTES) {
-    throw new XAgentAttachmentError(`Attachment exceeds the ${MAX_X_AGENT_ATTACHMENT_BYTES}-byte limit: ${sourcePath}`, 413)
-  }
-  return size
-}
-
 function countedBody(
   body: ReadableStream<Uint8Array> | null,
   expectedBytes: number,
@@ -95,100 +77,78 @@ function countedBody(
   }))
 }
 
-async function responseError(response: Response, fallback: string): Promise<XAgentAttachmentError> {
-  let detail = fallback
-  try {
-    const parsed = xAgentAttachmentErrorResponseSchema.safeParse(await response.json())
-    if (parsed.success && parsed.data.error) detail = parsed.data.error
-  } catch {
-    // Binary/non-JSON failures use the scoped fallback.
+/** Preserve typed transfer errors even when a lower-level stream wraps its cause. */
+export function transferError(error: unknown): unknown {
+  const seen = new Set<unknown>()
+  for (let current = error; current && !seen.has(current); current = (current as Error).cause) {
+    seen.add(current)
+    if (current instanceof XAgentAttachmentError) return current
+    if (current instanceof WorkspaceFileError) return new XAgentAttachmentError(current.message, current.status)
   }
-  const status = response.status === 400 || response.status === 403 || response.status === 404 ||
-    response.status === 409 || response.status === 413
-    ? response.status
-    : 502
-  return new XAgentAttachmentError(detail, status)
+  return error
+}
+
+/** Read size and bounded bytes from the same confined open file. */
+export async function openXAgentFile(files: FileOps, filePath: string): Promise<{ sizeBytes: number; body: ReadableStream<Uint8Array> }> {
+  const file = await files.open(filePath, { confined: true })
+  try {
+    const sizeBytes = await file.size()
+    if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) throw new XAgentAttachmentError('File size is unavailable', 502)
+    if (sizeBytes > MAX_X_AGENT_ATTACHMENT_BYTES) throw new XAgentAttachmentError('File exceeds the transfer limit', 413)
+    if (sizeBytes === 0) {
+      await file.close()
+      return { sizeBytes, body: new ReadableStream({ start: (controller) => controller.close() }) }
+    }
+    return { sizeBytes, body: countedBody(file.stream({ start: 0, end: sizeBytes - 1 }), sizeBytes, filePath) }
+  } catch (error) {
+    await file.close().catch(() => {})
+    throw transferError(error)
+  }
 }
 
 export function normalizeXAgentAttachmentPaths(paths: string[]): string[] {
   return xAgentAttachmentsSchema.parse(paths).map(normalizeSourcePath)
 }
 
-export async function removeTransferredAttachments(
-  targetClient: Pick<ContainerClient, 'fetch'>,
-  targetDirectory: string,
-): Promise<void> {
-  const response = await targetClient.fetch(xAgentWorkspaceFileRoute(targetDirectory, 'delete'), { method: 'DELETE' })
-  if (!response.ok && response.status !== 404) {
-    throw await responseError(response, 'Could not remove transferred attachments')
-  }
+export async function removeTransferredAttachments(files: FileOps, targetDirectory: string): Promise<void> {
+  await files.delete(targetDirectory, { recursive: true, confined: true })
 }
 
 export async function transferXAgentAttachments(input: {
-  sourceClient: Pick<ContainerClient, 'fetch'>
-  targetClient: Pick<ContainerClient, 'fetch'>
+  sourceFiles: FileOps
+  targetFiles: FileOps
   sourcePaths: string[]
   signal?: AbortSignal
   transferId?: string
 }): Promise<{ attachments: TransferredXAgentAttachment[]; targetDirectory?: string }> {
   const sourcePaths = normalizeXAgentAttachmentPaths(input.sourcePaths)
   if (sourcePaths.length === 0) return { attachments: [] }
-
-  const transferId = input.transferId ?? randomUUID()
-  const targetDirectory = `${WORKSPACE_ROOT}/uploads/x-agent/${transferId}`
+  const targetDirectory = `${WORKSPACE_ROOT}/uploads/x-agent/${input.transferId ?? randomUUID()}`
   const attachments: TransferredXAgentAttachment[] = []
   let totalBytes = 0
-
   try {
     for (const [index, sourcePath] of sourcePaths.entries()) {
-      const sourceResponse = await input.sourceClient.fetch(
-        xAgentWorkspaceFileRoute(sourcePath, 'content'),
-        { signal: input.signal },
-      )
-      if (!sourceResponse.ok) {
-        throw await responseError(sourceResponse, `Could not read attachment: ${sourcePath}`)
-      }
-
-      let sizeBytes: number
-      try {
-        sizeBytes = parseContentLength(sourceResponse, sourcePath)
-      } catch (error) {
-        await sourceResponse.body?.cancel().catch(() => {})
-        throw error
-      }
+      input.signal?.throwIfAborted()
+      const { sizeBytes, body } = await openXAgentFile(input.sourceFiles, sourcePath)
       totalBytes += sizeBytes
       if (totalBytes > MAX_X_AGENT_ATTACHMENTS_TOTAL_BYTES) {
-        await sourceResponse.body?.cancel()
-        throw new XAgentAttachmentError(
-          `Attachments exceed the ${MAX_X_AGENT_ATTACHMENTS_TOTAL_BYTES}-byte aggregate limit`,
-          413,
-        )
+        await body.cancel()
+        throw new XAgentAttachmentError('Attachments exceed the aggregate transfer limit', 413)
       }
-
       const filename = sanitizeUploadFilename(path.posix.basename(sourcePath))
       const targetPath = `${targetDirectory}/${index}/${filename}`
-      const body = countedBody(sourceResponse.body, sizeBytes, sourcePath)
-      const uploadResponse = await input.targetClient.fetch(
-        xAgentWorkspaceFileRoute(targetPath, 'upload'),
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/octet-stream',
-            'Content-Length': String(sizeBytes),
-          },
-          body,
-          signal: input.signal,
-          duplex: 'half',
-        } as RequestInit & { duplex: 'half' },
-      )
-      if (!uploadResponse.ok) {
-        throw await responseError(uploadResponse, `Could not write attachment: ${filename}`)
+      try {
+        await input.targetFiles.write(targetPath, body, { confined: true, overwrite: false, signal: input.signal })
+      } catch (error) {
+        // A refused destination may not have consumed the source yet.
+        if (!body.locked) await body.cancel().catch(() => {})
+        throw error
       }
       attachments.push({ sourcePath, targetPath, sizeBytes })
     }
     return { attachments, targetDirectory }
   } catch (error) {
-    await removeTransferredAttachments(input.targetClient, targetDirectory).catch(() => {})
-    throw error
+    await removeTransferredAttachments(input.targetFiles, targetDirectory).catch(() => {})
+    throw transferError(error)
   }
 }

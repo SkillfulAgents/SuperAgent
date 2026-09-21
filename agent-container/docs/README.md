@@ -37,7 +37,7 @@ itself important.
 - `browser-use.md`
 - `computer-use.md`
 - `x.md`
-- `deepgram.md`
+- `audio.md`
 - `exa.md`
 
 `session-history.md` is the one guide with executable companions: the two

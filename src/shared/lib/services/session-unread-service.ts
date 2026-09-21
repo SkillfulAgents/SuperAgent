@@ -21,6 +21,7 @@
  */
 
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
 import { sessionUnreadMarks } from '@shared/lib/db/schema'
 import { and, eq, inArray } from 'drizzle-orm'
 
@@ -41,7 +42,7 @@ export async function markSessionUnread(
     .values({ sessionId, userId, agentSlug, markedAt: new Date() })
     .onConflictDoNothing()
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -68,7 +69,7 @@ export async function clearSessionUnread(
       eq(sessionUnreadMarks.userId, userId),
     ))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /** Session ids this user marked unread on one agent. */
@@ -135,5 +136,5 @@ export async function deleteSessionUnreadMarks(
       inArray(sessionUnreadMarks.sessionId, sessionIds),
     ))
 
-  return result.changes ?? 0
+  return changesOf(result)
 }

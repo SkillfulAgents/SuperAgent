@@ -50,3 +50,19 @@ export function useIsVoiceModeActive(sessionId: string | null | undefined): bool
     () => false,
   )
 }
+
+// Request cards can stop the session while its voice composer is hidden.
+// Route that explicit stop to the mounted composer so it also closes media
+// and sends the normal voice-mode exit notice.
+const exitHandlers = new Map<string, () => void>()
+
+export function registerVoiceModeExit(sessionId: string, exit: () => void): () => void {
+  exitHandlers.set(sessionId, exit)
+  return () => {
+    if (exitHandlers.get(sessionId) === exit) exitHandlers.delete(sessionId)
+  }
+}
+
+export function exitSessionVoiceMode(sessionId: string): void {
+  exitHandlers.get(sessionId)?.()
+}

@@ -4,10 +4,10 @@ import { VoiceProviderError } from '@shared/lib/voice/provider-error'
 import { LiveSessionRegistry } from '@shared/lib/voice/live-session-registry'
 import { z } from 'zod'
 import { limitJsonBody, type LimitedJsonBodyEnv } from '../middleware/limit-json-body'
-import { Authenticated } from '../middleware/auth'
-import { getVoiceSettings, type VoiceProvider } from '@shared/lib/config/settings'
+import { Authenticated, ResolveAgent, AgentUser, getAgentId } from '../middleware/auth'
+import { getVoiceSettings, getAgentCapabilitySettings, type VoiceProvider } from '@shared/lib/config/settings'
 import { getVoiceProvider } from '@shared/lib/voice'
-import { liveMappingSchema, voiceHistorySchema } from '@shared/lib/voice/live-types'
+import { liveMappingSchema, voiceHistorySchema, type LiveAgentContext } from '@shared/lib/voice/live-types'
 import { resolveTtsSpeed } from '@shared/lib/voice/tts-preferences'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
@@ -68,7 +68,7 @@ function ttsError(c: Context<LimitedJsonBodyEnv>, error: unknown, fallback: stri
 const liveSessions = new LiveSessionRegistry()
 const pendingLiveStarts = new Map<string, number>()
 const liveSessionSchema = z.object({ sdp: z.string().min(1).max(64000), history: voiceHistorySchema })
-voice.post('/live/session', async (c) => {
+async function createLiveSession(c: Context<LimitedJsonBodyEnv>) {
   const ready = requireLiveConversation(c, 'Live session creation')
   if (ready instanceof Response) return ready
   const { provider, conversation } = ready
@@ -81,8 +81,24 @@ voice.post('/live/session', async (c) => {
   }
   pendingLiveStarts.set(owner, pending + 1)
   try {
+    let agentContext: LiveAgentContext | undefined
+    if (c.req.param('id')) {
+      // Only the protected route resolves an agent. Load instructions after ACL
+      // checks, and never let browser-supplied prompt fields reach the provider.
+      const { getAgent } = await import('@shared/lib/services/agent-service')
+      const agent = await getAgent(getAgentId(c))
+      if (!agent) return c.json({ error: 'Agent not found' }, 404)
+      agentContext = {
+        name: agent.frontmatter.name,
+        description: agent.frontmatter.description,
+        instructions: agent.instructions,
+        capabilityPolicies: getAgentCapabilitySettings(),
+      }
+    }
     const apiKey = provider.getEffectiveApiKey()
-    const answer = await conversation.createLiveSession(parsed.data.sdp, parsed.data.history)
+    const answer = agentContext
+      ? await conversation.createLiveSession(parsed.data.sdp, parsed.data.history, agentContext)
+      : await conversation.createLiveSession(parsed.data.sdp, parsed.data.history)
     const registered = liveSessions.add(owner, () => conversation.closeLiveSession(answer.session.id, apiKey))
     if (c.req.raw.signal.aborted) {
       await liveSessions.release(registered.handle, owner)
@@ -96,7 +112,10 @@ voice.post('/live/session', async (c) => {
     if (remaining) pendingLiveStarts.set(owner, remaining)
     else pendingLiveStarts.delete(owner)
   }
-})
+}
+// Keep generic startup for older renderers; current conversations use the ACL-protected route.
+voice.post('/live/session', createLiveSession)
+voice.post('/live/agents/:id/session', ResolveAgent(), AgentUser(), createLiveSession)
 voice.delete('/live/session/:handle', async (c) => {
   const result = await liveSessions.release(c.req.param('handle'), getCurrentUserId(c))
   if (result === 'missing') return c.json({ error: 'Voice session not found.' }, 404)
@@ -186,7 +205,7 @@ async function initializeTts(c: Context<LimitedJsonBodyEnv>, legacy = false) {
   if (provider instanceof Response) return provider
   try {
     const connection = await provider.getTtsConnection()
-    const own = getUserSettings(getCurrentUserId(c)).voice
+    const own = (await getUserSettings(getCurrentUserId(c))).voice
     const preferences = { provider: provider.id,
       voice: provider.resolveTtsVoice(own?.ttsVoice, getVoiceSettings().ttsVoice),
       speed: resolveTtsSpeed(own?.ttsSpeed),

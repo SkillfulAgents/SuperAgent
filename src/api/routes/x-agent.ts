@@ -9,6 +9,7 @@
  * Bearer <token>. The route resolves the caller's agent slug from that token and
  * applies xAgentPolicies + ACLs accordingly.
  */
+import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -29,7 +30,7 @@ import {
 } from '@shared/lib/services/agent-service'
 import { displaySlug } from '@shared/lib/utils/file-storage'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
-import type { ContainerClient } from '@shared/lib/container/types'
+import type { FileOps } from '@shared/lib/agent-actor/types'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   evaluate as evaluatePolicy,
@@ -46,11 +47,11 @@ import {
   removeTransferredAttachments,
   transferXAgentAttachments,
   normalizeXAgentAttachmentPaths,
-  xAgentWorkspaceFileRoute,
+  openXAgentFile,
+  transferError,
   XAgentAttachmentError,
 } from '@shared/lib/services/x-agent-attachment-service'
 import {
-  MAX_X_AGENT_ATTACHMENT_BYTES,
   xAgentAttachmentsSchema,
   xAgentDownloadFileBodySchema,
 } from '@shared/lib/services/x-agent-attachment-schema'
@@ -227,14 +228,11 @@ async function checkAgentPolicy(
   targetSlug: string | null,
   targetName: string,
   preview?: string,
-  attachments?: string[],
+  fileTransfer?: XAgentFileTransfer,
 ): Promise<{ allowed: boolean; reason?: string }> {
   if (operation !== 'create') {
-    const decision = evaluatePolicy(callerSlug, operation, targetSlug)
-    // Message permission predates attachments. Never let an existing send-only
-    // grant silently authorize file disclosure; each attached invoke is reviewed.
-    const requiresAttachmentReview = operation === 'invoke' && (attachments?.length ?? 0) > 0
-    if (decision === 'allow' && !requiresAttachmentReview) return { allowed: true }
+    const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
+    if (decision === 'allow' && !requiresOneTimeXAgentReview({ operation, fileTransfer })) return { allowed: true }
     if (decision === 'block') return { allowed: false, reason: 'Blocked by policy' }
     // 'review' → fall through to interactive prompt
   }
@@ -245,7 +243,7 @@ async function checkAgentPolicy(
       targetName,
       operation,
       preview,
-      attachments,
+      fileTransfer,
     )
     if (userDecision === 'deny') {
       return { allowed: false, reason: 'Denied by user' }
@@ -720,33 +718,23 @@ xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), 
     'read',
     targetSlug,
     target.name,
-    `download delivered file "${delivery.filename}"`,
+    undefined,
+    { kind: 'download', filename: delivery.filename },
   )
   if (!policy.allowed) return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
 
+  let sourcePath: string
   try {
-    await actor.container.start()
-    const client = actor.container
-    const normalizedPaths = normalizeXAgentAttachmentPaths([delivery.filePath])
-    const upstream = await client.fetch(xAgentWorkspaceFileRoute(normalizedPaths[0], 'content'), {
-      signal: c.req.raw.signal,
-    })
-    if (!upstream.ok) {
-      await upstream.body?.cancel().catch(() => {})
-      return c.json({ error: 'Delivered file is no longer available' }, upstream.status === 404 ? 404 : 502)
-    }
-    const currentSize = Number(upstream.headers.get('Content-Length'))
-    if (!Number.isSafeInteger(currentSize) || currentSize < 0) {
-      await upstream.body?.cancel().catch(() => {})
-      return c.json({ error: 'Delivered file size is unavailable' }, 502)
-    }
+    [sourcePath] = normalizeXAgentAttachmentPaths([delivery.filePath])
+  } catch {
+    return c.json({ error: 'Delivered file path is invalid' }, 400)
+  }
+  try {
+    const upstream = await openXAgentFile(actor.files, sourcePath)
+    const currentSize = upstream.sizeBytes
     if (currentSize !== delivery.sizeBytes) {
-      await upstream.body?.cancel().catch(() => {})
+      await upstream.body.cancel().catch(() => {})
       return c.json({ error: 'Delivered file changed after it was published' }, 409)
-    }
-    if (currentSize > MAX_X_AGENT_ATTACHMENT_BYTES) {
-      await upstream.body?.cancel().catch(() => {})
-      return c.json({ error: 'Delivered file exceeds the download limit' }, 413)
     }
     const body = delivery.sha256
       ? verifyDeliveredFileBody(upstream.body, delivery.sha256)
@@ -762,12 +750,12 @@ xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), 
         'Cache-Control': 'private, no-store, max-age=0',
       },
     })
-  } catch (error) {
+  } catch (caught) {
+    const error = transferError(caught)
     if (error instanceof XAgentAttachmentError) {
-      return c.json({ error: 'Delivered file path is invalid' }, error.status === 403 ? 403 : 400)
+      return c.json({ error: error.status === 404 ? 'Delivered file is no longer available' : error.message }, error.status)
     }
-    const message = error instanceof Error ? error.message : String(error)
-    return c.json({ error: `Failed to download delivered file: ${message}` }, 502)
+    return c.json({ error: 'Failed to read delivered file' }, 502)
   }
 })
 
@@ -849,7 +837,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     targetSlug,
     target.name,
     prompt.slice(0, 200),
-    attachments,
+    attachments.length ? { kind: 'send', paths: attachments } : undefined,
   )
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
@@ -874,7 +862,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     // Stages for runtime 500s: ensure_running → create_session / send_message.
     let stage = 'ensure_running'
     let stagedTargetDirectory: string | undefined
-    let stagedTargetClient: Pick<ContainerClient, 'fetch'> | undefined
+    let stagedTargetFiles: FileOps | undefined
     let promptDeliveryStarted = false
     let invokingSessionKey: string | undefined
     try {
@@ -887,21 +875,22 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         if (!(await targetActor.sessions.isKnown(existingSessionId))) {
           return c.json({ error: 'Session not found' }, 404)
         }
-        invokingSessionKey = `${targetSlug}\0${existingSessionId}`
-        if (targetActor.sessions.isActive(existingSessionId) || invokingSessions.has(invokingSessionKey)) {
+        const candidateKey = `${targetSlug}\0${existingSessionId}`
+        if (targetActor.sessions.isActive(existingSessionId) || invokingSessions.has(candidateKey)) {
           return c.json({ error: 'Target session is currently running' }, 409)
         }
-        invokingSessions.add(invokingSessionKey)
+        invokingSessions.add(candidateKey)
+        invokingSessionKey = candidateKey
         stage = 'ensure_running'
         await targetActor.container.start()
-        const client = targetActor.container
-        stagedTargetClient = client
+        const files = targetActor.files
+        stagedTargetFiles = files
         let deliveredPrompt = prompt
         if (attachments.length > 0) {
           stage = 'transfer_attachments'
           const transferred = await transferXAgentAttachments({
-            sourceClient: agentRegistry.get(callerSlug).container,
-            targetClient: client,
+            sourceFiles: agentRegistry.get(callerSlug).files,
+            targetFiles: files,
             sourcePaths: attachments,
             signal: c.req.raw.signal,
           })
@@ -931,7 +920,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             sessionId: existingSessionId,
           })
           if (stagedTargetDirectory) {
-            await removeTransferredAttachments(client, stagedTargetDirectory).catch(() => {})
+            await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
           }
           return c.json({ error: deliveryCutoffError() }, 504)
         }
@@ -965,7 +954,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
                 targetActor.sessions.markIdle(existingSessionId)
                 promptDeliveryStarted = false
                 if (stagedTargetDirectory) {
-                  await removeTransferredAttachments(client, stagedTargetDirectory).catch(() => {})
+                  await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
                   stagedTargetDirectory = undefined
                 }
               }
@@ -1018,14 +1007,14 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
 
       stage = 'ensure_running'
       await targetActor.container.start()
-      const client = targetActor.container
-      stagedTargetClient = client
+      const files = targetActor.files
+      stagedTargetFiles = files
       let deliveredPrompt = prompt
       if (attachments.length > 0) {
         stage = 'transfer_attachments'
         const transferred = await transferXAgentAttachments({
-          sourceClient: agentRegistry.get(callerSlug).container,
-          targetClient: client,
+          sourceFiles: agentRegistry.get(callerSlug).files,
+          targetFiles: files,
           sourcePaths: attachments,
           signal: c.req.raw.signal,
         })
@@ -1051,7 +1040,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           targetSlug,
         })
         if (stagedTargetDirectory) {
-          await removeTransferredAttachments(client, stagedTargetDirectory).catch(() => {})
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
         }
         return c.json({ error: deliveryCutoffError() }, 504)
       }
@@ -1084,7 +1073,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         created = await raceDeadline(createPromise, deliveryCutoff)
       } catch (error) {
         if (stagedTargetDirectory) {
-          await removeTransferredAttachments(client, stagedTargetDirectory).catch(() => {})
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
         }
         throw error
       }
@@ -1102,12 +1091,12 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
               })
             })
             if (stagedTargetDirectory) {
-              await removeTransferredAttachments(client, stagedTargetDirectory).catch(() => {})
+              await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
             }
           },
           async () => {
             if (stagedTargetDirectory) {
-              await removeTransferredAttachments(client, stagedTargetDirectory).catch(() => {})
+              await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
             }
           },
         )
@@ -1166,7 +1155,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         }
         targetActor.sessions.unsubscribeStream(newSessionId)
         if (stagedTargetDirectory) {
-          await removeTransferredAttachments(client, stagedTargetDirectory).catch(() => {})
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
         }
         return c.json({ error: `Failed to register invoked session: ${message}` }, 500)
       }
@@ -1203,7 +1192,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         }
         targetActor.sessions.unsubscribeStream(newSessionId)
         if (stagedTargetDirectory) {
-          await removeTransferredAttachments(client, stagedTargetDirectory).catch(() => {})
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
         }
         return c.json({ error: `Failed to attach to invoked session: ${message}` }, 500)
       }
@@ -1243,8 +1232,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       }
       return c.json({ sessionId: newSessionId, status: 'running' })
     } catch (err) {
-      if (!promptDeliveryStarted && stagedTargetClient && stagedTargetDirectory) {
-        await removeTransferredAttachments(stagedTargetClient, stagedTargetDirectory).catch(() => {})
+      if (!promptDeliveryStarted && stagedTargetFiles && stagedTargetDirectory) {
+        await removeTransferredAttachments(stagedTargetFiles, stagedTargetDirectory).catch(() => {})
       }
       if (err instanceof XAgentAttachmentError) {
         return c.json({ error: err.message }, err.status)

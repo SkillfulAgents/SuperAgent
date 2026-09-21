@@ -146,6 +146,8 @@ function titleForAgentView(view: AgentView, input: DocumentTitleInput): string {
       return joinView(agentTitle, cleanTitlePart(input.dashboardName) ?? humanizeIdentifier(view.slug) ?? 'Dashboard')
     case 'apiLogs':
       return joinView(agentTitle, 'API Logs')
+    case 'memories':
+      return joinView(agentTitle, 'Memories')
     case 'secrets':
       return joinView(agentTitle, 'Secrets')
     case 'xAgentPermissions':

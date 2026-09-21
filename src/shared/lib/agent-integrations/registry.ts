@@ -31,8 +31,8 @@ export class AgentIntegrationRegistry {
     return [...this.providers.values()].map(provider => provider.definition)
   }
 
-  isAllowed(context: IntegrationSessionContext): boolean {
-    return this.providers.get(context.integration.provider)?.policy.isAllowed(context) ?? false
+  async isAllowed(context: IntegrationSessionContext): Promise<boolean> {
+    return (await this.providers.get(context.integration.provider)?.policy.isAllowed(context)) ?? false
   }
 
   sessionPolicy(record: AgentIntegrationRecord, route: Partial<IntegrationRoute>): IntegrationSessionPolicy {

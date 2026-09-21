@@ -37,6 +37,10 @@ export function updateAgentRuntimeCache(
       : containerPort === undefined
         ? agent.containerPort
         : containerPort,
+    // A stop clears the host's stale mark. A running write keeps it: a warm
+    // start of a running agent leaves the host's mark in place, and the rare
+    // start after a silent host-side stop corrects itself on the next list fetch.
+    ...(status === 'stopped' ? { stale: undefined } : {}),
   }))
 }
 

@@ -101,33 +101,33 @@ describe('GenericLlmProvider.getDefaultModel', () => {
 })
 
 describe('GenericLlmProvider.getContainerEnvVars', () => {
-  it('sets the Anthropic-wire env, rewriting localhost to the container host gateway', () => {
+  it('sets the Anthropic-wire env, rewriting localhost to the container host gateway', async () => {
     settingsMock.mockReturnValue({
       apiKeys: { genericApiKey: 'k', genericBaseUrl: 'http://localhost:11434' },
     })
-    expect(provider.getContainerEnvVars()).toEqual({
+    expect(await provider.getContainerEnvVars()).toEqual({
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: 'http://host.docker.internal:11434',
       ANTHROPIC_AUTH_TOKEN: 'k',
     })
   })
 
-  it('leaves a non-localhost baseURL untouched', () => {
-    expect(provider.getContainerEnvVars().ANTHROPIC_BASE_URL).toBe('https://proxy.example')
+  it('leaves a non-localhost baseURL untouched', async () => {
+    expect((await provider.getContainerEnvVars()).ANTHROPIC_BASE_URL).toBe('https://proxy.example')
   })
 
-  it('rewrites loopback IPs, not just the localhost hostname', () => {
+  it('rewrites loopback IPs, not just the localhost hostname', async () => {
     settingsMock.mockReturnValue({
       apiKeys: { genericApiKey: 'k', genericBaseUrl: 'http://127.0.0.1:11434' },
     })
-    expect(provider.getContainerEnvVars().ANTHROPIC_BASE_URL).toBe('http://host.docker.internal:11434')
+    expect((await provider.getContainerEnvVars()).ANTHROPIC_BASE_URL).toBe('http://host.docker.internal:11434')
   })
 
-  it('does not mangle hostnames that merely start with localhost', () => {
+  it('does not mangle hostnames that merely start with localhost', async () => {
     settingsMock.mockReturnValue({
       apiKeys: { genericApiKey: 'k', genericBaseUrl: 'http://localhost.mycorp.dev:4000' },
     })
-    expect(provider.getContainerEnvVars().ANTHROPIC_BASE_URL).toBe('http://localhost.mycorp.dev:4000')
+    expect((await provider.getContainerEnvVars()).ANTHROPIC_BASE_URL).toBe('http://localhost.mycorp.dev:4000')
   })
 })
 

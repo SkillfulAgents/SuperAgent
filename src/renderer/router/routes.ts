@@ -46,6 +46,7 @@ const ApiLogsRoute = lazyRouteComponent(() => import('./lazy-routes/api-logs-rou
 const ChatRoute = lazyRouteComponent(() => import('./lazy-routes/chat-route'), 'ChatRoute')
 const ConnectionsRoute = lazyRouteComponent(() => import('./lazy-routes/connections-route'), 'ConnectionsRoute')
 const DashboardRoute = lazyRouteComponent(() => import('./lazy-routes/dashboard-route'), 'DashboardRoute')
+const MemoriesRoute = lazyRouteComponent(() => import('./lazy-routes/memories-route'), 'MemoriesRoute')
 const SecretsRoute = lazyRouteComponent(() => import('./lazy-routes/secrets-route'), 'SecretsRoute')
 const SessionRoute = lazyRouteComponent(() => import('./lazy-routes/session-route'), 'SessionRoute')
 const TaskRoute = lazyRouteComponent(() => import('./lazy-routes/task-route'), 'TaskRoute')
@@ -221,6 +222,12 @@ export const connectionsRoute = createRoute({
   component: ConnectionsRoute,
 })
 
+export const memoriesRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'memories',
+  component: MemoriesRoute,
+})
+
 export const secretsRoute = createRoute({
   getParentRoute: () => agentLayoutRoute,
   path: 'secrets',
@@ -285,6 +292,7 @@ export const routeTree = rootRoute.addChildren([
       apiLogsRoute,
       connectionsRoute,
       secretsRoute,
+      memoriesRoute,
       xAgentPermissionsRoute,
     ]),
   ]),

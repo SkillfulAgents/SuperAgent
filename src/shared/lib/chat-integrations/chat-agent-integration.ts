@@ -254,15 +254,15 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     const message = event.payload as IncomingMessage
     const integrationId = context.integration.id
     const chatId = context.externalId
-    const decision = decideInboundAccess({ integrationId, externalChatId: chatId, chatType: message.chatType,
+    const decision = await decideInboundAccess({ integrationId, externalChatId: chatId, chatType: message.chatType,
       userId: message.userId, userName: message.userName, chatName: message.chatName, preview: message.text })
     if (decision.action !== 'blocked') return true
     if (decision.sendNotice) {
-      const access = getChatAccess(integrationId, chatId)
+      const access = await getChatAccess(integrationId, chatId)
       if (access) {
         try {
           await this.sendMessage(chatId, { text: 'This bot needs the owner to approve this conversation before it can respond.' })
-          markNoticeSent(access.id)
+          await markNoticeSent(access.id)
         } catch (error) {
           captureException(error, { tags: { component: 'chat-integration', operation: 'access-notice' }, level: 'warning' })
         }
@@ -271,7 +271,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     return false
   }
 
-  isAllowed(context: IntegrationSessionContext): boolean {
+  isAllowed(context: IntegrationSessionContext): Promise<boolean> {
     return chatIntegrationPolicy.isAllowed(context)
   }
 
@@ -287,7 +287,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     const message = event.payload as IncomingMessage
     const { text, failedFiles } = await this.inputBuilder.buildMessageContent(context.integration, message)
     const skip = failedFiles.length > 0 && !text.trim()
-    if (failedFiles.length && this.isAllowed(context)) {
+    if (failedFiles.length && (await this.isAllowed(context))) {
       await this.sendMessage(context.externalId, { text: `Could not download file(s): ${failedFiles.join(', ')}. ${skip ? 'Message was not sent to the agent.' : 'Your text message will still be sent.'}\n\nIf this is a Slack bot, ensure the \`files:read\` scope is added and the app is reinstalled.` })
     }
     return { text, skip, systemPrompt: (this.constructor as ChatConnectorClass).generateSystemPrompt?.(message) }
@@ -359,12 +359,12 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
       name, description, inputSchema: { type: 'object', properties, required: Object.keys(properties), additionalProperties: false }, execute,
     })
     const tools = [tool('send_message', 'Send a complete message to an external conversation.', { text: { type: 'string' } }, async input => {
-      if (!this.isAllowed(context)) throw new Error('Conversation is not allowed')
+      if (!(await this.isAllowed(context))) throw new Error('Conversation is not allowed')
       const text = stringArgument(input, 'text')
       await this.startWorking(context.externalId, 'working').catch(() => {})
       try {
         await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 1100))
-        if (!this.isAllowed(context)) throw new Error('Conversation is not allowed')
+        if (!(await this.isAllowed(context))) throw new Error('Conversation is not allowed')
         return await this.sendMessage(context.externalId, { text })
       } finally { await this.stopWorking(context.externalId).catch(() => {}) }
     })]

@@ -48,7 +48,9 @@ export class OpenAILiveBridge {
   }
 
   receive(event: Record<string, unknown>) {
-    if (this.closed || this.paused) return
+    if (this.closed) return
+    // Paused for a request card: the mic is muted, but the reply keeps playing, so its subtitles keep coming.
+    if (this.paused && event.type !== 'session.output_transcript.delta') return
     if (event.type === 'session.input_transcript.delta' || event.type === 'session.output_transcript.delta') {
       if (typeof event.delta !== 'string' || !event.delta) return
       const role = event.type === 'session.input_transcript.delta' ? 'user' : 'assistant'

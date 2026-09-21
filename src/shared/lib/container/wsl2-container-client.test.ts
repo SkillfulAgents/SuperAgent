@@ -105,7 +105,7 @@ describe('windowsToWSLPath', () => {
     expect(windowsToWSLPath('C:/Users/foo/bar')).toBe('/mnt/c/Users/foo/bar')
   })
 
-  it('handles different drive letters', () => {
+  it('handles different drive letters', async () => {
     expect(windowsToWSLPath('D:\\Data\\stuff')).toBe('/mnt/d/Data/stuff')
   })
 
@@ -117,7 +117,7 @@ describe('windowsToWSLPath', () => {
     expect(windowsToWSLPath('/usr/local/bin')).toBe('/usr/local/bin')
   })
 
-  it('handles root of drive', () => {
+  it('handles root of drive', async () => {
     expect(windowsToWSLPath('C:\\')).toBe('/mnt/c/')
   })
 })
@@ -577,7 +577,7 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
   }
 
-  it('translates Windows env file path to WSL2 path', () => {
+  it('translates Windows env file path to WSL2 path', async () => {
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "C:\\Users\\testuser\\.superagent\\tmp\\superagent-env-test-agent-123"',
       filePath: 'C:\\Users\\testuser\\.superagent\\tmp\\superagent-env-test-agent-123',
@@ -585,12 +585,12 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient()
-    const result = client.testBuildEnvFile()
+    const result = await client.testBuildEnvFile()
 
     expect(result.flag).toBe('--env-file "/mnt/c/Users/testuser/.superagent/tmp/superagent-env-test-agent-123"')
   })
 
-  it('translates paths with different drive letters', () => {
+  it('translates paths with different drive letters', async () => {
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "D:\\Data\\tmp\\env-file"',
       filePath: 'D:\\Data\\tmp\\env-file',
@@ -598,12 +598,12 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient()
-    const result = client.testBuildEnvFile()
+    const result = await client.testBuildEnvFile()
 
     expect(result.flag).toBe('--env-file "/mnt/d/Data/tmp/env-file"')
   })
 
-  it('handles forward-slash Windows paths', () => {
+  it('handles forward-slash Windows paths', async () => {
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "C:/Users/testuser/tmp/env-file"',
       filePath: 'C:/Users/testuser/tmp/env-file',
@@ -611,12 +611,12 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient()
-    const result = client.testBuildEnvFile()
+    const result = await client.testBuildEnvFile()
 
     expect(result.flag).toBe('--env-file "/mnt/c/Users/testuser/tmp/env-file"')
   })
 
-  it('passes through the cleanup function from writeEnvFile', () => {
+  it('passes through the cleanup function from writeEnvFile', async () => {
     const mockCleanup = vi.fn()
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "C:\\tmp\\env"',
@@ -625,13 +625,13 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient()
-    const result = client.testBuildEnvFile()
+    const result = await client.testBuildEnvFile()
 
     result.cleanup()
     expect(mockCleanup).toHaveBeenCalledOnce()
   })
 
-  it('passes agent envVars and additional envVars to writeEnvFile', () => {
+  it('passes agent envVars and additional envVars to writeEnvFile', async () => {
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "C:\\tmp\\env"',
       filePath: 'C:\\tmp\\env',
@@ -639,7 +639,7 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient({ agentId: 'my-agent', envVars: { FOO: 'bar' } })
-    client.testBuildEnvFile({ EXTRA: 'val' })
+    await client.testBuildEnvFile({ EXTRA: 'val' })
 
     expect(mockedWriteEnvFile).toHaveBeenCalledOnce()
     const [envVars, agentId] = mockedWriteEnvFile.mock.calls[0]
@@ -651,7 +651,7 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
   })
 
-  it('writes to the .superagent/tmp directory under homedir', () => {
+  it('writes to the .superagent/tmp directory under homedir', async () => {
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "C:\\tmp\\env"',
       filePath: 'C:\\tmp\\env',
@@ -659,7 +659,7 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient()
-    client.testBuildEnvFile()
+    await client.testBuildEnvFile()
 
     const [, , tmpDir] = mockedWriteEnvFile.mock.calls[0]
     // path.join on test platform — check key components
@@ -667,7 +667,7 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     expect(tmpDir).toContain('tmp')
   })
 
-  it('handles paths with spaces', () => {
+  it('handles paths with spaces', async () => {
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "C:\\Users\\Test User\\AppData\\tmp\\env-file"',
       filePath: 'C:\\Users\\Test User\\AppData\\tmp\\env-file',
@@ -675,7 +675,7 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient()
-    const result = client.testBuildEnvFile()
+    const result = await client.testBuildEnvFile()
 
     expect(result.flag).toBe('--env-file "/mnt/c/Users/Test User/AppData/tmp/env-file"')
   })

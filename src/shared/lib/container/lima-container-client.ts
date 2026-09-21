@@ -412,13 +412,13 @@ export class LimaContainerClient extends BaseContainerClient {
    * Lima only mounts the home directory into the VM, so /var/folders/...
    * (macOS temp dir) is not accessible inside the VM.
    */
-  protected buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): { flag: string; cleanup: () => void } {
+  protected async buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): Promise<{ flag: string; cleanup: () => void }> {
     const home = process.env.HOME
     if (!home) {
       throw new Error('HOME environment variable is not set — cannot write container env file')
     }
     const tmpDir = path.join(home, '.superagent', 'tmp')
-    return writeEnvFile(this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId, tmpDir)
+    return writeEnvFile(await this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId, tmpDir)
   }
 
   /**

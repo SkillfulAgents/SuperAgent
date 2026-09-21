@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   synthesize: vi.fn(), connection: vi.fn(),
   preferences: { ttsVoice: 'cedar', ttsSpeed: 1.2 },
 }))
-vi.mock('../middleware/auth', () => ({ Authenticated: () => async (_c: unknown, next: () => Promise<void>) => mocks.authenticated ? next() : new Response('Unauthorized', { status: 401 }) }))
+vi.mock('../middleware/auth', () => ({ ResolveAgent: () => async (_c: unknown, next: () => Promise<void>) => next(), AgentUser: () => async (_c: unknown, next: () => Promise<void>) => next(), Authenticated: () => async (_c: unknown, next: () => Promise<void>) => mocks.authenticated ? next() : new Response('Unauthorized', { status: 401 }) }))
 vi.mock('@shared/lib/config/settings', () => ({ getVoiceSettings: () => ({ sttProvider: mocks.selected, ttsVoice: 'marin' }) }))
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: () => 'member' }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({ getUserSettings: () => ({ voice: mocks.preferences }) }))

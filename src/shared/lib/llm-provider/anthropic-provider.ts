@@ -24,7 +24,7 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
     return CLAUDE_BARE_CATALOG
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
     return {
       ANTHROPIC_API_KEY: this.getEffectiveApiKey(),
     }

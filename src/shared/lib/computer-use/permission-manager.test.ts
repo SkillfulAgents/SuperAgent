@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import type { AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
+import { AgentComputerUse } from './agent-permissions'
 import { ComputerUsePermissionManager } from './permission-manager'
 import { TIMED_GRANT_DURATION_MS } from './types'
 
@@ -8,16 +10,36 @@ const mockUpdateSettings = vi.fn()
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
   updateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
-  // persistToSettings now uses the serialized fresh-read mutateSettings.
-  // Reproduce its observable effect against the seeded mock so the existing
-  // mockUpdateSettings assertions still hold.
+  // Persisting uses the serialized fresh-read mutateSettings. Reproduce its
+  // observable effect against the seeded mock so the mockUpdateSettings
+  // assertions hold, and feed the written settings back into the next read,
+  // as the real one does: each agent writes only its own entry, so a second
+  // agent's persist must see the first agent's.
   mutateSettings: (mutator: (s: Record<string, unknown>) => void) => {
     const s = structuredClone(mockGetSettings() ?? {})
     mutator(s)
     mockUpdateSettings(s)
+    mockGetSettings.mockReturnValue(s)
     return s
   },
 }))
+
+/** The actors' stores without the actors: one per slug, created on first use, as the registry would. */
+function inMemoryStores(): AgentStoreDirectory<AgentComputerUse> {
+  const stores = new Map<string, AgentComputerUse>()
+  return {
+    get: (slug) => {
+      let store = stores.get(slug)
+      if (!store) {
+        store = new AgentComputerUse(slug)
+        stores.set(slug, store)
+      }
+      return store
+    },
+    peek: (slug) => stores.get(slug),
+    all: () => [...stores.values()],
+  }
+}
 
 describe('ComputerUsePermissionManager', () => {
   let pm: ComputerUsePermissionManager
@@ -27,6 +49,7 @@ describe('ComputerUsePermissionManager', () => {
     mockGetSettings.mockReturnValue({})
     mockUpdateSettings.mockReturnValue(undefined)
     pm = new ComputerUsePermissionManager()
+    pm.attachAgents(inMemoryStores())
   })
 
   // ─── checkPermission ──────────────────────────────────────────────

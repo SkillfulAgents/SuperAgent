@@ -8,7 +8,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { createHash } from 'crypto'
 import { z } from 'zod'
-import { openWorkspaceFile } from '../workspace-file-transfer'
+import { openWorkspaceFile, WorkspaceFileError } from '../workspace-file-transfer'
 
 export const deliverFileTool = tool(
   'deliver_file',
@@ -39,7 +39,7 @@ Example usage:
         hash.update(chunk)
         bytesRead += chunk.length
       }
-      if (bytesRead !== file.size) throw new Error('File changed while it was being delivered')
+      if (bytesRead !== file.size) throw new WorkspaceFileError('File changed while it was being delivered; retry delivery after the file is complete', 409)
       // The trailing `Delivered: {...}` line is the renderer contract (read back
       // by src/shared/lib/tool-definitions/deliver-file.ts): the tool already
       // stat'd the file, so the size travels as data rather than as a number the
@@ -54,12 +54,15 @@ Example usage:
           },
         ],
       }
-    } catch {
+    } catch (error) {
+      const message = error instanceof WorkspaceFileError
+        ? error.status === 404 ? `File not found at ${args.filePath}` : error.message
+        : 'Unable to read the file for delivery; try again after the file is complete'
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Error: File not found at ${args.filePath}`,
+            text: `Error: ${message}`,
           },
         ],
         isError: true,

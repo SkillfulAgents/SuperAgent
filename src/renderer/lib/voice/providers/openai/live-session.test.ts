@@ -46,9 +46,9 @@ class FakeAudioContext {
   createMediaStreamSource = () => ({ connect: vi.fn() })
 }
 const track = { enabled: true, stop: vi.fn() }
-function setup() {
+function setup(agentSlug?: string) {
   const callbacks = { onReady: vi.fn(), onError: vi.fn(), onSpeaking: vi.fn(), onInputSpeaking: vi.fn(), onUtterance: vi.fn(), onRequest: vi.fn(async () => true) }
-  return { adapter: new OpenAILiveConversation(callbacks), callbacks }
+  return { adapter: new OpenAILiveConversation(callbacks, [], agentSlug), callbacks }
 }
 const answer = () => new Response(JSON.stringify({ session: { id: 'live_1' }, transport: { sdp: 'answer' }, handle: 'owned-handle' }))
 beforeEach(() => {
@@ -66,6 +66,15 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('Live WebRTC lifecycle', () => {
+  it('starts on the selected agent route without supplying custom instructions from the browser', async () => {
+    const { adapter } = setup('ada display/slug')
+    await adapter.start()
+    expect(mocks.fetch).toHaveBeenCalledWith('/api/voice/live/agents/ada%20display%2Fslug/session', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ sdp: 'offer', history: [] }),
+    }))
+    adapter.close()
+  })
+
   it('waits for session.started and never sends the WebSocket session.start command', async () => {
     const { adapter, callbacks } = setup()
     adapter.setPaused(true)
@@ -107,20 +116,29 @@ describe('Live WebRTC lifecycle', () => {
     adapter.close()
   })
 
-  it('stops reporting speech on pause and does not resurrect it from pre-pause samples', async () => {
+  it('keeps the reply audible and reported while paused for a request card, muting only the mic', async () => {
     const { adapter, callbacks } = setup()
     await adapter.start()
-    FakePeer.last.channel.receive({ type: 'session.started' })
+    const channel = FakePeer.last.channel
+    channel.receive({ type: 'session.started' })
     FakePeer.last.ontrack?.({ track: {} })
     FakeAudioContext.outputLevel = 0.1
     await vi.advanceTimersByTimeAsync(20)
+    expect(callbacks.onSpeaking.mock.calls).toEqual([[true]])
+    channel.send.mockClear()
     adapter.setPaused(true)
     await vi.advanceTimersByTimeAsync(20)
-    expect(callbacks.onSpeaking.mock.calls).toEqual([[true], [false]])
+    expect(callbacks.onSpeaking.mock.calls).toEqual([[true]])
+    expect(track.enabled).toBe(false)
+    expect(adapter['audio']?.muted).toBe(false)
+    const sent = channel.send.mock.calls.map(([text]) => JSON.parse(text))
+    expect(sent.map((event) => event.type)).toEqual(['session.input_audio.mute', 'session.instructions.append'])
+    expect(sent[1].content).toContain('Finish what you are saying')
     FakeAudioContext.outputLevel = 0
-    adapter.setPaused(false)
-    await vi.advanceTimersByTimeAsync(40)
+    await vi.advanceTimersByTimeAsync(LIVE_SPEECH_RELEASE_MS)
     expect(callbacks.onSpeaking.mock.calls).toEqual([[true], [false]])
+    adapter.setPaused(false)
+    expect(track.enabled).toBe(true)
     adapter.close()
   })
 

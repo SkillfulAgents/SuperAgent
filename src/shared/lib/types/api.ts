@@ -31,6 +31,8 @@ export interface ApiAgent {
   status: 'running' | 'stopped'
   containerPort: number | null
   healthWarnings?: HealthCheckResult[]
+  /** Running on a container env that a setting change replaced. A stop clears it. */
+  stale?: boolean
   templateStatus?: ApiAgentTemplateStatus
   // Summary fields (included in list response)
   hasActiveSessions?: boolean

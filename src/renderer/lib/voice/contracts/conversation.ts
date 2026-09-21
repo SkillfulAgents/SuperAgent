@@ -41,6 +41,7 @@ export interface VoiceConversationEvents {
   onError(message: string | null): void
 }
 export interface VoiceConversationContext {
+  agentSlug: string
   sessionId: string
   history: VoiceHistory
 }

@@ -23,7 +23,7 @@ describe('XAgentReviewRequestItem attachments', () => {
           targetAgentName: 'Target Agent',
           operation: 'invoke',
           preview: 'Compare these files',
-          attachments: ['/workspace/reports/a.pdf', '/workspace/data/b.csv'],
+          fileTransfer: { kind: 'send', paths: ['/workspace/reports/a.pdf', '/workspace/data/b.csv'] },
         }}
         onComplete={vi.fn()}
       />,
@@ -57,22 +57,24 @@ describe('XAgentReviewRequestItem attachments', () => {
     expect(screen.getByTitle('/workspace/reports/long-report-name.pdf')).toBeInTheDocument()
   })
 
-  it('identifies the delivered file in a download review', () => {
+  it.each([false, true])('identifies the delivered file in a download review (readOnly=%s)', (readOnly) => {
     render(
       <XAgentReviewRequestItem
         reviewId="review-3"
+        readOnly={readOnly}
         agentSlug="caller"
         xAgent={{
           targetAgentSlug: 'target',
           targetAgentName: 'Target Agent',
           operation: 'read',
-          preview: 'download delivered file "report.pdf"',
+          fileTransfer: { kind: 'download', filename: 'report.pdf' },
         }}
         onComplete={vi.fn()}
       />,
     )
 
     expect(screen.getByText(/download a delivered file/)).toBeInTheDocument()
-    expect(screen.getByText('download delivered file "report.pdf"')).toBeInTheDocument()
+    expect(screen.getByText('report.pdf')).toBeInTheDocument()
+    expect(screen.queryByTestId('xagent-review-allow-menu')).not.toBeInTheDocument()
   })
 })

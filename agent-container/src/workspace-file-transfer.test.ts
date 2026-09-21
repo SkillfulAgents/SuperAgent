@@ -2,12 +2,10 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { Readable } from 'stream'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  extractWorkspaceFileRoutePath,
   normalizeWorkspaceFilePath,
   openWorkspaceFile,
-  removeWorkspacePath,
   resolveWorkspaceRegularFile,
   WorkspaceFileError,
   writeWorkspaceFile,
@@ -30,6 +28,7 @@ describe('workspace file transfer', () => {
   })
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     await fs.promises.rm(workspace, { recursive: true, force: true })
     await fs.promises.rm(sibling, { recursive: true, force: true })
   })
@@ -191,45 +190,24 @@ describe('workspace file transfer', () => {
     expect((await fs.promises.readdir(workspace)).sort()).toEqual(['report-1.pdf', 'report.pdf'])
   })
 
-  it('removes a confined directory tree', async () => {
-    const directory = path.join(workspace, 'uploads', 'x-agent', 'transfer-id')
-    await fs.promises.mkdir(directory, { recursive: true })
-    await fs.promises.writeFile(path.join(directory, 'file.bin'), 'bytes')
-
-    await removeWorkspacePath('/workspace/uploads/x-agent/transfer-id', workspace)
-
-    await expect(fs.promises.stat(directory)).rejects.toMatchObject({ code: 'ENOENT' })
+  it.each([true, false])('handles a publication race with collisionSafe=%s', async (collisionSafe) => {
+    const link = fs.promises.link.bind(fs.promises)
+    vi.spyOn(fs.promises, 'link').mockImplementationOnce(async (source, target) => {
+      await fs.promises.writeFile(target, 'racing writer')
+      return link(source, target)
+    })
+    const writing = writeWorkspaceFile('report.pdf', Readable.from('payload'), {
+      workspaceRoot: workspace, collisionSafe, overwrite: false,
+    })
+    if (collisionSafe) {
+      const file = await writing
+      expect(file.relativePath).toBe('report-1.pdf')
+      expect(await fs.promises.readFile(file.localPath, 'utf8')).toBe('payload')
+    } else {
+      await expect(writing).rejects.toMatchObject({ status: 409, message: 'File already exists' })
+    }
+    expect(await fs.promises.readFile(path.join(workspace, 'report.pdf'), 'utf8')).toBe('racing writer')
+    expect((await fs.promises.readdir(workspace)).some((name) => name.startsWith('.'))).toBe(false)
   })
 
-  it('refuses cleanup through an escaping symlink', async () => {
-    await fs.promises.writeFile(path.join(sibling, 'untouched.txt'), 'untouched')
-    await fs.promises.symlink(sibling, path.join(workspace, 'linked'))
-
-    await expect(removeWorkspacePath('/workspace/linked', workspace)).rejects.toThrow('must not be a symbolic link')
-    expect(await fs.promises.readFile(path.join(sibling, 'untouched.txt'), 'utf8')).toBe('untouched')
-  })
-})
-
-describe('workspace file route extraction', () => {
-  it.each([
-    'space name.bin',
-    'hash#name.bin',
-    'query?name.bin',
-    'percent%name.bin',
-    'unicode-\u00e9.bin',
-  ])('preserves URL-special filename %s', (filename) => {
-    const encoded = encodeURIComponent(filename)
-    expect(extractWorkspaceFileRoutePath(`http://container/workspace-files/content/${encoded}`, 'content')).toBe(filename)
-  })
-
-  it('uses an exact terminal route suffix', () => {
-    expect(extractWorkspaceFileRoutePath('http://container/workspace-files/upload/a/upload-name', 'upload')).toBe('a/upload-name')
-    expect(extractWorkspaceFileRoutePath('http://container/workspace-files/delete/a/nested', 'delete')).toBe('a/nested')
-    expect(() => extractWorkspaceFileRoutePath('http://container/workspace-files/upload/', 'upload')).toThrow('Invalid file route')
-  })
-
-  it('rejects malformed URL encoding', () => {
-    expect(() => extractWorkspaceFileRoutePath('http://container/workspace-files/content/bad%ZZ', 'content'))
-      .toThrow('Invalid encoded file path')
-  })
 })

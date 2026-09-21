@@ -1,247 +1,52 @@
-import crypto from 'crypto'
-import { messagePersister } from '@shared/lib/container/message-persister'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
-import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
-import { ReauthDismissedError, reauthDismissedMessage } from './reauth-dismissal'
-import { McpReplacedError } from './mcp-replacement'
+import { AttachedStores, type AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
+import type { McpReauthDetails, McpReauthWaits } from './reauth-waits'
 
-export const MCP_REAUTH_TIMEOUT_MS = 5 * 60 * 1000
-
-export interface McpReauthDetails {
-  agentSlug: string
-  mcpId: string
-  mcpName: string
-  authType: 'none' | 'oauth' | 'bearer'
-}
-
-interface ReauthWaiter {
-  resolve: () => void
-  reject: (error: Error) => void
-  timer: ReturnType<typeof setTimeout>
-  signal?: AbortSignal
-  onAbort?: () => void
-}
-
-interface McpReauthGroup {
-  key: string
-  entryId: string
-  agentSlug: string
-  mcpId: string
-  waiters: Set<ReauthWaiter>
-}
-
-type McpReauthEntry = Extract<PendingUserInputRequest, { kind: 'mcp_reauth_required' }>
+export {
+  MCP_REAUTH_TIMEOUT_MS,
+  createMcpReauthWaits,
+  type McpReauthDetails,
+  type McpReauthRequest,
+  type McpReauthWaits,
+} from './reauth-waits'
 
 /**
- * Parks MCP proxy requests while an inactive remote MCP is re-authorized.
- * The registry entry broadcasts the in-chat request; this class owns only the
- * in-memory promise that resumes the original HTTP request after reconnection.
+ * The router in front of every agent's MCP re-auth waits. The waits live in
+ * each agent's actor (`AgentReauthWaits`, see `reauth-waits`); this singleton
+ * dispatches the calls that arrive with a slug and runs the ones that span
+ * agents — completing an MCP resumes every agent's requests parked on it,
+ * and shutdown rejects them all.
  */
 export class McpReauthManager {
-  private groups = new Map<string, McpReauthGroup>()
-  private entryIdByKey = new Map<string, string>()
+  private readonly agents = new AttachedStores<McpReauthWaits>('MCP re-auth waits')
 
-  private static isMcpReauthEntry(
-    request: PendingUserInputRequest,
-  ): request is McpReauthEntry {
-    return request.kind === 'mcp_reauth_required'
-  }
-
-  private cleanupWaiter(waiter: ReauthWaiter): void {
-    clearTimeout(waiter.timer)
-    if (waiter.signal && waiter.onAbort) {
-      waiter.signal.removeEventListener('abort', waiter.onAbort)
-    }
-  }
-
-  private settleGroup(
-    group: McpReauthGroup,
-    outcome: 'answered' | 'cancelled' | 'timeout',
-    action: { type: 'resolve' } | { type: 'reject'; error: Error },
-  ): number {
-    this.groups.delete(group.entryId)
-    if (this.entryIdByKey.get(group.key) === group.entryId) {
-      this.entryIdByKey.delete(group.key)
-    }
-    const entry = userInputRequestManager.getOpenRequest(group.entryId)
-    if (entry && McpReauthManager.isMcpReauthEntry(entry)) {
-      userInputRequestManager.resolve(entry.id, outcome)
-    }
-
-    const waiters = [...group.waiters]
-    group.waiters.clear()
-    for (const waiter of waiters) {
-      this.cleanupWaiter(waiter)
-      if (action.type === 'resolve') waiter.resolve()
-      else waiter.reject(action.error)
-    }
-    messagePersister.syncAgentSessionsAwaiting(group.agentSlug)
-    return waiters.length
-  }
-
-  private rejectWaiter(
-    group: McpReauthGroup,
-    waiter: ReauthWaiter,
-    outcome: 'cancelled' | 'timeout',
-    error: Error,
-  ): void {
-    if (!group.waiters.delete(waiter)) return
-    this.cleanupWaiter(waiter)
-    waiter.reject(error)
-    if (group.waiters.size > 0) return
-
-    this.groups.delete(group.entryId)
-    if (this.entryIdByKey.get(group.key) === group.entryId) {
-      this.entryIdByKey.delete(group.key)
-    }
-    const entry = userInputRequestManager.getOpenRequest(group.entryId)
-    if (entry && McpReauthManager.isMcpReauthEntry(entry)) {
-      userInputRequestManager.resolve(entry.id, outcome)
-    }
-    messagePersister.syncAgentSessionsAwaiting(group.agentSlug)
+  /** Called once by the agent registry with the way to each agent's waits. */
+  attachAgents(directory: AgentStoreDirectory<McpReauthWaits> | null): void {
+    this.agents.attach(directory)
   }
 
   requestReauth(details: McpReauthDetails, signal?: AbortSignal): Promise<void> {
-    const key = `${details.agentSlug}\0${details.mcpId}`
-    const existingId = this.entryIdByKey.get(key)
-    let group = existingId ? this.groups.get(existingId) : undefined
-    let isNewGroup = false
-
-    if (group) {
-      const entry = userInputRequestManager.getOpenRequest(group.entryId)
-      if (!entry || !McpReauthManager.isMcpReauthEntry(entry)) {
-        this.settleGroup(group, 'cancelled', {
-          type: 'reject',
-          error: new Error('MCP re-authentication request was lost'),
-        })
-        group = undefined
-      }
-    }
-
-    if (!group) {
-      if (existingId) this.entryIdByKey.delete(key)
-      const entryId = crypto.randomUUID()
-      group = {
-        key,
-        entryId,
-        agentSlug: details.agentSlug,
-        mcpId: details.mcpId,
-        waiters: new Set(),
-      }
-      this.groups.set(entryId, group)
-      this.entryIdByKey.set(key, entryId)
-      isNewGroup = true
-    }
-
-    const activeGroup = group
-
-    return new Promise<void>((resolve, reject) => {
-      if (signal?.aborted) {
-        if (isNewGroup && activeGroup.waiters.size === 0) {
-          this.groups.delete(activeGroup.entryId)
-          this.entryIdByKey.delete(activeGroup.key)
-        }
-        reject(new Error('MCP proxy request aborted while awaiting re-authentication'))
-        return
-      }
-
-      let waiter: ReauthWaiter
-      const timer = setTimeout(() => {
-        this.rejectWaiter(
-          activeGroup,
-          waiter,
-          'timeout',
-          new Error('MCP re-authentication timed out'),
-        )
-      }, MCP_REAUTH_TIMEOUT_MS)
-
-      waiter = { resolve, reject, timer, signal }
-      if (signal) {
-        waiter.onAbort = () => {
-          this.rejectWaiter(
-            activeGroup,
-            waiter,
-            'cancelled',
-            new Error('MCP proxy request aborted while awaiting re-authentication'),
-          )
-        }
-        signal.addEventListener('abort', waiter.onAbort, { once: true })
-      }
-      activeGroup.waiters.add(waiter)
-
-      if (!isNewGroup) return
-
-      const registered = userInputRequestManager.register({
-        id: activeGroup.entryId,
-        kind: 'mcp_reauth_required',
-        scope: { agentSlug: details.agentSlug },
-        blocking: true,
-        autoApproved: false,
-        payload: {
-          mcpId: details.mcpId,
-          mcpName: details.mcpName,
-          authType: details.authType,
-          proxyRequestId: activeGroup.entryId,
-        },
-      })
-
-      if (!registered) {
-        this.settleGroup(activeGroup, 'cancelled', {
-          type: 'reject',
-          error: new Error('Failed to register MCP re-authentication request'),
-        })
-        return
-      }
-
-      messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
-    })
+    return this.agents.get(details.agentSlug).request(details, signal)
   }
 
-  /**
-   * Give up on one parked card because a person dismissed it. The
-   * account-reauth twin carries the full rationale.
-   */
+  /** `AgentReauthWaits.dismiss` on the agent's waits; false when it holds no such card. */
   dismiss(entryId: string, agentSlug: string, reason?: string): boolean {
-    const group = this.groups.get(entryId)
-    if (!group || group.agentSlug !== agentSlug) return false
-    this.settleGroup(group, 'cancelled', {
-      type: 'reject',
-      error: new ReauthDismissedError(
-        reauthDismissedMessage('MCP re-authentication', reason),
-        reason,
-      ),
-    })
-    return true
+    return this.agents.peek(agentSlug)?.dismiss(entryId, reason) ?? false
   }
 
   /** Settle this agent's waiters without resuming them against stale tools. */
   replaceMcp(entryId: string, agentSlug: string, replacementMcpId: string): boolean {
-    const group = this.groups.get(entryId)
-    if (!group || group.agentSlug !== agentSlug) return false
-    this.settleGroup(group, 'answered', {
-      type: 'reject',
-      error: new McpReplacedError(replacementMcpId),
-    })
-    return true
+    return this.agents.peek(agentSlug)?.replace(entryId, replacementMcpId) ?? false
   }
 
-  /** Resume every parked proxy request that uses the reconnected MCP. */
+  /** Resume every parked proxy request, of every agent, that uses the reconnected MCP. */
   completeMcp(mcpId: string): number {
     let completed = 0
-    for (const group of [...this.groups.values()]) {
-      if (group.mcpId !== mcpId) continue
-      completed += this.settleGroup(group, 'answered', { type: 'resolve' })
-    }
+    for (const waits of this.agents.all()) completed += waits.complete(mcpId)
     return completed
   }
 
   rejectAll(): void {
-    for (const group of [...this.groups.values()]) {
-      this.settleGroup(group, 'cancelled', {
-        type: 'reject',
-        error: new Error('MCP re-authentication interrupted by shutdown'),
-      })
-    }
+    for (const waits of this.agents.all()) waits.rejectAll()
   }
 }
 

@@ -6,7 +6,6 @@ import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { ownerScope } from '@shared/lib/auth/ownership'
-import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { finishConnectionReplacement } from '@shared/lib/container/connection-replacement'
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
@@ -78,8 +77,8 @@ accountReauth.post('/:id/reauth-request/:requestId/replace-account', AgentUser()
     }
     const result = { accountId, previousAccountId, toolkit: request.payload.toolkit }
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: result.previousAccountId, action: 'unassigned', details: { agentSlug: slug } })
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: result.accountId, action: 'assigned', details: { agentSlug: slug } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: result.previousAccountId, action: 'unassigned', details: { agentSlug: slug } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: result.accountId, action: 'assigned', details: { agentSlug: slug } })
     const recovery = await finishConnectionReplacement({
       agentSlug: slug,
       kind: 'connected-accounts',
@@ -87,8 +86,8 @@ accountReauth.post('/:id/reauth-request/:requestId/replace-account', AgentUser()
       previousId: result.previousAccountId,
       replacementId: result.accountId,
     }, () => {
-      if (!accountReauthManager.replaceAccount(requestId, slug, result.accountId)) {
-        const actor = agentRegistry.get(slug)
+      const actor = agentRegistry.get(slug)
+      if (!actor.inputs.accountReauth.replace(requestId, result.accountId)) {
         actor.inputs.resolve(requestId, 'answered')
         actor.sessions.syncAwaiting()
       }

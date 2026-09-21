@@ -135,8 +135,8 @@ function fakeConnector(opts?: {
 }
 
 function seedRow(row: ChatIntegration): void {
-  listStartupMock.mockReturnValue([row])
-  getIntegrationMock.mockReturnValue(row)
+  listStartupMock.mockResolvedValue([row])
+  getIntegrationMock.mockResolvedValue(row)
 }
 
 function resetManagerState(): void {
@@ -148,14 +148,14 @@ function resetManagerState(): void {
   mgr.reconcilingIds?.clear()
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks()
   resetManagerState()
-  listStartupMock.mockReturnValue([])
+  listStartupMock.mockResolvedValue([])
   mgr.isRunning = true
 })
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers()
   vi.restoreAllMocks()
   resetManagerState()

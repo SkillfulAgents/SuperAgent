@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import { count, eq, lt, sql } from 'drizzle-orm'
 import * as schema from './schema'
+import type { AppDatabase } from './drivers/types'
+import { createTestDatabase, type TestDatabase } from './testing/create-test-database'
 
-let sqlite: InstanceType<typeof Database>
-let testDb: ReturnType<typeof drizzle<typeof schema>>
+let handle: TestDatabase
+let testDb: AppDatabase
 
 vi.mock('./index', () => ({
   get db() {
@@ -18,18 +17,22 @@ import { batch, changesOf, insertWhere } from './batch'
 
 const { agents, pushSubscriptions } = schema
 
-function slugs() {
-  return testDb.select({ slug: agents.slug }).from(agents).orderBy(agents.slug).all().map((row) => row.slug)
+async function slugs() {
+  const rows = await testDb.select({ slug: agents.slug }).from(agents).orderBy(agents.slug).all()
+  return rows.map((row) => row.slug)
 }
 
-beforeEach(() => {
-  sqlite = new Database(':memory:')
-  testDb = drizzle(sqlite, { schema })
-  migrate(testDb, { migrationsFolder: 'src/shared/lib/db/migrations' })
+async function subscriptions() {
+  return testDb.select().from(pushSubscriptions).all()
+}
+
+beforeEach(async () => {
+  handle = await createTestDatabase()
+  testDb = handle.db
 })
 
-afterEach(() => {
-  sqlite.close()
+afterEach(async () => {
+  await handle.close()
 })
 
 describe('batch', () => {
@@ -42,12 +45,12 @@ describe('batch', () => {
     ])
 
     expect(results.map(changesOf)).toEqual([1, 1, 1])
-    expect(slugs()).toEqual(['b'])
+    expect(await slugs()).toEqual(['b'])
   })
 
   it('commits nothing when a later statement fails', async () => {
     const now = new Date()
-    testDb.insert(agents).values({ slug: 'taken', name: 'Taken', createdAt: now }).run()
+    await testDb.insert(agents).values({ slug: 'taken', name: 'Taken', createdAt: now }).run()
 
     await expect(
       batch([
@@ -56,12 +59,12 @@ describe('batch', () => {
       ]),
     ).rejects.toThrow()
 
-    expect(slugs()).toEqual(['taken'])
+    expect(await slugs()).toEqual(['taken'])
   })
 
   it('a later statement sees an earlier one', async () => {
     const now = new Date()
-    testDb.insert(agents).values({ slug: 'old', name: 'Old', createdAt: now }).run()
+    await testDb.insert(agents).values({ slug: 'old', name: 'Old', createdAt: now }).run()
     const results = await batch([
       testDb.delete(agents).where(eq(agents.slug, 'old')),
       testDb.update(agents).set({ name: 'Renamed' }).where(eq(agents.slug, 'old')),
@@ -119,14 +122,14 @@ describe('insertWhere', () => {
   it('inserts when the condition holds and reports one change', async () => {
     const result = await insertWhere(pushSubscriptions, row('e1'), underCap(1)).run()
     expect(changesOf(result)).toBe(1)
-    expect(testDb.select().from(pushSubscriptions).all()).toMatchObject([{ endpoint: 'e1', createdAt: now }])
+    expect(await subscriptions()).toMatchObject([{ endpoint: 'e1', createdAt: now }])
   })
 
   it('inserts nothing when the condition fails and reports zero changes', async () => {
     await insertWhere(pushSubscriptions, row('e1'), underCap(1)).run()
     const result = await insertWhere(pushSubscriptions, row('e2'), underCap(1)).run()
     expect(changesOf(result)).toBe(0)
-    expect(testDb.select().from(pushSubscriptions).all()).toHaveLength(1)
+    expect(await subscriptions()).toHaveLength(1)
   })
 
   it('honours ON CONFLICT DO UPDATE like a plain insert', async () => {
@@ -135,12 +138,12 @@ describe('insertWhere', () => {
       .onConflictDoUpdate({ target: pushSubscriptions.endpoint, set: { keysAuth: sql`excluded.keys_auth` } })
       .run()
     expect(changesOf(result)).toBe(1)
-    expect(testDb.select().from(pushSubscriptions).all()).toMatchObject([{ endpoint: 'e1', keysAuth: 'rotated' }])
+    expect(await subscriptions()).toMatchObject([{ endpoint: 'e1', keysAuth: 'rotated' }])
   })
 
   it('fills omitted columns from the schema default, or null', async () => {
     await insertWhere(agents, { slug: 'a', name: 'A', createdAt: now }, undefined).run()
-    expect(testDb.select().from(agents).all()).toMatchObject([
+    expect(await testDb.select().from(agents).all()).toMatchObject([
       { slug: 'a', description: null, runtime: 'local', workspaceHandle: null },
     ])
   })

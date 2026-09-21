@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'crypto'
+import { randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import { Readable } from 'stream'
@@ -153,7 +153,7 @@ export async function openWorkspaceFile(
   const resolved = await resolveWorkspaceRegularFile(rawPath, workspaceRoot)
   let handle: fs.promises.FileHandle | undefined
   try {
-    handle = await fs.promises.open(resolved.localPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    handle = await fs.promises.open(resolved.localPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
     await assertOpenedHandleContained(handle, workspaceRoot)
     const stats = await handle.stat()
     if (!stats.isFile()) {
@@ -176,34 +176,6 @@ export async function openWorkspaceFile(
     }
   } catch (error) {
     await handle?.close().catch(() => {})
-    return mapAccessError(error)
-  }
-}
-
-/** Remove one confined workspace file or directory without following a final symlink. */
-export async function removeWorkspacePath(
-  rawPath: string,
-  workspaceRoot = WORKSPACE_ROOT,
-): Promise<void> {
-  const normalized = normalizeWorkspaceFilePath(rawPath, workspaceRoot)
-  try {
-    const [canonicalRoot, entryStats] = await Promise.all([
-      fs.promises.realpath(workspaceRoot),
-      fs.promises.lstat(normalized.localPath),
-    ])
-    if (entryStats.isSymbolicLink()) {
-      throw new WorkspaceFileError('Workspace entry must not be a symbolic link', 400)
-    }
-    const canonicalEntry = await fs.promises.realpath(normalized.localPath)
-    if (!isContained(canonicalRoot, canonicalEntry) || canonicalEntry === canonicalRoot) {
-      throw new WorkspaceFileError('Workspace entry resolves outside /workspace', 403)
-    }
-    const currentStats = await fs.promises.lstat(canonicalEntry)
-    if (currentStats.dev !== entryStats.dev || currentStats.ino !== entryStats.ino || currentStats.isSymbolicLink()) {
-      throw new WorkspaceFileError('Workspace entry changed during cleanup', 409)
-    }
-    await fs.promises.rm(canonicalEntry, { recursive: entryStats.isDirectory() })
-  } catch (error) {
     return mapAccessError(error)
   }
 }
@@ -277,50 +249,10 @@ export async function writeWorkspaceFile(
   const requestedFilename = path.posix.basename(normalized.relativePath)
   const collisionSafe = options.collisionSafe ?? false
   const overwrite = collisionSafe ? false : (options.overwrite ?? true)
-  let destination = ''
-  let filename = ''
-  let lockPath: string | undefined
-  let lockHandle: fs.promises.FileHandle | undefined
   let tempHandle: fs.promises.FileHandle | undefined
   let tempPath: string | undefined
-  let selected = false
-
   try {
-    for (let attempt = 0; attempt < (collisionSafe ? 1000 : 1); attempt++) {
-      filename = suffixedFilename(requestedFilename, attempt)
-      destination = path.join(parent, filename)
-      if (collisionSafe || !overwrite) {
-        const candidateLockPath = path.join(parent, `.x-agent-${createHash('sha256').update(filename).digest('hex')}.lock`)
-        try {
-          lockHandle = await fs.promises.open(candidateLockPath, 'wx', 0o600)
-          lockPath = candidateLockPath
-        } catch (error) {
-          if (collisionSafe && errorCode(error) === 'EEXIST') continue
-          if (errorCode(error) === 'EEXIST') throw new WorkspaceFileError('File already exists', 409)
-          throw error
-        }
-      }
-
-      const existing = await lstatIfPresent(destination)
-      if (existing && collisionSafe) {
-        await lockHandle?.close()
-        await fs.promises.unlink(lockPath!).catch(() => {})
-        lockHandle = undefined
-        lockPath = undefined
-        continue
-      }
-      if (existing?.isSymbolicLink()) {
-        throw new WorkspaceFileError('Destination must not be a symbolic link', 400)
-      }
-      if (existing && !overwrite) throw new WorkspaceFileError('File already exists', 409)
-      if (existing && !existing.isFile()) throw new WorkspaceFileError('Destination is not a regular file', 400)
-      selected = true
-      break
-    }
-
-    if (!selected) throw new WorkspaceFileError('Could not find an available filename', 409)
-
-    // Keep staging names bounded even when the destination uses all NAME_MAX bytes.
+    // Stage once: a publication collision can retry without rereading the source.
     tempPath = path.join(parent, `.x-agent-${randomUUID()}.tmp`)
     tempHandle = await fs.promises.open(tempPath, 'wx', 0o600)
     await assertOpenedHandleContained(tempHandle, workspaceRoot)
@@ -328,39 +260,39 @@ export async function writeWorkspaceFile(
     await pipeline(readableSource(source), output, { signal: options.signal })
     tempHandle = undefined
 
-    const currentParent = await fs.promises.realpath(parent)
-    if (currentParent !== parent || !isContained(canonicalRoot, currentParent)) {
-      throw new WorkspaceFileError('Destination parent changed during upload', 409)
+    for (let attempt = 0; attempt < (collisionSafe ? 1000 : 1); attempt++) {
+      options.signal?.throwIfAborted()
+      const filename = suffixedFilename(requestedFilename, attempt)
+      const destination = path.join(parent, filename)
+      const currentParent = await fs.promises.realpath(parent)
+      if (currentParent !== parent || !isContained(canonicalRoot, currentParent)) {
+        throw new WorkspaceFileError('Destination parent changed during upload', 409)
+      }
+      if (overwrite) {
+        const existing = await lstatIfPresent(destination)
+        if (existing?.isSymbolicLink()) throw new WorkspaceFileError('Destination must not be a symbolic link', 400)
+        if (existing && !existing.isFile()) throw new WorkspaceFileError('Destination is not a regular file', 400)
+        if (existing) await fs.promises.chmod(tempPath, existing.mode & 0o7777)
+        await fs.promises.rename(tempPath, destination)
+      } else {
+        // The atomic link is the collision check, including competing writers
+        // that do not use this helper. Never replace their destination.
+        try {
+          await fs.promises.link(tempPath, destination)
+        } catch (error) {
+          if (errorCode(error) !== 'EEXIST') throw error
+          if (collisionSafe) continue
+          throw new WorkspaceFileError('File already exists', 409)
+        }
+        await fs.promises.unlink(tempPath)
+      }
+      tempPath = undefined
+      const stats = await fs.promises.stat(destination)
+      const relativeDir = path.posix.dirname(normalized.relativePath)
+      const relativePath = relativeDir === '.' ? filename : path.posix.join(relativeDir, filename)
+      return { path: logicalPath(relativePath), relativePath, localPath: destination, size: stats.size, modifiedAt: stats.mtime }
     }
-
-    const existing = await lstatIfPresent(destination)
-    if (existing?.isSymbolicLink()) {
-      throw new WorkspaceFileError('Destination must not be a symbolic link', 400)
-    }
-    if (existing && !overwrite) throw new WorkspaceFileError('File already exists', 409)
-    if (existing && !existing.isFile()) throw new WorkspaceFileError('Destination is not a regular file', 400)
-
-    if (overwrite) {
-      // Replacing the inode must preserve the permissions that writeFile kept.
-      if (existing) await fs.promises.chmod(tempPath, existing.mode & 0o7777)
-      await fs.promises.rename(tempPath, destination)
-    } else {
-      // link() publishes without replacing a destination created after the
-      // earlier lstat; rename() would silently clobber that racing file.
-      await fs.promises.link(tempPath, destination)
-      await fs.promises.unlink(tempPath)
-    }
-    tempPath = undefined
-    const stats = await fs.promises.stat(destination)
-    const relativeDir = path.posix.dirname(normalized.relativePath)
-    const relativePath = relativeDir === '.' ? filename : path.posix.join(relativeDir, filename)
-    return {
-      path: logicalPath(relativePath),
-      relativePath,
-      localPath: destination,
-      size: stats.size,
-      modifiedAt: stats.mtime,
-    }
+    throw new WorkspaceFileError('Could not find an available filename', 409)
   } catch (error) {
     if (errorCode(error) === 'EACCES' || errorCode(error) === 'EPERM') {
       throw new WorkspaceFileError('Destination is not writable', 403)
@@ -369,23 +301,5 @@ export async function writeWorkspaceFile(
   } finally {
     if (tempPath) await fs.promises.unlink(tempPath).catch(() => {})
     await tempHandle?.close().catch(() => {})
-    await lockHandle?.close().catch(() => {})
-    if (lockPath) await fs.promises.unlink(lockPath).catch(() => {})
-  }
-}
-
-/** Extract and decode the wildcard path without substring replacement ambiguity. */
-export function extractWorkspaceFileRoutePath(requestUrl: string, operation: 'content' | 'upload' | 'delete'): string {
-  const pathname = new URL(requestUrl, 'http://localhost').pathname
-  const prefix = `/workspace-files/${operation}/`
-  if (!pathname.startsWith(prefix)) {
-    throw new WorkspaceFileError('Invalid file route', 400)
-  }
-  const encodedPath = pathname.slice(prefix.length)
-  if (!encodedPath) throw new WorkspaceFileError('Invalid file route', 400)
-  try {
-    return decodeURIComponent(encodedPath)
-  } catch {
-    throw new WorkspaceFileError('Invalid encoded file path', 400)
   }
 }

@@ -313,7 +313,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                     data-testid={`x-agent-permissions-popover-${slug}`}
                   >
                     <div className="flex items-center justify-between gap-3">
-                      <span className="whitespace-nowrap text-xs font-medium">Read sessions and files</span>
+                      <span className="whitespace-nowrap text-xs font-medium">Read sessions</span>
                       <PolicyDecisionDropdown
                         value={getDecision('read', slug)}
                         onChange={handleChange('read', slug)}
@@ -410,7 +410,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
             <div className="rounded-md border p-3" data-testid="x-agent-policy-global-read">
               <div className="flex items-center justify-between gap-3">
                 <span className="min-w-0 flex-1 text-xs font-medium">
-                  Allow this agent to read sessions and delivered files from all other agents
+                  Allow this agent to read sessions of all other agents
                 </span>
                 <PolicyDecisionDropdown
                   value={globalRead}

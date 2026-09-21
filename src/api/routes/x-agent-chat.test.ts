@@ -12,7 +12,6 @@ let testSqlite: InstanceType<typeof Database>
 
 vi.mock('@shared/lib/db', () => ({
   get db() { return testDb },
-  get sqlite() { return testSqlite },
 }))
 
 const mockEnsureRunning = vi.fn()

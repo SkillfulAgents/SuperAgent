@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react'
 import type { Components } from 'react-markdown'
-import ReactMarkdown from 'react-markdown'
 import { CircleDollarSign, Info, TriangleAlert, type LucideIcon } from 'lucide-react'
 
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
@@ -8,7 +7,7 @@ import { defaultParseErrorResponse, type ProviderErrorPresentation } from '@shar
 import { RequestError } from '@renderer/components/messages/request-error'
 import { Button } from '@renderer/components/ui/button'
 import type { ProviderErrorComponentProps } from '@renderer/components/provider-error/provider-error-registry'
-import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { Markdown } from '@renderer/components/ui/markdown'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
 const ICONS: Record<string, LucideIcon> = {
@@ -69,12 +68,7 @@ export function ProviderErrorView({
     <RequestError
       label={null}
       message={
-        <ReactMarkdown
-          urlTransform={markdownUrlTransform}
-          components={MARKDOWN_COMPONENTS}
-        >
-          {presentation.message}
-        </ReactMarkdown>
+        <Markdown components={MARKDOWN_COMPONENTS}>{presentation.message}</Markdown>
       }
       hint={hasMarkdownLink(presentation.message) ? undefined : defaultHint(rawMessage ?? presentation.message)}
       severity={presentation.severity}
@@ -91,7 +85,6 @@ export function ProviderErrorView({
 export function ProviderErrorCard({
   message,
   presentation,
-  children,
   dismissible = false,
   'data-testid': testId,
 }: ProviderErrorComponentProps & { 'data-testid'?: string }) {
@@ -100,7 +93,7 @@ export function ProviderErrorCard({
     () => presentation ?? defaultParseErrorResponse(undefined, message),
     [presentation, message],
   )
-  if (dismissed) return <>{children}</>
+  if (dismissed) return null
   return (
     <>
       <ProviderErrorView
@@ -113,7 +106,6 @@ export function ProviderErrorCard({
           <Button size="sm" variant="ghost" onClick={() => setDismissed(true)}>Dismiss</Button>
         </div>
       )}
-      {children}
     </>
   )
 }

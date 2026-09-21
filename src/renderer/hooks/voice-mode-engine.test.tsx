@@ -31,7 +31,7 @@ describe('session voice engine selection', () => {
     mocks.engine = engine
     const { unmount } = renderHook(() => useVoiceMode({ sessionId: 's1', agentSlug: 'a1', active: true, send: async () => true }))
     expect(mocks.create).toHaveBeenCalledTimes(engine ? 1 : 0)
-    if (engine) expect(mocks.create).toHaveBeenCalledWith(engine, expect.objectContaining({ sessionId: 's1' }), expect.anything())
+    if (engine) expect(mocks.create).toHaveBeenCalledWith(engine, expect.objectContaining({ sessionId: 's1', agentSlug: 'a1' }), expect.anything())
     unmount()
     if (engine) expect(mocks.create.mock.results[0].value.close).toHaveBeenCalledOnce()
   })

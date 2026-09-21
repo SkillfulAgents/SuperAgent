@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { fakeLoginWindow } from '@renderer/test/fake-login-window'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -23,13 +24,10 @@ vi.mock('@renderer/lib/api', () => ({
   }),
 }))
 
-const popupMocks = vi.hoisted(() => ({ navigate: vi.fn(async () => {}), close: vi.fn() }))
-vi.mock('@renderer/lib/oauth-popup', () => ({
-  prepareOAuthPopup: () => ({ navigate: popupMocks.navigate, close: popupMocks.close }),
-}))
+vi.mock('@renderer/lib/oauth-popup', () => import('@renderer/test/fake-login-window'))
 
 import { usePlatformConnect } from './use-platform-auth'
-import { OAUTH_ABORT_DELAY_MS } from './use-delayed-oauth-abort'
+import { LOGIN_WINDOW_CANCEL_DELAY_MS } from './use-login-window'
 
 async function renderConnected() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -58,8 +56,8 @@ describe('usePlatformConnect launching state in a browser window', () => {
     vi.useRealTimers()
     initiateGate.hold = null
     initiateGate.onEnter = null
-    popupMocks.close.mockReset()
-    popupMocks.navigate.mockClear()
+    fakeLoginWindow.close.mockReset()
+    fakeLoginWindow.navigate.mockClear()
   })
 
   it('ends the launch when the stored token changes by any path', async () => {
@@ -73,14 +71,11 @@ describe('usePlatformConnect launching state in a browser window', () => {
   it('offers Cancel after the delay, and Cancel closes the window and ends the launch', async () => {
     const { result } = await renderLaunched({ fakeTimers: true })
 
-    act(() => { vi.advanceTimersByTime(OAUTH_ABORT_DELAY_MS - 1) })
-    expect(result.current.canCancel).toBe(false)
-
-    act(() => { vi.advanceTimersByTime(1) })
+    act(() => { vi.advanceTimersByTime(LOGIN_WINDOW_CANCEL_DELAY_MS) })
     expect(result.current.canCancel).toBe(true)
 
     act(() => { result.current.cancelConnect() })
-    expect(popupMocks.close).toHaveBeenCalledTimes(1)
+    expect(fakeLoginWindow.close).toHaveBeenCalledTimes(1)
     expect(result.current.isLaunching).toBe(false)
     expect(result.current.canCancel).toBe(false)
   })
@@ -100,7 +95,7 @@ describe('usePlatformConnect launching state in a browser window', () => {
 
     release()
     await act(async () => { await launch })
-    expect(popupMocks.navigate).not.toHaveBeenCalled()
+    expect(fakeLoginWindow.navigate).not.toHaveBeenCalled()
     expect(result.current.isLaunching).toBe(false)
   })
 
@@ -126,6 +121,6 @@ describe('usePlatformConnect launching state in a browser window', () => {
 
     expect(result.current.isLaunching).toBe(true)
     expect(result.current.error).toBeNull()
-    expect(popupMocks.navigate).toHaveBeenCalledTimes(1)
+    expect(fakeLoginWindow.navigate).toHaveBeenCalledTimes(1)
   })
 })

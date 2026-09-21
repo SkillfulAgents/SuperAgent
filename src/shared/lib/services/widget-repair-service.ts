@@ -152,7 +152,7 @@ async function openRepairSession(
   // needs an acting member, so attribute the repair to the agent's owner.
   let ownerUserId: string | null = null
   try {
-    ownerUserId = getAgentOwnerUserId(agentSlug)
+    ownerUserId = await getAgentOwnerUserId(agentSlug)
   } catch {
     // Single-user mode, or the ACL table is unavailable: run unattributed.
   }

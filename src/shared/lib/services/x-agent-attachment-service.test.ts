@@ -1,19 +1,11 @@
-import { describe, expect, it, vi } from 'vitest'
-import type { ContainerClient } from '@shared/lib/container/types'
-import {
-  normalizeXAgentAttachmentPaths,
-  transferXAgentAttachments,
-  XAgentAttachmentError,
-} from './x-agent-attachment-service'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as fs from 'fs/promises'
+import * as os from 'os'
+import * as path from 'path'
+import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
+import type { FileOps, OpenFile } from '@shared/lib/agent-actor/types'
+import { normalizeXAgentAttachmentPaths, transferXAgentAttachments, transferError, XAgentAttachmentError } from './x-agent-attachment-service'
 import { MAX_X_AGENT_ATTACHMENT_BYTES } from './x-agent-attachment-schema'
-
-function client(fetchImpl: (path: string, init?: RequestInit) => Promise<Response>): ContainerClient {
-  return { fetch: vi.fn(fetchImpl) } as unknown as ContainerClient
-}
-
-async function requestBytes(body: BodyInit | null | undefined): Promise<Uint8Array> {
-  return new Uint8Array(await new Response(body).arrayBuffer())
-}
 
 describe('normalizeXAgentAttachmentPaths', () => {
   it('normalizes relative and absolute workspace paths', () => {
@@ -43,142 +35,104 @@ describe('normalizeXAgentAttachmentPaths', () => {
   })
 })
 
-describe('transferXAgentAttachments', () => {
-  it('streams exact binary bytes to isolated collision-free target paths', async () => {
-    const first = Uint8Array.from([0, 255, 128, 1])
-    const second = Uint8Array.from([2, 3])
-    const source = client(async (filePath) => {
-      const bytes = filePath.includes('/a/') ? first : second
-      return new Response(bytes, { headers: { 'Content-Length': String(bytes.length) } })
-    })
-    const uploads: Array<{ path: string; bytes: Uint8Array }> = []
-    const target = client(async (filePath, init) => {
-      if (init?.method === 'DELETE') return new Response(null, { status: 204 })
-      uploads.push({ path: filePath, bytes: await requestBytes(init?.body) })
-      return Response.json({ success: true })
-    })
-
-    const result = await transferXAgentAttachments({
-      sourceClient: source,
-      targetClient: target,
-      sourcePaths: ['/workspace/a/report.bin', '/workspace/b/report.bin'],
-      transferId: 'transfer-id',
-    })
-
-    expect(result.attachments.map((item) => item.targetPath)).toEqual([
-      '/workspace/uploads/x-agent/transfer-id/0/report.bin',
-      '/workspace/uploads/x-agent/transfer-id/1/report.bin',
+describe('transferXAgentAttachments through local FileOps', () => {
+  let root: string
+  let source: FileOps
+  let target: FileOps
+  const targetDirectory = '/workspace/uploads/x-agent/test-transfer'
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'xagent-fileops-'))
+    await fs.mkdir(path.join(root, 'source'))
+    await fs.mkdir(path.join(root, 'target'))
+    source = new LocalFileOps(() => path.join(root, 'source'))
+    target = new LocalFileOps(() => path.join(root, 'target'))
+  })
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    await fs.rm(root, { recursive: true, force: true })
+  })
+  const transfer = (paths: string[], signal?: AbortSignal) => transferXAgentAttachments({
+    sourceFiles: source, targetFiles: target, sourcePaths: paths, transferId: 'test-transfer', signal,
+  })
+  it('copies binary, empty and URL-special names to isolated paths without decoding', async () => {
+    const bytes = Uint8Array.from([0, 255, 128, 1])
+    await source.putDoc('a/report.bin', bytes)
+    await source.putDoc('b/report.bin', 'second')
+    await source.putDoc('a folder/hash#query?.txt', '')
+    const result = await transfer(['a/report.bin', 'b/report.bin', 'a folder/hash#query?.txt'])
+    expect(result.attachments.map((file) => file.targetPath)).toEqual([
+      `${targetDirectory}/0/report.bin`, `${targetDirectory}/1/report.bin`, `${targetDirectory}/2/hash_query_.txt`,
     ])
-    expect(uploads).toHaveLength(2)
-    expect(uploads[0].bytes).toEqual(first)
-    expect(uploads[1].bytes).toEqual(second)
+    expect(await target.getDoc(result.attachments[0].targetPath)).toEqual(Buffer.from(bytes))
+    expect(Buffer.from((await target.getDoc(result.attachments[1].targetPath))!).toString()).toBe('second')
+    expect(await target.getDoc(result.attachments[2].targetPath)).toHaveLength(0)
   })
-
-  it('encodes every source and destination path segment', async () => {
-    const source = client(async () => new Response('x', { headers: { 'Content-Length': '1' } }))
-    const target = client(async () => Response.json({ success: true }))
-
-    await transferXAgentAttachments({
-      sourceClient: source,
-      targetClient: target,
-      sourcePaths: ['/workspace/a folder/hash#query?.txt'],
-      transferId: 'id',
+  it('cleans completed files when a later source is absent', async () => {
+    await source.putDoc('first', 'bytes')
+    await expect(transfer(['first', 'missing'])).rejects.toMatchObject({ status: 404 })
+    expect(await target.stat(targetDirectory)).toBeNull()
+  })
+  it.each([2, 10])('preserves 409 and cleans partial data on a stream size mismatch: %s', async (size) => {
+    vi.spyOn(source, 'open').mockResolvedValue({
+      size: async () => size, stream: () => new Response('short').body!, close: vi.fn(async () => {}), readAt: vi.fn(),
     })
-
-    expect(source.fetch).toHaveBeenCalledWith(
-      '/workspace-files/content/a%20folder/hash%23query%3F.txt',
-      expect.any(Object),
-    )
-    expect(target.fetch).toHaveBeenCalledWith(
-      '/workspace-files/upload/uploads/x-agent/id/0/hash_query_.txt',
-      expect.objectContaining({ method: 'POST' }),
-    )
+    await expect(transfer(['changing'])).rejects.toMatchObject({ status: 409 })
+    expect(await target.stat(targetDirectory)).toBeNull()
   })
-
-  it('does not upload when the source is missing', async () => {
-    const source = client(async () => Response.json({ error: 'File not found' }, { status: 404 }))
-    const target = client(async () => new Response(null, { status: 204 }))
-
-    await expect(transferXAgentAttachments({
-      sourceClient: source,
-      targetClient: target,
-      sourcePaths: ['missing.bin'],
-      transferId: 'id',
-    })).rejects.toMatchObject({ status: 404 })
-    expect(target.fetch).toHaveBeenCalledTimes(1)
-    expect(target.fetch).toHaveBeenCalledWith('/workspace-files/delete/uploads/x-agent/id', { method: 'DELETE' })
+  it('unwraps typed stream failures from lower-level causes', () => {
+    const cause = new XAgentAttachmentError('File changed', 409)
+    expect(transferError(new TypeError('fetch failed', { cause }))).toBe(cause)
   })
-
-  it('rejects a short or growing source stream and cleans the transfer directory', async () => {
-    const source = client(async () => new Response(Uint8Array.from([1, 2]), {
-      headers: { 'Content-Length': '3' },
-    }))
-    const target = client(async (filePath, init) => {
-      if (init?.method === 'DELETE') return new Response(null, { status: 204 })
-      await requestBytes(init?.body)
-      return Response.json({ success: true })
+  it('closes an oversized source before reading it', async () => {
+    const file: OpenFile = { size: async () => MAX_X_AGENT_ATTACHMENT_BYTES + 1, stream: vi.fn(), close: vi.fn(async () => {}), readAt: vi.fn() }
+    vi.spyOn(source, 'open').mockResolvedValue(file)
+    await expect(transfer(['large'])).rejects.toMatchObject({ status: 413 })
+    expect(file.close).toHaveBeenCalledOnce()
+    expect(file.stream).not.toHaveBeenCalled()
+  })
+  it('refuses symlink escapes when reading, writing, and cleaning up', async () => {
+    const outside = path.join(root, 'outside')
+    await fs.mkdir(outside)
+    await fs.writeFile(path.join(outside, 'secret'), 'secret')
+    await fs.symlink(outside, path.join(root, 'source', 'linked'))
+    await expect(transfer(['linked/secret'])).rejects.toMatchObject({ status: 400 })
+    await source.putDoc('safe', 'safe')
+    await fs.symlink(outside, path.join(root, 'target', 'uploads'))
+    await expect(transfer(['safe'])).rejects.toMatchObject({ status: 400 })
+    await expect(target.delete('uploads/secret', { confined: true })).rejects.toMatchObject({ code: 'outside-workspace' })
+    expect(await fs.readdir(outside)).toEqual(['secret'])
+    expect(await fs.readFile(path.join(outside, 'secret'), 'utf8')).toBe('secret')
+  })
+  it('rejects directories as sources', async () => {
+    await source.mkdir('directory')
+    await expect(transfer(['directory'])).rejects.toMatchObject({ status: 404 })
+  })
+  it('does not overwrite a racing destination', async () => {
+    await source.putDoc('safe', 'new')
+    const link = fs.link
+    // Inject the race at publication, after all preflight checks.
+    const nodeFs = await import('fs')
+    vi.spyOn(nodeFs.promises, 'link').mockImplementationOnce(async (from, to) => {
+      await fs.writeFile(to, 'existing')
+      return link(from, to)
     })
-
-    await expect(transferXAgentAttachments({
-      sourceClient: source,
-      targetClient: target,
-      sourcePaths: ['changing.bin'],
-      transferId: 'id',
-    })).rejects.toBeInstanceOf(XAgentAttachmentError)
-    expect(target.fetch).toHaveBeenLastCalledWith('/workspace-files/delete/uploads/x-agent/id', { method: 'DELETE' })
+    await expect(target.write('race', new TextEncoder().encode('new'), { confined: true, overwrite: false }))
+      .rejects.toMatchObject({ code: 'already-exists' })
+    expect(Buffer.from((await target.getDoc('race'))!).toString()).toBe('existing')
+    expect(await fs.readdir(path.join(root, 'target'))).toEqual(['race'])
   })
-
-  it('rejects a growing source stream and cleans the transfer directory', async () => {
-    const source = client(async () => new Response(Uint8Array.from([1, 2, 3]), {
-      headers: { 'Content-Length': '2' },
-    }))
-    const target = client(async (_filePath, init) => {
-      if (init?.method === 'DELETE') return new Response(null, { status: 204 })
-      await requestBytes(init?.body)
-      return Response.json({ success: true })
-    })
-
-    await expect(transferXAgentAttachments({
-      sourceClient: source,
-      targetClient: target,
-      sourcePaths: ['growing.bin'],
-      transferId: 'id',
-    })).rejects.toBeInstanceOf(XAgentAttachmentError)
-    expect(target.fetch).toHaveBeenLastCalledWith('/workspace-files/delete/uploads/x-agent/id', { method: 'DELETE' })
-  })
-
-  it('cancels an oversized source response before rejecting it', async () => {
+  it('cancels an interrupted transfer and removes partial data', async () => {
+    const abort = new AbortController()
     const cancel = vi.fn()
-    const body = new ReadableStream<Uint8Array>({ cancel })
-    const source = client(async () => new Response(body, {
-      headers: { 'Content-Length': String(MAX_X_AGENT_ATTACHMENT_BYTES + 1) },
-    }))
-    const target = client(async () => new Response(null, { status: 204 }))
-
-    await expect(transferXAgentAttachments({
-      sourceClient: source,
-      targetClient: target,
-      sourcePaths: ['oversized.bin'],
-      transferId: 'id',
-    })).rejects.toMatchObject({ status: 413 })
-    expect(cancel).toHaveBeenCalledOnce()
-  })
-
-  it('cleans completed files when a later upload fails', async () => {
-    const source = client(async () => new Response('x', { headers: { 'Content-Length': '1' } }))
-    let uploads = 0
-    const target = client(async (_filePath, init) => {
-      if (init?.method === 'DELETE') return new Response(null, { status: 204 })
-      uploads += 1
-      return uploads === 1 ? Response.json({ success: true }) : Response.json({ error: 'disk full' }, { status: 507 })
+    vi.spyOn(source, 'open').mockResolvedValue({
+      size: async () => 10, close: vi.fn(async () => {}), readAt: vi.fn(),
+      stream: () => new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1])) }, cancel }),
     })
-
-    await expect(transferXAgentAttachments({
-      sourceClient: source,
-      targetClient: target,
-      sourcePaths: ['one.bin', 'two.bin'],
-      transferId: 'id',
-    })).rejects.toThrow('disk full')
-    expect(target.fetch).toHaveBeenLastCalledWith('/workspace-files/delete/uploads/x-agent/id', { method: 'DELETE' })
+    const writing = transfer(['waiting'], abort.signal)
+    await vi.waitFor(async () => expect(await target.stat(targetDirectory)).not.toBeNull())
+    abort.abort()
+    await expect(writing).rejects.toMatchObject({ name: 'AbortError' })
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(await target.stat(targetDirectory)).toBeNull()
   })
 })

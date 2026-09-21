@@ -26,6 +26,10 @@ vi.mock('./profile-section', () => ({
   ProfileSection: () => <div data-testid="profile-section" />,
 }))
 
+vi.mock('./stale-agents-notice', () => ({
+  StaleAgentsNotice: () => <div data-testid="stale-agents-notice" />,
+}))
+
 import { PlatformTab } from './platform-tab'
 
 const authUser = { isAuthMode: true, isAdmin: false, user: { id: 'u1', email: 'a@example.com', name: 'Ada' } }
@@ -87,5 +91,20 @@ describe('PlatformTab profile section', () => {
     render(<PlatformTab readOnly />)
     expect(screen.getByTestId('profile-section')).toBeInTheDocument()
     expect(screen.getByText('Loading platform status…')).toBeInTheDocument()
+  })
+})
+
+describe('PlatformTab after connect', () => {
+  it('shows the green Connected line and mounts the stale-agents notice beneath it', () => {
+    useUserMock.mockReturnValue(localUser)
+    platformConnectMock.mockReturnValue({
+      ...disconnected(),
+      isConnected: true,
+      message: 'Connected.',
+      platformAuth: { connected: true, platformControlled: false, orgName: 'Example workspace' },
+    })
+    render(<PlatformTab />)
+    expect(screen.getByText('Connected.')).toBeInTheDocument()
+    expect(screen.getByTestId('stale-agents-notice')).toBeInTheDocument()
   })
 })

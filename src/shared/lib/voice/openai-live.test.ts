@@ -33,6 +33,22 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     expect(provider.supportsTts()).toBe(true)
   })
 
+  it('sends agent identity, custom instructions, and account handoff guidance as session instructions', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ session: { id: 'live_test' }, transport: { sdp: 'answer' } })))
+    await provider.createLiveSession('offer', [], {
+      name: 'Ada', description: 'Research assistant', instructions: 'Speak in Spanish. Ask before purchases.',
+      capabilityPolicies: { subagents: 'block', workflows: 'review' },
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.session.instructions).toContain('Ada')
+    expect(body.session.instructions).toContain('Speak in Spanish. Ask before purchases.')
+    expect(body.session.instructions).toContain('connecting an account')
+    expect(body.session.instructions).toContain('subagents: disabled')
+    expect(body.session.instructions).toContain('workflows, subject to user approval')
+    expect(body.session.delegation).toEqual({ type: 'client' })
+    expect(body.session.input).toEqual([])
+  })
+
   it('reuses the configured summarizer and validates its normalized request', async () => {
     mocks.summarize.mockResolvedValue('{"action":"message","text":"Check Thursday instead of Friday."}')
     expect(await provider.mapLiveConversation({ kind: 'request', transcript: 'user: Actually Thursday.', history: [], previousRequest: 'Check Friday.', agentBusy: true }))

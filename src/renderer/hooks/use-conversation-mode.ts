@@ -69,7 +69,7 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
         toolsRunning: (value.streamingToolUses?.length ?? 0) > 0, error: value.error ?? null,
       }
     }
-    const conversation = createVoiceConversation(engine, { sessionId, history: latest.current.args.history ?? [] }, {
+    const conversation = createVoiceConversation(engine, { sessionId, agentSlug, history: latest.current.args.history ?? [] }, {
       onCommand: (command) => turns.command(command),
       onSnapshot: (next) => {
         if (disposed) return

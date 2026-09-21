@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { ReactNode } from 'react'
+import { useState, type ComponentProps, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
@@ -152,10 +152,19 @@ function renderCard(
   dismissible = false,
 ) {
   return render(
-    <PlatformPaywallCard message={message} presentation={presentation} live={live} dismissible={dismissible}>
-      <div data-testid="composer">composer</div>
-    </PlatformPaywallCard>,
+    <Slot message={message} presentation={presentation} live={live} dismissible={dismissible} />,
     { wrapper: Wrapper },
+  )
+}
+
+// Mirrors ProviderErrorPlacement: the card sits above a composer slot it can only hide.
+function Slot(props: Omit<ComponentProps<typeof PlatformPaywallCard>, 'onDisplaceChildren'>) {
+  const [displaced, setDisplaced] = useState(false)
+  return (
+    <>
+      <PlatformPaywallCard {...props} onDisplaceChildren={setDisplaced} />
+      <div hidden={displaced}><div data-testid="composer">composer</div></div>
+    </>
   )
 }
 
@@ -200,9 +209,9 @@ describe('PlatformPaywallCard', () => {
 
   it('withholds the composer only once a fresh snapshot positively denies access', async () => {
     renderCard()
-    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
     await screen.findByText('Workspace billing needs attention')
-    expect(screen.queryByTestId('composer')).not.toBeInTheDocument()
+    expect(screen.getByTestId('composer')).not.toBeVisible()
     expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'true')
   })
 
@@ -210,7 +219,7 @@ describe('PlatformPaywallCard', () => {
     fetchBilling.mockResolvedValue(billing({ access: undefined }))
     renderCard()
     await screen.findByText('Workspace billing needs attention')
-    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
     expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'false')
   })
 
@@ -218,7 +227,7 @@ describe('PlatformPaywallCard', () => {
     fetchBilling.mockResolvedValue({ ...billing(), stale: true })
     renderCard()
     await screen.findByText('Workspace billing needs attention')
-    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
   })
 
   it('keeps the composer when the billing fetch fails, with the server copy and a billing link', async () => {
@@ -228,17 +237,17 @@ describe('PlatformPaywallCard', () => {
     expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
     expect(screen.getByText('You need more usage credit to continue')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Go to billing' })).toBeInTheDocument()
-    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
   })
 
   it('shows Dismiss when dismissible and hands the composer back while blocked', async () => {
     renderCard(undefined, true, PRESENTATION, true)
     await screen.findByText('Workspace billing needs attention')
-    expect(screen.queryByTestId('composer')).not.toBeInTheDocument()
+    expect(screen.getByTestId('composer')).not.toBeVisible()
     act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
     expect(mocks.track).toHaveBeenCalledWith('paywall_dismissed', { ctaKind: 'ask_admin', handedOff: false })
     expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
-    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
   })
 
   it('stops listening for refresh signals once dismissed', async () => {
@@ -256,7 +265,7 @@ describe('PlatformPaywallCard', () => {
     renderCard()
     await act(async () => {})
     expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
-    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
     expect(fetchBilling).not.toHaveBeenCalled()
   })
 
@@ -278,7 +287,7 @@ describe('PlatformPaywallCard', () => {
     fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
     act(() => { recheck.click() })
     await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
-    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
   })
 
   it('disables the CTA when the provider attached no href', async () => {
@@ -300,7 +309,7 @@ describe('PlatformPaywallCard', () => {
         await vi.advanceTimersByTimeAsync(PAYWALL_RECHECK_INTERVAL_MS)
       })
       await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
-      expect(screen.getByTestId('composer')).toBeInTheDocument()
+      expect(screen.getByTestId('composer')).toBeVisible()
     } finally {
       vi.useRealTimers()
     }
@@ -385,13 +394,21 @@ describe('PlatformPaywallCard', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
+  it('renders no card for a persisted 402 until the snapshot arrives, then blocks', async () => {
+    renderCard('API Error: 402 {"error":"insufficient_balance"}', false)
+    expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
+    await screen.findByText('Workspace billing needs attention')
+    expect(screen.getByTestId('composer')).not.toBeVisible()
+  })
+
   it('does not clear a live 402 on an allowed snapshot cached before it appeared', async () => {
     client.setQueryData(['platform-billing'], billing({ access: ALLOWED }))
     fetchBilling.mockReturnValue(new Promise(() => {}))
     renderCard()
     await act(async () => {})
     expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
-    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
   })
 
   it('clears a persisted 402 from the current allowed snapshot (session switch after top-up)', async () => {
@@ -399,7 +416,7 @@ describe('PlatformPaywallCard', () => {
     fetchBilling.mockReturnValue(new Promise(() => {}))
     renderCard('API Error: 402 {"error":"insufficient_balance"}', false)
     await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
-    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
   })
 
   it('clears once a fresh snapshot says access is allowed again', async () => {
@@ -408,7 +425,7 @@ describe('PlatformPaywallCard', () => {
     fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
     clickRecheck('Go to billing')
     await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
-    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
   })
 
   it('stays up (but unblocks) when the allowed snapshot is a stale cached fallback', async () => {
@@ -419,7 +436,7 @@ describe('PlatformPaywallCard', () => {
     clickRecheck('Go to billing')
     await waitFor(() => expect(fetchBilling.mock.calls.length).toBeGreaterThan(before))
     await waitFor(() => expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'false'))
-    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeVisible()
   })
 
   describe('web on a cloud workspace (in-app billing)', () => {
@@ -650,7 +667,7 @@ describe('PlatformPaywallCard', () => {
       await expandCta()
       act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
       expect(screen.queryByTestId('billing-cta-frame')).not.toBeInTheDocument()
-      expect(screen.getByTestId('composer')).toBeInTheDocument()
+      expect(screen.getByTestId('composer')).toBeVisible()
     })
 
     it('ignores open-billing from a hostile origin, a non-iframe source, or another org', async () => {
@@ -701,7 +718,7 @@ describe('PlatformPaywallCard', () => {
       fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
       postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
       await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
-      expect(screen.getByTestId('composer')).toBeInTheDocument()
+      expect(screen.getByTestId('composer')).toBeVisible()
       expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.')
     })
 
@@ -715,14 +732,14 @@ describe('PlatformPaywallCard', () => {
 
       expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'true')
       expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
-      expect(screen.getByTestId('composer')).toBeInTheDocument()
+      expect(screen.getByTestId('composer')).toBeVisible()
       expect(toastSuccess).not.toHaveBeenCalled()
       expect(mocks.track).not.toHaveBeenCalledWith('paywall_cleared', expect.anything())
 
       // A non-boolean `pending` reads as settled.
       postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', { pending: 'yes' })
       await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
-      expect(screen.getByTestId('composer')).toBeInTheDocument()
+      expect(screen.getByTestId('composer')).toBeVisible()
       expect(toastSuccess).toHaveBeenCalledTimes(1)
       expect(mocks.track).toHaveBeenCalledWith('paywall_cleared', { ctaKind: 'topup', handedOff: false })
     })
@@ -740,7 +757,7 @@ describe('PlatformPaywallCard', () => {
         await waitFor(() => expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'false'))
         expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'true')
         expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
-        expect(screen.getByTestId('composer')).toBeInTheDocument()
+        expect(screen.getByTestId('composer')).toBeVisible()
         expect(toastSuccess).not.toHaveBeenCalled()
 
         // The settings save fails after the poll already cleared: the frame must still be there.

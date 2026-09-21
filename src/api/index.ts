@@ -173,14 +173,14 @@ if (isAuthMode()) {
 // Public auth config endpoint (no auth required) — exposes non-sensitive
 // settings so the auth page can adapt (hide signup tab, show password policy, etc.)
 if (isAuthMode()) {
-  app.get('/api/auth-config', (c) => {
+  app.get('/api/auth-config', async (c) => {
     const authSettings = getAuthSettings()
     const publicProviders = getPublicAuthProviders()
 
     // Check if any users exist (first-user signup bypass)
     let hasUsers = true
     try {
-      const result = db.select({ count: sql<number>`count(*)` }).from(userTable).get()
+      const result = await db.select({ count: sql<number>`count(*)` }).from(userTable).get()
       hasUsers = !!result && result.count > 0
     } catch {
       hasUsers = false

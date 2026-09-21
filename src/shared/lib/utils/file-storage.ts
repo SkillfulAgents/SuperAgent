@@ -771,6 +771,9 @@ export async function writeFileAtomic(
 }
 
 export interface AtomicWriteOptions {
+  overwrite?: boolean
+  /** Validate an opened staging file before writing and again before publishing. */
+  validate?: (handle: fs.promises.FileHandle, temporaryPath: string) => Promise<void>
   mode?: number
   forceMode?: boolean
   /**
@@ -864,6 +867,7 @@ async function writeFileAtomicWith(
     // 'wx' = O_EXCL: never reuse a stray temp file. Unique name makes this safe.
     const handle = await fs.promises.open(tmpPath, 'wx', options?.mode ?? 0o666)
     try {
+      await options?.validate?.(handle, tmpPath)
       await writeContent(handle)
       // Best-effort: object-storage / perms-less mounts (e.g. an S3 FUSE driver)
       // may reject chown/chmod — a metadata tweak must never fail the data write.
@@ -875,10 +879,16 @@ async function writeFileAtomicWith(
         await handle.chmod(existing.mode).catch(() => {})
       }
       if (options?.fsync !== false) await handle.sync()
+      await options?.validate?.(handle, tmpPath)
     } finally {
       await handle.close()
     }
-    await renameWithRetry(tmpPath, filePath)
+    if (options?.overwrite === false) {
+      await fs.promises.link(tmpPath, filePath)
+      await fs.promises.unlink(tmpPath)
+    } else {
+      await renameWithRetry(tmpPath, filePath)
+    }
   } catch (err) {
     await fs.promises.rm(tmpPath, { force: true }).catch(() => {})
     throw err

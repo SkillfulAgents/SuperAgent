@@ -69,3 +69,30 @@ Intentional behavior change: Deepgram no longer sends a replacement after failed
 - [Live prompting](https://developers.openai.com/api/docs/guides/live-prompting)
 
 Pause/resume continues tracking request acknowledgment while suppressing spoken replies. Returning from a request card does not create a new pending turn merely because the agent was active before the pause. Live request bodies are limited by streamed byte count and parsed into typed route context without rebuilding the HTTP adapter's Request object; regression tests exercise chunked input through the development Node adapter.
+
+### Agent context in Live instructions
+
+Current session voice mode starts through `POST /api/voice/live/agents/:id/session`. The route resolves the agent's canonical ID and requires `AgentUser` access before reading its saved configuration. The host supplies its name, description, custom instructions, and the same workspace subagent/workflow policies passed to backend execution. Browser-supplied instruction fields are ignored. The generic `/live/session` route remains for older clients.
+
+`buildLiveConversationPrompt` combines the voice delegation policy with a compact adaptation of the platform system prompt: account connection/discovery, authorization cards, MCP connections, secrets, research, files, code, artifacts, and scheduling. Unknown service availability is delegated to the backend. Voice must not infer that accounts are already connected or claim completion before a backend result.
+
+Custom instructions are included as saved agent configuration, capped at 6,000 characters and explicitly marked when truncated. The backend retains the full instructions and resolves detailed constraints. This context is a startup snapshot; exiting and re-entering voice reloads changes. It does not enumerate account credentials, connected-account metadata, or tool schemas. Prompt tests and mocked transport tests verify propagation; spoken behavior still needs a live conversation check (for example, “Connect my Gmail account”).
+
+The voice summary is an index for delegation, not an exhaustive inventory. The backend's full prompt, tools, skills, configuration, assigned integrations, and product FAQs remain authoritative. When uncertain, voice delegates the user's original question/task for a capability check, preserves whether they requested information or execution, and respects confirmed policy blocks.
+
+Prompt audit against `agent-container/src/system-prompt.md`:
+
+| Backend area | Voice-facing coverage |
+| --- | --- |
+| Memory, standing instructions, own session history, skills | Recall prior work and persist changes through the backend; never just promise to remember. |
+| Files, mounts, bookmarks, browser, dashboards, widgets | Explain available work and deliverables; local-machine access depends on mounts/desktop support. |
+| Accounts, MCP tools/resources, chat integrations | Discover/check existing access before setup; chat has a separate connection flow. |
+| Scheduling, session resumes, triggers/webhooks | Delegate future work; backend chooses the mechanism and verifies platform-dependent triggers. |
+| Cross-agent work, subagents, workflows | Respect approval, invocation, and supplied workspace policies. |
+| Desktop control, media/audio, enrichment, X, structured search | Describe as conditional; verify runtime availability and preserve costs/approvals before promising work. |
+| Product identity, capabilities, help, support, privacy/security | Delegate to the backend for current FAQs and enabled capabilities. |
+| Secrets, browser login, authorization, file requests | Use application cards; do not solicit spoken credentials or treat approval waits as failures. |
+
+Execution details (tool schemas, shell commands, endpoint lists, exact prices, memory formats, and rendering procedures) stay with the backend. The request-mapping prompt also classifies capability questions and recall/persistence requests as backend messages, without converting exploratory questions into authorization to act.
+
+Live smoke-test examples: “What can you do?” should consult the backend FAQs; “What did we decide last week?” should search past sessions; “Remember to answer in Spanish” should persist through the backend; “Does this installation support video generation?” should check availability without creating a video; “Make me a daily widget” should delegate artifact work; “Can you access my spreadsheet on this computer?” should check actual access before claiming support or a limitation. These are manual behavioral checks, not guarantees established by prompt-string tests.

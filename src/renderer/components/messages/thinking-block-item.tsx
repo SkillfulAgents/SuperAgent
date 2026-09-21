@@ -1,10 +1,9 @@
 import { cn } from '@shared/lib/utils/cn'
 import { ListTree, ChevronDown, ChevronRight } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import type { Components } from 'react-markdown'
+import { Markdown } from '@renderer/components/ui/markdown'
 import { useElapsedTimer, formatElapsed } from '@renderer/hooks/use-elapsed-timer'
-import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import { StatusIndicator } from './tool-call-item'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
 
@@ -28,22 +27,9 @@ interface ThinkingBlockItemProps {
 // list's 80px tolerance since the card body is a small (max-h-64) scroller.
 const PIN_THRESHOLD_PX = 32
 
-const THINKING_REMARK_PLUGINS = [remarkGfm]
-
-// Thinking traces use the same safe URL policy as assistant messages. Keep the
-// renderer deliberately compact: these blocks live in a narrow, capped card,
-// where a wide table should scroll instead of widening the whole transcript.
+// Compact by design: these blocks live in a narrow, capped card, where a wide
+// table should scroll instead of widening the whole transcript.
 const THINKING_MARKDOWN_COMPONENTS: Components = {
-  a: ({ children, href }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="text-blue-500 hover:underline"
-    >
-      {children}
-    </a>
-  ),
   table: ({ children }) => (
     <div className="code-scrollbar my-2 max-w-full overflow-x-auto">
       <table className="my-0">{children}</table>
@@ -53,13 +39,7 @@ const THINKING_MARKDOWN_COMPONENTS: Components = {
 
 const ThinkingMarkdownBlock = memo(function ThinkingMarkdownBlock({ text }: { text: string }) {
   return (
-    <ReactMarkdown
-      remarkPlugins={THINKING_REMARK_PLUGINS}
-      components={THINKING_MARKDOWN_COMPONENTS}
-      urlTransform={markdownUrlTransform}
-    >
-      {text}
-    </ReactMarkdown>
+    <Markdown components={THINKING_MARKDOWN_COMPONENTS}>{text}</Markdown>
   )
 })
 

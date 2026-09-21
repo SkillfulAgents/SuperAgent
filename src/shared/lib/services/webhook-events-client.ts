@@ -83,7 +83,7 @@ async function webhookEventsFetch<T>(
 export async function pollAndClaimEvents(memberId: string): Promise<PollResult> {
   return webhookEventsFetch<PollResult>('/poll', memberId, {
     method: 'POST',
-    body: JSON.stringify({ trigger_ids: getSubscribedComposioTriggerIds() }),
+    body: JSON.stringify({ trigger_ids: await getSubscribedComposioTriggerIds() }),
   })
 }
 

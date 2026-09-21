@@ -5,6 +5,20 @@ import {
   userInputRequestManager,
   type UserInputRequestTransition,
 } from '@shared/lib/user-input/request-manager'
+import {
+  attachInMemoryAgentState,
+  type InMemoryAgentStateDirectory,
+} from '@shared/lib/agent-actor/testing/in-memory-agent-state'
+
+// The reviews live on the agents' actors; the manager under test is a router
+// over them. These build the actors' stores in memory, attached to the
+// singletons the way the registry attaches the real handles, and route the
+// manager under test to the same stores.
+let agents: InMemoryAgentStateDirectory
+function attachAgents(manager: ReviewManager) {
+  agents = attachInMemoryAgentState()
+  manager.attachAgents(agents.pick((state) => state.reviews))
+}
 
 /**
  * What the UI actually sees when a review opens or settles: the registry
@@ -29,10 +43,12 @@ describe('ReviewManager', () => {
     vi.clearAllMocks()
     recordTransitions()
     manager = new ReviewManager()
+    attachAgents(manager)
   })
 
   afterEach(() => {
     manager.rejectAll()
+    agents.reset()
     stopRecording?.()
     vi.useRealTimers()
   })
@@ -619,7 +635,7 @@ describe('ReviewManager', () => {
         'Target Agent',
         'invoke',
         'hello there',
-        ['/workspace/report.pdf'],
+        { kind: 'send', paths: ['/workspace/report.pdf'] },
       )
 
       expect(created()).toHaveLength(1)
@@ -635,7 +651,7 @@ describe('ReviewManager', () => {
           targetAgentName: 'Target Agent',
           operation: 'invoke',
           preview: 'hello there',
-          attachments: ['/workspace/report.pdf'],
+          fileTransfer: { kind: 'send', paths: ['/workspace/report.pdf'] },
         },
         displayText: 'Allow agent to send a message and 1 file to "Target Agent"?',
       })
@@ -643,7 +659,7 @@ describe('ReviewManager', () => {
       const pending = manager.getPendingReviewsForAgent('caller')
       expect(pending).toHaveLength(1)
       expect(pending[0].xAgent?.operation).toBe('invoke')
-      expect(pending[0].xAgent?.attachments).toEqual(['/workspace/report.pdf'])
+      expect(pending[0].xAgent?.fileTransfer).toEqual({ kind: 'send', paths: ['/workspace/report.pdf'] })
       expect(pending[0].accountId).toBe('target')
 
       manager.submitDecision(pending[0].id, 'allow')
@@ -677,7 +693,7 @@ describe('ReviewManager', () => {
       expect(await promise).toBe('deny')
     })
 
-    it('message-policy sweeps never settle attachment reviews', async () => {
+    it('message-policy allow sweeps leave attachment reviews pending', async () => {
       const plain = manager.requestXAgentReview('caller', 'target', 'Target', 'invoke', 'plain message')
       const attachment = manager.requestXAgentReview(
         'caller',
@@ -685,7 +701,7 @@ describe('ReviewManager', () => {
         'Target',
         'invoke',
         'share file',
-        ['/workspace/report.pdf'],
+        { kind: 'send', paths: ['/workspace/report.pdf'] },
       )
 
       manager.resolveMatchingPending('caller', 'invoke:target', 'allow')
@@ -693,9 +709,21 @@ describe('ReviewManager', () => {
       await expect(plain).resolves.toBe('allow')
       const pending = manager.getPendingReviewsForAgent('caller')
       expect(pending).toHaveLength(1)
-      expect(pending[0].xAgent?.attachments).toEqual(['/workspace/report.pdf'])
+      expect(pending[0].xAgent?.fileTransfer).toEqual({ kind: 'send', paths: ['/workspace/report.pdf'] })
       manager.submitDecision(pending[0].id, 'allow')
       await expect(attachment).resolves.toBe('allow')
+    })
+
+    it.each(['scope', 'operation'] as const)('deny sweeps settle file reviews through %s', async (sweep) => {
+      const sent = manager.requestXAgentReview('caller', 'target', 'Target', 'invoke', 'files', { kind: 'send', paths: ['/workspace/a'] })
+      const downloaded = manager.requestXAgentReview('caller', 'target', 'Target', 'read', undefined, { kind: 'download', filename: 'b.pdf' })
+      for (const operation of ['invoke', 'read'] as const) {
+        if (sweep === 'scope') manager.resolveMatchingPending('caller', `${operation}:target`, 'deny')
+        else manager.resolveMatchingXAgentByOperation('caller', operation, 'deny')
+      }
+      await expect(sent).resolves.toBe('deny')
+      await expect(downloaded).resolves.toBe('deny')
+      expect(manager.getPendingReviewsForAgent('caller')).toHaveLength(0)
     })
 
     it('non-x-agent reviews do NOT carry xAgent in the envelope', () => {
@@ -731,11 +759,13 @@ describe('ReviewManager shadow registry write-through (Phase 2)', () => {
     vi.useFakeTimers()
     vi.clearAllMocks()
     manager = new ReviewManager()
+    attachAgents(manager)
     userInputRequestManager.reset()
   })
 
   afterEach(() => {
     manager.rejectAll()
+    agents.reset()
     vi.useRealTimers()
   })
 
@@ -841,11 +871,13 @@ describe('ReviewManager as registry adapter (Phase 5)', () => {
     vi.useFakeTimers()
     vi.clearAllMocks()
     manager = new ReviewManager()
+    attachAgents(manager)
     userInputRequestManager.reset()
   })
 
   afterEach(() => {
     manager.rejectAll()
+    agents.reset()
     vi.useRealTimers()
   })
 

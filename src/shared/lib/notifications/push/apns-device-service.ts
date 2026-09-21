@@ -94,7 +94,7 @@ export async function upsertApnsDevice(params: {
   return changesOf(results[results.length - 1]) > 0
 }
 
-export function listApnsDevices(): ApnsDeviceRow[] {
+export async function listApnsDevices(): Promise<ApnsDeviceRow[]> {
   return db.select().from(apnsDevices).all()
 }
 
@@ -105,7 +105,7 @@ export function listApnsDevices(): ApnsDeviceRow[] {
  * APNs still accepts its token. Rows with no device link (defensive local-mode
  * parity with push_subscriptions) stay deliverable.
  */
-export function listDeliverableApnsDevices(now: Date = new Date()): ApnsDeviceRow[] {
+export async function listDeliverableApnsDevices(now: Date = new Date()): Promise<ApnsDeviceRow[]> {
   return db
     .select(getTableColumns(apnsDevices))
     .from(apnsDevices)
@@ -114,8 +114,8 @@ export function listDeliverableApnsDevices(now: Date = new Date()): ApnsDeviceRo
     .all()
 }
 
-export function deleteApnsDeviceById(id: string): void {
-  db.delete(apnsDevices).where(eq(apnsDevices.id, id)).run()
+export async function deleteApnsDeviceById(id: string): Promise<void> {
+  await db.delete(apnsDevices).where(eq(apnsDevices.id, id)).run()
 }
 
 /**
@@ -125,12 +125,12 @@ export function deleteApnsDeviceById(id: string): void {
  * single local user owns every device, including rows created under a
  * previous auth-mode life of the same database — those must stay deletable.
  */
-export function deleteApnsDeviceByToken(token: string, ownerUserId?: string): boolean {
+export async function deleteApnsDeviceByToken(token: string, ownerUserId?: string): Promise<boolean> {
   const ownerFilter =
     ownerUserId === undefined ? undefined : eq(apnsDevices.userId, ownerUserId)
-  const result = db
+  const result = await db
     .delete(apnsDevices)
     .where(and(eq(apnsDevices.token, token), ownerFilter))
     .run()
-  return result.changes > 0
+  return changesOf(result) > 0
 }

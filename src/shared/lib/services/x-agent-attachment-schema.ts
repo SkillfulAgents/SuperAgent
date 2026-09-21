@@ -15,7 +15,3 @@ export const xAgentDownloadFileBodySchema = z.object({
   sessionId: z.string().min(1),
   deliveryId: z.string().min(1),
 })
-
-export const xAgentAttachmentErrorResponseSchema = z.object({
-  error: z.string().optional(),
-})

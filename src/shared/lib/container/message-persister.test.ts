@@ -212,6 +212,10 @@ function storeFor(slug: string): ReturnType<typeof createInMemorySessionStore> {
   return store
 }
 messagePersister.attachSessionStores(storeFor)
+import { attachInMemoryAgentState } from '@shared/lib/agent-actor/testing/in-memory-agent-state'
+// Likewise the actors' in-memory stores (requests, reviews, grants), which
+// the persister routes to through the singletons.
+attachInMemoryAgentState({ syncAwaiting: (slug) => messagePersister.syncAgentSessionsAwaiting(slug) })
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
@@ -6243,7 +6247,7 @@ describe('MessagePersister', () => {
         mockGetStoredPlatformMemberId.mockReturnValue('sub_session')
         let mintKey: string | null | undefined
         mockEnableComposioTrigger.mockImplementation(async () => {
-          mintKey = attribution.current()?.getKey() ?? null
+          mintKey = (await attribution.current())?.getKey() ?? null
           return 'composio_trigger_id'
         })
 
@@ -6265,7 +6269,7 @@ describe('MessagePersister', () => {
         // Nothing resolves: the bearer must stay the bare token, not `token::local`.
         let mintKey: string | null | undefined
         mockEnableComposioTrigger.mockImplementation(async () => {
-          mintKey = attribution.current()?.getKey() ?? null
+          mintKey = (await attribution.current())?.getKey() ?? null
           return 'composio_trigger_id'
         })
 

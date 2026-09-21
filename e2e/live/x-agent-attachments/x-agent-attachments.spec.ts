@@ -162,6 +162,11 @@ test('a real caller sends and downloads the same binary through a real callee', 
   await expect(attachmentReview).toContainText(FIXTURE_NAME)
   await beat(page, 2_000)
   await attachmentReview.getByTestId('xagent-review-allow-once-btn').click()
+  const downloadReview = page.getByTestId('xagent-review-request').filter({ hasText: 'download a delivered file' })
+  await expect(downloadReview).toBeVisible({ timeout: 5 * 60_000 })
+  await expect(downloadReview).toContainText(path.basename(DELIVERED_PATH))
+  await expect(downloadReview.getByTestId('xagent-review-allow-menu')).toHaveCount(0)
+  await downloadReview.getByTestId('xagent-review-allow-once-btn').click()
   await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 30_000 })
   await expect(sessionPage.getStopButton()).not.toBeVisible({ timeout: 10 * 60_000 })
   await expect(sessionPage.getAssistantMessages().filter({ hasText: `ROUNDTRIP_COMPLETE ${EXPECTED_SHA256}` })).toBeVisible({

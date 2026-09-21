@@ -84,7 +84,7 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
       return c.json({ error: 'Scheduled task not found or already cancelled' }, 404)
     }
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'deleted' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'deleted' })
 
     // Cancelling a session wake changes that session's list/badge state.
     if (task!.resumeSessionId) {
@@ -115,7 +115,7 @@ scheduledTasksRouter.post('/:taskId/pause', TaskAgentRole('user'), async (c) => 
       return c.json({ error: 'Task is not pending' }, 400)
     }
     const updated = await getScheduledTask(task.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'paused' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'paused' })
     return c.json(updated)
   } catch (error) {
     console.error('Failed to pause scheduled task:', error)
@@ -135,7 +135,7 @@ scheduledTasksRouter.post('/:taskId/resume', TaskAgentRole('user'), async (c) =>
       return c.json({ error: 'Task is not paused' }, 400)
     }
     const updated = await getScheduledTask(task.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'resumed' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'resumed' })
     return c.json(updated)
   } catch (error) {
     console.error('Failed to resume scheduled task:', error)
@@ -177,7 +177,7 @@ scheduledTasksRouter.patch('/:taskId/prompt', TaskAgentRole('user'), async (c) =
     }
 
     const refreshed = await getScheduledTask(task!.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'prompt' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'prompt' } })
     return c.json(refreshed)
   } catch (error) {
     console.error('Failed to update scheduled task prompt:', error)
@@ -202,7 +202,7 @@ scheduledTasksRouter.patch('/:taskId/name', TaskAgentRole('user'), async (c) => 
     }
 
     const refreshed = await getScheduledTask(task!.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'name' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'name' } })
     return c.json(refreshed)
   } catch (error) {
     console.error('Failed to update scheduled task name:', error)
@@ -261,7 +261,7 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
     }
 
     const refreshed = await getScheduledTask(task!.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'runtime-options' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'runtime-options' } })
     return c.json(refreshed)
   } catch (error) {
     console.error('Failed to update scheduled task runtime options:', error)
@@ -473,7 +473,7 @@ scheduledTasksRouter.patch('/:taskId/schedule', TaskAgentRole('user'), async (c)
     }
 
     const refreshed = await getScheduledTask(task.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'schedule' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'schedule' } })
 
     // Surface the same too-frequent-interval warning as the agent path. The edit
     // still succeeds — the warning is advisory.

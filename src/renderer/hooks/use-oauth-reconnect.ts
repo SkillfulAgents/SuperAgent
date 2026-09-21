@@ -1,8 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
-import { useDelayedOAuthAbort } from '@renderer/hooks/use-delayed-oauth-abort'
+import { useLoginWindow } from '@renderer/hooks/use-login-window'
 
 // Upper bound on how long we wait for the OAuth callback before giving up and
 // cleaning up the IPC listener. Generous enough for a slow login (incl. MFA),
@@ -11,51 +10,46 @@ const OAUTH_RECONNECT_TIMEOUT_MS = 5 * 60 * 1000
 
 export function useOAuthReconnect() {
   const queryClient = useQueryClient()
-  const [pendingAccountId, setPendingAccountId] = useState<string | null>(null)
-  const abortReconnectRef = useRef<(() => void) | null>(null)
-  const canCancelPendingReconnect = useDelayedOAuthAbort(pendingAccountId !== null)
+  const { open, close, pending, canCancel } = useLoginWindow()
+  const [launchedAccountId, setLaunchedAccountId] = useState<string | null>(null)
+  // Settles the inline wait for the callback when the user cancels. A wait
+  // that already settled (the callback landed, completion is in flight) is
+  // past canceling: its result stands.
+  const abortWaitRef = useRef<(() => void) | null>(null)
+  // Only the latest reconnect may close the window.
+  const latestRef = useRef(0)
 
   const cancelReconnect = useCallback(() => {
-    abortReconnectRef.current?.()
-  }, [])
+    close()
+    abortWaitRef.current?.()
+  }, [close])
 
   const reconnect = useCallback(async (accountId: string, toolkit: string) => {
-    const popup = prepareOAuthPopup()
+    // One window at a time: a reconnect still waiting is superseded, so its
+    // timeout cannot close the window this one is about to open.
+    abortWaitRef.current?.()
+    const latest = ++latestRef.current
+    setLaunchedAccountId(accountId)
     let canceled = false
-    abortReconnectRef.current = () => {
-      canceled = true
-      popup.close()
-      setPendingAccountId(null)
-    }
-    setPendingAccountId(accountId)
     try {
-      const res = await apiFetch('/api/connected-accounts/initiate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          providerSlug: toolkit,
-          electron: !!window.electronAPI,
-          reconnectAccountId: accountId,
-        }),
-      })
-      if (canceled) return false
-      if (!res.ok) {
-        popup.close()
+      const outcome = await open(async () => {
+        const res = await apiFetch('/api/connected-accounts/initiate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            providerSlug: toolkit,
+            electron: !!window.electronAPI,
+            reconnectAccountId: accountId,
+          }),
+        })
         const data = await res.json()
-        console.error('Failed to initiate reconnection:', data.error)
-        setPendingAccountId(null)
-        return false
-      }
-      const data = await res.json()
-      if (canceled) return false
-      if (!data.redirectUrl) {
-        popup.close()
-        setPendingAccountId(null)
-        return false
-      }
-
-      await popup.navigate(data.redirectUrl)
-      if (canceled) return false
+        if (!res.ok) {
+          console.error('Failed to initiate reconnection:', data.error)
+          return null
+        }
+        return data.redirectUrl
+      })
+      if (outcome !== 'waiting') return false
 
       let reconnectSucceeded = false
 
@@ -73,10 +67,10 @@ export function useOAuthReconnect() {
             unsubscribe?.()
             return true
           }
-          abortReconnectRef.current = () => {
+          abortWaitRef.current = () => {
+            if (!settle()) return
             canceled = true
-            popup.close()
-            if (settle()) resolve(false)
+            resolve(false)
           }
           // Bound the wait: if the user abandons the OAuth window (or only
           // mismatched-toolkit callbacks ever arrive), settle anyway so we don't
@@ -129,10 +123,10 @@ export function useOAuthReconnect() {
               if (settle()) resolve(event.data?.success === true)
             }
           }
-          abortReconnectRef.current = () => {
+          abortWaitRef.current = () => {
+            if (!settle()) return
             canceled = true
-            popup.close()
-            if (settle()) resolve(false)
+            resolve(false)
           }
           timeout = window.setTimeout(() => {
             if (settle()) resolve(false)
@@ -142,19 +136,23 @@ export function useOAuthReconnect() {
       }
 
       if (canceled) return false
+      // A reconnect started during completion owns the window by now.
+      if (latest === latestRef.current) close()
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
       queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
       queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
       return reconnectSucceeded
     } catch (err) {
-      popup.close()
+      if (!canceled) close()
       console.error('Reconnect failed:', err)
       return false
-    } finally {
-      abortReconnectRef.current = null
-      setPendingAccountId(null)
     }
-  }, [queryClient])
+  }, [queryClient, open, close])
 
-  return { reconnect, pendingAccountId, canCancelPendingReconnect, cancelReconnect }
+  return {
+    reconnect,
+    pendingAccountId: pending ? launchedAccountId : null,
+    canCancelPendingReconnect: canCancel,
+    cancelReconnect,
+  }
 }

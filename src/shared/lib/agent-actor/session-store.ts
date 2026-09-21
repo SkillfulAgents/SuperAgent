@@ -13,6 +13,7 @@
  * the workspace is mounted at `/workspace`), so a runtime that mounts it
  * elsewhere answers with a different directory, and nothing else spells it.
  */
+import type { SessionSummaryCache } from '@shared/lib/services/session-summary-slot'
 import type { AgentSlug, ConfigOps, FileOps } from './types'
 import { WorkspaceFileError, joinWorkspacePath } from './workspace-path'
 
@@ -37,6 +38,14 @@ export interface SessionStore {
    * the workspace directory.
    */
   readonly key: string
+  /**
+   * The store's warm session summary (see `session-summary-cache`): built
+   * from the transcripts directory on first read and kept current by the
+   * writes recorded through the store. It is the store's, so it lives and
+   * dies with the agent's actor and is never shared with another agent's
+   * store, and it follows `key`: a store whose storage moved starts fresh.
+   */
+  readonly summaryCache: SessionSummaryCache
   /**
    * Told the epoch ms of every activity recorded against a session of this
    * store — a message sent to it, a frame received from it, a transcript
