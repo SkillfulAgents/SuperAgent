@@ -159,7 +159,7 @@ function seedAccess(integrationId: string, externalChatId: string, status: 'pend
 // ── Tests ────────────────────────────────────────────────────────────────
 
 describe('chat-integrations access routes', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
@@ -173,7 +173,7 @@ describe('chat-integrations access routes', () => {
     seedIntegration(INTEGRATION_B, 'agent-b')
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     testSqlite?.close()
   })
 
@@ -216,7 +216,7 @@ describe('chat-integrations access routes', () => {
 
   describe('PATCH /:integrationId', () => {
     it('maps config validation failures from the service to 400', async () => {
-      vi.mocked(updateChatIntegration).mockImplementationOnce(() => {
+      vi.mocked(updateChatIntegration).mockImplementationOnce(async () => {
         z.object({ botToken: z.string() }).parse({})
         return true
       })
@@ -616,7 +616,7 @@ describe('chat-integrations access routes', () => {
 
   describe('POST /:id create — requireApproval not settable at create', () => {
     it('ignores requireApproval in the body so the public flip cannot bypass the owner gate', async () => {
-      vi.mocked(createChatIntegration).mockReturnValue('new-int')
+      vi.mocked(createChatIntegration).mockResolvedValue('new-int')
       mockGetChatIntegration.mockImplementation((id: string) =>
         id === 'new-int' ? { id: 'new-int', agentSlug: 'agent-a' } : (integrations[id] ?? null),
       )
@@ -636,7 +636,7 @@ describe('chat-integrations access routes', () => {
     })
 
     it('returns 500 instead of a null success body when the created row cannot be read back', async () => {
-      vi.mocked(createChatIntegration).mockReturnValue('missing-int')
+      vi.mocked(createChatIntegration).mockResolvedValue('missing-int')
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
 
       const res = await app().request('http://localhost/api/chat-integrations/agent-a', {

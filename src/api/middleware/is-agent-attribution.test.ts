@@ -63,8 +63,8 @@ async function bearerSeenByHandler(): Promise<string | undefined> {
   let seen: string | undefined
   const app = new Hono()
   app.use('*', IsAgent())
-  app.get('/x', (c) => {
-    seen = attribution.current()?.bearerToken()
+  app.get('/x', async (c) => {
+    seen = (await attribution.current())?.bearerToken()
     return c.json({ ok: true })
   })
   const res = await app.request('http://localhost/x', {

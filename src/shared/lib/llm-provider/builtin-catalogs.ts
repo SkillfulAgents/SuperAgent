@@ -14,12 +14,21 @@ import { pricingFor } from './model-pricing-lookup'
  * `isLatest` marks the id a bare family alias resolves to. `isDefault` marks
  * the concrete model selected when switching to that model vendor in the
  * picker; it is intentionally independent from recency. Effort support is per
- * model: Opus/Fable accept all five levels, Sonnet/Haiku the lower three.
+ * model and reflects what the serving path accepts, verified live 2026-09-18
+ * (see the per-vendor notes at each constant).
  */
 
 const ALL_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const STANDARD_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
-// xhigh/max are Anthropic-only reasoning tiers; non-Claude models get the standard three.
+// Sonnet 4.6 / Opus 4.6: Anthropic accepts max but rejects xhigh (400).
+const CLAUDE_4_6_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'max']
+// gpt-5.4/5.5, grok-4.6/4.7, muse-spark ≤1.2: xhigh accepted, max rejected or clamped.
+const XHIGH_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh']
+// kimi-k3 on Fireworks' Anthropic wire: two real tiers, max ≈ 2.4× high (measured 2026-09-18).
+const KIMI_K3_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'max']
+// grok-4.5 and deepseek-v4.1-flash: nothing above high is verified to be
+// honored (Fireworks' Anthropic shim accepts any value; deepseek output is
+// flat across all tiers), so they keep the standard three.
 const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 
 /**
@@ -147,7 +156,7 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
     label: 'Sonnet 4.6',
     family: 'sonnet',
     icon: ICON,
-    supportedEfforts: STANDARD_EFFORTS,
+    supportedEfforts: CLAUDE_4_6_EFFORTS,
     pricing: pricingFor('claude-sonnet-4-6'),
   },
   {
@@ -157,7 +166,7 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
     family: 'sonnet',
     isLatest: true,
     icon: ICON,
-    supportedEfforts: STANDARD_EFFORTS,
+    supportedEfforts: ALL_EFFORTS,
     pricing: pricingFor('claude-sonnet-5'),
   },
   {
@@ -165,7 +174,7 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
     label: 'Opus 4.6',
     family: 'opus',
     icon: ICON,
-    supportedEfforts: ALL_EFFORTS,
+    supportedEfforts: CLAUDE_4_6_EFFORTS,
     pricing: pricingFor('claude-opus-4-6'),
   },
   {
@@ -350,21 +359,6 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     },
   },
   {
-    id: 'x-ai/grok-4.6',
-    label: 'Grok 4.6',
-    blurb: 'xAI Grok, routed via OpenRouter',
-    family: 'grok',
-    isLatest: true,
-    isDefault: true,
-    icon: 'xai',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
-    supportsWebSearch: false,
-    pricing: { inputPerMtok: 2, outputPerMtok: 6 },
-    contextWindow: 500_000,
-    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
-    promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
-  },
-  {
     id: 'x-ai/grok-4.5',
     label: 'Grok 4.5',
     blurb: 'xAI Grok, routed via OpenRouter',
@@ -375,6 +369,35 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-07-10.
     pricing: { inputPerMtok: 2, outputPerMtok: 6 },
     // OpenRouter-reported context length for x-ai/grok-4.5, fetched 2026-07-10.
+    contextWindow: 500_000,
+    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
+    promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
+  },
+  {
+    id: 'x-ai/grok-4.6',
+    label: 'Grok 4.6',
+    blurb: 'xAI Grok, routed via OpenRouter',
+    family: 'grok',
+    icon: 'xai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
+    pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+    contextWindow: 500_000,
+    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
+    promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
+  },
+  {
+    id: 'x-ai/grok-4.7',
+    label: 'Grok 4.7',
+    blurb: 'xAI Grok, routed via OpenRouter',
+    family: 'grok',
+    isLatest: true,
+    isDefault: true,
+    icon: 'xai',
+    // OpenRouter's grok-4.7 card lists low/medium/high/xhigh (fetched 2026-09-21).
+    supportedEfforts: XHIGH_EFFORTS,
+    supportsWebSearch: false,
+    pricing: { inputPerMtok: 2, outputPerMtok: 6 },
     contextWindow: 500_000,
     longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
@@ -433,7 +456,7 @@ export const OPENROUTER_CATALOG: ModelDefinition[] = [
 
 /**
  * Non-Claude models the Platform proxy can serve. Unlike OpenRouter these use
- * BARE ids (`gpt-5.5`, `grok-4.6`): the proxy's routing/pricing all key off bare
+ * BARE ids (`gpt-5.5`, `grok-4.7`): the proxy's routing/pricing all key off bare
  * ids, so a vendor-prefixed slug would miss every match.
  */
 // Responses hosts web_search but not web_fetch — fetch needs a Settings → Web vendor (Exa).
@@ -462,7 +485,8 @@ const PLATFORM_RESPONSES_WEB = { supportsWebSearch: true, supportsWebFetch: fals
  */
 const MUSE_SPARK_SHARED = {
   icon: 'meta',
-  supportedEfforts: NON_CLAUDE_EFFORTS,
+  // Meta rejects max on every muse-spark except standard 1.3 (400).
+  supportedEfforts: XHIGH_EFFORTS,
   supportsWebSearch: false,
   supportsWebFetch: false,
   supportsImageInput: true,
@@ -511,6 +535,7 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
     blurb: 'Meta flagship, served via Platform',
     isLatest: true,
     isDefault: true,
+    supportedEfforts: ALL_EFFORTS,
   },
   // Labels carry the full family name so the picker's version chips strip to
   // the bare version ("1.3"), matching the standard row beside them.
@@ -536,7 +561,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'OpenAI, served via Platform',
     family: 'gpt',
     icon: 'openai',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedEfforts: XHIGH_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 2.5, outputPerMtok: 15, speedMultipliers: GPT_SPEED_MULTIPLIERS },
@@ -551,7 +576,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'OpenAI, served via Platform',
     family: 'gpt',
     icon: 'openai',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedEfforts: XHIGH_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 5, outputPerMtok: 30, speedMultipliers: GPT_55_SPEED_MULTIPLIERS },
@@ -566,7 +591,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'OpenAI fastest tier, served via Platform',
     family: 'gpt',
     icon: 'openai',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 1, outputPerMtok: 6, speedMultipliers: GPT_SPEED_MULTIPLIERS },
@@ -581,7 +606,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'OpenAI balanced tier, served via Platform',
     family: 'gpt',
     icon: 'openai',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 2.5, outputPerMtok: 15, speedMultipliers: GPT_SPEED_MULTIPLIERS },
@@ -599,7 +624,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     isLatest: true,
     isDefault: true,
     icon: 'openai',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 5, outputPerMtok: 30, speedMultipliers: GPT_SPEED_MULTIPLIERS },
@@ -615,7 +640,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'OpenAI frontier, served via Platform',
     family: 'gpt',
     icon: 'openai',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 10, outputPerMtok: 50, speedMultipliers: GPT_SPEED_MULTIPLIERS },
@@ -626,12 +651,10 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   },
   {
     // Bare id matches the platform proxy's grok-* → xai-responses route.
-    id: 'grok-4.6',
-    label: 'Grok 4.6',
+    id: 'grok-4.5',
+    label: 'Grok 4.5',
     blurb: 'xAI Grok, served via Platform',
     family: 'grok',
-    isLatest: true,
-    isDefault: true,
     icon: 'xai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     // xAI offers priority but no flex tier — cost-sensitive work goes to their Batch API.
@@ -643,12 +666,28 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
   },
   {
-    id: 'grok-4.5',
-    label: 'Grok 4.5',
+    id: 'grok-4.6',
+    label: 'Grok 4.6',
     blurb: 'xAI Grok, served via Platform',
     family: 'grok',
     icon: 'xai',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedEfforts: XHIGH_EFFORTS,
+    supportedSpeeds: PRIORITY_ONLY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
+    contextWindow: 500_000,
+    longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
+    promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
+  },
+  {
+    id: 'grok-4.7',
+    label: 'Grok 4.7',
+    blurb: 'xAI Grok, served via Platform',
+    family: 'grok',
+    isLatest: true,
+    isDefault: true,
+    icon: 'xai',
+    supportedEfforts: XHIGH_EFFORTS,
     supportedSpeeds: PRIORITY_ONLY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
@@ -665,7 +704,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     isLatest: true,
     isDefault: true,
     icon: 'kimi',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedEfforts: KIMI_K3_EFFORTS,
     // Fireworks' fast path is a separate router resource the proxy swaps in;
     // it has no flex/slow equivalent.
     supportedSpeeds: PRIORITY_ONLY_SPEEDS,
@@ -693,7 +732,9 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     isLatest: true,
     isDefault: true,
     icon: 'zai',
-    supportedEfforts: NON_CLAUDE_EFFORTS,
+    // Fireworks chat wire with reasoning_effort forwarded by the proxy: low ≈ 0
+    // reasoning chars, high ≈ 50, xhigh ≈ 500, max ≈ 800 (measured 2026-09-18).
+    supportedEfforts: ALL_EFFORTS,
     supportsWebSearch: false,
     supportsWebFetch: false,
     supportsImageInput: true,

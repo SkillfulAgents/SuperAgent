@@ -72,12 +72,12 @@ export async function upsertPushSubscription(params: {
   return changesOf(result) > 0
 }
 
-export function listPushSubscriptions(): PushSubscriptionRow[] {
+export async function listPushSubscriptions(): Promise<PushSubscriptionRow[]> {
   return db.select().from(pushSubscriptions).all()
 }
 
-export function deletePushSubscriptionById(id: string): void {
-  db.delete(pushSubscriptions).where(eq(pushSubscriptions.id, id)).run()
+export async function deletePushSubscriptionById(id: string): Promise<void> {
+  await db.delete(pushSubscriptions).where(eq(pushSubscriptions.id, id)).run()
 }
 
 /**
@@ -87,13 +87,13 @@ export function deletePushSubscriptionById(id: string): void {
  * the single local user owns every device, including rows created under a
  * previous auth-mode life of the same database — those must stay deletable.
  */
-export function deletePushSubscriptionByEndpoint(
+export async function deletePushSubscriptionByEndpoint(
   endpoint: string,
   ownerUserId?: string
-): boolean {
+): Promise<boolean> {
   const ownerFilter =
     ownerUserId === undefined ? undefined : eq(pushSubscriptions.userId, ownerUserId)
-  const result = db
+  const result = await db
     .delete(pushSubscriptions)
     .where(and(eq(pushSubscriptions.endpoint, endpoint), ownerFilter))
     .run()

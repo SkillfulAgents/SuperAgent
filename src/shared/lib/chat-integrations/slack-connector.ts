@@ -22,7 +22,8 @@ import {
   type SystemPromptContext,
 } from './chat-agent-integration'
 import { buildSessionContextPrompt } from './chat-session-context'
-import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage, withSessionUrl, type AppLinkContext } from './utils'
+import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
+import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { isUnrecoverableSlackError } from './slack-error'
 import { MAX_TRACKED_SLACK_THREADS, type SlackThreadStateStore } from './slack-thread-state'
 import { captureException } from '@shared/lib/error-reporting'
@@ -471,7 +472,7 @@ export class SlackConnector extends ChatAgentIntegration {
         // participation too. A disk error must not swallow the current message.
         if (this.threadState && this.botUserId) {
           try {
-            this.threadState.save(this.botUserId, [...this.activeThreads])
+            await this.threadState.save(this.botUserId, [...this.activeThreads])
           } catch (err) {
             console.error('[SlackConnector] Failed to persist thread participation:', err)
             captureException(err, { tags: { component: 'slack', operation: 'save-thread-state' } })
@@ -610,7 +611,7 @@ export class SlackConnector extends ChatAgentIntegration {
     // alone is insufficient when several threads share a single agent session.
     if (this.threadState && this.botUserId && !this.disconnecting) {
       this.activeThreads.clear()
-      for (const key of this.threadState.load(this.botUserId)) {
+      for (const key of await this.threadState.load(this.botUserId)) {
         touchAndCapSet(this.activeThreads, key, SlackConnector.MAX_TRACKED_THREADS)
       }
     }

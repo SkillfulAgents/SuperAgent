@@ -52,6 +52,7 @@ import { createAgentTool } from './tools/agents/create-agent'
 import { makeInvokeAgentTool } from './tools/agents/invoke-agent'
 import { getSessionsTool } from './tools/agents/get-sessions'
 import { getSessionTranscriptTool } from './tools/agents/get-session-transcript'
+import { downloadAgentFileTool } from './tools/agents/download-agent-file'
 import { listAvailableChatProvidersTool } from './tools/chat/list-available-chat-providers'
 import { listChatIntegrationsTool } from './tools/chat/list-chat-integrations'
 import { listChatUsersTool } from './tools/chat/list-chat-users'
@@ -162,6 +163,7 @@ export function createAgentsMcpServer(getCallerSessionId: () => string) {
       makeInvokeAgentTool(getCallerSessionId),
       getSessionsTool,
       getSessionTranscriptTool,
+      downloadAgentFileTool,
     ],
   })
 }

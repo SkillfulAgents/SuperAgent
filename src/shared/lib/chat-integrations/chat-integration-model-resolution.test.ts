@@ -167,13 +167,13 @@ describe('chat integration model and effort resolution', () => {
 
   // Preference order: integration override > agent default > global default.
   async function startSession(integrationOverrides: Record<string, unknown> = {}) {
-    const integrationId = createChatIntegration({
+    const integrationId = (await createChatIntegration({
       agentSlug: 'test-agent',
       provider: 'telegram',
       config: { botToken: 'test-token-123' },
       name: 'Test Bot',
       ...integrationOverrides,
-    })
+    }))
     // These tests exercise session-spawn defaults, not access control, so
     // disable the owner-approval gate telegram integrations get by default.
     testSqlite.prepare('UPDATE chat_integrations SET require_approval = 0 WHERE id = ?').run(integrationId)

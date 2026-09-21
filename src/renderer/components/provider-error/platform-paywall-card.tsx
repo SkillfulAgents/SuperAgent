@@ -219,7 +219,7 @@ function SubscribeBody({ plan, hint, actions, expanded }: { plan: SubscribePlan 
 // Platform 402. An invitation, not a failure: neutral card, title + muted subtitle, one
 // role/billing-aware CTA. Fails open: the composer is withheld only while a fresh billing
 // snapshot positively denies access; otherwise the card sits above it.
-export function PlatformPaywallCard({ message, presentation, children, live = true, dismissible = false }: ProviderErrorComponentProps) {
+export function PlatformPaywallCard({ message, presentation, onDisplaceChildren, live = true, dismissible = false }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -281,7 +281,16 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
     track('paywall_cleared', { ctaKind, handedOff })
   }, [billing.cleared, holding, ctaKind, handedOff, track])
 
-  if ((billing.cleared && !holding) || dismissed) return <>{children}</>
+  const resolved = (billing.cleared && !holding) || dismissed
+  const displaced = !resolved && billing.blocked
+  useEffect(() => {
+    onDisplaceChildren?.(displaced)
+    return () => onDisplaceChildren?.(false)
+  }, [displaced, onDisplaceChildren])
+
+  if (resolved) return null
+  // A persisted 402 is usually long settled; don't flash "Checking billing" for it.
+  if (billing.loading && !live) return null
 
   const fallback = splitMessage(presentation?.message ?? message)
   const panelOpen = embedded && expanded
@@ -381,7 +390,6 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
           )}
         </div>
       </div>
-      {!billing.blocked && children}
     </>
   )
 }

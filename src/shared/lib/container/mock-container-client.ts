@@ -1890,7 +1890,7 @@ let cleanupBrowserSessionFn: ((sessionId: string) => void) | null = null
 
 // Register browser scenario only when E2E_CHROMIUM_PATH is available
 if (process.env.E2E_MOCK === 'true' && process.env.E2E_CHROMIUM_PATH) {
-  import('./mock-browser-scenario').then(({ BrowserScenario, cleanupBrowserSession }) => {
+  void import('./mock-browser-scenario').then(({ BrowserScenario, cleanupBrowserSession }) => {
     MockContainerClient.scenarios.set('browse ', new BrowserScenario())
     cleanupBrowserSessionFn = cleanupBrowserSession
     console.log('[MockContainerClient] Registered BrowserScenario (E2E_CHROMIUM_PATH available)')

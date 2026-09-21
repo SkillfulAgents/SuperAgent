@@ -2,7 +2,7 @@ import { z } from 'zod'
 import type { AgentIntegration } from '../agent-integrations/agent-integration'
 import type { AgentIntegrationRecord, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy } from '../agent-integrations/types'
 import { isChatAllowed } from '../services/chat-integration-access-service'
-import { formatSessionTimestamp } from './utils'
+import { formatSessionTimestamp } from '@shared/lib/agent-integrations/presentation'
 
 // Read both the existing database columns and an explicit family settings envelope.
 const chatSettingsSchema = z.object({ showToolCalls: z.boolean().default(false), sessionTimeout: z.number().nullable().default(null) })
@@ -12,7 +12,7 @@ export function chatSettings(integration: AgentIntegrationRecord) {
 
 /** Shared policy for live adapters and session recording during reconnection. */
 export const chatIntegrationPolicy: Pick<AgentIntegration, 'isAllowed' | 'sessionPolicy'> = {
-  isAllowed(context: IntegrationSessionContext): boolean {
+  isAllowed(context: IntegrationSessionContext): Promise<boolean> {
     return isChatAllowed(context.integration.id, context.externalId)
   },
 

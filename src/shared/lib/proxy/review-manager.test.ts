@@ -629,7 +629,14 @@ describe('ReviewManager', () => {
 
   describe('requestXAgentReview', () => {
     it('registers the xAgent payload + scope=invoke:target for invoke ops', async () => {
-      const promise = manager.requestXAgentReview('caller', 'target', 'Target Agent', 'invoke', 'hello there')
+      const promise = manager.requestXAgentReview(
+        'caller',
+        'target',
+        'Target Agent',
+        'invoke',
+        'hello there',
+        { kind: 'send', paths: ['/workspace/report.pdf'] },
+      )
 
       expect(created()).toHaveLength(1)
       expect(created()[0].request.kind).toBe('x_agent_review')
@@ -644,12 +651,15 @@ describe('ReviewManager', () => {
           targetAgentName: 'Target Agent',
           operation: 'invoke',
           preview: 'hello there',
+          fileTransfer: { kind: 'send', paths: ['/workspace/report.pdf'] },
         },
+        displayText: 'Allow agent to send a message and 1 file to "Target Agent"?',
       })
 
       const pending = manager.getPendingReviewsForAgent('caller')
       expect(pending).toHaveLength(1)
       expect(pending[0].xAgent?.operation).toBe('invoke')
+      expect(pending[0].xAgent?.fileTransfer).toEqual({ kind: 'send', paths: ['/workspace/report.pdf'] })
       expect(pending[0].accountId).toBe('target')
 
       manager.submitDecision(pending[0].id, 'allow')
@@ -681,6 +691,39 @@ describe('ReviewManager', () => {
       const pending = manager.getPendingReviewsForAgent('caller')
       manager.submitDecision(pending[0].id, 'deny')
       expect(await promise).toBe('deny')
+    })
+
+    it('message-policy allow sweeps leave attachment reviews pending', async () => {
+      const plain = manager.requestXAgentReview('caller', 'target', 'Target', 'invoke', 'plain message')
+      const attachment = manager.requestXAgentReview(
+        'caller',
+        'target',
+        'Target',
+        'invoke',
+        'share file',
+        { kind: 'send', paths: ['/workspace/report.pdf'] },
+      )
+
+      manager.resolveMatchingPending('caller', 'invoke:target', 'allow')
+
+      await expect(plain).resolves.toBe('allow')
+      const pending = manager.getPendingReviewsForAgent('caller')
+      expect(pending).toHaveLength(1)
+      expect(pending[0].xAgent?.fileTransfer).toEqual({ kind: 'send', paths: ['/workspace/report.pdf'] })
+      manager.submitDecision(pending[0].id, 'allow')
+      await expect(attachment).resolves.toBe('allow')
+    })
+
+    it.each(['scope', 'operation'] as const)('deny sweeps settle file reviews through %s', async (sweep) => {
+      const sent = manager.requestXAgentReview('caller', 'target', 'Target', 'invoke', 'files', { kind: 'send', paths: ['/workspace/a'] })
+      const downloaded = manager.requestXAgentReview('caller', 'target', 'Target', 'read', undefined, { kind: 'download', filename: 'b.pdf' })
+      for (const operation of ['invoke', 'read'] as const) {
+        if (sweep === 'scope') manager.resolveMatchingPending('caller', `${operation}:target`, 'deny')
+        else manager.resolveMatchingXAgentByOperation('caller', operation, 'deny')
+      }
+      await expect(sent).resolves.toBe('deny')
+      await expect(downloaded).resolves.toBe('deny')
+      expect(manager.getPendingReviewsForAgent('caller')).toHaveLength(0)
     })
 
     it('non-x-agent reviews do NOT carry xAgent in the envelope', () => {

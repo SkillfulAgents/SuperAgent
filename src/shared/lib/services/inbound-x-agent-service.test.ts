@@ -15,8 +15,8 @@ function agent(slug: string, name: string): ApiAgent {
 }
 
 describe('buildInboundXAgentDetails', () => {
-  it('sorts call history newest-first and excludes self and blocked callers', () => {
-    const result = buildInboundXAgentDetails({
+  it('sorts call history newest-first and excludes self and blocked callers', async () => {
+    const result = (await buildInboundXAgentDetails({
       targetSlug: 'target',
       metadata: {
         old: { invokedByAgentSlug: 'caller-a', createdAt: '2026-08-19T10:00:00.000Z' },
@@ -27,7 +27,7 @@ describe('buildInboundXAgentDetails', () => {
       authMode: false,
       aclRows: [],
       evaluatePolicy: (caller) => caller === 'caller-b' ? 'block' : 'review',
-    })
+    }))
 
     expect(result.sessions.map((session) => session.id)).toEqual(['newest', 'old'])
     expect(result.sessions[0]).toMatchObject({ triggeredBy: { name: 'Beta' } })
@@ -40,8 +40,8 @@ describe('buildInboundXAgentDetails', () => {
     }])
   })
 
-  it('includes running, settled, and legacy repairs without inventing caller permissions', () => {
-    const result = buildInboundXAgentDetails({
+  it('includes running, settled, and legacy repairs without inventing caller permissions', async () => {
+    const result = (await buildInboundXAgentDetails({
       targetSlug: 'target',
       metadata: {
         legacy: { name: 'Fix widget: weather', isWidgetRepair: true, widgetRepairSlug: 'weather', createdAt: '2026-08-19T10:00:00.000Z' },
@@ -59,7 +59,7 @@ describe('buildInboundXAgentDetails', () => {
       agents: [agent('target', 'Target')],
       authMode: false,
       aclRows: [],
-    })
+    }))
 
     // Exercise the renderer's boundary too, including the existing caller shape.
     const parsed = inboundXAgentDetailsSchema.parse(result)
@@ -76,8 +76,8 @@ describe('buildInboundXAgentDetails', () => {
     expect(parsed.callers).toEqual([])
   })
 
-  it('requires a caller owner with user access to the target and greys inaccessible callers', () => {
-    const result = buildInboundXAgentDetails({
+  it('requires a caller owner with user access to the target and greys inaccessible callers', async () => {
+    const result = (await buildInboundXAgentDetails({
       targetSlug: 'target',
       metadata: {},
       agents: [
@@ -97,7 +97,7 @@ describe('buildInboundXAgentDetails', () => {
         { agentSlug: 'caller-c', userId: 'viewer', role: 'viewer' },
       ],
       evaluatePolicy: () => 'allow',
-    })
+    }))
 
     expect(result.callers.map((caller) => [caller.slug, caller.canAccess])).toEqual([
       ['caller-a', false],
@@ -105,8 +105,8 @@ describe('buildInboundXAgentDetails', () => {
     ])
   })
 
-  it('keeps eligible caller rows accessible for an admin viewer without caller ACL rows', () => {
-    const result = buildInboundXAgentDetails({
+  it('keeps eligible caller rows accessible for an admin viewer without caller ACL rows', async () => {
+    const result = (await buildInboundXAgentDetails({
       targetSlug: 'target',
       metadata: {},
       agents: [agent('target', 'Target'), agent('caller', 'Caller')],
@@ -118,7 +118,7 @@ describe('buildInboundXAgentDetails', () => {
         { agentSlug: 'caller', userId: 'owner', role: 'owner' },
       ],
       evaluatePolicy: () => 'review',
-    })
+    }))
 
     expect(result.callers[0].canAccess).toBe(true)
   })

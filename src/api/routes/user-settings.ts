@@ -14,9 +14,9 @@ const userSettingsRouter = new Hono()
 userSettingsRouter.use('*', Authenticated())
 
 // GET /api/user-settings - Get current user's settings
-userSettingsRouter.get('/', (c) => {
+userSettingsRouter.get('/', async (c) => {
   const userId = getCurrentUserId(c)
-  const settings = getUserSettings(userId)
+  const settings = await getUserSettings(userId)
   return c.json(settings)
 })
 
@@ -41,7 +41,7 @@ userSettingsRouter.put('/', async (c) => {
   if (ttsVoice && !getConfiguredVoiceProvider()?.hasTtsVoice(ttsVoice)) {
     return c.json({ error: 'Unknown text-to-speech voice' }, 400)
   }
-  const updated = updateUserSettings(userId, body)
+  const updated = await updateUserSettings(userId, body)
   return c.json(updated)
 })
 

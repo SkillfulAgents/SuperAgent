@@ -210,6 +210,7 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
       deps.transcripts.readWorkflowAgentTranscript(store, sessionId, runId, workflowAgentId),
     copyDerivedFiles: (sourceId, targetId) => deps.transcripts.copyDerivedSessionFiles(store, sourceId, targetId),
 
+    getLive: (sessionId) => client().getSession(sessionId),
     create: (options) => client().createSession(options),
     fork: (sessionId) => client().forkSession(sessionId),
     deleteLive: (sessionId) => client().deleteSession(sessionId),

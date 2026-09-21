@@ -156,7 +156,7 @@ class TriggerManager {
       // Opaque-key mode has no authAccount rows, so fall back to a placeholder
       // (buildBearer ignores it). Org JWT mode returns early to avoid a bogus
       // `${token}::local` bearer.
-      let memberIds = getDistinctPlatformMemberIdsForActiveTriggers()
+      let memberIds = await getDistinctPlatformMemberIdsForActiveTriggers()
       if (memberIds.length === 0) {
         if (attribution.requiresActingMember() || !getPlatformAccessToken()) return
         memberIds = ['local']
@@ -313,9 +313,9 @@ class TriggerManager {
     // platform member (e.g. opaque-key / single-user mode), keep the prior
     // best-effort attribution (creator, else owner).
     const ownerUserId =
-      resolveTriggerPrincipal(trigger)?.userId ??
+      (await resolveTriggerPrincipal(trigger))?.userId ??
       trigger.createdByUserId ??
-      getConnectedAccountOwnerUserId(trigger.connectedAccountId)
+      (await getConnectedAccountOwnerUserId(trigger.connectedAccountId))
     await runWithOptionalUser(ownerUserId, () => this.spawnSessionInner(trigger, events))
   }
 

@@ -556,7 +556,7 @@ settings.put(
       }
 
       const runnerAvailability = await checkAllRunnersAvailability()
-      logAuditEvent({
+      await logAuditEvent({
         userId: getCurrentUserId(c),
         object: 'settings',
         objectId: 'global',
@@ -925,7 +925,7 @@ settings.post('/factory-reset', async (c) => {
     // Clear every agent/app-owned relational table (children before parents).
     // Better Auth tables (user/session/account/verification) are preserved.
     for (const table of FACTORY_RESET_TABLES) {
-      db.delete(table).run()
+      await db.delete(table).run()
     }
 
     // Delete settings file (includes platform auth token)

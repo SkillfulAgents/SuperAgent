@@ -3,6 +3,8 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { McpReauthRequestItem } from './mcp-reauth-request-item'
+import { fakeLoginWindow } from '@renderer/test/fake-login-window'
+import { LOGIN_WINDOW_CANCEL_DELAY_MS } from '@renderer/hooks/use-login-window'
 
 vi.mock('./remote-mcp-request-item', () => ({
   RemoteMcpRequestItem: ({ url, replacement }: { url: string; replacement: { requestId: string; onCancel: () => void } }) => (
@@ -14,10 +16,9 @@ vi.mock('./remote-mcp-request-item', () => ({
 
 const mockInitiateOAuth = vi.fn()
 const mockApiFetch = vi.fn()
-const mockNavigate = vi.fn()
-const mockClose = vi.fn()
 const mockDismiss = vi.fn()
 let oauthComplete: ((result: { success: boolean; error?: string }) => void) | null = null
+let armedWithState: string | undefined
 let mockOwnMcps: { servers: Array<{ id: string }> } | undefined
 
 vi.mock('@renderer/hooks/use-remote-mcps', () => ({
@@ -26,8 +27,9 @@ vi.mock('@renderer/hooks/use-remote-mcps', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-mcp-oauth-listener', () => ({
-  useMcpOAuthListener: (active: boolean, callback: typeof oauthComplete) => {
+  useMcpOAuthListener: (active: boolean, callback: typeof oauthComplete, expectedState?: string) => {
     oauthComplete = active ? callback : null
+    if (active) armedWithState = expectedState
   },
 }))
 
@@ -35,9 +37,7 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
-vi.mock('@renderer/lib/oauth-popup', () => ({
-  prepareOAuthPopup: () => ({ navigate: mockNavigate, close: mockClose }),
-}))
+vi.mock('@renderer/lib/oauth-popup', () => import('@renderer/test/fake-login-window'))
 
 vi.mock('@renderer/lib/reauth-dismiss', () => ({
   dismissReauthRequest: (...args: unknown[]) => mockDismiss(...args),
@@ -81,10 +81,40 @@ describe('McpReauthRequestItem', () => {
       mcpId: 'mcp-1',
       electron: false,
     }))
-    expect(mockNavigate).toHaveBeenCalledWith('https://auth.example.com')
+    expect(fakeLoginWindow.navigate).toHaveBeenCalledWith('https://auth.example.com')
 
     act(() => oauthComplete?.({ success: true }))
     expect(props.onComplete).toHaveBeenCalledOnce()
+  })
+
+  it('arms the listener only once the window is on the sign-in page, and Cancel disarms it', async () => {
+    vi.useFakeTimers()
+    try {
+      let sendUrl!: (result: { redirectUrl: string; state: string }) => void
+      mockInitiateOAuth.mockImplementation(() => new Promise((resolve) => { sendUrl = resolve }))
+      let landOnSignIn!: () => void
+      fakeLoginWindow.navigate.mockImplementationOnce(() => new Promise((resolve) => { landOnSignIn = () => resolve() }))
+      renderItem()
+      fireEvent.click(screen.getByTestId('mcp-reauth-reconnect-btn'))
+      await act(async () => {})
+      expect(oauthComplete).toBeNull()
+      // The URL is known and the window is waiting, but this attempt's state
+      // is applied only once navigation resolves: still disarmed.
+      await act(async () => sendUrl({ redirectUrl: 'https://auth.example.com', state: 'state-1' }))
+      expect(oauthComplete).toBeNull()
+      await act(async () => landOnSignIn())
+      expect(oauthComplete).not.toBeNull()
+      expect(armedWithState).toBe('state-1')
+      await act(async () => { await vi.advanceTimersByTimeAsync(LOGIN_WINDOW_CANCEL_DELAY_MS) })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel sign-in' }))
+      expect(fakeLoginWindow.close).toHaveBeenCalled()
+      expect(oauthComplete).toBeNull()
+      expect(screen.getByTestId('mcp-reauth-reconnect-btn')).toBeEnabled()
+      expect(screen.queryByText(/reconnection failed/i)).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('updates a bearer token, verifies the server, and resumes', async () => {

@@ -2,77 +2,8 @@
  * Chat integration utility functions.
  */
 
+import type { AppLinkContext } from '../agent-integrations/app-link'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
-import type { ChatIntegration } from '@shared/lib/db/schema'
-
-const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
-  imessage: 'iMessage',
-}
-
-/**
- * The single status the user sees for a chat integration, derived from the
- * persisted lifecycle (`status`) plus the live transport (`connected`):
- *
- *   Paused      — toggled off; won't connect.
- *   Connecting  — toggled on, wire not up yet.
- *   Listening   — toggled on and the wire is up.
- *   Error       — toggled on but a connect attempt failed; retrying.
- */
-export type ChatIntegrationState = 'paused' | 'connecting' | 'working' | 'error'
-
-export function deriveChatIntegrationState(
-  status: ChatIntegration['status'],
-  connected?: boolean,
-): ChatIntegrationState {
-  if (status === 'paused') return 'paused'
-  if (status === 'error') return 'error'
-  return connected ? 'working' : 'connecting'
-}
-
-/**
- * Whether an integration is mid-connect: toggled on but the transport isn't up yet
- * (the transient "Connecting…" state). The status card and the agent-home tag both
- * fast-poll while this holds so they converge to "Listening" promptly instead of
- * waiting a full idle interval - one predicate so the two surfaces can't drift.
- * A failed connect settles to `status: 'error'`, so this can't stay true forever.
- */
-export function isSettling(status: string, connected?: boolean): boolean {
-  return status === 'active' && !connected
-}
-
-/** User-facing label per state. The one place these words live, so the Status
- *  card and the agent-home status tag can't drift apart. */
-export const CHAT_INTEGRATION_STATE_LABEL: Record<ChatIntegrationState, string> = {
-  paused: 'Paused',
-  connecting: 'Connecting…',
-  working: 'Listening',
-  error: 'Error',
-}
-
-/** Pill colors per state, shared by the Status card tag and the agent-home tag
- *  so the two surfaces stay visually in sync. */
-export const CHAT_INTEGRATION_STATE_PILL: Record<ChatIntegrationState, string> = {
-  paused: 'bg-muted text-muted-foreground',
-  connecting: 'bg-green-500/10 text-green-700 dark:text-green-400',
-  working: 'bg-green-500/10 text-green-700 dark:text-green-400',
-  error: 'bg-red-500/10 text-red-600 dark:text-red-400',
-}
-
-/** Format a Date as a human-readable timestamp for session names (e.g. "May 20, 2:30 PM"). */
-export function formatSessionTimestamp(date: Date): string {
-  return date.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  })
-}
-
-/** Format a provider slug for display (e.g. "telegram" → "Telegram", "imessage" → "iMessage"). */
-export function formatProviderName(provider: string): string {
-  return PROVIDER_DISPLAY_NAMES[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1)
-}
 
 // Event types that need the desktop app (OAuth callbacks, browser input, script approval, etc.).
 // secret_request / file_request are here too: neither is wired to complete in chat, and a secret
@@ -119,43 +50,6 @@ export function splitChatMessage(text: string, maxLength: number): string[] {
     remaining = remaining.slice(splitAt).trimStart()
   }
   return chunks
-}
-
-/** Where to send the user when chat can't fulfill a request. */
-export interface AppLinkContext {
-  isDesktop: boolean
-  url: string | null
-}
-
-/**
- * Resolve the app surface + optional deep/web link for an agent.
- * Env reads stay inside this function (SUPERAGENT_PROTOCOL is assigned after
- * this module is imported in Electron main).
- */
-export function resolveAppLinkContext(agentSlug: string): AppLinkContext {
-  if (process.type === 'browser') {
-    // `||`, not `??`: an empty value must fall back too, or the link degrades to
-    // a scheme-less `://agent/…` that chat clients still render as a dead link.
-    const scheme = process.env.SUPERAGENT_PROTOCOL || 'superagent'
-    return { isDesktop: true, url: `${scheme}://agent/${encodeURIComponent(agentSlug)}` }
-  }
-  const base = process.env.HOST_PUBLIC_URL?.trim().replace(/\/+$/, '')
-  return { isDesktop: false, url: base ? `${base}/agents/${encodeURIComponent(agentSlug)}` : null }
-}
-
-/**
- * Session-scoped variant of an app link: suffix the session path onto the base
- * link. Passthrough when there is no base URL (self-hosted cloud) or no session
- * identity (link stays agent-home). One rule serves both surfaces because the
- * desktop and web base shapes are parallel.
- */
-export function withSessionUrl(
-  appLink: AppLinkContext | undefined,
-  sessionId?: string,
-): AppLinkContext | undefined {
-  if (!appLink?.url || !sessionId) return appLink
-  const base = appLink.url.replace(/\/+$/, '')
-  return { ...appLink, url: `${base}/sessions/${encodeURIComponent(sessionId)}` }
 }
 
 /**

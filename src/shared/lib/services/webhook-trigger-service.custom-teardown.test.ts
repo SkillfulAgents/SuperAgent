@@ -56,14 +56,14 @@ import {
 } from './webhook-trigger-service'
 
 describe('custom-endpoint teardown and poll scoping', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     testSqlite?.close()
   })
 
@@ -160,7 +160,7 @@ describe('custom-endpoint teardown and poll scoping', () => {
     // poll set must include it or the trigger never fires in acting-member mode.
     await createCustomTrigger()
 
-    expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual(['sub_stored'])
+    expect((await getDistinctPlatformMemberIdsForActiveTriggers())).toEqual(['sub_stored'])
   })
 
   it('omits unresolvable triggers from the poll set when no member is stored', async () => {
@@ -168,6 +168,6 @@ describe('custom-endpoint teardown and poll scoping', () => {
 
     await createCustomTrigger()
 
-    expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual([])
+    expect((await getDistinctPlatformMemberIdsForActiveTriggers())).toEqual([])
   })
 })

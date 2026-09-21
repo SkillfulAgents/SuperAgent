@@ -29,7 +29,7 @@ function addSession(integrationId: string, externalChatId: string, archived = fa
   }).run()
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   testDir = mkdtempSync(path.join(tmpdir(), 'slack-thread-state-'))
   openDatabase()
   for (const id of ['integration-a', 'integration-b']) {
@@ -38,26 +38,26 @@ beforeEach(() => {
     }).run()
   }
 })
-afterEach(() => {
+afterEach(async () => {
   sqlite.close()
   rmSync(testDir, { recursive: true, force: true })
 })
 
 describe('durable Slack thread participation', () => {
-  it('retains all shared-session thread anchors when the database and store reopen', () => {
+  it('retains all shared-session thread anchors when the database and store reopen', async () => {
     addSession('integration-a', 'C123') // one session for both threads
     const store = createSlackThreadStateStore('integration-a')
-    store.load('U_BOT')
-    store.save('U_BOT', ['C123|1000.001', 'C123|2000.001'])
+    await store.load('U_BOT')
+    await store.save('U_BOT', ['C123|1000.001', 'C123|2000.001'])
     sqlite.close()
     openDatabase()
 
-    expect(createSlackThreadStateStore('integration-a').load('U_BOT'))
+    expect(await createSlackThreadStateStore('integration-a').load('U_BOT'))
       .toEqual(['C123|1000.001', 'C123|2000.001'])
-    expect(createSlackThreadStateStore('integration-b').load('U_BOT')).toEqual([])
+    expect(await createSlackThreadStateStore('integration-b').load('U_BOT')).toEqual([])
   })
 
-  it('backfills existing active thread mappings once without admitting channel-wide or archived sessions', () => {
+  it('backfills existing active thread mappings once without admitting channel-wide or archived sessions', async () => {
     addSession('integration-a', 'C123|1000.001')
     addSession('integration-a', 'C123|1000.001') // legacy duplicate mapping
     addSession('integration-a', 'C123')
@@ -65,39 +65,39 @@ describe('durable Slack thread participation', () => {
     addSession('integration-a', 'C123|2000.001', true)
     addSession('integration-b', 'C123|3000.001')
     const store = createSlackThreadStateStore('integration-a')
-    expect(store.load('U_BOT')).toEqual(['C123|1000.001'])
+    expect((await store.load('U_BOT'))).toEqual(['C123|1000.001'])
 
     // Once state exists it is authoritative; evicted keys must not return on restart.
-    store.save('U_BOT', ['C123|4000.001'])
-    expect(createSlackThreadStateStore('integration-a').load('U_BOT')).toEqual(['C123|4000.001'])
+    await store.save('U_BOT', ['C123|4000.001'])
+    expect(await createSlackThreadStateStore('integration-a').load('U_BOT')).toEqual(['C123|4000.001'])
   })
 
-  it('retains participation after session archive, matching /clear without a restart', () => {
+  it('retains participation after session archive, matching /clear without a restart', async () => {
     addSession('integration-a', 'C123|1000.001')
     const store = createSlackThreadStateStore('integration-a')
-    store.load('U_BOT')
+    await store.load('U_BOT')
     db.update(schema.chatIntegrationSessions).set({ archivedAt: new Date() }).run()
-    expect(createSlackThreadStateStore('integration-a').load('U_BOT')).toEqual(['C123|1000.001'])
+    expect(await createSlackThreadStateStore('integration-a').load('U_BOT')).toEqual(['C123|1000.001'])
   })
 
-  it('resets participation when an installation switches bot identities, without reseeding old sessions', () => {
+  it('resets participation when an installation switches bot identities, without reseeding old sessions', async () => {
     addSession('integration-a', 'C123|1000.001')
     const store = createSlackThreadStateStore('integration-a')
-    expect(store.load('U_BOT')).toEqual(['C123|1000.001'])
-    expect(store.load('U_OTHER_BOT')).toEqual([])
-    expect(createSlackThreadStateStore('integration-a').load('U_OTHER_BOT')).toEqual([])
+    expect((await store.load('U_BOT'))).toEqual(['C123|1000.001'])
+    expect((await store.load('U_OTHER_BOT'))).toEqual([])
+    expect(await createSlackThreadStateStore('integration-a').load('U_OTHER_BOT')).toEqual([])
   })
 
-  it('persists only the most recent threads in their LRU order', () => {
+  it('persists only the most recent threads in their LRU order', async () => {
     const keys = Array.from({ length: MAX_TRACKED_SLACK_THREADS + 3 }, (_, i) => `C123|${i}.001`)
     const store = createSlackThreadStateStore('integration-a')
-    store.save('U_BOT', keys)
-    expect(store.load('U_BOT')).toEqual(keys.slice(3))
+    await store.save('U_BOT', keys)
+    expect((await store.load('U_BOT'))).toEqual(keys.slice(3))
   })
 
-  it('removes saved state when the owning integration is deleted', () => {
-    createSlackThreadStateStore('integration-a').save('U_BOT', ['C123|1000.001'])
-    createSlackThreadStateStore('integration-b').save('U_BOT', ['C123|2000.001'])
+  it('removes saved state when the owning integration is deleted', async () => {
+    await createSlackThreadStateStore('integration-a').save('U_BOT', ['C123|1000.001'])
+    await createSlackThreadStateStore('integration-b').save('U_BOT', ['C123|2000.001'])
     db.delete(schema.chatIntegrations).where(eq(schema.chatIntegrations.id, 'integration-a')).run()
     expect(db.select().from(schema.slackThreadState).all()).toEqual([{
       integrationId: 'integration-b', botUserId: 'U_BOT', activeThreads: ['C123|2000.001'],

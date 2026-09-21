@@ -1,13 +1,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { callHost, textResult, XAgentError } from './host-client'
-
-interface InvokeResult {
-  sessionId: string
-  status: 'running' | 'completed'
-  lastMessage?: string
-  error?: string
-}
+import { invokeResultSchema } from './host-response-schemas'
 
 export function makeInvokeAgentTool(getCallerSessionId: () => string) {
   return tool(
@@ -26,6 +20,7 @@ Note: sessions started by another agent cannot themselves invoke other agents â€
       prompt: z.string().min(1).describe('Message to send to the target agent'),
       session_id: z.string().optional().describe('Optional existing session ID to continue. Omit to start a new session.'),
       sync: z.boolean().optional().describe('If true, wait for the target agent to finish its turn and return its final message. Default false.'),
+      attachments: z.array(z.string()).max(10).optional().describe('Up to 10 regular files under the caller\'s /workspace to send with the prompt. Paths may be absolute /workspace/... paths or workspace-relative paths.'),
     },
     async (args) => {
       try {
@@ -35,8 +30,9 @@ Note: sessions started by another agent cannot themselves invoke other agents â€
         }
         if (args.session_id) body.sessionId = args.session_id
         if (args.sync) body.sync = true
+        if (args.attachments !== undefined) body.attachments = args.attachments
 
-        const data = await callHost<InvokeResult>('invoke', body, { callerSessionId: getCallerSessionId() })
+        const data = await callHost('invoke', body, invokeResultSchema, { callerSessionId: getCallerSessionId() })
         const lines = [`session_id: ${data.sessionId}`, `status: ${data.status}`]
         // Use !== undefined so an empty-string lastMessage is still surfaced
         // (compactMessage now returns "[no text response]" rather than "" for

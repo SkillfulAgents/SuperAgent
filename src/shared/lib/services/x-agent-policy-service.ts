@@ -59,12 +59,12 @@ function targetMatch(target: string | null) {
  * Look up an exact policy row.
  * For 'list', pass target=null. For 'read'/'invoke', pass target=<otherSlug>.
  */
-export function getPolicy(
+export async function getPolicy(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string | null,
-): XAgentPolicy | null {
-  const rows = db
+): Promise<XAgentPolicy | null> {
+  const rows = await db
     .select()
     .from(xAgentPolicies)
     .where(
@@ -156,12 +156,12 @@ async function compareAndSetPolicy(
 }
 
 /** Delete the exact policy row(s) for (caller, operation, target). */
-export function deletePolicy(
+export async function deletePolicy(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string | null,
-): number {
-  const result = db
+): Promise<number> {
+  const result = await db
     .delete(xAgentPolicies)
     .where(
       and(
@@ -181,12 +181,12 @@ export function deletePolicy(
  * effective decision would fall back to a global allow, if one exists).
  * Returns the number of rows removed.
  */
-export function deleteTargetPolicy(
+export async function deleteTargetPolicy(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string,
   options?: { preserveBlock?: boolean },
-): number {
+): Promise<number> {
   if (!options?.preserveBlock) {
     return deletePolicy(callerSlug, operation, targetSlug)
   }
@@ -198,7 +198,7 @@ export function deleteTargetPolicy(
   if (options?.preserveBlock) {
     conditions.push(ne(xAgentPolicies.decision, 'block'))
   }
-  const result = db
+  const result = await db
     .delete(xAgentPolicies)
     .where(and(...conditions))
     .run()
@@ -224,16 +224,16 @@ export function deleteTargetPolicy(
  * part of the invoke contract and does not require 'read' — 'read' only gates
  * browsing existing sessions via get_agent_sessions / get_agent_session_transcript.
  */
-export function evaluate(
+export async function evaluate(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string | null,
-): XAgentDecision {
+): Promise<XAgentDecision> {
   if (targetSlug !== null) {
-    const exact = getPolicy(callerSlug, operation, targetSlug)
+    const exact = await getPolicy(callerSlug, operation, targetSlug)
     if (exact) return exact.decision
   }
-  const global = getPolicy(callerSlug, operation, null)
+  const global = await getPolicy(callerSlug, operation, null)
   if (global) return global.decision
   return 'review'
 }
@@ -241,7 +241,7 @@ export function evaluate(
 /**
  * List all policy rows for a caller (used by UI to show current settings).
  */
-export function listPoliciesForCaller(callerSlug: string): XAgentPolicy[] {
+export async function listPoliciesForCaller(callerSlug: string): Promise<XAgentPolicy[]> {
   return db
     .select()
     .from(xAgentPolicies)

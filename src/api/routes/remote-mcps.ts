@@ -294,7 +294,7 @@ remoteMcps.post('/', async (c) => {
     .where(eq(remoteMcpServers.id, id))
     .limit(1)
 
-  logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'created', details: { name: body.name.trim(), url: body.url.trim() } })
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'created', details: { name: body.name.trim(), url: body.url.trim() } })
 
   return c.json({
     server: sanitizeServer(server),
@@ -595,7 +595,7 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     .where(eq(remoteMcpServers.id, id))
     .limit(1)
 
-  logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'updated' })
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'updated' })
   const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
 
   return c.json({
@@ -629,7 +629,7 @@ remoteMcps.delete('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     ? await syncRemoteMcpAgents(assignedAgentSlugs)
     : false
 
-  logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'deleted', details: { name: existing.name } })
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'deleted', details: { name: existing.name } })
 
   return c.json({ success: true, liveRefresh })
 })

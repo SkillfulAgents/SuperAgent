@@ -2155,7 +2155,7 @@ class MessagePersister {
   // Broadcast to SSE clients
   private broadcastToSSE(agentSlug: string, sessionId: string, data: unknown): void {
     const key = sessionKeyOf(agentSlug, sessionId)
-    this.capture?.recordOutput(sessionId, data)
+    void this.capture?.recordOutput(sessionId, data)
     // Turn boundaries settle whatever the last turn left parked. That is the
     // only request bookkeeping on the broadcast path — registration itself
     // lives in the per-kind handlers.
@@ -2204,7 +2204,7 @@ class MessagePersister {
     message: StreamMessage
   ): void {
     const { agentSlug, sessionId } = ctx
-    this.capture?.recordInput(sessionId, message)
+    void this.capture?.recordInput(sessionId, message)
     const state = this.streamingStates.get(ctx.key)
     if (!state) return
 
@@ -3359,7 +3359,7 @@ class MessagePersister {
               this.handleScriptRunRequestTool(sessionId, block.id, input, state.agentSlug, parentToolId)
             }
             if (block.name.startsWith('mcp__computer-use__')) {
-              this.handleComputerUseRequestTool(
+              void this.handleComputerUseRequestTool(
                 sessionId,
                 block.id,
                 block.name,
@@ -3768,7 +3768,7 @@ class MessagePersister {
           }
 
           if (sub.currentToolUse.name.startsWith('mcp__computer-use__')) {
-            this.handleComputerUseRequestTool(
+            void this.handleComputerUseRequestTool(
               sessionId,
               sub.currentToolUse.id,
               sub.currentToolUse.name,
@@ -4071,7 +4071,7 @@ class MessagePersister {
           }
 
           if (state.currentToolUse.name.startsWith('mcp__computer-use__')) {
-            this.handleComputerUseRequestTool(
+            void this.handleComputerUseRequestTool(
               sessionId,
               state.currentToolUse.id,
               state.currentToolUse.name,
@@ -4242,7 +4242,7 @@ class MessagePersister {
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
 
       // Parse the tool input
       let input: {
@@ -4282,7 +4282,7 @@ class MessagePersister {
       let timezone: string | undefined
       try {
         // Resolve timezone: agent tool override > agent owner's timezone
-        timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
+        timezone = input.timezone || (await resolveTimezoneForAgent(agentSlug))
         const sessionOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
         taskId = await createScheduledTask({
           agentSlug,
@@ -4361,7 +4361,7 @@ class MessagePersister {
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       let input: { wakeTime?: string; note?: string; timezone?: string }
       try {
         input = JSON.parse(toolInput)
@@ -4389,7 +4389,7 @@ class MessagePersister {
       let replaced: ScheduledTask | null
       let timezone: string | undefined
       try {
-        timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
+        timezone = input.timezone || (await resolveTimezoneForAgent(agentSlug))
         const sessionOwnerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
         ;({ taskId, replaced } = await createSessionWake({
           agentSlug,
@@ -4596,7 +4596,7 @@ ${continuation}`
     _toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         if (!agentSlug) {
           console.error('[MessagePersister] list_scheduled_tasks missing agentSlug')
@@ -4633,7 +4633,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: ScheduledTaskUpdateInput
         try {
@@ -4724,7 +4724,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: { task_id: string }
         try {
@@ -4789,7 +4789,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: { task_id: string }
         try {
@@ -4926,7 +4926,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         if (!isPlatformComposioActive()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
@@ -4983,7 +4983,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         if (!isPlatformComposioActive()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
@@ -5045,7 +5045,7 @@ ${continuation}`
         // of letting the call go out as a bare org token with nothing recorded.
         const sessionMemberId = await this.resolvePlatformMemberForSession(agentSlug, sessionId)
         const mintAttribution =
-          attribution.current() ??
+          (await attribution.current()) ??
           // Never mint as the opaque-key 'local' placeholder — that would send `token::local`.
           (sessionMemberId === 'local' ? null : attribution.fromMemberId(sessionMemberId))
         const mintedByMemberId = mintAttribution?.actingMemberId() ?? undefined
@@ -5126,7 +5126,7 @@ ${continuation}`
    */
   private async resolvePlatformMemberForSession(agentSlug: string, sessionId: string): Promise<string> {
     const ownerId = (await getSessionMetadata(this.storeOf(agentSlug), sessionId))?.createdByUserId
-    const resolved = resolvePlatformMemberForCandidates([ownerId])
+    const resolved = await resolvePlatformMemberForCandidates([ownerId])
     return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
   }
 
@@ -5138,7 +5138,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         // Gate on platform auth, not Composio mode: custom endpoints live on
         // the platform proxy and must keep working when the user brings their
@@ -5171,7 +5171,7 @@ ${continuation}`
         // Minted explicitly as `token::memberId` below, so record that when no ALS
         // attribution is active; never persist the opaque-key 'local' placeholder.
         const mintedByMemberId =
-          attribution.current()?.actingMemberId() ?? (memberId === 'local' ? undefined : memberId)
+          (await attribution.current())?.actingMemberId() ?? (memberId === 'local' ? undefined : memberId)
 
         // 1. Mint the endpoint on the platform proxy
         const endpoint = await createPlatformWebhookEndpoint(memberId, {
@@ -5278,7 +5278,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         // Gate on platform auth, not Composio mode: custom endpoints live on
         // the platform proxy and must keep working when the user brings their
@@ -5333,7 +5333,7 @@ ${continuation}`
         // runs the update (SUP-765). Pre-column rows fall back to the creator.
         const memberId =
           trigger.mintedByMemberId ??
-          resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
+          (await resolvePlatformMemberForCandidates([trigger.createdByUserId]))?.memberId ??
           (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
         await updatePlatformWebhookEndpoint(memberId, trigger.composioTriggerId, patch)
 
@@ -5381,7 +5381,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         if (!getPlatformAccessToken()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
@@ -5415,7 +5415,7 @@ ${continuation}`
         // Minting-member-first resolution, same as update/teardown (SUP-765).
         const memberId =
           trigger.mintedByMemberId ??
-          resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
+          (await resolvePlatformMemberForCandidates([trigger.createdByUserId]))?.memberId ??
           (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
 
         if (input.test_filter_exp) {
@@ -5464,7 +5464,7 @@ ${continuation}`
     _toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         const triggers = await listActiveWebhookTriggers(agentSlug)
         const formatted = triggers.length === 0
@@ -5494,7 +5494,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: WebhookTriggerUpdateInput
         try {
@@ -5552,7 +5552,7 @@ ${continuation}`
     toolInput: string,
     agentSlug: string
   ): void {
-    ;(async () => {
+    void (async () => {
       try {
         let input: { trigger_id: string }
         try {

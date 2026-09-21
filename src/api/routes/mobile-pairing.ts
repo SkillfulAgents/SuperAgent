@@ -80,7 +80,7 @@ mobilePairing.post('/pairing-token', async (c) => {
   try {
     const { mintPairingToken } = await import('@shared/lib/auth/mobile-pairing')
     const { getAppBaseUrl } = await import('@shared/lib/auth/config')
-    const { token, expiresAt } = mintPairingToken(info.user.id)
+    const { token, expiresAt } = await mintPairingToken(info.user.id)
     return c.json(
       { token, expiresAt: expiresAt.toISOString(), deploymentUrl: getAppBaseUrl() },
       200,
@@ -164,7 +164,7 @@ mobilePairing.get('/devices', async (c) => {
   if (!info) return c.json({ error: 'Unauthorized' }, 401)
 
   const { listMobileDevices } = await import('@shared/lib/auth/mobile-pairing')
-  const devices = listMobileDevices(info.user.id).map((device) => ({
+  const devices = (await listMobileDevices(info.user.id)).map((device) => ({
     id: device.id,
     deviceName: device.deviceName,
     createdAt: new Date(device.createdAt).toISOString(),

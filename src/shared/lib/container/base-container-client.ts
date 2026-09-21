@@ -741,7 +741,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       let port = await this.findAvailablePort()
 
       // Write env vars to a temp file (avoids command length limits on Windows)
-      const { flag: envFileFlag, cleanup: cleanupEnvFile } = this.buildEnvFile(options?.envVars, options?.agentName)
+      const { flag: envFileFlag, cleanup: cleanupEnvFile } = await this.buildEnvFile(options?.envVars, options?.agentName)
       const containerName = this.getContainerName()
 
       // Build resource limit flags
@@ -1879,11 +1879,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   // The final agent env, transport-agnostic; subclasses only serialize it.
   // Merge order: provider defaults < runtime constants < config.envVars < extra.
-  protected buildAgentEnv(extra?: Record<string, string>, agentName?: string): Record<string, string> {
+  protected async buildAgentEnv(extra?: Record<string, string>, agentName?: string): Promise<Record<string, string>> {
     const settings = getSettings()
     const provider = getActiveLlmProvider()
     const merged: Record<string, string | undefined> = {
-      ...provider.getContainerEnvVars(this.agentIdentityForEnv(agentName)),
+      ...(await provider.getContainerEnvVars(this.agentIdentityForEnv(agentName))),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       // The setting only switches tool search OFF; whether it may be on is the
       // provider's call, because it depends on the endpoint expanding deferred
@@ -1902,7 +1902,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   // Serialize the agent env to a temp --env-file (avoids shell-quoting + Windows
   // command-length limits). Caller cleans up the file after start.
-  protected buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): { flag: string; cleanup: () => void } {
-    return writeEnvFile(this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId)
+  protected async buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): Promise<{ flag: string; cleanup: () => void }> {
+    return writeEnvFile(await this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId)
   }
 }

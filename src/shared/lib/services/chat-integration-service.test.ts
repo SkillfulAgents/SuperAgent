@@ -2,14 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
-import * as schema from '../db/schema'
+import { eq } from 'drizzle-orm'
+import type { AppDatabase } from '../db/drivers/types'
+import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 
 let testDir: string
-let testDb: ReturnType<typeof drizzle>
-let testSqlite: InstanceType<typeof Database>
+let testDb: AppDatabase
+let handle: TestDatabase
 
 vi.mock('../db', () => ({
   get db() { return testDb },
@@ -32,33 +31,32 @@ import { chatIntegrations } from '../db/schema'
 describe('chat-integration-service', () => {
   beforeEach(async () => {
     testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'chat-integration-test-'))
-    testSqlite = new Database(':memory:')
-    testDb = drizzle(testSqlite, { schema })
-    migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
+    handle = await createTestDatabase()
+    testDb = handle.db
     captureExceptionMock.mockReset()
   })
 
   afterEach(async () => {
-    testSqlite?.close()
+    await handle.close()
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
 
   describe('createChatIntegration', () => {
-    it('throws DuplicateBotTokenError when same provider + token is registered twice', () => {
-      const firstId = createChatIntegration({
+    it('throws DuplicateBotTokenError when same provider + token is registered twice', async () => {
+      const firstId = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'duplicate-token' },
-      })
+      }))
 
-      expect(() => createChatIntegration({
+      await expect(createChatIntegration({
         agentSlug: 'agent-b',
         provider: 'telegram',
         config: { botToken: 'duplicate-token' },
-      })).toThrow(DuplicateBotTokenError)
+      })).rejects.toThrow(DuplicateBotTokenError)
 
       try {
-        createChatIntegration({
+        await createChatIntegration({
           agentSlug: 'agent-b',
           provider: 'telegram',
           config: { botToken: 'duplicate-token' },
@@ -69,59 +67,73 @@ describe('chat-integration-service', () => {
       }
 
       // Second insert must not have happened
-      const rows = testDb.select().from(chatIntegrations).all()
+      const rows = await testDb.select().from(chatIntegrations).all()
       expect(rows).toHaveLength(1)
     })
 
-    it('allows different tokens for the same agent', () => {
-      createChatIntegration({
+    it('admits exactly one of two registrations racing with the same token', async () => {
+      // The duplicate check is a condition on the insert itself: two
+      // registrations that both read "no owner" before either writes cannot
+      // both land.
+      const results = await Promise.allSettled([
+        createChatIntegration({ agentSlug: 'agent-a', provider: 'telegram', config: { botToken: 'raced-token' } }),
+        createChatIntegration({ agentSlug: 'agent-b', provider: 'telegram', config: { botToken: 'raced-token' } }),
+      ])
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+      const rejected = results.find((result) => result.status === 'rejected') as PromiseRejectedResult
+      expect(rejected.reason).toBeInstanceOf(DuplicateBotTokenError)
+      expect(await testDb.select().from(chatIntegrations).all()).toHaveLength(1)
+    })
+
+    it('allows different tokens for the same agent', async () => {
+      await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'token-1' },
       })
-      createChatIntegration({
+      await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'token-2' },
       })
 
-      const rows = testDb.select().from(chatIntegrations).all()
+      const rows = await testDb.select().from(chatIntegrations).all()
       expect(rows).toHaveLength(2)
     })
 
-    it('allows the same token string across different providers', () => {
+    it('allows the same token string across different providers', async () => {
       // Unlikely in practice (slack and telegram tokens look nothing alike),
       // but the check is provider-scoped so this must succeed.
-      createChatIntegration({
+      await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'shared-token' },
       })
-      createChatIntegration({
+      await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'slack',
         config: { botToken: 'shared-token', appToken: 'xapp-x' },
       })
 
-      const rows = testDb.select().from(chatIntegrations).all()
+      const rows = await testDb.select().from(chatIntegrations).all()
       expect(rows).toHaveLength(2)
     })
 
-    it('throws DuplicateBotTokenError when same phone number is registered twice for iMessage', () => {
-      const firstId = createChatIntegration({
+    it('throws DuplicateBotTokenError when same phone number is registered twice for iMessage', async () => {
+      const firstId = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'imessage',
         config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15551234567', token: 'tok123' },
-      })
+      }))
 
-      expect(() => createChatIntegration({
+      await expect(createChatIntegration({
         agentSlug: 'agent-b',
         provider: 'imessage',
         config: { gatewayUrl: 'https://gw2.example.com', phoneNumber: '+15551234567', token: 'tok456' },
-      })).toThrow(DuplicateBotTokenError)
+      })).rejects.toThrow(DuplicateBotTokenError)
 
       try {
-        createChatIntegration({
+        await createChatIntegration({
           agentSlug: 'agent-b',
           provider: 'imessage',
           config: { gatewayUrl: 'https://gw2.example.com', phoneNumber: '+15551234567', token: 'tok456' },
@@ -132,46 +144,46 @@ describe('chat-integration-service', () => {
       }
 
       // Second insert must not have happened
-      const rows = testDb.select().from(chatIntegrations).all()
+      const rows = await testDb.select().from(chatIntegrations).all()
       expect(rows).toHaveLength(1)
     })
 
-    it('allows the same phone number across different providers', () => {
-      createChatIntegration({
+    it('allows the same phone number across different providers', async () => {
+      await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'imessage',
         config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15551234567', token: 'tok123' },
       })
-      createChatIntegration({
+      await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: '+15551234567' },
       })
 
-      const rows = testDb.select().from(chatIntegrations).all()
+      const rows = await testDb.select().from(chatIntegrations).all()
       expect(rows).toHaveLength(2)
     })
 
-    it('allows different phone numbers for iMessage', () => {
-      createChatIntegration({
+    it('allows different phone numbers for iMessage', async () => {
+      await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'imessage',
         config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15551234567', token: 'tok123' },
       })
-      createChatIntegration({
+      await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'imessage',
         config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15559876543', token: 'tok456' },
       })
 
-      const rows = testDb.select().from(chatIntegrations).all()
+      const rows = await testDb.select().from(chatIntegrations).all()
       expect(rows).toHaveLength(2)
     })
   })
 
   describe('updateChatIntegration', () => {
-    it('preserves stored Slack credentials when PATCHing only behavior settings', () => {
-      const id = createChatIntegration({
+    it('preserves stored Slack credentials when PATCHing only behavior settings', async () => {
+      const id = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'slack',
         config: {
@@ -180,13 +192,13 @@ describe('chat-integration-service', () => {
           channelId: 'C123',
           onlyMentioned: false,
         },
-      })
+      }))
 
-      expect(updateChatIntegration(id, {
+      expect((await updateChatIntegration(id, {
         config: { onlyMentioned: true },
-      })).toBe(true)
+      }))).toBe(true)
 
-      expect(JSON.parse(getChatIntegration(id)!.config)).toEqual({
+      expect(JSON.parse((await getChatIntegration(id))!.config)).toEqual({
         botToken: 'xoxb-secret',
         appToken: 'xapp-secret',
         channelId: 'C123',
@@ -194,14 +206,14 @@ describe('chat-integration-service', () => {
       })
     })
 
-    it('preserves stored credentials when a client echoes masked placeholders', () => {
-      const id = createChatIntegration({
+    it('preserves stored credentials when a client echoes masked placeholders', async () => {
+      const id = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'slack',
         config: { botToken: 'xoxb-secret', appToken: 'xapp-secret' },
-      })
+      }))
 
-      updateChatIntegration(id, {
+      await updateChatIntegration(id, {
         config: {
           botToken: '********',
           appToken: '••••xapp',
@@ -209,111 +221,111 @@ describe('chat-integration-service', () => {
         },
       })
 
-      expect(JSON.parse(getChatIntegration(id)!.config)).toEqual({
+      expect(JSON.parse((await getChatIntegration(id))!.config)).toEqual({
         botToken: 'xoxb-secret',
         appToken: 'xapp-secret',
         answerInThread: true,
       })
     })
 
-    it('repairs an invalid stored config when PATCH supplies a complete replacement', () => {
-      const id = createChatIntegration({
+    it('repairs an invalid stored config when PATCH supplies a complete replacement', async () => {
+      const id = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'slack',
         config: { legacyBotToken: 'obsolete-shape' },
-      })
+      }))
 
-      expect(updateChatIntegration(id, {
+      expect((await updateChatIntegration(id, {
         config: {
           botToken: 'xoxb-repaired',
           appToken: 'xapp-repaired',
           onlyMentioned: true,
         },
-      })).toBe(true)
+      }))).toBe(true)
 
-      expect(JSON.parse(getChatIntegration(id)!.config)).toEqual({
+      expect(JSON.parse((await getChatIntegration(id))!.config)).toEqual({
         botToken: 'xoxb-repaired',
         appToken: 'xapp-repaired',
         onlyMentioned: true,
       })
     })
 
-    it('rejects a partial PATCH when an invalid stored config cannot supply credentials', () => {
-      const id = createChatIntegration({
+    it('rejects a partial PATCH when an invalid stored config cannot supply credentials', async () => {
+      const id = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'slack',
         config: { legacyBotToken: 'obsolete-shape' },
-      })
+      }))
 
-      expect(() => updateChatIntegration(id, {
+      await expect(updateChatIntegration(id, {
         config: { onlyMentioned: true },
-      })).toThrow()
+      })).rejects.toThrow()
     })
 
-    it('allows settings-only edits on legacy rows whose token is already duplicated', () => {
-      createChatIntegration({
+    it('allows settings-only edits on legacy rows whose token is already duplicated', async () => {
+      await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'legacy-duplicate' },
       })
-      const secondId = createChatIntegration({
+      const secondId = (await createChatIntegration({
         agentSlug: 'agent-b',
         provider: 'telegram',
         config: { botToken: 'originally-unique' },
-      })
-      testSqlite.prepare('UPDATE chat_integrations SET config = ? WHERE id = ?')
-        .run(JSON.stringify({ botToken: 'legacy-duplicate' }), secondId)
+      }))
+      await testDb.update(chatIntegrations).set({ config: JSON.stringify({ botToken: 'legacy-duplicate' }) })
+        .where(eq(chatIntegrations.id, secondId)).run()
 
-      expect(updateChatIntegration(secondId, {
+      expect((await updateChatIntegration(secondId, {
         config: { draftStreaming: true },
-      })).toBe(true)
-      expect(JSON.parse(getChatIntegration(secondId)!.config)).toEqual({
+      }))).toBe(true)
+      expect(JSON.parse((await getChatIntegration(secondId))!.config)).toEqual({
         botToken: 'legacy-duplicate',
         draftStreaming: true,
       })
     })
 
-    it('throws DuplicateBotTokenError when PATCHing config to an already-used token', () => {
-      const firstId = createChatIntegration({
+    it('throws DuplicateBotTokenError when PATCHing config to an already-used token', async () => {
+      const firstId = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'token-1' },
-      })
-      const secondId = createChatIntegration({
+      }))
+      const secondId = (await createChatIntegration({
         agentSlug: 'agent-b',
         provider: 'telegram',
         config: { botToken: 'token-2' },
-      })
+      }))
 
-      expect(() => updateChatIntegration(secondId, {
+      await expect(updateChatIntegration(secondId, {
         config: { botToken: 'token-1' },
-      })).toThrow(DuplicateBotTokenError)
+      })).rejects.toThrow(DuplicateBotTokenError)
 
       try {
-        updateChatIntegration(secondId, { config: { botToken: 'token-1' } })
+        await updateChatIntegration(secondId, { config: { botToken: 'token-1' } })
       } catch (err) {
         expect((err as DuplicateBotTokenError).existingIntegrationId).toBe(firstId)
       }
     })
 
-    it('throws DuplicateBotTokenError when PATCHing iMessage config to an already-used phone number', () => {
-      const firstId = createChatIntegration({
+    it('throws DuplicateBotTokenError when PATCHing iMessage config to an already-used phone number', async () => {
+      const firstId = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'imessage',
         config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15551234567', token: 'tok123' },
-      })
-      const secondId = createChatIntegration({
+      }))
+      const secondId = (await createChatIntegration({
         agentSlug: 'agent-b',
         provider: 'imessage',
         config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15559876543', token: 'tok456' },
-      })
+      }))
 
-      expect(() => updateChatIntegration(secondId, {
+      await expect(updateChatIntegration(secondId, {
         config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15551234567', token: 'tok456' },
-      })).toThrow(DuplicateBotTokenError)
+      })).rejects.toThrow(DuplicateBotTokenError)
 
       try {
-        updateChatIntegration(secondId, {
+        await updateChatIntegration(secondId, {
           config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15551234567', token: 'tok456' },
         })
       } catch (err) {
@@ -321,21 +333,84 @@ describe('chat-integration-service', () => {
       }
     })
 
-    it('allows updating an integration to keep the same token (self-exclusion)', () => {
-      const id = createChatIntegration({
+    it('admits exactly one of two PATCHes racing onto the same new token', async () => {
+      const first = await createChatIntegration({ agentSlug: 'agent-a', provider: 'telegram', config: { botToken: 'token-a' } })
+      const second = await createChatIntegration({ agentSlug: 'agent-b', provider: 'telegram', config: { botToken: 'token-b' } })
+      const results = await Promise.allSettled([
+        updateChatIntegration(first, { config: { botToken: 'token-moved' } }),
+        updateChatIntegration(second, { config: { botToken: 'token-moved' } }),
+      ])
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+      const rejected = results.find((result) => result.status === 'rejected') as PromiseRejectedResult
+      expect(rejected.reason).toBeInstanceOf(DuplicateBotTokenError)
+      const moved = (await testDb.select().from(chatIntegrations).all())
+        .filter((row) => JSON.parse(row.config).botToken === 'token-moved')
+      expect(moved).toHaveLength(1)
+    })
+
+    it('redoes a stale settings-only edit on the fresh row instead of putting its old credential back', async () => {
+      const first = await createChatIntegration({ agentSlug: 'agent-a', provider: 'telegram', config: { botToken: 'token-x' } })
+      // Between this edit's read and its write the row moves to token-y and
+      // another integration claims token-x. Writing the snapshot back would
+      // leave both rows owning token-x.
+      const intrude = async () => {
+        await testDb.update(chatIntegrations).set({ config: JSON.stringify({ botToken: 'token-y' }) })
+          .where(eq(chatIntegrations.id, first)).run()
+        await createChatIntegration({ agentSlug: 'agent-b', provider: 'telegram', config: { botToken: 'token-x' } })
+      }
+      const afterRead = (builder: object): object => new Proxy(builder, {
+        get(target, prop, receiver) {
+          const value = Reflect.get(target, prop, receiver)
+          if (typeof value !== 'function') return value
+          if (prop === 'all' || prop === 'get') {
+            return async (...args: unknown[]) => {
+              const rows = await value.apply(target, args)
+              await intrude()
+              return rows
+            }
+          }
+          return (...args: unknown[]) => {
+            const out = value.apply(target, args)
+            return out && typeof out === 'object' ? afterRead(out) : out
+          }
+        },
+      })
+      const select = testDb.select.bind(testDb)
+      let intruded = false
+      const spy = vi.spyOn(testDb, 'select').mockImplementation(((...args: unknown[]) => {
+        const query = (select as (...a: unknown[]) => object)(...args)
+        if (intruded) return query
+        intruded = true
+        return afterRead(query)
+      }) as never)
+      try {
+        expect(await updateChatIntegration(first, { config: { draftStreaming: true } })).toBe(true)
+      } finally {
+        spy.mockRestore()
+      }
+
+      const rows = await testDb.select().from(chatIntegrations).all()
+      const owningX = rows.filter((row) => JSON.parse(row.config).botToken === 'token-x')
+      expect(owningX).toHaveLength(1)
+      expect(owningX[0].id).not.toBe(first)
+      expect(JSON.parse(rows.find((row) => row.id === first)!.config)).toEqual({ botToken: 'token-y', draftStreaming: true })
+    })
+
+    it('allows updating an integration to keep the same token (self-exclusion)', async () => {
+      const id = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'token-1' },
-      })
+      }))
 
       // Same token, plus extra config — should not trip the guard
-      const ok = updateChatIntegration(id, { config: { botToken: 'token-1', chatId: '42' } })
+      const ok = (await updateChatIntegration(id, { config: { botToken: 'token-1', chatId: '42' } }))
       expect(ok).toBe(true)
     })
   })
 
   describe('listStartupChatIntegrations', () => {
-    function insertRow(opts: {
+    async function insertRow(opts: {
       id: string
       token: string
       status: 'active' | 'paused' | 'error' | 'disconnected'
@@ -346,7 +421,7 @@ describe('chat-integration-service', () => {
       const config = provider === 'imessage'
         ? { gatewayUrl: 'https://gw.example.com', phoneNumber: opts.token, token: 'tok123' }
         : { botToken: opts.token }
-      testDb.insert(chatIntegrations).values({
+      await testDb.insert(chatIntegrations).values({
         id: opts.id,
         agentSlug: 'agent-a',
         provider,
@@ -361,29 +436,29 @@ describe('chat-integration-service', () => {
       }).run()
     }
 
-    it('deduplicates rows sharing a bot token and prefers `active` over `error`', () => {
-      insertRow({ id: 'err', token: 'shared', status: 'error', updatedAt: new Date('2026-04-10T00:00:00Z') })
-      insertRow({ id: 'ok',  token: 'shared', status: 'active', updatedAt: new Date('2026-04-01T00:00:00Z') })
+    it('deduplicates rows sharing a bot token and prefers `active` over `error`', async () => {
+      await insertRow({ id: 'err', token: 'shared', status: 'error', updatedAt: new Date('2026-04-10T00:00:00Z') })
+      await insertRow({ id: 'ok',  token: 'shared', status: 'active', updatedAt: new Date('2026-04-01T00:00:00Z') })
 
-      const results = listStartupChatIntegrations()
+      const results = (await listStartupChatIntegrations())
       expect(results).toHaveLength(1)
       expect(results[0].id).toBe('ok')
     })
 
-    it('among rows with the same status, picks the most-recently updated', () => {
-      insertRow({ id: 'old', token: 'shared', status: 'active', updatedAt: new Date('2026-04-01T00:00:00Z') })
-      insertRow({ id: 'new', token: 'shared', status: 'active', updatedAt: new Date('2026-04-15T00:00:00Z') })
+    it('among rows with the same status, picks the most-recently updated', async () => {
+      await insertRow({ id: 'old', token: 'shared', status: 'active', updatedAt: new Date('2026-04-01T00:00:00Z') })
+      await insertRow({ id: 'new', token: 'shared', status: 'active', updatedAt: new Date('2026-04-15T00:00:00Z') })
 
-      const results = listStartupChatIntegrations()
+      const results = (await listStartupChatIntegrations())
       expect(results).toHaveLength(1)
       expect(results[0].id).toBe('new')
     })
 
-    it('reports a Sentry warning when duplicates are detected', () => {
-      insertRow({ id: 'a', token: 'shared', status: 'active', updatedAt: new Date('2026-04-01T00:00:00Z') })
-      insertRow({ id: 'b', token: 'shared', status: 'error',  updatedAt: new Date('2026-04-02T00:00:00Z') })
+    it('reports a Sentry warning when duplicates are detected', async () => {
+      await insertRow({ id: 'a', token: 'shared', status: 'active', updatedAt: new Date('2026-04-01T00:00:00Z') })
+      await insertRow({ id: 'b', token: 'shared', status: 'error',  updatedAt: new Date('2026-04-02T00:00:00Z') })
 
-      listStartupChatIntegrations()
+      await listStartupChatIntegrations()
 
       expect(captureExceptionMock).toHaveBeenCalledTimes(1)
       const [err, opts] = captureExceptionMock.mock.calls[0] as [Error, { level?: string; tags?: Record<string, string> }]
@@ -392,19 +467,19 @@ describe('chat-integration-service', () => {
       expect(opts.tags).toMatchObject({ component: 'chat-integration', operation: 'list-startup' })
     })
 
-    it('does not report Sentry when there are no duplicates', () => {
-      insertRow({ id: 'a', token: 'token-1', status: 'active', updatedAt: new Date('2026-04-01T00:00:00Z') })
-      insertRow({ id: 'b', token: 'token-2', status: 'active', updatedAt: new Date('2026-04-02T00:00:00Z') })
+    it('does not report Sentry when there are no duplicates', async () => {
+      await insertRow({ id: 'a', token: 'token-1', status: 'active', updatedAt: new Date('2026-04-01T00:00:00Z') })
+      await insertRow({ id: 'b', token: 'token-2', status: 'active', updatedAt: new Date('2026-04-02T00:00:00Z') })
 
-      const results = listStartupChatIntegrations()
+      const results = (await listStartupChatIntegrations())
       expect(results).toHaveLength(2)
       expect(captureExceptionMock).not.toHaveBeenCalled()
     })
 
-    it('keeps rows that have no parseable token (defensive)', () => {
+    it('keeps rows that have no parseable token (defensive)', async () => {
       // Row with malformed JSON config — safeParseConfig returns null, so it can't be deduped.
       // We still want it in the startup list; the connector will flip it to `error` itself.
-      testDb.insert(chatIntegrations).values({
+      await testDb.insert(chatIntegrations).values({
         id: 'bad',
         agentSlug: 'agent-a',
         provider: 'telegram',
@@ -418,7 +493,7 @@ describe('chat-integration-service', () => {
         updatedAt: new Date('2026-04-01T00:00:00Z'),
       }).run()
 
-      const results = listStartupChatIntegrations()
+      const results = (await listStartupChatIntegrations())
       expect(results.find(r => r.id === 'bad')).toBeDefined()
       // Malformed JSON is a real bug — should have been captured
       expect(captureExceptionMock).toHaveBeenCalled()
@@ -428,91 +503,91 @@ describe('chat-integration-service', () => {
       expect(parseCall).toBeDefined()
     })
 
-    it('deduplicates iMessage rows sharing a phone number', () => {
-      insertRow({ id: 'im-err', token: '+15551234567', status: 'error',  updatedAt: new Date('2026-04-10T00:00:00Z'), provider: 'imessage' })
-      insertRow({ id: 'im-ok',  token: '+15551234567', status: 'active', updatedAt: new Date('2026-04-01T00:00:00Z'), provider: 'imessage' })
+    it('deduplicates iMessage rows sharing a phone number', async () => {
+      await insertRow({ id: 'im-err', token: '+15551234567', status: 'error',  updatedAt: new Date('2026-04-10T00:00:00Z'), provider: 'imessage' })
+      await insertRow({ id: 'im-ok',  token: '+15551234567', status: 'active', updatedAt: new Date('2026-04-01T00:00:00Z'), provider: 'imessage' })
 
-      const results = listStartupChatIntegrations()
+      const results = (await listStartupChatIntegrations())
       expect(results).toHaveLength(1)
       expect(results[0].id).toBe('im-ok')
     })
   })
 
   describe('sessionTimeout', () => {
-    it('stores sessionTimeout on create', () => {
-      const id = createChatIntegration({
+    it('stores sessionTimeout on create', async () => {
+      const id = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'token-timeout' },
         sessionTimeout: 4,
-      })
-      const row = getChatIntegration(id)
+      }))
+      const row = (await getChatIntegration(id))
       expect(row?.sessionTimeout).toBe(4)
     })
 
-    it('defaults sessionTimeout to null when not provided', () => {
-      const id = createChatIntegration({
+    it('defaults sessionTimeout to null when not provided', async () => {
+      const id = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'token-no-timeout' },
-      })
-      const row = getChatIntegration(id)
+      }))
+      const row = (await getChatIntegration(id))
       expect(row?.sessionTimeout).toBeNull()
     })
 
-    it('updates sessionTimeout via updateChatIntegration', () => {
-      const id = createChatIntegration({
+    it('updates sessionTimeout via updateChatIntegration', async () => {
+      const id = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'token-update-timeout' },
-      })
-      updateChatIntegration(id, { sessionTimeout: 12 })
-      expect(getChatIntegration(id)?.sessionTimeout).toBe(12)
+      }))
+      await updateChatIntegration(id, { sessionTimeout: 12 })
+      expect((await getChatIntegration(id))?.sessionTimeout).toBe(12)
     })
 
-    it('clears sessionTimeout by setting to null', () => {
-      const id = createChatIntegration({
+    it('clears sessionTimeout by setting to null', async () => {
+      const id = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'token-clear-timeout' },
         sessionTimeout: 6,
-      })
-      expect(getChatIntegration(id)?.sessionTimeout).toBe(6)
+      }))
+      expect((await getChatIntegration(id))?.sessionTimeout).toBe(6)
 
-      updateChatIntegration(id, { sessionTimeout: null })
-      expect(getChatIntegration(id)?.sessionTimeout).toBeNull()
+      await updateChatIntegration(id, { sessionTimeout: null })
+      expect((await getChatIntegration(id))?.sessionTimeout).toBeNull()
     })
   })
 
   describe('requireApproval (secure-by-default invariant)', () => {
     // The allowlist only protects if new integrations default to gated. Assert
     // the persisted row, not the call args: an omitted flag must land as `true`.
-    it('persists requireApproval=true when the flag is omitted', () => {
-      const id = createChatIntegration({
+    it('persists requireApproval=true when the flag is omitted', async () => {
+      const id = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'tok-omitted' },
-      })
-      expect(getChatIntegration(id)?.requireApproval).toBe(true)
+      }))
+      expect((await getChatIntegration(id))?.requireApproval).toBe(true)
     })
 
-    it('ignores any caller-supplied requireApproval at create and stays private', () => {
+    it('ignores any caller-supplied requireApproval at create and stays private', async () => {
       // The field is intentionally not in CreateChatIntegrationParams; a caller
       // smuggling it in (e.g. via an untyped request body) must NOT create a
       // public bot — making a bot public is owner-only via PATCH.
-      const id = createChatIntegration({
+      const id = (await createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'tok-override-ignored' },
         requireApproval: false,
-      } as Parameters<typeof createChatIntegration>[0] & { requireApproval: boolean })
-      expect(getChatIntegration(id)?.requireApproval).toBe(true)
+      } as Parameters<typeof createChatIntegration>[0] & { requireApproval: boolean }))
+      expect((await getChatIntegration(id))?.requireApproval).toBe(true)
     })
   })
 })
 
 describe('DuplicateBotTokenError', () => {
-  it('carries the existing integration id and keeps its name', () => {
+  it('carries the existing integration id and keeps its name', async () => {
     const err = new DuplicateBotTokenError('abc-123')
     expect(err.name).toBe('DuplicateBotTokenError')
     expect(err.existingIntegrationId).toBe('abc-123')

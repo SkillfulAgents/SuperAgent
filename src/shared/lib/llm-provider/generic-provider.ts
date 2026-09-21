@@ -132,7 +132,7 @@ export class GenericLlmProvider extends BaseLlmProvider {
     return getCatalogDefaultModels(this.id, getModelCatalogSettings()).agentModel
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
     // A loopback endpoint (e.g. ollama on the host) isn't reachable as
     // localhost from inside the agent container; rewrite to the host gateway
     // (same translation the platform provider applies).

@@ -8,7 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Progress } from '@renderer/components/ui/progress'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { RequestError } from '@renderer/components/messages/request-error'
-import { OAuthFlowCancel } from '@renderer/components/connections/oauth-flow-cancel'
+import { LoginWindowCancel } from '@renderer/components/connections/login-window-cancel'
 import { ProfileSection } from './profile-section'
 import { StaleAgentsNotice } from './stale-agents-notice'
 import { useUser } from '@renderer/context/user-context'
@@ -426,7 +426,7 @@ function NotConnectedEmptyState({ readOnly, isLaunching, canCancel, onConnect, o
                 <Button size="sm" variant="outline" onClick={() => setShowKeyInput(true)}>
                   Add access key
                 </Button>
-                <OAuthFlowCancel visible={canCancel} onCancel={onCancel} testId="platform-cancel-connect" />
+                <LoginWindowCancel visible={canCancel} onCancel={onCancel} testId="platform-cancel-connect" />
               </div>
             )}
           </div>
@@ -485,7 +485,7 @@ function ReconnectRow({ readOnly, isLaunching, canCancel, connectLabel, onReconn
               Add key
             </Button>
           )}
-          <OAuthFlowCancel visible={canCancel} onCancel={onCancel} testId="platform-cancel-reconnect" />
+          <LoginWindowCancel visible={canCancel} onCancel={onCancel} testId="platform-cancel-reconnect" />
         </div>
       </div>
     </div>

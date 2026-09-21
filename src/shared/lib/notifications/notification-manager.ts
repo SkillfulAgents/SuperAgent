@@ -74,12 +74,12 @@ class NotificationManager {
    * In auth mode, always returns true — each client checks its own user's
    * settings before showing the OS notification (see GlobalNotificationHandler).
    */
-  private isNotificationTypeEnabled(type: NotificationType): boolean {
+  private async isNotificationTypeEnabled(type: NotificationType): Promise<boolean> {
     if (isAuthMode()) {
       return true
     }
 
-    return isNotificationTypeEnabled(getUserSettings('local').notifications, type)
+    return isNotificationTypeEnabled((await getUserSettings('local')).notifications, type)
   }
 
   /**
@@ -95,12 +95,10 @@ class NotificationManager {
 
     try {
       const userIds = await getAgentAccessUserIds(agentSlug)
-      return userIds.some((userId) =>
-        isNotificationTypeEnabled(
-          getUserSettings(userId).notifications,
-          type,
-        ),
-      )
+      for (const userId of userIds) {
+        if (isNotificationTypeEnabled((await getUserSettings(userId)).notifications, type)) return true
+      }
+      return false
     } catch (error) {
       // Preference lookup failure must not suppress a potentially wanted
       // summary. Fail open, but make the unexpected token-spend path visible.
@@ -143,7 +141,7 @@ class NotificationManager {
     }
 
     // Skip if notification type is disabled in settings
-    if (!this.isNotificationTypeEnabled(type)) {
+    if (!(await this.isNotificationTypeEnabled(type))) {
       return 'suppressed'
     }
 
@@ -249,7 +247,7 @@ class NotificationManager {
         // owner. The owner lookup is a DB read, so it stays inside the guard.
         resolve: async () => {
           try {
-            return await runWithOptionalUser(getAgentOwnerUserId(agentSlug), async () =>
+            return await runWithOptionalUser(await getAgentOwnerUserId(agentSlug), async () =>
               buildSessionCompleteBody({
                 sessionId,
                 agentSlug,

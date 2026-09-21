@@ -1,6 +1,7 @@
+import { requiresOneTimeXAgentReview, xAgentReviewAttachments, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import { apiFetch } from '@renderer/lib/api'
 import { useState, useEffect, useRef } from 'react'
-import { ShieldCheck, ShieldX, ChevronDown, MessageSquare } from 'lucide-react'
+import { ShieldCheck, ShieldX, ChevronDown, MessageSquare, Paperclip } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
@@ -12,12 +13,7 @@ interface XAgentReviewRequestItemProps {
   reviewId: string
   sessionId?: string
   agentSlug: string // caller agent (the one who needs approval)
-  xAgent: {
-    targetAgentSlug: string
-    targetAgentName: string
-    operation: 'list' | 'read' | 'invoke' | 'create'
-    preview?: string
-  }
+  xAgent: XAgentReview
   readOnly?: boolean
   onComplete: () => void
 }
@@ -67,8 +63,12 @@ export function XAgentReviewRequestItem({
 
   const targetIsActionable = xAgent.operation === 'invoke' || xAgent.operation === 'read'
   const isCreate = xAgent.operation === 'create'
-  // For 'create' there is no policy table entry — only Allow Once is offered
-  const canRemember = !isCreate
+  const isFileDownload = xAgent.fileTransfer?.kind === 'download'
+  const attachments = xAgentReviewAttachments(xAgent)
+  // File paths are reviewed per invocation so a pre-existing message grant can
+  // never silently expand into file disclosure.
+  const hasAttachments = attachments.length > 0
+  const canRemember = !requiresOneTimeXAgentReview(xAgent)
 
   // Apply a terminal status + schedule onComplete, but only if the component is
   // still mounted. Avoids React's "setState on unmounted component" warning when
@@ -190,10 +190,11 @@ export function XAgentReviewRequestItem({
 
   const titleNode = (
     <>
-      Allow this agent to <span className="font-medium">{operationVerb(xAgent.operation)}</span>
+      Allow this agent to <span className="font-medium">{isFileDownload ? 'download a delivered file' : operationVerb(xAgent.operation)}</span>
+      {hasAttachments && <span className="font-medium"> and share {attachments.length} {attachments.length === 1 ? 'file' : 'files'}</span>}
       {targetIsActionable && (
         <>
-          {' '}to{' '}{targetButton}
+          {' '}{xAgent.operation === 'read' ? 'from' : 'to'}{' '}{targetButton}
         </>
       )}
       {isCreate && (
@@ -206,7 +207,44 @@ export function XAgentReviewRequestItem({
     </>
   )
 
-  const readOnlyConfig = readOnly ? {} : false as const
+  const invokeDetails = xAgent.operation === 'invoke' ? (
+    <>
+      {xAgent.preview && (
+        <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
+          <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <MessageSquare className="h-3 w-3" />
+            <span>Message preview</span>
+          </div>
+          <p className="text-sm text-foreground/85 line-clamp-3 whitespace-pre-wrap">{xAgent.preview}</p>
+        </div>
+      )}
+      {!!attachments?.length && (
+        <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
+          <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Paperclip className="h-3 w-3" />
+            <span>{attachments.length} {attachments.length === 1 ? 'file' : 'files'} to share</span>
+          </div>
+          <ul className="space-y-1">
+            {attachments.map((filePath, index) => (
+              <li
+                key={`${filePath}-${index}`}
+                className="truncate font-mono text-xs text-foreground/85"
+                title={filePath}
+              >
+                {filePath}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
+  ) : null
+  const downloadDetails = xAgent.fileTransfer?.kind === 'download' ? (
+    <div className="mt-3 rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground/85">
+      {xAgent.fileTransfer.filename}
+    </div>
+  ) : null
+  const readOnlyConfig = readOnly ? { extraContent: <>{invokeDetails}{downloadDetails}</> } : false as const
 
   return (
     <RequestItemShell
@@ -222,16 +260,9 @@ export function XAgentReviewRequestItem({
       data-review-id={reviewId}
       data-status={isCompleted ? status : undefined}
     >
-      {/* Prompt preview for invoke */}
-      {xAgent.operation === 'invoke' && xAgent.preview && (
-        <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
-          <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-            <MessageSquare className="h-3 w-3" />
-            <span>Message preview</span>
-          </div>
-          <p className="text-sm text-foreground/85 line-clamp-3 whitespace-pre-wrap">{xAgent.preview}</p>
-        </div>
-      )}
+      {invokeDetails}
+
+      {downloadDetails}
 
       {/* Action buttons */}
       <RequestItemActions>
@@ -303,7 +334,7 @@ export function XAgentReviewRequestItem({
                         <span className="flex flex-col items-start text-left">
                           <span>Always allow reading <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span></span>
                           <span className="text-xs font-normal text-muted-foreground/80">
-                            Lets this agent read sessions and transcripts (no message-sending)
+                            Lets this agent read sessions and transcripts. File downloads require one-time approval.
                           </span>
                         </span>
                       </Button>

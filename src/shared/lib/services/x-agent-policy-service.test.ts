@@ -2,14 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
-import * as schema from '../db/schema'
+import type { AppDatabase } from '../db/drivers/types'
+import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 
 let testDir: string
-let testDb: ReturnType<typeof drizzle>
-let testSqlite: InstanceType<typeof Database>
+let testDb: AppDatabase
+let handle: TestDatabase
 
 vi.mock('../db', async () => {
   return {
@@ -32,29 +30,27 @@ import {
 describe('x-agent-policy-service', () => {
   beforeEach(async () => {
     testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'aip-test-'))
-    testSqlite = new Database(':memory:')
-    testDb = drizzle(testSqlite, { schema })
-    const migrationsFolder = path.join(process.cwd(), 'src/shared/lib/db/migrations')
-    migrate(testDb, { migrationsFolder })
+    handle = await createTestDatabase()
+    testDb = handle.db
   })
 
   afterEach(async () => {
-    testSqlite?.close()
+    await handle.close()
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
 
   describe('evaluate (defaults)', () => {
     it('returns review when no policy exists', async () => {
-      expect(evaluate('caller', 'list', null)).toBe('review')
-      expect(evaluate('caller', 'read', 'target')).toBe('review')
-      expect(evaluate('caller', 'invoke', 'target')).toBe('review')
+      expect((await evaluate('caller', 'list', null))).toBe('review')
+      expect((await evaluate('caller', 'read', 'target'))).toBe('review')
+      expect((await evaluate('caller', 'invoke', 'target'))).toBe('review')
     })
   })
 
   describe('setPolicy + getPolicy', () => {
     it('inserts a row for list operation (target=null)', async () => {
       await setPolicy('caller', 'list', null, 'allow')
-      const row = getPolicy('caller', 'list', null)
+      const row = (await getPolicy('caller', 'list', null))
       expect(row).not.toBeNull()
       expect(row?.decision).toBe('allow')
       expect(row?.targetAgentSlug).toBeNull()
@@ -65,16 +61,16 @@ describe('x-agent-policy-service', () => {
       await setPolicy('caller', 'invoke', 'agent-b', 'block')
       await setPolicy('caller', 'read', 'agent-a', 'allow')
 
-      expect(getPolicy('caller', 'invoke', 'agent-a')?.decision).toBe('allow')
-      expect(getPolicy('caller', 'invoke', 'agent-b')?.decision).toBe('block')
-      expect(getPolicy('caller', 'read', 'agent-a')?.decision).toBe('allow')
-      expect(getPolicy('caller', 'read', 'agent-b')).toBeNull()
+      expect((await getPolicy('caller', 'invoke', 'agent-a'))?.decision).toBe('allow')
+      expect((await getPolicy('caller', 'invoke', 'agent-b'))?.decision).toBe('block')
+      expect((await getPolicy('caller', 'read', 'agent-a'))?.decision).toBe('allow')
+      expect((await getPolicy('caller', 'read', 'agent-b'))).toBeNull()
     })
 
     it('updates an existing row instead of inserting a duplicate', async () => {
       await setPolicy('caller', 'invoke', 'target', 'review')
       await setPolicy('caller', 'invoke', 'target', 'allow')
-      const rows = listPoliciesForCaller('caller')
+      const rows = (await listPoliciesForCaller('caller'))
       const matching = rows.filter(
         (r) => r.operation === 'invoke' && r.targetAgentSlug === 'target',
       )
@@ -86,57 +82,57 @@ describe('x-agent-policy-service', () => {
   describe('evaluate (with stored policies)', () => {
     it('returns the stored exact-match decision', async () => {
       await setPolicy('caller', 'invoke', 'target', 'allow')
-      expect(evaluate('caller', 'invoke', 'target')).toBe('allow')
+      expect((await evaluate('caller', 'invoke', 'target'))).toBe('allow')
 
       await setPolicy('caller', 'invoke', 'blocked', 'block')
-      expect(evaluate('caller', 'invoke', 'blocked')).toBe('block')
+      expect((await evaluate('caller', 'invoke', 'blocked'))).toBe('block')
     })
 
     it('keeps invoke and read independent — invoke=allow does NOT imply read=allow', async () => {
       // Supports the "trigger but don't browse history" use case.
       await setPolicy('caller', 'invoke', 'target', 'allow')
-      expect(evaluate('caller', 'invoke', 'target')).toBe('allow')
-      expect(evaluate('caller', 'read', 'target')).toBe('review')
+      expect((await evaluate('caller', 'invoke', 'target'))).toBe('allow')
+      expect((await evaluate('caller', 'read', 'target'))).toBe('review')
     })
 
     it('keeps read and invoke independent the other way too — read=allow does not imply invoke=allow', async () => {
       await setPolicy('caller', 'read', 'target', 'allow')
-      expect(evaluate('caller', 'read', 'target')).toBe('allow')
-      expect(evaluate('caller', 'invoke', 'target')).toBe('review')
+      expect((await evaluate('caller', 'read', 'target'))).toBe('allow')
+      expect((await evaluate('caller', 'invoke', 'target'))).toBe('review')
     })
 
     it('list operations are isolated per caller', async () => {
       await setPolicy('caller-a', 'list', null, 'allow')
-      expect(evaluate('caller-a', 'list', null)).toBe('allow')
-      expect(evaluate('caller-b', 'list', null)).toBe('review')
+      expect((await evaluate('caller-a', 'list', null))).toBe('allow')
+      expect((await evaluate('caller-b', 'list', null))).toBe('review')
     })
 
     it('falls back to global (target=null) policy for read when no specific row exists', async () => {
       await setPolicy('caller', 'read', null, 'allow')
       // No specific-target row → fall back to global → allow
-      expect(evaluate('caller', 'read', 'any-target')).toBe('allow')
-      expect(evaluate('caller', 'read', 'another-target')).toBe('allow')
+      expect((await evaluate('caller', 'read', 'any-target'))).toBe('allow')
+      expect((await evaluate('caller', 'read', 'another-target'))).toBe('allow')
       // Different operation should still default to review
-      expect(evaluate('caller', 'invoke', 'any-target')).toBe('review')
+      expect((await evaluate('caller', 'invoke', 'any-target'))).toBe('review')
     })
 
     it('falls back to global (target=null) policy for invoke when no specific row exists', async () => {
       await setPolicy('caller', 'invoke', null, 'allow')
-      expect(evaluate('caller', 'invoke', 'any-target')).toBe('allow')
-      expect(evaluate('caller', 'read', 'any-target')).toBe('review')
+      expect((await evaluate('caller', 'invoke', 'any-target'))).toBe('allow')
+      expect((await evaluate('caller', 'read', 'any-target'))).toBe('review')
     })
 
     it('specific-target row wins over global — block on a single agent overrides allow-all', async () => {
       await setPolicy('caller', 'read', null, 'allow')
       await setPolicy('caller', 'read', 'sensitive', 'block')
-      expect(evaluate('caller', 'read', 'normal-agent')).toBe('allow')
-      expect(evaluate('caller', 'read', 'sensitive')).toBe('block')
+      expect((await evaluate('caller', 'read', 'normal-agent'))).toBe('allow')
+      expect((await evaluate('caller', 'read', 'sensitive'))).toBe('block')
     })
 
     it('specific allow on one agent does not leak to others when no global is set', async () => {
       await setPolicy('caller', 'invoke', 'alice', 'allow')
-      expect(evaluate('caller', 'invoke', 'alice')).toBe('allow')
-      expect(evaluate('caller', 'invoke', 'bob')).toBe('review')
+      expect((await evaluate('caller', 'invoke', 'alice'))).toBe('allow')
+      expect((await evaluate('caller', 'invoke', 'bob'))).toBe('review')
     })
   })
 
@@ -150,11 +146,11 @@ describe('x-agent-policy-service', () => {
       await deletePoliciesForAgent('alice')
 
       // alice as caller — gone
-      expect(getPolicy('alice', 'invoke', 'bob')).toBeNull()
-      expect(getPolicy('alice', 'list', null)).toBeNull()
+      expect((await getPolicy('alice', 'invoke', 'bob'))).toBeNull()
+      expect((await getPolicy('alice', 'list', null))).toBeNull()
       // alice as target — gone
-      expect(getPolicy('bob', 'invoke', 'alice')).toBeNull()
-      expect(getPolicy('charlie', 'invoke', 'alice')).toBeNull()
+      expect((await getPolicy('bob', 'invoke', 'alice'))).toBeNull()
+      expect((await getPolicy('charlie', 'invoke', 'alice'))).toBeNull()
     })
 
     it('leaves unrelated rows alone', async () => {
@@ -163,7 +159,7 @@ describe('x-agent-policy-service', () => {
 
       await deletePoliciesForAgent('alice')
 
-      expect(getPolicy('charlie', 'invoke', 'dave')?.decision).toBe('allow')
+      expect((await getPolicy('charlie', 'invoke', 'dave'))?.decision).toBe('allow')
     })
   })
 
@@ -173,11 +169,11 @@ describe('x-agent-policy-service', () => {
       await setPolicy('alice', 'read', 'bob', 'review')
       await setPolicy('charlie', 'invoke', 'bob', 'block')
 
-      const aliceRows = listPoliciesForCaller('alice')
+      const aliceRows = (await listPoliciesForCaller('alice'))
       expect(aliceRows).toHaveLength(2)
       expect(aliceRows.map((r) => r.operation).sort()).toEqual(['invoke', 'read'])
 
-      const charlieRows = listPoliciesForCaller('charlie')
+      const charlieRows = (await listPoliciesForCaller('charlie'))
       expect(charlieRows).toHaveLength(1)
     })
   })
@@ -193,7 +189,7 @@ describe('x-agent-policy-service', () => {
         setPolicy('alice', 'list', null, 'review'),
       ])
 
-      const rows = listPoliciesForCaller('alice')
+      const rows = (await listPoliciesForCaller('alice'))
       expect(rows).toHaveLength(1)
       expect(rows[0].targetAgentSlug).toBeNull()
       expect(rows[0].decision).toBe('review')
@@ -204,8 +200,8 @@ describe('x-agent-policy-service', () => {
         setPolicy('alice', 'invoke', 'bob', 'allow'),
         setPolicy('alice', 'invoke', 'bob', 'block'),
       ])
-      expect(listPoliciesForCaller('alice')).toHaveLength(1)
-      expect(getPolicy('alice', 'invoke', 'bob')?.decision).toBe('block')
+      expect((await listPoliciesForCaller('alice'))).toHaveLength(1)
+      expect((await getPolicy('alice', 'invoke', 'bob'))?.decision).toBe('block')
     })
 
     it('only the first concurrent write reports creating the policy', async () => {
@@ -225,8 +221,8 @@ describe('x-agent-policy-service', () => {
       const decisions = ['allow', 'block', 'review', 'allow', 'block', 'review'] as const
       const results = await Promise.all(decisions.map((decision) => setPolicy('alice', 'invoke', 'bob', decision)))
       expect(results.map((r) => r.previousDecision)).toEqual([null, 'allow', 'block', 'review', 'allow', 'block'])
-      expect(getPolicy('alice', 'invoke', 'bob')?.decision).toBe('review')
-      expect(listPoliciesForCaller('alice')).toHaveLength(1)
+      expect((await getPolicy('alice', 'invoke', 'bob'))?.decision).toBe('review')
+      expect((await listPoliciesForCaller('alice'))).toHaveLength(1)
     })
 
     it('restoring allow reports the block it actually overwrote', async () => {
@@ -251,7 +247,7 @@ describe('x-agent-policy-service', () => {
         { operation: 'invoke', targetSlug: 'bob', decision: 'block' },
       ])
 
-      const rows = listPoliciesForCaller('alice')
+      const rows = (await listPoliciesForCaller('alice'))
       // Old rows for bob:invoke/bob:read/list are gone; carol:invoke + bob:block are new
       expect(rows).toHaveLength(2)
       const byTarget = Object.fromEntries(
@@ -266,7 +262,7 @@ describe('x-agent-policy-service', () => {
         { operation: 'invoke', targetSlug: 'bob', decision: 'allow' },
         { operation: 'read', targetSlug: 'bob', decision: 'review' },
       ])
-      const rows = listPoliciesForCaller('alice')
+      const rows = (await listPoliciesForCaller('alice'))
       expect(rows).toHaveLength(2)
       const byOp = Object.fromEntries(rows.map((r) => [r.operation, r.decision]))
       expect(byOp.invoke).toBe('allow')
@@ -279,8 +275,8 @@ describe('x-agent-policy-service', () => {
         { operation: 'read', targetSlug: 'bob', decision: 'review' },
       ])
       // Global says allow-all, but bob is explicitly pinned back to review.
-      expect(evaluate('alice', 'read', 'bob')).toBe('review')
-      expect(evaluate('alice', 'read', 'carol')).toBe('allow')
+      expect((await evaluate('alice', 'read', 'bob'))).toBe('review')
+      expect((await evaluate('alice', 'read', 'carol'))).toBe('allow')
     })
 
     it('does not affect other callers', async () => {
@@ -288,7 +284,7 @@ describe('x-agent-policy-service', () => {
       await replacePoliciesForCaller('alice', [
         { operation: 'invoke', targetSlug: 'bob', decision: 'block' },
       ])
-      expect(getPolicy('charlie', 'invoke', 'bob')?.decision).toBe('allow')
+      expect((await getPolicy('charlie', 'invoke', 'bob'))?.decision).toBe('allow')
     })
 
     it('rejects invalid input via Zod schema', async () => {
@@ -301,7 +297,7 @@ describe('x-agent-policy-service', () => {
     it('accepts an empty list (clears all rows for caller)', async () => {
       await setPolicy('alice', 'invoke', 'bob', 'allow')
       await replacePoliciesForCaller('alice', [])
-      expect(listPoliciesForCaller('alice')).toHaveLength(0)
+      expect((await listPoliciesForCaller('alice'))).toHaveLength(0)
     })
 
     it('rolls back the entire batch if one insert violates a unique constraint', async () => {
@@ -320,14 +316,14 @@ describe('x-agent-policy-service', () => {
         ]),
       ).rejects.toThrow()
 
-      const rows = listPoliciesForCaller('alice')
+      const rows = (await listPoliciesForCaller('alice'))
       // Both seeded rows must still be present — proves the batch rolled
       // back the initial DELETE, not just the failing INSERT.
       expect(rows).toHaveLength(2)
-      expect(getPolicy('alice', 'invoke', 'bob')?.decision).toBe('allow')
-      expect(getPolicy('alice', 'list', null)?.decision).toBe('allow')
+      expect((await getPolicy('alice', 'invoke', 'bob'))?.decision).toBe('allow')
+      expect((await getPolicy('alice', 'list', null))?.decision).toBe('allow')
       // No partial 'carol' row was committed.
-      expect(getPolicy('alice', 'invoke', 'carol')).toBeNull()
+      expect((await getPolicy('alice', 'invoke', 'carol'))).toBeNull()
     })
 
     it('handles a large bulk replace (250 rows) without partial visibility', async () => {
@@ -343,13 +339,13 @@ describe('x-agent-policy-service', () => {
       }))
       await replacePoliciesForCaller('alice', big)
 
-      const rows = listPoliciesForCaller('alice')
+      const rows = (await listPoliciesForCaller('alice'))
       expect(rows).toHaveLength(250)
       // The pre-existing row for old-target must be gone (delete actually ran).
-      expect(getPolicy('alice', 'invoke', 'old-target')).toBeNull()
+      expect((await getPolicy('alice', 'invoke', 'old-target'))).toBeNull()
       // Spot-check a few random new rows landed.
-      expect(getPolicy('alice', 'invoke', 'bulk-0')?.decision).toBe('allow')
-      expect(getPolicy('alice', 'invoke', 'bulk-249')?.decision).toBe('allow')
+      expect((await getPolicy('alice', 'invoke', 'bulk-0'))?.decision).toBe('allow')
+      expect((await getPolicy('alice', 'invoke', 'bulk-249'))?.decision).toBe('allow')
     })
   })
 })

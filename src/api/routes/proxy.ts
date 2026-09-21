@@ -390,8 +390,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     ? null
     : await c.req.arrayBuffer()
 
-  const forwardRequest = () => runWithAttribution(
-      attribution.fromResourceCreator(account.userId),
+  const forwardRequest = async () => runWithAttribution(
+      await attribution.fromResourceCreator(account.userId),
       () => provider.makeApiCall({
         providerConnectionId: account.providerConnectionId,
         toolkitSlug: account.toolkitSlug,
@@ -442,7 +442,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     }
   }
 
-  audit({
+  await audit({
     statusCode: response.status,
     ...(response.status >= 400 ? { errorMessage: `Upstream returned ${response.status}` } : {}),
   })

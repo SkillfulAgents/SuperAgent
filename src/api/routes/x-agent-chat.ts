@@ -52,14 +52,14 @@ function getCallerSlug(c: { get: (k: 'callerSlug') => string }): string {
 xAgentChat.post('/list', async (c) => {
   try {
     const callerSlug = getCallerSlug(c)
-    const integrations = listChatIntegrations(callerSlug)
+    const integrations = await listChatIntegrations(callerSlug)
 
     const result = await Promise.all(integrations.map(async (i) => {
       // Static (per-provider) lookups: label each chat with its conversation
       // type where the provider's ids encode one, and advertise discovery
       // capabilities so agents know which discovery tools apply here.
       const connectorClass = await agentIntegrationManager.getDefinition(i.provider)
-      const sessions = listChatIntegrationSessions(i.id)
+      const sessions = await listChatIntegrationSessions(i.id)
       const activeChats = await Promise.all(sessions
         .filter((s) => !s.archivedAt)
         .map(async (s) => {
@@ -140,7 +140,7 @@ xAgentChat.post('/add', async (c) => {
 
     let id: string
     try {
-      id = createChatIntegration({
+      id = await createChatIntegration({
         agentSlug: callerSlug,
         provider: provider as ChatProvider,
         name,
@@ -157,14 +157,14 @@ xAgentChat.post('/add', async (c) => {
       await agentIntegrationManager.addIntegration(id)
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err)
-      updateChatIntegrationStatus(id, 'error', errMsg)
+      await updateChatIntegrationStatus(id, 'error', errMsg)
     }
 
     // Outside the connect try/catch: a contact-card failure is cosmetic and must
     // never surface as a connect error.
     void agentIntegrationManager.integrationCreated(id)
 
-    const created = getChatIntegration(id)
+    const created = await getChatIntegration(id)
     if (!created) {
       return c.json({ error: 'Integration created but could not be retrieved' }, 500)
     }
@@ -194,7 +194,7 @@ xAgentChat.post('/send', async (c) => {
       return c.json({ error: 'Pass either chat_id or user_id, not both.' }, 400)
     }
 
-    const integration = getChatIntegration(integration_id)
+    const integration = await getChatIntegration(integration_id)
     if (!integration) {
       return c.json({ error: 'Chat integration not found' }, 404)
     }
@@ -250,7 +250,7 @@ xAgentChat.post('/send', async (c) => {
     // session is rotated out, its SSE forwarding is torn down, so an outbound
     // send is the only remaining delivery path.
     if (session_id) {
-      const callerChatSession = getChatIntegrationSessionBySessionId(callerSlug, session_id)
+      const callerChatSession = await getChatIntegrationSessionBySessionId(callerSlug, session_id)
       if (
         callerChatSession
         && !callerChatSession.archivedAt
@@ -266,7 +266,7 @@ xAgentChat.post('/send', async (c) => {
 
     // No explicit target: fall back to the integration's single active chat
     if (!resolvedChatId) {
-      const sessions = listChatIntegrationSessions(integration_id)
+      const sessions = await listChatIntegrationSessions(integration_id)
       const activeChats = sessions.filter((s) => !s.archivedAt)
       if (activeChats.length === 0) {
         return c.json({
@@ -284,7 +284,7 @@ xAgentChat.post('/send', async (c) => {
       resolvedChatId = activeChats[0].externalChatId
     }
 
-    if (!isChatAllowed(integration_id, resolvedChatId)) {
+    if (!(await isChatAllowed(integration_id, resolvedChatId))) {
       return c.json({ error: 'This conversation is not approved for this integration.' }, 403)
     }
 
@@ -386,7 +386,7 @@ async function resolveDirectoryConnector(
     return { response: c.json({ error: 'Missing required field: integration_id' }, 400) }
   }
 
-  const integration = getChatIntegration(integrationId)
+  const integration = await getChatIntegration(integrationId)
   if (!integration) {
     return { response: c.json({ error: 'Chat integration not found' }, 404) }
   }

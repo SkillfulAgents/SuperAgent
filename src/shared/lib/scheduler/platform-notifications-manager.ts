@@ -121,9 +121,7 @@ class PlatformNotificationsManager {
     }
     const client = new SupabaseRealtimeClient()
     this.realtimeClient = client
-    await client.connect(config, (record) => {
-      this.handleRealtimeInsert(record)
-    })
+    await client.connect(config, (record) => this.handleRealtimeInsert(record))
     if (generation !== this.generation) {
       // Superseded while the socket opened: tear down our own client, but
       // leave this.realtimeClient alone if a newer connect already replaced it.
@@ -174,7 +172,7 @@ class PlatformNotificationsManager {
     }
   }
 
-  private handleRealtimeInsert(rawRecord: unknown): void {
+  private async handleRealtimeInsert(rawRecord: unknown): Promise<void> {
     const parsed = platformNotificationRealtimeRecordSchema.safeParse(rawRecord)
     if (!parsed.success) {
       captureException(parsed.error, {
@@ -199,7 +197,7 @@ class PlatformNotificationsManager {
         : record.created_at
     this.persistWatermark()
 
-    if (!this.isPlatformNotificationEnabled()) return
+    if (!(await this.isPlatformNotificationEnabled())) return
 
     // Fire straight from the record (notifications are plain data, not a
     // claimable work queue — no re-poll). No agentSlug/sessionId: clicking
@@ -222,9 +220,9 @@ class PlatformNotificationsManager {
   // Manager runs non-auth only, so the single 'local' user's settings apply.
   // The renderer re-checks its own settings before showing the popup; this
   // gate just avoids broadcasting an event nobody may show.
-  private isPlatformNotificationEnabled(): boolean {
+  private async isPlatformNotificationEnabled(): Promise<boolean> {
     try {
-      const notifications = getUserSettings('local').notifications
+      const notifications = (await getUserSettings('local')).notifications
       if (!notifications.enabled) return false
       return notifications.platformNotification !== false
     } catch {

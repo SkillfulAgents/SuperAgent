@@ -1,3 +1,4 @@
+import { xAgentFileTransferSchema } from '@shared/lib/proxy/x-agent-review'
 import { z } from 'zod'
 
 /**
@@ -159,6 +160,8 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
           targetAgentName: lenientString,
           operation: lenientString,
           preview: lenientString,
+          fileTransfer: xAgentFileTransferSchema.optional().catch(undefined),
+          attachments: z.array(z.string()).optional().catch(undefined),
         })
         .optional()
         .catch(undefined),

@@ -227,9 +227,9 @@ function dismissReviewNotification(reviewId: string): void {
  * path; the IPC handler runs after the renderer's gate so it doesn't need
  * this check itself).
  */
-function isNotificationTypeAllowedLocally(notificationType: string | undefined): boolean {
+async function isNotificationTypeAllowedLocally(notificationType: string | undefined): Promise<boolean> {
   try {
-    const settings = getUserSettings('local')
+    const settings = await getUserSettings('local')
     const n = settings.notifications
     if (!n.enabled) return false
     switch (notificationType) {
@@ -1324,7 +1324,7 @@ function startNotificationListener(): void {
   const es = new EventSource(url)
   notificationEventSource = es
 
-  es.onmessage = (event) => {
+  es.onmessage = async (event) => {
     try {
       const data = JSON.parse(event.data)
 
@@ -1360,7 +1360,7 @@ function startNotificationListener(): void {
         const notificationType = data.notificationType as string | undefined
         if (
           (!mainWindow || mainWindow.isDestroyed()) &&
-          isNotificationTypeAllowedLocally(notificationType) &&
+          (await isNotificationTypeAllowedLocally(notificationType)) &&
           Notification.isSupported()
         ) {
           const actions = data.actions as Array<{ text: string }> | undefined
@@ -1553,7 +1553,7 @@ async function startApp() {
   }
 
   // Restore keep-awake state from previous session (after window is ready so dialogs display correctly)
-  const userSettings = getUserSettings('local')
+  const userSettings = await getUserSettings('local')
   restoreKeepAwakeOnStartup(userSettings.keepAwakeEnabled).catch((error) => {
     console.error('Failed to restore keep-awake state:', error)
   })

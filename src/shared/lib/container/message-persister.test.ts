@@ -6436,7 +6436,7 @@ describe('MessagePersister', () => {
         mockGetStoredPlatformMemberId.mockReturnValue('sub_session')
         let mintKey: string | null | undefined
         mockEnableComposioTrigger.mockImplementation(async () => {
-          mintKey = attribution.current()?.getKey() ?? null
+          mintKey = (await attribution.current())?.getKey() ?? null
           return 'composio_trigger_id'
         })
 
@@ -6458,7 +6458,7 @@ describe('MessagePersister', () => {
         // Nothing resolves: the bearer must stay the bare token, not `token::local`.
         let mintKey: string | null | undefined
         mockEnableComposioTrigger.mockImplementation(async () => {
-          mintKey = attribution.current()?.getKey() ?? null
+          mintKey = (await attribution.current())?.getKey() ?? null
           return 'composio_trigger_id'
         })
 

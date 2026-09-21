@@ -11,8 +11,8 @@ export interface VapidKeyPair {
   privateKey: string
 }
 
-export function getVapidKeys(): VapidKeyPair | null {
-  const rows = db
+export async function getVapidKeys(): Promise<VapidKeyPair | null> {
+  const rows = await db
     .select()
     .from(pushVapidKeys)
     .where(eq(pushVapidKeys.id, VAPID_ROW_ID))
@@ -32,7 +32,7 @@ export function getVapidKeys(): VapidKeyPair | null {
  * a restored/partial backup), those rows are undeliverable and get dropped.
  */
 export async function getOrCreateVapidKeys(): Promise<VapidKeyPair> {
-  const existing = getVapidKeys()
+  const existing = await getVapidKeys()
   if (existing) {
     return existing
   }
@@ -52,5 +52,5 @@ export async function getOrCreateVapidKeys(): Promise<VapidKeyPair> {
 
   // Re-read instead of trusting `generated`: under a concurrent first-use
   // race the row that won the insert is the pair the subscriber was given.
-  return getVapidKeys() ?? generated
+  return (await getVapidKeys()) ?? generated
 }

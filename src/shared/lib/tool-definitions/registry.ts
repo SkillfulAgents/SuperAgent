@@ -56,6 +56,7 @@ import {
   invokeAgentDef,
   getAgentSessionsDef,
   getAgentSessionTranscriptDef,
+  downloadAgentFileDef,
 } from './x-agent-tools'
 import {
   taskCreateDef,
@@ -140,6 +141,7 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__agents__invoke_agent': invokeAgentDef,
   'mcp__agents__get_agent_sessions': getAgentSessionsDef,
   'mcp__agents__get_agent_session_transcript': getAgentSessionTranscriptDef,
+  'mcp__agents__download_agent_file': downloadAgentFileDef,
 
   // MCP tools - chat integrations
   'mcp__chat__list_available_chat_providers': listAvailableChatProvidersDef,
