@@ -144,4 +144,41 @@ test.describe('Provider connection lifecycle', () => {
     await page.getByTestId('composer-options-trigger').click()
     await expect(page.getByRole('combobox', { name: 'Connection' })).toHaveValue(accounts[1])
   })
+  test('edits custom and disabled models without saving built-in catalog definitions', async ({ page, request }) => {
+    const settings = await (await request.get('/api/settings/models')).json()
+    const builtin = settings.llmProviderStatus.find((p: { id: string }) => p.id === 'anthropic').builtinCatalog[0]
+    const custom = { id: 'private-catalog-model', label: 'Private model', supportedEfforts: ['low'], contextWindow: 100_000, disabled: true }
+    const created = await request.post('/api/llm-connections', { data: {
+      name: 'Catalog account', provider: 'anthropic', config: { apiKeys: { anthropicApiKey: 'test-key' } },
+      modelOverrides: [{ id: builtin.id, disabled: true }, custom],
+    } })
+    expect(created.status()).toBe(201)
+    const { id } = await created.json()
+    await page.goto('/settings/llm')
+    await page.getByRole('button', { name: 'Edit Catalog account', exact: true }).click()
+    await page.getByTestId('catalog-disclosure-trigger').click()
+    await expect(page.getByTestId(`catalog-toggle-${builtin.id}`)).not.toBeChecked()
+    await expect(page.getByTestId('catalog-toggle-private-catalog-model')).not.toBeChecked()
+    await page.getByTestId('catalog-customize-private-catalog-model').click()
+    await page.getByLabel('Display label').fill('Renamed private model')
+    await page.getByTestId('catalog-save-custom-model').click()
+    await page.getByTestId('catalog-toggle-private-catalog-model').click()
+    const saved = page.waitForRequest(req => req.method() === 'PUT' && req.url().endsWith(`/llm-connections/${id}`))
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    const payload = (await saved).postDataJSON()
+    expect(payload).not.toHaveProperty('catalog')
+    expect(payload.modelOverrides).toEqual([
+      { id: builtin.id, disabled: true },
+      expect.objectContaining({ id: custom.id, label: 'Renamed private model', contextWindow: 100_000 }),
+    ])
+    expect(payload.modelOverrides[1].disabled).not.toBe(true)
+    await expect(page.getByRole('heading', { name: 'Edit Catalog account' })).toHaveCount(0)
+    await page.reload()
+    await page.getByRole('button', { name: 'Edit Catalog account', exact: true }).click()
+    await page.getByTestId('catalog-disclosure-trigger').click()
+    await expect(page.getByTestId(`catalog-toggle-${builtin.id}`)).not.toBeChecked()
+    await expect(page.getByTestId('catalog-toggle-private-catalog-model')).toBeChecked()
+    await expect(page.getByTestId('model-catalog-editor').getByText('Renamed private model', { exact: true })).toBeVisible()
+  })
+
 })

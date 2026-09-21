@@ -40,7 +40,7 @@ export const llmConnections = sqliteTable('llm_connections', {
   provider: text('provider').notNull(),
   managed: integer('managed', { mode: 'boolean' }).notNull().default(false),
   config: text('config').notNull(),
-  catalog: text('catalog').notNull(),
+  modelOverrides: text('model_overrides').notNull().default('[]'),
   browserModel: text('browser_model'),
   dashboardModel: text('dashboard_model'),
   generation: integer('generation').notNull().default(0),

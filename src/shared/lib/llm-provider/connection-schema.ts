@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { LLM_PROVIDER_IDS } from './provider-types'
-import { modelCatalogSchema } from './model-catalog-schema'
+import { catalogOverrideEntrySchema, modelCatalogSchema, modelDefinitionSchema, type ModelDefinition, type CatalogOverrideEntry } from './model-catalog-schema'
 
 export const modelSelectionSchema = z.object({
   connectionId: z.string().min(1),
@@ -30,10 +30,23 @@ export const connectionConfigSchema = z.object({
 })
 export type ConnectionConfig = z.infer<typeof connectionConfigSchema>
 
-/** Connections own model availability and capabilities; prices are global settings. */
-export const connectionCatalogSchema = modelCatalogSchema.transform(models =>
-  models.map(({ pricing: _pricing, ...model }) => model)
-)
+/** Persist custom definitions and explicit disabled IDs, never built-in definitions or prices. */
+export const connectionModelOverridesSchema = z.array(catalogOverrideEntrySchema.omit({ pricing: true }))
+const customModelSchema = modelDefinitionSchema.omit({ pricing: true })
+
+export function normalizeConnectionModelOverrides(
+  builtins: readonly ModelDefinition[],
+  overrides: readonly CatalogOverrideEntry[],
+): CatalogOverrideEntry[] {
+  const builtinIds = new Set(builtins.map(model => model.id))
+  return overrides.flatMap((entry): CatalogOverrideEntry[] => {
+    // A disabled built-in may disappear in a later release. Its saved ID remains harmless.
+    if (builtinIds.has(entry.id) || (entry.disabled && !entry.label)) {
+      return entry.disabled ? [{ id: entry.id, disabled: true }] : []
+    }
+    return [{ ...customModelSchema.parse(entry), ...(entry.disabled ? { disabled: true } : {}) }]
+  })
+}
 
 export const connectionInputSchema = z
   .object({
@@ -41,7 +54,7 @@ export const connectionInputSchema = z
     provider: z.enum(LLM_PROVIDER_IDS),
     userId: z.string().min(1).nullable().default(null),
     config: connectionConfigSchema,
-    catalog: connectionCatalogSchema.optional(),
+    modelOverrides: connectionModelOverridesSchema.optional(),
     browserModel: z.string().min(1).nullable().optional(),
     dashboardModel: z.string().min(1).nullable().optional(),
   })
@@ -57,6 +70,7 @@ export const connectionInfoSchema = z.object({
   managed: z.boolean(),
   isConfigured: z.boolean(),
   catalog: modelCatalogSchema,
+  modelOverrides: connectionModelOverridesSchema,
   browserModel: z.string().nullable(),
   dashboardModel: z.string().nullable(),
   baseUrl: z.string().optional(),

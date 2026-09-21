@@ -15,8 +15,8 @@ export const importLlmConnections: DataMigration = {
     const { getSettings, getEffectiveModels, mutateSettings } = await import('../../config/settings')
     const { LLM_PROVIDER_IDS, getLlmProvider, resolveModelForProvider } = await import('../../llm-provider')
     const { connectionFromProviderSettings, legacyConnectionId } = await import('../../llm-provider/provider-settings')
-    const { resolveSelection, parseConnectionJson } = await import('../../llm-provider/connection-schema')
-    const { modelCatalogSchema } = await import('../../llm-provider/model-catalog-schema')
+    const { resolveSelection } = await import('../../llm-provider/connection-schema')
+    const { connectionCatalog } = await import('../../llm-provider/connections')
     const settings = getSettings()
     const active = settings.llmProvider ?? 'anthropic'
     const models = getEffectiveModels()
@@ -35,7 +35,7 @@ export const importLlmConnections: DataMigration = {
     const imported = await db.select().from(llmConnections)
       .where(eq(llmConnections.id, legacyConnectionId(active))).get()
     if (!imported) return // Fresh installs configure their connection in onboarding.
-    const catalog = parseConnectionJson(modelCatalogSchema, imported.catalog)
+    const catalog = connectionCatalog(imported)
     const selection = (model: string, purpose: 'agent' | 'summarizer') => ({
       connectionId: imported.id,
       model: resolveSelection({ connectionId: imported.id, model }, [{ id: imported.id, catalog }])

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "0f3707e0-e0a2-4a51-bf8f-146b50584eda",
+  "id": "4a0ddb71-b367-40ba-85f2-364fdf1f197c",
   "prevId": "a130796e-409a-4784-8066-034495a60826",
   "tables": {
     "agent_acl": {
@@ -1395,12 +1395,13 @@
           "notNull": true,
           "autoincrement": false
         },
-        "catalog": {
-          "name": "catalog",
+        "model_overrides": {
+          "name": "model_overrides",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
+          "autoincrement": false,
+          "default": "'[]'"
         },
         "browser_model": {
           "name": "browser_model",

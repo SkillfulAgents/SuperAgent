@@ -5,7 +5,7 @@ CREATE TABLE `llm_connections` (
 	`provider` text NOT NULL,
 	`managed` integer DEFAULT false NOT NULL,
 	`config` text NOT NULL,
-	`catalog` text NOT NULL,
+	`model_overrides` text DEFAULT '[]' NOT NULL,
 	`browser_model` text,
 	`dashboard_model` text,
 	`generation` integer DEFAULT 0 NOT NULL,

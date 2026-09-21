@@ -68,7 +68,7 @@ beforeEach(async () => {
       config: {
         apiKeys: { genericApiKey: 'static-key', genericBaseUrl: 'https://test.example' },
       },
-      catalog: [{ id: 'model', label: 'Test model', supportedEfforts: ['low'] }],
+      modelOverrides: [{ id: 'model', label: 'Test model', supportedEfforts: ['low'] }],
     },
     { userId: null, admin: true }
   )

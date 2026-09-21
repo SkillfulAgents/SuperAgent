@@ -11,6 +11,7 @@ import {
 } from '../db/schema'
 import type { AppSettings } from '../config/settings'
 import { resolveSelection } from './connection-schema'
+import { getLlmProvider } from './index'
 
 const state = vi.hoisted(() => ({
   settings: {} as AppSettings,
@@ -74,7 +75,7 @@ async function add(name = 'First', userId: string | null = null) {
           genericBaseUrl: `https://${name.toLowerCase()}.example`,
         },
       },
-      catalog,
+      modelOverrides: catalog,
     },
     { ...admin, userId }
   )
@@ -96,6 +97,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await handle.close()
   vi.unstubAllEnvs()
+  vi.restoreAllMocks()
 })
 
 describe('LLM connections', () => {
@@ -103,12 +105,12 @@ describe('LLM connections', () => {
     state.settings.modelPricing = { 'model-a': { inputPerMtok: 2, outputPerMtok: 3 } }
     const first = await add('First')
     const second = await add('Second')
-    await saveConnection({ name: 'Second', provider: 'generic', config: {}, catalog: [
+    await saveConnection({ name: 'Second', provider: 'generic', config: {}, modelOverrides: [
       { ...catalog[0], pricing: { inputPerMtok: 99, outputPerMtok: 99 } },
     ] }, admin, second)
     const firstRow = (await getConnection(first))!
     const secondRow = (await getConnection(second))!
-    expect(JSON.parse(secondRow.catalog)[0]).not.toHaveProperty('pricing')
+    expect(JSON.parse(secondRow.modelOverrides)[0]).not.toHaveProperty('pricing')
     expect(connectionCatalog(firstRow)[0].pricing).toEqual(connectionCatalog(secondRow)[0].pricing)
     expect(calculateCost('model-a', 1_000_000, 1_000_000, 0, 0)).toBe(5)
     state.settings.modelPricing['model-a'] = { inputPerMtok: 4, outputPerMtok: 6 }
@@ -149,7 +151,7 @@ describe('LLM connections', () => {
     await setGlobalSelection('default', { connectionId: first, model: 'a' })
     await expect(deleteConnection(first, admin)).rejects.toThrow('app default')
     await expect(
-      saveConnection({ name: 'First', provider: 'generic', config: {}, catalog: [] }, admin, first)
+      saveConnection({ name: 'First', provider: 'generic', config: {}, modelOverrides: [] }, admin, first)
     ).rejects.toThrow('app default')
     expect(
       (await resolveExecutionSelection({ connectionId: 'gone', model: 'model-a' })).connectionId
@@ -333,8 +335,8 @@ it('migrates version pins in SQL and old file selections before applying strict 
   await state
     .db!.update(llmConnections)
     .set({
-      catalog: JSON.stringify(
-        JSON.parse(file.connection.catalog).filter(
+      modelOverrides: JSON.stringify(
+        JSON.parse(file.connection.modelOverrides).filter(
           (m: { id: string }) => m.id !== 'claude-previous-2'
         )
       ),
@@ -454,4 +456,82 @@ it('onboarding configures the first account after the empty migration has comple
   expect(state.settings.llmSummarizer).toEqual({ connectionId: 'legacy-anthropic', model: 'haiku' })
   expect(state.settings.llmLegacyConnectionId).toBeUndefined()
   expect(await runDataMigrations(handle.db, [importLlmConnections])).toEqual([])
+})
+
+
+describe('code-driven connection catalogs', () => {
+  it.each(['anthropic', 'platform'] as const)('keeps %s built-ins and family aliases current after upgrades', async (providerId) => {
+    const provider = getLlmProvider(providerId)
+    let builtins = [{ id: 'version-1', label: 'Version 1', family: 'latest', isLatest: true, supportedEfforts: ['low' as const] }]
+    vi.spyOn(provider, 'getBuiltinCatalog').mockImplementation(() => builtins)
+    let id: string
+    if (providerId === 'platform') {
+      state.platformToken = 'platform-test-token'
+      await ensureManagedPlatformConnection()
+      id = 'legacy-platform'
+    } else {
+      id = await saveConnection({ name: 'API account', provider: providerId, config: { apiKeys: { anthropicApiKey: 'test-key' } } }, admin)
+    }
+    await setGlobalSelection('default', { connectionId: id, model: 'latest' })
+    expect((await getConnection(id))!.modelOverrides).toBe('[]')
+    expect((await resolveExecutionSelection()).wireModel).toBe('version-1')
+
+    builtins = [
+      { ...builtins[0], label: 'Updated metadata', isLatest: false },
+      { ...builtins[0], id: 'version-2', label: 'Version 2' },
+    ]
+    expect((await resolveExecutionSelection()).wireModel).toBe('version-2')
+    const info = (await listConnections(admin))[0]
+    expect(info.catalog.map(model => model.label)).toEqual(['Updated metadata', 'Version 2'])
+    expect(info.modelOverrides).toEqual([])
+    expect((await getConnection(id))!.modelOverrides).toBe('[]')
+  })
+
+  it('stores only custom definitions and disabled IDs, retaining them across built-in changes', async () => {
+    const provider = getLlmProvider('anthropic')
+    const original = provider.getBuiltinCatalog()
+    const disabled = original[0]
+    const custom = { id: 'custom-private', label: 'Private', supportedEfforts: ['high' as const], contextWindow: 100_000, disabled: true }
+    const id = await saveConnection({ name: 'Custom account', provider: 'anthropic', config: {}, modelOverrides: [
+      { ...disabled, label: 'Must not override code', disabled: true },
+      ...original.slice(1),
+      { ...custom, pricing: { inputPerMtok: 3, outputPerMtok: 9 } },
+    ] }, admin)
+    expect(JSON.parse((await getConnection(id))!.modelOverrides)).toEqual([{ id: disabled.id, disabled: true }, custom])
+    expect(connectionCatalog((await getConnection(id))!).some(model => model.id === custom.id)).toBe(false)
+    vi.spyOn(provider, 'getBuiltinCatalog').mockReturnValue([...original, { id: 'brand-new', label: 'New', supportedEfforts: ['low'] }])
+    const info = (await listConnections(admin))[0]
+    expect(info.catalog.some(model => model.id === disabled.id)).toBe(false)
+    expect(info.catalog.some(model => model.id === 'brand-new')).toBe(true)
+    await saveConnection({ name: 'Custom account', provider: 'anthropic', config: {}, modelOverrides: [
+      { id: disabled.id, disabled: true }, { ...custom, disabled: false },
+    ] }, admin, id)
+    expect(connectionCatalog((await getConnection(id))!).find(model => model.id === custom.id)).toMatchObject({ label: 'Private', contextWindow: 100_000 })
+  })
+
+  it('tolerates a saved disabled ID after the built-in is removed from code', async () => {
+    const provider = getLlmProvider('anthropic')
+    const builtins = provider.getBuiltinCatalog()
+    const removed = builtins[0]
+    const id = await saveConnection({ name: 'Account', provider: 'anthropic', config: {}, modelOverrides: [
+      { id: removed.id, disabled: true },
+    ] }, admin)
+    vi.spyOn(provider, 'getBuiltinCatalog').mockReturnValue(builtins.slice(1))
+    const info = (await listConnections(admin))[0]
+    expect(info.catalog.some(model => model.id === removed.id)).toBe(false)
+    expect(info.modelOverrides).toEqual([{ id: removed.id, disabled: true }])
+    await expect(saveConnection({ name: 'Renamed', provider: 'anthropic', config: {} }, admin, id)).resolves.toBe(id)
+  })
+
+  it('uses the code definition when a formerly custom model becomes a built-in', async () => {
+    const id = await add()
+    vi.spyOn(getLlmProvider('generic'), 'getBuiltinCatalog').mockReturnValue([
+      { ...catalog[0], label: 'Now maintained in code', contextWindow: 900_000 },
+    ])
+    const info = (await listConnections(admin))[0]
+    expect(info.catalog[0]).toMatchObject({ label: 'Now maintained in code', contextWindow: 900_000 })
+    expect(info.modelOverrides).toEqual([])
+    await saveConnection({ name: 'Renamed', provider: 'generic', config: {} }, admin, id)
+    expect((await getConnection(id))!.modelOverrides).toBe('[]')
+  })
 })

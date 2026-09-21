@@ -45,7 +45,7 @@ function draft(userId: string | null = null) {
     config: {
       apiKeys: { genericApiKey: 'private-api-key', genericBaseUrl: 'https://provider.example' },
     },
-    catalog,
+    modelOverrides: catalog,
   }
 }
 function request(path: string, method = 'GET', body?: unknown, caller = 'admin') {
@@ -93,7 +93,7 @@ describe('connection API ownership and root protection', () => {
       (await request('/defaults/default', 'PUT', { connectionId: id, model: 'model' })).status
     ).toBe(200)
     expect((await request(`/${id}`, 'DELETE')).status).toBe(400)
-    expect((await request(`/${id}`, 'PUT', { ...draft(), catalog: [] })).status).toBe(400)
+    expect((await request(`/${id}`, 'PUT', { ...draft(), modelOverrides: [] })).status).toBe(400)
     expect(
       (await request('/defaults/default', 'PUT', { connectionId: id, model: 'model' }, 'alice'))
         .status

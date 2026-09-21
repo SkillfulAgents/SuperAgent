@@ -1,5 +1,6 @@
 import { withGlobalModelPricing } from './global-pricing'
-import { connectionCatalogSchema } from './connection-schema'
+import { connectionModelOverridesSchema, normalizeConnectionModelOverrides } from './connection-schema'
+import { mergeCatalog } from './catalog-merge'
 import { parseConnectionJson } from './connection-schema'
 import { randomUUID } from 'node:crypto'
 import { legacyConnectionId, providerCredentialFields } from './provider-settings'
@@ -50,8 +51,16 @@ export async function getConnection(id: string): Promise<ConnectionRow | null> {
   return (await db.select().from(llmConnections).where(eq(llmConnections.id, id)).get()) ?? null
 }
 
-export function connectionCatalog(row: Pick<ConnectionRow, 'catalog'>): ModelDefinition[] {
-  return withGlobalModelPricing(parseConnectionJson(connectionCatalogSchema, row.catalog), getSettings().modelPricing)
+export function connectionModelOverrides(row: Pick<ConnectionRow, 'provider' | 'modelOverrides'>) {
+  return normalizeConnectionModelOverrides(
+    getLlmProvider(providerSchema.parse(row.provider)).getBuiltinCatalog(),
+    parseConnectionJson(connectionModelOverridesSchema, row.modelOverrides),
+  )
+}
+
+export function connectionCatalog(row: Pick<ConnectionRow, 'provider' | 'modelOverrides'>): ModelDefinition[] {
+  const builtins = getLlmProvider(providerSchema.parse(row.provider)).getBuiltinCatalog()
+  return withGlobalModelPricing(mergeCatalog(builtins, connectionModelOverrides(row)), getSettings().modelPricing)
 }
 
 // Settings writes are already serialized in the owning app. Keep registry
@@ -92,6 +101,7 @@ export async function listConnections(
       managed: row.managed,
       isConfigured: provider.getApiKeyStatus().isConfigured,
       catalog: connectionCatalog(row),
+      modelOverrides: connectionModelOverrides(row),
       browserModel: row.browserModel,
       dashboardModel: row.dashboardModel,
       baseUrl: config.apiKeys.genericBaseUrl,
@@ -169,11 +179,13 @@ export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, 
   }
   if (editedKeys.includes('genericBaseUrl')) delete config.runtimeEnv.ANTHROPIC_BASE_URL
   if (editedKeys.includes('bedrockRegion')) delete config.runtimeEnv.AWS_REGION
-  const catalog = connectionCatalogSchema.parse(
-    input.catalog ??
-      (previous ? connectionCatalog(previous) : getLlmProvider(input.provider).getBuiltinCatalog())
+  const builtins = getLlmProvider(input.provider).getBuiltinCatalog()
+  const modelOverrides = normalizeConnectionModelOverrides(
+    builtins,
+    input.modelOverrides ?? (previous ? connectionModelOverrides(previous) : []),
   )
-  return { input, previous, config, catalog }
+  const catalog = mergeCatalog(builtins, modelOverrides)
+  return { input, previous, config, catalog, modelOverrides }
 }
 
 export async function saveConnection(
@@ -182,7 +194,7 @@ export async function saveConnection(
   id?: string
 ): Promise<string> {
   return mutateConnections(async () => {
-    const { input, previous, config, catalog } = await prepareConnection(raw, viewer, id)
+    const { input, previous, config, catalog, modelOverrides } = await prepareConnection(raw, viewer, id)
     const connectionId = id ?? randomUUID()
     const root = getSettings().llmDefault
     if (
@@ -196,7 +208,7 @@ export async function saveConnection(
       provider: input.provider,
       userId: input.userId,
       config: JSON.stringify(config),
-      catalog: JSON.stringify(catalog),
+      modelOverrides: JSON.stringify(connectionModelOverridesSchema.parse(modelOverrides)),
       browserModel: input.browserModel ?? null,
       dashboardModel: input.dashboardModel ?? null,
       updatedAt: new Date(),
@@ -275,13 +287,14 @@ export async function resolveConnectionSelection(selection: ModelSelection | nul
     if (!resolveSelection(selection, [{ id: row.id, catalog: connectionCatalog(row) }])) {
       selection = { connectionId: row.id, model: wire }
       while (!connectionCatalog(row).some((model) => model.id === wire)) {
-        const catalog = connectionCatalogSchema.parse([
-          ...connectionCatalog(row),
-          { id: wire, label: wire, supportedEfforts: ['low', 'medium', 'high'] },
-        ])
+        const overrides = connectionModelOverrides(row).filter(model => model.id !== wire)
+        if (!getLlmProvider(providerSchema.parse(row.provider)).getBuiltinCatalog().some(model => model.id === wire)) {
+          overrides.push({ id: wire, label: wire, supportedEfforts: ['low', 'medium', 'high'] })
+        }
+        const modelOverrides = connectionModelOverridesSchema.parse(overrides)
         const result = await db
           .update(llmConnections)
-          .set({ catalog: JSON.stringify(catalog), generation: row.generation + 1 })
+          .set({ modelOverrides: JSON.stringify(modelOverrides), generation: row.generation + 1 })
           .where(and(eq(llmConnections.id, row.id), eq(llmConnections.generation, row.generation)))
           .run()
         const current = await getConnection(row.id)

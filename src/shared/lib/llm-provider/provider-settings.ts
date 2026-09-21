@@ -1,7 +1,8 @@
 import { getSettings, getEffectiveModels } from '../config/settings'
-import { getLlmProvider, getEffectiveCatalog, resolveModelForProvider } from './index'
+import { getLlmProvider, resolveModelForProvider } from './index'
 import type { LlmProviderId } from './provider-types'
-import { connectionCatalogSchema } from './connection-schema'
+import { connectionModelOverridesSchema, normalizeConnectionModelOverrides } from './connection-schema'
+import { mergeCatalog } from './catalog-merge'
 import { connectionConfigSchema, resolveSelection, type ConnectionConfig } from './connection-schema'
 
 export const legacyConnectionId = (provider: LlmProviderId) => `legacy-${provider}`
@@ -46,7 +47,17 @@ export function connectionFromProviderSettings(id: LlmProviderId, extraModels: I
           )
         : {},
   })
-  const catalog = getEffectiveCatalog(id)
+  const builtins = provider.getBuiltinCatalog()
+  const legacyOverrides = settings.modelCatalog?.[id]?.overrides ?? []
+  // Materialize only custom entries (including disabled ones); built-ins keep their code definitions.
+  const customModels = mergeCatalog([], legacyOverrides
+    .filter(entry => !builtins.some(builtin => builtin.id === entry.id))
+    .map(({ disabled: _disabled, ...entry }) => entry))
+  const modelOverrides = normalizeConnectionModelOverrides(builtins, [
+    ...customModels.map(model => ({ ...model, ...(legacyOverrides.findLast(entry => entry.id === model.id)?.disabled ? { disabled: true } : {}) })),
+    ...legacyOverrides.filter(entry => builtins.some(builtin => builtin.id === entry.id)),
+  ])
+  const catalog = mergeCatalog(builtins, modelOverrides)
   // Old version pins could be sent even if absent from the built-in
   // catalog. Preserve explicit app defaults as catalog entries on import.
   if (id === active) {
@@ -58,8 +69,15 @@ export function connectionFromProviderSettings(id: LlmProviderId, extraModels: I
       ...[...extraModels].map((model) => [model, 'agent']),
     ] as [string, 'agent' | 'summarizer' | 'browser' | 'dashboard'][]) {
       const wire = resolveModelForProvider(selection, id, purpose)
-      if (!catalog.some((m) => m.id === wire))
-        catalog.push({ id: wire, label: wire, supportedEfforts: ['low', 'medium', 'high'] })
+      if (!catalog.some((m) => m.id === wire)) {
+        const definition = builtins.find(model => model.id === wire)
+          ?? { id: wire, label: wire, supportedEfforts: ['low' as const, 'medium' as const, 'high' as const] }
+        // An explicit legacy selection re-enables its model without storing a built-in copy.
+        const disabled = modelOverrides.findIndex(model => model.id === wire)
+        if (disabled >= 0) modelOverrides.splice(disabled, 1)
+        if (!builtins.some(model => model.id === wire)) modelOverrides.push(definition)
+        catalog.push(definition)
+      }
     }
   }
   const preserve = (model: string, purpose: 'agent' | 'summarizer' | 'browser' | 'dashboard') =>
@@ -72,7 +90,7 @@ export function connectionFromProviderSettings(id: LlmProviderId, extraModels: I
     userId: null,
     managed: id === 'platform',
     config: JSON.stringify(config),
-    catalog: JSON.stringify(connectionCatalogSchema.parse(catalog)),
+    modelOverrides: JSON.stringify(connectionModelOverridesSchema.parse(modelOverrides)),
     browserModel:
       id === active
         ? preserve(models.browserModel, 'browser')

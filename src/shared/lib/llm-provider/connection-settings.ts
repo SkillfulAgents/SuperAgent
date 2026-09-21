@@ -4,9 +4,9 @@ import { llmConnections } from '../db/schema'
 import { getSettings, getEffectiveModels, mutateSettings } from '../config/settings'
 import { getLlmProvider, resolveModelForProvider } from './index'
 import type { LlmProviderId } from './provider-types'
-import { connectionCatalogSchema } from './connection-schema'
+import { connectionModelOverridesSchema } from './connection-schema'
 import { resolveSelection } from './connection-schema'
-import { connectionCatalog, getConnection, mutateConnections } from './connections'
+import { connectionCatalog, connectionModelOverrides, getConnection, mutateConnections } from './connections'
 import { connectionFromProviderSettings, legacyConnectionId } from './provider-settings'
 
 export interface ProviderSettingsSync {
@@ -33,9 +33,11 @@ export async function syncProviderSettings(sync: ProviderSettingsSync): Promise<
         await db.insert(llmConnections).values(values).onConflictDoNothing().run()
         continue
       }
-      let syncedCatalog = sync.catalog ? values.catalog : undefined
-      if (!syncedCatalog && id === active && sync.models?.length) {
+      let syncedOverrides = sync.catalog ? values.modelOverrides : undefined
+      if (!syncedOverrides && id === active && sync.models?.length) {
         const currentCatalog = connectionCatalog(existing)
+        const overrides = connectionModelOverrides(existing)
+        const builtins = getLlmProvider(id).getBuiltinCatalog()
         const purposes = {
           agentModel: 'agent', summarizerModel: 'summarizer',
           browserModel: 'browser', dashboardBuilderModel: 'dashboard',
@@ -46,14 +48,19 @@ export async function syncProviderSettings(sync: ProviderSettingsSync): Promise<
           const wire = resolveModelForProvider(models[key], id, purposes[key])
           if (!currentCatalog.some((model) => model.id === wire)) {
             const definition = catalog.find((model) => model.id === wire)
-            if (definition) currentCatalog.push(definition)
+            if (definition) {
+              const disabled = overrides.findIndex(model => model.id === wire)
+              if (disabled >= 0) overrides.splice(disabled, 1)
+              if (!builtins.some(model => model.id === wire)) overrides.push(definition)
+              currentCatalog.push(definition)
+            }
           }
         }
-        syncedCatalog = JSON.stringify(connectionCatalogSchema.parse(currentCatalog))
+        syncedOverrides = JSON.stringify(connectionModelOverridesSchema.parse(overrides))
       }
       await db.update(llmConnections).set({
         ...(sync.credentials ? { config: values.config } : {}),
-        ...(syncedCatalog ? { catalog: syncedCatalog } : {}),
+        ...(syncedOverrides ? { modelOverrides: syncedOverrides } : {}),
         ...(id === active && sync.models?.includes('browserModel') ? { browserModel: values.browserModel } : {}),
         ...(id === active && sync.models?.includes('dashboardBuilderModel') ? { dashboardModel: values.dashboardModel } : {}),
         generation: sql`${llmConnections.generation} + 1`,

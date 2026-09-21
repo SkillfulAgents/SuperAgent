@@ -183,16 +183,7 @@ function ConnectionEditor({
   const [accessKey, setAccessKey] = useState('')
   const [secretKey, setSecretKey] = useState('')
   const [region, setRegion] = useState(existing?.region ?? 'us-east-1')
-  const [overrides, setOverrides] = useState<CatalogOverrideEntry[]>(() =>
-    existing
-      ? [
-          ...existing.catalog,
-          ...catalogFor(provider)
-            .filter((m) => !existing.catalog.some((saved) => saved.id === m.id))
-            .map((m) => ({ id: m.id, disabled: true })),
-        ]
-      : []
-  )
+  const [overrides, setOverrides] = useState<CatalogOverrideEntry[]>(existing?.modelOverrides ?? [])
   const catalog = withGlobalModelPricing(mergeCatalog(catalogFor(provider), overrides), modelPricing)
   const [browserModel, setBrowserModel] = useState(existing?.browserModel ?? '')
   const [dashboardModel, setDashboardModel] = useState(existing?.dashboardModel ?? '')
@@ -217,7 +208,7 @@ function ConnectionEditor({
         provider,
         userId: owner,
         config: { apiKeys, env: {} },
-        catalog,
+        modelOverrides: overrides,
         browserModel: browserModel || null,
         dashboardModel: dashboardModel || null,
       }

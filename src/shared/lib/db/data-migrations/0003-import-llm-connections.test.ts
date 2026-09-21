@@ -72,9 +72,29 @@ describe('import-llm-connections data migration', () => {
     for (const table of [scheduledTasks, webhookTriggers, chatIntegrations]) {
       const row = await handle.db.select({ model: table.model, connectionId: table.connectionId }).from(table).get()
       expect(row?.connectionId).toBe('legacy-anthropic')
-      expect(rows.find(row => row.id === 'legacy-anthropic')?.catalog).toContain(row!.model)
+      expect(rows.find(row => row.id === 'legacy-anthropic')?.modelOverrides).toContain(row!.model)
     }
     expect(await handle.db.select().from(dataMigrations).all()).toMatchObject([{ id: 3, name: 'import-llm-connections' }])
+  })
+
+  it('imports custom definitions and disabled IDs without copying built-ins', async () => {
+    const { getLlmProvider } = await import('../../llm-provider')
+    configure()
+    const builtins = getLlmProvider('anthropic').getBuiltinCatalog()
+    const disabled = builtins.find(model => !model.isLatest)!
+    const custom = { id: 'private-model', label: 'Private', supportedEfforts: ['low' as const], disabled: true }
+    settings.mutateSettings(s => { s.modelCatalog = { anthropic: { overrides: [
+      { id: disabled.id, disabled: true }, custom,
+    ] } } })
+    await runDataMigrations(handle.db, migrations)
+    const row = (await handle.db.select().from(llmConnections).get())!
+    expect(JSON.parse(row.modelOverrides)).toEqual(expect.arrayContaining([
+      { id: disabled.id, disabled: true }, custom,
+      { id: 'claude-archived-1', label: 'claude-archived-1', supportedEfforts: ['low', 'medium', 'high'] },
+    ]))
+    for (const entry of JSON.parse(row.modelOverrides)) {
+      if (builtins.some(model => model.id === entry.id)) expect(Object.keys(entry).sort()).toEqual(['disabled', 'id'])
+    }
   })
 
   it('uses the ledger to skip subsequent imports, including after a connection is deleted', async () => {
