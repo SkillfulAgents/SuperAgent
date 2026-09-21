@@ -8,10 +8,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/components/ui/select'
-import { useUpdateChatIntegration } from '@renderer/hooks/use-chat-integrations'
+import { useUpdateAgentIntegration } from '@renderer/hooks/use-agent-integrations'
 import { useInheritedRuntimeSelection } from '@renderer/hooks/use-inherited-runtime-selection'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
-import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
+import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 
 export function ToggleRow({ label, helperText, checked, onCheckedChange, disabled }: {
   label: string
@@ -133,8 +133,8 @@ export function SessionTimeoutSelect({ value, onCommit, disabled, id, descriptio
   )
 }
 
-export function IntegrationModelEffort({ integration }: { integration: ChatIntegration }) {
-  const updateIntegration = useUpdateChatIntegration()
+export function IntegrationModelEffort({ integration }: { integration: PublicAgentIntegration }) {
+  const updateIntegration = useUpdateAgentIntegration()
   const { selection } = useInheritedRuntimeSelection(integration.agentSlug, integration)
 
   if (!selection?.model || !selection.effort || !selection.displayEffort) {

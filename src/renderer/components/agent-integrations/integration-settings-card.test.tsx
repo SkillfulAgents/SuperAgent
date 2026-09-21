@@ -6,8 +6,8 @@ import { makeChatIntegration as makeIntegration } from './test-factories'
 
 const updateMock = vi.fn()
 const setApprovalMock = vi.fn()
-vi.mock('@renderer/hooks/use-chat-integrations', () => ({
-  useUpdateChatIntegration: () => ({ mutate: updateMock, isPending: false }),
+vi.mock('@renderer/hooks/use-agent-integrations', () => ({
+  useUpdateAgentIntegration: () => ({ mutate: updateMock, isPending: false }),
   useSetRequireApproval: () => ({ mutate: setApprovalMock, isPending: false, isError: false }),
 }))
 vi.mock('./integration-settings-controls', () => ({

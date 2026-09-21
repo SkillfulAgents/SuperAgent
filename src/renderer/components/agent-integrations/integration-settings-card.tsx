@@ -1,15 +1,18 @@
-import { useUpdateChatIntegration, useSetRequireApproval } from '@renderer/hooks/use-chat-integrations'
+import { isPublicChatIntegration } from '@shared/lib/chat-integrations/public'
+import { useUpdateAgentIntegration, useSetRequireApproval } from '@renderer/hooks/use-agent-integrations'
 import { ToggleRow, SessionTimeoutSelect } from './integration-settings-controls'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
-import type { PublicChatIntegration } from '@shared/lib/chat-integrations/public'
+import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 
 export function IntegrationSettingsCard({ integration, canManageAccess }: {
-  integration: PublicChatIntegration
+  integration: PublicAgentIntegration
   /** Telegram owner: shows the require-approval gate. */
   canManageAccess?: boolean
 }) {
-  const updateIntegration = useUpdateChatIntegration()
+  const updateIntegration = useUpdateAgentIntegration()
   const setRequireApproval = useSetRequireApproval()
+
+  if (!isPublicChatIntegration(integration)) return null
 
   return (
     <DetailCard label="Integration Settings">

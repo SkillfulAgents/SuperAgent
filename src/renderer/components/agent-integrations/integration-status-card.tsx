@@ -1,16 +1,16 @@
 import { Switch } from '@renderer/components/ui/switch'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
-import { useUpdateChatIntegration } from '@renderer/hooks/use-chat-integrations'
-import { deriveChatIntegrationState } from '@shared/lib/chat-integrations/utils'
-import { ChatIntegrationPill } from './chat-integration-pill'
-import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
+import { useUpdateAgentIntegration } from '@renderer/hooks/use-agent-integrations'
+import { deriveAgentIntegrationState } from '@shared/lib/agent-integrations/presentation'
+import { AgentIntegrationPill } from './agent-integration-pill'
+import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 
 export function IntegrationStatusCard({ integration, connected }: {
-  integration: ChatIntegration
+  integration: PublicAgentIntegration
   connected?: boolean
 }) {
-  const updateIntegration = useUpdateChatIntegration()
-  const state = deriveChatIntegrationState(integration.status, connected)
+  const updateIntegration = useUpdateAgentIntegration()
+  const state = deriveAgentIntegrationState(integration.status, connected)
   // "On" covers active/error/connecting — anything the user means to be running.
   const isOn = integration.status !== 'paused'
 
@@ -19,7 +19,7 @@ export function IntegrationStatusCard({ integration, connected }: {
       label="Status"
       headerActions={
         <div className="flex items-center gap-2">
-          <ChatIntegrationPill state={state} />
+          <AgentIntegrationPill state={state} />
           <Switch
             className="scale-75 origin-right"
             checked={isOn}

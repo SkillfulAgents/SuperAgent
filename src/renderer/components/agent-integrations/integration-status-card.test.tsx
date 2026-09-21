@@ -6,8 +6,8 @@ import { IntegrationStatusCard } from './integration-status-card'
 import { makeChatIntegration as makeIntegration } from './test-factories'
 
 const updateMock = vi.fn()
-vi.mock('@renderer/hooks/use-chat-integrations', () => ({
-  useUpdateChatIntegration: () => ({ mutate: updateMock, isPending: false }),
+vi.mock('@renderer/hooks/use-agent-integrations', () => ({
+  useUpdateAgentIntegration: () => ({ mutate: updateMock, isPending: false }),
 }))
 
 describe('IntegrationStatusCard', () => {
