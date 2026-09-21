@@ -230,6 +230,7 @@ describe('ConnectedAccountRequestItem', () => {
     await act(async () => {
       window.dispatchEvent(new MessageEvent('message', {
         origin: window.location.origin,
+        source: fakeLoginWindow.source,
         data: { type: 'oauth-callback', success: true, accountId: 'new-account' },
       }))
     })
@@ -237,6 +238,32 @@ describe('ConnectedAccountRequestItem', () => {
     expect(mockApiFetch).toHaveBeenNthCalledWith(2,
       '/api/agents/my-agent/reauth-request/reauth-1/replace-account',
       expect.objectContaining({ body: expect.stringContaining('"accountIds":["new-account"]') }))
+  })
+
+  it('leaves its sign-in running when another window\'s sign-in finishes', async () => {
+    const user = userEvent.setup()
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ redirectUrl: 'https://oauth.example' }) })
+    renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
+    await user.click(screen.getByRole('button', { name: 'Add New Account' }))
+    fakeLoginWindow.close.mockClear()
+    const callback = (source: MessagePort | null, accountId: string) => act(async () => {
+      window.dispatchEvent(new MessageEvent('message', {
+        origin: window.location.origin,
+        source,
+        data: { type: 'oauth-callback', success: true, accountId, toolkitSlug: 'github' },
+      }))
+    })
+
+    // Another card's window, and a message with no window at all.
+    await callback(new MessageChannel().port1, 'other-account')
+    await callback(null, 'other-account')
+    expect(fakeLoginWindow.close).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Connecting…' })).toBeDisabled()
+    expect(screen.queryByTestId('policy-editor')).not.toBeInTheDocument()
+
+    await callback(fakeLoginWindow.source, 'new-account')
+    expect(fakeLoginWindow.close).toHaveBeenCalled()
+    expect(screen.getByTestId('policy-editor')).toHaveTextContent('new-account')
   })
 
   it('refreshes but does not auto-select an account whose sign-in was cancelled first', async () => {

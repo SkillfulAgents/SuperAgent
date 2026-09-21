@@ -103,7 +103,7 @@ export function ConnectedAccountRequestItem({
 
   const { track } = useAnalyticsTracking()
   const { reconnect: oauthReconnect, pendingAccountId, canCancelPendingReconnect, cancelReconnect } = useOAuthReconnect()
-  const { open: openLoginWindow, close: closeLoginWindow, pending: connecting, canCancel: canCancelConnect } = useLoginWindow()
+  const { open: openLoginWindow, close: closeLoginWindow, pending: connecting, canCancel: canCancelConnect, isLoginWindow } = useLoginWindow()
   // Every control the card gates waits for the whole sign-in, not only the request for its URL.
   const busy = status !== 'pending' || connecting || pendingAccountId !== null
   const provider = getProvider(toolkit)
@@ -216,13 +216,15 @@ export function ConnectedAccountRequestItem({
     const handleMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return
       if (event.data?.type === 'oauth-callback') {
-        handleOAuthComplete(claimAttempt(), event.data.success, event.data.error, event.data.accountId)
+        // Only this card's own window finishes this card's sign-in.
+        const attempt = isLoginWindow(event.source) ? claimAttempt() : null
+        handleOAuthComplete(attempt, event.data.success, event.data.error, event.data.accountId)
       }
     }
 
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [invalidateConnectedAccounts, refetch, toolkit, replacement, closeLoginWindow])
+  }, [invalidateConnectedAccounts, refetch, toolkit, replacement, closeLoginWindow, isLoginWindow])
 
   const toggleAccount = useCallback((accountId: string) => {
     const account = accounts.find((a) => a.id === accountId)
