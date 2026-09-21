@@ -111,6 +111,33 @@ beforeEach(() => {
 })
 
 describe('LlmTab model catalog editor', () => {
+  it('keeps a shared long-context cliff when a custom model without one is only renamed', async () => {
+    const user = userEvent.setup()
+    // The cliff came from another provider's entry for the same model id; this provider's entry has none.
+    const shared = {
+      inputPerMtok: 1,
+      outputPerMtok: 2,
+      cacheReadPerMtok: 0.05,
+      longContextPriceCliff: { thresholdTokens: 200_000, inputMultiplier: 2, outputMultiplier: 1.5 },
+    }
+    const custom = { id: 'shared-model', label: 'Shared', supportedEfforts: ['low'] }
+    renderWithSettings({
+      modelPricing: { 'shared-model': shared },
+      modelCatalog: { anthropic: { overrides: [custom] } },
+      catalog: [BUILTIN[0], { ...custom, pricing: shared } as ModelDefinition],
+    })
+    await openCatalog(user)
+    await user.click(screen.getByTestId('catalog-customize-shared-model'))
+    const labelField = screen.getByLabelText('Display label')
+    await user.clear(labelField)
+    await user.type(labelField, 'Renamed')
+    await user.click(screen.getByTestId('catalog-save-custom-model'))
+
+    expect(mutateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ modelPricing: { 'shared-model': shared } }),
+    )
+  })
+
   it('retains the global price when editing a disabled custom model', async () => {
     const user = userEvent.setup()
     renderWithSettings({

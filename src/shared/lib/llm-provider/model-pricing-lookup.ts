@@ -47,16 +47,26 @@ interface TokenRates {
   cacheCreationPerMtok?: number
   cacheCreation1hPerMtok?: number
   cacheReadPerMtok?: number
+  speedMultipliers?: SpeedMultipliers
 }
 
 /**
  * True when `rates` restates a rate the built-in card has or had for `id`: every
- * field it sets equals the current card or one of its historical cards. Such a
- * price is not a user override, so importing it must not shadow the schedule.
+ * field it sets, speed multipliers included, equals the current card or one of
+ * its historical cards. Such a price is not a user override, so importing it
+ * must not shadow the schedule. Anything it sets that the card does not say the
+ * same way makes it a real override.
  */
 export function restatesBuiltinRate(id: string, rates: TokenRates): boolean {
   const entry = staticEntry(id)
   if (!entry) return false
+  if (
+    rates.speedMultipliers &&
+    (rates.speedMultipliers.slow !== entry.speedMultipliers?.slow ||
+      rates.speedMultipliers.fast !== entry.speedMultipliers?.fast)
+  ) {
+    return false
+  }
   return [entry, ...(entry.historicalRates ?? [])].some(
     (card) =>
       rates.inputPerMtok === card.input &&

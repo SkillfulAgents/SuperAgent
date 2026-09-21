@@ -221,10 +221,11 @@ export function CatalogEditor({
     const key = canonicalPricingId(entry.id)
     let modelPricingPatch: GlobalModelPricingPatch | undefined
     if (pricing) {
-      // Keep rates this dialog does not edit (cache, speed tiers); the cliff follows the model.
+      // Keep what this dialog does not edit (cache rates, speed tiers, a cliff
+      // another provider's entry contributed): the price is shared, and an
+      // edit here that never touched them must not change them for everyone.
       const next = { ...modelPricing[key], ...pricing }
       if (entry.longContextPriceCliff) next.longContextPriceCliff = entry.longContextPriceCliff
-      else delete next.longContextPriceCliff
       modelPricingPatch = { [key]: next }
     } else if (modelPricing[key]) {
       modelPricingPatch = { [key]: null }

@@ -95,8 +95,10 @@ export function extractCatalogPricing(catalogs: ModelCatalogSettings, active = '
       overrides: catalogs[provider].overrides.map((entry) => {
         const { pricing, ...model } = entry
         const key = canonicalPricingId(entry.id)
-        const restated = !entry.longContextPriceCliff && pricing && restatesBuiltinRate(entry.id, pricing)
-        if (pricing && !restated && !prices.has(key))
+        // Precedence first: the first provider to price a model owns its key,
+        // whatever that price says. Whether the winner is worth keeping is
+        // decided below, so a restated price still shuts out a later provider's.
+        if (pricing && !prices.has(key))
           prices.set(key, {
             ...pricing,
             ...(entry.longContextPriceCliff
@@ -106,6 +108,9 @@ export function extractCatalogPricing(catalogs: ModelCatalogSettings, active = '
         return model
       }),
     }
+  }
+  for (const [key, price] of prices) {
+    if (!price.longContextPriceCliff && restatesBuiltinRate(key, price)) prices.delete(key)
   }
   return { catalog, pricing: globalModelPricingSchema.parse(Object.fromEntries(prices)) }
 }

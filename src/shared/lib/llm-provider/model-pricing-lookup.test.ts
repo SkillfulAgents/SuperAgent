@@ -38,6 +38,17 @@ describe('restatesBuiltinRate', () => {
     expect(restatesBuiltinRate(id, { inputPerMtok: 3, outputPerMtok: 15, cacheReadPerMtok: 0 })).toBe(false)
     expect(restatesBuiltinRate('unknown-model', { inputPerMtok: 3, outputPerMtok: 15 })).toBe(false)
   })
+
+  it('treats a changed speed multiplier as an override even at the built-in token rates', () => {
+    const builtin = pricingFor('claude-opus-4-8')!
+    const rates = { inputPerMtok: builtin.inputPerMtok, outputPerMtok: builtin.outputPerMtok }
+    expect(builtin.speedMultipliers).toEqual({ fast: 2 })
+    expect(restatesBuiltinRate('claude-opus-4-8', { ...rates, speedMultipliers: { fast: 2 } })).toBe(true)
+    expect(restatesBuiltinRate('claude-opus-4-8', { ...rates, speedMultipliers: { fast: 9 } })).toBe(false)
+    expect(restatesBuiltinRate('claude-opus-4-8', { ...rates, speedMultipliers: { slow: 0.5, fast: 2 } })).toBe(false)
+    // A model whose card has no speed tiers: declaring one is an override.
+    expect(restatesBuiltinRate('claude-sonnet-5', { inputPerMtok: 2, outputPerMtok: 10, speedMultipliers: { fast: 2 } })).toBe(false)
+  })
 })
 
 describe('pricingFor', () => {

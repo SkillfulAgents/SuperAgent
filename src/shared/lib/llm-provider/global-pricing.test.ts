@@ -134,4 +134,33 @@ describe('global model pricing', () => {
       { id: 'claude-opus-4-8' },
     ])
   })
+
+  it('resolves provider precedence before dropping a restated price', () => {
+    const builtin = pricingFor('claude-opus-4-8')!
+    const restated = { inputPerMtok: builtin.inputPerMtok, outputPerMtok: builtin.outputPerMtok }
+    const legacy = {
+      anthropic: { overrides: [{ id: 'claude-opus-4-8', pricing: restated }] },
+      bedrock: {
+        overrides: [{ id: 'us.anthropic.claude-opus-4-8', pricing: { inputPerMtok: 9, outputPerMtok: 45 } }],
+      },
+    }
+    // Active Anthropic wins the key with the built-in rate, so nothing is overridden:
+    // the inactive Bedrock price must not slip in behind it.
+    expect(extractCatalogPricing(legacy, 'anthropic').pricing).toEqual({})
+    // With Bedrock active, its price is the winner and a real override.
+    expect(extractCatalogPricing(legacy, 'bedrock').pricing).toEqual({
+      'claude-opus-4-8': { inputPerMtok: 9, outputPerMtok: 45 },
+    })
+  })
+
+  it('imports built-in token rates that carry their own speed multiplier', () => {
+    const builtin = pricingFor('claude-opus-4-8')!
+    const pricing = {
+      inputPerMtok: builtin.inputPerMtok,
+      outputPerMtok: builtin.outputPerMtok,
+      speedMultipliers: { fast: 9 },
+    }
+    const legacy = { anthropic: { overrides: [{ id: 'claude-opus-4-8', pricing }] } }
+    expect(extractCatalogPricing(legacy, 'anthropic').pricing).toEqual({ 'claude-opus-4-8': pricing })
+  })
 })

@@ -1282,7 +1282,6 @@ describe('session usage — GET /:id/sessions/:sessionId/usage', () => {
     expect(mockLoadSessionUsageTotals).toHaveBeenCalledWith({
       files: expect.anything(),
       transcript: '.claude/projects/-workspace/session-1.jsonl',
-      providerId: 'anthropic',
     })
   })
 
