@@ -36,6 +36,7 @@ export interface CreateAgentIntegrationParams {
   agentSlug: string
   provider: string
   name?: string
+  status?: 'active' | 'paused' | 'error' | 'disconnected'
   config: Record<string, unknown>
   showToolCalls?: boolean
   sessionTimeout?: number | null
@@ -73,6 +74,7 @@ export async function createAgentIntegration(params: CreateAgentIntegrationParam
     agentSlug: params.agentSlug,
     provider: params.provider as NewChatIntegration['provider'],
     name: params.name ?? null,
+    status: params.status ?? 'active',
     config: JSON.stringify(config),
     showToolCalls: params.showToolCalls ?? false,
     // Always private at create; making a bot public is owner-only via the

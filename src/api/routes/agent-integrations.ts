@@ -5,7 +5,7 @@
  * Mounted at /api/agent-integrations with /api/chat-integrations as a legacy alias.
  */
 
-import { Hono, type MiddlewareHandler } from 'hono'
+import { Hono, type MiddlewareHandler, type Context } from 'hono'
 import { z } from 'zod'
 import {
   getAgentIntegration,
@@ -26,24 +26,48 @@ import {
 import type { ChatAccessStatus } from '@shared/lib/services/chat-integration-access-service'
 import { listAgentIntegrationSessions, archiveAgentIntegrationSession, getAgentIntegrationSessionById, deleteAgentIntegrationSessionsByIntegration } from '@shared/lib/services/agent-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
-import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema } from '@shared/lib/chat-integrations/config-schema'
 import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/cleanup'
 import { listAgentIntegrationsHandler } from './agent-integration-list'
+import { getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, authorizeIntegration, setupError } from '@shared/lib/agent-integrations/setup'
 import { toPublicAgentIntegration, publicIntegrationStatus } from '@shared/lib/agent-integrations/serialization'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { Authenticated, AgentRead, AgentUser, EntityAgentRole, ResolveAgent, getAgentId, getAuthorizedAgentRole, hasMinRole } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, EntityAgentRole, ResolveAgent, getAgentId, getAuthorizedAgentRole, hasMinRole } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
 import { SPEED_LEVELS } from '@shared/lib/container/types'
 
-const SENTRY_TAGS = { component: 'chat-integration' } as const
+const SENTRY_TAGS = { component: 'agent-integration' } as const
 
 // Speed override carried on create/update bodies: a level, null to clear, or absent.
 const speedOverrideSchema = z.enum(SPEED_LEVELS).nullable().optional()
 
 const agentIntegrationsRouter = new Hono()
 
+async function completeAuthorization(c: Context) {
+  c.header('Cache-Control', 'no-store'); c.header('Referrer-Policy', 'no-referrer')
+  try {
+    const callback = getIntegrationSetup(c.req.param('provider') ?? '').callback
+    const state = c.req.query('state')
+    if (!callback || !state) return c.html('<h1>Authorization unavailable</h1><p>Return to Gamut to try again.</p>', 400)
+    const result = await callback({ state, code: c.req.query('code'), error: c.req.query('error') })
+    if (result.cancelled || !result.integrationId) return c.html('<h1>Authorization cancelled</h1><p>Return to Gamut to try again.</p>', 400)
+    const installed = await getAgentIntegration(result.integrationId)
+    if (installed?.provider !== c.req.param('provider')) throw new Error('Authorization belongs to another provider')
+    try { await agentIntegrationManager.addIntegration(result.integrationId) }
+    catch (error) {
+      captureException(error, { tags: { component: 'agent-integration', operation: 'initial-connect' } })
+      return c.html('<h1>Account authorized</h1><p>Event delivery is temporarily unavailable and will retry automatically. You can close this window and return to Gamut.</p>')
+    }
+    return c.html('<h1>Account connected</h1><p>You can close this window and return to Gamut.</p>')
+  } catch (error) {
+    captureException(error, { tags: { component: 'agent-integration', operation: 'authorization-callback' } })
+    return c.html('<h1>Could not authorize account</h1><p>Return to Gamut and check the app credentials, workspace and permissions.</p>', 400)
+  }
+}
+agentIntegrationsRouter.get('/providers/:provider/callback', completeAuthorization)
+// Existing installed apps may retain this shorter callback URL.
+agentIntegrationsRouter.get('/:provider/callback', completeAuthorization)
 agentIntegrationsRouter.use('*', Authenticated())
 agentIntegrationsRouter.get('/agents/:id', ResolveAgent(), AgentRead(), listAgentIntegrationsHandler)
 
@@ -88,53 +112,10 @@ agentIntegrationsRouter.post('/test-credentials', Authenticated(), async (c) => 
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
-    // Validate by attempting a lightweight API call
-    // TODO: we should move these to be part of the integration class, not hardcoded here in the route handler. This breaks abstracting provider-specific logic out of the route layer and makes it harder to maintain as we add more providers.
-    if (provider === 'telegram') {
-      const botToken = config.botToken
-      if (!botToken) {
-        return c.json({ error: 'Missing botToken' }, 400)
-      }
-      // Call Telegram getMe to validate
-      const res = await fetch(`https://api.telegram.org/bot${botToken}/getMe`)
-      const data = await res.json() as { ok: boolean; result?: { username: string; first_name: string } }
-      if (!data.ok) {
-        return c.json({ valid: false, error: 'Invalid bot token' }, 400)
-      }
-      return c.json({ valid: true, botName: data.result?.first_name, botUsername: data.result?.username })
-    }
-
-    if (provider === 'slack') {
-      const botToken = config.botToken
-      const appToken = config.appToken
-      if (!botToken) {
-        return c.json({ error: 'Missing botToken' }, 400)
-      }
-      if (!appToken) {
-        return c.json({ error: 'Missing appToken (app-level token for Socket Mode)' }, 400)
-      }
-      // Validate bot token via auth.test
-      const res = await fetch('https://slack.com/api/auth.test', {
-        headers: { 'Authorization': `Bearer ${botToken}` },
-      })
-      const data = await res.json() as { ok: boolean; team?: string; user?: string; error?: string }
-      if (!data.ok) {
-        return c.json({ valid: false, error: `Bot token invalid: ${data.error || 'unknown error'}` }, 400)
-      }
-      // Validate app token via apps.connections.open (proves Socket Mode will work)
-      const socketRes = await fetch('https://slack.com/api/apps.connections.open', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${appToken}` },
-      })
-      const socketData = await socketRes.json() as { ok: boolean; error?: string }
-      if (!socketData.ok) {
-        return c.json({ valid: false, error: `App token invalid: ${socketData.error || 'unknown error'}. Ensure Socket Mode is enabled and the token has connections:write scope.` }, 400)
-      }
-      return c.json({ valid: true, team: data.team, user: data.user })
-    }
-
-    return c.json({ error: 'Invalid provider' }, 400)
+    return c.json(await testIntegrationCredentials(provider, config))
   } catch (error) {
+    const failure = setupError(error)
+    if (failure) return c.json({ valid: false, error: failure.error }, failure.status)
     console.error('Failed to test credentials:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'test-credentials' } })
     return c.json({ error: 'Failed to test credentials' }, 500)
@@ -146,7 +127,15 @@ agentIntegrationsRouter.post('/test-credentials', Authenticated(), async (c) => 
 // canonical id BEFORE AgentUser checks the ACL — otherwise auth mode denies valid
 // owners (ACL is id-keyed) and non-auth mode persists the display slug, splitting
 // the row from the canonical id. AgentUser then validates the 'user' role.
-agentIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
+const RequireSetupManagement: MiddlewareHandler = async (c, next) => {
+  const body = await c.req.json()
+  const definition = agentIntegrationRegistry.getDefinition(body.provider)
+  if (!definition) return c.json({ error: 'Unknown integration provider' }, 400)
+  return (definition.managementAccess ?? 'owner') === 'owner' ? AgentAdmin()(c, next) : AgentUser()(c, next)
+}
+agentIntegrationsRouter.post('/agents/:id', ResolveAgent(), RequireSetupManagement, createIntegration)
+agentIntegrationsRouter.post('/:id', ResolveAgent(), RequireSetupManagement, createIntegration)
+async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
   try {
     const agentSlug = getAgentId(c)
     const body = await c.req.json()
@@ -163,47 +152,7 @@ agentIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
-    if (!CHAT_PROVIDERS.includes(provider)) {
-      return c.json({ error: `Invalid provider. Must be one of: ${CHAT_PROVIDERS.join(', ')}` }, 400)
-    }
-
-    // For iMessage: if config has a code instead of token, exchange it first
-    // TODO this shoud live in the integration class, not here in the route handler. This breaks abstracting provider-specific logic out of the route layer and makes it harder to maintain as we add more providers.
-    if (provider === 'imessage' && config.code && !config.token) {
-      const parsed = imessageSetupSchema.safeParse({ phoneNumber: config.phoneNumber, code: config.code })
-      if (!parsed.success) {
-        return c.json({ error: parsed.error.issues[0]?.message || 'Invalid phone number or code' }, 400)
-      }
-      const exchangeRes = await fetch(`${IMESSAGE_GATEWAY_URL}/auth/exchange`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: config.phoneNumber, code: config.code }),
-      })
-      if (exchangeRes.status === 401) {
-        return c.json({ error: 'Invalid or expired code' }, 400)
-      }
-      if (exchangeRes.status === 429) {
-        return c.json({ error: 'Too many attempts, try again later' }, 400)
-      }
-      if (!exchangeRes.ok) {
-        return c.json({ error: `Code exchange failed (${exchangeRes.status})` }, 400)
-      }
-      const { token } = await exchangeRes.json() as { token: string }
-      if (!token) {
-        return c.json({ error: 'No token returned from gateway' }, 400)
-      }
-      config.token = token
-      config.gatewayUrl = IMESSAGE_GATEWAY_URL
-      delete config.code
-    }
-
-    // Validate config against Zod schema
-    try {
-      validateChatIntegrationConfig(provider, config)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Invalid config'
-      return c.json({ error: `Invalid config: ${message}` }, 400)
-    }
+    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, new URL(c.req.url).origin, agentSlug, getCurrentUserId(c)))
 
     // Get the authenticated user ID if available
     const user = c.get('user' as never) as { id: string } | undefined
@@ -215,7 +164,8 @@ agentIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
         agentSlug,
         provider,
         name,
-        config,
+        config: prepared.config,
+        status: prepared.status,
         showToolCalls: showToolCalls ?? false,
         sessionTimeout: sessionTimeout ?? null,
         model: model ?? null,
@@ -240,9 +190,9 @@ agentIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
       throw err
     }
 
-    // Start the integration
+    // Providers may require authorization before their runtime can connect.
     try {
-      await agentIntegrationManager.addIntegration(id)
+      if (!prepared.status || prepared.status === 'active') await agentIntegrationManager.addIntegration(id)
     } catch (err) {
       // Integration was created but failed to connect — update status to error
       const errMsg = err instanceof Error ? err.message : String(err)
@@ -264,9 +214,25 @@ agentIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
     return c.json(toPublicAgentIntegration(integration), 201)
   } catch (error) {
+    const failure = setupError(error)
+    if (failure) return c.json({ error: failure.error }, failure.status)
     console.error('Failed to create agent integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'create-integration' }, extra: { agentSlug: c.req.param('id') } })
     return c.json({ error: 'Failed to create agent integration' }, 500)
+  }
+}
+
+agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('user'), RequireProviderManagement, async c => {
+  const row = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
+  try {
+    if (!getIntegrationSetup(row.provider).authorize) return c.json({ error: 'This provider does not use external authorization' }, 400)
+    await agentIntegrationManager.pauseIntegration(row.id)
+    return c.json(await authorizeIntegration(row, await c.req.json(), integrationSetupContext(row.provider, new URL(c.req.url).origin, row.agentSlug, getCurrentUserId(c))))
+  } catch (error) {
+    const failure = setupError(error)
+    if (failure) return c.json({ error: failure.error }, failure.status)
+    captureException(error, { tags: { component: 'agent-integration', operation: 'authorize' } })
+    return c.json({ error: 'Could not authorize integration' }, 500)
   }
 })
 

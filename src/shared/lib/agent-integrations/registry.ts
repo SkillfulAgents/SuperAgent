@@ -1,3 +1,4 @@
+import type { IntegrationProviderSetup } from './setup-types'
 import type { SQLiteTable } from 'drizzle-orm/sqlite-core'
 import type { PublicAgentIntegration } from './public'
 import type { IntegrationMcpConnection } from './mcp-types'
@@ -6,6 +7,7 @@ import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationRou
 import { chatProviders } from '../chat-integrations/providers'
 
 export interface IntegrationProvider {
+  setup?: IntegrationProviderSetup
   definition: AgentIntegrationDefinition
   /** Child tables, in deletion order, owned by this provider/family. */
   storage?(): readonly SQLiteTable[]

@@ -19,3 +19,5 @@ src/shared/lib/services/x-agent-policy-service.sup223.test.ts
 src/api/routes/mcp-proxy.integration-identity.test.ts
 
 src/api/routes/agent-integrations.boundary.test.ts
+
+src/api/routes/agent-integration-setup.test.ts

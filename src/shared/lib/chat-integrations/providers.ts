@@ -1,3 +1,4 @@
+import { chatProviderSetup } from './setup'
 import { chatIntegrationAccess, chatIntegrationSessions, slackThreadState } from '../db/schema'
 import { z, type ZodType } from 'zod'
 import type { IntegrationProvider } from '../agent-integrations/registry'
@@ -32,6 +33,7 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
   return {
     definition: chatDefinitions[provider],
     policy: chatIntegrationPolicy,
+    setup: chatProviderSetup(provider, schema),
     storage: () => [chatIntegrationAccess, chatIntegrationSessions, ...(provider === 'slack' ? [slackThreadState] : [])],
     serialize: record => toPublicChatIntegration(record as ChatIntegration),
     configuration: {

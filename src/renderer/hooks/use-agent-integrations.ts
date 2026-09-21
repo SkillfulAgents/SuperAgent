@@ -5,7 +5,6 @@
  */
 
 import type { AgentIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
-import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 import { isSettling } from '@shared/lib/agent-integrations/presentation'
 import { apiFetch } from '@renderer/lib/api'
@@ -163,7 +162,7 @@ export function useCreateAgentIntegration() {
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (params: {
       agentSlug: string
-      provider: ChatProvider
+      provider: string
       name?: string
       config: Record<string, unknown>
       showToolCalls?: boolean
@@ -173,7 +172,7 @@ export function useCreateAgentIntegration() {
       speed?: string | null
     }) => {
       const { agentSlug, ...body } = params
-      const res = await apiFetch(`/api/agent-integrations/${agentSlug}`, {
+      const res = await apiFetch(`/api/agent-integrations/agents/${agentSlug}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -214,6 +213,7 @@ export function useUpdateAgentIntegration() {
     }: {
       id: string
       name?: string
+      settings?: Record<string, unknown>
       config?: Record<string, unknown>
       showToolCalls?: boolean
       sessionTimeout?: number | null
@@ -339,7 +339,7 @@ export function useTestAgentIntegrationCredentials() {
   return useMutation({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (params: {
-      provider: ChatProvider
+      provider: string
       config: Record<string, unknown>
     }) => {
       const res = await apiFetch('/api/agent-integrations/test-credentials', {
