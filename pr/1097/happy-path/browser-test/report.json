@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the Gamut agent successfully executes browser tools, navigates to a URL, retrieves the page title, and reports the result with \"Example Domain\"",
+  "reason": "Agent successfully executed browser navigation request and returned the correct page title \"Example Domain\"",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut application showing the home page with two agents listed in the sidebar",
-    "Step 2: Found and clicked on the \"QA-20260921-184028-3atk\" agent in the sidebar — Successfully navigated to the agent's configuration page with the chat interface",
-    "Step 3: Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input textbox — Message was successfully entered and visible in the textbox",
-    "Step 4: Clicked the \"Send message\" button — Message was sent successfully, creating a new session titled \"Browser Page Title Lookup Session\", and the agent began processing with \"working\" status",
-    "Step 5: Waited for the agent response — Agent completed its work in 7 seconds using 3 tool calls and 148,070 tokens, returning the response: \"The page title is \"Example Domain\" (loaded with HTTP 200). Browser closed.\""
+    "Navigated to http://localhost:47891 — page loaded successfully showing Gamut home with agent list",
+    "Clicked on \"QA-20260921-185543-inmo\" agent in sidebar — agent configuration page opened",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — message visible in text box",
+    "Clicked Send message button — message submitted and agent started processing",
+    "Waited up to 3 minutes for response (actually completed in 8 seconds) — agent executed browser operations and returned response",
+    "Verified response contains \"Example Domain\" and took screenshot — confirmed: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser is closed again.\""
   ],
   "bugs": [],
-  "durationMs": 74409,
-  "sessionId": "d442c6f2-0fa3-4624-a4fa-d470c6f55823",
+  "durationMs": 93396,
+  "sessionId": "3687c08b-f30b-4772-b41c-e22f2cdc54f0",
   "cost": {
-    "inputTokens": 404,
-    "outputTokens": 15596,
-    "cacheCreationTokens": 86259,
-    "cacheReadTokens": 1296448,
+    "inputTokens": 414,
+    "outputTokens": 11456,
+    "cacheCreationTokens": 73662,
+    "cacheReadTokens": 1268971,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.315853
+    "totalCostUsd": 0.276669
   }
 }
