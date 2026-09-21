@@ -114,6 +114,7 @@ interface RemoteMcpConfig {
   name: string;
   status?: 'active' | 'auth_required';
   proxyUrl: string;
+  integration?: { id: string; provider: string; name: string; workspace: string };
   tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
 }
 
@@ -213,6 +214,10 @@ interface RemoteMcpView {
   sanitizedName: string;
   hasTools: boolean;
   needsReauth: boolean;
+  agentOwned: boolean;
+  identityName: string;
+  identityProvider: string;
+  identityWorkspace: string;
 }
 
 function connectedAccountGroups(): ConnectedAccountGroup[] {
@@ -226,9 +231,13 @@ function remoteMcpViews(): RemoteMcpView[] {
   return parseRemoteMcps().map(mcp => ({
     name: mcp.name,
     tools: mcp.tools.map(t => t.name).join(', '),
-    sanitizedName: sanitizeMcpName(mcp.name),
+    sanitizedName: sanitizeMcpName(mcp.name, !!mcp.integration),
     hasTools: mcp.tools.length > 0,
     needsReauth: mcp.status === 'auth_required',
+    agentOwned: !!mcp.integration,
+    identityName: mcp.integration?.name ?? '',
+    identityProvider: mcp.integration?.provider ?? '',
+    identityWorkspace: mcp.integration?.workspace ?? '',
   }));
 }
 
@@ -802,7 +811,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     const proxyToken = process.env.PROXY_TOKEN;
 
     for (const mcp of remoteMcps) {
-      const sanitizedName = sanitizeMcpName(mcp.name);
+      const sanitizedName = sanitizeMcpName(mcp.name, !!mcp.integration);
       configs[sanitizedName] = {
         type: 'http',
         url: mcp.proxyUrl,
@@ -843,7 +852,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     // Only the auth-required entries are exempt; active siblings still gate.
     const expected = parseRemoteMcps()
       .filter((mcp) => mcp.status !== 'auth_required')
-      .map((mcp) => sanitizeMcpName(mcp.name));
+      .map((mcp) => sanitizeMcpName(mcp.name, !!mcp.integration));
     if (expected.length === 0 || !this.queryInstance) return;
 
     const deadline = Date.now() + timeoutMs;

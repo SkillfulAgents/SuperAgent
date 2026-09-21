@@ -151,13 +151,8 @@ function seedRow(row: ChatIntegration): void {
 }
 
 function resetManagerState(): void {
-  mgr.connections.clear()
-  mgr.chatSessions.clear()
-  mgr.messageQueues.clear()
-  mgr.disconnectedSince.clear()
-  mgr.consecutiveFailures.clear()
-  mgr.reconcilingIds?.clear()
-  mgr.generations?.clear()
+  // Exercise the public teardown so new lifecycle state cannot leak between tests.
+  mgr.stop()
 }
 
 beforeEach(async () => {

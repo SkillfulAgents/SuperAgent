@@ -1,3 +1,4 @@
+vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
 import { mockChatIntegration } from '@shared/lib/chat-integrations/test-helpers'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'

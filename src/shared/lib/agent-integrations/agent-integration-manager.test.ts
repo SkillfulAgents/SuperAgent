@@ -11,9 +11,11 @@ const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
   mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
   streams: new Map<string, (event: unknown) => void>(),
+  syncMcp: vi.fn(async () => true),
   claim: vi.fn(), notify: vi.fn().mockResolvedValue(undefined),
   create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), register: vi.fn(), metadata: vi.fn(),
 }))
+vi.mock('@shared/lib/services/connection-sync-service', () => ({ syncRemoteMcpAgents: state.syncMcp }))
 vi.mock('@shared/lib/services/chat-integration-service', () => ({
   listStartupChatIntegrations: () => state.rows,
   getChatIntegration: (id: string) => state.rows.find(row => row.id === id),
@@ -523,5 +525,120 @@ it('review: a restoration retry cannot outlive a clear that is still in progress
   } finally {
     releaseFirst.release(); releaseRetry.release(); releaseClear.release()
     lookup.mockRestore()
+  }
+})
+
+
+describe('integration-owned MCP lifecycle', () => {
+  it('refreshes the owning runtime on connect, pause and resume', async () => {
+    (adapter.definition.capabilities as string[]).push('mcp')
+    await manager.start()
+    expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a'])
+    await manager.pauseIntegration('installation-a')
+    expect(state.syncMcp).toHaveBeenCalledTimes(2)
+    expect(updateChatIntegrationStatus).toHaveBeenCalledWith('installation-a', 'paused')
+    await manager.resumeIntegration('installation-a')
+    expect(state.syncMcp).toHaveBeenCalledTimes(3)
+  })
+
+  it('leaves runtime MCP state alone for providers without the capability', async () => {
+    await manager.start()
+    await manager.pauseIntegration('installation-a')
+    expect(state.syncMcp).not.toHaveBeenCalled()
+  })
+})
+
+
+it.each(['active', 'error'] as const)('pause wins an already executing %s status write', async delayedStatus => {
+  await manager.start()
+  let release!: () => void
+  let reached!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  const writing = new Promise<void>(resolve => { reached = resolve })
+  const status = vi.mocked(updateChatIntegrationStatus)
+  status.mockImplementation(async (id, next) => {
+    if (next === delayedStatus) { reached(); await blocked }
+    state.rows.find(row => row.id === id)!.status = next
+    return true
+  })
+  try {
+    const resuming = delayedStatus === 'active' ? manager.resumeIntegration('installation-a') : Promise.resolve(adapter.fail(new Error('transport failed')))
+    await writing
+    const pausing = manager.pauseIntegration('installation-a')
+    release()
+    await Promise.all([resuming, pausing])
+    expect(state.rows[0].status).toBe('paused')
+    expect(manager.isIntegrationConnected('installation-a')).toBe(false)
+  } finally { release(); status.mockReset() }
+})
+
+it('a later resume wins a pause whose database write is still executing', async () => {
+  await manager.start()
+  let release!: () => void
+  let reached!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  const writing = new Promise<void>(resolve => { reached = resolve })
+  const status = vi.mocked(updateChatIntegrationStatus)
+  status.mockImplementation(async (id, next) => {
+    if (next === 'paused') { reached(); await blocked }
+    state.rows.find(row => row.id === id)!.status = next
+    return true
+  })
+  try {
+    const pausing = manager.pauseIntegration('installation-a')
+    await writing
+    const resuming = manager.resumeIntegration('installation-a')
+    release()
+    await Promise.all([pausing, resuming])
+    expect(state.rows[0].status).toBe('active')
+    expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+  } finally { release(); status.mockReset() }
+})
+
+
+it('allows explicit setup activation after pausing without reconnecting a still-paused row', async () => {
+  await manager.start()
+  await manager.pauseIntegration('installation-a')
+  state.rows[0].status = 'paused'
+  await manager.addIntegration('installation-a')
+  expect(manager.isIntegrationConnected('installation-a')).toBe(false)
+  // OAuth completion persists active before addIntegration; it need not resume
+  // a provider using the previous authorization first.
+  state.rows[0].status = 'active'
+  await manager.addIntegration('installation-a')
+  expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+})
+
+
+it('auto-pause refreshes the MCP environment after the paused status is persisted', async () => {
+  (adapter.definition.capabilities as string[]).push('mcp')
+  const connecting = vi.spyOn(adapter, 'connect').mockRejectedValue(new Error('upstream unavailable'))
+  const status = vi.mocked(updateChatIntegrationStatus)
+  status.mockImplementation(async (id, next) => {
+    state.rows.find(row => row.id === id)!.status = next
+    return true
+  })
+  const projectedStatuses: string[] = []
+  state.syncMcp.mockImplementation(async () => {
+    projectedStatuses.push(state.rows[0].status)
+    return true
+  })
+  const health = manager as unknown as { runHealthChecks(): Promise<void> }
+  try {
+    await manager.start()
+    for (let attempt = 0; attempt < 14; attempt++) await health.runHealthChecks()
+    expect(projectedStatuses).toEqual([])
+    await health.runHealthChecks()
+    expect(state.rows[0].status).toBe('paused')
+    expect(projectedStatuses).toEqual(['paused'])
+    expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a'])
+    const attempts = connecting.mock.calls.length
+    await health.runHealthChecks()
+    expect(connecting).toHaveBeenCalledTimes(attempts)
+    expect(projectedStatuses).toEqual(['paused'])
+  } finally {
+    connecting.mockRestore()
+    status.mockReset()
+    state.syncMcp.mockReset().mockResolvedValue(true)
   }
 })

@@ -352,8 +352,8 @@ chatIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), a
   try {
     const id = c.req.param('integrationId')
 
-    // Disconnect first
-    await agentIntegrationManager.removeIntegration(id)
+    // Pause also removes the identity from the running agent before deleting it.
+    await agentIntegrationManager.pauseIntegration(id)
 
     // Clean up session mappings
     await deleteChatIntegrationSessionsByIntegration(id)
