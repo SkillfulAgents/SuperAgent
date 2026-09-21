@@ -68,7 +68,9 @@ test('Live stops read-aloud and reserves audio until the call exits', async ({ p
   } }))
   await page.route('**/api/voice/live/session/*', route => route.fulfill({ json: { closed: true } }))
   const installLiveMocks = () => {
-    navigator.mediaDevices.getUserMedia = async () => new AudioContext().createMediaStreamDestination().stream
+    // WebKit can lose an instance override before Live acquires the microphone.
+    // Patch the prototype so startup always uses the fake stream.
+    MediaDevices.prototype.getUserMedia = async () => new AudioContext().createMediaStreamDestination().stream
     class Channel {
       readyState = 'open'
       onmessage?: (event: { data: string }) => void
