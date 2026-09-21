@@ -15,6 +15,7 @@
  */
 import type { AppDatabase } from '../drivers/types'
 import { dataMigrations } from '../schema'
+import { globalModelPricing } from './0002-global-model-pricing'
 import { importAgentsFromDirectories } from './0001-import-agents-from-directories'
 
 /** The query surface a migration gets. Await every statement: the driver may answer asynchronously. */
@@ -33,7 +34,7 @@ export interface DataMigration {
 }
 
 /** Every data migration, in the order they are applied. */
-export const DATA_MIGRATIONS: readonly DataMigration[] = [importAgentsFromDirectories]
+export const DATA_MIGRATIONS: readonly DataMigration[] = [importAgentsFromDirectories, globalModelPricing]
 
 /**
  * Apply every migration in `migrations` the ledger does not list, in id

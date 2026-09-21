@@ -1,3 +1,5 @@
+import { globalModelPricingPatchSchema } from '../llm-provider/global-pricing-schema'
+import { extractCatalogPricing, patchGlobalModelPricing } from '../llm-provider/global-pricing'
 import { VOICE_PROVIDERS } from '../voice/provider-types'
 import { z } from 'zod'
 import type {
@@ -142,6 +144,7 @@ export const providerSettingsPatchSchema = z.object({
   webBlockedSites: z.array(z.string()),
   models: modelSettingsPatchSchema,
   modelCatalog: modelCatalogSettingsSchema,
+  modelPricing: globalModelPricingPatchSchema,
 }).partial().strict()
 
 const agentLimitsPatchSchema = z.object({
@@ -407,6 +410,9 @@ export const providerSettingsComponent = {
       if (defaults) models = { ...before.models, ...defaults }
     }
 
+    const imported = patch.modelCatalog
+      ? extractCatalogPricing(patch.modelCatalog, patch.llmProvider ?? before.llmProvider)
+      : undefined
     return {
       ...before,
       llmProvider: patch.llmProvider ?? before.llmProvider,
@@ -421,8 +427,11 @@ export const providerSettingsComponent = {
       webBlockedSites:
         patch.webBlockedSites !== undefined ? patch.webBlockedSites : before.webBlockedSites,
       models,
-      modelCatalog:
-        patch.modelCatalog !== undefined ? patch.modelCatalog : before.modelCatalog,
+      modelCatalog: imported?.catalog ?? before.modelCatalog,
+      modelPricing: patchGlobalModelPricing(before.modelPricing, {
+        ...imported?.pricing,
+        ...patch.modelPricing,
+      }),
     }
   },
 
@@ -487,6 +496,7 @@ function pickProviderPatch(patch: SettingsPatch): ProviderSettingsPatch {
     webBlockedSites: patch.webBlockedSites,
     models: patch.models,
     modelCatalog: patch.modelCatalog,
+    modelPricing: patch.modelPricing,
   }
 }
 

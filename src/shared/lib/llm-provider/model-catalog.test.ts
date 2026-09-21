@@ -365,6 +365,7 @@ describe('getEffectiveCatalog', () => {
   it('patches built-ins while preserving sibling fields', () => {
     settingsMock.mockReturnValue({
       llmProvider: 'anthropic',
+      modelPricing: { 'claude-opus-4-8': { inputPerMtok: 7, outputPerMtok: 31 } },
       modelCatalog: {
         anthropic: {
           overrides: [
@@ -372,7 +373,6 @@ describe('getEffectiveCatalog', () => {
               id: 'claude-opus-4-8',
               label: 'Opus patched',
               blurb: 'Fresh label',
-              pricing: { inputPerMtok: 7, outputPerMtok: 31 },
             },
           ],
         },
@@ -389,29 +389,14 @@ describe('getEffectiveCatalog', () => {
     })
   })
 
-  it('preserves built-in cache pricing when overriding input and output rates', () => {
+  it('uses global pricing overrides instead of provider catalog prices', () => {
     settingsMock.mockReturnValue({
       llmProvider: 'openrouter',
-      modelCatalog: {
-        openrouter: {
-          overrides: [
-            {
-              id: 'z-ai/glm-5.2',
-              pricing: { inputPerMtok: 2, outputPerMtok: 6 },
-            },
-          ],
-        },
-      },
+      modelPricing: { 'glm-5.2': { inputPerMtok: 2, outputPerMtok: 6 } },
+      modelCatalog: { openrouter: { overrides: [{ id: 'z-ai/glm-5.2', pricing: { inputPerMtok: 99, outputPerMtok: 99 } }] } },
     })
-
-    expect(
-      getEffectiveCatalog('openrouter').find((model) => model.id === 'z-ai/glm-5.2')?.pricing,
-    ).toEqual({
-      inputPerMtok: 2,
-      outputPerMtok: 6,
-      cacheCreationPerMtok: 0,
-      cacheCreation1hPerMtok: 0,
-    })
+    expect(getEffectiveCatalog('openrouter').find(model => model.id === 'z-ai/glm-5.2')?.pricing)
+      .toEqual({ inputPerMtok: 2, outputPerMtok: 6 })
   })
 
   it('appends valid net-new models after built-ins', () => {

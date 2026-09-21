@@ -409,6 +409,7 @@ function buildSettingsResponse(
     llmProvider: appSettings.llmProvider ?? 'anthropic',
     llmProviderStatus: getAllProviderInfo(),
     modelCatalog: appSettings.modelCatalog ?? {},
+    modelPricing: appSettings.modelPricing ?? {},
     webProvider: resolveEffectiveWebVendor(),
     webProviderIsDefault: appSettings.webProvider == null,
     apiKeyStatus: {

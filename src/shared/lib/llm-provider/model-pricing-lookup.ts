@@ -1,4 +1,5 @@
 import MODEL_PRICING from '../services/model-pricing.json'
+import { modelPricingCandidates } from './model-pricing-ids'
 
 interface SpeedMultipliers {
   slow?: number
@@ -36,9 +37,8 @@ function effectiveRates(entry: PricingEntry, now: number): PricingRates {
 
 /**
  * Display pricing for a catalog entry, seeded from model-pricing.json.
- * Returns undefined when the id has no known pricing (e.g. region-prefixed
- * Bedrock ids that aren't keyed there) — callers should pass a bare id for
- * Bedrock entries so display pricing still resolves.
+ * Provider-qualified and dated aliases resolve through the shared model IDs.
+ * Returns undefined when the model has no known rate.
  *
  * Served-tier speed multipliers ride along so catalog entries seeded here
  * (e.g. Opus 4.8's 2x fast mode) bill speed rows correctly.
@@ -56,7 +56,7 @@ export function pricingFor(
       speedMultipliers?: SpeedMultipliers
     }
   | undefined {
-  const entry = PRICING[id]
+  const entry = modelPricingCandidates(id).map(candidate => PRICING[candidate]).find(Boolean)
   if (!entry) return undefined
   const rates = effectiveRates(entry, at.getTime())
   return {

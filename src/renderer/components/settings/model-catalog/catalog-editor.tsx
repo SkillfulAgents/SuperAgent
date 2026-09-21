@@ -1,3 +1,5 @@
+import { canonicalPricingId } from '@shared/lib/llm-provider/model-pricing-ids'
+import type { GlobalModelPricing, GlobalModelPricingPatch } from '@shared/lib/llm-provider/global-pricing-schema'
 import { useMemo, useState } from 'react'
 import { ChevronDown, Plus, Settings, Trash2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
@@ -118,14 +120,15 @@ export interface CatalogEditorProps {
   builtinCatalog: ModelDefinition[]
   effectiveCatalog: ModelDefinition[]
   modelCatalog: ModelCatalogSettings | undefined
+  modelPricing?: GlobalModelPricing
   supportsModelSearch?: boolean
   disabled?: boolean
-  onChange: (modelCatalog: ModelCatalogSettings) => void
+  onChange: (modelCatalog: ModelCatalogSettings, prices?: GlobalModelPricingPatch) => void
 }
 
 /**
- * Per-provider model catalog editor: disable built-ins, override their display
- * pricing, and add/edit custom models. Collapsed behind a disclosure so the
+ * Per-provider model catalog editor: disable built-ins and add/edit custom
+ * models. Price edits update the global rate for the model. Collapsed behind a disclosure so the
  * provider card stays light until a user opts into catalog management.
  */
 export function CatalogEditor({
@@ -133,6 +136,7 @@ export function CatalogEditor({
   builtinCatalog,
   effectiveCatalog,
   modelCatalog,
+  modelPricing = {},
   supportsModelSearch = false,
   disabled,
   onChange,
@@ -206,23 +210,23 @@ export function CatalogEditor({
   // a custom model's disabled state across edits.
   const submitCustomModel = (entry: CatalogOverrideEntry) => {
     const wasDisabled = overrideById.get(entry.id)?.disabled === true
-    upsertOverride(cleanOverride({ ...entry, ...(wasDisabled ? { disabled: true } : {}) }), entry.id)
+    const { pricing, ...model } = entry
+    const pricePatch = pricing
+      ? { [canonicalPricingId(entry.id)]: { ...modelPricing[canonicalPricingId(entry.id)], ...pricing, ...(entry.longContextPriceCliff ? { longContextPriceCliff: entry.longContextPriceCliff } : {}) } }
+      : modelPricing[canonicalPricingId(entry.id)] ? { [canonicalPricingId(entry.id)]: null } : undefined
+    onChange(setProviderOverrides(modelCatalog, providerId,
+      replaceOverride(overrides, cleanOverride({ ...model, ...(wasDisabled ? { disabled: true } : {}) }), entry.id)), pricePatch)
   }
 
   const saveBuiltinPricing = (
     model: ModelDefinition,
     pricing: { inputPerMtok: number; outputPerMtok: number },
   ) => {
-    const current = overrideById.get(model.id)
-    upsertOverride(cleanOverride({ ...current, id: model.id, pricing }), model.id)
+    onChange(modelCatalog ?? {}, { [canonicalPricingId(model.id)]: { ...modelPricing[canonicalPricingId(model.id)], ...pricing } })
   }
 
   const resetBuiltinPricing = (model: ModelDefinition) => {
-    const current = overrideById.get(model.id)
-    if (!current) return
-    const rest = { ...current }
-    delete rest.pricing
-    upsertOverride(cleanOverride(rest), model.id)
+    onChange(modelCatalog ?? {}, { [canonicalPricingId(model.id)]: null })
   }
 
   const confirmRemoveCustomModel = () => {
@@ -241,7 +245,7 @@ export function CatalogEditor({
           <span className="flex flex-col">
             <span className="text-xs font-medium">Model catalog</span>
             <span className="text-[11px] text-muted-foreground">
-              Customize pricing, disable models, or add your own
+              Disable models or add your own. Prices are shared across providers.
             </span>
           </span>
           <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform [[data-state=closed]>&]:rotate-[-90deg]" />
@@ -275,7 +279,7 @@ export function CatalogEditor({
                       <CatalogRow
                         key={model.id}
                         model={model}
-                        priceText={priceLabel(override?.pricing ?? model.pricing)}
+                        priceText={priceLabel(modelPricing[canonicalPricingId(model.id)] ?? model.pricing)}
                         enabled={override?.disabled !== true}
                         disabled={disabled}
                         onToggle={(enabled) => updateBuiltinDisabled(model, enabled)}
@@ -349,7 +353,7 @@ export function CatalogEditor({
 
       <BuiltinPricingDialog
         model={editingBuiltin}
-        overridePricing={editingBuiltin ? overrideById.get(editingBuiltin.id)?.pricing : undefined}
+        overridePricing={editingBuiltin ? modelPricing[canonicalPricingId(editingBuiltin.id)] : undefined}
         disabled={disabled}
         onOpenChange={(open) => !open && setEditingBuiltin(null)}
         onSave={(pricing) => editingBuiltin && saveBuiltinPricing(editingBuiltin, pricing)}

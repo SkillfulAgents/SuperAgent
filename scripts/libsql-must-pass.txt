@@ -4,6 +4,7 @@
 src/shared/lib/db/batch.test.ts
 src/shared/lib/db/migrations/bundle.test.ts
 src/shared/lib/db/data-migrations/index.test.ts
+src/shared/lib/db/data-migrations/0002-global-model-pricing.test.ts
 src/shared/lib/db/testing/create-test-database.test.ts
 src/shared/lib/services/api-log-auto-delete.test.ts
 src/shared/lib/notifications/push/apns-device-service.test.ts

@@ -1,3 +1,4 @@
+import { withGlobalModelPricing } from './global-pricing'
 import type { LlmProviderId, ModelPurpose } from './base-llm-provider'
 import {
   modelDefinitionSchema,
@@ -5,7 +6,7 @@ import {
   type ModelDefinition,
 } from './model-catalog-schema'
 import { getLlmProvider } from './index'
-import { getModelCatalogSettings } from '../config/settings'
+import { getModelCatalogSettings, getSettings } from '../config/settings'
 
 /**
  * Host-side source of truth for which concrete models a provider offers and
@@ -126,7 +127,7 @@ export function getEffectiveCatalog(providerId: LlmProviderId): ModelDefinition[
     valid.push(parsed.data)
   }
 
-  return normalizeCatalog(valid)
+  return withGlobalModelPricing(normalizeCatalog(valid), getSettings().modelPricing)
 }
 
 /** Look up a concrete model definition by id within a provider's catalog. */

@@ -50,6 +50,7 @@ const BUILTIN: ModelDefinition[] = [
 ]
 
 function renderWithSettings(options?: {
+  modelPricing?: Record<string, { inputPerMtok: number; outputPerMtok: number }>
   modelCatalog?: Record<string, { overrides: unknown[] }>
   catalog?: ModelDefinition[]
   providerId?: TestProvider
@@ -76,6 +77,7 @@ function renderWithSettings(options?: {
         },
       ],
       modelCatalog: options?.modelCatalog ?? {},
+      modelPricing: options?.modelPricing ?? {},
       models: {
         agentModel: 'gpt',
         summarizerModel: 'gpt',
@@ -157,26 +159,20 @@ describe('LlmTab model catalog editor', () => {
     await user.click(screen.getByTestId('catalog-save-builtin-pricing'))
 
     expect(mutateMock).toHaveBeenCalledWith({
-      modelCatalog: {
-        anthropic: {
-          overrides: [{ id: 'gpt-5.5', pricing: { inputPerMtok: 6, outputPerMtok: 30 } }],
-        },
-      },
+      modelCatalog: {},
+      modelPricing: { 'gpt-5.5': { inputPerMtok: 6, outputPerMtok: 30 } },
     })
 
     mutateMock.mockClear()
     firstRender.unmount()
     renderWithSettings({
-      modelCatalog: {
-        anthropic: {
-          overrides: [{ id: 'gpt-5.5', pricing: { inputPerMtok: 6, outputPerMtok: 30 } }],
-        },
-      },
+      modelCatalog: {},
+      modelPricing: { 'gpt-5.5': { inputPerMtok: 6, outputPerMtok: 30 } },
     })
     fireEvent.click(screen.getByTestId('catalog-disclosure-trigger'))
     fireEvent.click(screen.getByTestId('catalog-customize-gpt-5.5'))
     fireEvent.click(screen.getByTestId('catalog-reset-pricing-gpt-5.5'))
-    expect(mutateMock).toHaveBeenCalledWith({ modelCatalog: {} })
+    expect(mutateMock).toHaveBeenCalledWith({ modelCatalog: {}, modelPricing: { 'gpt-5.5': null } })
   })
 
   it('requires a label and effort before adding a custom model', async () => {
@@ -294,6 +290,7 @@ describe('LlmTab model catalog editor', () => {
     await user.click(screen.getByTestId('catalog-add-custom-model'))
 
     expect(mutateMock).toHaveBeenCalledWith({
+      modelPricing: { 'qwen/qwen3-max': { inputPerMtok: 0.4, outputPerMtok: 1.2 } },
       modelCatalog: {
         openrouter: {
           overrides: [
@@ -303,7 +300,6 @@ describe('LlmTab model catalog editor', () => {
               family: 'qwen',
               blurb: 'Qwen model from OpenRouter.',
               supportedEfforts: ['low', 'medium', 'high'],
-              pricing: { inputPerMtok: 0.4, outputPerMtok: 1.2 },
               contextWindow: 262144,
               supportsWebSearch: false,
               supportsImageInput: true,
@@ -347,6 +343,7 @@ describe('LlmTab model catalog editor', () => {
     await user.click(screen.getByTestId('catalog-save-custom-model'))
 
     expect(mutateMock).toHaveBeenCalledWith({
+      modelPricing: { 'custom-model-1': { inputPerMtok: 1, outputPerMtok: 2 } },
       modelCatalog: {
         anthropic: {
           overrides: [
@@ -356,7 +353,6 @@ describe('LlmTab model catalog editor', () => {
               family: 'custom',
               icon: 'uploaded:test-icon.svg',
               supportedEfforts: ['low'],
-              pricing: { inputPerMtok: 1, outputPerMtok: 2 },
               blurb: 'A carried-through blurb.',
               contextWindow: 100000,
               isDefault: true,

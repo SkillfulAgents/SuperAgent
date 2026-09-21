@@ -393,6 +393,7 @@ function CustomModelDialogBody({
         />
       </div>
 
+      <p className="text-xs text-muted-foreground">Prices are shared by model ID across all providers.</p>
       <fieldset className="space-y-2">
         <legend className="text-xs font-medium text-foreground">Supported efforts</legend>
         <div className="flex flex-wrap items-center gap-3">

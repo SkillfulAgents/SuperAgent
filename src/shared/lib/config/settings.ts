@@ -1,3 +1,4 @@
+import { globalModelPricingSchema, type GlobalModelPricing } from '../llm-provider/global-pricing-schema'
 import type { VoiceProvider } from '../voice/provider-types'
 import fs from 'fs'
 import path from 'path'
@@ -281,6 +282,7 @@ export interface AppSettings {
   app?: AppPreferences
   models?: ModelSettings
   modelCatalog?: ModelCatalogSettings
+  modelPricing?: GlobalModelPricing
   agentLimits?: AgentLimitsSettings
   customEnvVars?: Record<string, string>
   skillsets?: SkillsetConfig[]
@@ -369,6 +371,7 @@ export interface GlobalSettingsResponse {
   llmProvider: LlmProviderId
   llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
+  modelPricing?: GlobalModelPricing
   // GET: always the vendor the agent runs (pin when set; Platform-if-login / native when unset).
   // PUT still writes the stored pin (or null to clear). `webProviderIsDefault` is true iff stored unset.
   webProvider: WebProviderId
@@ -577,6 +580,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
       }
     })(),
     modelCatalog,
+    modelPricing: globalModelPricingSchema.parse(loaded.modelPricing ?? {}),
     agentLimits: loaded.agentLimits,
     customEnvVars: loaded.customEnvVars,
     // Deep-clone the default when defaulting: callers mutate `s.skillsets` in
