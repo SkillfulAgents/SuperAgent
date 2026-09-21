@@ -237,16 +237,22 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const setModel = useCallback((m: string) => {
     modelSeededRef.current = true
     modelDirtyRef.current = true
+    if (effectiveConnectionId) {
+      connectionDirty.current = true
+      setConnectionId(effectiveConnectionId)
+    }
     setModelState(m)
-  }, [])
+  }, [effectiveConnectionId])
 
   const setConnection = useCallback((id: string) => {
     const next = connections.find(c => c.id === id)
     if (!next?.catalog[0]) return
     connectionDirty.current = true
     setConnectionId(id)
-    setModel(next.catalog.find(m => m.isDefault)?.id ?? next.catalog[0].id)
-  }, [connections, setModel])
+    modelSeededRef.current = true
+    modelDirtyRef.current = true
+    setModelState(next.catalog.find(m => m.isDefault)?.id ?? next.catalog[0].id)
+  }, [connections])
 
   const markSubmitted = useCallback(
     (options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; connectionId?: string }) => {
@@ -329,7 +335,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
 
   // Seeded refs are read at submit time: only a user pick or a session-seeded
   // value counts as an explicit choice worth putting on the wire.
-  const displayedModel = connectionData ? effectiveSelection?.model : model
+  const displayedModel = connectionData?.defaultSelection ? effectiveSelection?.model : model
   const toRuntimeOptions = useCallback(
     () => ({
       ...(effortSeededRef.current ? { effort } : {}),

@@ -64,6 +64,19 @@ beforeEach(() => {
 })
 
 describe('SettingsModelSelect (flat picker)', () => {
+  it('keeps the legacy selection visible when no connections are configured yet', async () => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections: [], defaultSelection: null } })
+    const onModelChange = vi.fn()
+    const onSelectionChange = vi.fn()
+    render(<SettingsModelSelect model="haiku" onModelChange={onModelChange} onSelectionChange={onSelectionChange} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Haiku · latest')
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('model-latest-opus'))
+    expect(onModelChange).toHaveBeenCalledWith('opus')
+    expect(onSelectionChange).not.toHaveBeenCalled()
+  })
+
   it('stores the bare family alias when "latest" is picked', async () => {
     const user = userEvent.setup()
     const onModelChange = vi.fn()

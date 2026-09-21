@@ -205,9 +205,12 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
   afterEach(async () => {
     await claudeProcess?.stop()
     claudeProcess = undefined
+    vi.unstubAllEnvs()
   })
 
-  it('rebuilds credentials, endpoint, subagents and context when changing LLM accounts', async () => {
+  it('rebuilds LLM credentials and capabilities while preserving Platform service credentials', async () => {
+    vi.stubEnv('PLATFORM_BASE_URL', 'https://platform-services.example')
+    vi.stubEnv('PLATFORM_AUTH_TOKEN', 'platform-services-token::owner')
     const runtime = (connectionId: string, model: string, generation = 0) => ({
       connectionId, generation, provider: 'generic', model,
       browserModel: model, dashboardBuilderModel: model, modelPromptHints: [], subagentModels: [],
@@ -228,6 +231,12 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     expect(calls).toHaveLength(4)
     expect(calls[3].options.model).toBe('different-model')
     expect(JSON.stringify(calls[3].options.agents)).toContain('different-model')
+    for (const call of calls) {
+      expect(call.options.env).toMatchObject({
+        PLATFORM_BASE_URL: 'https://platform-services.example',
+        PLATFORM_AUTH_TOKEN: 'platform-services-token::owner',
+      })
+    }
   })
 
   it('keeps an integration identity separate from a user MCP with the same name', async () => {

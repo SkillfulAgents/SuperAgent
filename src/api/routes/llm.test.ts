@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   browserModel: 'sonnet',
   resolvedModel: 'claude-sonnet-5',
   resolveModel: vi.fn(),
+  helperModel: undefined as string | undefined,
 }))
 
 const mockCreate = vi.fn()
@@ -20,7 +21,8 @@ vi.mock('../middleware/auth', () => ({
 }))
 
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
-  getConfiguredLlmClient: () => ({
+  configuredHelperModel: () => state.helperModel,
+  getConfiguredLlmClient: async () => ({
     messages: { create: mockCreate },
   }),
 }))
@@ -38,6 +40,7 @@ vi.mock('@shared/lib/llm-provider', () => ({
 
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: () => ({ browserModel: state.browserModel }),
+  getSettings: () => ({}),
 }))
 
 import llm from './llm'
@@ -74,6 +77,7 @@ describe('LLM proxy endpoint', () => {
     vi.clearAllMocks()
     state.providerId = 'anthropic'
     state.configured = true
+    state.helperModel = undefined
     state.browserModel = 'sonnet'
     state.resolvedModel = 'claude-sonnet-5'
   })
@@ -154,7 +158,18 @@ describe('LLM proxy endpoint', () => {
       )
     })
 
-    it('uses specified model over default', async () => {
+    it('uses the global helper model when no explicit model is requested', async () => {
+      state.helperModel = 'global-helper-model'
+      mockCreate.mockResolvedValue({ content: [] })
+      const res = await post(createApp(), '/api/llm/v1/messages', {
+        messages: [{ role: 'user', content: 'hi' }], max_tokens: 10,
+      })
+      expect(res.status).toBe(200)
+      expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'global-helper-model' }))
+    })
+
+    it('preserves an explicit model even when the helper has another default', async () => {
+      state.helperModel = 'global-helper-model'
       mockCreate.mockResolvedValue({ content: [] })
 
       const app = createApp()

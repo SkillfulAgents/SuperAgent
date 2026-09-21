@@ -27,9 +27,19 @@ function render(initialProps: UseComposerOptionsArgs) {
   })
 }
 
+beforeEach(() => { state.connections = undefined })
+
 describe('useComposerOptions default adoption', () => {
   beforeEach(() => {
     state.settings = LOADED_SETTINGS
+  })
+
+  it('keeps model picks before a connection has been configured', () => {
+    state.connections = { connections: [], defaultSelection: null }
+    const { result } = render({})
+    act(() => result.current.setModel('claude-haiku-4-5'))
+    expect(result.current.model).toBe('claude-haiku-4-5')
+    expect(result.current.toRuntimeOptions()).toEqual({ model: 'claude-haiku-4-5' })
   })
 
   it('adopts the agent default over the global default as sources stream in', () => {
@@ -302,6 +312,15 @@ describe('connection/model selection', () => {
     state.settings = LOADED_SETTINGS
     state.connections = { connections: [first, second], defaultSelection: { connectionId: 'global', model: 'global-default' } }
   })
+  it('binds a model pick to the inherited connection before the initial query has settled', () => {
+    state.connections = undefined
+    const { result, rerender } = render({ initialModel: 'same' })
+    state.connections = { connections: [first, second], defaultSelection: { connectionId: 'global', model: 'global-default' } }
+    rerender({ initialModel: 'same' })
+    act(() => result.current.setModel('same'))
+    expect(result.current.toRuntimeOptions()).toMatchObject({ connectionId: 'global', model: 'same' })
+  })
+
   it('changes accounts even when both expose the same model ID', () => {
     const { result } = render({ initialConnectionId: 'global', initialModel: 'same' })
     act(() => result.current.setConnection?.('personal'))
