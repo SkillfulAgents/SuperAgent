@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the SuperAgent app can successfully send a message requesting browser automation, the agent opens a browser, navigates to https://example.com, retrieves the page title \"Example Domain\", and returns the result in the chat interface.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Gamut interface with sidebar containing agent list",
+    "Clicked on \"QA-20260921-222042-3s75\" agent in sidebar — Agent view opened showing message input field and agent configuration panels",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into input field — Message was entered into the textbox",
+    "Clicked Send button to submit message — Message was sent, new session created titled \"Browser Page Title Check\", agent status changed to \"working\"",
+    "Waited for agent response (up to 3 minutes) — Agent processed the request in 7 seconds and returned a complete response",
+    "Verified response mentions \"Example Domain\" — Response displays: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\"",
+    "Took final screenshot showing complete response — Screenshot captured showing user message, agent response with page title, and session work summary"
+  ],
+  "bugs": [],
+  "durationMs": 103059,
+  "sessionId": "6f77c011-7337-4b5a-a55f-8ae09823c317",
+  "cost": {
+    "inputTokens": 578,
+    "outputTokens": 14898,
+    "cacheCreationTokens": 98645,
+    "cacheReadTokens": 2009858,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.39936
+  }
+}
