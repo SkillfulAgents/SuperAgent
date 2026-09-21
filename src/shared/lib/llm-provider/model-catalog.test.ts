@@ -53,13 +53,13 @@ describe('getProviderCatalog', () => {
       ['anthropic', 'claude-opus-5'],
       ['openai', 'openai/gpt-5.5'],
       ['zai', 'z-ai/glm-5.2'],
-      ['xai', 'x-ai/grok-4.6'],
+      ['xai', 'x-ai/grok-4.7'],
       ['kimi', 'moonshotai/kimi-k3'],
     ])
     expect(defaultsByIcon('platform')).toEqual([
       ['anthropic', 'claude-opus-5'],
       ['openai', 'gpt-5.6-sol'],
-      ['xai', 'grok-4.6'],
+      ['xai', 'grok-4.7'],
       ['kimi', 'kimi-k3'],
       ['meta', 'muse-spark-1.3'],
       ['zai', 'glm-5.3-flash'],
@@ -108,6 +108,7 @@ describe('getProviderCatalog', () => {
     ['gpt-5.6-terra', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-5.6-sol', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-6-astra', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['grok-4.7', ['low', 'medium', 'high', 'xhigh']],
     ['grok-4.6', ['low', 'medium', 'high', 'xhigh']],
     ['grok-4.5', ['low', 'medium', 'high']],
     ['muse-spark-1.3', ['low', 'medium', 'high', 'xhigh', 'max']],
@@ -125,7 +126,7 @@ describe('getProviderCatalog', () => {
     const catalog = getProviderCatalog('openrouter')
     const gpt = catalog.find((m) => m.id === 'openai/gpt-5.5')!
     const glm = catalog.find((m) => m.id === 'z-ai/glm-5.2')!
-    const grok = catalog.find((m) => m.id === 'x-ai/grok-4.6')!
+    const grok = catalog.find((m) => m.id === 'x-ai/grok-4.7')!
     expect(gpt).toMatchObject({
       family: 'gpt',
       isLatest: true,
@@ -158,6 +159,14 @@ describe('getProviderCatalog', () => {
       pricing: { inputPerMtok: 2, outputPerMtok: 6 },
       contextWindow: 500_000,
     })
+    expect(catalog.find((m) => m.id === 'x-ai/grok-4.6')).toMatchObject({
+      family: 'grok',
+      icon: 'xai',
+      supportsWebSearch: false,
+      pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+      contextWindow: 500_000,
+    })
+    expect(catalog.find((m) => m.id === 'x-ai/grok-4.6')!.isLatest).toBeFalsy()
     expect(catalog.find((m) => m.id === 'x-ai/grok-4.5')!.isLatest).toBeFalsy()
     // Anthropic must NOT inherit the OpenRouter-only extras.
     expect(getProviderCatalog('anthropic').some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
@@ -258,7 +267,7 @@ describe('getProviderCatalog', () => {
     const gptLatest = catalog.filter((m) => m.family === 'gpt' && m.isLatest)
     expect(gptLatest.map((m) => m.id)).toEqual(['gpt-5.6-sol'])
     // Grok rides the same Responses wire (xai-responses upstream); bare id only.
-    expect(catalog.find((m) => m.id === 'grok-4.6')).toMatchObject({
+    expect(catalog.find((m) => m.id === 'grok-4.7')).toMatchObject({
       family: 'grok',
       isLatest: true,
       icon: 'xai',
@@ -267,6 +276,15 @@ describe('getProviderCatalog', () => {
       pricing: { inputPerMtok: 2, outputPerMtok: 6 },
       contextWindow: 500_000,
     })
+    expect(catalog.find((m) => m.id === 'grok-4.6')).toMatchObject({
+      family: 'grok',
+      icon: 'xai',
+      supportsWebSearch: true,
+      supportsWebFetch: false,
+      pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+      contextWindow: 500_000,
+    })
+    expect(catalog.find((m) => m.id === 'grok-4.6')!.isLatest).toBeFalsy()
     expect(catalog.find((m) => m.id === 'grok-4.5')).toMatchObject({
       family: 'grok',
       icon: 'xai',
@@ -277,7 +295,7 @@ describe('getProviderCatalog', () => {
     })
     expect(catalog.find((m) => m.id === 'grok-4.5')!.isLatest).toBeFalsy()
     const grokLatest = catalog.filter((m) => m.family === 'grok' && m.isLatest)
-    expect(grokLatest.map((m) => m.id)).toEqual(['grok-4.6'])
+    expect(grokLatest.map((m) => m.id)).toEqual(['grok-4.7'])
     // Kimi rides Fireworks' Anthropic-compatible wire, which strips server tools.
     expect(catalog.find((m) => m.id === 'kimi-k3')).toMatchObject({
       family: 'kimi',
@@ -317,6 +335,7 @@ describe('getProviderCatalog', () => {
     expect(catalog.some((m) => m.id === 'glm-5.2')).toBe(false)
     expect(catalog.some((m) => m.id === 'x-ai/grok-4.5')).toBe(false)
     expect(catalog.some((m) => m.id === 'x-ai/grok-4.6')).toBe(false)
+    expect(catalog.some((m) => m.id === 'x-ai/grok-4.7')).toBe(false)
   })
 })
 
@@ -538,6 +557,7 @@ describe('getModelContextWindow', () => {
   })
 
   it('returns the catalog window for Platform Grok models', () => {
+    expect(getModelContextWindow('grok-4.7', 'platform')).toBe(500_000)
     expect(getModelContextWindow('grok-4.6', 'platform')).toBe(500_000)
     expect(getModelContextWindow('grok-4.5', 'platform')).toBe(500_000)
   })
@@ -559,6 +579,7 @@ describe('getModelContextWindow', () => {
 describe('getModelContextWindowMap', () => {
   it('maps every Platform model that declares a window, non-latest included', () => {
     const map = getModelContextWindowMap('platform')
+    expect(map['grok-4.7']).toBe(500_000)
     expect(map['grok-4.6']).toBe(500_000)
     expect(map['grok-4.5']).toBe(500_000)
     expect(map['gpt-5.5']).toBe(1_050_000)
@@ -585,8 +606,10 @@ describe('getModelPromptHints', () => {
 
   it('returns browser-integration guidance for Platform and OpenRouter Grok models', () => {
     for (const [providerId, modelId] of [
+      ['platform', 'grok-4.7'],
       ['platform', 'grok-4.6'],
       ['platform', 'grok-4.5'],
+      ['openrouter', 'x-ai/grok-4.7'],
       ['openrouter', 'x-ai/grok-4.6'],
       ['openrouter', 'x-ai/grok-4.5'],
     ] as const) {
@@ -648,7 +671,8 @@ describe('resolveModelForProvider', () => {
   it('resolves OpenRouter non-Claude models (gpt alias → latest id, glm slug passthrough)', () => {
     expect(resolveModelForProvider('gpt', 'openrouter', 'agent')).toBe('openai/gpt-5.5')
     expect(resolveModelForProvider('z-ai/glm-5.2', 'openrouter', 'agent')).toBe('z-ai/glm-5.2')
-    expect(resolveModelForProvider('grok', 'openrouter', 'agent')).toBe('x-ai/grok-4.6')
+    expect(resolveModelForProvider('grok', 'openrouter', 'agent')).toBe('x-ai/grok-4.7')
+    expect(resolveModelForProvider('x-ai/grok-4.7', 'openrouter', 'agent')).toBe('x-ai/grok-4.7')
     expect(resolveModelForProvider('x-ai/grok-4.6', 'openrouter', 'agent')).toBe('x-ai/grok-4.6')
     expect(resolveModelForProvider('x-ai/grok-4.5', 'openrouter', 'agent')).toBe('x-ai/grok-4.5')
   })
@@ -670,7 +694,8 @@ describe('resolveModelForProvider', () => {
     expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.6-sol')
     expect(resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
     expect(resolveModelForProvider('gpt-5.6-luna', 'platform', 'agent')).toBe('gpt-5.6-luna')
-    expect(resolveModelForProvider('grok', 'platform', 'agent')).toBe('grok-4.6')
+    expect(resolveModelForProvider('grok', 'platform', 'agent')).toBe('grok-4.7')
+    expect(resolveModelForProvider('grok-4.7', 'platform', 'agent')).toBe('grok-4.7')
     expect(resolveModelForProvider('grok-4.6', 'platform', 'agent')).toBe('grok-4.6')
     expect(resolveModelForProvider('grok-4.5', 'platform', 'agent')).toBe('grok-4.5')
     expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('glm-5.3-flash')
