@@ -5,7 +5,7 @@ import type { AppDatabase } from '@shared/lib/db/drivers/types'
 import { mcpAuditLog, remoteMcpServers } from '@shared/lib/db/schema'
 import { createChatIntegration, deleteChatIntegration, getChatIntegration, updateChatIntegrationStatus } from '@shared/lib/services/chat-integration-service'
 import { agentIntegrationRegistry, AgentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
-import { integrationMcpProjection, resolveIntegrationMcp } from '@shared/lib/agent-integrations/mcp'
+import { integrationMcpName, integrationMcpProjection, resolveIntegrationMcp } from '@shared/lib/agent-integrations/mcp'
 import mcpProxy from './mcp-proxy'
 
 let handle: TestDatabase
@@ -22,9 +22,11 @@ const reportHealth = vi.fn<(available: boolean) => Promise<void>>()
 const beforeAuthorization = vi.fn<() => Promise<void>>()
 let id: string
 let app: Hono
+let connectionStatus: 'active' | 'auth_required'
 
 beforeEach(async () => {
   handle = await createTestDatabase(); testDb = handle.db
+  connectionStatus = 'active'
   vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock)
   fetchMock.mockResolvedValue(Response.json({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: 'done' }] } }))
   authRequired.mockResolvedValue(undefined); reportHealth.mockResolvedValue(undefined); beforeAuthorization.mockResolvedValue(undefined)
@@ -37,7 +39,7 @@ beforeEach(async () => {
       if (record.name === 'Broken') throw new Error('Invalid provider configuration')
       return {
         integrationId: record.id, agentSlug: record.agentSlug, name: 'test_identity', url: 'https://mcp.example.com/mcp',
-        identity: { provider: 'Test', name: 'Agent Identity', workspace: 'Test workspace' }, status: 'active',
+        identity: { provider: 'Test', name: 'Agent Identity', workspace: 'Test workspace' }, status: connectionStatus,
         tools: [{ name: 'send_message', inputSchema: { type: 'object' } }],
         async authorization() {
           await beforeAuthorization()
@@ -54,8 +56,9 @@ beforeEach(async () => {
   app = new Hono().route('/api/mcp-proxy', mcpProxy)
 })
 afterEach(async () => { await handle.close(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
-function call(connectionId = `integration:${id}`) {
-  return app.request(`/api/mcp-proxy/agent/${connectionId}`, { method: 'POST', headers: {
+function call(connectionId = `integration:${id}`, signal?: AbortSignal, sessionId?: string) {
+  return app.request(`/api/mcp-proxy/agent/${connectionId}`, { method: 'POST', signal, headers: {
+    ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}),
     Authorization: 'Bearer container-token', 'Content-Type': 'application/json',
   }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'send_message', arguments: { text: 'Test' } } }) })
 }
@@ -71,6 +74,7 @@ describe('integration-owned MCP through the shared proxy', () => {
   it('uses parent authorization without user policy/review and attributes the existing audit record', async () => {
     expect((await call()).status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(beforeAuthorization).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0][0]).toBe('https://mcp.example.com/mcp')
     expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get('Authorization')).toBe('Bearer agent-secret')
     expect(policy.resolve).not.toHaveBeenCalled(); expect(policy.review).not.toHaveBeenCalled()
@@ -105,6 +109,7 @@ describe('integration-owned MCP through the shared proxy', () => {
     beforeAuthorization.mockImplementation(async () => { await updateChatIntegrationStatus(id, 'paused') })
     expect((await call()).status).toBe(502)
     expect(fetchMock).not.toHaveBeenCalled()
+    expect(reportHealth).not.toHaveBeenCalled()
   })
   it('isolates damaged and unsupported providers while projecting healthy connections', async () => {
     await createChatIntegration({ agentSlug: 'agent', provider: 'telegram', name: 'Broken', config: { botToken: 'broken-token' } })
@@ -112,4 +117,69 @@ describe('integration-owned MCP through the shared proxy', () => {
     expect(await integrationMcpProjection('agent', 'http://host')).toHaveLength(1)
     expect(await resolveIntegrationMcp('agent', `integration:${unsupported}`)).toBeNull()
   })
+})
+
+
+it('assigns distinct stable namespaces to two installations with the same provider name', async () => {
+  const second = await createChatIntegration({ agentSlug: 'agent', provider: 'telegram', config: { botToken: 'second-token' } })
+  const projected = await integrationMcpProjection('agent', 'http://host')
+  expect(new Set(projected.map(connection => connection.name))).toEqual(new Set([integrationMcpName(id), integrationMcpName(second)]))
+  expect(projected.map(connection => connection.name)).not.toContain('test_identity')
+})
+
+it('reports a network failure as an outage', async () => {
+  fetchMock.mockRejectedValue(new TypeError('fetch failed'))
+  expect((await call()).status).toBe(502)
+  expect(reportHealth).toHaveBeenCalledExactlyOnceWith(false)
+})
+
+it('does not report a cancelled request as an upstream outage', async () => {
+  const abort = new AbortController()
+  fetchMock.mockImplementation(async () => { abort.abort(); throw new DOMException('Cancelled', 'AbortError') })
+  expect((await call(undefined, abort.signal)).status).toBe(502)
+  expect(reportHealth).not.toHaveBeenCalled()
+})
+
+async function syntheticSession(): Promise<string> {
+  connectionStatus = 'auth_required'
+  const response = await app.request(`/api/mcp-proxy/agent/integration:${id}`, {
+    method: 'POST', headers: { Authorization: 'Bearer container-token', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } }),
+  })
+  expect(response.status).toBe(200)
+  connectionStatus = 'active'
+  return response.headers.get('Mcp-Session-Id')!
+}
+
+it('revalidates after a real handshake and authorizes established calls only once', async () => {
+  const sessionId = await syntheticSession()
+  fetchMock.mockResolvedValueOnce(Response.json({ result: {} }, { headers: { 'Mcp-Session-Id': 'upstream' } }))
+    .mockResolvedValueOnce(new Response(null, { status: 202 }))
+  expect((await call(undefined, undefined, sessionId)).status).toBe(200)
+  expect(beforeAuthorization).toHaveBeenCalledTimes(2)
+  expect(fetchMock).toHaveBeenCalledTimes(3)
+  beforeAuthorization.mockClear(); fetchMock.mockClear()
+  expect((await call(undefined, undefined, sessionId)).status).toBe(200)
+  expect(beforeAuthorization).toHaveBeenCalledTimes(1)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
+it('does not forward or report an outage when paused during an upstream handshake', async () => {
+  const sessionId = await syntheticSession()
+  fetchMock.mockResolvedValueOnce(Response.json({ result: {} }, { headers: { 'Mcp-Session-Id': 'upstream' } }))
+    .mockImplementationOnce(async () => {
+      await updateChatIntegrationStatus(id, 'paused')
+      return new Response(null, { status: 202 })
+    })
+  expect((await call(undefined, undefined, sessionId)).status).toBe(502)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(reportHealth).not.toHaveBeenCalled()
+})
+
+it.each([401, 503])('classifies handshake HTTP %i separately from cancellation and lifecycle rejection', async status => {
+  const sessionId = await syntheticSession()
+  fetchMock.mockResolvedValue(new Response(null, { status }))
+  expect((await call(undefined, undefined, sessionId)).status).toBe(502)
+  if (status === 503) expect(reportHealth).toHaveBeenCalledExactlyOnceWith(false)
+  else { expect(reportHealth).not.toHaveBeenCalled(); expect(authRequired).toHaveBeenCalledOnce() }
 })

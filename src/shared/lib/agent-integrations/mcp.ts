@@ -23,7 +23,7 @@ export async function integrationMcpProjection(agentSlug: string, hostApiBaseUrl
       const connection = await agentIntegrationRegistry.getMcpConnection(row)
       if (!connection) continue
       const id = `${INTEGRATION_MCP_PREFIX}${row.id}`
-      result.push({ id, name: connection.name, status: connection.status,
+      result.push({ id, name: integrationMcpName(row.id), status: connection.status,
         proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${agentSlug}/${id}`,
         tools: connection.tools.map(({ name }) => ({ name })),
         integration: { id: row.id, ...connection.identity },

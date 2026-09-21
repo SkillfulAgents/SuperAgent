@@ -7,7 +7,7 @@ import { syncRemoteMcpAgents } from '../services/connection-sync-service'
  */
 
 import type { AgentIntegration } from './agent-integration'
-import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
+import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
 import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './registry'
 import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
@@ -113,6 +113,10 @@ export class AgentIntegrationManager {
   // paused integration or restoring pre-update credentials — and clobber the
   // status the user's operation just wrote.
   private generations: Map<string, number> = new Map()
+  // Invalidate connects immediately, then serialize status writes so an already
+  // executing resume/error write cannot land after a completed pause.
+  private pausedIds = new Set<string>()
+  private statusWrites = new Map<string, Promise<void>>()
   // Bumped synchronously each time a chat session is cleared (see noteSessionClear).
   private sessionClears = 0
   // Session row ids whose clear has begun (see noteSessionClear); the row may
@@ -165,16 +169,17 @@ export class AgentIntegrationManager {
     const integrations = await listStartupIntegrations()
 
     for (const integration of integrations) {
+      const generation = this.bumpGeneration(integration.id)
       try {
-        const connected = await this.connectIntegration(integration)
+        const connected = await this.connectIntegration(integration, generation)
         // Clear error status on successful reconnect
         if (connected && integration.status === 'error') {
-          try { await updateIntegrationStatus(integration.id, 'active', null) } catch { /* best-effort */ }
+          try { await this.writeStatus(integration.id, generation, 'active', null) } catch { /* best-effort */ }
         }
       } catch (err) {
         console.error(`[AgentIntegrationManager] Failed to connect integration ${integration.id}:`, err)
         reportError(err, 'start-connect', { integrationId: integration.id, provider: integration.provider, agentSlug: integration.agentSlug })
-        try { await updateIntegrationStatus(integration.id, 'error', String(err)) } catch { /* best-effort */ }
+        try { await this.writeStatus(integration.id, generation, 'error', String(err)) } catch { /* best-effort */ }
       }
     }
 
@@ -215,6 +220,7 @@ export class AgentIntegrationManager {
     this.consecutiveFailures.clear()
     this.reconcilingIds.clear()
     this.generations.clear()
+    this.pausedIds.clear()
     this.sessionClears = 0
     this.clearedSessionRows.clear()
     this.messageQueues.clear()
@@ -231,6 +237,17 @@ export class AgentIntegrationManager {
 
   private generationOf(id: string): number {
     return this.generations.get(id) ?? 0
+  }
+
+  private async writeStatus(id: string, generation: number, ...update: [status: IntegrationStatus, error?: string | null]): Promise<void> {
+    const previous = this.statusWrites.get(id) ?? Promise.resolve()
+    const write = previous.catch(() => {}).then(async () => {
+      if (this.generationOf(id) !== generation || (this.pausedIds.has(id) && update[0] !== 'paused')) return
+      await updateIntegrationStatus(id, ...update)
+    })
+    this.statusWrites.set(id, write)
+    try { await write }
+    finally { if (this.statusWrites.get(id) === write) this.statusWrites.delete(id) }
   }
 
   // ── Chat clears ─────────────────────────────────────────────────────
@@ -299,7 +316,10 @@ export class AgentIntegrationManager {
     const generation = this.bumpGeneration(id)
     const integration = await getIntegration(id)
     if (!integration) throw new Error(`Chat integration ${id} not found`)
-    if (this.generationOf(id) !== generation) return
+    if (this.generationOf(id) !== generation || integration.status === 'paused') return
+    // Setup/re-authorization can persist active credentials before calling add.
+    // That explicit activation supersedes our prior local pause intent.
+    this.pausedIds.delete(id)
     await this.connectIntegration(integration, generation)
   }
 
@@ -401,9 +421,11 @@ export class AgentIntegrationManager {
   }
 
   async pauseIntegration(id: string): Promise<void> {
-    // Gate health-check reconnects before disconnect yields to provider cleanup.
-    await updateIntegrationStatus(id, 'paused')
-    await this.removeIntegration(id)
+    const generation = this.bumpGeneration(id)
+    this.pausedIds.add(id)
+    await this.writeStatus(id, generation, 'paused')
+    if (this.generationOf(id) !== generation) return
+    await this.teardownConnection(id)
     const record = await getIntegration(id)
     if (record) await this.syncMcpEnvironment(record)
   }
@@ -412,10 +434,11 @@ export class AgentIntegrationManager {
     // Same claim-before-read as addIntegration: the row read and the status
     // write are both windows in which a pause can land.
     const generation = this.bumpGeneration(id)
+    this.pausedIds.delete(id)
     const integration = await getIntegration(id)
     if (!integration) throw new Error(`Chat integration ${id} not found`)
     if (this.generationOf(id) !== generation) return
-    await updateIntegrationStatus(id, 'active')
+    await this.writeStatus(id, generation, 'active')
     if (this.generationOf(id) !== generation) return
     await this.connectIntegration({ ...integration, status: 'active' }, generation)
   }
@@ -470,7 +493,7 @@ export class AgentIntegrationManager {
   private async connectIntegration(integration: AgentIntegrationRecord, expectedGeneration?: number): Promise<boolean> {
     const id = integration.id
     const generation = expectedGeneration ?? this.bumpGeneration(id)
-    if (this.generationOf(id) !== generation) return false
+    if (this.generationOf(id) !== generation || this.pausedIds.has(id)) return false
 
     if (this.connections.has(id)) {
       await this.teardownConnection(id)
@@ -504,7 +527,7 @@ export class AgentIntegrationManager {
     conn.errorUnsubscribe = connector.onError(async (error) => {
       console.error(`[AgentIntegrationManager] Connector error for ${integration.id}:`, error)
       reportError(error, 'connector-error', { integrationId: integration.id, provider: integration.provider, agentSlug: integration.agentSlug })
-      try { await updateIntegrationStatus(integration.id, 'error', error.message) } catch { /* best-effort */ }
+      try { await this.writeStatus(integration.id, generation, 'error', error.message) } catch { /* best-effort */ }
       this.emitNotification(integration, 'error', error.message)
     })
 
@@ -697,7 +720,8 @@ export class AgentIntegrationManager {
       // just tore down.
       if (!this.isRunning) return
       const id = integration.id
-      if (this.reconcilingIds.has(id)) continue
+      const generation = this.generationOf(id)
+      if (this.reconcilingIds.has(id) || this.pausedIds.has(id)) continue
 
       const conn = this.connections.get(id)
       const connected = conn?.connector.isConnected() ?? false
@@ -707,7 +731,7 @@ export class AgentIntegrationManager {
         this.consecutiveFailures.delete(id)
         if (integration.status === 'error') {
           // The connector recovered on its own — clear the stale error badge.
-          try { await updateIntegrationStatus(id, 'active', null) } catch { /* best-effort */ }
+          try { await this.writeStatus(id, generation, 'active', null) } catch { /* best-effort */ }
         }
         continue
       }
@@ -757,7 +781,7 @@ export class AgentIntegrationManager {
         this.disconnectedSince.delete(id)
         this.consecutiveFailures.delete(id)
         if (fresh.status === 'error') {
-          try { await updateIntegrationStatus(id, 'active', null) } catch { /* best-effort */ }
+          try { await this.writeStatus(id, generation, 'active', null) } catch { /* best-effort */ }
         }
       } catch (err) {
         // A cancelled rebuild reports nothing: the failure was (or may have
@@ -773,14 +797,14 @@ export class AgentIntegrationManager {
         if (failures >= HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES) {
           console.error(`[AgentIntegrationManager] ${id}: ${failures} consecutive reconnect failures — pausing`)
           reportError(new Error(`Auto-paused after ${failures} failures`), 'health-check-auto-pause', { integrationId: id, provider: integration.provider, failures }, 'warning')
-          try { await updateIntegrationStatus(id, 'paused', `Auto-paused after ${failures} failed reconnection attempts`) } catch { /* best-effort */ }
+          try { await this.writeStatus(id, generation, 'paused', `Auto-paused after ${failures} failed reconnection attempts`) } catch { /* best-effort */ }
           this.emitNotification(integration, 'error', `Auto-paused after ${failures} failed reconnect attempts`)
           this.disconnectedSince.delete(id)
           this.consecutiveFailures.delete(id)
           return
         }
 
-        try { await updateIntegrationStatus(id, 'error', `Reconnect failed (attempt ${failures}): ${err}`) } catch { /* best-effort */ }
+        try { await this.writeStatus(id, generation, 'error', `Reconnect failed (attempt ${failures}): ${err}`) } catch { /* best-effort */ }
         // Notify once per outage, not once per 5-minute tick.
         if (failures === 1) this.emitNotification(integration, 'error', 'Connection lost')
       }
@@ -866,7 +890,7 @@ export class AgentIntegrationManager {
       await this.deliver(integrationId, chatId, { type: 'message',
         text: 'Error: The agent no longer exists.',
       })
-      try { await updateIntegrationStatus(integrationId, 'error', 'Agent no longer exists') } catch { /* best-effort */ }
+      try { await this.writeStatus(integrationId, this.generationOf(integrationId), 'error', 'Agent no longer exists') } catch { /* best-effort */ }
       return
     }
 

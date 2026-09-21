@@ -185,6 +185,21 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     claudeProcess = undefined
   })
 
+  it('keeps an integration identity separate from a user MCP with the same name', async () => {
+    const claude = await startProcess('test-integration-name-collision')
+    const owned = { id: 'integration:one', name: 'agent_integration_one', status: 'active', proxyUrl: 'http://host/owned', tools: [], integration: { id: 'one', provider: 'Test', name: 'Bot', workspace: 'Test' } }
+    process.env.REMOTE_MCPS = JSON.stringify([owned, { id: 'user', name: owned.name, proxyUrl: 'http://host/user', tools: [] }])
+    await claude.sendMessage('Use my connections')
+    expect(setMcpServersCalls.at(-1)).toMatchObject({
+      agent_integration_one: { url: 'http://host/owned' },
+      remote_agent_integration_one: { url: 'http://host/user' },
+    })
+    process.env.REMOTE_MCPS = JSON.stringify([{ id: 'user', name: owned.name, proxyUrl: 'http://host/user', tools: [] }])
+    await claude.sendMessage('The integration has been deleted')
+    expect(setMcpServersCalls.at(-1)).not.toHaveProperty('agent_integration_one')
+    expect(setMcpServersCalls.at(-1)).toHaveProperty('remote_agent_integration_one')
+  })
+
   it('applies a remote MCP change to the live query in place, without a re-query', async () => {
     const claude = await startProcess('test-runtime-mcp-hot-apply')
     expect(calls).toHaveLength(1)

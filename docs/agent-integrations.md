@@ -55,11 +55,17 @@ so attribution requires no additional audit column or migration.
 
 Runtime projections expose these connections to every session of the owning agent
 without creating a user-owned MCP account, assignment or independent
-permission/delete control. Connect and pause refresh the running agent's MCP
-environment. The provider reports authentication and availability changes through
+permission/delete control. Connect, pause and deletion refresh the running agent's MCP
+environment. Pause claims lifecycle ownership before awaiting storage, and status
+writes are serialized so an older resume or error cannot reopen a paused identity.
+The provider reports authentication and availability changes through
 its callbacks. Prompts explain the agent's identity and direct reconnection to the
-parent integration. Existing chat providers do not opt in and retain their current
-outbound behavior.
+parent integration. The host assigns installation-ID-based tool namespaces; the
+container reserves those names against user MCPs. Only upstream network/protocol
+failures affect outbound health, excluding caller cancellation and parent lifecycle
+rejections. Ordinary requests authorize once; a real upstream handshake is followed
+by a second check before forwarding the waiting tool call. Existing chat
+providers do not opt in and retain their current outbound behavior.
 
 ## Next phase
 

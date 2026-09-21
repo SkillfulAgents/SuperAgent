@@ -4,7 +4,6 @@ import type { McpToolInfo } from '../mcp/types'
 export interface IntegrationMcpConnection {
   integrationId: string
   agentSlug: string
-  name: string
   url: string
   identity: { provider: string; name: string; workspace: string }
   status: 'active' | 'auth_required'

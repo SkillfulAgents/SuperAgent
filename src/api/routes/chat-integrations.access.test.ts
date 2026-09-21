@@ -69,7 +69,10 @@ vi.mock('@shared/lib/services/chat-integration-service', () => ({
   createChatIntegration: vi.fn(),
   updateChatIntegration: vi.fn(() => true),
   updateChatIntegrationStatus: vi.fn(),
-  deleteChatIntegration: vi.fn(),
+  deleteChatIntegration: vi.fn(() => {
+    expect(mockPauseIntegration).toHaveBeenCalledOnce()
+    return true
+  }),
   DuplicateBotTokenError: class DuplicateBotTokenError extends Error {},
 }))
 
@@ -86,6 +89,7 @@ const mockNotifyChatApproved = vi.fn().mockResolvedValue(undefined)
 const mockTearDownChatSession = vi.fn().mockResolvedValue(undefined)
 const mockReconcileAccess = vi.fn().mockResolvedValue(undefined)
 const mockClearChatSessionById = vi.fn()
+const mockPauseIntegration = vi.fn().mockResolvedValue(undefined)
 const mockRemoveIntegration = vi.fn().mockResolvedValue(undefined)
 const mockSendContactCard = vi.fn().mockResolvedValue(undefined)
 
@@ -99,7 +103,7 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
     addIntegration: vi.fn(),
     integrationCreated: (...args: unknown[]) => mockSendContactCard(...args),
     removeIntegration: (...args: unknown[]) => mockRemoveIntegration(...args),
-    pauseIntegration: vi.fn(),
+    pauseIntegration: (...args: unknown[]) => mockPauseIntegration(...args),
     resumeIntegration: vi.fn(),
   },
 }))
@@ -176,6 +180,14 @@ describe('chat-integrations access routes', () => {
   afterEach(async () => {
     testSqlite?.close()
   })
+
+  it('pauses and refreshes the running identity before deleting an integration', async () => {
+    const response = await app().request(`/api/chat-integrations/${INTEGRATION_A}`, { method: 'DELETE' })
+    expect(response.status).toBe(204)
+    expect(mockPauseIntegration).toHaveBeenCalledWith(INTEGRATION_A)
+    expect(mockRemoveIntegration).not.toHaveBeenCalled()
+  })
+
 
   // ── GET /:integrationId/access ─────────────────────────────────────────
 

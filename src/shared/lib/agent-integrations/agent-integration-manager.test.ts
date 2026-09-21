@@ -547,3 +547,64 @@ describe('integration-owned MCP lifecycle', () => {
     expect(state.syncMcp).not.toHaveBeenCalled()
   })
 })
+
+
+it.each(['active', 'error'] as const)('pause wins an already executing %s status write', async delayedStatus => {
+  await manager.start()
+  let release!: () => void
+  let reached!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  const writing = new Promise<void>(resolve => { reached = resolve })
+  const status = vi.mocked(updateChatIntegrationStatus)
+  status.mockImplementation(async (id, next) => {
+    if (next === delayedStatus) { reached(); await blocked }
+    state.rows.find(row => row.id === id)!.status = next
+    return true
+  })
+  try {
+    const resuming = delayedStatus === 'active' ? manager.resumeIntegration('installation-a') : Promise.resolve(adapter.fail(new Error('transport failed')))
+    await writing
+    const pausing = manager.pauseIntegration('installation-a')
+    release()
+    await Promise.all([resuming, pausing])
+    expect(state.rows[0].status).toBe('paused')
+    expect(manager.isIntegrationConnected('installation-a')).toBe(false)
+  } finally { release(); status.mockReset() }
+})
+
+it('a later resume wins a pause whose database write is still executing', async () => {
+  await manager.start()
+  let release!: () => void
+  let reached!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  const writing = new Promise<void>(resolve => { reached = resolve })
+  const status = vi.mocked(updateChatIntegrationStatus)
+  status.mockImplementation(async (id, next) => {
+    if (next === 'paused') { reached(); await blocked }
+    state.rows.find(row => row.id === id)!.status = next
+    return true
+  })
+  try {
+    const pausing = manager.pauseIntegration('installation-a')
+    await writing
+    const resuming = manager.resumeIntegration('installation-a')
+    release()
+    await Promise.all([pausing, resuming])
+    expect(state.rows[0].status).toBe('active')
+    expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+  } finally { release(); status.mockReset() }
+})
+
+
+it('allows explicit setup activation after pausing without reconnecting a still-paused row', async () => {
+  await manager.start()
+  await manager.pauseIntegration('installation-a')
+  state.rows[0].status = 'paused'
+  await manager.addIntegration('installation-a')
+  expect(manager.isIntegrationConnected('installation-a')).toBe(false)
+  // OAuth completion persists active before addIntegration; it need not resume
+  // a provider using the previous authorization first.
+  state.rows[0].status = 'active'
+  await manager.addIntegration('installation-a')
+  expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+})

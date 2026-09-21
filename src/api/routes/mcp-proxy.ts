@@ -83,6 +83,7 @@ async function initializeUpstreamSession(options: {
   targetUrl: string
   accessToken: string | null
   headers: Headers
+  signal?: AbortSignal
 }): Promise<string | null> {
   const { session, targetUrl, accessToken } = options
   if (session.upstreamSessionId !== undefined) return session.upstreamSessionId
@@ -96,6 +97,7 @@ async function initializeUpstreamSession(options: {
     if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
 
     const initializeResponse = await mcpSafeFetch(targetUrl, {
+      signal: options.signal,
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -132,6 +134,7 @@ async function initializeUpstreamSession(options: {
       initializedHeaders.set('Mcp-Session-Id', upstreamSessionId)
     }
     const initializedResponse = await mcpSafeFetch(targetUrl, {
+      signal: options.signal,
       method: 'POST',
       headers: initializedHeaders,
       body: JSON.stringify({
@@ -718,6 +721,18 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
 
   const syntheticSession = getSyntheticMcpSession(mcpId, clientMcpSessionId)
 
+  // Only failures while talking to the upstream affect its health. Parent
+  // authorization, local lifecycle changes and cancelled callers do not.
+  const requestUpstream = async <T>(request: () => Promise<T>): Promise<T> => {
+    try { return await request() }
+    catch (error) {
+      const cancelled = c.req.raw.signal.aborted || (error instanceof Error && error.name === 'AbortError')
+      const rejected = error instanceof McpSessionInitializationError && error.status !== undefined && error.status < 500
+      if (!cancelled && !rejected) await integrationConnection?.reportHealth(false).catch(() => {})
+      throw error
+    }
+  }
+
   const forwardRequest = async () => {
     // Recheck ownership, pause/delete and current authorization immediately
     // before forwarding, including after an upstream handshake or retry.
@@ -726,22 +741,27 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     const headers = new Headers(forwardHeaders)
     if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
     if (syntheticSession) {
-      const upstreamSessionId = await initializeUpstreamSession({
+      const needsHandshake = syntheticSession.upstreamSessionId === undefined
+      const upstreamSessionId = await requestUpstream(() => initializeUpstreamSession({
         session: syntheticSession,
         targetUrl,
         accessToken,
         headers,
-      })
+        signal: c.req.raw.signal,
+      }))
       headers.delete('Mcp-Session-Id')
       if (upstreamSessionId) headers.set('Mcp-Session-Id', upstreamSessionId)
-    }
-    if (integrationConnection) {
-      accessToken = await integrationConnection.authorization()
-      headers.set('Authorization', `Bearer ${accessToken}`)
+      // A real handshake yielded to the network: revalidate before sending the
+      // queued tool call. Established/stateless requests authorize only once.
+      if (integrationConnection && needsHandshake) {
+        accessToken = await integrationConnection.authorization()
+        headers.set('Authorization', `Bearer ${accessToken}`)
+      }
     }
     const init: RequestInit = { method, headers, signal: c.req.raw.signal }
     if (bodyBuffer) init.body = bodyBuffer
-    return mcpSafeFetch(targetUrl, init)
+    c.req.raw.signal.throwIfAborted()
+    return requestUpstream(() => mcpSafeFetch(targetUrl, init))
   }
 
   try {
@@ -765,7 +785,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       response = await forwardRequest()
     }
 
-    if (integrationConnection && method === 'POST') await integrationConnection.reportHealth(response.status < 500).catch(() => {})
+    if (integrationConnection && method === 'POST' && !c.req.raw.signal.aborted) await integrationConnection.reportHealth(response.status < 500).catch(() => {})
     const durationMs = Date.now() - startTime
 
     if (shouldRewriteNonSseGet(method, response)) {
@@ -834,7 +854,6 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       headers: responseHeaders,
     })
   } catch (error) {
-    await integrationConnection?.reportHealth(false).catch(() => {})
     const durationMs = Date.now() - startTime
     const sessionInitializationFailed = error instanceof McpSessionInitializationError
     if (sessionInitializationFailed && error.status === 401) {
