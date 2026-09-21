@@ -4,6 +4,8 @@
 
 ```mermaid
 classDiagram
+    AgentIntegration <|-- TaskManagerAgentIntegration
+    TaskManagerAgentIntegration <|-- LinearAgentIntegration
     AgentIntegration <|-- ChatAgentIntegration
     ChatAgentIntegration <|-- TelegramConnector
     ChatAgentIntegration <|-- SlackConnector
@@ -67,8 +69,16 @@ rejections. Ordinary requests authorize once; a real upstream handshake is follo
 by a second check before forwarding the waiting tool call. Existing chat
 providers do not opt in and retain their current outbound behavior.
 
-## Next phase
+## Management and discovery
 
-SUP-832 adds the task-manager family and Linear as the first provider of an
-integration-owned MCP. Those implementations and their setup UI are separate from
-this foundation.
+`/api/agent-integrations` owns management for every provider; `/api/chat-integrations`
+remains a compatibility URL. Persistence lives in `agent-integration-service.ts`
+while the existing physical table names preserve installed accounts and sessions.
+Provider definitions control safe serialization, management permission, settings,
+cleanup, and reset-table ownership. Renderer providers register setup and optional
+connection/settings panels; shared pages do not import concrete provider panels.
+
+`list_agent_integrations` calls the agent-authenticated `/api/x-agent/integrations/list`.
+It lists every account owned by the caller, its capabilities, active external session
+IDs, and any integration-owned MCP identity/server/tools. Chat operations consume
+chat capabilities; MCP providers use their named server. Credentials are excluded.

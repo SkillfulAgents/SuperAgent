@@ -56,7 +56,7 @@ import {
 import { getDashboardViewDispatchHostJs } from '../dashboard-view-dispatch-host'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
-import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
+import { listAgentIntegrations } from '@shared/lib/services/agent-integration-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
@@ -4599,7 +4599,7 @@ agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
     const slug = getAgentId(c)
     const status = c.req.query('status')
 
-    const integrations = await listChatIntegrations(slug, status || undefined)
+    const integrations = await listAgentIntegrations(slug, status || undefined)
     // Enrich each row with the live transport state (the same isIntegrationConnected
     // the /status route reads) so the agent-home list derives "Listening" vs
     // "Connecting…" from the same source of truth as the connector page, instead

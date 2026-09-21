@@ -1,13 +1,14 @@
+import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { Hono } from 'hono'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import {
-  getChatIntegration,
-  createChatIntegration,
-  listChatIntegrations,
-  updateChatIntegrationStatus,
-  DuplicateBotTokenError,
-} from '@shared/lib/services/chat-integration-service'
+  getAgentIntegration,
+  createAgentIntegration,
+  listAgentIntegrations,
+  updateAgentIntegrationStatus,
+  DuplicateIntegrationIdentityError,
+} from '@shared/lib/services/agent-integration-service'
 import {
   listChatIntegrationSessions,
   getChatIntegrationSessionBySessionId,
@@ -52,7 +53,7 @@ function getCallerSlug(c: { get: (k: 'callerSlug') => string }): string {
 xAgentChat.post('/list', async (c) => {
   try {
     const callerSlug = getCallerSlug(c)
-    const integrations = await listChatIntegrations(callerSlug)
+    const integrations = (await listAgentIntegrations(callerSlug)).filter(row => agentIntegrationRegistry.getDefinition(row.provider)?.family === 'chat')
 
     const result = await Promise.all(integrations.map(async (i) => {
       // Static (per-provider) lookups: label each chat with its conversation
@@ -140,14 +141,14 @@ xAgentChat.post('/add', async (c) => {
 
     let id: string
     try {
-      id = await createChatIntegration({
+      id = await createAgentIntegration({
         agentSlug: callerSlug,
         provider: provider as ChatProvider,
         name,
         config,
       })
     } catch (err) {
-      if (err instanceof DuplicateBotTokenError) {
+      if (err instanceof DuplicateIntegrationIdentityError) {
         return c.json({ error: err.message, code: 'duplicate_bot_token' }, 409)
       }
       throw err
@@ -157,14 +158,14 @@ xAgentChat.post('/add', async (c) => {
       await agentIntegrationManager.addIntegration(id)
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err)
-      await updateChatIntegrationStatus(id, 'error', errMsg)
+      await updateAgentIntegrationStatus(id, 'error', errMsg)
     }
 
     // Outside the connect try/catch: a contact-card failure is cosmetic and must
     // never surface as a connect error.
     void agentIntegrationManager.integrationCreated(id)
 
-    const created = await getChatIntegration(id)
+    const created = await getAgentIntegration(id)
     if (!created) {
       return c.json({ error: 'Integration created but could not be retrieved' }, 500)
     }
@@ -194,7 +195,7 @@ xAgentChat.post('/send', async (c) => {
       return c.json({ error: 'Pass either chat_id or user_id, not both.' }, 400)
     }
 
-    const integration = await getChatIntegration(integration_id)
+    const integration = await getAgentIntegration(integration_id)
     if (!integration) {
       return c.json({ error: 'Chat integration not found' }, 404)
     }
@@ -209,7 +210,7 @@ xAgentChat.post('/send', async (c) => {
       const connectorClass = await agentIntegrationManager.getDefinition(integration.provider)
       if (!connectorClass?.capabilities?.includes('dm_by_user_id')) {
         return c.json({
-          error: `The ${integration.provider} provider does not support messaging by user_id. Pass a chat_id instead (see list_chat_integrations).`,
+          error: `The ${integration.provider} provider does not support messaging by user_id. Pass a chat_id instead (see list_agent_integrations).`,
         }, 400)
       }
     }
@@ -227,7 +228,7 @@ xAgentChat.post('/send', async (c) => {
       const directChat = connector.getTools({ integration, externalId: '' }).find(tool => tool.name === 'dm_by_user_id')
       if (!directChat) {
         return c.json({
-          error: `The ${integration.provider} provider does not support messaging by user_id. Pass a chat_id instead (see list_chat_integrations).`,
+          error: `The ${integration.provider} provider does not support messaging by user_id. Pass a chat_id instead (see list_agent_integrations).`,
         }, 400)
       }
       try {
@@ -259,7 +260,7 @@ xAgentChat.post('/send', async (c) => {
       ) {
         const label = callerChatSession.displayName ? ` (${callerChatSession.displayName})` : ''
         return c.json({
-          error: `Not sent: this session IS the live conversation for chat ${callerChatSession.externalChatId}${label}. Everything you write in your response is delivered to that chat automatically — sending it here too would post it twice. To message a different chat, pass its chat_id (see list_chat_integrations).`,
+          error: `Not sent: this session IS the live conversation for chat ${callerChatSession.externalChatId}${label}. Everything you write in your response is delivered to that chat automatically — sending it here too would post it twice. To message a different chat, pass its chat_id (see list_agent_integrations).`,
         }, 400)
       }
     }
@@ -386,7 +387,7 @@ async function resolveDirectoryConnector(
     return { response: c.json({ error: 'Missing required field: integration_id' }, 400) }
   }
 
-  const integration = await getChatIntegration(integrationId)
+  const integration = await getAgentIntegration(integrationId)
   if (!integration) {
     return { response: c.json({ error: 'Chat integration not found' }, 404) }
   }

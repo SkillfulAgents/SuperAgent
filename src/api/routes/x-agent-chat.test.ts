@@ -44,14 +44,14 @@ const mockCreateChatIntegration = vi.fn()
 const mockListChatIntegrations = vi.fn()
 const mockUpdateChatIntegrationStatus = vi.fn()
 
-const MockDuplicateBotTokenError = vi.hoisted(() => class DuplicateBotTokenError extends Error {})
+const MockDuplicateIntegrationIdentityError = vi.hoisted(() => class DuplicateIntegrationIdentityError extends Error {})
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  getChatIntegration: (...args: unknown[]) => mockGetChatIntegration(...args),
-  createChatIntegration: (...args: unknown[]) => mockCreateChatIntegration(...args),
-  listChatIntegrations: (...args: unknown[]) => mockListChatIntegrations(...args),
-  updateChatIntegrationStatus: (...args: unknown[]) => mockUpdateChatIntegrationStatus(...args),
-  DuplicateBotTokenError: MockDuplicateBotTokenError,
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  getAgentIntegration: (...args: unknown[]) => mockGetChatIntegration(...args),
+  createAgentIntegration: (...args: unknown[]) => mockCreateChatIntegration(...args),
+  listAgentIntegrations: (...args: unknown[]) => mockListChatIntegrations(...args),
+  updateAgentIntegrationStatus: (...args: unknown[]) => mockUpdateChatIntegrationStatus(...args),
+  DuplicateIntegrationIdentityError: MockDuplicateIntegrationIdentityError,
 }))
 
 const mockListChatIntegrationSessions = vi.fn()
@@ -85,7 +85,8 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
 
 const mockValidateChatIntegrationConfig = vi.fn()
 
-vi.mock('@shared/lib/chat-integrations/config-schema', () => ({
+vi.mock('@shared/lib/chat-integrations/config-schema', async importOriginal => ({
+  ...await importOriginal<typeof import('@shared/lib/chat-integrations/config-schema')>(),
   validateChatIntegrationConfig: (...args: unknown[]) => mockValidateChatIntegrationConfig(...args),
   CHAT_PROVIDERS: ['slack', 'telegram', 'imessage'],
   IMESSAGE_GATEWAY_URL: 'https://imessage-gateway.example.com',

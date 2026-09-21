@@ -26,7 +26,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
     }),
   }
 })
-vi.mock('@shared/lib/services/chat-integration-service', () => ({ getChatIntegration: () => integration('slack') }))
+vi.mock('@shared/lib/services/agent-integration-service', () => ({ getAgentIntegration: () => integration('slack') }))
 vi.mock('@shared/lib/services/agent-service', () => ({ agentExists: async () => true }))
 vi.mock('@shared/lib/services/chat-integration-access-service', () => ({
   decideInboundAccess: () => ({ action: 'allowed' }),

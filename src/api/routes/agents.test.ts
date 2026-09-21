@@ -521,8 +521,8 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsAndWidgets: vi.fn(async () => ({ dashboards: [], widgets: [] })),
 }))
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  listChatIntegrations: vi.fn(() => []),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  listAgentIntegrations: vi.fn(() => []),
 }))
 
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
@@ -747,7 +747,7 @@ import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { writeFileAtomicStream, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { readJsonl, streamJsonl } from '@shared/lib/agent-actor/jsonl-files'
-import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
+import { listAgentIntegrations } from '@shared/lib/services/agent-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
 // ============================================================================
@@ -1216,7 +1216,7 @@ describe('GET /:id/webhook-triggers', () => {
 
 describe('GET /:id/chat-integrations', () => {
   it('redacts credentials from every list row', async () => {
-    vi.mocked(listChatIntegrations).mockResolvedValueOnce([{
+    vi.mocked(listAgentIntegrations).mockResolvedValueOnce([{
       id: 'integration-1',
       agentSlug: 'test-agent',
       provider: 'telegram',

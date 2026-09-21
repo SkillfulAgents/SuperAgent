@@ -27,10 +27,10 @@ vi.mock('../db', () => ({
   get db() { return testDb },
 }))
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  getChatIntegration: vi.fn(() => fakeIntegration()),
-  listStartupChatIntegrations: vi.fn().mockReturnValue([]),
-  updateChatIntegrationStatus: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  getAgentIntegration: vi.fn(() => fakeIntegration()),
+  listStartupAgentIntegrations: vi.fn().mockReturnValue([]),
+  updateAgentIntegrationStatus: vi.fn(),
 }))
 
 vi.mock('@shared/lib/container/container-host', async () => {

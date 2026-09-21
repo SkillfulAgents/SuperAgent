@@ -104,7 +104,7 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { chatIntegrationManager } from './chat-integration-manager'
-import { createChatIntegration } from '@shared/lib/services/chat-integration-service'
+import { createAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ describe('chat integration model and effort resolution', () => {
 
   // Preference order: integration override > agent default > global default.
   async function startSession(integrationOverrides: Record<string, unknown> = {}) {
-    const integrationId = (await createChatIntegration({
+    const integrationId = (await createAgentIntegration({
       agentSlug: 'test-agent',
       provider: 'telegram',
       config: { botToken: 'test-token-123' },

@@ -27,10 +27,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 //   9. an integration paused mid-tick is not reconnected.
 // ---------------------------------------------------------------------------
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  listStartupChatIntegrations: vi.fn().mockReturnValue([]),
-  getChatIntegration: vi.fn(),
-  updateChatIntegrationStatus: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  listStartupAgentIntegrations: vi.fn().mockReturnValue([]),
+  getAgentIntegration: vi.fn(),
+  updateAgentIntegrationStatus: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
@@ -73,17 +73,17 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 
 import { chatIntegrationManager } from './chat-integration-manager'
 import {
-  listStartupChatIntegrations,
-  getChatIntegration,
-  updateChatIntegrationStatus,
-} from '@shared/lib/services/chat-integration-service'
+  listStartupAgentIntegrations,
+  getAgentIntegration,
+  updateAgentIntegrationStatus,
+} from '@shared/lib/services/agent-integration-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import type { ChatClientConnector } from './base-connector'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
-const listStartupMock = vi.mocked(listStartupChatIntegrations)
-const getIntegrationMock = vi.mocked(getChatIntegration)
-const updateStatusMock = vi.mocked(updateChatIntegrationStatus)
+const listStartupMock = vi.mocked(listStartupAgentIntegrations)
+const getIntegrationMock = vi.mocked(getAgentIntegration)
+const updateStatusMock = vi.mocked(updateAgentIntegrationStatus)
 
 interface ManagerTestSurface {
   connections: Map<string, { connector: ChatClientConnector }>
@@ -353,7 +353,7 @@ describe('reconcile: lifecycle operations racing a rebuild', () => {
 
   it('a pause landing during the teardown await cancels the rebuild (stale-row reconnect)', async () => {
     const row = integrationRow()
-    seedRow(row) // getChatIntegration keeps returning the stale ACTIVE row: only the generation can save us
+    seedRow(row) // getAgentIntegration keeps returning the stale ACTIVE row: only the generation can save us
     let releaseDisconnect: () => void = () => {}
     const dead = fakeConnector({
       disconnectImpl: () => new Promise<void>((r) => { releaseDisconnect = r }),

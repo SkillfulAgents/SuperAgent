@@ -1,5 +1,5 @@
 /**
- * Chat Integration Service — CRUD operations for the chat_integrations table.
+ * Agent integration persistence. Physical table names are retained for upgrades.
  */
 
 import { eq, and, inArray, count, ne, notExists, sql, type SQL } from 'drizzle-orm'
@@ -7,27 +7,27 @@ import { db } from '@shared/lib/db'
 import { changesOf, insertWhere } from '@shared/lib/db/batch'
 import { chatIntegrations, chatIntegrationSessions } from '@shared/lib/db/schema'
 import type { ChatIntegration, NewChatIntegration } from '@shared/lib/db/schema'
-import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
-import { mergeChatIntegrationConfig } from '@shared/lib/chat-integrations/config-schema'
+import { agentIntegrationRegistry } from '../agent-integrations/registry'
+import { z } from 'zod'
 import { captureException } from '@shared/lib/error-reporting'
 
 export type { ChatIntegration, NewChatIntegration }
 
-export class DuplicateBotTokenError extends Error {
+export class DuplicateIntegrationIdentityError extends Error {
   readonly existingIntegrationId: string
   constructor(existingIntegrationId: string, provider?: string) {
-    const label = provider === 'imessage' ? 'Phone number' : 'Bot token'
+    const label = provider ? agentIntegrationRegistry.getProvider(provider).configuration?.identityLabel ?? 'Account identity' : 'Account identity'
     super(`${label} is already registered on integration ${existingIntegrationId}`)
-    this.name = 'DuplicateBotTokenError'
+    this.name = 'DuplicateIntegrationIdentityError'
     this.existingIntegrationId = existingIntegrationId
   }
 }
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-export interface CreateChatIntegrationParams {
+export interface CreateAgentIntegrationParams {
   agentSlug: string
-  provider: ChatProvider
+  provider: string
   name?: string
   config: Record<string, unknown>
   showToolCalls?: boolean
@@ -38,7 +38,7 @@ export interface CreateChatIntegrationParams {
   createdByUserId?: string
 }
 
-export interface UpdateChatIntegrationParams {
+export interface UpdateAgentIntegrationParams {
   name?: string
   config?: Record<string, unknown>
   showToolCalls?: boolean
@@ -55,7 +55,7 @@ export interface UpdateChatIntegrationParams {
 
 const MAX_UNIQUE_KEY_ATTEMPTS = 3
 
-export async function createChatIntegration(params: CreateChatIntegrationParams): Promise<string> {
+export async function createAgentIntegration(params: CreateAgentIntegrationParams): Promise<string> {
   const newToken = extractUniqueKey(params.provider, params.config)
   const id = crypto.randomUUID()
   const now = new Date()
@@ -63,7 +63,7 @@ export async function createChatIntegration(params: CreateChatIntegrationParams)
   const newRecord: NewChatIntegration = {
     id,
     agentSlug: params.agentSlug,
-    provider: params.provider,
+    provider: params.provider as NewChatIntegration['provider'],
     name: params.name ?? null,
     config: JSON.stringify(params.config),
     showToolCalls: params.showToolCalls ?? false,
@@ -91,7 +91,7 @@ export async function createChatIntegration(params: CreateChatIntegrationParams)
     const inserted = await insertWhere(chatIntegrations, newRecord, noOtherIntegrationWith(params.provider, newToken)).run()
     if (changesOf(inserted) > 0) return id
     const duplicate = await findIntegrationByUniqueKey(params.provider, newToken)
-    if (duplicate) throw new DuplicateBotTokenError(duplicate.id, params.provider)
+    if (duplicate) throw new DuplicateIntegrationIdentityError(duplicate.id, params.provider)
     // The owner was deleted between the insert and the lookup: try again.
   }
   throw new Error('Chat integration changed concurrently; try again')
@@ -104,8 +104,10 @@ export async function createChatIntegration(params: CreateChatIntegrationParams)
  * findIntegrationByUniqueKey() skips them.
  */
 function noOtherIntegrationWith(provider: string, key: string, excludeId?: string): SQL {
-  const field = provider === 'imessage' ? '$.phoneNumber' : '$.botToken'
-  const storedKey = sql`CASE WHEN json_valid(${chatIntegrations.config}) THEN json_extract(${chatIntegrations.config}, ${field}) END`
+  const paths = agentIntegrationRegistry.getProvider(provider).configuration?.identityPaths
+  if (!paths?.length) throw new Error(`Provider ${provider} has no credential identity`)
+  const keys = paths.map(field => sql`json_extract(${chatIntegrations.config}, ${field})`)
+  const storedKey = sql`CASE WHEN json_valid(${chatIntegrations.config}) THEN ${sql.join(keys, sql` || ':' || `)} END`
   return notExists(
     db.select({ one: sql`1` }).from(chatIntegrations).where(and(
       eq(chatIntegrations.provider, provider as ChatIntegration['provider']),
@@ -115,15 +117,9 @@ function noOtherIntegrationWith(provider: string, key: string, excludeId?: strin
   )
 }
 
-/** Extract the unique key for duplicate detection: botToken for Telegram/Slack, phoneNumber for iMessage. */
-function extractUniqueKey(provider: string, config: Record<string, unknown>): string | null {
-  if (provider === 'imessage') {
-    const phone = (config as { phoneNumber?: unknown }).phoneNumber
-    return typeof phone === 'string' && phone.length > 0 ? phone : null
-  }
-  const token = (config as { botToken?: unknown }).botToken
-  if (provider !== 'telegram' && provider !== 'slack') return null
-  return typeof token === 'string' && token.length > 0 ? token : null
+/** The provider validates the persisted credential identity before deduplication. */
+function extractUniqueKey(provider: string, config: unknown): string | null {
+  return agentIntegrationRegistry.getProvider(provider).configuration?.uniqueKey(config) ?? null
 }
 
 async function findIntegrationByUniqueKey(
@@ -134,11 +130,10 @@ async function findIntegrationByUniqueKey(
   const rows = await db.select().from(chatIntegrations)
     .where(eq(chatIntegrations.provider, provider as ChatIntegration['provider']))
     .all()
-  const field = provider === 'imessage' ? 'phoneNumber' : 'botToken'
   for (const row of rows) {
     if (excludeId && row.id === excludeId) continue
     const cfg = safeParseConfig(row)
-    if (cfg && typeof (cfg as any)[field] === 'string' && (cfg as any)[field] === key) {
+    if (cfg && extractUniqueKey(provider, cfg) === key) {
       return row
     }
   }
@@ -147,7 +142,7 @@ async function findIntegrationByUniqueKey(
 
 function safeParseConfig(row: ChatIntegration): Record<string, unknown> | null {
   try {
-    return JSON.parse(row.config) as Record<string, unknown>
+    return z.record(z.string(), z.unknown()).parse(JSON.parse(row.config))
   } catch (err) {
     captureException(err, {
       tags: { component: 'chat-integration', operation: 'parse-config' },
@@ -159,12 +154,12 @@ function safeParseConfig(row: ChatIntegration): Record<string, unknown> | null {
 
 // ── Read ────────────────────────────────────────────────────────────────
 
-export async function getChatIntegration(id: string): Promise<ChatIntegration | null> {
+export async function getAgentIntegration(id: string): Promise<ChatIntegration | null> {
   const results = await db.select().from(chatIntegrations).where(eq(chatIntegrations.id, id)).all()
   return results[0] || null
 }
 
-export async function listChatIntegrations(agentSlug?: string, status?: string): Promise<ChatIntegration[]> {
+export async function listAgentIntegrations(agentSlug?: string, status?: string): Promise<ChatIntegration[]> {
   const conditions = []
   if (agentSlug) conditions.push(eq(chatIntegrations.agentSlug, agentSlug))
   if (status) conditions.push(eq(chatIntegrations.status, status as ChatIntegration['status']))
@@ -183,7 +178,7 @@ export async function listChatIntegrations(agentSlug?: string, status?: string):
  * When duplicates exist, prefer `active` over `error`; within the same status,
  * prefer the most recently updated row.
  */
-export async function listStartupChatIntegrations(): Promise<ChatIntegration[]> {
+export async function listStartupAgentIntegrations(): Promise<ChatIntegration[]> {
   const rows = await db.select().from(chatIntegrations)
     .where(inArray(chatIntegrations.status, ['active', 'error']))
     .all()
@@ -244,7 +239,7 @@ export async function countSessionsPerIntegration(agentSlugs: string[]): Promise
   return counts
 }
 
-export async function listChatIntegrationsByAgents(
+export async function listAgentIntegrationsByAgents(
   agentSlugs: string[],
   // Default stays active-only (the agent-list enrichment tags live chats);
   // the home graph passes allStatuses so error/paused nodes still render.
@@ -270,7 +265,7 @@ export async function listChatIntegrationsByAgents(
 
 // ── Update ──────────────────────────────────────────────────────────────
 
-export async function updateChatIntegration(id: string, params: UpdateChatIntegrationParams): Promise<boolean> {
+export async function updateAgentIntegration(id: string, params: UpdateAgentIntegrationParams): Promise<boolean> {
   if (params.config === undefined) {
     const result = await db.update(chatIntegrations)
       .set(fieldUpdates(params))
@@ -288,10 +283,12 @@ export async function updateChatIntegration(id: string, params: UpdateChatIntegr
   // settings-only edit keeps whatever credential the row has, legacy
   // duplicates included.
   for (let attempt = 0; attempt < MAX_UNIQUE_KEY_ATTEMPTS; attempt++) {
-    const current = await getChatIntegration(id)
+    const current = await getAgentIntegration(id)
     if (!current) return false
 
-    const nextConfig = mergeChatIntegrationConfig(current.provider, current.config, params.config)
+    const configuration = agentIntegrationRegistry.getProvider(current.provider).configuration
+    if (!configuration) throw new Error('Provider settings cannot be edited')
+    const nextConfig = configuration.merge(current.config, params.config)
     const currentConfig = safeParseConfig(current)
     const currentToken = currentConfig
       ? extractUniqueKey(current.provider, currentConfig)
@@ -311,17 +308,17 @@ export async function updateChatIntegration(id: string, params: UpdateChatIntegr
 
     // Nothing changed: the row is gone, its config moved on, or another
     // integration owns the new credential. Tell them apart.
-    const latest = await getChatIntegration(id)
+    const latest = await getAgentIntegration(id)
     if (!latest) return false
     if (latest.config !== current.config || !movedTo) continue
     const duplicate = await findIntegrationByUniqueKey(current.provider, movedTo, id)
-    if (duplicate) throw new DuplicateBotTokenError(duplicate.id, current.provider)
+    if (duplicate) throw new DuplicateIntegrationIdentityError(duplicate.id, current.provider)
   }
   throw new Error('Chat integration changed concurrently; try again')
 }
 
 /** The column updates a PATCH carries, config aside. */
-function fieldUpdates(params: UpdateChatIntegrationParams): Record<string, unknown> {
+function fieldUpdates(params: UpdateAgentIntegrationParams): Record<string, unknown> {
   const updates: Record<string, unknown> = { updatedAt: new Date() }
   if (params.name !== undefined) updates.name = params.name
   if (params.showToolCalls !== undefined) updates.showToolCalls = params.showToolCalls
@@ -335,17 +332,17 @@ function fieldUpdates(params: UpdateChatIntegrationParams): Record<string, unkno
   return updates
 }
 
-export async function updateChatIntegrationStatus(
+export async function updateAgentIntegrationStatus(
   id: string,
   status: ChatIntegration['status'],
   errorMessage?: string | null,
 ): Promise<boolean> {
-  return updateChatIntegration(id, { status, errorMessage: errorMessage ?? null })
+  return updateAgentIntegration(id, { status, errorMessage: errorMessage ?? null })
 }
 
 // ── Delete ──────────────────────────────────────────────────────────────
 
-export async function deleteChatIntegration(id: string): Promise<boolean> {
+export async function deleteAgentIntegration(id: string): Promise<boolean> {
   const result = await db.delete(chatIntegrations)
     .where(eq(chatIntegrations.id, id))
     .run()

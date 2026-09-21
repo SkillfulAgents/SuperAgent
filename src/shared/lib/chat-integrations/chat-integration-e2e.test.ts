@@ -119,7 +119,7 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { chatIntegrationManager } from './chat-integration-manager'
-import { createChatIntegration, getChatIntegration } from '@shared/lib/services/chat-integration-service'
+import { createAgentIntegration, getAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { listChatIntegrationSessions } from '@shared/lib/services/chat-integration-session-service'
 import { approveChatAccess, revokeChatAccess } from '@shared/lib/services/chat-integration-access-service'
 import { MockContainerClient, UserInputRequestScenario } from '@shared/lib/container/mock-container-client'
@@ -128,7 +128,7 @@ import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 // ── Helpers ────────────────────────────────────────────────────────────
 
 async function createTestIntegration(overrides?: Record<string, unknown>): Promise<string> {
-  const id = (await createChatIntegration({
+  const id = (await createAgentIntegration({
     agentSlug: 'test-agent',
     provider: 'telegram',
     config: { botToken: 'test-token-123' },
@@ -532,7 +532,7 @@ describe('Chat integration E2E', () => {
 
       await chatIntegrationManager.pauseIntegration(integrationId)
       expect(chatIntegrationManager.isIntegrationConnected(integrationId)).toBe(false)
-      const paused = (await getChatIntegration(integrationId))
+      const paused = (await getAgentIntegration(integrationId))
       expect(paused?.status).toBe('paused')
 
       // Create a new mock connector for resume (old one is disconnected)

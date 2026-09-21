@@ -1,5 +1,5 @@
 import { getIntegration } from './store'
-import { listChatIntegrations } from '../services/chat-integration-service'
+import { listAgentIntegrations } from '../services/agent-integration-service'
 import { agentIntegrationRegistry } from './registry'
 import type { IntegrationMcpConnection } from './mcp-types'
 import type { RemoteMcpRuntimeConfig } from '../container/connection-runtime-projections'
@@ -15,7 +15,7 @@ export async function resolveIntegrationMcp(agentSlug: string, connectionId: str
 }
 
 export async function integrationMcpProjection(agentSlug: string, hostApiBaseUrl: string): Promise<RemoteMcpRuntimeConfig[]> {
-  const rows = await listChatIntegrations(agentSlug)
+  const rows = await listAgentIntegrations(agentSlug)
   const result: RemoteMcpRuntimeConfig[] = []
   for (const row of rows) {
     if (row.status === 'paused') continue

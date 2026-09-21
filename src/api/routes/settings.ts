@@ -1,3 +1,4 @@
+import { captureException } from '@shared/lib/error-reporting'
 import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
@@ -51,39 +52,7 @@ import { containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, getRunnerDisplayName, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
-import { db } from '@shared/lib/db'
-import type { SQLiteTable } from 'drizzle-orm/sqlite-core'
-import {
-  proxyAuditLog,
-  proxyTokens,
-  agentConnectedAccounts,
-  scheduledTasks,
-  notifications,
-  sessionUnreadMarks,
-  connectedAccounts,
-  userSettings,
-  auditLog,
-  webhookTriggers,
-  chatIntegrations,
-  chatIntegrationSessions,
-  chatIntegrationAccess,
-  slackThreadState,
-  remoteMcpServers,
-  agentRemoteMcps,
-  mcpAuditLog,
-  mcpToolPolicies,
-  agentAcl,
-  agents,
-  messageAuthor,
-  xAgentPolicies,
-  apiScopePolicies,
-  tokenExchangeJti,
-  mobilePairingToken,
-  mobileDevice,
-  apnsDevices,
-  pushSubscriptions,
-  pushVapidKeys,
-} from '@shared/lib/db/schema'
+import { resetApplicationTables } from '@shared/lib/db/reset'
 import fs from 'fs'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
@@ -162,68 +131,6 @@ async function serveUploadedModelIcon(c: Context) {
     return c.json({ error: 'Failed to read model icon' }, 500)
   }
 }
-
-/**
- * Canonical set of agent/app-owned relational tables wiped by factory reset.
- *
- * Ordered children-before-parents so deletes succeed regardless of FK-cascade
- * state. Better Auth tables (user, session, account, verification) are
- * intentionally excluded — a factory reset clears app/agent data but does NOT
- * delete user accounts. The data-migration ledger is excluded too, like
- * drizzle's own: it records which one-time moves this database has been
- * through, and a reset database is an empty one, not a legacy one. Re-running
- * those moves after a reset would pull back whatever state the reset did not
- * delete.
- *
- * Keep this reconciled with the per-agent set in agent-cleanup-service.ts. The
- * test in factory-reset.sup206.test.ts enumerates the schema dynamically and
- * fails if a new agent/app-owned table is added without being listed here, so
- * the set cannot silently drift again.
- */
-const FACTORY_RESET_TABLES: SQLiteTable[] = [
-  // Leaf / no-FK-to-reset-table audit + attribution rows
-  proxyAuditLog,
-  proxyTokens,
-  mcpAuditLog,
-  messageAuthor,
-  agentAcl,
-  xAgentPolicies,
-  webhookTriggers,
-  // the agent catalog itself, once the per-agent rows above are gone
-  agents,
-  notifications,
-  sessionUnreadMarks,
-  scheduledTasks,
-  // chat integrations (access + sessions + Slack state cascade from integrations)
-  chatIntegrationAccess,
-  chatIntegrationSessions,
-  slackThreadState,
-  chatIntegrations,
-  // connected accounts + dependents (api scope policies + agent mappings cascade)
-  agentConnectedAccounts,
-  apiScopePolicies,
-  connectedAccounts,
-  // remote MCP servers + dependents (tool policies + agent mappings cascade)
-  agentRemoteMcps,
-  mcpToolPolicies,
-  remoteMcpServers,
-  // per-user settings (user row itself is preserved)
-  userSettings,
-  // global app audit log
-  auditLog,
-  // transient single-use jti replay guard for the token-exchange endpoint
-  tokenExchangeJti,
-  // transient single-use mobile pairing tokens
-  mobilePairingToken,
-  // APNs registrations before mobile devices: the cascade covers paired rows,
-  // but nullable mobile_device_id rows would survive it
-  apnsDevices,
-  // stable mobile devices; deleting them cascades their access sessions
-  mobileDevice,
-  // web push device subscriptions + the VAPID keypair they were minted against
-  pushSubscriptions,
-  pushVapidKeys,
-]
 
 // Custom model icons are used in regular model pickers, so any authenticated
 // user may read them. Writes and the rest of settings stay admin-only.
@@ -909,6 +816,13 @@ settings.post('/validate-web-key', async (c) => {
 // POST /api/settings/factory-reset - Reset all data
 settings.post('/factory-reset', async (c) => {
   try {
+    // Stop integrations and let each provider release its external resources.
+    try {
+      const { cleanupIntegrationResources } = await import('@shared/lib/agent-integrations/cleanup')
+      await cleanupIntegrationResources()
+    } catch (error) {
+      captureException(error, { tags: { component: 'settings', operation: 'factory-reset-integrations' } })
+    }
     // Revoke platform token remotely before clearing local state
     try {
       await revokePlatformToken({ clearLocal: false })
@@ -925,9 +839,7 @@ settings.post('/factory-reset', async (c) => {
 
     // Clear every agent/app-owned relational table (children before parents).
     // Better Auth tables (user/session/account/verification) are preserved.
-    for (const table of FACTORY_RESET_TABLES) {
-      await db.delete(table).run()
-    }
+    await resetApplicationTables()
 
     // Delete settings file (includes platform auth token)
     const settingsPath = path.join(getDataDir(), 'settings.json')

@@ -16,7 +16,7 @@ import crypto from 'node:crypto'
 //
 // isChatAllowed is exercised through the REAL access service reading REAL
 // in-memory DB rows — the same pattern used by chat-integration-access-gate
-// and chat-integration-access-service tests. The service layer (getChatIntegration,
+// and chat-integration-access-service tests. The service layer (getAgentIntegration,
 // resolveActiveSession) is still mocked since it is not under test here.
 // ---------------------------------------------------------------------------
 
@@ -29,10 +29,10 @@ vi.mock('../db', () => ({
 
 const mockGetChatIntegration = vi.fn()
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  getChatIntegration: (...args: unknown[]) => mockGetChatIntegration(...args),
-  listStartupChatIntegrations: vi.fn().mockReturnValue([]),
-  updateChatIntegrationStatus: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  getAgentIntegration: (...args: unknown[]) => mockGetChatIntegration(...args),
+  listStartupAgentIntegrations: vi.fn().mockReturnValue([]),
+  updateAgentIntegrationStatus: vi.fn(),
 }))
 
 const mockResolveActiveSession = vi.fn()
@@ -171,6 +171,7 @@ describe('ChatIntegrationManager.ensureSession — outbound access gate', () => 
     const actor = agentRegistry.get('test-agent')
     expect(actor.sessions.register).toHaveBeenCalledWith(sessionId, expect.stringContaining('Alice'))
     expect(actor.sessions.updateMetadata).toHaveBeenCalledWith(sessionId, {
+      isAgentIntegrationSession: true, agentIntegrationId: INT,
       isChatIntegrationSession: true, chatIntegrationId: INT, createdByUserId: 'owner-1',
     })
     expect(createChatIntegrationSession).toHaveBeenCalledWith({

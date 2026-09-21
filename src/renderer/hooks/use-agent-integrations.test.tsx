@@ -6,6 +6,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { makeChatIntegration } from '@renderer/components/agent-integrations/test-factories'
 import {
   agentIntegrationKeys,
+  useAgentIntegration,
   useCreateAgentIntegration,
   useUpdateAgentIntegration,
   useDeleteAgentIntegration,
@@ -51,5 +52,52 @@ describe('integration list invalidation', () => {
     expect(client.getQueryState(other)?.isInvalidated).toBe(false)
     unmount()
     client.clear()
+  })
+})
+
+describe('integration authorization polling', () => {
+  it.each(['telegram', 'slack', 'imessage'])('does not poll settled %s details', async provider => {
+    vi.useFakeTimers()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const data = { ...makeChatIntegration(), provider }
+    vi.mocked(apiFetch).mockClear().mockImplementation(async () => new Response(JSON.stringify(data)))
+    const { unmount } = renderHook(() => useAgentIntegration(data.id), {
+      wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+    })
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(90000) })
+      expect(apiFetch).toHaveBeenCalledOnce()
+    } finally { unmount(); client.clear(); vi.useRealTimers() }
+  })
+  it.each(['setup', 'reconnect', 'expired'])('does not poll every 2.5 seconds for %s', async state => {
+    vi.useFakeTimers()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const data = { ...makeChatIntegration(), provider: 'test-oauth', refreshIntervalMs: 30000, hasCredentials: false,
+      ...(state === 'expired' ? { authorizationPendingUntil: Date.now() - 1 } : {}) }
+    vi.mocked(apiFetch).mockClear().mockImplementation(async () => new Response(JSON.stringify(data)))
+    const { unmount } = renderHook(() => useAgentIntegration(data.id), {
+      wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+    })
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+      expect(apiFetch).toHaveBeenCalledOnce()
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+      expect(apiFetch).toHaveBeenCalledTimes(2)
+    } finally { unmount(); client.clear(); vi.useRealTimers() }
+  })
+  it('polls quickly only until the pending authorization expires', async () => {
+    vi.useFakeTimers()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const data = { ...makeChatIntegration(), provider: 'test-oauth', refreshIntervalMs: 30000, hasCredentials: false, authorizationPendingUntil: Date.now() + 5000 }
+    vi.mocked(apiFetch).mockClear().mockImplementation(async () => new Response(JSON.stringify(data)))
+    const { unmount } = renderHook(() => useAgentIntegration(data.id), {
+      wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+    })
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(apiFetch).toHaveBeenCalledTimes(3)
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+      expect(apiFetch).toHaveBeenCalledTimes(3)
+    } finally { unmount(); client.clear(); vi.useRealTimers() }
   })
 })

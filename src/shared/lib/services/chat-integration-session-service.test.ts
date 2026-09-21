@@ -29,7 +29,7 @@ import {
   resolveActiveSession,
   getLastDisplayName,
 } from './chat-integration-session-service'
-import { createChatIntegration } from './chat-integration-service'
+import { createAgentIntegration } from './agent-integration-service'
 
 describe('chat-integration-session-service', () => {
   let integrationId: string
@@ -39,7 +39,7 @@ describe('chat-integration-session-service', () => {
     handle = await createTestDatabase()
     testDb = handle.db
 
-    integrationId = (await createChatIntegration({
+    integrationId = (await createAgentIntegration({
       agentSlug: 'test-agent',
       provider: 'telegram',
       config: { botToken: 'test-token' },
@@ -57,7 +57,7 @@ describe('chat-integration-session-service', () => {
     // one owned by the asking agent — otherwise an approval card for one agent
     // is routed into a different agent's channel.
     it('returns the asking agent’s session, not another agent’s same-id session', async () => {
-      const otherIntegrationId = (await createChatIntegration({
+      const otherIntegrationId = (await createAgentIntegration({
         agentSlug: 'other-agent',
         provider: 'telegram',
         config: { botToken: 'other-token' },

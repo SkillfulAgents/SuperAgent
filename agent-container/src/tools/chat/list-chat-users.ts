@@ -20,7 +20,7 @@ export const listChatUsersTool = tool(
 
 Use this to find the right person BEFORE sending a proactive direct message: pass the user_id to send_chat_message and it will open (or reuse) the 1:1 conversation — no existing chat with that person is needed.
 
-Only integrations whose capabilities include list_users support this (see list_chat_integrations). Large workspaces are capped; a truncated listing says so.`,
+Only integrations whose capabilities include list_users support this (see list_agent_integrations). Large workspaces are capped; a truncated listing says so.`,
   {
     integration_id: z.string().describe('ID of the chat integration whose directory to list'),
   },

@@ -31,6 +31,7 @@ const mockAuthUser = { id: 'attacker-user', name: 'Attacker', email: 'attacker@e
 // real middleware scopes auth to :integrationId and never sees the session.
 vi.mock('../middleware/auth', () => ({
   Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  AgentRead: () => async (_c: unknown, next: () => Promise<void>) => next(),
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
   getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
@@ -45,19 +46,19 @@ vi.mock('../middleware/auth', () => ({
 }))
 
 // Two integrations: A (agent-a) and B (agent-b).
-const integrations: Record<string, { id: string; agentSlug: string }> = {
-  [INTEGRATION_A]: { id: INTEGRATION_A, agentSlug: 'agent-a' },
-  [INTEGRATION_B]: { id: INTEGRATION_B, agentSlug: 'agent-b' },
+const integrations: Record<string, { id: string; agentSlug: string; provider: 'telegram' }> = {
+  [INTEGRATION_A]: { id: INTEGRATION_A, agentSlug: 'agent-a', provider: 'telegram' },
+  [INTEGRATION_B]: { id: INTEGRATION_B, agentSlug: 'agent-b', provider: 'telegram' },
 }
 const mockGetChatIntegration = vi.fn(async (id: string) => integrations[id] ?? null)
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  getChatIntegration: (id: string) => mockGetChatIntegration(id),
-  createChatIntegration: vi.fn(),
-  updateChatIntegration: vi.fn(),
-  updateChatIntegrationStatus: vi.fn(),
-  deleteChatIntegration: vi.fn(),
-  DuplicateBotTokenError: class DuplicateBotTokenError extends Error {},
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  getAgentIntegration: (id: string) => mockGetChatIntegration(id),
+  createAgentIntegration: vi.fn(),
+  updateAgentIntegration: vi.fn(),
+  updateAgentIntegrationStatus: vi.fn(),
+  deleteAgentIntegration: vi.fn(),
+  DuplicateIntegrationIdentityError: class DuplicateIntegrationIdentityError extends Error {},
 }))
 
 const mockGetChatIntegrationSessionById = vi.fn()
@@ -82,7 +83,8 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
   },
 }))
 
-vi.mock('@shared/lib/chat-integrations/config-schema', () => ({
+vi.mock('@shared/lib/chat-integrations/config-schema', async importOriginal => ({
+  ...await importOriginal<typeof import('@shared/lib/chat-integrations/config-schema')>(),
   validateChatIntegrationConfig: vi.fn(),
   CHAT_PROVIDERS: ['telegram', 'slack', 'imessage'],
   IMESSAGE_GATEWAY_URL: 'https://imessage.example.com',
@@ -100,6 +102,12 @@ vi.mock('@shared/lib/services/audit-log-service', () => ({
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
+
+vi.mock('@shared/lib/agent-integrations/registry', async importOriginal => {
+  const actual = await importOriginal<typeof import('@shared/lib/agent-integrations/registry')>()
+  actual.agentIntegrationRegistry.cleanup = vi.fn()
+  return actual
+})
 
 import chatIntegrationsRouter from './chat-integrations'
 

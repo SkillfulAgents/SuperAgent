@@ -140,7 +140,7 @@ import {
   TelegramConnector,
 } from './telegram-connector'
 import { buildIMessageSystemPrompt, classifyIMessageChat } from './imessage-connector'
-import { createChatIntegration } from '@shared/lib/services/chat-integration-service'
+import { createAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 
 class PromptTestContainerClient extends MockContainerClient {
@@ -333,7 +333,7 @@ describe('chat session system prompt wiring', () => {
     messageOpts: { chatId: string; userName?: string; chatName?: string; text?: string },
   ) {
     const callIndex = createSessionSpy.mock.calls.length
-    const integrationId = (await createChatIntegration({
+    const integrationId = (await createAgentIntegration({
       agentSlug: 'test-agent',
       provider,
       config: provider === 'telegram'

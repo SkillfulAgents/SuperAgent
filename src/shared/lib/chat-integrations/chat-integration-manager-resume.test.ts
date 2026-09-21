@@ -22,10 +22,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 //      for the 5-minute tick.
 // ---------------------------------------------------------------------------
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  listStartupChatIntegrations: vi.fn().mockReturnValue([]),
-  getChatIntegration: vi.fn(),
-  updateChatIntegrationStatus: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  listStartupAgentIntegrations: vi.fn().mockReturnValue([]),
+  getAgentIntegration: vi.fn(),
+  updateAgentIntegrationStatus: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
@@ -68,14 +68,14 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 
 import { chatIntegrationManager } from './chat-integration-manager'
 import {
-  listStartupChatIntegrations,
-  getChatIntegration,
-} from '@shared/lib/services/chat-integration-service'
+  listStartupAgentIntegrations,
+  getAgentIntegration,
+} from '@shared/lib/services/agent-integration-service'
 import type { ChatClientConnector } from './base-connector'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
-const listStartupMock = vi.mocked(listStartupChatIntegrations)
-const getIntegrationMock = vi.mocked(getChatIntegration)
+const listStartupMock = vi.mocked(listStartupAgentIntegrations)
+const getIntegrationMock = vi.mocked(getAgentIntegration)
 
 interface ManagerTestSurface {
   connections: Map<string, { connector: ChatClientConnector }>

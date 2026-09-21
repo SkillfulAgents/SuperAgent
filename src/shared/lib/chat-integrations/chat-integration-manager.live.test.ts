@@ -20,10 +20,10 @@ import { readFileSync } from 'node:fs'
 //      and the rebuilt socket still receives real inbound events.
 // ---------------------------------------------------------------------------
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  listStartupChatIntegrations: vi.fn().mockReturnValue([]),
-  getChatIntegration: vi.fn(),
-  updateChatIntegrationStatus: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  listStartupAgentIntegrations: vi.fn().mockReturnValue([]),
+  getAgentIntegration: vi.fn(),
+  updateAgentIntegrationStatus: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
@@ -61,19 +61,19 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 
 import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
 import {
-  listStartupChatIntegrations,
-  getChatIntegration,
-  updateChatIntegrationStatus,
-} from '@shared/lib/services/chat-integration-service'
+  listStartupAgentIntegrations,
+  getAgentIntegration,
+  updateAgentIntegrationStatus,
+} from '@shared/lib/services/agent-integration-service'
 import type { ChatClientConnector, IncomingMessage } from './base-connector'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
 const LIVE = process.env.SLACK_LIVE === '1'
 const INT = 'int-live-manager'
 
-const listStartupMock = vi.mocked(listStartupChatIntegrations)
-const getIntegrationMock = vi.mocked(getChatIntegration)
-const updateStatusMock = vi.mocked(updateChatIntegrationStatus)
+const listStartupMock = vi.mocked(listStartupAgentIntegrations)
+const getIntegrationMock = vi.mocked(getAgentIntegration)
+const updateStatusMock = vi.mocked(updateAgentIntegrationStatus)
 
 interface ManagerTestSurface {
   connections: Map<string, { connector: ChatClientConnector }>

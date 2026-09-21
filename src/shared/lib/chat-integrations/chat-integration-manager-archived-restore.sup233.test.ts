@@ -78,7 +78,7 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { chatIntegrationManager } from './chat-integration-manager'
-import { createChatIntegration } from '@shared/lib/services/chat-integration-service'
+import { createAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import {
   createChatIntegrationSession,
   archiveChatIntegrationSession,
@@ -115,7 +115,7 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
     // Public bot so the access gate is a no-op and this test isolates SUP-233's
     // concern (active sessions restore, archived don't). requireApproval is
     // owner-only post-create, so flip it directly on the row.
-    const integrationId = (await createChatIntegration({
+    const integrationId = (await createAgentIntegration({
       agentSlug: 'test-agent',
       provider: 'telegram',
       config: { botToken: 'test-token-123' },
@@ -149,7 +149,7 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
   })
 
   it('listActiveChatIntegrationSessions excludes archived rows; listChatIntegrationSessions keeps them', async () => {
-    const integrationId = (await createChatIntegration({
+    const integrationId = (await createAgentIntegration({
       agentSlug: 'test-agent-2',
       provider: 'telegram',
       config: { botToken: 'test-token-456' },

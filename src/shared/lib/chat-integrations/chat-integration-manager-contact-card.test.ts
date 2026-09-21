@@ -10,9 +10,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // the card arrive before the user has ever messaged the agent.
 // ---------------------------------------------------------------------------
 
-vi.mock('@shared/lib/services/chat-integration-service', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@shared/lib/services/chat-integration-service')>()),
-  getChatIntegration: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/agent-integration-service')>()),
+  getAgentIntegration: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/agent-service', async (importOriginal) => ({
@@ -25,7 +25,7 @@ vi.mock('@shared/lib/error-reporting', async (importOriginal) => ({
   captureException: vi.fn(),
 }))
 
-import { getChatIntegration } from '@shared/lib/services/chat-integration-service'
+import { getAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { getAgentRecord } from '@shared/lib/services/agent-service'
 import { chatIntegrationManager } from './chat-integration-manager'
 
@@ -41,13 +41,13 @@ const mgr = chatIntegrationManager as unknown as ManagerInternals
 const sendFile = vi.fn<(...args: unknown[]) => Promise<string>>()
 
 async function registerConnector(): Promise<void> {
-  const connector = (await getChatIntegration(INT))?.provider === 'telegram' ? new MockChatClientConnector() : new IMessageConnector({ gatewayUrl: 'https://example.com', phoneNumber: '+15551234567', token: 'test' })
+  const connector = (await getAgentIntegration(INT))?.provider === 'telegram' ? new MockChatClientConnector() : new IMessageConnector({ gatewayUrl: 'https://example.com', phoneNumber: '+15551234567', token: 'test' })
   connector.sendFile = sendFile
   mgr.connections.set(INT, { connector })
 }
 
 function mockIntegration(provider: string, name?: string | null): void {
-  vi.mocked(getChatIntegration).mockReturnValue({ provider, agentSlug: 'ada', name: name ?? null } as never)
+  vi.mocked(getAgentIntegration).mockReturnValue({ provider, agentSlug: 'ada', name: name ?? null } as never)
 }
 
 function mockAgent(): void {
@@ -138,7 +138,7 @@ describe('integrationCreated', () => {
 
   it('links to the pretty display slug while the card UID keeps the minted id', async () => {
     process.env.HOST_PUBLIC_URL = 'https://app.example.com'
-    vi.mocked(getChatIntegration).mockReturnValue({ provider: 'imessage', agentSlug: MINTED_ID } as never)
+    vi.mocked(getAgentIntegration).mockReturnValue({ provider: 'imessage', agentSlug: MINTED_ID } as never)
     await registerConnector()
     mockAgent()
 
