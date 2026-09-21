@@ -330,6 +330,20 @@
       "when": 1790040447107,
       "tag": "0046_scheduled_task_overlap_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1790014024800,
+      "tag": "0047_linear_agent_integrations",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1790024171033,
+      "tag": "0048_task_dispatch_attempts",
+      "breakpoints": true
     }
   ]
 }

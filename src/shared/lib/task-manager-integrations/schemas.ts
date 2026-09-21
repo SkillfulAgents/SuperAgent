@@ -1,0 +1,23 @@
+import { z } from 'zod'
+
+export const taskEventSchema = z.object({
+  id: z.string().min(1), taskId: z.string().min(1), interactionId: z.string(),
+  kind: z.enum(['invocation', 'status', 'context']), timestamp: z.string(),
+  sourceCommentId: z.string().optional(),
+  text: z.string(), title: z.string().optional(),
+  replyTarget: z.record(z.string(), z.string()), payload: z.unknown(),
+})
+export const taskRuntimeEventSchema = z.object({
+  type: z.string(), requestId: z.string().optional(), text: z.string().optional(), error: z.string().optional(),
+})
+
+/** Decode persisted JSON at the boundary and report a stable, secret-free error. */
+export function parseTaskJson<T>(schema: z.ZodType<T>, json: string): T {
+  try { return schema.parse(JSON.parse(json)) } catch { throw new Error('Invalid persisted integration data') }
+}
+
+/** Only host failure notices use the durable publication slot; agent replies use MCP. */
+export const taskFailureNoticeSchema = z.object({
+  kind: z.literal('failure_notice'), id: z.string().uuid(), body: z.string().min(1),
+  attempts: z.number().int().nonnegative().default(0),
+})

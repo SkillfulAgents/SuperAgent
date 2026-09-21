@@ -501,5 +501,25 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1790040447107,
     "hash": "841f5d556872c1e923410a1264069897e55c42f194983f8fee8531fe566b267c"
+  },
+  {
+    "sql": [
+      "-- Consolidated before release. IF NOT EXISTS preserves earlier PR test installations.\nCREATE TABLE IF NOT EXISTS `integration_task_events` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`integration_id` text NOT NULL,\n\t`external_event_id` text NOT NULL,\n\t`task_id` text NOT NULL,\n\t`interaction_id` text NOT NULL,\n\t`event_json` text NOT NULL,\n\t`status` text DEFAULT 'queued' NOT NULL,\n\t`session_id` text,\n\t`response_text` text,\n\t`publication_json` text,\n\t`published_id` text,\n\t`input_request_json` text,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`integration_id`) REFERENCES `chat_integrations`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE UNIQUE INDEX IF NOT EXISTS `integration_task_events_delivery_unique` ON `integration_task_events` (`integration_id`,`external_event_id`);",
+      "\nCREATE INDEX IF NOT EXISTS `integration_task_events_work_idx` ON `integration_task_events` (`integration_id`,`task_id`,`status`);",
+      "\nCREATE TABLE IF NOT EXISTS `linear_issue_sync` (\n\t`integration_id` text NOT NULL,\n\t`task_id` text NOT NULL,\n\t`first_seen_at` text NOT NULL,\n\t`synced_through` text NOT NULL,\n\t`next_poll_at` integer NOT NULL,\n\t`inaccessible_since` text,\n\tPRIMARY KEY(`integration_id`, `task_id`),\n\tFOREIGN KEY (`integration_id`) REFERENCES `chat_integrations`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE INDEX IF NOT EXISTS `linear_issue_sync_due_idx` ON `linear_issue_sync` (`integration_id`,`next_poll_at`);"
+    ],
+    "bps": true,
+    "folderMillis": 1790014024800,
+    "hash": "953e233d20f8b99b94dd1b621f54fb6bf96e9d9c9d098c1aa70252f2cab885a8"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `integration_task_events` ADD `dispatch_attempts` integer DEFAULT 0 NOT NULL;"
+    ],
+    "bps": true,
+    "folderMillis": 1790024171033,
+    "hash": "29c080092059c291e131cd559c995ac0748b16bf6a0cef6ee00bd65d560d9d45"
   }
 ]

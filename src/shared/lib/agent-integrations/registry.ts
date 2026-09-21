@@ -4,6 +4,7 @@ import type { PublicAgentIntegration } from './public'
 import type { IntegrationMcpConnection } from './mcp-types'
 import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy } from './types'
+import { taskManagerProviders } from '../task-manager-integrations/providers'
 import { chatProviders } from '../chat-integrations/providers'
 
 export interface IntegrationProvider {
@@ -85,4 +86,4 @@ export class AgentIntegrationRegistry {
   }
 }
 
-export const agentIntegrationRegistry = new AgentIntegrationRegistry(chatProviders)
+export const agentIntegrationRegistry = new AgentIntegrationRegistry([...chatProviders, ...taskManagerProviders])

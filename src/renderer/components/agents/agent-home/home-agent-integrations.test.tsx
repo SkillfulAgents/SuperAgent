@@ -65,11 +65,27 @@ const INTEGRATION: ListItem = {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('HomeAgentIntegrations', () => {
+  it('puts Linear and chat providers in the same list with the same navigation', async () => {
+    mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION, { ...INTEGRATION, id: 'linear-1', name: 'Linear Agent', provider: 'linear' }] })
+    renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+    expect(screen.getByText('External Integrations')).toBeInTheDocument()
+    expect(screen.getByText('Test Bot')).toBeInTheDocument()
+    expect(screen.queryByText('Task Platforms')).toBeNull()
+    await userEvent.setup().click(screen.getByText('Linear Agent'))
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/agents/$slug/chat/$integrationId', params: { slug: 'test-agent', integrationId: 'linear-1' } })
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     mockCanManage.mockReturnValue(true)
     mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION] })
     mockUseChatIntegrationAccess.mockReturnValue({ data: [] })
+  })
+
+  it('shows reconnect needed on the shared home card', () => {
+    mockUseChatIntegrations.mockReturnValue({ data: [{ ...INTEGRATION, provider: 'linear', status: 'disconnected', connected: false, reconnectRequired: true }] })
+    renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+    expect(screen.getByText('Reconnect needed')).toBeInTheDocument()
   })
 
   it('does NOT render a per-row settings/actions kebab', () => {

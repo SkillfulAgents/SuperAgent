@@ -110,3 +110,10 @@ credential panel, fields, feedback and actions. Providers supply their content a
 connection flow. An optional read-only `setup.describe` hook supplies app-creation
 and callback URLs through the agent-scoped setup endpoint without creating an
 installation. The endpoint enforces the same provider management role as creation.
+
+## Task managers
+
+`TaskManagerAgentIntegration` owns durable inbound work, one session per work item,
+ordering, context hydration and run/request lifecycle. Linear implements the provider
+setup, cleanup and MCP hooks; its UI panels register at the renderer composition point.
+See [Linear integration](linear-agent-integration.md) for event delivery and identity setup.
