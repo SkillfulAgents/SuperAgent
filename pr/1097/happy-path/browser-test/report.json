@@ -1,23 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can execute browser tools to navigate to a URL and retrieve the page title, with the response explicitly mentioning \"Example Domain\"",
+  "reason": "Verified that the agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it correctly.",
   "steps": [
-    "1. Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\"",
-    "2. Found and clicked the \"QA-20260921-201519-tvb0\" agent in the sidebar — Agent page opened with URL containing the agent ID",
-    "3. Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted and the agent started working",
-    "4. Waited for response (up to 3 minutes) — Agent completed execution in approximately 6 seconds with 3 tool calls and 148,950 tokens used",
-    "5. Verified response mentions \"Example Domain\" — Response displays: \"The page title is \"Example Domain\" (HTTP 200). Browser closed.\" which correctly mentions \"Example Domain\""
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application with sidebar displaying agent list.",
+    "Clicked on \"QA-20260921-213729-vm0b\" agent in the sidebar — Successfully opened the agent chat interface at /agents/qa-20260921-213729-vm0b-r43fe28x5o.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message was successfully entered in the message textbox and became visible in the UI.",
+    "Clicked \"Send message\" button — Message was sent successfully and the agent transitioned to \"working\" status. A new session titled \"Browser Navigation and Page Title Test\" was created.",
+    "Waited for agent response (up to 3 minutes) — Agent completed work after approximately 6 seconds, using 3 tool calls and 148,961 tokens.",
+    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\" The mention of \"Example Domain\" confirms the expected behavior.",
+    "Took screenshot to document the result — Full page screenshot captured showing the complete conversation with the agent's response displaying the page title correctly."
   ],
   "bugs": [],
-  "durationMs": 148278,
-  "sessionId": "cf047615-5473-4d86-bb4b-106d41204886",
+  "durationMs": 53876,
+  "sessionId": "a63d6461-8936-4fcd-a59b-efb6801b1e14",
   "cost": {
-    "inputTokens": 482,
-    "outputTokens": 12333,
-    "cacheCreationTokens": 55776,
-    "cacheReadTokens": 1312483,
+    "inputTokens": 320,
+    "outputTokens": 9662,
+    "cacheCreationTokens": 118097,
+    "cacheReadTokens": 873973,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.263115
+    "totalCostUsd": 0.283649
   }
 }
