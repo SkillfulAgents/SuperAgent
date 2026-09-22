@@ -188,6 +188,7 @@ function createTask(overrides: Record<string, unknown> = {}) {
     scheduleExpression: '0 9 * * 1-5',
     status: 'pending',
     isRecurring: true,
+    lastSessionId: null,
     model: null,
     effort: null,
     speed: null,
@@ -276,6 +277,20 @@ describe('scheduled-tasks route', () => {
     expect(mockMessagePersister.markSessionActive).toHaveBeenCalledWith('agent-one', 'container-session-1')
     expect(mockRecordManualExecution).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockMarkTaskExecuted).not.toHaveBeenCalled()
+  })
+
+  it('runs a recurring task now even while its previous run is still busy', async () => {
+    // The scheduler's overlap guard holds only scheduled fires; Run now is the
+    // user asking for a run, so it goes ahead.
+    task = createTask({ lastSessionId: 'session-active' })
+
+    const res = await app.request('http://localhost/api/scheduled-tasks/task-1/run-now', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(201)
+    expect(mockCreateSession).toHaveBeenCalledTimes(1)
+    expect(mockRecordManualExecution).toHaveBeenCalledWith('task-1', 'container-session-1')
   })
 
   it('marks a one-time task executed when run-now succeeds', async () => {
