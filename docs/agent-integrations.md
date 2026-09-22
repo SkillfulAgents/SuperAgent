@@ -4,6 +4,8 @@
 
 ```mermaid
 classDiagram
+    AgentIntegration <|-- TaskManagerAgentIntegration
+    TaskManagerAgentIntegration <|-- LinearAgentIntegration
     AgentIntegration <|-- ChatAgentIntegration
     ChatAgentIntegration <|-- TelegramConnector
     ChatAgentIntegration <|-- SlackConnector
@@ -110,3 +112,12 @@ credential panel, fields, feedback and actions. Providers supply their content a
 connection flow. An optional read-only `setup.describe` hook supplies app-creation
 and callback URLs through the agent-scoped setup endpoint without creating an
 installation. The endpoint enforces the same provider management role as creation.
+
+## Task managers
+
+`TaskManagerAgentIntegration` maps each work item to a session and prepares issue
+context and reply guidance. Inputs go directly through the same manager/runtime queue
+as chat messages, including while a turn is running. It has no durable work queue,
+turn lock or retry scheduler. Linear implements provider setup, cleanup and MCP hooks;
+its UI panels register at the renderer composition point.
+See [Linear integration](linear-agent-integration.md) for event delivery and identity setup.
