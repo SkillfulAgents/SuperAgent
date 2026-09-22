@@ -142,7 +142,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
       : []),
     // Everyone: the tab carries each person's own read-aloud voice; the
     // provider and key sections inside it are admin-gated.
-    { id: 'llm', label: 'Model Connections', icon: <Sparkle className="h-4 w-4" />, render: () => deferredTab(<LlmTab />) },
+    { id: 'llm', label: 'Model Providers', icon: <Sparkle className="h-4 w-4" />, render: () => deferredTab(<LlmTab />) },
     { id: 'voice', label: 'Voice', icon: <Mic className="h-4 w-4" />, render: () => deferredTab(<VoiceTab />) },
   ]
 
