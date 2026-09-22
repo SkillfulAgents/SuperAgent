@@ -1,25 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully executed a chat message with an agent to open a browser, navigate to https://example.com, and retrieve the page title",
+  "reason": "Browser use feature successfully enables agents to open browsers, navigate to URLs, extract page content (page titles), and return accurate results.",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully showing Gamut application with agent list",
-    "Step 2: Clicked on \"QA-20260922-005912-jdo4\" agent in the sidebar — Agent page opened, displaying chat interface and agent configuration",
-    "Step 3: Clicked on message input field — Input field became active and ready for typing",
-    "Step 4: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message displayed in input field",
-    "Step 5: Clicked \"Send message\" button — Message was sent, agent started working (status changed to \"working\")",
-    "Step 6: Waited for agent response (up to 3 minutes) — Agent responded within 7 seconds",
-    "Step 7: Verified response content — Agent response clearly states: \"The page title is Example Domain (https://example.com/, HTTP 200). Browser closed.\""
+    "Step 1: Navigated to http://localhost:47891 — App loaded successfully, showing SuperAgent home page with list of agents in sidebar.",
+    "Step 2: Clicked on \"QA-20260922-015209-e3t8\" agent in sidebar — Successfully navigated to agent's chat interface.",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input box — Message was entered correctly.",
+    "Step 4: Clicked \"Send message\" button to submit the message — Message was sent successfully, agent started working.",
+    "Step 5: Waited up to 3 minutes for agent response (actual wait time: 8 seconds) — Agent completed the task with 3 tool calls (ToolSearch, Open Browser, browser operations) using 148,969 tokens.",
+    "Step 6: Verified response contains \"Example Domain\" — Response confirmed: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\" — Test verification successful."
   ],
   "bugs": [],
-  "durationMs": 61554,
-  "sessionId": "3cedc54b-eead-453e-8b0b-7a6998140c1b",
+  "durationMs": 99389,
+  "sessionId": "810f4317-a636-45c0-b1ad-a831b83c2f56",
   "cost": {
-    "inputTokens": 454,
-    "outputTokens": 11363,
-    "cacheCreationTokens": 85147,
-    "cacheReadTokens": 1447871,
+    "inputTokens": 458,
+    "outputTokens": 11845,
+    "cacheCreationTokens": 79231,
+    "cacheReadTokens": 1372996,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.30849
+    "totalCostUsd": 0.296021
   }
 }
