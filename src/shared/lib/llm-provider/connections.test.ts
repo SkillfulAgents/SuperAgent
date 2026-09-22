@@ -536,6 +536,8 @@ describe('review regressions', () => {
     const before = await getConnection(id)
     expect(await resolveSelectionHierarchy()).toMatchObject({ llmProviderId: id, model: 'model-a' })
     expect(await getConnection(id)).toEqual(before)
+    await saveConnection({ name: 'Renamed provider', provider: 'generic', config: {} }, admin, id)
+    expect((await getConnection(id))?.name).toBe('Renamed provider')
   })
 
   it('uses the migrated global provider when settings outlive a recreated database', async () => {
@@ -543,6 +545,8 @@ describe('review regressions', () => {
     state.settings.llmDefault = { llmProviderId: 'lost-database-row', model: 'retired-model' }
     await importLlmConnections.run(handle.db)
     expect(await resolveSelectionHierarchy()).toMatchObject({ llmProviderId: 'legacy-anthropic' })
+    expect((await listConnections(admin)).find(row => row.id === 'legacy-anthropic')?.canDelete).toBe(false)
+    await expect(deleteConnection('legacy-anthropic', admin)).rejects.toThrow('Change the app default')
   })
 
   it('selects a provider default when the caller switches only llmProviderId', async () => {

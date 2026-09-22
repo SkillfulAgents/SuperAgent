@@ -88,6 +88,7 @@ export async function listConnections(
       )
     )
     .all()
+  const defaultSelection = await resolveGlobalSelection()
   return rows.map(({ connection: row, ownerName }) => {
     const provider = providerForConnection(row)
     const config = parseConnectionJson(connectionConfigSchema, row.config)
@@ -109,7 +110,7 @@ export async function listConnections(
       canManage,
       canDelete:
         canManage &&
-        getSettings().llmDefault?.llmProviderId !== row.id &&
+        defaultSelection?.llmProviderId !== row.id &&
         !(row.managed && provider.getApiKeyStatus().isConfigured),
     }
   })
@@ -196,7 +197,7 @@ export async function saveConnection(
   return mutateConnections(async () => {
     const { input, previous, config, catalog, modelOverrides } = await prepareConnection(raw, viewer, id)
     const llmProviderId = id ?? randomUUID()
-    const root = getSettings().llmDefault
+    const root = await resolveGlobalSelection()
     if (
       root?.llmProviderId === llmProviderId &&
       !resolveSelection(root, [{ id: llmProviderId, catalog }])
@@ -238,7 +239,7 @@ export async function deleteConnection(id: string, viewer: ConnectionViewer): Pr
     const row = await getConnection(id)
     if (!row) throw new Error('Connection not found')
     assertManageConnection(row, viewer)
-    if (getSettings().llmDefault?.llmProviderId === id)
+    if ((await resolveGlobalSelection())?.llmProviderId === id)
       throw new Error('Change the app default before deleting this connection')
     if (row.managed && providerForConnection(row).getApiKeyStatus().isConfigured)
       throw new Error('Platform cannot be deleted while connected')
