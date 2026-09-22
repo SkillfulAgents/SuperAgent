@@ -4,6 +4,8 @@
 
 ```mermaid
 classDiagram
+    AgentIntegration <|-- TaskManagerAgentIntegration
+    TaskManagerAgentIntegration <|-- LinearAgentIntegration
     AgentIntegration <|-- ChatAgentIntegration
     ChatAgentIntegration <|-- TelegramConnector
     ChatAgentIntegration <|-- SlackConnector

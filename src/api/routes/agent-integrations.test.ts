@@ -12,6 +12,8 @@ vi.mock('../middleware/auth', () => {
   const rank: Record<string, number> = { viewer: 0, user: 1, owner: 2 }
   const role = (minimum: string) => async (c: any, next: () => Promise<void>) => rank[auth.role] >= rank[minimum] ? next() : c.json({ error: 'Forbidden' }, 403)
   return {
+    getAuthorizedAgentRole: () => auth.role,
+    hasMinRole: (actual: string, minimum: string) => rank[actual] >= rank[minimum],
     Authenticated: () => async (_c: any, next: () => Promise<void>) => next(),
     AgentRead: () => role('viewer'), AgentUser: () => role('user'), AgentAdmin: () => role('owner'),
     ResolveAgent: () => async (_c: any, next: () => Promise<void>) => next(), getAgentId: (c: any) => c.req.param('id'),
