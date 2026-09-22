@@ -87,6 +87,31 @@ describe('getProviderCatalog', () => {
     expect(opusLatest[0].id).toBe('claude-opus-5-5')
   })
 
+  it('keeps Opus 5 selectable but demoted once Opus 5.5 takes the family alias', () => {
+    for (const providerId of ['anthropic', 'openrouter', 'platform'] as const) {
+      const catalog = getProviderCatalog(providerId)
+      const opus5 = catalog.find((m) => m.id === 'claude-opus-5')!
+      expect(opus5).toMatchObject({ family: 'opus', label: 'Opus 5' })
+      expect(opus5.isLatest).toBeFalsy()
+      expect(opus5.isDefault).toBeFalsy()
+      expect(catalog.find((m) => m.id === 'claude-opus-5-5')).toMatchObject({
+        family: 'opus',
+        label: 'Opus 5.5',
+        isLatest: true,
+        isDefault: true,
+        pricing: { inputPerMtok: 4, outputPerMtok: 20, speedMultipliers: { fast: 2 } },
+      })
+    }
+  })
+
+  it('offers fast mode on Platform for every Claude id Anthropic serves it on', () => {
+    const catalog = getProviderCatalog('platform')
+    for (const id of ['claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5']) {
+      expect(catalog.find((m) => m.id === id)!.supportedSpeeds).toEqual(['normal', 'fast'])
+    }
+    expect(catalog.find((m) => m.id === 'claude-opus-4-7')!.supportedSpeeds).toBeUndefined()
+  })
+
   // Effort lists mirror what each serving path accepted live on 2026-09-18.
   it.each([
     ['claude-haiku-4-5', ['low', 'medium', 'high']],
@@ -95,6 +120,8 @@ describe('getProviderCatalog', () => {
     ['claude-opus-4-6', ['low', 'medium', 'high', 'max']],
     ['claude-opus-4-7', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['claude-opus-4-8', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['claude-opus-5', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['claude-opus-5-5', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['claude-fable-5-1', ['low', 'medium', 'high', 'xhigh', 'max']],
   ])('anthropic %s accepts efforts %j', (id, efforts) => {
     const model = getProviderCatalog('anthropic').find((m) => m.id === id)!
@@ -649,6 +676,13 @@ describe('resolveModelForProvider', () => {
   it('resolves a bare family alias to that family latest id', () => {
     expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-5-5')
     expect(resolveModelForProvider('sonnet', 'anthropic', 'agent')).toBe('claude-sonnet-5')
+  })
+
+  it('keeps an explicit Opus 5 pin on Opus 5 after 5.5 becomes latest', () => {
+    for (const providerId of ['anthropic', 'openrouter', 'platform'] as const) {
+      expect(resolveModelForProvider('claude-opus-5', providerId, 'agent')).toBe('claude-opus-5')
+      expect(resolveModelForProvider('claude-opus-5-5', providerId, 'agent')).toBe('claude-opus-5-5')
+    }
   })
 
   it('passes an unknown but versioned id straight through (treated as a pin)', () => {

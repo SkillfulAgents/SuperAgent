@@ -38,6 +38,7 @@ describe('getSubagentModelCatalog', () => {
     const catalog = getSubagentModelCatalog('anthropic')
 
     expect(effective.some((model) => model.id === 'claude-opus-4-8')).toBe(true)
+    expect(effective.some((model) => model.id === 'claude-opus-5')).toBe(true)
     expect(catalog.some((model) => model.id === 'claude-opus-4-8')).toBe(false)
     expect(catalog.some((model) => model.id === 'claude-opus-5')).toBe(false)
     expect(catalog.some((model) => model.id === 'claude-opus-5-5')).toBe(true)

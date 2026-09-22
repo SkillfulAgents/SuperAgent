@@ -1220,6 +1220,16 @@ describe('usage-service', () => {
       expect(await costOf('grok-4.7', { speed: 'fast' })).toBeCloseTo(grokBase * 2, 9)
     })
 
+    it('bills claude-opus-5-5 at its cut 4/20 card, doubled in fast mode', async () => {
+      const opus55Base = (100_000 * 4 + 1_000 * 20) / 1_000_000
+      expect(await costOf('claude-opus-5-5', {})).toBeCloseTo(opus55Base, 9)
+      expect(await costOf('claude-opus-5-5', { speed: 'fast' })).toBeCloseTo(opus55Base * 2, 9)
+      expect(calculateCost('claude-opus-5-5', 0, 0, 100_000, 100_000)).toBeCloseTo(
+        (100_000 * 5 + 100_000 * 0.2) / 1_000_000,
+        9,
+      )
+    })
+
     it('bills kimi-k3 on the Fireworks fast router at 1.5x', async () => {
       const kimiBase = (100_000 * 3 + 1_000 * 15) / 1_000_000
       expect(await costOf('kimi-k3', {})).toBeCloseTo(kimiBase, 9)
