@@ -9,6 +9,14 @@ import { parseMcpResponse } from '@shared/lib/mcp/discover-tools'
 import { resolveMcpConnection } from '@shared/lib/mcp/connections'
 import type { McpAuthorization, McpRecoveryResult } from '@shared/lib/mcp/connection-types'
 
+// MCP 2026-07-28 clients (Claude Code CLI 2.1.274+ by default) open every
+// connection with a `server/discover` era probe before `initialize`. It carries
+// no data and a server that predates the era answers it with a JSON-RPC
+// "method not found", after which the client falls back to the classic
+// handshake. Treat it as protocol chatter: without this every remote MCP
+// server raised an "Allow POST request?" review card per session.
+const MCP_ERA_PROBE_METHOD = 'server/discover'
+
 const SYNTHETIC_MCP_SESSION_TTL_MS = 24 * 60 * 60 * 1000
 
 interface SyntheticMcpSession {
@@ -372,6 +380,15 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     if (mcpMethodInfo === 'ping') {
       return c.json({ jsonrpc: '2.0', id: jsonRpcId, result: {} })
     }
+    if (mcpMethodInfo === MCP_ERA_PROBE_METHOD) {
+      // A pre-2026-07-28 server answers the era probe with "method not
+      // found"; the client then negotiates through `initialize` as before.
+      return c.json({
+        jsonrpc: '2.0',
+        id: jsonRpcId,
+        error: { code: -32601, message: `Method not found: ${MCP_ERA_PROBE_METHOD}` },
+      })
+    }
     return null
   }
 
@@ -388,6 +405,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   // Only tool invocations (tools/call) need policy checks.
   const MCP_PROTOCOL_METHODS = new Set([
     'initialize',
+    MCP_ERA_PROBE_METHOD,
     'ping',
     'tools/list',
     'prompts/list',
