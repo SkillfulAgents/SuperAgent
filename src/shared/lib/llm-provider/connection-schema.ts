@@ -121,6 +121,7 @@ export const connectionInfoSchema = z.object({
   isConfigured: z.boolean(),
   catalog: modelCatalogSchema,
   modelOverrides: connectionModelOverridesSchema,
+  defaultModel: z.string().nullable(),
   browserModel: z.string().nullable(),
   dashboardModel: z.string().nullable(),
   baseUrl: z.string().optional(),

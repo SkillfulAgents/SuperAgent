@@ -57,6 +57,7 @@ export function LlmConnectionsTab() {
               model={data.defaultSelection?.model}
               llmProviderId={data.defaultSelection?.llmProviderId}
               globalOnly
+              disabled={mutation.isPending}
               includeEffort
               effort={settings?.models?.agentEffort}
               onEffortChange={(agentEffort) => updateSettings.mutate({ models: { agentEffort } })}
@@ -71,11 +72,12 @@ export function LlmConnectionsTab() {
                 model={(data.summarizerSelection ?? data.defaultSelection)?.model}
                 llmProviderId={(data.summarizerSelection ?? data.defaultSelection)?.llmProviderId}
                 globalOnly
+                disabled={mutation.isPending}
                 onModelChange={() => {}}
                 onSelectionChange={(s) => changeDefault('summarizer', s)}
               />
               {data.summarizerSelection && (
-                <Button variant="ghost" size="sm" onClick={() => changeDefault('summarizer', null)}>
+                <Button variant="ghost" size="sm" disabled={mutation.isPending} onClick={() => changeDefault('summarizer', null)}>
                   Use app default
                 </Button>
               )}

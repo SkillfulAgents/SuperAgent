@@ -147,10 +147,11 @@ function SettingsModelSelectImpl({
         // it pops its name tooltip instantly. Keyboard users can Tab in.
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
+        <fieldset disabled={disabled} className="contents">
         {onSelectionChange && choices.length > 1 && <label className="px-2 pb-2 text-xs">Connection
           <select aria-label="Connection" className="mt-1 w-full rounded border bg-background p-2" value={selectedConnection?.id ?? ''} onChange={e => {
             const next = choices.find(c => c.id === e.target.value)
-            if (next?.catalog[0]) onSelectionChange({ llmProviderId: next.id, model: next.catalog.find(m => m.isDefault)?.id ?? next.catalog[0].id })
+            if (next?.defaultModel) onSelectionChange({ llmProviderId: next.id, model: next.defaultModel })
           }}>{choices.map(c => <option key={c.id} value={c.id}>{c.name}{c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}</option>)}</select>
         </label>}
         <ModelFamilyList
@@ -187,6 +188,7 @@ function SettingsModelSelectImpl({
             <AppDefaultFooter {...appDefault} />
           </>
         )}
+        </fieldset>
       </PopoverContent>
     </Popover>
   )

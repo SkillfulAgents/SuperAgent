@@ -100,10 +100,10 @@ export function useUpdateWebhookTriggerRuntimeOptions() {
       }
       return res.json() as Promise<WebhookTrigger>
     },
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['webhook-trigger', variables.triggerId] })
-      queryClient.invalidateQueries({ queryKey: ['webhook-triggers', variables.agentSlug] })
-    },
+    onSuccess: (_data, variables) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['webhook-trigger', variables.triggerId] }),
+      queryClient.invalidateQueries({ queryKey: ['webhook-triggers', variables.agentSlug] }),
+    ]),
   })
 }
 

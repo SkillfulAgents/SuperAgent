@@ -654,3 +654,20 @@ it('validates the configured Anthropic endpoint and custom bearer', async () => 
   expect(sent.url).toBe('https://validate-proxy.example/v1/messages')
   expect(sent.headers.get('Authorization')).toBe('Bearer custom-bearer')
 })
+
+it('publishes the same default used for provider-only selections, including disabled preferred models', async () => {
+  state.platformToken = 'platform-token'
+  await ensureManagedPlatformConnection()
+  const openrouter = await saveConnection({ name: 'Router', provider: 'openrouter', config: { apiKeys: { openrouterApiKey: 'key' } } }, admin)
+  for (const [id, expected] of [['legacy-platform', 'grok'], [openrouter, 'sonnet']] as const) {
+    const row = (await listConnections(admin)).find(c => c.id === id)!
+    expect(row.defaultModel).toBe(expected)
+    expect((await resolveExecutionSelection({ llmProviderId: id })).model).toBe(row.defaultModel)
+  }
+  const router = (await getConnection(openrouter))!
+  await saveConnection({ name: 'Router', provider: 'openrouter', config: {}, modelOverrides: connectionCatalog(router)
+    .filter(model => model.family === 'sonnet').map(model => ({ id: model.id, disabled: true })) }, admin, openrouter)
+  const fallback = (await listConnections(admin)).find(c => c.id === openrouter)!
+  expect(fallback.defaultModel).not.toBe('sonnet')
+  expect((await resolveExecutionSelection({ llmProviderId: openrouter })).model).toBe(fallback.defaultModel)
+})

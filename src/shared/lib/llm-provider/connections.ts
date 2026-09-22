@@ -104,6 +104,7 @@ export async function listConnections(
       managed: row.managed,
       isConfigured: provider.getApiKeyStatus().isConfigured,
       catalog: connectionCatalog(row),
+      defaultModel: defaultSelectionForConnection(row)?.model ?? null,
       modelOverrides: connectionModelOverrides(row),
       browserModel: row.browserModel,
       dashboardModel: row.dashboardModel,

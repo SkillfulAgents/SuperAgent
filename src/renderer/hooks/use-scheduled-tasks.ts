@@ -278,10 +278,10 @@ export function useUpdateScheduledTaskRuntimeOptions() {
       }
       return res.json() as Promise<ApiScheduledTask>
     },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] })
-      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', data.agentSlug] })
-    },
+    onSuccess: (data) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] }),
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', data.agentSlug] }),
+    ]),
   })
 }
 

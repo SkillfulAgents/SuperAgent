@@ -306,8 +306,8 @@ describe('useComposerOptions web provider', () => {
 
 describe('connection/model selection', () => {
   const model = (id: string) => ({ id, label: id, supportedEfforts: ['low', 'medium', 'high'] })
-  const first = { id: 'global', catalog: [model('same'), model('global-default')] }
-  const second = { id: 'personal', catalog: [model('same'), model('personal-other')] }
+  const first = { id: 'global', defaultModel: 'same', catalog: [model('same'), model('global-default')] }
+  const second = { id: 'personal', defaultModel: 'same', catalog: [model('same'), model('personal-other')] }
   beforeEach(() => {
     state.settings = LOADED_SETTINGS
     state.connections = { connections: [first, second], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
@@ -329,6 +329,17 @@ describe('connection/model selection', () => {
     rerender({ initialModel: 'same' })
     act(() => result.current.setModel('same'))
     expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'same' })
+  })
+
+  it('uses the server-resolved provider default instead of the first family default', () => {
+    const platform = { id: 'platform', defaultModel: 'grok', catalog: [
+      { ...model('opus-id'), family: 'opus', isDefault: true, isLatest: true },
+      { ...model('grok-id'), family: 'grok', isDefault: true, isLatest: true },
+    ] }
+    state.connections = { connections: [first, platform], defaultSelection: { llmProviderId: 'global', model: 'same' } }
+    const { result } = render({ initialLlmProviderId: 'global', initialModel: 'same' })
+    act(() => result.current.setConnection?.('platform'))
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'platform', model: 'grok' })
   })
 
   it('changes accounts even when both expose the same model ID', () => {

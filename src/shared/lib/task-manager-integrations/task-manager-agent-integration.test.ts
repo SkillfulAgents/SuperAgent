@@ -19,7 +19,7 @@ class FakeTasks extends TaskManagerAgentIntegration {
   stop(taskId: string) { return this.stopTask(taskId) }
 }
 const integration: AgentIntegrationRecord = { id: 'integration', agentSlug: 'agent', provider: 'fake', config: '{}', name: null, status: 'active', errorMessage: null,
-  model: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() }
+  model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() }
 let tasks: FakeTasks
 let events: IntegrationEvent[]
 function event(id: string, taskId = 'issue'): TaskEvent { return { id, taskId, interactionId: taskId, kind: 'invocation', sourceCommentId: id, timestamp: new Date().toISOString(), text: 'Do work', replyTarget: { commentId: 'root' }, payload: {} } }

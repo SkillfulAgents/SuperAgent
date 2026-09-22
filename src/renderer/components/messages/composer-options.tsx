@@ -253,12 +253,12 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
 
   const setConnection = useCallback((id: string) => {
     const next = connections.find(c => c.id === id)
-    if (!next?.catalog[0]) return
+    if (!next?.defaultModel) return
     connectionDirty.current = true
     setLlmProviderId(id)
     modelSeededRef.current = true
     modelDirtyRef.current = true
-    setModelState(next.catalog.find(m => m.isDefault)?.id ?? next.catalog[0].id)
+    setModelState(next.defaultModel)
   }, [connections])
 
   const markSubmitted = useCallback(

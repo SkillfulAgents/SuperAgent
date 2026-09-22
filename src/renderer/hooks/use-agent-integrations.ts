@@ -234,9 +234,11 @@ export function useUpdateAgentIntegration() {
     },
     onSuccess: (data) => {
       queryClient.setQueryData(agentIntegrationKeys.detail(data.id), data)
-      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(data.agentSlug) })
-      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(data.id) })
-      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.status(data.id) })
+      return Promise.all([
+        queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(data.agentSlug) }),
+        queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(data.id) }),
+        queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.status(data.id) }),
+      ])
     },
   })
 }

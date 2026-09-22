@@ -145,6 +145,7 @@ export function IntegrationModelEffort({ integration }: { integration: PublicAge
   return (
     <SettingsModelSelect
       agentSlug={integration.agentSlug}
+      disabled={updateIntegration.isPending}
       model={selection.model}
       llmProviderId={integration.llmProviderId}
       onSelectionChange={s => updateIntegration.mutate({ id: integration.id, ...s })}

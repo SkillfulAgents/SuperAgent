@@ -96,6 +96,51 @@ test.describe('Provider connection lifecycle', () => {
     await page.goto('/')
     await expect(page.getByText('Click to set up')).toHaveCount(0)
   })
+  test('waits for a connection save before accepting a model choice', async ({ page, request }) => {
+    const ids: string[] = []
+    for (const provider of ['openrouter', 'anthropic']) {
+      const created = await request.post('/api/llm-connections', { data: {
+        name: `Delayed ${provider}`, provider,
+        config: { apiKeys: provider === 'anthropic' ? { anthropicApiKey: 'test-key' } : { openrouterApiKey: 'test-key' } },
+      } })
+      expect(created.status()).toBe(201)
+      ids.push((await created.json()).id)
+    }
+    const endpoint = '/api/llm-connections/defaults/summarizer'
+    expect((await request.put(endpoint, { data: { llmProviderId: ids[0], model: 'sonnet' } })).ok()).toBe(true)
+    await page.goto('/settings/llm')
+    await page.getByTestId('settings-model-trigger').nth(1).click()
+    const saves: unknown[] = []
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    await page.route(`**${endpoint}`, async route => {
+      if (route.request().method() !== 'PUT') return route.continue()
+      saves.push(route.request().postDataJSON())
+      if (saves.length === 1) await pending
+      await route.continue()
+    })
+    try {
+      const connection = page.getByRole('combobox', { name: 'Connection' })
+      await connection.selectOption(ids[1])
+      await expect(connection).toBeDisabled()
+      const haiku = page.getByTestId('model-latest-haiku')
+      await expect(haiku).toBeDisabled()
+      // A real delayed PUT, not a mocked save response. No second request can
+      // race with the connection change while this popover remains open.
+      expect(saves).toHaveLength(1)
+      release()
+      await expect(connection).toBeEnabled()
+      await expect(connection).toHaveValue(ids[1])
+      await haiku.click()
+      await expect.poll(async () => (await (await request.get('/api/llm-connections')).json()).summarizerSelection)
+        .toEqual({ llmProviderId: ids[1], model: 'haiku' })
+      expect(saves).toEqual([
+        { llmProviderId: ids[1], model: 'opus' },
+        { llmProviderId: ids[1], model: 'haiku' },
+      ])
+    } finally { release() }
+  })
+
   test('switches an existing session to another account without changing the app default', async ({
     page,
     request,
