@@ -20,7 +20,7 @@ describe('terminal integration authorization loss', () => {
       expect(await requireIntegrationReconnect({ integrationId: id, expectedConfig: before.config, config: {}, message: 'Reconnect this account' })).toBe(true)
       const after = (await getAgentIntegration(id))!
       expect(after).toMatchObject({ config: '{}', status: status === 'paused' ? 'paused' : 'disconnected', errorMessage: 'Reconnect this account' })
-      expect(observed).toHaveBeenCalledExactlyOnceWith({ integrationId: id, config: '{}' })
+      expect(observed).toHaveBeenCalledExactlyOnceWith({ integrationId: id })
       if (status === 'active') {
         expect(await updateAgentIntegrationStatus(id, 'error', 'Late transport failure')).toBe(false)
         expect(await updateAgentIntegrationStatus(id, 'active', null, { unlessDisconnected: true })).toBe(false)

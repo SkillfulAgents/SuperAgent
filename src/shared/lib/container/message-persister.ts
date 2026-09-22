@@ -963,6 +963,25 @@ class MessagePersister {
     this.finalizeIdle(agentSlug, sessionId, state)
   }
 
+  /** Admit terminal replay during recovery, with an undo for a silent cold attach.
+   * The rollback owns only this optimistic mark: a new send, runtime turn, or
+   * output takes ownership even if the public (pending-inclusive) turn number
+   * happens to be unchanged.
+   */
+  markSessionProvisionallyActive(agentSlug: string, sessionId: string): () => void {
+    this.markSessionActive(agentSlug, sessionId)
+    const key = sessionKeyOf(agentSlug, sessionId)
+    const marked = this.streamingStates.get(key)!
+    const { activityGeneration, turnGeneration, outputGeneration, resultGeneration, provisionalActivity } = marked
+    return () => {
+      const state = this.streamingStates.get(key)
+      if (!state || state.provisionalActivity !== provisionalActivity || state.activityGeneration !== activityGeneration ||
+        state.turnGeneration !== turnGeneration || state.outputGeneration !== outputGeneration || state.resultGeneration !== resultGeneration ||
+        state.isInterrupted || state.isRecovering) return
+      this.markSessionIdle(agentSlug, sessionId)
+    }
+  }
+
   // Check if a session is currently active (processing user request)
   isSessionActive(agentSlug: string, sessionId: string): boolean {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))

@@ -87,6 +87,8 @@ interface ManagedSession {
   sseUnsubscribe: (() => void) | null
   recovery?: Promise<void>
   recovered?: boolean
+  recoveryClears?: number
+  updatingProvisionalActivity?: boolean
   recoveryReported?: boolean
   recoveryTimer?: ReturnType<typeof setTimeout>
 }
@@ -159,7 +161,7 @@ export class AgentIntegrationManager {
     if (!connector || !context || !(await connector.isAllowed(context))) return
     const managed = this.chatSessions.get(this.getChatSessionKey(integrationId, externalId))
     const routed = managed && (!sessionId || managed.sessionId === sessionId) ? managed.context : context
-    await connector.deliver(this.withActivity({ ...routed, integration: context.integration, sessionId: sessionId ?? routed.sessionId }, managed), output)
+    await connector.deliver(this.withActivity(routed, managed, { integration: context.integration, sessionId: sessionId ?? routed.sessionId }), output)
   }
 
   describeTarget(provider: string, externalId: string) { return this.registry.describeTarget(provider, externalId) }
@@ -241,7 +243,10 @@ export class AgentIntegrationManager {
   private async authorizationLost(change: IntegrationAuthorizationLost): Promise<void> {
     const generation = this.generationOf(change.integrationId)
     const row = await getIntegration(change.integrationId)
-    if (!this.isRunning || !row || row.config !== change.config || !['disconnected', 'paused'].includes(row.status) || this.generationOf(row.id) !== generation) return
+    if (!this.isRunning || !row || !['disconnected', 'paused'].includes(row.status) || this.generationOf(row.id) !== generation) return
+    // The lifecycle write already fenced the rejected credential. Unrelated
+    // config writes must not suppress teardown; status and manager generation
+    // protect replacement authorization instead.
     this.bumpGeneration(row.id)
     this.disconnectedSince.delete(row.id)
     this.consecutiveFailures.delete(row.id)
@@ -689,15 +694,23 @@ export class AgentIntegrationManager {
       session.recoveryReported = false
     }
     session.sessionId = sessionId
-    session.context = this.withActivity({ ...session.context, sessionId }, session)
+    session.context = this.withActivity(session.context, session, { sessionId })
     const actor = agentRegistry.get(agentSlug)
     session.sseUnsubscribe = actor.messages.subscribe(sessionId, (event: unknown) => {
+      // Provisional activity is visible to the app, but is not a real turn
+      // start/completion for the integration's durable work queue.
+      const type = (event as { type?: string } | null)?.type
+      if (session.updatingProvisionalActivity && (type === 'session_active' || type === 'session_idle')) return
       this.enqueueSSEEvent(integrationId, chatId, event, sessionId, session)
     })
     session.connector.observeSession(session.context)
   }
 
-  private withActivity(context: IntegrationSessionContext, managed?: ManagedSession): IntegrationSessionContext {
+  private withActivity(source: IntegrationSessionContext, managed?: ManagedSession, update: Partial<Pick<IntegrationSessionContext, 'integration' | 'sessionId'>> = {}): IntegrationSessionContext {
+    // Copy routing fields explicitly: spreading a decorated context eagerly
+    // evaluates its activity and request getters on every streamed delta.
+    const { integration, externalId, sessionId, interactionId, replyTarget } = source
+    const context = { integration, externalId, sessionId, interactionId, replyTarget, ...update }
     return { ...context, get activity() {
       if (!context.sessionId || !managed || managed.sessionId !== context.sessionId) return 'unknown'
       const activity = agentRegistry.get(context.integration.agentSlug).sessions.activity(context.sessionId)
@@ -713,6 +726,14 @@ export class AgentIntegrationManager {
     const conn = this.connections.get(integrationId)
     if (!conn || !this.isRunning || this.generationOf(integrationId) !== generation) return
     const clears = this.sessionClears
+    const cached = this.chatSessions.get(this.getChatSessionKey(integrationId, externalId))
+    const actor = agentRegistry.get(conn.integration.agentSlug)
+    // This is an observation, not an authorization grant. Input/output paths
+    // still check current access. Clears and lifecycle changes invalidate this
+    // cache, and a busy session with a lost stream must re-enter recovery.
+    if (cached?.recovered && cached.recoveryClears === clears && cached.sessionId &&
+      (!expectedSessionId || cached.sessionId === expectedSessionId) &&
+      (actor.sessions.activity(cached.sessionId) === 'idle' || actor.sessions.isStreamSubscribed(cached.sessionId))) return cached.context
     const row = await getIntegrationSession(integrationId, externalId)
     if (!row || (expectedSessionId && row.sessionId !== expectedSessionId) || this.clearedSessionRows.has(row.id) || clears !== this.sessionClears) return
     if (!(await this.isAllowed(integrationId, externalId)) || this.connections.get(integrationId) !== conn || this.generationOf(integrationId) !== generation || clears !== this.sessionClears) return
@@ -724,7 +745,6 @@ export class AgentIntegrationManager {
     if (!managed) return
     const session = managed
     const current = () => this.isRunning && this.connections.get(integrationId) === conn && this.generationOf(integrationId) === generation && this.isCurrentSession(integrationId, externalId, session, row.sessionId)
-    const actor = agentRegistry.get(conn.integration.agentSlug)
     const lostActiveStream = !actor.sessions.isStreamSubscribed(row.sessionId) && actor.sessions.activity(row.sessionId) !== 'idle'
     if ((!session.recovered || lostActiveStream) && !session.recovery) {
       session.recovery = (async () => {
@@ -734,9 +754,20 @@ export class AgentIntegrationManager {
           // Cold hosts otherwise discard terminal replay as already settled.
           // Only an explicit recovery demand reaches here; idle historical
           // mappings are never marked active or attached on their own.
-          if (actor.sessions.activity(row.sessionId) === 'idle') actor.sessions.markActive(row.sessionId)
-          // Host delivery is already listening; the handshake can replay idle/error.
-          await actor.sessions.subscribeStream(row.sessionId, row.sessionId)
+          let revert: (() => void) | undefined
+          session.updatingProvisionalActivity = true
+          try {
+            if (actor.sessions.activity(row.sessionId) === 'idle') revert = actor.sessions.markProvisionalActive(row.sessionId)
+          } finally { session.updatingProvisionalActivity = false }
+          try {
+            // Host delivery is already listening; the handshake can replay idle/error.
+            await actor.sessions.subscribeStream(row.sessionId, row.sessionId)
+          } finally {
+            // A cold resume may have no turn to replay. Also undo on a failed
+            // attach, so unknown activity can retry instead of remaining busy.
+            session.updatingProvisionalActivity = true
+            try { revert?.() } finally { session.updatingProvisionalActivity = false }
+          }
         }
         if (!current()) return
         session.recovered = true
@@ -768,7 +799,9 @@ export class AgentIntegrationManager {
       }).finally(() => { if (session.sessionId === row.sessionId) session.recovery = undefined })
     }
     await session.recovery
-    return current() ? session.context : undefined
+    if (!current()) return
+    if (session.recovered) session.recoveryClears = clears
+    return session.context
   }
 
   // `observe` is the chat session to mark live before the event is handled.
@@ -1108,7 +1141,7 @@ export class AgentIntegrationManager {
       if (consumed) return
 
       const managed = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
-      if (managed) managed.context = this.withActivity({ ...context, sessionId }, managed)
+      if (managed) managed.context = this.withActivity(context, managed, { sessionId })
       await this.deliver(integrationId, chatId, { type: 'turn-started' }, sessionId)
       await actor.messages.withSend(sessionId, () => actor.messages.send(sessionId, input!.text))
       const now = Date.now()
@@ -1437,7 +1470,7 @@ export class AgentIntegrationManager {
     if (!this.isCurrentSession(integrationId, chatId, session, sessionId)) return
     const eventType = (event as { type?: string } | null)?.type
     if (eventType === 'session_active' || eventType === 'session_idle' || eventType === 'session_error') session.recovered = true
-    const context = this.withActivity({ ...session.context, integration }, session)
+    const context = this.withActivity(session.context, session, { integration })
     if (eventType === 'user_request_created' || eventType === 'user_request_resolved') {
       const parsed = integrationRequestEventSchema.safeParse(event)
       if (!parsed.success) return

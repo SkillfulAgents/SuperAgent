@@ -219,6 +219,7 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
     isActive: (sessionId) => deps.messagePersister.isSessionActive(slug, sessionId),
     isAwaitingInput: (sessionId) => deps.messagePersister.isSessionAwaitingInput(slug, sessionId),
     markActive: (sessionId) => deps.messagePersister.markSessionActive(slug, sessionId),
+    markProvisionalActive: (sessionId) => deps.messagePersister.markSessionProvisionallyActive(slug, sessionId),
     markIdle: (sessionId) => {
       // Going idle is the last moment the session was busy.
       deps.containerHost.runtime(slug).noteSessionActivity()

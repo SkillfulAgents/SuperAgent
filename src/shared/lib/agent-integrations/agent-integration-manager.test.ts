@@ -13,12 +13,12 @@ const state = vi.hoisted(() => ({
   mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
   streams: new Map<string, (event: unknown) => void>(),
   global: undefined as ((event: unknown) => void) | undefined, interrupt: vi.fn<(sessionId: string) => Promise<InterruptSessionResult>>(),
-  authorizationLost: undefined as ((change: { integrationId: string; config: string }) => void) | undefined,
+  authorizationLost: undefined as ((change: { integrationId: string }) => void) | undefined,
   syncMcp: vi.fn(async () => true),
   claim: vi.fn(), notify: vi.fn().mockResolvedValue(undefined),
-  markActive: vi.fn(),
+  markActive: vi.fn(), markIdle: vi.fn(), markProvisionalActive: vi.fn(), open: vi.fn(() => []),
   activity: vi.fn(() => 'idle'), recovery: [] as Array<{ externalId: string; sessionId?: string }>,
-  create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), register: vi.fn(), metadata: vi.fn(),
+  create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), isStreamSubscribed: vi.fn(() => false), register: vi.fn(), metadata: vi.fn(),
 }))
 vi.mock('./lifecycle', () => ({ onIntegrationAuthorizationLost: (callback: typeof state.authorizationLost) => { state.authorizationLost = callback; return () => { state.authorizationLost = undefined } } }))
 vi.mock('@shared/lib/services/connection-sync-service', () => ({ syncRemoteMcpAgents: state.syncMcp }))
@@ -42,10 +42,10 @@ vi.mock('@shared/lib/agent-actor', () => ({
   agentCatalog: { exists: async () => true },
   agentRegistry: { get: () => ({
     container: { start: state.start },
-    inputs: { claim: state.claim, open: () => [] },
+    inputs: { claim: state.claim, open: state.open },
     sessions: {
       create: state.create, register: state.register, updateMetadata: state.metadata,
-      activity: state.activity, activeIds: () => ['session-1'], markActive: state.markActive, markIdle: vi.fn(), subscribeStream: state.subscribeStream, isStreamSubscribed: () => false,
+      activity: state.activity, activeIds: () => ['session-1'], markActive: state.markActive, markIdle: state.markIdle, markProvisionalActive: state.markProvisionalActive, subscribeStream: state.subscribeStream, isStreamSubscribed: state.isStreamSubscribed,
     },
     messages: {
       send: state.send, interrupt: state.interrupt,
@@ -111,10 +111,21 @@ beforeEach(async () => {
   state.rows = [record('installation-a')]
   state.recovery = []
   state.activity.mockReturnValue('idle')
+  state.markProvisionalActive.mockImplementation((id: string) => {
+    state.markActive(id)
+    state.activity.mockReturnValue('working')
+    state.streams.get(id)?.({ type: 'session_active' })
+    return () => {
+      state.markIdle(id)
+      state.activity.mockReturnValue('idle')
+      state.streams.get(id)?.({ type: 'session_idle' })
+    }
+  })
   state.mappings.clear()
   state.streams.clear()
   state.create.mockImplementation(async () => ({ id: `session-${state.create.mock.calls.length}` }))
   state.subscribeStream.mockResolvedValue(undefined)
+  state.isStreamSubscribed.mockReturnValue(false)
   state.start.mockResolvedValue(undefined)
   state.send.mockResolvedValue(undefined)
   adapter = new ObjectIntegration()
@@ -732,14 +743,45 @@ describe('manager-owned runtime recovery', () => {
     mapping('unfinished', 'old-session'); mapping('completed', 'settled-session')
     state.recovery = [{ externalId: 'unfinished', sessionId: 'old-session' }]
     state.subscribeStream.mockImplementation(async (id: string) => {
-      // The persister ignores terminal replay unless the host knew work was outstanding.
-      if (state.markActive.mock.calls.some(([sessionId]) => sessionId === id)) state.streams.get(id)?.({ type: 'session_idle' })
+      // This fixture explicitly represents a settled runtime with a terminal
+      // result to replay; a cold resume is covered separately with no frames.
+      expect(state.activity()).toBe('working')
+      state.activity.mockReturnValue('idle')
+      state.streams.get(id)?.({ type: 'session_idle' })
     })
     await manager.start()
     await vi.waitFor(() => expect(adapter.outputs.some(x => x.output.type === 'turn-completed')).toBe(true))
     expect(state.subscribeStream).toHaveBeenCalledExactlyOnceWith('old-session', 'old-session')
     expect(state.create).not.toHaveBeenCalled()
     expect(state.send).not.toHaveBeenCalled()
+  })
+  it('undoes a silent cold attach without claiming that a turn completed', async () => {
+    mapping('object-7', 'old-session')
+    await manager.start()
+    const context = await adapter.session('object-7')
+    expect(state.markProvisionalActive).toHaveBeenCalledWith('old-session')
+    expect(state.markIdle).toHaveBeenCalledWith('old-session')
+    expect(context?.activity).toBe('idle')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(adapter.outputs).toEqual([])
+    await adapter.input('follow-up')
+    await vi.waitFor(() => expect(state.send).toHaveBeenCalled())
+  })
+  it('reads recovered idle activity without querying mappings or parsing provider access again', async () => {
+    mapping('unfinished', 'old-session')
+    await manager.start()
+    const context = await adapter.session('unfinished')
+    const mappingRead = vi.spyOn(integrationStore, 'getIntegrationSession').mockClear()
+    const installationRead = vi.spyOn(integrationStore, 'getIntegration').mockClear()
+    const accessCheck = vi.spyOn(adapter, 'isAllowed')
+    expect(await adapter.session('unfinished')).toBe(context)
+    expect(await adapter.session('unfinished')).toBe(context)
+    expect(mappingRead).not.toHaveBeenCalled()
+    expect(installationRead).not.toHaveBeenCalled()
+    expect(accessCheck).not.toHaveBeenCalled()
+    await manager.clearSessionById('mapping-old-session')
+    expect(await adapter.session('unfinished')).toBeUndefined()
+    expect(mappingRead).toHaveBeenCalled()
   })
   it('coalesces recovery and exposes live activity without giving the provider an actor', async () => {
     mapping('unfinished', 'old-session')
@@ -755,6 +797,21 @@ describe('manager-owned runtime recovery', () => {
     expect(a?.activity).toBe('idle')
     state.activity.mockReturnValue('working')
     expect(a?.activity).toBe('working')
+  })
+  it('uses the fast path after a normal turn, but reattaches if its busy stream disappears', async () => {
+    await manager.start(); await adapter.input('comment')
+    await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+    state.isStreamSubscribed.mockReturnValue(true)
+    state.activity.mockReturnValue('working')
+    const context = await adapter.session('object-7')
+    const mappingRead = vi.spyOn(integrationStore, 'getIntegrationSession').mockClear()
+    expect(await adapter.session('object-7')).toBe(context)
+    expect(mappingRead).not.toHaveBeenCalled()
+    state.subscribeStream.mockClear()
+    state.isStreamSubscribed.mockReturnValue(false)
+    await adapter.session('object-7')
+    expect(mappingRead).toHaveBeenCalled()
+    expect(state.subscribeStream).toHaveBeenCalledExactlyOnceWith('session-1', 'session-1')
   })
   it('does not attach a replacement mapping for an older work item', async () => {
     mapping('unfinished', 'replacement')
@@ -801,7 +858,7 @@ it('stops a revoked connector and refreshes its MCP projection without classifyi
   await manager.start()
   state.syncMcp.mockClear(); vi.mocked(captureException).mockClear()
   state.rows[0].status = 'disconnected'; state.rows[0].config = '{"revoked":true}'
-  state.authorizationLost?.({ integrationId: 'installation-a', config: state.rows[0].config })
+  state.authorizationLost?.({ integrationId: 'installation-a' })
   await vi.waitFor(() => expect(adapter.connected).toBe(false))
   await vi.waitFor(() => expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a']))
   expect(captureException).not.toHaveBeenCalled()
@@ -809,7 +866,7 @@ it('stops a revoked connector and refreshes its MCP projection without classifyi
 it('does not tear down replacement authorization on a late revocation notification', async () => {
   await manager.start()
   state.rows[0].config = '{"replacement":true}'
-  state.authorizationLost?.({ integrationId: 'installation-a', config: '{"revoked":true}' })
+  state.authorizationLost?.({ integrationId: 'installation-a' })
   await new Promise(resolve => setTimeout(resolve, 0))
   expect(adapter.connected).toBe(true)
 })
@@ -841,4 +898,25 @@ it('does not connect when the activation credential revision was invalidated dur
   await manager.resumeIntegration('installation-a')
   expect(activate).toHaveBeenCalledWith('installation-a', 'active', null, { config: state.rows[0].config })
   expect(connecting).not.toHaveBeenCalled()
+})
+
+
+it('keeps activity and pending requests lazy during stream delivery', async () => {
+  await manager.start(); await adapter.input('comment')
+  await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+  state.open.mockClear(); state.activity.mockClear(); adapter.outputs = []
+  state.streams.get('session-1')?.({ type: 'text_delta', text: 'hello' })
+  await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
+  expect(state.open).not.toHaveBeenCalled()
+  expect(state.activity).not.toHaveBeenCalled()
+  expect(adapter.outputs[0].context.pendingRequests).toEqual([])
+  expect(state.open).toHaveBeenCalledExactlyOnceWith('session-1')
+})
+
+it('tears down revoked authorization even if an unrelated config write followed the revocation', async () => {
+  await manager.start()
+  state.rows[0].status = 'disconnected'
+  state.rows[0].config = '{"revoked":true,"transportHealth":"offline"}'
+  state.authorizationLost?.({ integrationId: 'installation-a' })
+  await vi.waitFor(() => expect(adapter.connected).toBe(false))
 })

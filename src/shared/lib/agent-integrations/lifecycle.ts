@@ -13,7 +13,6 @@ export interface IntegrationReconnectRequired {
 }
 export interface IntegrationAuthorizationLost {
   integrationId: string
-  config: string
 }
 const listeners = new Set<(change: IntegrationAuthorizationLost) => void>()
 
@@ -35,7 +34,7 @@ export async function requireIntegrationReconnect(change: IntegrationReconnectRe
     .returning({ id: chatIntegrations.id }).get()
   if (!changed) return false
   for (const listener of listeners) {
-    try { listener({ integrationId: change.integrationId, config }) }
+    try { listener({ integrationId: change.integrationId }) }
     catch (error) { captureException(error, { tags: { component: 'agent-integration', operation: 'authorization-lost' } }) }
   }
   return true
