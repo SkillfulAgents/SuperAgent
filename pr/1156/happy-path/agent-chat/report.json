@@ -1,24 +1,26 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "All 6 test steps executed successfully. Agent responded correctly with \"4\" to the math question \"2+2\".",
+  "reason": "Successfully navigated to the agent, sent a math question, received the correct response within milliseconds.",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 — Page loaded successfully, showing home page with two agents in sidebar",
-    "Step 2 - Found and clicked \"QA-20260922-004532-vu5u\" agent in sidebar — Agent page loaded, navigated to agent view at /agents/qa-20260922-004532-vu5u-3zboctfc86",
-    "Step 3 - Verified agent status is \"running\" or \"idle\" — Agent status confirmed as \"idle\" in top right corner, which meets the requirement",
-    "Step 4 - Sent message \"Hello! What is 2+2?\" — Message typed into input field, sent button clicked, and page transitioned to session view with working indicator",
-    "Step 5 - Waited up to 3 minutes for response — Response received within seconds (timestamp shows Today at 12:46 AM), well within the 3-minute timeout. Agent returned to \"idle\" status after responding",
-    "Step 6 - Verified response mentions \"4\" — Response displayed as \"4\" in the message log, correctly answering the math question. Screenshot taken showing both user message and agent response"
+    "Navigated to http://localhost:47891 - Page loaded successfully showing the home view with agents list in sidebar.",
+    "Found agent \"QA-20260922-010442-v1p2\" in the sidebar at ref=e133 - Agent located in the \"Your Agents\" section of the sidebar.",
+    "Clicked on agent \"QA-20260922-010442-v1p2\" - Agent page opened successfully, showing agent status as \"idle\" (ref=e198).",
+    "Verified agent status is \"running\" or \"idle\" - Status confirmed as \"idle\" on the agent detail page header.",
+    "Typed message \"Hello! What is 2+2?\" in the message input box (ref=e216) - Message successfully entered in the input field.",
+    "Clicked the \"Send message\" button (ref=e363) - Message sent successfully, URL changed to session URL, agent status changed to \"working\".",
+    "Waited for response with polling up to 3 minutes - Response received in 11 milliseconds, well within the 3-minute timeout.",
+    "Verified response contains \"4\" - Response text confirmed to contain \"4\", the correct answer. Screenshot taken showing the conversation with user message \"Hello! What is 2+2?\" on the right and the agent's response \"4\" in the center of the chat window."
   ],
   "bugs": [],
-  "durationMs": 58134,
-  "sessionId": "fdaa5f52-ab94-4ea2-a994-6d65ce5f7dea",
+  "durationMs": 53653,
+  "sessionId": "966df427-78e1-43cd-ae5d-1d4b7df13d16",
   "cost": {
-    "inputTokens": 350,
-    "outputTokens": 10111,
-    "cacheCreationTokens": 120710,
-    "cacheReadTokens": 963504,
+    "inputTokens": 336,
+    "outputTokens": 10153,
+    "cacheCreationTokens": 72963,
+    "cacheReadTokens": 977413,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.298143
+    "totalCostUsd": 0.240046
   }
 }
