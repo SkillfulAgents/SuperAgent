@@ -208,8 +208,8 @@ describe('chat-integrations access routes', () => {
       })
       expect(res.status).toBe(400)
     }
-    expect(createChatIntegration).not.toHaveBeenCalled()
-    expect(updateChatIntegration).not.toHaveBeenCalled()
+    expect(createAgentIntegration).not.toHaveBeenCalled()
+    expect(updateAgentIntegration).not.toHaveBeenCalled()
   })
 
   it('returns 404 for a missing LLM provider without updating the integration', async () => {
@@ -219,7 +219,7 @@ describe('chat-integrations access routes', () => {
     })
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ error: 'LLM provider not found' })
-    expect(updateChatIntegration).not.toHaveBeenCalled()
+    expect(updateAgentIntegration).not.toHaveBeenCalled()
   })
 
   // ── GET /:integrationId/access ─────────────────────────────────────────
