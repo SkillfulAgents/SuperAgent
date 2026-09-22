@@ -90,9 +90,6 @@ vi.mock('@shared/lib/chat-integrations/config-schema', async importOriginal => (
   validateChatIntegrationConfig: (...args: unknown[]) => mockValidateChatIntegrationConfig(...args),
   CHAT_PROVIDERS: ['slack', 'telegram', 'imessage'],
   IMESSAGE_GATEWAY_URL: 'https://imessage-gateway.example.com',
-  imessageSetupSchema: {
-    safeParse: () => ({ success: true, data: { phoneNumber: '+15555550100', code: '123456' } }),
-  },
 }))
 
 // The agent's workspace on this machine; the transcript append lands below it.
@@ -119,6 +116,7 @@ vi.mock('fs', () => ({
 }))
 
 import xAgentChat from './x-agent-chat'
+import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 
 function createApp() {
   const app = new Hono()
@@ -197,6 +195,7 @@ describe('x-agent chat route', () => {
   afterEach(() => {
     testSqlite?.close()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('rejects requests without a valid proxy token', async () => {
@@ -209,6 +208,43 @@ describe('x-agent chat route', () => {
 
     expect(res.status).toBe(401)
     expect(await res.json()).toEqual({ error: 'Unauthorized' })
+  })
+
+  it('stores the exchanged iMessage token rather than the single-use setup code', async () => {
+    const fetch = vi.fn(async () => Response.json({ token: 'issued-token' }))
+    vi.stubGlobal('fetch', fetch)
+    mockCreateChatIntegration.mockResolvedValue('created-imessage')
+    mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'created-imessage', provider: 'imessage', status: 'active' }))
+    const response = await app.request('/api/x-agent/chat/add', {
+      method: 'POST', headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'imessage', name: 'Agent phone', config: { phoneNumber: '+15555550100', code: '123456' } }),
+    })
+    expect(response.status).toBe(201)
+    expect(mockCreateChatIntegration).toHaveBeenCalledExactlyOnceWith({
+      agentSlug: 'agent-one', provider: 'imessage', name: 'Agent phone', status: undefined,
+      config: { phoneNumber: '+15555550100', token: 'issued-token', gatewayUrl: 'https://imessage-gateway.example.com' },
+    })
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(mockAddIntegration).toHaveBeenCalledExactlyOnceWith('created-imessage')
+  })
+
+  it('persists a provider-prepared disconnected status without starting the runtime', async () => {
+    agentIntegrationRegistry.register({
+      definition: { provider: 'test-agent-setup', name: 'Test', family: 'chat', managementAccess: 'user', capabilities: [], settings: [], setup: { kind: 'credentials', credentialFields: [] } },
+      policy: { isAllowed: async () => true, sessionPolicy: () => ({ name: 'Test', metadata: {} }) },
+      create: async () => { throw new Error('not needed') },
+      setup: { allowAgentCreation: true, prepare: async () => ({ config: { prepared: true }, status: 'disconnected' }) },
+    })
+    mockCreateChatIntegration.mockResolvedValue('created-pending')
+    mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'created-pending', provider: 'test-agent-setup', status: 'disconnected' }))
+    const response = await app.request('/api/x-agent/chat/add', {
+      method: 'POST', headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'test-agent-setup', config: { raw: true } }),
+    })
+    expect(response.status).toBe(201)
+    expect(mockCreateChatIntegration).toHaveBeenCalledExactlyOnceWith({ agentSlug: 'agent-one', provider: 'test-agent-setup', name: undefined, config: { prepared: true }, status: 'disconnected' })
+    expect(mockAddIntegration).not.toHaveBeenCalled()
+    expect(await response.json()).toMatchObject({ status: 'disconnected' })
   })
 
   it('lists integrations with only active chat sessions', async () => {

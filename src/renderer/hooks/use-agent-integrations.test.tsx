@@ -11,6 +11,7 @@ import {
   useUpdateAgentIntegration,
   useDeleteAgentIntegration,
   useSetRequireApproval,
+  useAuthorizeAgentIntegration,
 } from './use-agent-integrations'
 
 vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn() }))
@@ -99,5 +100,43 @@ describe('integration authorization polling', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
       expect(apiFetch).toHaveBeenCalledTimes(3)
     } finally { unmount(); client.clear(); vi.useRealTimers() }
+  })
+})
+
+
+describe('integration authorization errors', () => {
+  it.each([
+    ['<html>Bad gateway</html>', 'Could not authorize integration'],
+    ['', 'Could not authorize integration'],
+    ['null', 'Could not authorize integration'],
+    ['{"error":{"message":"Unexpected error shape"}}', 'Could not authorize integration'],
+    ['{"error":"Invalid app credentials"}', 'Invalid app credentials'],
+  ])('shows a useful message for a failed response: %s', async (body, message) => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+    vi.mocked(apiFetch).mockResolvedValue(new Response(body, { status: 502 }))
+    const { result, unmount } = renderHook(() => useAuthorizeAgentIntegration(), {
+      wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+    })
+    try {
+      await act(async () => {
+        await expect(result.current.mutateAsync({ id: 'integration', agentSlug: 'agent', config: {} })).rejects.toThrow(message)
+      })
+    } finally { unmount(); client.clear() }
+  })
+  it('returns the authorization URL and refreshes the parent integration on success', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+    const keys = [agentIntegrationKeys.detail('integration'), agentIntegrationKeys.status('integration'), agentIntegrationKeys.list('agent')]
+    for (const key of keys) client.setQueryData(key, {})
+    const payload = { url: 'https://provider.example/authorize' }
+    vi.mocked(apiFetch).mockResolvedValue(Response.json(payload))
+    const { result, unmount } = renderHook(() => useAuthorizeAgentIntegration(), {
+      wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+    })
+    try {
+      await act(async () => {
+        await expect(result.current.mutateAsync({ id: 'integration', agentSlug: 'agent', config: {} })).resolves.toEqual(payload)
+      })
+      for (const key of keys) expect(client.getQueryState(key)?.isInvalidated).toBe(true)
+    } finally { unmount(); client.clear() }
   })
 })

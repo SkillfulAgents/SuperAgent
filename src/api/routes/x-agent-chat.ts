@@ -17,13 +17,7 @@ import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-in
 import type { AgentIntegration } from '@shared/lib/agent-integrations/agent-integration'
 import type { IntegrationTool } from '@shared/lib/agent-integrations/types'
 import { z } from 'zod'
-import {
-  validateChatIntegrationConfig,
-  CHAT_PROVIDERS,
-  IMESSAGE_GATEWAY_URL,
-  imessageSetupSchema,
-  type ChatProvider,
-} from '@shared/lib/chat-integrations/config-schema'
+import { integrationSetupContext, prepareIntegrationSetup, setupError } from '@shared/lib/agent-integrations/setup'
 import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
 import { captureException } from '@shared/lib/error-reporting'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
@@ -100,53 +94,16 @@ xAgentChat.post('/add', async (c) => {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
-    if (!CHAT_PROVIDERS.includes(provider)) {
-      return c.json({ error: `Invalid provider. Must be one of: ${CHAT_PROVIDERS.join(', ')}` }, 400)
-    }
-
-    // iMessage code exchange
-    if (provider === 'imessage' && config.code && !config.token) {
-      const parsed = imessageSetupSchema.safeParse({ phoneNumber: config.phoneNumber, code: config.code })
-      if (!parsed.success) {
-        return c.json({ error: parsed.error.issues[0]?.message || 'Invalid phone number or code' }, 400)
-      }
-      const exchangeRes = await fetch(`${IMESSAGE_GATEWAY_URL}/auth/exchange`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: config.phoneNumber, code: config.code }),
-      })
-      if (exchangeRes.status === 401) {
-        return c.json({ error: 'Invalid or expired verification code' }, 400)
-      }
-      if (exchangeRes.status === 429) {
-        return c.json({ error: 'Too many attempts, try again later' }, 400)
-      }
-      if (!exchangeRes.ok) {
-        return c.json({ error: `Code exchange failed (${exchangeRes.status})` }, 400)
-      }
-      const { token } = await exchangeRes.json() as { token: string }
-      if (!token) {
-        return c.json({ error: 'No token returned from gateway' }, 400)
-      }
-      config.token = token
-      config.gatewayUrl = IMESSAGE_GATEWAY_URL
-      delete config.code
-    }
-
-    try {
-      validateChatIntegrationConfig(provider as ChatProvider, config)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Invalid config'
-      return c.json({ error: `Invalid config: ${message}` }, 400)
-    }
+    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, callerSlug), true)
 
     let id: string
     try {
       id = await createAgentIntegration({
         agentSlug: callerSlug,
-        provider: provider as ChatProvider,
+        provider,
         name,
-        config,
+        config: prepared.config,
+        status: prepared.status,
       })
     } catch (err) {
       if (err instanceof DuplicateIntegrationIdentityError) {
@@ -156,7 +113,7 @@ xAgentChat.post('/add', async (c) => {
     }
 
     try {
-      await agentIntegrationManager.addIntegration(id)
+      if (!prepared.status || prepared.status === 'active') await agentIntegrationManager.addIntegration(id)
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err)
       await updateAgentIntegrationStatus(id, 'error', errMsg)
@@ -177,6 +134,8 @@ xAgentChat.post('/add', async (c) => {
       name: created.name,
     }, 201)
   } catch (error) {
+    const failure = setupError(error)
+    if (failure) return c.json({ error: failure.error }, failure.status)
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'add' } })
     return c.json({ error: 'Failed to add chat integration' }, 500)
   }

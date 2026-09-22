@@ -80,3 +80,25 @@ connection/settings panels; shared pages do not import concrete provider panels.
 It lists every account owned by the caller, its capabilities, active external session
 IDs, and any integration-owned MCP identity/server/tools. Chat operations consume
 chat capabilities; MCP providers use their named server. Credentials are excluded.
+
+## Provider setup
+
+Provider-level setup hooks run before a connector exists: `prepare`, optional
+`testCredentials`, `authorize`, and `callback`. Generic HTTP routes authorize the
+caller using the provider definition and delegate credential exchange/validation.
+Create uses `POST /api/agent-integrations/agents/:id` with `{ provider, name, config }`;
+authorization uses `POST /api/agent-integrations/:integrationId/authorize`. Provider
+callbacks use `/api/agent-integrations/providers/:provider/callback`; the shorter
+`/:provider/callback` path remains valid for previously registered callback URLs.
+Callbacks require provider-validated, expiring one-use state instead of user cookies.
+
+Telegram token validation, Slack bot/app-token checks, and iMessage code exchange
+implement this same contract. Agent-side creation uses the same preparation hooks
+and requires explicit provider opt-in, preserving owner-only interactive setup.
+Initial authorization-required rows are inserted disconnected atomically.
+
+Provider setup uses `IntegrationSetupLayout` for the shared header, instructions,
+credential panel, fields, feedback and actions. Providers supply their content and
+connection flow. An optional read-only `setup.describe` hook supplies app-creation
+and callback URLs through the agent-scoped setup endpoint without creating an
+installation. The endpoint enforces the same provider management role as creation.
