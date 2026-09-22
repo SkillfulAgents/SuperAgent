@@ -148,19 +148,22 @@ function SettingsModelSelectImpl({
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <fieldset disabled={disabled} className="contents">
-        {onSelectionChange && choices.length > 1 && <label className="px-2 pb-2 text-xs">Connection
-          <select aria-label="Connection" className="mt-1 w-full rounded border bg-background p-2" value={selectedConnection?.id ?? ''} onChange={e => {
-            const next = choices.find(c => c.id === e.target.value)
-            if (next?.defaultModel) onSelectionChange({ llmProviderId: next.id, model: next.defaultModel })
-          }}>{choices.map(c => <option key={c.id} value={c.id}>{c.name}{c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}</option>)}</select>
-        </label>}
-        <ModelFamilyList
-          catalog={catalog}
-          value={selectedModel}
-          onPick={m => onSelectionChange && selectedConnection ? onSelectionChange({ llmProviderId: selectedConnection.id, model: m }) : onModelChange(m)}
-          offerLatest
-          webProvider={settings?.webProvider}
-        />
+        {/* Keep provider → brand → model together when the outer sections reverse. */}
+        <div className="flex flex-col">
+          {onSelectionChange && choices.length > 1 && <label className="px-2 pb-2 text-xs">Connection
+            <select aria-label="Connection" className="mt-1 w-full rounded border bg-background p-2" value={selectedConnection?.id ?? ''} onChange={e => {
+              const next = choices.find(c => c.id === e.target.value)
+              if (next?.defaultModel) onSelectionChange({ llmProviderId: next.id, model: next.defaultModel })
+            }}>{choices.map(c => <option key={c.id} value={c.id}>{c.name}{c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}</option>)}</select>
+          </label>}
+          <ModelFamilyList
+            catalog={catalog}
+            value={selectedModel}
+            onPick={m => onSelectionChange && selectedConnection ? onSelectionChange({ llmProviderId: selectedConnection.id, model: m }) : onModelChange(m)}
+            offerLatest
+            webProvider={settings?.webProvider}
+          />
+        </div>
         {includeEffort && (
           <>
             <Separator className="my-2 bg-border/50" />
