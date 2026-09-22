@@ -501,5 +501,16 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1790040447107,
     "hash": "841f5d556872c1e923410a1264069897e55c42f194983f8fee8531fe566b267c"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `integration_deliveries` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`integration_id` text NOT NULL,\n\t`external_id` text NOT NULL,\n\t`event_id` text NOT NULL,\n\t`envelope` text,\n\t`session_id` text,\n\t`state` text DEFAULT 'pending' NOT NULL,\n\t`attempts` integer DEFAULT 0 NOT NULL,\n\t`owner` text,\n\t`next_attempt_at` integer NOT NULL,\n\t`notice_state` text DEFAULT 'none' NOT NULL,\n\t`notice_attempts` integer DEFAULT 0 NOT NULL,\n\t`error` text,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`integration_id`) REFERENCES `chat_integrations`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE UNIQUE INDEX `integration_deliveries_event_idx` ON `integration_deliveries` (`integration_id`,`external_id`,`event_id`);",
+      "\nCREATE INDEX `integration_deliveries_due_idx` ON `integration_deliveries` (`state`,`next_attempt_at`);",
+      "\nCREATE INDEX `integration_deliveries_notice_idx` ON `integration_deliveries` (`notice_state`,`next_attempt_at`);"
+    ],
+    "bps": true,
+    "folderMillis": 1790107007902,
+    "hash": "97d1ee90bc2cb982ac039fffb71ed61f7ce3afdd3e44d0c597b0f5c4ddab9c9e"
   }
 ]

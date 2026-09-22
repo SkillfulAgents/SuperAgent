@@ -1,3 +1,4 @@
+import { MessageNotAcceptedError } from './message-dispatch-error'
 import { EventEmitter } from 'events'
 import { createHash, randomUUID } from 'crypto'
 import * as fs from 'fs'
@@ -3089,6 +3090,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   // Session management
 
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
+    // Match POST /sessions and SessionManager: the first message creates the
+    // runtime's canonical session ID. An empty idle session is not supported.
+    if (!options.initialMessage) throw new Error('initialMessage is required')
     // Resolve the selection exactly as the real container client does, so E2E
     // assertions see the concrete wire id the SDK would receive.
     const model = resolveContainerModel(options.model, 'agent')
@@ -3278,7 +3282,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     })
     const session = this.sessions.get(sessionId)
     if (!session) {
-      throw new Error(`Session ${sessionId} not found`)
+      throw new MessageNotAcceptedError('session-gone', `Session ${sessionId} not found`)
     }
 
     // Update last activity

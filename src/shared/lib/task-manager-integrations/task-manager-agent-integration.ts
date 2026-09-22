@@ -10,9 +10,6 @@ import { taskManagerPolicy } from './policy'
  * agent-authored replies and edits go through the integration's MCP. */
 export abstract class TaskManagerAgentIntegration extends AgentIntegration {
   protected connected = false
-  // Live subscriptions can expose the same event through multiple feeds. This
-  // bounded cache also retains the reply target for a host dispatch-error notice.
-  private recentEvents = new Map<string, Pick<TaskEvent, 'taskId' | 'replyTarget'>>()
   protected constructor(protected readonly installation: AgentIntegrationRecord) { super() }
   protected abstract publishMessage(taskId: string, text: string, parentId?: string): Promise<void>
   protected abstract hydrateTask(taskId: string): Promise<TaskSnapshot>
@@ -29,14 +26,14 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
       replyTarget: task.replyTarget, action: task.kind === 'context' ? 'ignore' : 'run' }
   }
   protected async acceptTaskEvent(event: TaskEvent): Promise<void> {
-    if (!this.connected || event.kind === 'context' || this.recentEvents.has(event.id)) return
-    this.recentEvents.set(event.id, { taskId: event.taskId, replyTarget: event.replyTarget })
-    if (this.recentEvents.size > 1000) this.recentEvents.delete(this.recentEvents.keys().next().value!)
-    // Hand off immediately, including during a running turn or an open request.
-    // An issue comment is a new message, not an answer to a Gamut input card.
+    if (!this.connected || event.kind === 'context') return
+    // Deduplication and acceptance belong to the shared manager for all families.
     await this.emitEvent({ type: 'input', id: event.id, externalId: event.taskId,
       timestamp: new Date(event.timestamp), payload: event })
-    if (event.kind === 'invocation') void this.acknowledgeTask(event).catch(error => this.report(error, 'acknowledge'))
+  }
+  async acknowledgeInput(event: IntegrationInputEvent): Promise<void> {
+    const task = taskEventSchema.parse(event.payload)
+    if (task.kind === 'invocation') await this.acknowledgeTask(task)
   }
   async prepareInput(event: IntegrationInputEvent, _context: IntegrationInputContext) {
     const task = taskEventSchema.parse(event.payload)
@@ -50,11 +47,9 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
     // Runtime output and request lifecycle already belong to the host session.
     // Only host error/status messages are published here; never the transcript.
     if (output.type !== 'message' || !this.connected) return
-    const event = output.inputId ? this.recentEvents.get(output.inputId) : undefined
-    try {
-      await this.publishMessage(event?.taskId ?? context.externalId, output.text,
-        event ? event.replyTarget.commentId : context.replyTarget?.commentId)
-    } catch (error) { this.report(error, 'host-message') }
+    // The persisted route remains authoritative across connector recreation.
+    // Propagate failures to the manager's bounded notice retry scheduler.
+    await this.publishMessage(context.externalId, output.text, context.replyTarget?.commentId)
   }
   protected async stopTask(taskId: string): Promise<void> {
     if (this.connected) await this.emitEvent({ type: 'cancel', externalId: taskId })

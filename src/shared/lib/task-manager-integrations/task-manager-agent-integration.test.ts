@@ -1,6 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentIntegrationRecord, IntegrationEvent, IntegrationInputContext, IntegrationInputEvent, IntegrationSessionContext } from '../agent-integrations/types'
-import { captureException } from '../error-reporting'
 import { pendingUserInputRequestSchema } from '../user-input/request-schema'
 import type { TaskEvent, TaskSnapshot } from './types'
 import { TaskManagerAgentIntegration } from './task-manager-agent-integration'
@@ -46,33 +45,18 @@ describe('TaskManagerAgentIntegration live input', () => {
     expect(activityLookup).not.toHaveBeenCalled()
     expect(vi.getTimerCount()).toBe(0)
   })
-  it('deduplicates concurrent live copies and acknowledges each comment once', async () => {
-    await Promise.all([tasks.accept(event('one')), tasks.accept(event('one')), tasks.accept(event('two'))])
+  it('leaves event deduplication and acknowledgement timing to the manager', async () => {
+    await Promise.all([tasks.accept(event('one')), tasks.accept(event('one'))])
     expect(events).toHaveLength(2)
-    expect(tasks.acknowledgeTask.mock.calls.map(([event]) => event.id)).toEqual(['one', 'two'])
+    expect(tasks.acknowledgeTask).not.toHaveBeenCalled()
+    await tasks.acknowledgeInput(input())
+    expect(tasks.acknowledgeTask).toHaveBeenCalledOnce()
   })
-  it('bounds deduplication state and does not persist it across instances', async () => {
-    for (let i = 0; i <= 1000; i++) await tasks.accept(event(String(i)))
-    await tasks.accept(event('1000'))
-    expect(events).toHaveLength(1001)
-    await tasks.accept(event('0'))
-    expect(events).toHaveLength(1002)
-    await tasks.disconnect()
-    tasks = new FakeTasks(integration); tasks.onEvent(event => { events.push(event) }); await tasks.connect()
-    expect(await tasks.sessionsToRecover()).toEqual([])
-    await tasks.accept(event('1000'))
-    expect(events).toHaveLength(1003)
-  })
-  it('does not block input on an acknowledgement request', async () => {
-    tasks.acknowledgeTask.mockImplementation(() => new Promise(() => {}))
-    await tasks.accept(event('one')); await tasks.accept(event('two'))
-    expect(events).toHaveLength(2)
-  })
-  it('reports acknowledgement failures without losing input', async () => {
+  it('propagates acknowledgement failures to the manager without consuming input', async () => {
     tasks.acknowledgeTask.mockRejectedValue(new Error('Reaction failed'))
-    await tasks.accept(event('one')); await Promise.resolve()
+    await tasks.accept(event('one'))
+    await expect(tasks.acknowledgeInput(input())).rejects.toThrow('Reaction failed')
     expect(events).toHaveLength(1)
-    expect(captureException).toHaveBeenCalled()
   })
   it('does not turn context changes into new work', async () => {
     await tasks.accept({ ...event('context'), kind: 'context' })
@@ -102,11 +86,11 @@ describe('TaskManagerAgentIntegration live input', () => {
     await tasks.deliver(context(), { type: 'turn-completed', event: {} })
     expect(tasks.publishMessage).not.toHaveBeenCalled()
   })
-  it('publishes a dispatch failure once to its triggering thread, without a retry timer', async () => {
+  it('propagates dispatch-notice failure to the shared scheduler without its own retry timer', async () => {
     await tasks.accept(event('one'))
     await tasks.accept({ ...event('two'), replyTarget: { commentId: 'other-thread' } })
     tasks.publishMessage.mockRejectedValueOnce(new Error('Offline'))
-    await tasks.deliver(context(1), { type: 'message', inputId: 'one', text: 'Could not start. Please try again.', retryable: true })
+    await expect(tasks.deliver(context(0), { type: 'message', inputId: 'one', text: 'Could not start. Please try again.', retryable: true })).rejects.toThrow('Offline')
     expect(tasks.publishMessage).toHaveBeenCalledExactlyOnceWith('issue', 'Could not start. Please try again.', 'root')
     await vi.advanceTimersByTimeAsync(3600000)
     expect(tasks.publishMessage).toHaveBeenCalledOnce()

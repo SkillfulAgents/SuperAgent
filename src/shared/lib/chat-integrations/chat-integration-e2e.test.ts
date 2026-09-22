@@ -1,3 +1,4 @@
+import { MessageNotAcceptedError } from '../container/message-dispatch-error'
 /**
  * Chat integration E2E tests.
  *
@@ -188,7 +189,7 @@ describe('Chat integration E2E', () => {
 
     // connectIntegration cancels itself on a stopped manager; this harness
     // drives addIntegration directly (no start()), so mark the manager running.
-    ;(agentIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
+    await agentIntegrationManager.start()
   })
 
   afterEach(async () => {
@@ -383,17 +384,14 @@ describe('Chat integration E2E', () => {
       // Next send fails with a TRANSIENT error (not "session not found").
       const sendSpy = vi
         .spyOn(mockContainerClient, 'sendMessage')
-        .mockRejectedValueOnce(new Error('Container is not running'))
+        .mockRejectedValueOnce(new MessageNotAcceptedError('unavailable', 'Container is not running'))
 
       const createBefore = MockContainerClient.createSessionCalls.length
       const sentBefore = mockConnector.sentMessages.length
       mockConnector.simulateIncomingMessage('Transient please', 'chat-1', 'user-1')
 
-      // Manager surfaces a retry prompt and does NOT rotate the session.
-      await waitForCondition(
-        () => mockConnector.sentMessages.slice(sentBefore).some((m) => /try again/i.test(m.message.text ?? '')),
-        3000,
-      )
+      await waitForCondition(() => sendSpy.mock.calls.length === 2, 3000)
+      expect(mockConnector.sentMessages.slice(sentBefore).some(m => /could not deliver/i.test(m.message.text))).toBe(false)
       expect(MockContainerClient.createSessionCalls.length).toBe(createBefore)
 
       const rows = (await listAgentIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
@@ -435,7 +433,7 @@ describe('Chat integration E2E', () => {
       // spending and bail — no fresh session for a chat that is no longer allowed.
       const sendSpy = vi.spyOn(mockContainerClient, 'sendMessage').mockImplementationOnce(async () => {
         await revokeChatAccess(accessId, 'owner')
-        throw new Error('Session not found')
+        throw new MessageNotAcceptedError('session-gone', 'Session not found')
       })
 
       mockConnector.simulateIncomingMessage('Are you there?', 'chat-1', 'user-1')

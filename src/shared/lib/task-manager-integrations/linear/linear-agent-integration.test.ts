@@ -1,3 +1,4 @@
+import { deliveryStore } from '../../agent-integrations/delivery-store'
 vi.mock('../../services/connection-sync-service', () => ({ syncRemoteMcpAgents: vi.fn(async () => true) }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IntegrationEvent } from '../../agent-integrations/types'
@@ -42,7 +43,13 @@ beforeEach(async () => {
     tokens: { accessToken: 'access', refreshToken: 'refresh', expiresAt: Date.now() + 3600000, scope: 'read write app:mentionable app:assignable' },
   } })
   integration = new LinearAgentIntegration((await getAgentIntegration(id))!)
-  events = []; integration.onEvent(event => { events.push(event) })
+  events = []; integration.onEvent(async event => {
+      if (event.type === 'input') {
+        if (!await deliveryStore.accept(id, event, integration.resolveRoute(event))) return
+        await integration.acknowledgeInput(event)
+      }
+      events.push(event)
+    })
   fetchMock = vi.fn(async (_url: string, options: { body: string }) => {
     const { query } = JSON.parse(options.body)
     if (query.includes('reactionCreate')) return Response.json({ data: { reactionCreate: { success: true } } })
@@ -128,7 +135,13 @@ describe('Linear live event lifecycle', () => {
     await connect(); await transport.event({ ...mention, data: { ...mention.data, issue: { ...issue, delegate: null } } })
     await integration.disconnect()
     integration = new LinearAgentIntegration((await getAgentIntegration(id))!)
-    integration.onEvent(event => { events.push(event) })
+    integration.onEvent(async event => {
+      if (event.type === 'input') {
+        if (!await deliveryStore.accept(id, event, integration.resolveRoute(event))) return
+        await integration.acknowledgeInput(event)
+      }
+      events.push(event)
+    })
     await connect()
     expect(fetchMock.mock.calls.filter(([, options]) => JSON.parse(options.body).query.includes('viewer'))).toHaveLength(2)
     await transport.event({ type: 'commentCreated', data: { ...comment, id: 'after-restart', issue: { ...issue, delegate: null } } })
@@ -168,7 +181,13 @@ describe('Linear live event lifecycle', () => {
     expect(events).toHaveLength(1)
     await integration.disconnect()
     integration = new LinearAgentIntegration((await getAgentIntegration(id))!)
-    integration.onEvent(event => { events.push(event) })
+    integration.onEvent(async event => {
+      if (event.type === 'input') {
+        if (!await deliveryStore.accept(id, event, integration.resolveRoute(event))) return
+        await integration.acknowledgeInput(event)
+      }
+      events.push(event)
+    })
     await connect()
     await vi.advanceTimersByTimeAsync(3600000)
     expect(events).toHaveLength(1)

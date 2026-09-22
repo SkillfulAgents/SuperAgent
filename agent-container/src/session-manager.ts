@@ -1,3 +1,4 @@
+import { SessionInputNotAcceptedError } from './session-creation-error';
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from 'crypto';
 import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession } from '@anthropic-ai/claude-agent-sdk';
@@ -216,6 +217,17 @@ export class SessionManager extends EventEmitter {
    * This ensures the session ID matches Claude's JSONL file name.
    */
   async createSession(request: CreateSessionRequest): Promise<Session> {
+    let submitted = false;
+    try {
+      return await this.createSessionWithInput(request, () => { submitted = true; });
+    } catch (error) {
+      if (error instanceof SessionInputNotAcceptedError) throw error;
+      if (!submitted) throw new SessionInputNotAcceptedError(error);
+      throw error;
+    }
+  }
+
+  private async createSessionWithInput(request: CreateSessionRequest, beforeSend: () => void): Promise<Session> {
     if (!request.initialMessage) {
       throw new Error('initialMessage is required for createSession');
     }
@@ -278,12 +290,14 @@ export class SessionManager extends EventEmitter {
       });
 
     // Promise to capture Claude's session ID and slash commands (emitted after first message is sent)
+    let cancelInitWait = () => {};
     const initCompletePromise = new Promise<string>((resolve, reject) => {
       let claudeSessionId: string | null = null;
       const timeout = setTimeout(() => {
         if (claudeSessionId) resolve(claudeSessionId);
         else reject(new Error('Timeout waiting for Claude session ID'));
       }, 30000);
+      cancelInitWait = () => clearTimeout(timeout);
 
       process.once('claude-session-id', (id: string) => {
         claudeSessionId = id;
@@ -301,6 +315,9 @@ export class SessionManager extends EventEmitter {
       });
     });
 
+    // start/send may fail before the handshake is awaited.
+    void initCompletePromise.catch(() => {});
+
     // Start the process and wait for the init handshake. On ANY failure the
     // started process must be torn down here: it has no session entry yet, so
     // nothing else — not the reaper, not a delete — could ever reach it.
@@ -308,6 +325,8 @@ export class SessionManager extends EventEmitter {
     try {
       await process.start();
 
+      // From here a rejection may come after the runtime queued the input.
+      beforeSend();
       // Send the initial message - this triggers Claude to emit the session ID
       await process.sendMessage(request.initialMessage, request.initialMessageUuid);
 
@@ -315,7 +334,14 @@ export class SessionManager extends EventEmitter {
       claudeSessionId = await initCompletePromise;
     } catch (error) {
       await process.dispose().catch(() => undefined);
+      // The SDK can queue stdin before discovering that the executable could
+      // not launch. Its explicit launch error still proves no agent ran.
+      if (error && typeof error === 'object' && 'errorClass' in error && error.errorClass === 'executable_launch_failed') {
+        throw new SessionInputNotAcceptedError(error);
+      }
       throw error;
+    } finally {
+      cancelInitWait();
     }
     console.log(`Got Claude session ID: ${claudeSessionId}`);
 

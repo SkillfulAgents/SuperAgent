@@ -58,13 +58,12 @@ changes invoke work only when enabled. External unassignment, cancellation and
 archival events stop work, while the agent's own state changes let it finish its
 reply. Human assignment and agent delegation remain separate.
 
-A bounded in-memory event-ID cache deduplicates overlapping comment and mention
-deliveries. Thread participation persists as up to 1,000 issue/thread pairs in the
-existing integration config, scoped to the app identity and workspace. Session
-mappings use the existing integration session store. Received messages and failed
-host notices are not kept in a separate durable queue or replayed after restart.
-Shared durable delivery and bounded retries for all chat integrations are tracked
-in [SUP-922](https://linear.app/datawizz/issue/SUP-922).
+The shared manager durably deduplicates overlapping comment and mention deliveries.
+Thread participation persists as up to 1,000 issue/thread pairs in the existing
+integration config, scoped to the app identity and workspace. Session mappings use
+the existing integration session store. Locally accepted inputs and host failure
+notices use the same [durable delivery and bounded retries](integration-delivery.md)
+as Slack, Telegram and iMessage; there is no task-specific queue or remote catch-up.
 Sockets pace registration,
 maintain heartbeats, renew tokens and reconnect with bounded backoff. Subscription
 failure is reported as an unhealthy connection; it never enables a polling path.
@@ -154,9 +153,9 @@ The integration does not stage files or maintain a second publication outbox.
 
 Discovery runs once on connection and when accepted work needs tools, using a
 five-minute cache for healthy results. It does not run periodically while idle.
-If MCP is unavailable while preparing an input, the manager reports a dispatch
-failure with a best-effort comment asking the user to retry. It does not schedule
-another run. The shared integration UI shows **Degraded** when inbound events work
+If MCP is unavailable while preparing an input, the shared manager retries
+preparation with a bounded budget, then delivers a failure notice if exhausted.
+The shared integration UI shows **Degraded** when inbound events work
 but MCP is unavailable; transient failures do not clear credentials. Proxy
 failures also update outbound health. A 401 requires reconnecting the parent
 identity. Neither direction needs platform login or a webhook relay.

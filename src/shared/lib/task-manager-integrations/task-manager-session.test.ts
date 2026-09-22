@@ -1,3 +1,4 @@
+vi.mock('../agent-integrations/delivery-store', async () => ({ deliveryStore: (await import('../agent-integrations/testing/memory-delivery-store')).memoryDeliveryStore() }))
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TaskManagerAgentIntegration } from './task-manager-agent-integration'
 import { AgentIntegrationManager } from '../agent-integrations/agent-integration-manager'
@@ -54,8 +55,8 @@ describe('task inputs through the shared integration manager', () => {
     // The runtime remains working throughout this test. No completion/idle frame
     // arrives, so any task-family turn lock would prevent the following send.
     await tasks.input('second-thread')
-    await vi.waitFor(() => expect(runtime.send).toHaveBeenCalledWith('session', expect.stringContaining('comment thread second-thread')))
-    expect(runtime.create).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(runtime.send).toHaveBeenCalledWith('session', expect.stringContaining('comment thread second-thread'), expect.any(String)))
+    expect(runtime.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ initialMessage: expect.stringContaining('comment thread first-thread'), initialMessageUuid: expect.any(String) }))
     expect(runtime.send).toHaveBeenCalledOnce()
   })
 })

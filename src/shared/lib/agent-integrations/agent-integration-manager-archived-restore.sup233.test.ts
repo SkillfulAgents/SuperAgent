@@ -1,3 +1,4 @@
+vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testing/memory-delivery-store')).memoryDeliveryStore() }))
 /**
  * SUP-233 — Chat integration reconnect restores archived session SSE forwarding.
  *

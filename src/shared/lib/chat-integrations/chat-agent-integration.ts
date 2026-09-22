@@ -18,6 +18,7 @@ import { z } from 'zod'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import type { ChatProvider } from './config-schema'
+import { incomingMessageSchema } from './message-schema'
 import { captureException } from '@shared/lib/error-reporting'
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -231,7 +232,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   }
 
   resolveRoute(event: IntegrationInputEvent): IntegrationRoute {
-    const message = event.payload as IncomingMessage
+    const message = incomingMessageSchema.parse(event.payload)
     let displayName = deriveDisplayName(message)
     if (message.chatId.includes('|')) {
       const date = message.timestamp.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
@@ -248,7 +249,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   }
 
   async authorize(context: IntegrationSessionContext, event: IntegrationInputEvent): Promise<boolean> {
-    const message = event.payload as IncomingMessage
+    const message = incomingMessageSchema.parse(event.payload)
     const integrationId = context.integration.id
     const chatId = context.externalId
     const decision = await decideInboundAccess({ integrationId, externalChatId: chatId, chatType: message.chatType,
@@ -281,7 +282,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   }
 
   async prepareInput(event: IntegrationInputEvent, context: IntegrationInputContext): Promise<PreparedIntegrationInput> {
-    const message = event.payload as IncomingMessage
+    const message = incomingMessageSchema.parse(event.payload)
     const { text, failedFiles } = await this.inputBuilder.buildMessageContent(context.integration, message)
     const skip = failedFiles.length > 0 && !text.trim()
     if (failedFiles.length && (await this.isAllowed(context))) {
@@ -292,7 +293,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
 
   async consumeInput(event: IntegrationInputEvent, context: IntegrationInputContext, input: PreparedIntegrationInput): Promise<boolean> {
     if (!context.sessionId) return false
-    const message = event.payload as IncomingMessage
+    const message = incomingMessageSchema.parse(event.payload)
     const { actor } = context
     return consumeOrCancelAwaitingInput({
       sessionId: context.sessionId, agentSlug: context.integration.agentSlug, chatId: context.externalId,
@@ -378,7 +379,9 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   // ── Protected helpers for subclasses ────────────────────────────────
 
   protected emitMessage(message: IncomingMessage): void {
-    void this.emitEvent({ type: 'input', id: message.externalMessageId, externalId: message.chatId, timestamp: message.timestamp, payload: message }).catch(error => this.emitError(error instanceof Error ? error : new Error(String(error))))
+    // The manager reports acceptance failures. They do not imply the provider
+    // transport is unhealthy (and must not flip its connection status).
+    void this.emitEvent({ type: 'input', id: message.externalMessageId, externalId: message.chatId, timestamp: message.timestamp, payload: message }).catch(() => {})
   }
 
   protected emitInteractiveResponse(toolUseId: string, response: unknown, chatId?: string): void {

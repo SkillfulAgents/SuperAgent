@@ -27,3 +27,6 @@ src/shared/lib/task-manager-integrations/linear/setup.test.ts
 src/shared/lib/task-manager-integrations/task-manager-agent-integration.test.ts
 src/api/routes/agent-integrations.test.ts
 src/api/routes/mcp-proxy.linear.test.ts
+
+src/shared/lib/agent-integrations/delivery-queue.test.ts
+src/shared/lib/agent-integrations/agent-integration-delivery.test.ts

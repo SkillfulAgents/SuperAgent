@@ -1,3 +1,4 @@
+import { MessageNotAcceptedError, requestWasNotDispatched } from './message-dispatch-error'
 import { exec, execSync, spawn } from 'child_process'
 import path from 'path'
 import { promisify } from 'util'
@@ -1238,45 +1239,50 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
-    const port = await this.getPortOrThrow()
+    const port = await this.getPortOrThrow().catch(error => {
+      throw new MessageNotAcceptedError('unavailable', error instanceof Error ? error.message : 'Container unavailable', { cause: error })
+    })
     const timeoutMs = 60000 // 60 second timeout
 
-    // Resolve stored selections (bare aliases or concrete ids) to the active
-    // provider's concrete wire id before the container ever sees them.
-    const resolvedModel = resolveContainerModel(options.model, 'agent')
-    // Resolved on the same path as the session's own model, so the prompt
-    // hints the container pre-warms with match what a default session would
-    // actually be built with.
-    const resolvedPrewarmModel = resolveContainerModel(options.prewarmDefaults?.model, 'agent')
-    const prewarmPromptHints = getContainerModelPromptHints(resolvedPrewarmModel)
-    const resolvedBrowserModel = resolveContainerModel(options.browserModel, 'browser')
-    const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
-    const modelPromptHints = getContainerModelPromptHints(resolvedModel)
-    const subagentModels = getSubagentModelCatalog(getActiveLlmProvider().id)
-    // Catalog windows for ALL models (not just isLatest like subagentModels):
-    // the container passes the session model's window to the Claude Agent SDK
-    // via CLAUDE_CODE_MAX_CONTEXT_TOKENS, else non-Claude models compact at
-    // the SDK's 200k default (grok: 500k real, gpt-5.x: 1.05M real).
-    const modelContextWindows = getModelContextWindowMap(getActiveLlmProvider().id)
-    // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
-    // Resolved once here from global settings so every session-creation caller inherits it. One
-    // stored vendor backs both tools; the two ids sent to the container are the per-tool enablement
-    // signals, each derived from whether the vendor supports that operation (undefined -> native,
-    // the container keeps its built-in WebSearch/WebFetch for that tool).
-    const activeWebProvider = getActiveWebProvider()
-    const webSearchProvider = activeWebProvider?.search ? activeWebProvider.id : undefined
-    const webFetchProvider = activeWebProvider?.fetch ? activeWebProvider.id : undefined
-    // Host-authoritative launch policies (allow/review/block for subagents and
-    // workflows), resolved from global settings here so every session-creation
-    // caller inherits them. Never taken from the request — a caller (or the
-    // agent itself) must not be able to loosen its own policy.
-    const capabilityPolicies = getAgentCapabilitySettings()
-
+    let requestStarted = false
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
     try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+      // Resolve stored selections (bare aliases or concrete ids) to the active
+      // provider's concrete wire id before the container ever sees them.
+      const resolvedModel = resolveContainerModel(options.model, 'agent')
+      // Resolved on the same path as the session's own model, so the prompt
+      // hints the container pre-warms with match what a default session would
+      // actually be built with.
+      const resolvedPrewarmModel = resolveContainerModel(options.prewarmDefaults?.model, 'agent')
+      const prewarmPromptHints = getContainerModelPromptHints(resolvedPrewarmModel)
+      const resolvedBrowserModel = resolveContainerModel(options.browserModel, 'browser')
+      const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
+      const modelPromptHints = getContainerModelPromptHints(resolvedModel)
+      const subagentModels = getSubagentModelCatalog(getActiveLlmProvider().id)
+      // Catalog windows for ALL models (not just isLatest like subagentModels):
+      // the container passes the session model's window to the Claude Agent SDK
+      // via CLAUDE_CODE_MAX_CONTEXT_TOKENS, else non-Claude models compact at
+      // the SDK's 200k default (grok: 500k real, gpt-5.x: 1.05M real).
+      const modelContextWindows = getModelContextWindowMap(getActiveLlmProvider().id)
+      // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
+      // Resolved once here from global settings so every session-creation caller inherits it. One
+      // stored vendor backs both tools; the two ids sent to the container are the per-tool enablement
+      // signals, each derived from whether the vendor supports that operation (undefined -> native,
+      // the container keeps its built-in WebSearch/WebFetch for that tool).
+      const activeWebProvider = getActiveWebProvider()
+      const webSearchProvider = activeWebProvider?.search ? activeWebProvider.id : undefined
+      const webFetchProvider = activeWebProvider?.fetch ? activeWebProvider.id : undefined
+      // Host-authoritative launch policies (allow/review/block for subagents and
+      // workflows), resolved from global settings here so every session-creation
+      // caller inherits them. Never taken from the request — a caller (or the
+      // agent itself) must not be able to loosen its own policy.
+      const capabilityPolicies = getAgentCapabilitySettings()
 
-      const response = await fetch(`${this.getBaseUrl(port)}/sessions`, {
+      const controller = new AbortController()
+      timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+
+      const url = `${this.getBaseUrl(port)}/sessions`
+      const request: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...this.getHostAuthHeaders() },
         body: JSON.stringify({
@@ -1310,7 +1316,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           },
         }),
         signal: controller.signal,
-      })
+      }
+      requestStarted = true
+      const response = await fetch(url, request)
 
       clearTimeout(timeoutId)
 
@@ -1319,6 +1327,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         let errorDetail = ''
         let containerErrorCode: string | undefined
         let containerErrorClass: string | undefined
+        let inputRejected = false
         try {
           const errorBody = await response.text()
           if (errorBody) {
@@ -1330,12 +1339,21 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
               // CLI launch failures (see the POST /sessions handler).
               if (typeof parsed.code === 'string') containerErrorCode = parsed.code
               if (typeof parsed.errorClass === 'string') containerErrorClass = parsed.errorClass
+              // Older containers already forward the SDK's explicit spawn
+              // failure class, which also proves the agent never launched.
+              inputRejected = parsed.inputAccepted === false ||
+                (parsed.inputAccepted === undefined && parsed.errorClass === 'executable_launch_failed')
             } catch {
               errorDetail = errorBody
             }
           }
         } catch {
           errorDetail = response.statusText
+        }
+
+        if (inputRejected) {
+          throw Object.assign(new MessageNotAcceptedError('rejected', `Failed to create session: ${errorDetail || response.statusText}`),
+            { status: response.status, containerErrorCode, containerErrorClass })
         }
 
         // Check for known error patterns and provide user-friendly messages
@@ -1361,6 +1379,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error))
 
+      if (err instanceof MessageNotAcceptedError) throw err
+      if (!requestStarted || requestWasNotDispatched(err)) {
+        if (requestStarted) this.handleConnectionError()
+        throw new MessageNotAcceptedError('unavailable', err.message, { cause: err })
+      }
+
       // Handle abort/timeout
       if (err.name === 'AbortError') {
         throw new Error(
@@ -1381,6 +1405,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       // Re-throw if already a user-friendly message
       throw err
+    } finally {
+      clearTimeout(timeoutId)
     }
   }
 
@@ -1408,7 +1434,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
-    const port = await this.getPortOrThrow()
+    const port = await this.getPortOrThrow().catch(error => {
+      throw new MessageNotAcceptedError('unavailable', error instanceof Error ? error.message : 'Container unavailable', { cause: error })
+    })
     const timeoutMs = 30000 // 30 second timeout
     const effort = options?.effort
     const speed = options?.speed
@@ -1459,6 +1487,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         } catch {
           errorDetail = response.statusText
         }
+        if (response.status === 404) throw new MessageNotAcceptedError('session-gone', `Failed to send message: ${errorDetail || response.statusText}`)
         throw new Error(`Failed to send message: ${errorDetail || response.statusText}`)
       }
     } catch (error) {
