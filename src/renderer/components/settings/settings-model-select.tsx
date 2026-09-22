@@ -15,7 +15,7 @@ import type { LlmProviderId } from '@shared/lib/config/settings'
 
 interface SettingsModelSelectProps {
   agentSlug?: string
-  connectionId?: string | null
+  llmProviderId?: string | null
   globalOnly?: boolean
   onSelectionChange?: (selection: ModelSelection) => void
   /** Currently-selected model — a concrete id (pinned) or a bare family alias (latest); undefined while loading. */
@@ -64,7 +64,7 @@ interface SettingsModelSelectProps {
 function SettingsModelSelectImpl({
   agentSlug,
   model,
-  connectionId,
+  llmProviderId,
   globalOnly,
   onSelectionChange,
   onModelChange,
@@ -80,12 +80,12 @@ function SettingsModelSelectImpl({
 }: SettingsModelSelectProps) {
   // Picker-safe endpoint — this select also serves non-admin surfaces (the
   // agent-home Default Model card), where the admin-gated settings 403.
-  const { data: settings } = useModelSettings(agentSlug, connectionId)
+  const { data: settings } = useModelSettings(agentSlug, llmProviderId)
   const connections = settings?.connections ? { connections: settings.connections, defaultSelection: settings.defaultSelection } : undefined
   const choices = connections?.connections.filter(c => !globalOnly || c.userId === null) ?? []
-  const selected = resolveSelection(model && connectionId ? { model, connectionId } : null, choices)
+  const selected = resolveSelection(model && llmProviderId ? { model, llmProviderId } : null, choices)
     ?? resolveSelection(connections?.defaultSelection, choices)
-  const selectedConnection = choices.find(c => c.id === selected?.connectionId)
+  const selectedConnection = choices.find(c => c.id === selected?.llmProviderId)
     ?? (!connections?.defaultSelection && choices.length === 1 ? choices[0] : undefined)
   const selectedModel = onSelectionChange && choices.length > 0 ? selected?.model : model
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
@@ -150,13 +150,13 @@ function SettingsModelSelectImpl({
         {onSelectionChange && choices.length > 1 && <label className="px-2 pb-2 text-xs">Connection
           <select aria-label="Connection" className="mt-1 w-full rounded border bg-background p-2" value={selectedConnection?.id ?? ''} onChange={e => {
             const next = choices.find(c => c.id === e.target.value)
-            if (next?.catalog[0]) onSelectionChange({ connectionId: next.id, model: next.catalog.find(m => m.isDefault)?.id ?? next.catalog[0].id })
+            if (next?.catalog[0]) onSelectionChange({ llmProviderId: next.id, model: next.catalog.find(m => m.isDefault)?.id ?? next.catalog[0].id })
           }}>{choices.map(c => <option key={c.id} value={c.id}>{c.name}{c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}</option>)}</select>
         </label>}
         <ModelFamilyList
           catalog={catalog}
           value={selectedModel}
-          onPick={m => onSelectionChange && selectedConnection ? onSelectionChange({ connectionId: selectedConnection.id, model: m }) : onModelChange(m)}
+          onPick={m => onSelectionChange && selectedConnection ? onSelectionChange({ llmProviderId: selectedConnection.id, model: m }) : onModelChange(m)}
           offerLatest
           webProvider={settings?.webProvider}
         />

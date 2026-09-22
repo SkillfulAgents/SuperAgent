@@ -58,7 +58,7 @@ function request(path: string, method = 'GET', body?: unknown, caller = 'admin')
 beforeEach(async () => {
   database = await createTestDatabase()
   state.db = database.db
-  state.settings = { llmLegacyConnectionId: 'already-imported' } as AppSettings
+  state.settings = { llmLegacyProviderId: 'already-imported' } as AppSettings
   vi.stubEnv('AUTH_MODE', 'true')
   await database.db
     .insert(user)
@@ -90,17 +90,17 @@ describe('connection API ownership and root protection', () => {
   it('enforces root/catalog protection through direct HTTP mutations', async () => {
     const { id } = await (await request('', 'POST', draft())).json()
     expect(
-      (await request('/defaults/default', 'PUT', { connectionId: id, model: 'model' })).status
+      (await request('/defaults/default', 'PUT', { llmProviderId: id, model: 'model' })).status
     ).toBe(200)
     expect((await request(`/${id}`, 'DELETE')).status).toBe(400)
     expect((await request(`/${id}`, 'PUT', { ...draft(), modelOverrides: [] })).status).toBe(400)
     expect(
-      (await request('/defaults/default', 'PUT', { connectionId: id, model: 'model' }, 'alice'))
+      (await request('/defaults/default', 'PUT', { llmProviderId: id, model: 'model' }, 'alice'))
         .status
     ).toBe(403)
     const { id: personal } = await (await request('', 'POST', draft('alice'), 'alice')).json()
     expect(
-      (await request('/defaults/summarizer', 'PUT', { connectionId: personal, model: 'model' }))
+      (await request('/defaults/summarizer', 'PUT', { llmProviderId: personal, model: 'model' }))
         .status
     ).toBe(400)
   })

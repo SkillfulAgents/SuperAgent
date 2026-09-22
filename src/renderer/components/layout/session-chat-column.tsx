@@ -28,7 +28,7 @@ interface SessionChatColumnProps {
   contextPercent: number | null
   effort?: EffortLevel
   speed?: SpeedLevel
-  connectionId?: string | null
+  llmProviderId?: string | null
   model?: string
   onPendingMessageAppeared: (localId: string) => void
   onMessageSent: (content: string, localId: string, queued: boolean) => void
@@ -52,7 +52,7 @@ export function SessionChatColumn({
   effort,
   speed,
   model,
-  connectionId,
+  llmProviderId,
   onPendingMessageAppeared,
   onMessageSent,
   onMessageUuidAssigned,
@@ -153,7 +153,7 @@ export function SessionChatColumn({
                     onMessageFailed={onMessageFailed}
                     initialEffort={effort}
                     initialSpeed={speed}
-                    initialModel={model} initialConnectionId={connectionId}
+                    initialModel={model} initialLlmProviderId={llmProviderId}
                     registerSnapshot={staleSession.registerSnapshot}
                     suspended={pendingRequestCount > 0 || displaced}
                   />

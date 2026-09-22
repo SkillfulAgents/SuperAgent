@@ -8,7 +8,7 @@ export const agentPreferencesSchema = z.object({
   /** Days after which this agent's API / MCP audit rows are deleted. 0 = Never. */
   apiLogAutoDeleteDays: z.number().int().nonnegative().optional(),
   /** Default model for new sessions — a concrete id (pinned) or a bare family alias (latest). Overrides the global default; per-session/trigger picks still win. */
-  defaultConnectionId: z.string().min(1).nullish(),
+  defaultLlmProviderId: z.string().min(1).nullish(),
   defaultModel: z.string().trim().min(1).optional(),
   /** Default effort for new sessions. Overrides the global default; per-session/trigger picks still win. */
   defaultEffort: z.enum(EFFORT_LEVELS).optional(),
@@ -25,7 +25,7 @@ export type AgentPreferences = z.infer<typeof agentPreferencesSchema>
 export const agentPreferencesUpdateSchema = z.object({
   autoDeleteInactiveDays: z.number().int().nonnegative().nullish(),
   apiLogAutoDeleteDays: z.number().int().nonnegative().nullish(),
-  defaultConnectionId: z.string().min(1).nullish(),
+  defaultLlmProviderId: z.string().min(1).nullish(),
   defaultModel: z.string().trim().min(1).nullish(),
   defaultEffort: z.enum(EFFORT_LEVELS).nullish(),
   defaultSpeed: z.enum(SPEED_LEVELS).nullish(),

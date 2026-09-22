@@ -71,7 +71,7 @@ export interface AgentCapabilityPolicies {
 }
 
 export interface CreateSessionRequest {
-  connectionId?: string;
+  llmProviderId?: string;
   llmRuntime?: ConnectionRuntime;
   metadata?: Record<string, any>;
   workingDirectory?: string;
@@ -102,7 +102,8 @@ export interface CreateSessionRequest {
   // session's own possibly one-off pick. Used to pre-warm a CLI subprocess for
   // the right configuration; absent on non-interactive callers.
   prewarmDefaults?: {
-    connectionId?: string
+    llmRuntime?: ConnectionRuntime;
+    llmProviderId?: string
     model?: string;
     modelPromptHints?: string[];
     effort?: EffortLevel;
@@ -111,7 +112,7 @@ export interface CreateSessionRequest {
 }
 
 export interface SendMessageRequest {
-  connectionId?: string;
+  llmProviderId?: string;
   llmRuntime?: ConnectionRuntime;
   content: any;
   type?: 'user' | 'system';

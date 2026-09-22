@@ -54,7 +54,7 @@ export function LlmConnectionsTab() {
             <span className="text-sm">App default</span>
             <SettingsModelSelect
               model={data.defaultSelection?.model}
-              connectionId={data.defaultSelection?.connectionId}
+              llmProviderId={data.defaultSelection?.llmProviderId}
               globalOnly
               includeEffort
               effort={settings?.models?.agentEffort}
@@ -68,7 +68,7 @@ export function LlmConnectionsTab() {
             <div className="flex items-center gap-2">
               <SettingsModelSelect
                 model={(data.summarizerSelection ?? data.defaultSelection)?.model}
-                connectionId={(data.summarizerSelection ?? data.defaultSelection)?.connectionId}
+                llmProviderId={(data.summarizerSelection ?? data.defaultSelection)?.llmProviderId}
                 globalOnly
                 onModelChange={() => {}}
                 onSelectionChange={(s) => changeDefault('summarizer', s)}
@@ -342,7 +342,7 @@ function ConnectionEditor({
       {provider !== 'platform' && (
         <CatalogEditor
           providerId={provider}
-          connectionId={existing?.id}
+          llmProviderId={existing?.id}
           supportsModelSearch={!!existing && (provider === 'openrouter' || provider === 'generic')}
           builtinCatalog={catalogFor(provider)}
           effectiveCatalog={catalog}

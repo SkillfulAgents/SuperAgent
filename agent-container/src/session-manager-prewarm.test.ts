@@ -180,11 +180,8 @@ describe('SessionManager pre-warm pool', () => {
     expect(MockClaudeProcess.spawned[0].disposeCalls).toBe(1)
   })
 
-  it('resolves the migrated account when resuming a legacy file without a connection ID', async () => {
-    const runtime = { connectionId: 'migrated-account', generation: 0, provider: 'anthropic', model: 'new-wire-model',
-      browserModel: 'browser', dashboardBuilderModel: 'dashboard', modelPromptHints: [], subagentModels: [],
-      modelContextWindows: {}, env: { ANTHROPIC_API_KEY: 'current-test-key' } }
-    const fetchCredential = vi.fn(async () => new Response(JSON.stringify(runtime)))
+  it('keeps a persisted session readable while the host credential service is unavailable', async () => {
+    const fetchCredential = vi.fn(async () => { throw new Error('host unavailable') })
     vi.stubEnv('SUPERAGENT_HOST_API_URL', 'http://host.test/api')
     vi.stubEnv('PROXY_TOKEN', 'agent-test-token')
     vi.stubGlobal('fetch', fetchCredential)
@@ -192,10 +189,47 @@ describe('SessionManager pre-warm pool', () => {
       persistedSessions.set('old-session', { sessionId: 'old-session', claudeSessionId: 'old-claude-id',
         workingDirectory: workDir, model: 'legacy-model', createdAt: new Date().toISOString() })
       expect(await manager.getSession('old-session')).not.toBeNull()
-      expect(fetchCredential).toHaveBeenCalledWith('http://host.test/api/llm-runtime/resolve', expect.objectContaining({
-        body: JSON.stringify({ sessionId: 'old-session' }),
-      }))
-      expect(MockClaudeProcess.spawned.at(-1)?.options).toMatchObject({ llmRuntime: runtime, model: 'new-wire-model' })
+      expect(fetchCredential).not.toHaveBeenCalled()
+      expect(MockClaudeProcess.spawned.at(-1)?.options).toMatchObject({ requiresConnectionRuntime: true, model: 'legacy-model' })
+    } finally {
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('warms the agent default provider after a one-off provider selection', async () => {
+    const runtime = (id: string, model: string) => ({ llmProviderId: id, generation: 0, provider: 'generic', model,
+      browserModel: model, dashboardBuilderModel: model, modelPromptHints: [], subagentModels: [], modelContextWindows: {},
+      env: { ANTHROPIC_AUTH_TOKEN: `secret-${id}` } })
+    const defaults = runtime('agent-default', 'default-model')
+    await manager.createSession({ ...baseRequest, model: 'one-off-model', llmProviderId: 'one-off', llmRuntime: runtime('one-off', 'one-off-model'),
+      prewarmDefaults: { llmRuntime: defaults, model: defaults.model, effort: 'high' } })
+    const warm = MockClaudeProcess.spawned.at(-1)!
+    expect(warm.options.llmRuntime).toEqual(defaults)
+    expect(warm.prewarmCalls).toBe(1)
+    const count = MockClaudeProcess.spawned.length
+    await manager.createSession({ ...baseRequest, model: defaults.model, llmProviderId: defaults.llmProviderId, llmRuntime: defaults })
+    expect(MockClaudeProcess.spawned).toHaveLength(count + 1) // Refill only; the session claimed the warm process.
+    const file = fs.readFileSync(path.join(workDir, '.superagent-warm-profile.json'), 'utf8')
+    expect(file).not.toContain('secret-agent-default')
+  })
+
+  it('refreshes a persisted provider profile on boot before warming it', async () => {
+    const runtime = { llmProviderId: 'boot-default', generation: 7, provider: 'anthropic', model: 'current-model',
+      browserModel: 'browser', dashboardBuilderModel: 'dashboard', modelPromptHints: [], subagentModels: [],
+      modelContextWindows: {}, env: { ANTHROPIC_API_KEY: 'fresh-boot-key' } }
+    const profile = { ...profileFor('old-model'), llmProviderId: 'old-default', credentialGeneration: 1, runtimeFingerprint: 'unavailable-after-restart' }
+    fs.writeFileSync(path.join(workDir, '.superagent-warm-profile.json'), JSON.stringify(profile))
+    const fetchRuntime = vi.fn(async () => new Response(JSON.stringify(runtime)))
+    vi.stubEnv('SUPERAGENT_HOST_API_URL', 'http://host.test/api')
+    vi.stubEnv('PROXY_TOKEN', 'agent-token')
+    vi.stubGlobal('fetch', fetchRuntime)
+    try {
+      manager.prewarmFromLastProfile()
+      await vi.waitFor(() => expect(MockClaudeProcess.spawned.at(-1)?.prewarmCalls).toBe(1))
+      expect(fetchRuntime).toHaveBeenCalledWith('http://host.test/api/llm-runtime/prewarm', expect.anything())
+      expect(MockClaudeProcess.spawned.at(-1)?.options).toMatchObject({ llmRuntime: runtime, model: 'current-model' })
+      expect(fs.readFileSync(path.join(workDir, '.superagent-warm-profile.json'), 'utf8')).not.toContain('fresh-boot-key')
     } finally {
       vi.unstubAllGlobals()
       vi.unstubAllEnvs()

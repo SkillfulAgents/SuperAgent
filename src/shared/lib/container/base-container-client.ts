@@ -1,4 +1,5 @@
 import { MessageNotAcceptedError, requestWasNotDispatched } from './message-dispatch-error'
+import { isProviderEnvVar } from '../llm-provider/provider-settings'
 import { isQueuedSessionSend } from './session-send-context'
 import { connectionRuntime, rememberSessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { resolveExecutionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
@@ -1250,8 +1251,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     try {
       // Resolve stored selections (bare aliases or concrete ids) to the active
       // provider's concrete wire id before the container ever sees them.
-      const selected = await resolveExecutionSelection(storedSelection(options.model, options.connectionId))
+      const selected = await resolveExecutionSelection(storedSelection(options.model, options.llmProviderId))
       const llmRuntime = await connectionRuntime(selected, this.config.agentId)
+      const warmSelection = options.prewarmDefaults
+        ? await resolveExecutionSelection(storedSelection(options.prewarmDefaults.model, options.prewarmDefaults.llmProviderId))
+        : null
+      const warmRuntime = warmSelection
+        ? await connectionRuntime(warmSelection, this.config.agentId)
+        : undefined
       const resolvedModel = llmRuntime.model
       const resolvedBrowserModel = llmRuntime.browserModel
       const resolvedDashboardBuilderModel = llmRuntime.dashboardBuilderModel
@@ -1285,7 +1292,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         headers: { 'Content-Type': 'application/json', ...this.getHostAuthHeaders() },
         body: JSON.stringify({
           metadata: options.metadata,
-          connectionId: selected.connectionId,
+          llmProviderId: selected.llmProviderId,
           llmRuntime,
           systemPrompt: options.systemPrompt,
           modelPromptHints: modelPromptHints.length > 0 ? modelPromptHints : undefined,
@@ -1308,9 +1315,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           effort: options.effort,
           speed: options.speed,
           capabilityPolicies,
-          prewarmDefaults: options.prewarmDefaults?.model === selected.model && options.prewarmDefaults?.connectionId === selected.connectionId ? {
-            model: resolvedModel,
-            modelPromptHints,
+          prewarmDefaults: options.prewarmDefaults && warmRuntime ? {
+            llmRuntime: warmRuntime,
+            llmProviderId: warmRuntime.llmProviderId,
+            model: warmRuntime.model,
+            modelPromptHints: warmRuntime.modelPromptHints,
             effort: options.prewarmDefaults.effort,
             speed: options.prewarmDefaults.speed,
           } : undefined,
@@ -1452,13 +1461,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const metadata = await actor.sessions.metadata(sessionId)
       const prefs = await actor.config.get('preferences')
       const selected = await resolveExecutionSelection(
-        storedSelection(options?.model, options?.connectionId !== undefined ? options.connectionId : metadata?.connectionId),
-        storedSelection(metadata?.model, metadata?.connectionId),
-        storedSelection(prefs?.defaultModel, prefs?.defaultConnectionId),
+        options?.model || options?.llmProviderId !== undefined
+          ? storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId)
+          : null,
+        storedSelection(metadata?.model, metadata?.llmProviderId),
+        storedSelection(prefs?.defaultModel, prefs?.defaultLlmProviderId),
       )
       llmRuntime = await connectionRuntime(selected, this.config.agentId)
       rememberSessionRuntime(this.config.agentId, sessionId, llmRuntime)
-      await actor.sessions.updateMetadata(sessionId, { connectionId: selected.connectionId, model: selected.model })
+      await actor.sessions.updateMetadata(sessionId, { llmProviderId: selected.llmProviderId, model: selected.model })
     }
     const model = llmRuntime?.model
     const shouldQuery = options?.shouldQuery
@@ -1478,7 +1489,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           headers: { 'Content-Type': 'application/json', ...this.getHostAuthHeaders() },
           body: JSON.stringify({
             content,
-            ...(llmRuntime ? { connectionId: llmRuntime.connectionId, llmRuntime } : {}),
+            ...(llmRuntime ? { llmProviderId: llmRuntime.llmProviderId, llmRuntime } : {}),
             ...(uuid ? { uuid } : {}),
             ...(effort ? { effort } : {}),
             ...(speed ? { speed } : {}),
@@ -1946,7 +1957,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
     const out: Record<string, string> = {}
     for (const [key, value] of Object.entries(merged)) {
-      if (value !== undefined) out[key] = value
+      if (value !== undefined && !(settings.llmDefault && isProviderEnvVar(key))) out[key] = value
     }
     return out
   }

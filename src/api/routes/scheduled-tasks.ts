@@ -1,4 +1,4 @@
-import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { LlmSelectionAccessError, assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Scheduled Tasks API Routes
@@ -252,13 +252,13 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { connectionId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
-    if ('connectionId' in body) updates.connectionId = parsed.data.connectionId ?? null
+    const updates: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
+    if ('llmProviderId' in body) updates.llmProviderId = parsed.data.llmProviderId ?? null
     if ('model' in body) updates.model = parsed.data.model ?? null
     if ('effort' in body) updates.effort = parsed.data.effort ?? null
     if ('speed' in body) updates.speed = parsed.data.speed ?? null
 
-    await assertConnectionSelectionAccess(parsed.data.connectionId, task?.connectionId)
+    await assertConnectionSelectionAccess(parsed.data.llmProviderId, task?.llmProviderId)
     const updated = await updateTaskRuntimeOptions(task!.id, updates)
     if (!updated) {
       return c.json({ error: 'Task not found or not editable' }, 404)
@@ -268,6 +268,7 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'runtime-options' } })
     return c.json(refreshed)
   } catch (error) {
+    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     console.error('Failed to update scheduled task runtime options:', error)
     return c.json({ error: 'Failed to update runtime options' }, 500)
   }
@@ -312,7 +313,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     const agentPrefs = await readAgentPreferences(task.agentSlug)
     const resolved = await resolveConnectionRuntimeInherit(
       { model: task.model,
-      connectionId: task.connectionId, effort: task.effort, speed: task.speed },
+      llmProviderId: task.llmProviderId, effort: task.effort, speed: task.speed },
       agentPrefs,
       models,
     )
@@ -321,7 +322,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
       model: resolved.model,
-      connectionId: resolved.connectionId,
+      llmProviderId: resolved.llmProviderId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       effort: resolved.effort,

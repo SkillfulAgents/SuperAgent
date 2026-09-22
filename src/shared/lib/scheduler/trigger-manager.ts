@@ -345,7 +345,7 @@ class TriggerManager {
     const agentPrefs = await readAgentPreferences(trigger.agentSlug)
     const resolved = await resolveConnectionRuntimeInherit(
       { model: trigger.model,
-      connectionId: trigger.connectionId, effort: trigger.effort, speed: trigger.speed },
+      llmProviderId: trigger.llmProviderId, effort: trigger.effort, speed: trigger.speed },
       agentPrefs,
       models,
     )
@@ -353,7 +353,7 @@ class TriggerManager {
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: prompt,
       model: resolved.model,
-      connectionId: resolved.connectionId,
+      llmProviderId: resolved.llmProviderId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },

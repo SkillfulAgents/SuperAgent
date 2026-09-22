@@ -310,38 +310,48 @@ describe('connection/model selection', () => {
   const second = { id: 'personal', catalog: [model('same'), model('personal-other')] }
   beforeEach(() => {
     state.settings = LOADED_SETTINGS
-    state.connections = { connections: [first, second], defaultSelection: { connectionId: 'global', model: 'global-default' } }
+    state.connections = { connections: [first, second], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
   })
+  it('retains a model picked while the connection query is still pending', () => {
+    state.connections = undefined
+    const { result, rerender } = render({})
+    act(() => result.current.setModel('same'))
+    state.connections = { connections: [first, second], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+    rerender({})
+    expect(result.current.model).toBe('same')
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'same' })
+  })
+
   it('binds a model pick to the inherited connection before the initial query has settled', () => {
     state.connections = undefined
     const { result, rerender } = render({ initialModel: 'same' })
-    state.connections = { connections: [first, second], defaultSelection: { connectionId: 'global', model: 'global-default' } }
+    state.connections = { connections: [first, second], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
     rerender({ initialModel: 'same' })
     act(() => result.current.setModel('same'))
-    expect(result.current.toRuntimeOptions()).toMatchObject({ connectionId: 'global', model: 'same' })
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'same' })
   })
 
   it('changes accounts even when both expose the same model ID', () => {
-    const { result } = render({ initialConnectionId: 'global', initialModel: 'same' })
+    const { result } = render({ initialLlmProviderId: 'global', initialModel: 'same' })
     act(() => result.current.setConnection?.('personal'))
-    expect(result.current.toRuntimeOptions()).toMatchObject({ connectionId: 'personal', model: 'same' })
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
     expect(result.current.catalog).toEqual(second.catalog)
   })
   it('drops the whole deleted pair instead of charging another account for the orphaned model', () => {
-    const { result, rerender } = render({ initialConnectionId: 'personal', initialModel: 'same' })
-    state.connections = { connections: [first], defaultSelection: { connectionId: 'global', model: 'global-default' } }
-    rerender({ initialConnectionId: 'personal', initialModel: 'same' })
-    expect(result.current.toRuntimeOptions()).toMatchObject({ connectionId: 'global', model: 'global-default' })
+    const { result, rerender } = render({ initialLlmProviderId: 'personal', initialModel: 'same' })
+    state.connections = { connections: [first], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+    rerender({ initialLlmProviderId: 'personal', initialModel: 'same' })
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'global-default' })
   })
   it('drops a removed model before considering an agent default', () => {
-    const { result } = render({ initialConnectionId: 'personal', initialModel: 'removed', agentDefaultConnectionId: 'personal', agentDefaultModel: 'personal-other' })
-    expect(result.current.connectionId).toBe('personal')
+    const { result } = render({ initialLlmProviderId: 'personal', initialModel: 'removed', agentDefaultLlmProviderId: 'personal', agentDefaultModel: 'personal-other' })
+    expect(result.current.llmProviderId).toBe('personal')
     expect(result.current.model).toBe('personal-other')
   })
   it('protects an unsent account change from an authoritative refetch', () => {
-    const { result, rerender } = render({ initialConnectionId: 'global', initialModel: 'same' })
+    const { result, rerender } = render({ initialLlmProviderId: 'global', initialModel: 'same' })
     act(() => result.current.setConnection?.('personal'))
-    rerender({ initialConnectionId: 'global', initialModel: 'global-default' })
-    expect(result.current.toRuntimeOptions()).toMatchObject({ connectionId: 'personal', model: 'same' })
+    rerender({ initialLlmProviderId: 'global', initialModel: 'global-default' })
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
   })
 })

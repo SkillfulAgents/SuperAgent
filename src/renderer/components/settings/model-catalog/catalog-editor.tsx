@@ -121,7 +121,7 @@ export interface CatalogEditorProps {
   builtinCatalog: ModelDefinition[]
   effectiveCatalog: ModelDefinition[]
   modelCatalog: ModelCatalogSettings | undefined
-  connectionId?: string
+  llmProviderId?: string
   modelPricing?: GlobalModelPricing
   canEditPricing?: boolean
   supportsModelSearch?: boolean
@@ -145,7 +145,7 @@ export function CatalogEditor({
   builtinCatalog,
   effectiveCatalog,
   modelCatalog,
-  connectionId,
+  llmProviderId,
   modelPricing = {},
   canEditPricing = true,
   supportsModelSearch = false,
@@ -377,7 +377,7 @@ export function CatalogEditor({
         canEditPricing={canEditPricing}
         initialModel={customDialog?.mode === 'edit' ? customDialog.model : null}
         providerId={providerId}
-        connectionId={connectionId}
+        llmProviderId={llmProviderId}
         supportsModelSearch={supportsModelSearch}
         disabled={disabled}
         onOpenChange={(open) => !open && setCustomDialog(null)}

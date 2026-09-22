@@ -65,6 +65,7 @@ export class BedrockLlmProvider extends BaseLlmProvider {
         apiKey: '',
         awsAccessKey: accessKeyId,
         awsSecretKey: secretAccessKey,
+        awsSessionToken: this.envValue('AWS_SESSION_TOKEN'),
       }) as unknown as Anthropic
     }
 
@@ -90,6 +91,7 @@ export class BedrockLlmProvider extends BaseLlmProvider {
       // Advanced auth (only if no bearer token)
       AWS_ACCESS_KEY_ID: !bearerToken ? (settings.apiKeys?.bedrockAccessKeyId || this.envValue('AWS_ACCESS_KEY_ID')) : undefined,
       AWS_SECRET_ACCESS_KEY: !bearerToken ? (settings.apiKeys?.bedrockSecretAccessKey || this.envValue('AWS_SECRET_ACCESS_KEY')) : undefined,
+      AWS_SESSION_TOKEN: !bearerToken ? this.envValue('AWS_SESSION_TOKEN') : undefined,
       // Clear Anthropic API key so container uses Bedrock
       ANTHROPIC_API_KEY: undefined,
     }
@@ -117,6 +119,7 @@ export class BedrockLlmProvider extends BaseLlmProvider {
         apiKey: '',
         awsAccessKey: accessKeyId,
         awsSecretKey: secretAccessKey,
+        awsSessionToken: this.envValue('AWS_SESSION_TOKEN'),
       })
       await client.messages.create({
         model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',

@@ -30,7 +30,7 @@ export interface CreateScheduledTaskParams {
   createdBySessionId?: string
   createdByUserId?: string
   timezone?: string
-  connectionId?: string | null
+  llmProviderId?: string | null
   model?: string
   effort?: string
   speed?: string
@@ -100,7 +100,7 @@ export async function createScheduledTask(
     createdBySessionId: params.createdBySessionId,
     createdByUserId: params.createdByUserId,
     timezone: params.timezone || null,
-    connectionId: params.model ? (params.connectionId === undefined ? getSettings().llmDefault?.connectionId : params.connectionId) : null,
+    llmProviderId: params.model ? (params.llmProviderId === undefined ? getSettings().llmDefault?.llmProviderId : params.llmProviderId) : null,
     model: params.model || null,
     effort: params.effort || null,
     speed: params.speed || null,
@@ -715,17 +715,17 @@ export async function recordManualExecution(
  */
 export async function updateTaskRuntimeOptions(
   taskId: string,
-  options: { connectionId?: string | null; model?: string | null; effort?: string | null; speed?: string | null },
+  options: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null },
 ): Promise<boolean> {
   const task = await getScheduledTask(taskId)
   if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
 
   const updates: Record<string, string | null> = {}
-  if ('connectionId' in options) updates.connectionId = options.connectionId ?? null
+  if ('llmProviderId' in options) updates.llmProviderId = options.llmProviderId ?? null
   if ('model' in options) {
     updates.model = options.model ?? null
-    if (!options.model) updates.connectionId = null
-    else if (options.connectionId === undefined && getSettings().llmDefault) updates.connectionId = task.connectionId ?? getSettings().llmDefault!.connectionId
+    if (!options.model) updates.llmProviderId = null
+    else if (options.llmProviderId === undefined && getSettings().llmDefault) updates.llmProviderId = task.llmProviderId ?? getSettings().llmDefault!.llmProviderId
   }
   if ('effort' in options) updates.effort = options.effort ?? null
   if ('speed' in options) updates.speed = options.speed ?? null

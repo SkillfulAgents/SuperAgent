@@ -1032,7 +1032,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         initialMessage: deliveredPrompt,
         ...(initialMessageUuid ? { initialMessageUuid } : {}),
         model: resolved.model,
-      connectionId: resolved.connectionId,
+      llmProviderId: resolved.llmProviderId,
         browserModel: models.browserModel,
         dashboardBuilderModel: models.dashboardBuilderModel,
         effort: resolved.effort,

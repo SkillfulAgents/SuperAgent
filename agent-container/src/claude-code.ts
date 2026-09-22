@@ -1,4 +1,4 @@
-import { withoutProviderCredentials, type ConnectionRuntime } from './connection-runtime';
+import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
 import {
   query,
   startup,
@@ -533,6 +533,7 @@ export interface ClaudeCodeProcessOptions {
   maxTurns?: number;
   maxBudgetUsd?: number;
   llmRuntime?: ConnectionRuntime;
+  requiresConnectionRuntime?: boolean;
   customEnvVars?: Record<string, string>;
   effort?: EffortLevel;
   speed?: SpeedLevel;
@@ -562,6 +563,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private maxTurns: number | undefined;
   private maxBudgetUsd: number | undefined;
   private llmRuntime: ConnectionRuntime | undefined;
+  private readonly requiresConnectionRuntime: boolean;
   private customEnvVars: Record<string, string> | undefined;
   private effort: EffortLevel | undefined;
   private speed: SpeedLevel | undefined;
@@ -673,6 +675,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.maxBudgetUsd = options.maxBudgetUsd;
     this.customEnvVars = options.customEnvVars;
     this.llmRuntime = options.llmRuntime;
+    this.requiresConnectionRuntime = options.requiresConnectionRuntime ?? false;
     this.effort = options.effort;
     this.speed = options.speed;
     this.capabilityPolicies = options.capabilityPolicies;
@@ -959,6 +962,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   }
 
   private buildQueryOptions(): Options {
+    if (this.requiresConnectionRuntime && !this.llmRuntime) throw new Error('LLM provider runtime is required');
     const remoteMcpConfigs = this.buildRemoteMcpServers();
     const remoteMcpToolPatterns = Object.keys(remoteMcpConfigs).map(name => `mcp__${name}__*`);
     this.connectedAccountsSnapshot = connectedAccountsSnapshot();
@@ -1623,9 +1627,10 @@ export class ClaudeCodeProcess extends EventEmitter {
   }
 
   async sendMessage(content: string, uuid?: UUID, options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
-    const nextRuntime = options?.llmRuntime;
+    const nextRuntime = options?.llmRuntime ?? (this.requiresConnectionRuntime && !this.llmRuntime
+      ? await resolveSessionRuntime(this.sessionId) : undefined);
     const connectionChanged = nextRuntime !== undefined && (
-      nextRuntime.connectionId !== this.llmRuntime?.connectionId ||
+      nextRuntime.llmProviderId !== this.llmRuntime?.llmProviderId ||
       nextRuntime.model !== this.llmRuntime?.model ||
       nextRuntime.generation !== this.llmRuntime?.generation ||
       JSON.stringify(nextRuntime.env) !== JSON.stringify(this.llmRuntime?.env)

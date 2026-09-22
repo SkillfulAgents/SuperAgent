@@ -38,15 +38,9 @@ export async function readAgentPreferences(
     return {}
   }
   if (getSettings().llmDefault && prefs.defaultModel) {
-    const selected = await resolveConnectionSelection(storedSelection(prefs.defaultModel, prefs.defaultConnectionId))
-    if (!selected) return { ...prefs, defaultModel: undefined, defaultConnectionId: null }
-    if (prefs.defaultConnectionId === undefined) {
-      await agentRegistry.get(agentSlug).config.update('preferences', current => {
-        if (!current || current.defaultModel !== prefs.defaultModel || current.defaultConnectionId !== undefined) return current
-        return { ...current, defaultModel: selected.model, defaultConnectionId: selected.connectionId }
-      })
-    }
-    return { ...prefs, defaultModel: selected.model, defaultConnectionId: selected.connectionId }
+    const selected = await resolveConnectionSelection(storedSelection(prefs.defaultModel, prefs.defaultLlmProviderId))
+    if (!selected) return { ...prefs, defaultModel: undefined, defaultLlmProviderId: null }
+    return { ...prefs, defaultModel: selected.model, defaultLlmProviderId: selected.llmProviderId }
   }
   return prefs
 }
@@ -69,7 +63,7 @@ export async function updateAgentPreferences(
     const merged: Record<string, unknown> = { ...(current ?? {}) }
     for (const [key, value] of Object.entries(updates)) {
       if (value === null || value === undefined) {
-        if (key === 'defaultConnectionId') merged[key] = null
+        if (key === 'defaultLlmProviderId') merged[key] = null
         else delete merged[key]
       } else {
         merged[key] = value
@@ -78,10 +72,10 @@ export async function updateAgentPreferences(
     // New model-only writes bind to the current account. Only old documents
     // without an ID are eligible for the one-time legacy migration.
     if (Object.hasOwn(updates, 'defaultModel')) {
-      if (!updates.defaultModel) merged.defaultConnectionId = null
-      else if (!Object.hasOwn(updates, 'defaultConnectionId')) {
-        const connectionId = current?.defaultConnectionId ?? getSettings().llmDefault?.connectionId
-        if (connectionId) merged.defaultConnectionId = connectionId
+      if (!updates.defaultModel) merged.defaultLlmProviderId = null
+      else if (!Object.hasOwn(updates, 'defaultLlmProviderId')) {
+        const llmProviderId = current?.defaultLlmProviderId ?? getSettings().llmDefault?.llmProviderId
+        if (llmProviderId) merged.defaultLlmProviderId = llmProviderId
       }
     }
     return agentPreferencesSchema.parse(merged)

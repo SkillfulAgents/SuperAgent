@@ -261,9 +261,9 @@ export function useUpdateScheduledTaskRuntimeOptions() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ taskId, connectionId, model, effort, speed }: { taskId: string; agentSlug: string; connectionId?: string | null; model?: string | null; effort?: string | null; speed?: string | null }) => {
+    mutationFn: async ({ taskId, llmProviderId, model, effort, speed }: { taskId: string; agentSlug: string; llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null }) => {
       const body: Record<string, string | null> = {}
-      if (connectionId !== undefined) body.connectionId = connectionId
+      if (llmProviderId !== undefined) body.llmProviderId = llmProviderId
       if (model !== undefined) body.model = model
       if (effort !== undefined) body.effort = effort
       if (speed !== undefined) body.speed = speed

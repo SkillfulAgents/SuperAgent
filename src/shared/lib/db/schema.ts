@@ -262,7 +262,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   timezone: text('timezone'),
 
   // Runtime options (override global defaults when set)
-  connectionId: text('connection_id').references(() => llmConnections.id, { onDelete: 'set null' }),
+  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
   model: text('model'),
   effort: text('effort'),
   speed: text('speed'),
@@ -658,7 +658,7 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   mintedByMemberId: text('minted_by_member_id'),
 
   // Runtime options (override global defaults when set)
-  connectionId: text('connection_id').references(() => llmConnections.id, { onDelete: 'set null' }),
+  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
   model: text('model'),
   effort: text('effort'),
   speed: text('speed'),
@@ -687,7 +687,7 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   showToolCalls: integer('show_tool_calls', { mode: 'boolean' }).notNull().default(false),
   requireApproval: integer('require_approval', { mode: 'boolean' }).notNull().default(true),
   sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
-  connectionId: text('connection_id').references(() => llmConnections.id, { onDelete: 'set null' }),
+  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
   model: text('model'), // Claude model override; null = use default
   effort: text('effort'), // Effort level override; null = use default
   speed: text('speed'), // Speed level override; null = use default

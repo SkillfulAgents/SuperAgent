@@ -1,5 +1,3 @@
-import { getSettings as getLlmSettings } from '@shared/lib/config/settings'
-import { resolveConnectionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 /**
  * Session Service
  *
@@ -260,10 +258,6 @@ export async function getSessionMetadata(
   // Own-property check for the same reason as isSessionRegistered: a bare index
   // read returns an inherited Object.prototype member for ids like 'constructor'.
   const entry = Object.hasOwn(metadata, sessionId) ? metadata[sessionId] : null
-  if (entry?.model && getLlmSettings().llmDefault) {
-    const selected = await resolveConnectionSelection(storedSelection(entry.model, entry.connectionId))
-    return selected ? { ...entry, connectionId: selected.connectionId } : { ...entry, model: undefined, connectionId: null }
-  }
   return entry
 }
 

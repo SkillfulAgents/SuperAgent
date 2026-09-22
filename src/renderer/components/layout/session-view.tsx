@@ -172,7 +172,7 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
               contextPercent={contextPercent}
               effort={session?.effort}
               speed={session?.speed}
-              model={session?.model} connectionId={session?.connectionId}
+              model={session?.model} llmProviderId={session?.llmProviderId}
               onPendingMessageAppeared={onPendingMessageAppeared}
               onMessageSent={onMessageSent}
               onMessageUuidAssigned={onMessageUuidAssigned}

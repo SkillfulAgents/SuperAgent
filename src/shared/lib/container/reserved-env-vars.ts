@@ -15,9 +15,6 @@ import { z } from 'zod'
  * spoof them by exploiting a branch where the runtime did not set them.
  */
 export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
-  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_CUSTOM_HEADERS',
-  'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX',
-  'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
   // Proxy authentication
   'PROXY_BASE_URL',
   'PROXY_TOKEN',

@@ -41,6 +41,7 @@ export interface AgentIdentity {
 }
 
 export interface ProviderConfiguration {
+  runtimeEnv?: Record<string, string>
   apiKeys: ApiKeySettings
   env: Record<string, string | undefined>
 }
@@ -53,7 +54,7 @@ export abstract class BaseLlmProvider {
   }
 
   protected envValue(name: string): string | undefined {
-    return this.configuration ? this.configuration.env[name] : process.env[name]
+    return this.configuration ? this.configuration.runtimeEnv?.[name] ?? this.configuration.env[name] : process.env[name]
   }
 
   abstract readonly id: LlmProviderId

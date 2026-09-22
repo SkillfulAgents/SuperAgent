@@ -79,7 +79,7 @@ test.describe('Provider connection lifecycle', () => {
     await expect
       .poll(
         async () =>
-          (await (await request.get('/api/llm-connections')).json()).defaultSelection.connectionId
+          (await (await request.get('/api/llm-connections')).json()).defaultSelection.llmProviderId
       )
       .toBe(first.id)
     expect((await request.delete(`/api/llm-connections/${first.id}`)).status()).toBe(400)
@@ -117,7 +117,7 @@ test.describe('Provider connection lifecycle', () => {
       await request.post('/api/agents', { data: { name: 'Connection switching test' } })
     ).json()
     const created = await request.post(`/api/agents/${agent.slug}/sessions`, {
-      data: { message: 'Hello', model: 'sonnet', connectionId: accounts[0] },
+      data: { message: 'Hello', model: 'sonnet', llmProviderId: accounts[0] },
     })
     expect(created.status()).toBe(201)
     const session = await created.json()
@@ -132,7 +132,7 @@ test.describe('Provider connection lifecycle', () => {
     await page.keyboard.press('Escape')
     await new SessionPage(page).sendMessage('Continue on the selected account.')
     await expect
-      .poll(async () => (await (await request.get(sessionPath)).json()).connectionId)
+      .poll(async () => (await (await request.get(sessionPath)).json()).llmProviderId)
       .toBe(accounts[1])
     expect((await (await request.get('/api/llm-connections')).json()).defaultSelection).toEqual(
       baseline.defaultSelection

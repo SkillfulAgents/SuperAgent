@@ -200,6 +200,28 @@ describe('chat-integrations access routes', () => {
   })
 
 
+  it.each([42, {}, [], ''])( 'rejects malformed llmProviderId %j before creating or updating a chat integration', async value => {
+    for (const method of ['POST', 'PATCH']) {
+      const res = await app().request(`/api/chat-integrations/${method === 'POST' ? 'agent-a' : INTEGRATION_A}`, {
+        method, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'telegram', config: { botToken: 't' }, llmProviderId: value }),
+      })
+      expect(res.status).toBe(400)
+    }
+    expect(createChatIntegration).not.toHaveBeenCalled()
+    expect(updateChatIntegration).not.toHaveBeenCalled()
+  })
+
+  it('returns 404 for a missing LLM provider without updating the integration', async () => {
+    const res = await app().request(`/api/chat-integrations/${INTEGRATION_A}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ llmProviderId: 'deleted-provider' }),
+    })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'LLM provider not found' })
+    expect(updateChatIntegration).not.toHaveBeenCalled()
+  })
+
   // ── GET /:integrationId/access ─────────────────────────────────────────
 
   describe('GET /:integrationId', () => {

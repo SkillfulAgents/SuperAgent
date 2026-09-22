@@ -8,7 +8,7 @@ import {
 
 it('cannot reuse a warm process after an environment credential rotates without a DB generation change', () => {
   const old: ConnectionRuntime = {
-    connectionId: 'same-account',
+    llmProviderId: 'same-account',
     generation: 3,
     provider: 'anthropic',
     model: 'model',
@@ -21,11 +21,11 @@ it('cannot reuse a warm process after an environment credential rotates without 
   }
   rememberConnectionRuntime(old)
   const fingerprint = runtimeFingerprint(old)
-  expect(cachedConnectionRuntime(old.connectionId, 3, 'model', fingerprint)).toEqual(old)
+  expect(cachedConnectionRuntime(old.llmProviderId, 3, 'model', fingerprint)).toEqual(old)
   const next = { ...old, env: { ANTHROPIC_API_KEY: 'new-key' } }
   rememberConnectionRuntime(next)
-  expect(cachedConnectionRuntime(old.connectionId, 3, 'model', fingerprint)).toBeUndefined()
-  expect(cachedConnectionRuntime(next.connectionId, 3, 'model', runtimeFingerprint(next))).toEqual(
+  expect(cachedConnectionRuntime(old.llmProviderId, 3, 'model', fingerprint)).toBeUndefined()
+  expect(cachedConnectionRuntime(next.llmProviderId, 3, 'model', runtimeFingerprint(next))).toEqual(
     next
   )
   expect(

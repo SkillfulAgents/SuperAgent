@@ -3,7 +3,7 @@ import { apiFetch } from '@renderer/lib/api'
 import type { ConnectionInfo, ModelSelection } from '@shared/lib/llm-provider/connection-schema'
 
 export interface ConnectionsResponse {
-  legacyConnectionId?: string
+  legacyLlmProviderId?: string
   connections: ConnectionInfo[]
   defaultSelection: ModelSelection | null
   summarizerSelection: ModelSelection | null
@@ -11,10 +11,10 @@ export interface ConnectionsResponse {
 export function useLlmConnections(
   agentSlug?: string,
   sessionId?: string,
-  currentConnectionId?: string | null
+  currentLlmProviderId?: string | null
 ) {
   return useQuery<ConnectionsResponse>({
-    queryKey: ['settings', 'llm-connections', agentSlug, sessionId, currentConnectionId],
+    queryKey: ['settings', 'llm-connections', agentSlug, sessionId, currentLlmProviderId],
     queryFn: async () => {
       const root = await apiFetch('/api/llm-connections')
       if (!root.ok) throw new Error('Could not load model connections')

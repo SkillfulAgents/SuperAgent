@@ -59,10 +59,10 @@ export function getModelContextWindow(
  * window for non-Claude models (it otherwise assumes a 200k default).
  */
 export function getModelContextWindowMap(
-  providerId: LlmProviderId,
+  catalog: readonly ModelDefinition[],
 ): Record<string, number> {
   return Object.fromEntries(
-    getEffectiveCatalog(providerId)
+    catalog
       .filter(model => model.contextWindow !== undefined)
       .map(model => [model.id, model.contextWindow as number]),
   )

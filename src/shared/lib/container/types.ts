@@ -107,7 +107,7 @@ export interface CreateSessionOptions {
   availableEnvVars?: string[]
   initialMessage: string // Required: first message to send (triggers session ID generation)
   initialMessageUuid?: string // Optional UUID for message author attribution
-  connectionId?: string | null
+  llmProviderId?: string | null
   model?: string // Claude model to use for this session
   browserModel?: string // Model for browser subagent
   dashboardBuilderModel?: string // Model for the dashboard-builder subagent
@@ -130,7 +130,7 @@ export interface CreateSessionOptions {
    * default session would discard that process and start cold.
    */
   prewarmDefaults?: {
-    connectionId?: string
+    llmProviderId?: string
     model?: string
     effort?: EffortLevel
     speed?: SpeedLevel

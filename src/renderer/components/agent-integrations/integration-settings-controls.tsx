@@ -146,7 +146,7 @@ export function IntegrationModelEffort({ integration }: { integration: PublicAge
     <SettingsModelSelect
       agentSlug={integration.agentSlug}
       model={selection.model}
-      connectionId={integration.connectionId}
+      llmProviderId={integration.llmProviderId}
       onSelectionChange={s => updateIntegration.mutate({ id: integration.id, ...s })}
       onModelChange={(m) => updateIntegration.mutate({ id: integration.id, model: m })}
       includeEffort

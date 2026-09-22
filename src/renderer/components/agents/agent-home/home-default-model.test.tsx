@@ -136,6 +136,6 @@ describe('HomeDefaultModel overrides', () => {
     await user.click(screen.getByTestId('settings-model-trigger'))
     await user.click(screen.getByTestId('settings-model-app-default'))
 
-    expect(mutateMock).toHaveBeenCalledWith({ defaultModel: null, defaultConnectionId: null, defaultEffort: null, defaultSpeed: null })
+    expect(mutateMock).toHaveBeenCalledWith({ defaultModel: null, defaultLlmProviderId: null, defaultEffort: null, defaultSpeed: null })
   })
 })

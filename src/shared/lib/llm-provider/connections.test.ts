@@ -90,7 +90,7 @@ beforeEach(async () => {
       agentImage: 'test',
       resourceLimits: { cpu: 1, memory: '1g' },
     },
-    llmLegacyConnectionId: 'imported',
+    llmLegacyProviderId: 'imported',
   }
   vi.stubEnv('AUTH_MODE', 'true')
 })
@@ -122,13 +122,13 @@ describe('LLM connections', () => {
 
   it('resolves aliases and clears the entire selection when either reference disappears', () => {
     expect(
-      resolveSelection({ connectionId: 'one', model: 'a' }, [{ id: 'one', catalog }])?.wireModel
+      resolveSelection({ llmProviderId: 'one', model: 'a' }, [{ id: 'one', catalog }])?.wireModel
     ).toBe('model-a')
     expect(
-      resolveSelection({ connectionId: 'missing', model: 'model-a' }, [{ id: 'one', catalog }])
+      resolveSelection({ llmProviderId: 'missing', model: 'model-a' }, [{ id: 'one', catalog }])
     ).toBeNull()
     expect(
-      resolveSelection({ connectionId: 'one', model: 'removed-4' }, [{ id: 'one', catalog }])
+      resolveSelection({ llmProviderId: 'one', model: 'removed-4' }, [{ id: 'one', catalog }])
     ).toBeNull()
   })
   it('isolates two accounts of the same provider from ambient settings and each other', async () => {
@@ -148,16 +148,16 @@ describe('LLM connections', () => {
   })
   it('protects the global app default and its model, with ordinary missing overrides inheriting', async () => {
     const first = await add()
-    await setGlobalSelection('default', { connectionId: first, model: 'a' })
+    await setGlobalSelection('default', { llmProviderId: first, model: 'a' })
     await expect(deleteConnection(first, admin)).rejects.toThrow('app default')
     await expect(
       saveConnection({ name: 'First', provider: 'generic', config: {}, modelOverrides: [] }, admin, first)
     ).rejects.toThrow('app default')
     expect(
-      (await resolveExecutionSelection({ connectionId: 'gone', model: 'model-a' })).connectionId
+      (await resolveExecutionSelection({ llmProviderId: 'gone', model: 'model-a' })).llmProviderId
     ).toBe(first)
     expect(storedSelection('a', null)).toBeNull()
-    expect(storedSelection('a')).toEqual({ connectionId: 'imported', model: 'a' })
+    expect(storedSelection('a')).toEqual({ llmProviderId: 'imported', model: 'a' })
   })
   it('rejects personal defaults and only exposes another owner through the attached session', async () => {
     await state
@@ -166,10 +166,10 @@ describe('LLM connections', () => {
       .run()
     const personal = await add('Personal', 'alice')
     await expect(
-      setGlobalSelection('default', { connectionId: personal, model: 'a' })
+      setGlobalSelection('default', { llmProviderId: personal, model: 'a' })
     ).rejects.toThrow('global')
     await expect(
-      setGlobalSelection('summarizer', { connectionId: personal, model: 'a' })
+      setGlobalSelection('summarizer', { llmProviderId: personal, model: 'a' })
     ).rejects.toThrow('global')
     expect(await listConnections({ userId: 'bob', admin: false })).toEqual([])
     const attached = await listConnections({ userId: 'bob', admin: false }, personal)
@@ -196,7 +196,7 @@ describe('LLM connections', () => {
         nextExecutionAt: new Date(),
         createdAt: new Date(),
         model: 'a',
-        connectionId: personal,
+        llmProviderId: personal,
       })
       .run()
     await state
@@ -209,7 +209,7 @@ describe('LLM connections', () => {
         prompt: 'hello',
         createdAt: new Date(),
         model: 'a',
-        connectionId: personal,
+        llmProviderId: personal,
       })
       .run()
     await state
@@ -222,30 +222,30 @@ describe('LLM connections', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
         model: 'a',
-        connectionId: personal,
+        llmProviderId: personal,
       })
       .run()
     await state.db!.delete(user).where(eq(user.id, 'alice')).run()
     expect(await getConnection(personal)).toBeNull()
     for (const table of [scheduledTasks, webhookTriggers, chatIntegrations]) {
       const row = await state
-        .db!.select({ connectionId: table.connectionId, model: table.model })
+        .db!.select({ llmProviderId: table.llmProviderId, model: table.model })
         .from(table)
         .get()
-      expect(row).toEqual({ connectionId: null, model: 'a' })
+      expect(row).toEqual({ llmProviderId: null, model: 'a' })
     }
   })
   it('imports legacy settings idempotently and preserves effective helper defaults and environment references', async () => {
-    state.settings.llmLegacyConnectionId = undefined
+    state.settings.llmLegacyProviderId = undefined
     state.settings.apiKeys = { anthropicApiKey: 'saved-key' }
     vi.stubEnv('ANTHROPIC_API_KEY', 'env-key')
     await runDataMigrations(handle.db, [importLlmConnections])
     await runDataMigrations(handle.db, [importLlmConnections])
     const rows = await state.db!.select().from(llmConnections).all()
     expect(rows).toHaveLength(1)
-    expect(state.settings.llmDefault).toEqual({ connectionId: 'legacy-anthropic', model: 'opus' })
+    expect(state.settings.llmDefault).toEqual({ llmProviderId: 'legacy-anthropic', model: 'opus' })
     expect(state.settings.llmSummarizer).toEqual({
-      connectionId: 'legacy-anthropic',
+      llmProviderId: 'legacy-anthropic',
       model: 'haiku',
     })
     expect(rows[0]).toMatchObject({ browserModel: 'sonnet', dashboardModel: 'sonnet' })
@@ -253,11 +253,11 @@ describe('LLM connections', () => {
     expect(providerForConnection(rows[0]).getEffectiveApiKey()).toBe('saved-key')
   })
   it('does not recreate an imported connection after deletion', async () => {
-    state.settings.llmLegacyConnectionId = undefined
+    state.settings.llmLegacyProviderId = undefined
     state.settings.apiKeys = { anthropicApiKey: 'saved-key' }
     await runDataMigrations(handle.db, [importLlmConnections])
     const root = await add('Other')
-    await setGlobalSelection('default', { connectionId: root, model: 'a' })
+    await setGlobalSelection('default', { llmProviderId: root, model: 'a' })
     await deleteConnection('legacy-anthropic', admin)
     await runDataMigrations(handle.db, [importLlmConnections])
     expect(await getConnection('legacy-anthropic')).toBeNull()
@@ -266,7 +266,7 @@ describe('LLM connections', () => {
 
 it('uses session connection overrides and falls back to its main model when removed', async () => {
   const id = await add()
-  await setGlobalSelection('default', { connectionId: id, model: 'a' })
+  await setGlobalSelection('default', { llmProviderId: id, model: 'a' })
   await state
     .db!.update(llmConnections)
     .set({ browserModel: 'gone', dashboardModel: 'a' })
@@ -274,7 +274,7 @@ it('uses session connection overrides and falls back to its main model when remo
     .run()
   const runtime = await connectionRuntime(await resolveExecutionSelection(), 'test-agent')
   expect(runtime).toMatchObject({
-    connectionId: id,
+    llmProviderId: id,
     model: 'model-a',
     browserModel: 'model-a',
     dashboardBuilderModel: 'model-a',
@@ -282,7 +282,6 @@ it('uses session connection overrides and falls back to its main model when remo
   expect(runtime.env).toMatchObject({
     ANTHROPIC_AUTH_TOKEN: 'key-First',
     CLAUDE_CODE_USE_BEDROCK: '',
-    AWS_SECRET_ACCESS_KEY: '',
   })
 })
 
@@ -309,7 +308,7 @@ it('serializes edits for one session without serializing independent sessions', 
 })
 
 it('migrates version pins in SQL and old file selections before applying strict membership', async () => {
-  state.settings.llmLegacyConnectionId = undefined
+  state.settings.llmLegacyProviderId = undefined
   state.settings.apiKeys = { anthropicApiKey: 'key' }
   await state
     .db!.insert(scheduledTasks)
@@ -326,26 +325,18 @@ it('migrates version pins in SQL and old file selections before applying strict 
     .run()
   await runDataMigrations(handle.db, [importLlmConnections])
   const task = await state.db!.select().from(scheduledTasks).get()
-  expect(task).toMatchObject({ model: 'claude-previous-1', connectionId: 'legacy-anthropic' })
+  expect(task).toMatchObject({ model: 'claude-previous-1', llmProviderId: 'legacy-anthropic' })
   expect(
-    (await resolveExecutionSelection(storedSelection(task!.model, task!.connectionId))).wireModel
+    (await resolveExecutionSelection(storedSelection(task!.model, task!.llmProviderId))).wireModel
   ).toBe('claude-previous-1')
+  const before = await getConnection('legacy-anthropic')
   const file = await resolveExecutionSelection(storedSelection('claude-previous-2'))
-  expect(file).toMatchObject({ connectionId: 'legacy-anthropic', model: 'claude-previous-2' })
-  await state
-    .db!.update(llmConnections)
-    .set({
-      modelOverrides: JSON.stringify(
-        JSON.parse(file.connection.modelOverrides).filter(
-          (m: { id: string }) => m.id !== 'claude-previous-2'
-        )
-      ),
-    })
-    .where(eq(llmConnections.id, file.connectionId))
-    .run()
-  expect(
-    (await resolveExecutionSelection(storedSelection(file.model, file.connectionId))).model
-  ).toBe('opus')
+  expect(file).toMatchObject({ llmProviderId: 'legacy-anthropic', model: 'claude-previous-2', wireModel: 'claude-previous-2' })
+  expect(await connectionRuntime(file, 'agent')).toMatchObject({ model: 'claude-previous-2', modelPromptHints: [] })
+  expect(await getConnection('legacy-anthropic')).toEqual(before)
+  expect(connectionCatalog((await getConnection('legacy-anthropic'))!).some(m => m.id === file.model)).toBe(false)
+  // Once a session is bound, subsequent turns must retain that legacy pin too.
+  expect((await resolveExecutionSelection(storedSelection(file.model, file.llmProviderId))).wireModel).toBe('claude-previous-2')
 })
 
 it('keeps one managed Platform account and prevents deletion while logged in', async () => {
@@ -366,7 +357,7 @@ it('keeps one managed Platform account and prevents deletion while logged in', a
 })
 
 it('preserves legacy environment overrides only on the migrated account and honors later key removal', async () => {
-  state.settings.llmLegacyConnectionId = undefined
+  state.settings.llmLegacyProviderId = undefined
   state.settings.apiKeys = { anthropicApiKey: 'saved' }
   state.settings.customEnvVars = {
     ANTHROPIC_AUTH_TOKEN: 'legacy-custom',
@@ -381,7 +372,7 @@ it('preserves legacy environment overrides only on the migrated account and hono
   })
   const other = await add()
   expect(
-    (await connectionRuntime(await resolveExecutionSelection({ connectionId: other, model: 'a' }), 'agent'))
+    (await connectionRuntime(await resolveExecutionSelection({ llmProviderId: other, model: 'a' }), 'agent'))
       .env.ANTHROPIC_AUTH_TOKEN
   ).toBe('key-First')
   state.settings.apiKeys.anthropicApiKey = ''
@@ -392,7 +383,7 @@ it('preserves legacy environment overrides only on the migrated account and hono
 })
 
 it('editing a migrated key replaces the custom bearer without losing its endpoint', async () => {
-  state.settings.llmLegacyConnectionId = undefined
+  state.settings.llmLegacyProviderId = undefined
   state.settings.apiKeys = { anthropicApiKey: 'saved' }
   state.settings.customEnvVars = {
     ANTHROPIC_AUTH_TOKEN: 'old-bearer',
@@ -411,19 +402,19 @@ it('editing a migrated key replaces the custom bearer without losing its endpoin
 })
 
 it('a legacy browser-only settings edit preserves the app and summarizer selections', async () => {
-  state.settings.llmLegacyConnectionId = undefined
+  state.settings.llmLegacyProviderId = undefined
   state.settings.apiKeys = { anthropicApiKey: 'saved' }
   await runDataMigrations(handle.db, [importLlmConnections])
   const root = state.settings.llmDefault
   const helper = await add('Helper')
-  await setGlobalSelection('summarizer', { connectionId: helper, model: 'a' })
+  await setGlobalSelection('summarizer', { llmProviderId: helper, model: 'a' })
   await syncProviderSettings({ providers: ['anthropic'], models: ['browserModel'] })
   expect(state.settings.llmDefault).toEqual(root)
-  expect(state.settings.llmSummarizer).toEqual({ connectionId: helper, model: 'a' })
+  expect(state.settings.llmSummarizer).toEqual({ llmProviderId: helper, model: 'a' })
 })
 
 it('legacy model updates preserve explicit pins without replacing connection-local catalog edits', async () => {
-  state.settings.llmLegacyConnectionId = undefined
+  state.settings.llmLegacyProviderId = undefined
   state.settings.apiKeys = { anthropicApiKey: 'saved' }
   await runDataMigrations(handle.db, [importLlmConnections])
   state.settings.models = {
@@ -438,7 +429,7 @@ it('legacy model updates preserve explicit pins without replacing connection-loc
 })
 
 it('keeps registry reads free of legacy import and Platform creation', async () => {
-  state.settings.llmLegacyConnectionId = undefined
+  state.settings.llmLegacyProviderId = undefined
   state.settings.apiKeys = { anthropicApiKey: 'saved' }
   state.platformToken = 'platform-test-token'
   expect(await listConnections(admin)).toEqual([])
@@ -448,13 +439,13 @@ it('keeps registry reads free of legacy import and Platform creation', async () 
 })
 
 it('onboarding configures the first account after the empty migration has completed', async () => {
-  state.settings.llmLegacyConnectionId = undefined
+  state.settings.llmLegacyProviderId = undefined
   await runDataMigrations(handle.db, [importLlmConnections])
   state.settings.apiKeys = { anthropicApiKey: 'onboarding-key' }
   await syncProviderSettings({ providers: ['anthropic'], credentials: true, selectDefault: true })
-  expect((await resolveExecutionSelection()).connectionId).toBe('legacy-anthropic')
-  expect(state.settings.llmSummarizer).toEqual({ connectionId: 'legacy-anthropic', model: 'haiku' })
-  expect(state.settings.llmLegacyConnectionId).toBeUndefined()
+  expect((await resolveExecutionSelection()).llmProviderId).toBe('legacy-anthropic')
+  expect(state.settings.llmSummarizer).toEqual({ llmProviderId: 'legacy-anthropic', model: 'haiku' })
+  expect(state.settings.llmLegacyProviderId).toBeUndefined()
   expect(await runDataMigrations(handle.db, [importLlmConnections])).toEqual([])
 })
 
@@ -472,7 +463,7 @@ describe('code-driven connection catalogs', () => {
     } else {
       id = await saveConnection({ name: 'API account', provider: providerId, config: { apiKeys: { anthropicApiKey: 'test-key' } } }, admin)
     }
-    await setGlobalSelection('default', { connectionId: id, model: 'latest' })
+    await setGlobalSelection('default', { llmProviderId: id, model: 'latest' })
     expect((await getConnection(id))!.modelOverrides).toBe('[]')
     expect((await resolveExecutionSelection()).wireModel).toBe('version-1')
 
@@ -533,5 +524,70 @@ describe('code-driven connection catalogs', () => {
     expect(info.modelOverrides).toEqual([])
     await saveConnection({ name: 'Renamed', provider: 'generic', config: {} }, admin, id)
     expect((await getConnection(id))!.modelOverrides).toBe('[]')
+  })
+})
+
+
+describe('review regressions', () => {
+  it('falls back within the global provider when a pinned built-in is retired', async () => {
+    const id = await add()
+    state.settings.llmLegacyProviderId = id
+    state.settings.llmDefault = { llmProviderId: id, model: 'removed-model' }
+    const before = await getConnection(id)
+    expect(await resolveSelectionHierarchy()).toMatchObject({ llmProviderId: id, model: 'model-a' })
+    expect(await getConnection(id)).toEqual(before)
+  })
+
+  it('uses the migrated global provider when settings outlive a recreated database', async () => {
+    state.settings.apiKeys = { anthropicApiKey: 'key' }
+    state.settings.llmDefault = { llmProviderId: 'lost-database-row', model: 'retired-model' }
+    await importLlmConnections.run(handle.db)
+    expect(await resolveSelectionHierarchy()).toMatchObject({ llmProviderId: 'legacy-anthropic' })
+  })
+
+  it('selects a provider default when the caller switches only llmProviderId', async () => {
+    const first = await add()
+    const second = await add('Second')
+    await setGlobalSelection('default', { llmProviderId: first, model: 'model-a' })
+    expect(await resolveSelectionHierarchy(storedSelection(undefined, second), storedSelection('model-a', first)))
+      .toMatchObject({ llmProviderId: second, model: 'model-a' })
+  })
+
+  it('preserves Anthropic proxy environment bindings on host helpers without leaking to new accounts', async () => {
+    state.settings.apiKeys = { anthropicApiKey: 'key' }
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://env-proxy.example')
+    await importLlmConnections.run(handle.db)
+    const migrated = (await getConnection('legacy-anthropic'))!
+    expect(providerForConnection(migrated).createClient().baseURL).toBe('https://env-proxy.example')
+    expect((await connectionRuntime(await resolveSelectionHierarchy(), 'agent')).env.ANTHROPIC_BASE_URL).toBe('https://env-proxy.example')
+    const other = await saveConnection({ name: 'Direct', provider: 'anthropic', config: { apiKeys: { anthropicApiKey: 'other-key' } } }, admin)
+    expect(providerForConnection((await getConnection(other))!).createClient().baseURL).toBe('https://api.anthropic.com')
+    state.settings.customEnvVars = { ANTHROPIC_BASE_URL: 'https://edited-proxy.example' }
+    await syncProviderSettings({ providers: ['anthropic'], runtimeEnv: true })
+    const edited = (await getConnection('legacy-anthropic'))!
+    expect(providerForConnection(edited).createClient().baseURL).toBe('https://edited-proxy.example')
+    expect((await connectionRuntime(await resolveSelectionHierarchy(), 'agent')).env.ANTHROPIC_BASE_URL).toBe('https://edited-proxy.example')
+    expect(edited.generation).toBe(migrated.generation + 1)
+    state.settings.customEnvVars = {}
+    await syncProviderSettings({ providers: ['anthropic'], runtimeEnv: true })
+    expect(providerForConnection((await getConnection('legacy-anthropic'))!).createClient().baseURL).toBe('https://env-proxy.example')
+  })
+
+  it('does not rotate generations for effort-only or identical model saves', async () => {
+    state.settings.apiKeys = { anthropicApiKey: 'key' }
+    await importLlmConnections.run(handle.db)
+    const before = await getConnection('legacy-anthropic')
+    state.settings.models = { agentEffort: 'high' }
+    await syncProviderSettings({ providers: ['anthropic'], models: [] })
+    await syncProviderSettings({ providers: ['anthropic'], models: ['agentModel', 'browserModel'] })
+    expect(await getConnection('legacy-anthropic')).toEqual(before)
+  })
+
+  it('does not consume general AWS tool credentials for non-Bedrock providers', async () => {
+    state.settings.apiKeys = { anthropicApiKey: 'key' }
+    state.settings.customEnvVars = { AWS_REGION: 'eu-west-1', AWS_ACCESS_KEY_ID: 'tool-key', AWS_SECRET_ACCESS_KEY: 'tool-secret' }
+    await importLlmConnections.run(handle.db)
+    const runtime = await connectionRuntime(await resolveSelectionHierarchy(), 'agent')
+    for (const key of Object.keys(state.settings.customEnvVars)) expect(runtime.env).not.toHaveProperty(key)
   })
 })

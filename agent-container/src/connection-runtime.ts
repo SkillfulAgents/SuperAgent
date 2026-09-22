@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { subagentModelCatalogSchema, modelContextWindowsSchema } from './subagent-model-catalog'
 
 export const connectionRuntimeSchema = z.object({
-  connectionId: z.string().min(1),
+  llmProviderId: z.string().min(1),
   generation: z.number().int(),
   provider: z.string(),
   model: z.string(),
@@ -29,7 +29,7 @@ export function rememberConnectionRuntime(runtime: ConnectionRuntime): void {
   // account, including environment/Platform changes without a DB generation.
   for (const [key, cached] of runtimes) {
     if (
-      cached.connectionId === runtime.connectionId &&
+      cached.llmProviderId === runtime.llmProviderId &&
       (cached.generation !== runtime.generation ||
         JSON.stringify(cached.env) !== JSON.stringify(runtime.env))
     )
@@ -45,23 +45,31 @@ export function cachedConnectionRuntime(
   fingerprint?: string
 ): ConnectionRuntime | undefined {
   const runtime = fingerprint ? runtimes.get(fingerprint) : undefined
-  return runtime?.connectionId === id &&
+  return runtime?.llmProviderId === id &&
     runtime?.generation === generation &&
     runtime?.model === model
     ? runtime
     : undefined
 }
 export async function resolveSessionRuntime(sessionId: string): Promise<ConnectionRuntime> {
+  return requestRuntime('resolve', { sessionId })
+}
+
+export async function resolvePrewarmRuntime(): Promise<ConnectionRuntime> {
+  return requestRuntime('prewarm', {})
+}
+
+async function requestRuntime(path: string, body: object): Promise<ConnectionRuntime> {
   const base = process.env.SUPERAGENT_HOST_API_URL
   const token = process.env.PROXY_TOKEN
   if (!base || !token) throw new Error('Host credential service is not configured')
-  const response = await fetch(`${base.replace(/\/$/, '')}/llm-runtime/resolve`, {
+  const response = await fetch(`${base.replace(/\/$/, '')}/llm-runtime/${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ sessionId }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
   })
-  if (!response.ok) throw new Error(`Cannot resolve session connection (${response.status})`)
+  if (!response.ok) throw new Error(`Cannot resolve LLM provider (${response.status})`)
   const runtime = connectionRuntimeSchema.parse(await response.json())
   rememberConnectionRuntime(runtime)
   return runtime
@@ -73,7 +81,7 @@ export function withoutProviderCredentials<T extends string | undefined>(
   return Object.fromEntries(
     Object.entries(env).filter(
       ([key]) =>
-        !/^(ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN$|CLAUDE_CODE_USE_(BEDROCK|VERTEX)$|AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|BEARER_TOKEN_BEDROCK)$)/.test(
+        !/^(ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN$|CLAUDE_CODE_USE_(BEDROCK|VERTEX)$|AWS_BEARER_TOKEN_BEDROCK$)/.test(
           key
         )
     )

@@ -23,9 +23,9 @@ const DEFAULT_EFFORT: EffortLevel = 'medium'
 const DEFAULT_SPEED: SpeedLevel = 'normal'
 
 export interface ComposerOptionsState {
-  connectionId?: string
+  llmProviderId?: string
   connections?: ConnectionInfo[]
-  setConnection?: (connectionId: string) => void
+  setConnection?: (llmProviderId: string) => void
   effort: EffortLevel
   setEffort: (e: EffortLevel) => void
   speed: SpeedLevel
@@ -48,7 +48,7 @@ export interface ComposerOptionsState {
    * a still-loading preferences query — and would override the actual model of
    * a session that carries none in its metadata (e.g. trigger-created).
    */
-  toRuntimeOptions(): { effort?: EffortLevel; speed?: SpeedLevel; model?: string; connectionId?: string }
+  toRuntimeOptions(): { effort?: EffortLevel; speed?: SpeedLevel; model?: string; llmProviderId?: string }
 }
 
 /** Submit lifecycle used by composer hosts; presentation-only consumers only need the state above. */
@@ -59,7 +59,7 @@ export interface ComposerOptionsController extends ComposerOptionsState {
    * must not be overwritten by a session-detail refetch. Afterwards, newer
    * initial values are authoritative (another window may have spoken).
    */
-  markSubmitted(options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; connectionId?: string }): void
+  markSubmitted(options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; llmProviderId?: string }): void
 }
 
 /**
@@ -79,8 +79,8 @@ export function findCatalogModel(
 }
 
 export interface UseComposerOptionsArgs {
-  initialConnectionId?: string | null
-  agentDefaultConnectionId?: string | null
+  initialLlmProviderId?: string | null
+  agentDefaultLlmProviderId?: string | null
   sessionId?: string
   /** Effort last used on this session, seeds the selector if provided. */
   initialEffort?: EffortLevel
@@ -122,8 +122,8 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     initialEffort,
     initialSpeed,
     initialModel,
-    initialConnectionId,
-    agentDefaultConnectionId,
+    initialLlmProviderId,
+    agentDefaultLlmProviderId,
     sessionId,
     agentDefaultModel,
     agentDefaultEffort,
@@ -137,25 +137,25 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   // admin-gated full settings (which would leave them an empty catalog).
   const { data: settings } = useModelSettings()
 
-  const { data: connectionData } = useLlmConnections(agentKey, sessionId, initialConnectionId)
-  const [connectionId, setConnectionId] = useState<string | undefined>(initialConnectionId ?? undefined)
+  const { data: connectionData } = useLlmConnections(agentKey, sessionId, initialLlmProviderId)
+  const [llmProviderId, setLlmProviderId] = useState<string | undefined>(initialLlmProviderId ?? undefined)
   const connectionDirty = useRef(false)
   const connections = useMemo(() => connectionData?.connections ?? [], [connectionData])
   const [model, setModelState] = useState<string | undefined>(initialModel)
-  const legacyConnectionId = connectionData?.legacyConnectionId
-  const currentSelection = resolveSelection(initialModel && initialConnectionId !== null ? { model: initialModel, connectionId: initialConnectionId ?? legacyConnectionId ?? '' } : null, connections)
-  const agentSelection = resolveSelection(agentDefaultModel && agentDefaultConnectionId !== null ? { model: agentDefaultModel, connectionId: agentDefaultConnectionId ?? legacyConnectionId ?? '' } : null, connections)
+  const legacyLlmProviderId = connectionData?.legacyLlmProviderId
+  const currentSelection = resolveSelection(initialModel && initialLlmProviderId !== null ? { model: initialModel, llmProviderId: initialLlmProviderId ?? legacyLlmProviderId ?? '' } : null, connections)
+  const agentSelection = resolveSelection(agentDefaultModel && agentDefaultLlmProviderId !== null ? { model: agentDefaultModel, llmProviderId: agentDefaultLlmProviderId ?? legacyLlmProviderId ?? '' } : null, connections)
   const inheritedSelection = currentSelection ?? agentSelection ?? resolveSelection(connectionData?.defaultSelection, connections)
-  const inheritedConnectionId = inheritedSelection?.connectionId
-  const localSelection = resolveSelection(connectionId && model ? { connectionId, model } : null, connections)
+  const inheritedLlmProviderId = inheritedSelection?.llmProviderId
+  const localSelection = resolveSelection(llmProviderId && model ? { llmProviderId, model } : null, connections)
   // Validate the pair before falling back. Never combine a removed account's
   // model with another account merely because both happen to expose that ID.
   const effectiveSelection = localSelection ?? inheritedSelection
-  const effectiveConnectionId = effectiveSelection?.connectionId
-  const selectedConnection = connections.find(c => c.id === effectiveConnectionId)
+  const effectiveLlmProviderId = effectiveSelection?.llmProviderId
+  const selectedConnection = connections.find(c => c.id === effectiveLlmProviderId)
   useEffect(() => {
-    if (!connectionDirty.current) setConnectionId(initialConnectionId ?? undefined)
-  }, [initialConnectionId, agentKey])
+    if (!connectionDirty.current) setLlmProviderId(initialLlmProviderId ?? undefined)
+  }, [initialLlmProviderId, agentKey])
 
   // ---- Effort ----
   const [effort, setEffortState] = useState<EffortLevel>(initialEffort ?? DEFAULT_EFFORT)
@@ -237,26 +237,33 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const setModel = useCallback((m: string) => {
     modelSeededRef.current = true
     modelDirtyRef.current = true
-    if (effectiveConnectionId) {
+    if (effectiveLlmProviderId) {
       connectionDirty.current = true
-      setConnectionId(effectiveConnectionId)
+      setLlmProviderId(effectiveLlmProviderId)
     }
     setModelState(m)
-  }, [effectiveConnectionId])
+  }, [effectiveLlmProviderId])
+
+  useEffect(() => {
+    if (modelDirtyRef.current && !llmProviderId && inheritedLlmProviderId) {
+      connectionDirty.current = true
+      setLlmProviderId(inheritedLlmProviderId)
+    }
+  }, [llmProviderId, inheritedLlmProviderId])
 
   const setConnection = useCallback((id: string) => {
     const next = connections.find(c => c.id === id)
     if (!next?.catalog[0]) return
     connectionDirty.current = true
-    setConnectionId(id)
+    setLlmProviderId(id)
     modelSeededRef.current = true
     modelDirtyRef.current = true
     setModelState(next.catalog.find(m => m.isDefault)?.id ?? next.catalog[0].id)
   }, [connections])
 
   const markSubmitted = useCallback(
-    (options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; connectionId?: string }) => {
-      if (options.connectionId === effectiveConnectionId) connectionDirty.current = false
+    (options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; llmProviderId?: string }) => {
+      if (options.llmProviderId === effectiveLlmProviderId) connectionDirty.current = false
       // Do not clear a newer selection if a request somehow completed after
       // the picker changed again. MessageInput disables the picker in flight,
       // but the equality check keeps this helper correct for other callers.
@@ -270,7 +277,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
         modelDirtyRef.current = false
       }
     },
-    [effort, speed, model, effectiveConnectionId],
+    [effort, speed, model, effectiveLlmProviderId],
   )
 
   // ---- Default adoption ----
@@ -295,7 +302,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     if (adoptionLockedRef.current) return
     if (!modelSeededRef.current && fallbackModel) {
       setModelState(fallbackModel)
-      if (inheritedConnectionId) setConnectionId(inheritedConnectionId)
+      if (inheritedLlmProviderId) setLlmProviderId(inheritedLlmProviderId)
     }
     if (
       !effortSeededRef.current &&
@@ -319,7 +326,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   }, [
     agentKey,
     connectionData,
-    inheritedConnectionId,
+    inheritedLlmProviderId,
     model,
     fallbackModel,
     effort,
@@ -340,14 +347,14 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     () => ({
       ...(effortSeededRef.current ? { effort } : {}),
       ...(speedSeededRef.current ? { speed } : {}),
-      ...(modelSeededRef.current && displayedModel ? { model: displayedModel, ...(effectiveConnectionId ? { connectionId: effectiveConnectionId } : {}) } : {}),
+      ...(modelSeededRef.current && displayedModel ? { model: displayedModel, ...(effectiveLlmProviderId ? { llmProviderId: effectiveLlmProviderId } : {}) } : {}),
     }),
-    [effort, speed, displayedModel, effectiveConnectionId],
+    [effort, speed, displayedModel, effectiveLlmProviderId],
   )
 
   return useMemo(
     () => ({
-      connectionId: effectiveConnectionId,
+      llmProviderId: effectiveLlmProviderId,
       connections,
       setConnection,
       effort,
@@ -362,7 +369,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       toRuntimeOptions,
       markSubmitted,
     }),
-    [effectiveConnectionId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, setModel, catalog, fallbackModel, settings, toRuntimeOptions, markSubmitted],
+    [effectiveLlmProviderId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, setModel, catalog, fallbackModel, settings, toRuntimeOptions, markSubmitted],
   )
 }
 

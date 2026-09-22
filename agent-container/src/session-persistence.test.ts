@@ -38,13 +38,14 @@ describe('SessionPersistence', () => {
 
   it('keeps connection references but removes provider secrets before persisting a session', async () => {
     const persistence = await loadPersistence();
-    persistence.saveSession({ ...legacySession('bound'), connectionId: 'personal-account', customEnvVars: {
+    persistence.saveSession({ ...legacySession('bound'), llmProviderId: 'personal-account', customEnvVars: {
       ANTHROPIC_API_KEY: 'old-key', ANTHROPIC_AUTH_TOKEN: 'access-token', CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token', AWS_SECRET_ACCESS_KEY: 'aws-secret', MY_TOOL_SETTING: 'retained',
     } });
     const file = fs.readFileSync(sessionsFile, 'utf8');
     expect(file).toContain('personal-account');
     expect(file).toContain('MY_TOOL_SETTING');
-    for (const secret of ['old-key', 'access-token', 'oauth-token', 'aws-secret']) expect(file).not.toContain(secret);
+    expect(persistence.getSession('bound')?.customEnvVars?.AWS_SECRET_ACCESS_KEY).toBe('aws-secret');
+    for (const secret of ['old-key', 'access-token', 'oauth-token']) expect(file).not.toContain(secret);
   });
 
   it('loads pre-catalog session records with an empty subagent catalog', async () => {

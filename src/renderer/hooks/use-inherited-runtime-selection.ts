@@ -14,7 +14,7 @@ import type { LlmProviderId } from '@shared/lib/config/settings'
 
 /** A surface's stored override row; null, undefined, and '' all mean "unset". */
 export type RuntimeSurface = {
-  connectionId?: string | null
+  llmProviderId?: string | null
   model?: string | null
   effort?: string | null
   speed?: string | null
@@ -23,7 +23,7 @@ export type RuntimeSurface = {
 export type InheritedRuntimeSelection = {
   /** What the host will send: surface override → agent default → app default. */
   model: string
-  connectionId?: string | null
+  llmProviderId?: string | null
   effort?: EffortLevel
   speed?: SpeedLevel
   /** `effort`/`speed` snapped to what the catalog model allows — display only, never written back. */
@@ -51,7 +51,7 @@ export function useInheritedRuntimeSelection(agentSlug: string, surface: Runtime
   /** Re-run the ladder for another surface (e.g. the cleared row on Reset); null while not ready. */
   resolveDisplay: (surface: RuntimeSurface) => InheritedRuntimeSelection | null
 } {
-  const { data: settings } = useModelSettings(agentSlug, surface.connectionId)
+  const { data: settings } = useModelSettings(agentSlug, surface.llmProviderId)
   const { data: prefs } = useAgentPreferences(agentSlug)
 
   const models = settings?.models
@@ -78,13 +78,13 @@ export function useInheritedRuntimeSelection(agentSlug: string, surface: Runtime
       )
       if (settings?.connections) {
         const pair = (model?: string | null, id?: string | null) => model && id !== null
-          ? { model, connectionId: id ?? settings.legacyConnectionId ?? '' } : null
-        const selection = resolveSelection(pair(s.model, s.connectionId), settings.connections)
-          ?? resolveSelection(pair(prefs?.defaultModel, prefs?.defaultConnectionId), settings.connections)
+          ? { model, llmProviderId: id ?? settings.legacyLlmProviderId ?? '' } : null
+        const selection = resolveSelection(pair(s.model, s.llmProviderId), settings.connections)
+          ?? resolveSelection(pair(prefs?.defaultModel, prefs?.defaultLlmProviderId), settings.connections)
           ?? resolveSelection(settings.defaultSelection, settings.connections)
-        if (selection) { resolved.model = selection.model; resolved.connectionId = selection.connectionId }
+        if (selection) { resolved.model = selection.model; resolved.llmProviderId = selection.llmProviderId }
       }
-      const activeCatalog = settings?.connections?.find(c => c.id === resolved.connectionId)?.catalog ?? catalog
+      const activeCatalog = settings?.connections?.find(c => c.id === resolved.llmProviderId)?.catalog ?? catalog
       const catalogModel = findCatalogModel(resolved.model, activeCatalog)
       return {
         ...resolved,
@@ -97,8 +97,8 @@ export function useInheritedRuntimeSelection(agentSlug: string, surface: Runtime
   )
 
   const selection = useMemo(
-    () => resolveDisplay({ connectionId: surface.connectionId, model: surface.model, effort: surface.effort, speed: surface.speed }),
-    [resolveDisplay, surface.connectionId, surface.model, surface.effort, surface.speed],
+    () => resolveDisplay({ llmProviderId: surface.llmProviderId, model: surface.model, effort: surface.effort, speed: surface.speed }),
+    [resolveDisplay, surface.llmProviderId, surface.model, surface.effort, surface.speed],
   )
 
   return { ready: inheritModels !== null, selection, resolveDisplay }

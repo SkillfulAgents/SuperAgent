@@ -35,8 +35,8 @@ export function HomeDefaultModel({ agentSlug }: HomeDefaultModelProps) {
       <SettingsModelSelect
         agentSlug={agentSlug}
         model={displayModel}
-        connectionId={prefs?.defaultConnectionId}
-        onSelectionChange={s => updatePreferences.mutate({ defaultModel: s.model, defaultConnectionId: s.connectionId })}
+        llmProviderId={prefs?.defaultLlmProviderId}
+        onSelectionChange={s => updatePreferences.mutate({ defaultModel: s.model, defaultLlmProviderId: s.llmProviderId })}
         onModelChange={(m) => updatePreferences.mutate({ defaultModel: m })}
         includeEffort
         effort={displayEffort as EffortLevel}
@@ -51,7 +51,7 @@ export function HomeDefaultModel({ agentSlug }: HomeDefaultModelProps) {
         appDefault={{
           isOverride: hasCustom,
           onUseAppDefault: () =>
-            updatePreferences.mutate({ defaultModel: null, defaultConnectionId: null, defaultEffort: null, defaultSpeed: null }),
+            updatePreferences.mutate({ defaultModel: null, defaultLlmProviderId: null, defaultEffort: null, defaultSpeed: null }),
         }}
       />
     </div>

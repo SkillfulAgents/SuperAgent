@@ -149,9 +149,9 @@ export class SessionPersistence {
     }
   }
 
-  updateConnection(sessionId: string, connectionId: string): void {
+  updateConnection(sessionId: string, llmProviderId: string): void {
     const session = this.sessions.get(sessionId);
-    if (session) { session.connectionId = connectionId; this.save(); }
+    if (session) { session.llmProviderId = llmProviderId; this.save(); }
   }
 
   updateModel(sessionId: string, model: string | undefined): void {

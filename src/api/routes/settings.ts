@@ -1,4 +1,5 @@
 import { captureException } from '@shared/lib/error-reporting'
+import { resolveGlobalSelection } from '@shared/lib/llm-provider/connections'
 import { resolveSelection } from '@shared/lib/llm-provider/connection-schema'
 import { mergeCatalog } from '@shared/lib/llm-provider/catalog-merge'
 import { listConnections } from '@shared/lib/llm-provider/connections'
@@ -149,16 +150,17 @@ settings.get('/models', Authenticated(), async (c) => {
   try {
     const appSettings = getSettings()
     const connections = await listConnections({ userId: getCurrentUserId(c), admin: false })
-    const root = connections.find(connection => connection.id === appSettings.llmDefault?.connectionId)
+    const defaultSelection = await resolveGlobalSelection()
+    const root = connections.find(connection => connection.id === defaultSelection?.llmProviderId)
     const response: ModelPickerSettingsResponse = {
       enableToolSearch: appSettings.enableToolSearch ?? true,
       modelPricing: appSettings.modelPricing ?? {},
       connections,
-      defaultSelection: appSettings.llmDefault,
-      legacyConnectionId: appSettings.llmLegacyConnectionId,
+      defaultSelection: defaultSelection ? { llmProviderId: defaultSelection.llmProviderId, model: defaultSelection.model } : undefined,
+      legacyLlmProviderId: appSettings.llmLegacyProviderId,
       llmProvider: root?.provider ?? appSettings.llmProvider ?? 'anthropic',
       llmProviderStatus: getAllProviderInfo().map(p => root?.provider === p.id ? { ...p, catalog: root.catalog } : p),
-      models: { ...getEffectiveModels(), ...(appSettings.llmDefault ? { agentModel: appSettings.llmDefault.model } : {}) },
+      models: { ...getEffectiveModels(), ...(defaultSelection ? { agentModel: defaultSelection.model } : {}) },
       webProvider: resolveEffectiveWebVendor(),
     }
     return c.json(response)
@@ -436,18 +438,18 @@ settings.put(
       }
 
       const root = currentSettings.llmDefault
-      if (root && body.modelCatalog && root.connectionId.startsWith('legacy-')) {
-        const provider = root.connectionId.slice('legacy-'.length) as LlmProviderId
+      if (root && body.modelCatalog && root.llmProviderId.startsWith('legacy-')) {
+        const provider = root.llmProviderId.slice('legacy-'.length) as LlmProviderId
         if (Object.hasOwn(body.modelCatalog, provider)) {
           const catalog = mergeCatalog(getLlmProvider(provider).getBuiltinCatalog(), newSettings.modelCatalog?.[provider]?.overrides ?? [])
-          if (!resolveSelection(root, [{ id: root.connectionId, catalog }])) {
+          if (!resolveSelection(root, [{ id: root.llmProviderId, catalog }])) {
             return c.json({ error: 'Change the app default before removing its model' }, 400)
           }
         }
       }
 
       updateSettings(newSettings)
-      if (body.llmProvider !== undefined || body.models !== undefined || body.modelCatalog !== undefined || body.apiKeys !== undefined) {
+      if (body.llmProvider !== undefined || body.models !== undefined || body.modelCatalog !== undefined || body.apiKeys !== undefined || body.customEnvVars !== undefined) {
         const active = newSettings.llmProvider ?? 'anthropic'
         const touched = new Set<LlmProviderId>()
         if (body.apiKeys) {
@@ -455,10 +457,10 @@ settings.put(
             if (keys.some(key => Object.hasOwn(body.apiKeys!, key))) touched.add(provider as LlmProviderId)
           }
         }
-        if (body.llmProvider || body.models) touched.add(active)
+        if (body.llmProvider || body.models || body.customEnvVars) touched.add(active)
         if (body.modelCatalog) for (const provider of Object.keys(body.modelCatalog)) touched.add(provider as LlmProviderId)
         await syncProviderSettings({ providers: [...touched], credentials: !!body.apiKeys,
-          catalog: !!body.modelCatalog,
+          catalog: !!body.modelCatalog, runtimeEnv: body.customEnvVars !== undefined,
           models: (['agentModel', 'summarizerModel', 'browserModel', 'dashboardBuilderModel'] as const).filter(key => !!body.llmProvider || Object.hasOwn(body.models ?? {}, key)),
           selectDefault: !!body.llmProvider })
       }

@@ -128,7 +128,7 @@ function createTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     createdByUserId: 'user-1',
     timezone: 'America/Los_Angeles',
     model: null,
-  connectionId: null,
+  llmProviderId: null,
     effort: null,
     speed: null,
     resumeSessionId: null,

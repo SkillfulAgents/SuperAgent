@@ -463,7 +463,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
 
           <RuntimeOptionsCard
             agentSlug={agentSlug}
-            model={task.model} connectionId={task.connectionId}
+            model={task.model} llmProviderId={task.llmProviderId}
             effort={task.effort}
             speed={task.speed}
             disabled={!canCancel || !isActive}

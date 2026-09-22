@@ -16,6 +16,6 @@ CREATE TABLE `llm_connections` (
 --> statement-breakpoint
 CREATE INDEX `llm_connections_owner_idx` ON `llm_connections` (`user_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `llm_connections_platform_unique` ON `llm_connections` (`provider`) WHERE provider = 'platform';--> statement-breakpoint
-ALTER TABLE `chat_integrations` ADD `connection_id` text REFERENCES llm_connections(id) ON DELETE SET NULL;--> statement-breakpoint
-ALTER TABLE `scheduled_tasks` ADD `connection_id` text REFERENCES llm_connections(id) ON DELETE SET NULL;--> statement-breakpoint
-ALTER TABLE `webhook_triggers` ADD `connection_id` text REFERENCES llm_connections(id) ON DELETE SET NULL;
+ALTER TABLE `chat_integrations` ADD `llm_provider_id` text REFERENCES llm_connections(id) ON DELETE SET NULL;--> statement-breakpoint
+ALTER TABLE `scheduled_tasks` ADD `llm_provider_id` text REFERENCES llm_connections(id) ON DELETE SET NULL;--> statement-breakpoint
+ALTER TABLE `webhook_triggers` ADD `llm_provider_id` text REFERENCES llm_connections(id) ON DELETE SET NULL;

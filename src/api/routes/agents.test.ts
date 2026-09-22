@@ -1171,7 +1171,7 @@ describe('GET /:id/webhook-triggers', () => {
     createdByUserId: 'owner-private-id',
     mintedByMemberId: 'sub_member-private-id',
     model: null,
-  connectionId: null,
+  llmProviderId: null,
     effort: null,
     speed: null,
     createdAt: new Date('2026-07-17T00:00:00Z'),
@@ -1231,7 +1231,7 @@ describe('GET /:id/chat-integrations', () => {
       requireApproval: true,
       sessionTimeout: null,
       model: null,
-  connectionId: null,
+  llmProviderId: null,
       effort: null,
       speed: null,
       status: 'active',
@@ -3819,6 +3819,20 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
   })
 
   // ---- Runtime options forwarding ----
+
+  it.each([null, { id: 'private-provider', userId: 'another-user' }])('returns 404 for an unavailable provider pick before recording or sending the message', async row => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const lookup = vi.spyOn(connections, 'getConnection').mockResolvedValue(row as never)
+    try {
+      const res = await postJson(app, URL, { content: 'hello', llmProviderId: 'private-provider' })
+      expect(res.status).toBe(404)
+      expect(await res.json()).toEqual({ error: 'LLM provider not found' })
+      expect(mockSendMessage).not.toHaveBeenCalled()
+      expect(mockDbInsertValues).not.toHaveBeenCalled()
+    } finally {
+      lookup.mockRestore()
+    }
+  })
 
   it('forwards effort to sendMessage when present in body', async () => {
     mockIsAuthMode.mockReturnValue(false)
@@ -8377,8 +8391,8 @@ describe('agent preferences — PUT /:id/preferences', () => {
     const res = await putJson(PREFS_URL, { defaultModel: null })
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ defaultEffort: 'high', defaultConnectionId: null })
-    expect(persistedPreferences()).toEqual({ defaultEffort: 'high', defaultConnectionId: null })
+    expect(await res.json()).toEqual({ defaultEffort: 'high', defaultLlmProviderId: null })
+    expect(persistedPreferences()).toEqual({ defaultEffort: 'high', defaultLlmProviderId: null })
   })
 
   it('trims surrounding whitespace before storing defaultModel', async () => {

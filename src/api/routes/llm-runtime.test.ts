@@ -35,7 +35,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
     get: () => ({
       sessions: {
         isKnown: async (id: string) => id === 'own-session',
-        metadata: async () => ({ model: 'model', connectionId: state.currentId }),
+        metadata: async () => ({ model: 'model', llmProviderId: state.currentId }),
       },
       config: { get: async () => ({}) },
     }),
@@ -60,7 +60,7 @@ function request(operation: string, body: unknown, token = 'agent-test-token') {
 beforeEach(async () => {
   handle = await createTestDatabase()
   state.db = handle.db
-  state.settings = { llmLegacyConnectionId: 'imported' } as AppSettings
+  state.settings = { llmLegacyProviderId: 'imported' } as AppSettings
   state.currentId = await saveConnection(
     {
       name: 'Account',
@@ -72,7 +72,7 @@ beforeEach(async () => {
     },
     { userId: null, admin: true }
   )
-  await setGlobalSelection('default', { connectionId: state.currentId, model: 'model' })
+  await setGlobalSelection('default', { llmProviderId: state.currentId, model: 'model' })
 })
 afterEach(async () => handle.close())
 
@@ -80,16 +80,25 @@ it('scopes resolution to the authenticated agent session and rejects arbitrary a
   expect((await request('resolve', { sessionId: 'own-session' }, 'wrong')).status).toBe(401)
   expect((await request('resolve', { sessionId: 'another-agent-session' })).status).toBe(404)
   expect(
-    (await request('resolve', { sessionId: 'own-session', connectionId: 'other-account' }))
+    (await request('resolve', { sessionId: 'own-session', llmProviderId: 'other-account' }))
       .status
   ).toBe(409)
   const response = await request('resolve', { sessionId: 'own-session' })
   expect(response.status).toBe(200)
   expect(response.headers.get('cache-control')).toBe('no-store')
   expect(await response.json()).toMatchObject({
-    connectionId: state.currentId,
+    llmProviderId: state.currentId,
     model: 'model',
     env: { ANTHROPIC_AUTH_TOKEN: 'static-key' },
   })
   expect(sessionRuntime('alpha', 'own-session')?.env).toEqual({})
+})
+
+
+it('prewarms the authenticated agent default without accepting a nominated provider', async () => {
+  expect((await request('prewarm', {}, 'wrong')).status).toBe(401)
+  const res = await request('prewarm', { llmProviderId: 'other-account', model: 'other-model' })
+  expect(res.status).toBe(200)
+  expect(res.headers.get('cache-control')).toBe('no-store')
+  expect(await res.json()).toMatchObject({ llmProviderId: state.currentId, model: 'model' })
 })

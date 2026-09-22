@@ -1197,7 +1197,7 @@ export class AgentIntegrationManager {
     const agentPrefs = await readAgentPreferences(integration.agentSlug)
     const resolved = await resolveConnectionRuntimeInherit(
       { model: integration.model,
-      connectionId: integration.connectionId, effort: integration.effort, speed: integration.speed },
+      llmProviderId: integration.llmProviderId, effort: integration.effort, speed: integration.speed },
       agentPrefs,
       models,
     )
@@ -1208,7 +1208,7 @@ export class AgentIntegrationManager {
       initialMessageUuid: attempt.id,
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       model: resolved.model,
-      connectionId: resolved.connectionId,
+      llmProviderId: resolved.llmProviderId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       effort: resolved.effort,

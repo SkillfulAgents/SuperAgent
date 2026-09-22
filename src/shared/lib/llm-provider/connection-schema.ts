@@ -3,7 +3,7 @@ import { LLM_PROVIDER_IDS } from './provider-types'
 import { catalogOverrideEntrySchema, modelCatalogSchema, modelDefinitionSchema, type ModelDefinition, type CatalogOverrideEntry } from './model-catalog-schema'
 
 export const modelSelectionSchema = z.object({
-  connectionId: z.string().min(1),
+  llmProviderId: z.string().min(1),
   model: z.string().min(1),
 })
 export type ModelSelection = z.infer<typeof modelSelectionSchema>
@@ -87,7 +87,7 @@ export function resolveSelection(
   connections: readonly Pick<ConnectionInfo, 'id' | 'catalog'>[]
 ): (ModelSelection & { wireModel: string }) | null {
   if (!selection) return null
-  const connection = connections.find((c) => c.id === selection.connectionId)
+  const connection = connections.find((c) => c.id === selection.llmProviderId)
   const model =
     connection?.catalog.find((m) => m.id === selection.model) ??
     connection?.catalog.find((m) => m.family === selection.model && m.isLatest)

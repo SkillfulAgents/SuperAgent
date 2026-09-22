@@ -14,7 +14,7 @@ export const sessionMetadataSchema = z
     modelPromptHints: z.array(z.string()).optional(),
     availableEnvVars: z.array(z.string()).optional(),
     model: z.string().optional(),
-    connectionId: z.string().optional(),
+    llmProviderId: z.string().optional(),
     browserModel: z.string().optional(),
     dashboardBuilderModel: z.string().optional(),
     subagentModels: subagentModelCatalogSchema,

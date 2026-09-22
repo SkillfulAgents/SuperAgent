@@ -8,17 +8,17 @@ import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 
 interface RuntimeOptionsCardProps {
   agentSlug: string
-  connectionId?: string | null
+  llmProviderId?: string | null
   model: string | null
   effort: string | null
   speed: string | null
   disabled?: boolean
-  onUpdate: (options: { connectionId?: string | null; model?: string | null; effort?: string | null; speed?: string | null }) => void
+  onUpdate: (options: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null }) => void
 }
 
-export function RuntimeOptionsCard({ agentSlug, connectionId, model, effort, speed, disabled, onUpdate }: RuntimeOptionsCardProps) {
+export function RuntimeOptionsCard({ agentSlug, llmProviderId, model, effort, speed, disabled, onUpdate }: RuntimeOptionsCardProps) {
   const picked = useRef(false)
-  const { ready, selection, resolveDisplay } = useInheritedRuntimeSelection(agentSlug, { connectionId, model, effort, speed })
+  const { ready, selection, resolveDisplay } = useInheritedRuntimeSelection(agentSlug, { llmProviderId, model, effort, speed })
 
   // Local mirror so a pick shows immediately; the parent's save round-trips
   // through props, and the sync effect below re-adopts the inherit once it
@@ -63,7 +63,7 @@ export function RuntimeOptionsCard({ agentSlug, connectionId, model, effort, spe
     setLocalEffort(cleared.displayEffort)
     setLocalSpeed(cleared.displaySpeed)
     setLocalModel(cleared.model)
-    onUpdate({ connectionId: null, model: null, effort: null, speed: null })
+    onUpdate({ llmProviderId: null, model: null, effort: null, speed: null })
   }, [onUpdate, resolveDisplay])
 
   const hasCustom = model !== null || effort !== null || speed !== null
@@ -92,7 +92,7 @@ export function RuntimeOptionsCard({ agentSlug, connectionId, model, effort, spe
           <SettingsModelSelect
             agentSlug={agentSlug}
             model={localModel}
-            connectionId={selection.connectionId}
+            llmProviderId={selection.llmProviderId}
             onSelectionChange={s => { setLocalModel(s.model); onUpdate(s) }}
             onModelChange={handleSetModel}
             includeEffort

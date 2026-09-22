@@ -179,7 +179,7 @@ async function startRepairSession(
       ...(availableEnvVars.length > 0 ? { availableEnvVars } : {}),
       initialMessage: buildPrompt(widgetSlug, error, logTail),
       model: resolved.model,
-      connectionId: resolved.connectionId,
+      llmProviderId: resolved.llmProviderId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },

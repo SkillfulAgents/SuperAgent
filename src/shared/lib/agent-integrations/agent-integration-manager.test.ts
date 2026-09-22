@@ -102,7 +102,7 @@ class ObjectIntegration extends AgentIntegration {
 
 function record(id: string): AgentIntegrationRecord {
   return { id, agentSlug: id, provider: 'test-objects', name: null, config: '{}', status: 'active', errorMessage: null,
-    model: null, connectionId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() }
+    model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() }
 }
 
 let manager: AgentIntegrationManager

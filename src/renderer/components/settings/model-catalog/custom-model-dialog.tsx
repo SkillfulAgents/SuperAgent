@@ -89,7 +89,7 @@ export interface CustomModelDialogProps {
   /** The model being edited (edit mode) — prefills the form and supplies carried-through extras. */
   initialModel?: ModelDefinition | null
   providerId: LlmProviderId
-  connectionId?: string
+  llmProviderId?: string
   supportsModelSearch?: boolean
   canEditPricing?: boolean
   disabled?: boolean
@@ -110,7 +110,7 @@ function CustomModelDialogBody({
   mode,
   initialModel,
   providerId,
-  connectionId,
+  llmProviderId,
   supportsModelSearch = false,
   canEditPricing = true,
   disabled,
@@ -139,7 +139,7 @@ function CustomModelDialogBody({
   const searchEnabled = supportsModelSearch && mode === 'add' && !disabled
   const providerModelSearch = useProviderModelSearch(providerId, debouncedQuery, {
     enabled: searchEnabled,
-    connectionId,
+    llmProviderId,
   })
 
   useEffect(() => {

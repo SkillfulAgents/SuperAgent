@@ -34,3 +34,4 @@ src/api/routes/mcp-proxy.linear.test.ts
 
 src/shared/lib/agent-integrations/delivery-queue.test.ts
 src/shared/lib/agent-integrations/agent-integration-delivery.test.ts
+src/shared/lib/container/base-container-client.llm-provider.test.ts

@@ -278,7 +278,7 @@ export interface AppSettings {
   llmDefault?: import('../llm-provider/connection-schema').ModelSelection
   llmSummarizer?: import('../llm-provider/connection-schema').ModelSelection | null
   /** Binding for model-only preferences written before connections existed. */
-  llmLegacyConnectionId?: string
+  llmLegacyProviderId?: string
 
   container: ContainerSettings
   apiKeys?: ApiKeySettings
@@ -430,7 +430,7 @@ export type ModelPickerSettingsResponse = Pick<
 > & {
   connections?: import('../llm-provider/connection-schema').ConnectionInfo[]
   defaultSelection?: import('../llm-provider/connection-schema').ModelSelection
-  legacyConnectionId?: string
+  legacyLlmProviderId?: string
 }
 
 /**
@@ -564,7 +564,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     llmProvider: loaded.llmProvider,
     llmDefault: loaded.llmDefault === undefined ? undefined : modelSelectionSchema.parse(loaded.llmDefault),
     llmSummarizer: loaded.llmSummarizer == null ? loaded.llmSummarizer : modelSelectionSchema.parse(loaded.llmSummarizer),
-    llmLegacyConnectionId: loaded.llmLegacyConnectionId,
+    llmLegacyProviderId: loaded.llmLegacyProviderId,
     // Recover a pre-collapse selection: webSearchProvider shipped (v0.4.5-0.4.7) and the single
     // UI select wrote both old fields to the same value, so the legacy webSearchProvider is the
     // user's choice. Read-fallback (not a boot-time migration) keeps this merge pure; the next

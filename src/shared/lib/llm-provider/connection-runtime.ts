@@ -1,9 +1,11 @@
+import { getModelContextWindowMap } from './model-catalog'
+import { getContainerModelPromptHints } from '../container/resolve-model'
 import { parseConnectionJson } from './connection-schema'
 import { getSettings } from '../config/settings'
 import { getRequestUserId } from '../platform-attribution/request-context'
 import { resolveRuntimeInherit } from '../container/runtime-options'
 import type { AgentPreferences } from '../types/agent-preferences'
-import { subagentModelCatalogSchema } from '../container/subagent-model-catalog'
+import { getSubagentModelCatalog } from '../container/subagent-model-catalog'
 import { connectionConfigSchema, resolveSelection } from './connection-schema'
 import {
   storedSelection,
@@ -17,7 +19,7 @@ import {
 export async function resolveConnectionRuntimeInherit(
   surface: {
     model?: string | null
-    connectionId?: string | null
+    llmProviderId?: string | null
     effort?: unknown
     speed?: unknown
   },
@@ -27,22 +29,26 @@ export async function resolveConnectionRuntimeInherit(
   const knobs = resolveRuntimeInherit(surface, agent, models)
   if (!getSettings().llmDefault) return knobs
   const resolved = await resolveSelectionHierarchy(
-    storedSelection(surface.model, surface.connectionId),
-    storedSelection(agent?.defaultModel, agent?.defaultConnectionId)
+    storedSelection(surface.model, surface.llmProviderId),
+    storedSelection(agent?.defaultModel, agent?.defaultLlmProviderId)
   )
-  return { ...knobs, model: resolved.model, connectionId: resolved.connectionId }
+  return { ...knobs, model: resolved.model, llmProviderId: resolved.llmProviderId }
 }
 
 /** Enforce selection access only for an explicit new binding. An attached
  * personal connection can be continued by every existing session collaborator.
  */
+export class LlmSelectionAccessError extends Error {
+  constructor() { super('LLM provider not found') }
+}
+
 export async function assertConnectionSelectionAccess(
-  connectionId: string | null | undefined,
+  llmProviderId: string | null | undefined,
   currentId?: string | null
 ) {
-  if (!connectionId) return
-  const row = await getConnection(connectionId)
-  if (!row) return // Missing references inherit; existence is not authorization.
+  if (!llmProviderId) return
+  const row = await getConnection(llmProviderId)
+  if (!row) throw new LlmSelectionAccessError()
   if (
     !canSelectConnection(
       row,
@@ -50,7 +56,7 @@ export async function assertConnectionSelectionAccess(
       currentId ?? undefined
     )
   ) {
-    throw new Error('Connection not found')
+    throw new LlmSelectionAccessError()
   }
 }
 
@@ -65,42 +71,33 @@ export const LLM_ENV_KEYS = [
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
   'AWS_BEARER_TOKEN_BEDROCK',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-  'AWS_REGION',
   'ENABLE_TOOL_SEARCH',
 ] as const
 
 export async function connectionRuntime(resolved: ResolvedConnection, agentId: string) {
   const { connection, provider, wireModel } = resolved
   const catalog = connectionCatalog(connection)
-  const model = catalog.find((m) => m.id === wireModel)!
   const subagent = (selection: string | null) =>
-    resolveSelection(selection ? { connectionId: connection.id, model: selection } : null, [
+    resolveSelection(selection ? { llmProviderId: connection.id, model: selection } : null, [
       { id: connection.id, catalog },
     ])?.wireModel ?? wireModel
   const env = Object.fromEntries(LLM_ENV_KEYS.map((key) => [key, '']))
   for (const [key, value] of Object.entries(await provider.getContainerEnvVars({ id: agentId }))) {
-    env[key] = value ?? ''
+    if (value !== undefined) env[key] = value
   }
   Object.assign(env, parseConnectionJson(connectionConfigSchema, connection.config).runtimeEnv)
   env.ENABLE_TOOL_SEARCH =
     getSettings().enableToolSearch === false ? 'false' : (provider.toolSearchEnv ?? '')
   return {
-    connectionId: connection.id,
+    llmProviderId: connection.id,
     generation: connection.generation,
     provider: provider.id,
     model: wireModel,
     browserModel: subagent(connection.browserModel),
     dashboardBuilderModel: subagent(connection.dashboardModel),
-    modelPromptHints: model.promptHints ?? [],
-    subagentModels: subagentModelCatalogSchema.parse(
-      catalog.filter((m) => m.isLatest).slice(0, 32)
-    ),
-    modelContextWindows: Object.fromEntries(
-      catalog.filter((m) => m.contextWindow).map((m) => [m.id, m.contextWindow!])
-    ),
+    modelPromptHints: getContainerModelPromptHints(wireModel, catalog),
+    subagentModels: getSubagentModelCatalog(catalog),
+    modelContextWindows: getModelContextWindowMap(catalog),
     env,
   }
 }

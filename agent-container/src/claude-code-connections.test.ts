@@ -193,6 +193,7 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
       })
     } finally {
       vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
     }
   })
 
@@ -206,16 +207,50 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     await claudeProcess?.stop()
     claudeProcess = undefined
     vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+  })
+
+  it('recovers a deferred session after credential resolution fails without using ambient auth', async () => {
+    vi.stubEnv('SUPERAGENT_HOST_API_URL', 'http://host.test/api')
+    vi.stubEnv('PROXY_TOKEN', 'agent-token')
+    vi.stubEnv('ANTHROPIC_API_KEY', 'must-not-use-ambient-key')
+    const runtime = { llmProviderId: 'account', generation: 0, provider: 'anthropic', model: 'resolved-model',
+      browserModel: 'resolved-model', dashboardBuilderModel: 'resolved-model', modelPromptHints: [],
+      subagentModels: [], modelContextWindows: {}, env: { ANTHROPIC_API_KEY: 'resolved-key' } }
+    const fetchRuntime = vi.fn().mockResolvedValueOnce(new Response('unavailable', { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(runtime)))
+    vi.stubGlobal('fetch', fetchRuntime)
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'deferred', claudeSessionId: 'old-cli-id', workingDirectory: '/tmp', requiresConnectionRuntime: true })
+    expect(calls).toHaveLength(0)
+    await expect(claudeProcess.sendMessage('retry later')).rejects.toThrow('503')
+    expect(calls).toHaveLength(0)
+    await claudeProcess.sendMessage('host recovered')
+    expect(calls).toHaveLength(1)
+    expect(calls[0].options.env).toMatchObject({ ANTHROPIC_API_KEY: 'resolved-key' })
+    expect(JSON.stringify(calls)).not.toContain('must-not-use-ambient-key')
+  })
+
+  it('restores the agent AWS tool environment when switching away from Bedrock', async () => {
+    const base = { llmProviderId: 'bedrock', generation: 0, provider: 'bedrock', model: 'model',
+      browserModel: 'model', dashboardBuilderModel: 'model', modelPromptHints: [], subagentModels: [], modelContextWindows: {} }
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'aws-tool-env', workingDirectory: '/tmp',
+      customEnvVars: { AWS_ACCESS_KEY_ID: 'tool-key', AWS_SECRET_ACCESS_KEY: 'tool-secret', AWS_REGION: 'eu-west-1', AWS_SESSION_TOKEN: 'tool-session' },
+      llmRuntime: { ...base, env: { AWS_ACCESS_KEY_ID: 'bedrock-key', AWS_SECRET_ACCESS_KEY: 'bedrock-secret', AWS_REGION: 'us-east-1', CLAUDE_CODE_USE_BEDROCK: '1' } } })
+    await claudeProcess.start()
+    expect(calls[0].options.env).toMatchObject({ AWS_ACCESS_KEY_ID: 'bedrock-key' })
+    await claudeProcess.sendMessage('use Anthropic', undefined, { llmRuntime: { ...base, llmProviderId: 'anthropic', provider: 'anthropic', env: { ANTHROPIC_API_KEY: 'anthropic-key', CLAUDE_CODE_USE_BEDROCK: '' } } })
+    expect(calls[1].options.env).toMatchObject({ AWS_ACCESS_KEY_ID: 'tool-key', AWS_SECRET_ACCESS_KEY: 'tool-secret', AWS_REGION: 'eu-west-1', AWS_SESSION_TOKEN: 'tool-session' })
+    expect(JSON.stringify(calls[1].options)).not.toContain('bedrock-secret')
   })
 
   it('rebuilds LLM credentials and capabilities while preserving Platform service credentials', async () => {
     vi.stubEnv('PLATFORM_BASE_URL', 'https://platform-services.example')
     vi.stubEnv('PLATFORM_AUTH_TOKEN', 'platform-services-token::owner')
-    const runtime = (connectionId: string, model: string, generation = 0) => ({
-      connectionId, generation, provider: 'generic', model,
+    const runtime = (llmProviderId: string, model: string, generation = 0) => ({
+      llmProviderId, generation, provider: 'generic', model,
       browserModel: model, dashboardBuilderModel: model, modelPromptHints: [], subagentModels: [],
-      modelContextWindows: { [model]: connectionId === 'first' ? 500000 : 100000 },
-      env: { ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: `secret-${connectionId}-${generation}`, ANTHROPIC_BASE_URL: `https://${connectionId}.example`, CLAUDE_CODE_USE_BEDROCK: '' },
+      modelContextWindows: { [model]: llmProviderId === 'first' ? 500000 : 100000 },
+      env: { ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: `secret-${llmProviderId}-${generation}`, ANTHROPIC_BASE_URL: `https://${llmProviderId}.example`, CLAUDE_CODE_USE_BEDROCK: '' },
     })
     claudeProcess = new ClaudeCodeProcess({ sessionId: 'llm-switch', workingDirectory: '/tmp', llmRuntime: runtime('first', 'shared-model'), customEnvVars: { ANTHROPIC_AUTH_TOKEN: 'must-not-win' } })
     await claudeProcess.start()

@@ -5,7 +5,7 @@ import { connectionModelOverridesSchema, normalizeConnectionModelOverrides } fro
 import { mergeCatalog } from './catalog-merge'
 import { connectionConfigSchema, resolveSelection, type ConnectionConfig } from './connection-schema'
 
-export const legacyConnectionId = (provider: LlmProviderId) => `legacy-${provider}`
+export const legacyLlmProviderId = (provider: LlmProviderId) => `legacy-${provider}`
 export const providerCredentialFields: Record<LlmProviderId, (keyof ConnectionConfig['apiKeys'])[]> = {
   anthropic: ['anthropicApiKey'],
   openrouter: ['openrouterApiKey'],
@@ -14,11 +14,18 @@ export const providerCredentialFields: Record<LlmProviderId, (keyof ConnectionCo
   platform: [],
 }
 const envNames: Record<LlmProviderId, string[]> = {
-  anthropic: ['ANTHROPIC_API_KEY'],
+  anthropic: ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'],
   openrouter: ['OPENROUTER_API_KEY'],
   generic: ['GENERIC_API_KEY', 'GENERIC_BASE_URL'],
-  bedrock: ['AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION'],
+  bedrock: ['AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_REGION'],
   platform: [],
+}
+
+/** Legacy LLM overrides belong to the active provider; general AWS tool
+ * credentials remain agent environment unless the active provider is Bedrock. */
+export function isProviderEnvVar(key: string, provider?: LlmProviderId): boolean {
+  return /^(ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN$|CLAUDE_CODE_USE_(BEDROCK|VERTEX)$|AWS_BEARER_TOKEN_BEDROCK$)/.test(key)
+    || (provider === 'bedrock' && /^AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|REGION)$/.test(key))
 }
 
 /** Build the account used by the existing provider settings/onboarding API.
@@ -40,9 +47,7 @@ export function connectionFromProviderSettings(id: LlmProviderId, extraModels: I
       id === active
         ? Object.fromEntries(
             Object.entries(settings.customEnvVars ?? {}).filter(([key]) =>
-              /^(ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN$|CLAUDE_CODE_USE_(BEDROCK|VERTEX)$|AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|BEARER_TOKEN_BEDROCK|REGION)$)/.test(
-                key
-              )
+              isProviderEnvVar(key, id)
             )
           )
         : {},
@@ -81,10 +86,10 @@ export function connectionFromProviderSettings(id: LlmProviderId, extraModels: I
     }
   }
   const preserve = (model: string, purpose: 'agent' | 'summarizer' | 'browser' | 'dashboard') =>
-    resolveSelection({ connectionId: legacyConnectionId(id), model }, [{ id: legacyConnectionId(id), catalog }])
+    resolveSelection({ llmProviderId: legacyLlmProviderId(id), model }, [{ id: legacyLlmProviderId(id), catalog }])
       ?.model ?? resolveModelForProvider(model, id, purpose)
   const values = {
-    id: legacyConnectionId(id),
+    id: legacyLlmProviderId(id),
     provider: id,
     name: provider.name,
     userId: null,

@@ -1,4 +1,4 @@
-import { assertConnectionSelectionAccess, withSessionSelection } from '@shared/lib/llm-provider/connection-runtime'
+import { LlmSelectionAccessError, assertConnectionSelectionAccess, withSessionSelection } from '@shared/lib/llm-provider/connection-runtime'
 import { listConnections } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
@@ -1540,10 +1540,11 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
       return c.json({ error: `Invalid preferences: ${field}: ${issue?.message ?? 'invalid value'}` }, 400)
     }
 
-    await assertConnectionSelectionAccess(parsed.data.defaultConnectionId, parsed.data.defaultConnectionId ? (await readAgentPreferences(slug)).defaultConnectionId : undefined)
+    await assertConnectionSelectionAccess(parsed.data.defaultLlmProviderId, parsed.data.defaultLlmProviderId ? (await readAgentPreferences(slug)).defaultLlmProviderId : undefined)
     const merged = await updateAgentPreferences(slug, parsed.data)
     return c.json(merged)
   } catch (error) {
+    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     console.error('Failed to update agent preferences:', error)
     return c.json({ error: 'Failed to update agent preferences' }, 500)
   }
@@ -1928,12 +1929,12 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
 agents.get('/:id/llm-connections', AgentRead(), async c => {
   const slug = getAgentId(c)
   const prefs = await readAgentPreferences(slug)
-  let currentId = prefs.defaultConnectionId ?? undefined
-  const reference = c.req.query('connectionId')
+  let currentId = prefs.defaultLlmProviderId ?? undefined
+  const reference = c.req.query('llmProviderId')
   if (reference && reference !== currentId) {
     for (const table of [scheduledTasks, webhookTriggers, chatIntegrations]) {
       const attached = await db.select({ id: table.id }).from(table)
-        .where(and(eq(table.agentSlug, slug), eq(table.connectionId, reference))).get()
+        .where(and(eq(table.agentSlug, slug), eq(table.llmProviderId, reference))).get()
       if (attached) { currentId = reference; break }
     }
   }
@@ -1947,7 +1948,7 @@ agents.get('/:id/sessions/:sessionId/llm-connections', AgentUser(), async c => {
   if (!await actor.sessions.isKnown(sessionId)) return c.json({ error: 'Session not found' }, 404)
   const metadata = await actor.sessions.metadata(sessionId)
   const effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(slug), getEffectiveModels())
-  return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, effective.connectionId ?? undefined) })
+  return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, effective.llmProviderId ?? undefined) })
 })
 
 // POST /api/agents/:id/sessions - Create a new session with initial message
@@ -2002,7 +2003,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // Model/effort/speed preference order: explicit per-session pick > agent default > global default.
     const agentPrefs = await readAgentPreferences(slug)
     const models = getEffectiveModels()
-    await assertConnectionSelectionAccess(runtimeOptions.connectionId, agentPrefs.defaultConnectionId)
+    await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, agentPrefs.defaultLlmProviderId)
     const resolved = await resolveConnectionRuntimeInherit(runtimeOptions, agentPrefs, models)
     const prewarm = await resolveConnectionRuntimeInherit({}, agentPrefs, models)
 
@@ -2011,7 +2012,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       initialMessage: message.trim(),
       initialMessageUuid,
       model: resolved.model,
-      connectionId: resolved.connectionId,
+      llmProviderId: resolved.llmProviderId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       maxOutputTokens: agentLimits.maxOutputTokens,
@@ -2027,7 +2028,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       // wire when the user explicitly chooses one), so it is what the
       // container should pre-warm for.
       prewarmDefaults: {
-        connectionId: prewarm.connectionId ?? undefined,
+        llmProviderId: prewarm.llmProviderId ?? undefined,
         model: prewarm.model,
         effort: prewarm.effort,
         speed: prewarm.speed,
@@ -2041,7 +2042,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // an existing conversation's next turn or make the composer claim it will.
     const initialMetadata: Partial<SessionMetadata> = {
       model: resolved.model,
-      connectionId: resolved.connectionId,
+      llmProviderId: resolved.llmProviderId,
       ...(resolved.effort ? { effort: resolved.effort } : {}),
       ...(resolved.speed ? { speed: resolved.speed } : {}),
       ...(dashboardDispatch
@@ -2120,7 +2121,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         messageCount: 0,
         isActive: true,
         model: resolved.model,
-        connectionId: resolved.connectionId,
+        llmProviderId: resolved.llmProviderId,
         ...(resolved.effort ? { effort: resolved.effort } : {}),
         ...(resolved.speed ? { speed: resolved.speed } : {}),
         initialMessageUuid,
@@ -2128,6 +2129,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       201
     )
   } catch (error) {
+    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     console.error('Failed to create session:', error)
     return c.json({ error: 'Failed to create session' }, 500)
   }
@@ -2721,7 +2723,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     return await withSessionSelection(agentSlug, sessionId, async () => {
       const currentSelection = await actor.sessions.metadata(sessionId)
       // Authorize before mutating activity or persisting the user's message.
-      await assertConnectionSelectionAccess(runtimeOptions.connectionId, currentSelection?.connectionId)
+      await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, currentSelection?.llmProviderId)
       // If the session is awaiting user input (an open AskUserQuestion / secret / file
       // request, etc.), cancel the pending request first so this message starts a fresh
       // turn instead of deadlocking behind the blocked tool. No-op when not awaiting.
@@ -2744,7 +2746,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         delete runtimeOptions.effort
         delete runtimeOptions.speed
         delete runtimeOptions.model
-        delete runtimeOptions.connectionId
+        delete runtimeOptions.llmProviderId
       }
 
       await persistAndBroadcastUserMessage(c, {
@@ -2765,10 +2767,10 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       const effectiveMetadata = getSettings().llmDefault ? await actor.sessions.metadata(sessionId) : null
       if (!wasQueued && effectiveMetadata?.model) {
         updates.model = effectiveMetadata.model
-        updates.connectionId = effectiveMetadata.connectionId
+        updates.llmProviderId = effectiveMetadata.llmProviderId
       } else {
         if (runtimeOptions.model) updates.model = runtimeOptions.model
-        if (runtimeOptions.connectionId !== undefined) updates.connectionId = runtimeOptions.connectionId
+        if (runtimeOptions.llmProviderId !== undefined) updates.llmProviderId = runtimeOptions.llmProviderId
       }
       if (isAuthMode()) {
         // Alert claim: the device that spoke last in a session is the one
@@ -2793,7 +2795,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
             (updates.effort !== undefined && previous?.effort !== updates.effort) ||
             (updates.speed !== undefined && previous?.speed !== updates.speed) ||
             (updates.model !== undefined && (getSettings().llmDefault ? currentSelection : previous)?.model !== updates.model) ||
-            (updates.connectionId !== undefined && (getSettings().llmDefault ? currentSelection : previous)?.connectionId !== updates.connectionId)
+            (updates.llmProviderId !== undefined && (getSettings().llmDefault ? currentSelection : previous)?.llmProviderId !== updates.llmProviderId)
           if (runtimeSelectionChanged) {
             // Other windows/devices may already have seeded their composer from
             // the previous session metadata. Tell both the local session stream
@@ -2809,6 +2811,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
     })
   } catch (error) {
+    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     console.error('Failed to send message:', error)
     return c.json({ error: 'Failed to send message' }, 500)
   }
@@ -2878,9 +2881,16 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
 
     const isActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
     const metadata = await actor.sessions.metadata(sessionId)
-    const effective = getSettings().llmDefault
-      ? await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(agentSlug), getEffectiveModels())
-      : null
+    let effective: Awaited<ReturnType<typeof resolveConnectionRuntimeInherit>> | null = null
+    if (getSettings().llmDefault) {
+      try {
+        effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(agentSlug), getEffectiveModels())
+      } catch (error) {
+        // History remains readable during provider/configuration outages.
+        // A new turn still resolves and validates its runtime before sending.
+        console.warn('Could not resolve session display defaults:', error)
+      }
+    }
     const pendingWake = await getPendingWakeForSession(agentSlug, sessionId)
     const invokingAgent = metadata?.invokedByAgentSlug
       ? await getAgent(metadata.invokedByAgentSlug)
@@ -2917,7 +2927,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       effort: metadata?.effort,
       speed: metadata?.speed,
       model: effective?.model ?? metadata?.model,
-      connectionId: effective?.connectionId ?? metadata?.connectionId,
+      llmProviderId: effective?.llmProviderId ?? metadata?.llmProviderId,
       ...(pendingWake
         ? {
             pendingWakeAt: pendingWake.nextExecutionAt.toISOString(),

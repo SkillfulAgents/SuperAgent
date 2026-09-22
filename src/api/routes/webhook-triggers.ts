@@ -1,4 +1,4 @@
-import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { LlmSelectionAccessError, assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Webhook Triggers API Routes
  *
@@ -133,13 +133,13 @@ webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('use
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { connectionId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
-    if ('connectionId' in body) updates.connectionId = parsed.data.connectionId ?? null
+    const updates: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
+    if ('llmProviderId' in body) updates.llmProviderId = parsed.data.llmProviderId ?? null
     if ('model' in body) updates.model = parsed.data.model ?? null
     if ('effort' in body) updates.effort = parsed.data.effort ?? null
     if ('speed' in body) updates.speed = parsed.data.speed ?? null
 
-    await assertConnectionSelectionAccess(updates.connectionId, trigger?.connectionId)
+    await assertConnectionSelectionAccess(updates.llmProviderId, trigger?.llmProviderId)
     const updated = await updateWebhookTriggerRuntimeOptions(trigger!.id, updates)
     if (!updated) {
       return c.json({ error: 'Trigger not found or cancelled' }, 404)
@@ -150,6 +150,7 @@ webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('use
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'updated', details: { field: 'runtime-options' } })
     return c.json(toPublicWebhookTrigger(refreshed, getAuthorizedAgentRole(c)))
   } catch (error) {
+    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     console.error('Failed to update webhook trigger runtime options:', error)
     return c.json({ error: 'Failed to update runtime options' }, 500)
   }

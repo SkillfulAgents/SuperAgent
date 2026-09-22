@@ -61,17 +61,18 @@ describe('import-llm-connections data migration', () => {
     }).run()
     expect(await runDataMigrations(handle.db, migrations)).toEqual([3])
     const rows = await handle.db.select().from(llmConnections).all()
-    expect(rows.map(row => row.id).sort()).toEqual(['legacy-anthropic', 'legacy-openrouter'])
-    expect(rows.find(row => row.id === 'legacy-openrouter')?.config).toContain('OPENROUTER_API_KEY')
+    expect(rows.map(row => row.id).sort()).toEqual(['legacy-anthropic'])
+    // Ambient keys for unselected providers must not become member-selectable.
+    expect(rows.find(row => row.id === 'legacy-openrouter')).toBeUndefined()
     expect(JSON.stringify(rows)).not.toContain('environment-test-key')
     expect(settings.getSettings()).toMatchObject({
-      llmLegacyConnectionId: 'legacy-anthropic',
-      llmDefault: { connectionId: 'legacy-anthropic', model: 'claude-archived-1' },
-      llmSummarizer: { connectionId: 'legacy-anthropic', model: 'haiku' },
+      llmLegacyProviderId: 'legacy-anthropic',
+      llmDefault: { llmProviderId: 'legacy-anthropic', model: 'claude-archived-1' },
+      llmSummarizer: { llmProviderId: 'legacy-anthropic', model: 'haiku' },
     })
     for (const table of [scheduledTasks, webhookTriggers, chatIntegrations]) {
-      const row = await handle.db.select({ model: table.model, connectionId: table.connectionId }).from(table).get()
-      expect(row?.connectionId).toBe('legacy-anthropic')
+      const row = await handle.db.select({ model: table.model, llmProviderId: table.llmProviderId }).from(table).get()
+      expect(row?.llmProviderId).toBe('legacy-anthropic')
       expect(rows.find(row => row.id === 'legacy-anthropic')?.modelOverrides).toContain(row!.model)
     }
     expect(await handle.db.select().from(dataMigrations).all()).toMatchObject([{ id: 3, name: 'import-llm-connections' }])
@@ -132,7 +133,7 @@ describe('import-llm-connections data migration', () => {
     configure()
     await importLlmConnections.run(handle.db)
     settings.mutateSettings(s => {
-      s.llmDefault = { connectionId: 'legacy-anthropic', model: 'haiku' }
+      s.llmDefault = { llmProviderId: 'legacy-anthropic', model: 'haiku' }
       s.llmSummarizer = null
     })
     await importLlmConnections.run(handle.db)

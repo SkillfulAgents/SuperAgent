@@ -63,15 +63,15 @@ export function useWarmStartOnTypeEnabled(): boolean {
  * catalog. The `['settings', …]` key keeps it refreshed by the same broad
  * invalidations the settings mutations already fire (e.g. a catalog edit).
  */
-export function useModelSettings(agentSlug?: string, connectionId?: string | null) {
+export function useModelSettings(agentSlug?: string, llmProviderId?: string | null) {
   return useQuery<ModelPickerSettingsResponse>({
-    queryKey: ['settings', 'models', ...(agentSlug ? [agentSlug, connectionId] : [])],
+    queryKey: ['settings', 'models', ...(agentSlug ? [agentSlug, llmProviderId] : [])],
     queryFn: async () => {
       const res = await apiFetch('/api/settings/models')
       if (!res.ok) throw new Error('Failed to fetch model settings')
       const data: ModelPickerSettingsResponse = await res.json()
       if (agentSlug) {
-        const query = connectionId ? `?connectionId=${encodeURIComponent(connectionId)}` : ''
+        const query = llmProviderId ? `?llmProviderId=${encodeURIComponent(llmProviderId)}` : ''
         const response = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/llm-connections${query}`)
         if (!response.ok) throw new Error('Failed to fetch saved model connection')
         data.connections = (await response.json()).connections
@@ -85,15 +85,15 @@ export function useModelSettings(agentSlug?: string, connectionId?: string | nul
 export function useProviderModelSearch(
   providerId: LlmProviderId,
   query: string,
-  options?: { enabled?: boolean; connectionId?: string },
+  options?: { enabled?: boolean; llmProviderId?: string },
 ) {
   const trimmedQuery = query.trim()
   return useQuery<ModelSearchResult[]>({
-    queryKey: ['settings', 'llm-provider-model-search', providerId, options?.connectionId, trimmedQuery],
+    queryKey: ['settings', 'llm-provider-model-search', providerId, options?.llmProviderId, trimmedQuery],
     queryFn: async () => {
       const res = await apiFetch(
-        options?.connectionId
-          ? `/api/llm-connections/${encodeURIComponent(options.connectionId)}/models/search?q=${encodeURIComponent(trimmedQuery)}`
+        options?.llmProviderId
+          ? `/api/llm-connections/${encodeURIComponent(options.llmProviderId)}/models/search?q=${encodeURIComponent(trimmedQuery)}`
           : `/api/settings/llm-providers/${providerId}/models/search?q=${encodeURIComponent(trimmedQuery)}`,
       )
       const body = await res.json().catch(() => ({})) as { data?: ModelSearchResult[]; error?: string }

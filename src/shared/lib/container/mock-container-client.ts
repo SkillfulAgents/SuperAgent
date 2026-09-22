@@ -3264,12 +3264,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       const metadata = await actor.sessions.metadata(sessionId)
       const preferences = await actor.config.get('preferences')
       const selected = await resolveSelectionHierarchy(
-        storedSelection(options?.model, options?.connectionId !== undefined ? options.connectionId : metadata?.connectionId),
-        storedSelection(metadata?.model, metadata?.connectionId),
-        storedSelection(preferences?.defaultModel, preferences?.defaultConnectionId),
+        storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId),
+        storedSelection(metadata?.model, metadata?.llmProviderId),
+        storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId),
       )
       model = selected.wireModel
-      await actor.sessions.updateMetadata(sessionId, { model: selected.model, connectionId: selected.connectionId })
+      await actor.sessions.updateMetadata(sessionId, { model: selected.model, llmProviderId: selected.llmProviderId })
     }
     // Record for E2E test assertions
     MockContainerClient.lastSendMessageCall = {

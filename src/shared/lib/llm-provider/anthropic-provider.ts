@@ -15,9 +15,14 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
   protected readonly envVarName = 'ANTHROPIC_API_KEY'
 
   createClient(): Anthropic {
-    const apiKey = this.getEffectiveApiKey()
-    if (!apiKey) throw new Error('Anthropic API key not configured')
-    return new Anthropic({ apiKey, ...(this.configuration ? { baseURL: 'https://api.anthropic.com', authToken: null } : {}) })
+    const apiKey = this.configuration?.runtimeEnv?.ANTHROPIC_API_KEY ?? this.getEffectiveApiKey()
+    const authToken = this.envValue('ANTHROPIC_AUTH_TOKEN') || null
+    if (!apiKey && !authToken) throw new Error('Anthropic API key not configured')
+    return new Anthropic({
+      apiKey: apiKey ?? null,
+      baseURL: this.envValue('ANTHROPIC_BASE_URL') || 'https://api.anthropic.com',
+      authToken,
+    })
   }
 
   getBuiltinCatalog(): ModelDefinition[] {
@@ -27,6 +32,8 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
   async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
     return {
       ANTHROPIC_API_KEY: this.getEffectiveApiKey(),
+      ANTHROPIC_BASE_URL: this.envValue('ANTHROPIC_BASE_URL'),
+      ANTHROPIC_AUTH_TOKEN: this.envValue('ANTHROPIC_AUTH_TOKEN'),
     }
   }
 

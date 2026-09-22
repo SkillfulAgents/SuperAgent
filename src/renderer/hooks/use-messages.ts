@@ -309,7 +309,7 @@ export function useSendMessage(options: {
       content: string
       effort?: EffortLevel
       speed?: SpeedLevel
-      connectionId?: string | null
+      llmProviderId?: string | null
       model?: string
       /**
        * false appends the message to the transcript for the agent to read
@@ -325,7 +325,7 @@ export function useSendMessage(options: {
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.speed ? { speed: data.speed } : {}),
           ...(data.model ? { model: data.model } : {}),
-          ...(data.connectionId !== undefined ? { connectionId: data.connectionId } : {}),
+          ...(data.llmProviderId !== undefined ? { llmProviderId: data.llmProviderId } : {}),
           ...(data.shouldQuery === false ? { shouldQuery: false } : {}),
         }),
       })
@@ -355,7 +355,7 @@ export function useSendMessage(options: {
         ...(variables.effort !== undefined ? { effort: variables.effort } : {}),
         ...(variables.speed !== undefined ? { speed: variables.speed } : {}),
         ...(variables.model !== undefined ? { model: variables.model } : {}),
-        ...(variables.connectionId !== undefined ? { connectionId: variables.connectionId } : {}),
+        ...(variables.llmProviderId !== undefined ? { llmProviderId: variables.llmProviderId } : {}),
       }
       if (Object.keys(patch).length === 0) return
       queryClient.setQueriesData<ApiSession>(

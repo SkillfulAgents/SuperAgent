@@ -252,7 +252,7 @@ class TaskScheduler {
     const agentPrefs = await readAgentPreferences(task.agentSlug)
     const resolved = await resolveConnectionRuntimeInherit(
       { model: task.model,
-      connectionId: task.connectionId, effort: task.effort, speed: task.speed },
+      llmProviderId: task.llmProviderId, effort: task.effort, speed: task.speed },
       agentPrefs,
       models,
     )
@@ -261,7 +261,7 @@ class TaskScheduler {
         availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
       model: resolved.model,
-      connectionId: resolved.connectionId,
+      llmProviderId: resolved.llmProviderId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },

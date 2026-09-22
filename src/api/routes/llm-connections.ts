@@ -7,6 +7,7 @@ import { getSettings } from '@shared/lib/config/settings'
 import {
   listConnections,
   resolveConnectionSelection,
+  resolveGlobalSelection,
   saveConnection,
   deleteConnection,
   setGlobalSelection,
@@ -35,14 +36,15 @@ routes.onError((error, c) =>
 )
 routes.get('/', async (c) => {
   const connections = await listConnections(viewer(c))
+  const root = await resolveGlobalSelection()
   const summarizer = await resolveConnectionSelection(getSettings().llmSummarizer)
   return c.json({
     connections,
-    legacyConnectionId: getSettings().llmLegacyConnectionId,
-    defaultSelection: getSettings().llmDefault ?? null,
+    legacyLlmProviderId: getSettings().llmLegacyProviderId,
+    defaultSelection: root ? { llmProviderId: root.llmProviderId, model: root.model } : null,
     summarizerSelection:
       summarizer?.connection.userId === null
-        ? { connectionId: summarizer.connectionId, model: summarizer.model }
+        ? { llmProviderId: summarizer.llmProviderId, model: summarizer.model }
         : null,
   })
 })

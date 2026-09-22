@@ -3,9 +3,9 @@ import { connectionModelOverridesSchema, normalizeConnectionModelOverrides } fro
 import { mergeCatalog } from './catalog-merge'
 import { parseConnectionJson } from './connection-schema'
 import { randomUUID } from 'node:crypto'
-import { legacyConnectionId, providerCredentialFields } from './provider-settings'
+import { legacyLlmProviderId, providerCredentialFields } from './provider-settings'
 import { changesOf } from '../db/batch'
-import { sql, and, eq, isNull, or } from 'drizzle-orm'
+import { sql, eq, isNull, or } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../db'
 import {
@@ -27,7 +27,6 @@ import {
   modelSelectionSchema,
   resolveSelection,
   type ConnectionInfo,
-  type ModelSelection,
 } from './connection-schema'
 
 export type ConnectionRow = typeof llmConnections.$inferSelect
@@ -44,6 +43,7 @@ export function providerForConnection(
     env: Object.fromEntries(
       Object.entries(config.env).map(([key, name]) => [key, process.env[name]])
     ),
+    runtimeEnv: config.runtimeEnv,
   })
 }
 
@@ -109,7 +109,7 @@ export async function listConnections(
       canManage,
       canDelete:
         canManage &&
-        getSettings().llmDefault?.connectionId !== row.id &&
+        getSettings().llmDefault?.llmProviderId !== row.id &&
         !(row.managed && provider.getApiKeyStatus().isConfigured),
     }
   })
@@ -195,11 +195,11 @@ export async function saveConnection(
 ): Promise<string> {
   return mutateConnections(async () => {
     const { input, previous, config, catalog, modelOverrides } = await prepareConnection(raw, viewer, id)
-    const connectionId = id ?? randomUUID()
+    const llmProviderId = id ?? randomUUID()
     const root = getSettings().llmDefault
     if (
-      root?.connectionId === connectionId &&
-      !resolveSelection(root, [{ id: connectionId, catalog }])
+      root?.llmProviderId === llmProviderId &&
+      !resolveSelection(root, [{ id: llmProviderId, catalog }])
     ) {
       throw new Error('Change the app default before removing its model')
     }
@@ -220,16 +220,16 @@ export async function saveConnection(
           ...values,
           generation: sql`${llmConnections.generation} + 1`,
         })
-        .where(eq(llmConnections.id, connectionId))
+        .where(eq(llmConnections.id, llmProviderId))
         .run()
       if (!changesOf(updated)) throw new Error('Connection no longer exists')
     } else {
       await db
         .insert(llmConnections)
-        .values({ ...values, id: connectionId, createdAt: new Date() })
+        .values({ ...values, id: llmProviderId, createdAt: new Date() })
         .run()
     }
-    return connectionId
+    return llmProviderId
   })
 }
 
@@ -238,12 +238,12 @@ export async function deleteConnection(id: string, viewer: ConnectionViewer): Pr
     const row = await getConnection(id)
     if (!row) throw new Error('Connection not found')
     assertManageConnection(row, viewer)
-    if (getSettings().llmDefault?.connectionId === id)
+    if (getSettings().llmDefault?.llmProviderId === id)
       throw new Error('Change the app default before deleting this connection')
     if (row.managed && providerForConnection(row).getApiKeyStatus().isConfigured)
       throw new Error('Platform cannot be deleted while connected')
     await db.delete(llmConnections).where(eq(llmConnections.id, id)).run()
-    if (id === legacyConnectionId(providerSchema.parse(row.provider))) {
+    if (id === legacyLlmProviderId(providerSchema.parse(row.provider))) {
       const config = parseConnectionJson(connectionConfigSchema, row.config)
       mutateSettings((settings) => {
         for (const key of providerCredentialFields[providerSchema.parse(row.provider)]) delete settings.apiKeys?.[key]
@@ -272,68 +272,86 @@ export async function setGlobalSelection(
   })
 }
 
-export async function resolveConnectionSelection(selection: ModelSelection | null | undefined) {
+type StoredModelSelection = { llmProviderId: string; model?: string }
+
+function defaultSelectionForConnection(row: ConnectionRow) {
+  const catalog = connectionCatalog(row)
+  const provider = providerForConnection(row)
+  const preferred = resolveSelection(
+    { llmProviderId: row.id, model: provider.getDefaultModel('agent') },
+    [{ id: row.id, catalog }],
+  )
+  const fallback = catalog.find(model => model.isDefault) ?? catalog[0]
+  const selected = preferred ?? (fallback ? { llmProviderId: row.id, model: fallback.id, wireModel: fallback.id } : null)
+  return selected ? { ...selected, connection: row, provider } : null
+}
+
+export async function resolveConnectionSelection(
+  selection: StoredModelSelection | null | undefined,
+  allowLegacyPin = false,
+) {
   if (!selection) return null
-  let row = await getConnection(selection.connectionId)
+  const row = await getConnection(selection.llmProviderId)
   if (!row) return null
-  if (legacySelections.has(selection)) {
-    // An absent ID is pre-upgrade file data, not a deleted binding. Preserve
-    // the old alias/passthrough semantics once, before the strict resolver.
-    const wire = resolveModelForProvider(
-      selection.model,
-      providerSchema.parse(row.provider),
-      'agent'
-    )
-    if (!resolveSelection(selection, [{ id: row.id, catalog: connectionCatalog(row) }])) {
-      selection = { connectionId: row.id, model: wire }
-      while (!connectionCatalog(row).some((model) => model.id === wire)) {
-        const overrides = connectionModelOverrides(row).filter(model => model.id !== wire)
-        if (!getLlmProvider(providerSchema.parse(row.provider)).getBuiltinCatalog().some(model => model.id === wire)) {
-          overrides.push({ id: wire, label: wire, supportedEfforts: ['low', 'medium', 'high'] })
-        }
-        const modelOverrides = connectionModelOverridesSchema.parse(overrides)
-        const result = await db
-          .update(llmConnections)
-          .set({ modelOverrides: JSON.stringify(modelOverrides), generation: row.generation + 1 })
-          .where(and(eq(llmConnections.id, row.id), eq(llmConnections.generation, row.generation)))
-          .run()
-        const current = await getConnection(row.id)
-        if (!current) return null
-        row = current
-        if (changesOf(result)) break
-      }
-    }
+  if (!selection.model) return defaultSelectionForConnection(row)
+  const provider = providerForConnection(row)
+  const resolved = resolveSelection({ ...selection, model: selection.model }, [{ id: row.id, catalog: connectionCatalog(row) }])
+  if (resolved) return { ...resolved, connection: row, provider }
+  // Pre-upgrade files and model-only clients could use an arbitrary wire ID.
+  // Preserve that request locally; resolving it must never edit a global catalog.
+  if (legacySelections.has(selection) || (allowLegacyPin && row.id === getSettings().llmLegacyProviderId)) {
+    return { ...selection, model: selection.model,
+      wireModel: resolveModelForProvider(selection.model, provider.id, 'agent'),
+      connection: row, provider }
   }
-  const resolved = resolveSelection(selection, [{ id: row.id, catalog: connectionCatalog(row) }])
-  return resolved ? { ...resolved, connection: row, provider: providerForConnection(row) } : null
+  return null
 }
 export type ResolvedConnection = NonNullable<Awaited<ReturnType<typeof resolveConnectionSelection>>>
 
-const legacySelections = new WeakSet<ModelSelection>()
+const legacySelections = new WeakSet<StoredModelSelection>()
 
 /** Undefined ID is legacy data. Explicit NULL is a cleared/deleted binding. */
 export function storedSelection(
   model?: string | null,
-  connectionId?: string | null
-): ModelSelection | null {
-  if (!model || connectionId === null) return null
-  const id = connectionId ?? getSettings().llmLegacyConnectionId
+  llmProviderId?: string | null
+): StoredModelSelection | null {
+  if (llmProviderId === null || (!model && !llmProviderId)) return null
+  const id = llmProviderId ?? getSettings().llmLegacyProviderId
   if (!id) return null
-  const selection = { connectionId: id, model }
-  if (connectionId === undefined) legacySelections.add(selection)
+  const selection = { llmProviderId: id, ...(model ? { model } : {}) }
+  if (llmProviderId === undefined) legacySelections.add(selection)
   return selection
 }
 
+/** Resolve the app default without mutating settings during a read. A retired
+ * model falls back within its provider; a lost row falls back to the migrated
+ * active global provider, never to a personal account or an ambient API key.
+ */
+export async function resolveGlobalSelection(): Promise<ResolvedConnection | null> {
+  const settings = getSettings()
+  const root = settings.llmDefault
+  const selected = await resolveConnectionSelection(root)
+  if (selected?.connection.userId === null) return selected
+  const ids = new Set([root?.llmProviderId, settings.llmLegacyProviderId, legacyLlmProviderId(settings.llmProvider ?? 'anthropic')])
+  for (const id of ids) {
+    if (!id) continue
+    const row = await getConnection(id)
+    if (row?.userId !== null) continue
+    const fallback = defaultSelectionForConnection(row)
+    if (fallback) return fallback
+  }
+  return null
+}
+
 export async function resolveSelectionHierarchy(
-  ...candidates: (ModelSelection | null | undefined)[]
+  ...candidates: (StoredModelSelection | null | undefined)[]
 ): Promise<ResolvedConnection> {
   for (const candidate of candidates) {
-    const resolved = await resolveConnectionSelection(candidate)
+    const resolved = await resolveConnectionSelection(candidate, true)
     if (resolved) return resolved
   }
-  const root = await resolveConnectionSelection(getSettings().llmDefault)
-  if (!root || root.connection.userId !== null)
-    throw new Error('Configure a global default connection and model in Settings → LLM')
+  const root = await resolveGlobalSelection()
+  if (!root) throw new Error('Configure a global default connection and model in Settings → LLM')
   return root
 }
 
