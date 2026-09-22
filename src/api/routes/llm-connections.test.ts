@@ -105,3 +105,18 @@ describe('connection API ownership and root protection', () => {
     ).toBe(400)
   })
 })
+
+
+it('accepts connection env without exposing values, and rejects reserved runtime overrides', async () => {
+  const input = draft()
+  const created = await request('', 'POST', { ...input, config: { ...input.config, runtimeEnv: { ANTHROPIC_AUTH_TOKEN: 'private-bearer' } } })
+  expect(created.status).toBe(201)
+  const response = await (await request('')).json()
+  expect(response.connections[0].customEnvVarKeys).toEqual(['ANTHROPIC_AUTH_TOKEN'])
+  expect(JSON.stringify(response)).not.toContain('private-bearer')
+  for (const key of ['PROXY_TOKEN', 'PLATFORM_AUTH_TOKEN', 'SUPERAGENT_HOST_API_URL']) {
+    const rejected = await request('', 'POST', { ...input, config: { ...input.config, runtimeEnv: { [key]: 'bad-override' } } })
+    expect(rejected.status).toBe(400)
+    expect((await rejected.json()).error).toBe('Invalid connection configuration')
+  }
+})

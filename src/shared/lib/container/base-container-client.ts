@@ -1,5 +1,5 @@
 import { MessageNotAcceptedError, requestWasNotDispatched } from './message-dispatch-error'
-import { isProviderEnvVar } from '../llm-provider/provider-settings'
+import { isProviderEnvVar } from '../llm-provider/provider-env'
 import { isQueuedSessionSend } from './session-send-context'
 import { connectionRuntime, rememberSessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { resolveExecutionSelection, storedSelection } from '@shared/lib/llm-provider/connections'

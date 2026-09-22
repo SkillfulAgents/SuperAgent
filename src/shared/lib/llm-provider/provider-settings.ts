@@ -1,3 +1,4 @@
+import { isProviderEnvVar } from './provider-env'
 import { getSettings, getEffectiveModels } from '../config/settings'
 import { getLlmProvider, resolveModelForProvider } from './index'
 import type { LlmProviderId } from './provider-types'
@@ -19,13 +20,6 @@ const envNames: Record<LlmProviderId, string[]> = {
   generic: ['GENERIC_API_KEY', 'GENERIC_BASE_URL'],
   bedrock: ['AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_REGION'],
   platform: [],
-}
-
-/** Legacy LLM overrides belong to the active provider; general AWS tool
- * credentials remain agent environment unless the active provider is Bedrock. */
-export function isProviderEnvVar(key: string, provider?: LlmProviderId): boolean {
-  return /^(ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN$|CLAUDE_CODE_USE_(BEDROCK|VERTEX)$|AWS_BEARER_TOKEN_BEDROCK$)/.test(key)
-    || (provider === 'bedrock' && /^AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|REGION)$/.test(key))
 }
 
 /** Build the account used by the existing provider settings/onboarding API.

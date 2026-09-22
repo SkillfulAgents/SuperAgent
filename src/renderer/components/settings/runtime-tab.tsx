@@ -1,3 +1,4 @@
+import { providerEnvVarsError } from '@shared/lib/llm-provider/provider-env'
 import { useState, useEffect, useMemo } from 'react'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
@@ -299,10 +300,11 @@ export function RuntimeTab() {
     // Mirror the server-side reserved-runtime-var guard (SUP-210) client-side so
     // the rejection is instant and the offending row never lingers.
     const reserved = findReservedEnvVarKeys(updated)
-    if (reserved.length > 0) {
+    const providerError = providerEnvVarsError(updated)
+    if (reserved.length > 0 || providerError) {
       setCustomEnvVarsDraft(previous)
       setCustomEnvError(
-        `customEnvVars may not override reserved runtime variables: ${reserved.join(', ')}`
+        providerError ?? `customEnvVars may not override reserved runtime variables: ${reserved.join(', ')}`
       )
       return
     }
@@ -940,11 +942,11 @@ export function RuntimeTab() {
       </div>
 
       {/* Custom Environment Variables */}
-      <div className="space-y-4 pt-2">
+      <div className="space-y-4 pt-2" data-testid="runtime-custom-env">
         <div className="space-y-0.5">
           <Label className="text-base">Custom Environment Variables</Label>
           <p className="text-xs text-muted-foreground">
-            Set additional environment variables for the agent process. These are passed to the Claude Code CLI. Changes apply to new sessions.
+            Set shared environment variables for agent tools and the Claude Code CLI. Changes apply to new sessions. Configure LLM credentials and endpoints on each connection in Settings → LLM → Edit connection → Custom environment variables.
           </p>
         </div>
 
@@ -1028,7 +1030,7 @@ export function RuntimeTab() {
           <DialogHeader>
             <DialogTitle>Add Custom Environment Variable</DialogTitle>
             <DialogDescription>
-              These variables are passed to the agent process for new sessions.
+              These variables apply across providers. For LLM credentials and endpoints, edit the connection in Settings → LLM.
             </DialogDescription>
           </DialogHeader>
 

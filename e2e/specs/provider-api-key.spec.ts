@@ -181,4 +181,60 @@ test.describe('Provider connection lifecycle', () => {
     await expect(page.getByTestId('model-catalog-editor').getByText('Renamed private model', { exact: true })).toBeVisible()
   })
 
+  test('keeps custom variables scoped to a provider and supports masked edits and removal', async ({ page, request }) => {
+    await addForm(page)
+    await page.getByLabel('Name', { exact: true }).fill('Environment account')
+    await page.getByLabel('API key', { exact: true }).fill('sk-ant-e2e-placeholder')
+    await page.getByTestId('connection-env-editor').locator('summary').click()
+    for (const [key, value] of [['ANTHROPIC_BASE_URL', 'https://custom-proxy.example'], ['PROVIDER_SECRET', 'private-value']]) {
+      await page.getByLabel('Variable name', { exact: true }).fill(key)
+      await page.getByLabel('Variable value', { exact: true }).fill(value)
+      await page.getByRole('button', { name: 'Add variable', exact: true }).click()
+    }
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await page.getByRole('button', { name: 'Edit Environment account', exact: true }).click()
+    await page.getByTestId('connection-env-editor').locator('summary').click()
+    const saved = await (await request.get('/api/llm-connections')).json()
+    const connection = saved.connections.find((row: { name: string }) => row.name === 'Environment account')
+    expect(connection.customEnvVarKeys).toEqual(['ANTHROPIC_BASE_URL', 'PROVIDER_SECRET'])
+    expect(JSON.stringify(saved)).not.toContain('private-value')
+    await expect(page.getByLabel('Value for PROVIDER_SECRET', { exact: true })).toHaveValue('')
+    await expect(page.getByLabel('Value for PROVIDER_SECRET', { exact: true })).toHaveAttribute('placeholder', 'Saved value (unchanged)')
+    await page.getByLabel('Name', { exact: true }).fill('Renamed environment account')
+    const unchanged = page.waitForRequest(req => req.method() === 'PUT' && req.url().endsWith(`/llm-connections/${connection.id}`))
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    expect((await unchanged).postDataJSON().config.runtimeEnv).toEqual({})
+    await page.getByRole('button', { name: 'Edit Renamed environment account', exact: true }).click()
+    await page.getByTestId('connection-env-editor').locator('summary').click()
+    await page.getByLabel('Value for PROVIDER_SECRET', { exact: true }).fill('replacement-value')
+    await page.getByRole('button', { name: 'Remove ANTHROPIC_BASE_URL', exact: true }).click()
+    const edited = page.waitForRequest(req => req.method() === 'PUT' && req.url().endsWith(`/llm-connections/${connection.id}`))
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    expect((await edited).postDataJSON().config.runtimeEnv).toEqual({ PROVIDER_SECRET: 'replacement-value', ANTHROPIC_BASE_URL: null })
+    await expect(page.getByTestId('llm-connection-editor')).toHaveCount(0)
+    const after = await (await request.get('/api/llm-connections')).json()
+    expect(after.connections.find((row: { id: string }) => row.id === connection.id).customEnvVarKeys).toEqual(['PROVIDER_SECRET'])
+    expect(JSON.stringify(after)).not.toContain('replacement-value')
+  })
+
+  test('preserves custom endpoints on unrelated Generic and Bedrock edits', async ({ page, request }) => {
+    for (const [provider, apiKeys, runtimeEnv] of [
+      ['generic', { genericApiKey: 'test-key', genericBaseUrl: 'https://base.example' }, { ANTHROPIC_BASE_URL: 'https://custom.example' }],
+      ['bedrock', { bedrockApiKey: 'test-key', bedrockRegion: 'us-east-1' }, { AWS_REGION: 'eu-west-1' }],
+    ] as const) {
+      const created = await request.post('/api/llm-connections', { data: { name: `${provider} custom env`, provider, config: { apiKeys, runtimeEnv } } })
+      expect(created.status()).toBe(201)
+      const { id } = await created.json()
+      await page.goto('/settings/llm')
+      await page.getByRole('button', { name: `Edit ${provider} custom env`, exact: true }).click()
+      await page.getByLabel('Name', { exact: true }).fill(`${provider} renamed`)
+      const saved = page.waitForRequest(req => req.method() === 'PUT' && req.url().endsWith(`/llm-connections/${id}`))
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
+      expect((await saved).postDataJSON().config.apiKeys).toEqual({})
+      await expect(page.getByTestId('llm-connection-editor')).toHaveCount(0)
+      const data = await (await request.get('/api/llm-connections')).json()
+      expect(data.connections.find((row: { id: string }) => row.id === id).customEnvVarKeys).toEqual(Object.keys(runtimeEnv))
+    }
+  })
+
 })

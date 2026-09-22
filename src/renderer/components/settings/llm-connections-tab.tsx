@@ -1,3 +1,4 @@
+import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import { withGlobalModelPricing } from '@shared/lib/llm-provider/global-pricing'
 import type { GlobalModelPricing } from '@shared/lib/llm-provider/global-pricing-schema'
 import { useId, useState } from 'react'
@@ -182,6 +183,11 @@ function ConnectionEditor({
   const [baseUrl, setBaseUrl] = useState(existing?.baseUrl ?? '')
   const [accessKey, setAccessKey] = useState('')
   const [secretKey, setSecretKey] = useState('')
+  const [runtimeEnv, setRuntimeEnv] = useState<Record<string, string | null | undefined>>(
+    Object.fromEntries((existing?.customEnvVarKeys ?? []).map(key => [key, undefined])),
+  )
+  const [envName, setEnvName] = useState('')
+  const [envValue, setEnvValue] = useState('')
   const [region, setRegion] = useState(existing?.region ?? 'us-east-1')
   const [overrides, setOverrides] = useState<CatalogOverrideEntry[]>(existing?.modelOverrides ?? [])
   const catalog = withGlobalModelPricing(mergeCatalog(catalogFor(provider), overrides), modelPricing)
@@ -195,9 +201,9 @@ function ConnectionEditor({
       if (provider === 'generic') apiKeys.genericApiKey = apiKey
       if (provider === 'bedrock') apiKeys.bedrockApiKey = apiKey
     }
-    if (provider === 'generic') apiKeys.genericBaseUrl = baseUrl
+    if (provider === 'generic' && (!existing || baseUrl !== (existing.baseUrl ?? ''))) apiKeys.genericBaseUrl = baseUrl
     if (provider === 'bedrock') {
-      apiKeys.bedrockRegion = region
+      if (!existing || region !== (existing.region ?? 'us-east-1')) apiKeys.bedrockRegion = region
       if (accessKey && secretKey && !apiKey) apiKeys.bedrockApiKey = ''
       if (accessKey) apiKeys.bedrockAccessKeyId = accessKey
       if (secretKey) apiKeys.bedrockSecretAccessKey = secretKey
@@ -207,7 +213,7 @@ function ConnectionEditor({
         name: name || providers[provider as keyof typeof providers],
         provider,
         userId: owner,
-        config: { apiKeys, env: {} },
+        config: { apiKeys, runtimeEnv: Object.fromEntries(Object.entries(runtimeEnv).filter(([, value]) => value !== undefined)) },
         modelOverrides: overrides,
         browserModel: browserModel || null,
         dashboardModel: dashboardModel || null,
@@ -339,6 +345,47 @@ function ConnectionEditor({
           </label>
         </>
       )}
+      <details className="rounded-lg border p-3" data-testid="connection-env-editor">
+        <summary className="cursor-pointer text-sm font-medium">Custom environment variables</summary>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Apply only when this connection is selected. Saved values are hidden; leave them unchanged to keep them.
+        </p>
+        <div className="mt-3 space-y-2">
+          {Object.entries(runtimeEnv).filter(([, value]) => value !== null).map(([key, value]) => (
+            <div key={key} className="flex items-center gap-2" data-testid="connection-env-row">
+              <span className="min-w-0 flex-1 truncate font-mono text-xs" title={key}>{key}</span>
+              <Input
+                aria-label={`Value for ${key}`}
+                type="password"
+                autoComplete="new-password"
+                className="flex-1 font-mono text-sm"
+                value={value ?? ''}
+                placeholder={value === undefined ? 'Saved value (unchanged)' : 'Value'}
+                onChange={e => setRuntimeEnv(previous => ({ ...previous, [key]: e.target.value }))}
+              />
+              <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${key}`}
+                onClick={() => setRuntimeEnv(previous => ({ ...previous, [key]: null }))}>
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+          <div className="flex gap-2">
+            <Input aria-label="Variable name" placeholder="ANTHROPIC_BASE_URL" className="font-mono text-sm"
+              value={envName} onChange={e => setEnvName(e.target.value)} />
+            <Input aria-label="Variable value" type="password" autoComplete="new-password" placeholder="Value"
+              value={envValue} onChange={e => setEnvValue(e.target.value)} />
+            <Button type="button" variant="outline" onClick={() => {
+              const key = envName.trim()
+              if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return toast.error('Enter a valid environment variable name')
+              if (isReservedEnvVar(key)) return toast.error(`${key} is reserved for the runtime`)
+              if (Object.hasOwn(runtimeEnv, key) && runtimeEnv[key] !== null) return toast.error('That variable already exists')
+              setRuntimeEnv(previous => ({ ...previous, [key]: envValue }))
+              setEnvName('')
+              setEnvValue('')
+            }}>Add variable</Button>
+          </div>
+        </div>
+      </details>
       {provider !== 'platform' && (
         <CatalogEditor
           providerId={provider}

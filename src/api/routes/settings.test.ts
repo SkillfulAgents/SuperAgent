@@ -1134,6 +1134,15 @@ describe('settings route', () => {
       expect(mockUpdateSettings).not.toHaveBeenCalled()
     })
 
+    it('directs global LLM overrides to the connection editor without storing them', async () => {
+      const res = await app.request('/api/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customEnvVars: { ANTHROPIC_BASE_URL: 'https://wrong-scope.example' } }),
+      })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('Edit connection')
+    })
+
     it('accepts customEnvVars with only non-reserved keys (200)', async () => {
       const res = await putSettings({
         customEnvVars: { MY_OK: 'fine', ANOTHER: 'x' },

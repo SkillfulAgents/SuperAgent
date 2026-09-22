@@ -142,3 +142,18 @@ describe('import-llm-connections data migration', () => {
     expect(settings.getSettings().llmSummarizer).toBeNull()
   })
 })
+
+
+it('moves provider overrides to the imported connection and retains shared tool variables', async () => {
+  configure()
+  settings.mutateSettings(s => { s.customEnvVars = {
+    ANTHROPIC_BASE_URL: 'https://old-proxy.example', ANTHROPIC_AUTH_TOKEN: 'old-bearer',
+    AWS_ACCESS_KEY_ID: 'tool-key', AWS_REGION: 'eu-west-1', TOOL_SETTING: 'keep',
+  } })
+  await runDataMigrations(handle.db, migrations)
+  const row = (await handle.db.select().from(llmConnections).get())!
+  expect(JSON.parse(row.config).runtimeEnv).toEqual({ ANTHROPIC_BASE_URL: 'https://old-proxy.example', ANTHROPIC_AUTH_TOKEN: 'old-bearer' })
+  expect(settings.getSettings().customEnvVars).toEqual({ AWS_ACCESS_KEY_ID: 'tool-key', AWS_REGION: 'eu-west-1', TOOL_SETTING: 'keep' })
+  await runDataMigrations(handle.db, migrations)
+  expect((await handle.db.select().from(llmConnections).get())!.config).toBe(row.config)
+})

@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
+import type { ApiKeyStatus } from '../config/settings'
 import { BaseLlmProvider } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
 import { CLAUDE_BARE_CATALOG, CLAUDE_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
@@ -14,8 +15,17 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
   protected readonly settingsKeyField = 'anthropicApiKey' as const
   protected readonly envVarName = 'ANTHROPIC_API_KEY'
 
+  override getEffectiveApiKey(): string | undefined {
+    return this.configuration?.runtimeEnv?.ANTHROPIC_API_KEY ?? super.getEffectiveApiKey()
+  }
+
+  override getApiKeyStatus(): ApiKeyStatus {
+    return this.envValue('ANTHROPIC_AUTH_TOKEN')
+      ? { isConfigured: true, source: 'env' } : super.getApiKeyStatus()
+  }
+
   createClient(): Anthropic {
-    const apiKey = this.configuration?.runtimeEnv?.ANTHROPIC_API_KEY ?? this.getEffectiveApiKey()
+    const apiKey = this.getEffectiveApiKey()
     const authToken = this.envValue('ANTHROPIC_AUTH_TOKEN') || null
     if (!apiKey && !authToken) throw new Error('Anthropic API key not configured')
     return new Anthropic({
@@ -39,7 +49,7 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
 
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
     try {
-      const client = new Anthropic({ apiKey })
+      const client = this.configuration ? this.createClient() : new Anthropic({ apiKey })
       await client.messages.create({
         model: 'claude-haiku-4-5',
         max_tokens: 1,

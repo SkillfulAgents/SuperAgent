@@ -85,9 +85,10 @@ export async function connectionRuntime(resolved: ResolvedConnection, agentId: s
   for (const [key, value] of Object.entries(await provider.getContainerEnvVars({ id: agentId }))) {
     if (value !== undefined) env[key] = value
   }
-  Object.assign(env, parseConnectionJson(connectionConfigSchema, connection.config).runtimeEnv)
+  const runtimeEnv = parseConnectionJson(connectionConfigSchema, connection.config).runtimeEnv
+  Object.assign(env, runtimeEnv)
   env.ENABLE_TOOL_SEARCH =
-    getSettings().enableToolSearch === false ? 'false' : (provider.toolSearchEnv ?? '')
+    getSettings().enableToolSearch === false ? 'false' : (runtimeEnv.ENABLE_TOOL_SEARCH ?? provider.toolSearchEnv ?? '')
   return {
     llmProviderId: connection.id,
     generation: connection.generation,

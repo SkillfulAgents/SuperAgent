@@ -449,7 +449,7 @@ settings.put(
       }
 
       updateSettings(newSettings)
-      if (body.llmProvider !== undefined || body.models !== undefined || body.modelCatalog !== undefined || body.apiKeys !== undefined || body.customEnvVars !== undefined) {
+      if (body.llmProvider !== undefined || body.models !== undefined || body.modelCatalog !== undefined || body.apiKeys !== undefined) {
         const active = newSettings.llmProvider ?? 'anthropic'
         const touched = new Set<LlmProviderId>()
         if (body.apiKeys) {
@@ -457,10 +457,10 @@ settings.put(
             if (keys.some(key => Object.hasOwn(body.apiKeys!, key))) touched.add(provider as LlmProviderId)
           }
         }
-        if (body.llmProvider || body.models || body.customEnvVars) touched.add(active)
+        if (body.llmProvider || body.models) touched.add(active)
         if (body.modelCatalog) for (const provider of Object.keys(body.modelCatalog)) touched.add(provider as LlmProviderId)
-        await syncProviderSettings({ providers: [...touched], credentials: !!body.apiKeys,
-          catalog: !!body.modelCatalog, runtimeEnv: body.customEnvVars !== undefined,
+        await syncProviderSettings({ providers: [...touched], apiKeys: body.apiKeys,
+          catalog: !!body.modelCatalog,
           models: (['agentModel', 'summarizerModel', 'browserModel', 'dashboardBuilderModel'] as const).filter(key => !!body.llmProvider || Object.hasOwn(body.models ?? {}, key)),
           selectDefault: !!body.llmProvider })
       }

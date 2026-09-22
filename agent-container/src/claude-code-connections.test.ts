@@ -250,15 +250,16 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
       llmProviderId, generation, provider: 'generic', model,
       browserModel: model, dashboardBuilderModel: model, modelPromptHints: [], subagentModels: [],
       modelContextWindows: { [model]: llmProviderId === 'first' ? 500000 : 100000 },
-      env: { ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: `secret-${llmProviderId}-${generation}`, ANTHROPIC_BASE_URL: `https://${llmProviderId}.example`, CLAUDE_CODE_USE_BEDROCK: '' },
+      env: { ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: `secret-${llmProviderId}-${generation}`, ANTHROPIC_BASE_URL: `https://${llmProviderId}.example`, CLAUDE_CODE_USE_BEDROCK: '', ...(llmProviderId === 'first' ? { PROVIDER_CUSTOM_SECRET: 'first-only' } : {}) },
     })
     claudeProcess = new ClaudeCodeProcess({ sessionId: 'llm-switch', workingDirectory: '/tmp', llmRuntime: runtime('first', 'shared-model'), customEnvVars: { ANTHROPIC_AUTH_TOKEN: 'must-not-win' } })
     await claudeProcess.start()
-    expect(calls[0].options.env).toMatchObject({ ANTHROPIC_AUTH_TOKEN: 'secret-first-0', CLAUDE_CODE_MAX_CONTEXT_TOKENS: '500000' })
+    expect(calls[0].options.env).toMatchObject({ PROVIDER_CUSTOM_SECRET: 'first-only', ANTHROPIC_AUTH_TOKEN: 'secret-first-0', CLAUDE_CODE_MAX_CONTEXT_TOKENS: '500000' })
     await claudeProcess.sendMessage('continue on second account', undefined, { llmRuntime: runtime('second', 'shared-model') })
     expect(calls).toHaveLength(2)
     expect(calls[1].options.env).toMatchObject({ ANTHROPIC_AUTH_TOKEN: 'secret-second-0', ANTHROPIC_BASE_URL: 'https://second.example', CLAUDE_CODE_MAX_CONTEXT_TOKENS: '100000' })
     expect(JSON.stringify(calls[1].options)).not.toContain('secret-first')
+    expect(calls[1].options.env).not.toHaveProperty('PROVIDER_CUSTOM_SECRET')
     await claudeProcess.sendMessage('credentials rotated', undefined, { llmRuntime: runtime('second', 'shared-model', 1) })
     expect(calls).toHaveLength(3)
     expect(calls[2].options.env).toMatchObject({ ANTHROPIC_AUTH_TOKEN: 'secret-second-1' })

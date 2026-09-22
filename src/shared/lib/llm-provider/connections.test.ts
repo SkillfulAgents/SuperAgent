@@ -97,6 +97,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await handle.close()
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
@@ -376,7 +377,7 @@ it('preserves legacy environment overrides only on the migrated account and hono
       .env.ANTHROPIC_AUTH_TOKEN
   ).toBe('key-First')
   state.settings.apiKeys.anthropicApiKey = ''
-  await syncProviderSettings({ providers: ['anthropic'], credentials: true })
+  await syncProviderSettings({ providers: ['anthropic'], apiKeys: state.settings.apiKeys })
   expect(
     providerForConnection((await getConnection('legacy-anthropic'))!).getEffectiveApiKey()
   ).toBeUndefined()
@@ -385,6 +386,7 @@ it('preserves legacy environment overrides only on the migrated account and hono
 it('editing a migrated key replaces the custom bearer without losing its endpoint', async () => {
   state.settings.llmLegacyProviderId = undefined
   state.settings.apiKeys = { anthropicApiKey: 'saved' }
+  vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'stale-host-bearer')
   state.settings.customEnvVars = {
     ANTHROPIC_AUTH_TOKEN: 'old-bearer',
     ANTHROPIC_BASE_URL: 'https://legacy.example',
@@ -399,6 +401,10 @@ it('editing a migrated key replaces the custom bearer without losing its endpoin
   expect(runtime.env.ANTHROPIC_AUTH_TOKEN).toBe('')
   expect(runtime.env.ANTHROPIC_API_KEY).toBe('new-key')
   expect(runtime.env.ANTHROPIC_BASE_URL).toBe('https://legacy.example')
+  const client = providerForConnection((await getConnection('legacy-anthropic'))!).createClient()
+  expect(client.authToken).toBeNull()
+  expect(client.apiKey).toBe('new-key')
+  expect(client.baseURL).toBe('https://legacy.example')
 })
 
 it('a legacy browser-only settings edit preserves the app and summarizer selections', async () => {
@@ -442,7 +448,7 @@ it('onboarding configures the first account after the empty migration has comple
   state.settings.llmLegacyProviderId = undefined
   await runDataMigrations(handle.db, [importLlmConnections])
   state.settings.apiKeys = { anthropicApiKey: 'onboarding-key' }
-  await syncProviderSettings({ providers: ['anthropic'], credentials: true, selectDefault: true })
+  await syncProviderSettings({ providers: ['anthropic'], apiKeys: state.settings.apiKeys, selectDefault: true })
   expect((await resolveExecutionSelection()).llmProviderId).toBe('legacy-anthropic')
   expect(state.settings.llmSummarizer).toEqual({ llmProviderId: 'legacy-anthropic', model: 'haiku' })
   expect(state.settings.llmLegacyProviderId).toBeUndefined()
@@ -566,15 +572,13 @@ describe('review regressions', () => {
     expect((await connectionRuntime(await resolveSelectionHierarchy(), 'agent')).env.ANTHROPIC_BASE_URL).toBe('https://env-proxy.example')
     const other = await saveConnection({ name: 'Direct', provider: 'anthropic', config: { apiKeys: { anthropicApiKey: 'other-key' } } }, admin)
     expect(providerForConnection((await getConnection(other))!).createClient().baseURL).toBe('https://api.anthropic.com')
-    state.settings.customEnvVars = { ANTHROPIC_BASE_URL: 'https://edited-proxy.example' }
-    await syncProviderSettings({ providers: ['anthropic'], runtimeEnv: true })
+    await saveConnection({ name: migrated.name, provider: 'anthropic', config: { runtimeEnv: { ANTHROPIC_BASE_URL: 'https://edited-proxy.example' } } }, admin, migrated.id)
     const edited = (await getConnection('legacy-anthropic'))!
     expect(providerForConnection(edited).createClient().baseURL).toBe('https://edited-proxy.example')
     expect((await connectionRuntime(await resolveSelectionHierarchy(), 'agent')).env.ANTHROPIC_BASE_URL).toBe('https://edited-proxy.example')
     expect(edited.generation).toBe(migrated.generation + 1)
-    state.settings.customEnvVars = {}
-    await syncProviderSettings({ providers: ['anthropic'], runtimeEnv: true })
-    expect(providerForConnection((await getConnection('legacy-anthropic'))!).createClient().baseURL).toBe('https://env-proxy.example')
+    await saveConnection({ name: migrated.name, provider: 'anthropic', config: { runtimeEnv: { ANTHROPIC_BASE_URL: null } } }, admin, migrated.id)
+    expect(providerForConnection((await getConnection('legacy-anthropic'))!).createClient().baseURL).toBe('https://api.anthropic.com')
   })
 
   it('does not rotate generations for effort-only or identical model saves', async () => {
@@ -594,4 +598,59 @@ describe('review regressions', () => {
     const runtime = await connectionRuntime(await resolveSelectionHierarchy(), 'agent')
     for (const key of Object.keys(state.settings.customEnvVars)) expect(runtime.env).not.toHaveProperty(key)
   })
+})
+
+
+it('keeps custom env isolated per connection, preserves omitted values and removes explicit nulls', async () => {
+  const first = await saveConnection({ name: 'First', provider: 'anthropic', config: {
+    apiKeys: { anthropicApiKey: 'key-a' },
+    runtimeEnv: { ANTHROPIC_BASE_URL: 'https://a.example', ANTHROPIC_AUTH_TOKEN: 'bearer-a', EXTRA_SECRET: 'secret-a' },
+  } }, admin)
+  const second = await saveConnection({ name: 'Second', provider: 'anthropic', config: {
+    apiKeys: { anthropicApiKey: 'key-b' }, runtimeEnv: { ANTHROPIC_BASE_URL: 'https://b.example' },
+  } }, admin)
+  const runtimeFor = async (id: string) => connectionRuntime(await resolveExecutionSelection({ llmProviderId: id, model: 'sonnet' }), 'agent')
+  expect((await runtimeFor(first)).env).toMatchObject({ ANTHROPIC_AUTH_TOKEN: 'bearer-a', EXTRA_SECRET: 'secret-a' })
+  expect((await runtimeFor(second)).env).toMatchObject({ ANTHROPIC_BASE_URL: 'https://b.example', ANTHROPIC_AUTH_TOKEN: '' })
+  expect((await runtimeFor(second)).env).not.toHaveProperty('EXTRA_SECRET')
+  expect(providerForConnection((await getConnection(first))!).createClient().authToken).toBe('bearer-a')
+  const publicRows = await listConnections(admin)
+  expect(publicRows.find(row => row.id === first)?.customEnvVarKeys).toEqual(['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'EXTRA_SECRET'])
+  expect(JSON.stringify(publicRows)).not.toContain('secret-a')
+  expect(JSON.stringify(publicRows)).not.toContain('bearer-a')
+  await saveConnection({ name: 'First renamed', provider: 'anthropic', config: {} }, admin, first)
+  expect((await runtimeFor(first)).env.EXTRA_SECRET).toBe('secret-a')
+  await saveConnection({ name: 'First renamed', provider: 'anthropic', config: { runtimeEnv: { EXTRA_SECRET: null, ANTHROPIC_AUTH_TOKEN: 'new-bearer' } } }, admin, first)
+  expect((await runtimeFor(first)).env).not.toHaveProperty('EXTRA_SECRET')
+  expect((await runtimeFor(first)).env.ANTHROPIC_AUTH_TOKEN).toBe('new-bearer')
+})
+
+it('preserves connection-specific env on legacy settings key edits and clears host bearer bindings', async () => {
+  state.settings.apiKeys = { anthropicApiKey: 'old-key' }
+  vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'old-host-bearer')
+  await importLlmConnections.run(handle.db)
+  await saveConnection({ name: 'Proxy', provider: 'anthropic', config: { runtimeEnv: { ANTHROPIC_BASE_URL: 'https://proxy.example', EXTRA_SECRET: 'keep' } } }, admin, 'legacy-anthropic')
+  state.settings.apiKeys.anthropicApiKey = 'new-key'
+  await syncProviderSettings({ providers: ['anthropic'], apiKeys: state.settings.apiKeys })
+  const client = providerForConnection((await getConnection('legacy-anthropic'))!).createClient()
+  expect(client.apiKey).toBe('new-key')
+  expect(client.authToken).toBeNull()
+  expect(client.baseURL).toBe('https://proxy.example')
+  expect((await connectionRuntime(await resolveExecutionSelection(), 'agent')).env.EXTRA_SECRET).toBe('keep')
+})
+
+
+it('validates the configured Anthropic endpoint and custom bearer', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'msg_test', type: 'message', role: 'assistant', model: 'claude-haiku-4-5', content: [], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }), { headers: { 'Content-Type': 'application/json' } }))
+  vi.stubGlobal('fetch', fetchMock)
+  const id = await saveConnection({ name: 'Bearer proxy', provider: 'anthropic', config: {
+    runtimeEnv: { ANTHROPIC_BASE_URL: 'https://validate-proxy.example', ANTHROPIC_AUTH_TOKEN: 'custom-bearer' },
+  } }, admin)
+  const provider = providerForConnection((await getConnection(id))!)
+  expect(provider.getApiKeyStatus().isConfigured).toBe(true)
+  expect(await provider.validateKey('')).toEqual({ valid: true })
+  const [url, init] = fetchMock.mock.calls[0]
+  const sent = new Request(url, init)
+  expect(sent.url).toBe('https://validate-proxy.example/v1/messages')
+  expect(sent.headers.get('Authorization')).toBe('Bearer custom-bearer')
 })

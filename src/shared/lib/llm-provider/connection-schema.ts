@@ -1,3 +1,4 @@
+import { isReservedEnvVar } from '../container/reserved-env-vars'
 import { z } from 'zod'
 import { LLM_PROVIDER_IDS } from './provider-types'
 import { catalogOverrideEntrySchema, modelCatalogSchema, modelDefinitionSchema, type ModelDefinition, type CatalogOverrideEntry } from './model-catalog-schema'
@@ -21,8 +22,7 @@ export const connectionConfigSchema = z.object({
       bedrockRegion: z.string().optional(),
     })
     .default({}),
-  // Legacy per-process overrides are moved behind this account boundary.
-  // New connections cannot set this through the public mutation API.
+  // Custom variables belong to this account and are sent only with its runtime.
   runtimeEnv: z.record(z.string(), z.string()).default({}),
   // Names only: resolve environment-backed values at execution time. Extra
   // connections never inherit the host's ambient provider credentials.
@@ -53,12 +53,62 @@ export const connectionInputSchema = z
     name: z.string().trim().min(1).max(120),
     provider: z.enum(LLM_PROVIDER_IDS),
     userId: z.string().min(1).nullable().default(null),
-    config: connectionConfigSchema,
+    config: connectionConfigSchema.extend({
+      // Omitted values are unchanged; null explicitly removes a saved value.
+      runtimeEnv: z.record(
+        z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'Invalid environment variable name'),
+        z.string().nullable(),
+      ).superRefine((vars, ctx) => {
+        const reserved = Object.keys(vars).filter(isReservedEnvVar)
+        if (reserved.length) ctx.addIssue({ code: 'custom', message: `Cannot override reserved runtime variables: ${reserved.join(', ')}` })
+      }).optional(),
+    }),
     modelOverrides: connectionModelOverridesSchema.optional(),
     browserModel: z.string().min(1).nullable().optional(),
     dashboardModel: z.string().min(1).nullable().optional(),
   })
   .strict()
+
+/** Apply credential edits before explicit env edits so a newly supplied key
+ * clears stale migrated auth, while an intentional env override can replace it. */
+export function mergeConnectionConfig(
+  previous: ConnectionConfig | null,
+  input: z.infer<typeof connectionInputSchema>['config'],
+): ConnectionConfig {
+  const config = connectionConfigSchema.parse({
+    apiKeys: { ...previous?.apiKeys, ...input.apiKeys },
+    runtimeEnv: previous?.runtimeEnv ?? {},
+    env: previous?.env ?? {}, // Host bindings come only from migration.
+  })
+  const keyEnvironment: Record<string, string[]> = {
+    anthropicApiKey: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
+    openrouterApiKey: ['OPENROUTER_API_KEY'],
+    genericApiKey: ['GENERIC_API_KEY'],
+    genericBaseUrl: ['GENERIC_BASE_URL'],
+    bedrockApiKey: ['AWS_BEARER_TOKEN_BEDROCK'],
+    bedrockAccessKeyId: ['AWS_ACCESS_KEY_ID'],
+    bedrockSecretAccessKey: ['AWS_SECRET_ACCESS_KEY'],
+    bedrockRegion: ['AWS_REGION'],
+  }
+  const editedKeys = Object.keys(input.apiKeys)
+  for (const key of editedKeys) {
+    for (const name of keyEnvironment[key] ?? []) delete config.env[name]
+  }
+  if (editedKeys.some(key => key !== 'genericBaseUrl' && key !== 'bedrockRegion')) {
+    for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN',
+      'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']) {
+      delete config.runtimeEnv[key]
+    }
+  }
+  if (editedKeys.includes('genericBaseUrl')) delete config.runtimeEnv.ANTHROPIC_BASE_URL
+  if (editedKeys.includes('bedrockRegion')) delete config.runtimeEnv.AWS_REGION
+  for (const [key, value] of Object.entries(input.runtimeEnv ?? {})) {
+    delete config.env[key]
+    if (value === null) delete config.runtimeEnv[key]
+    else config.runtimeEnv[key] = value
+  }
+  return config
+}
 
 /** Public connection representation: never includes secrets or refresh state. */
 export const connectionInfoSchema = z.object({
@@ -75,6 +125,7 @@ export const connectionInfoSchema = z.object({
   dashboardModel: z.string().nullable(),
   baseUrl: z.string().optional(),
   region: z.string().optional(),
+  customEnvVarKeys: z.array(z.string()).optional(),
   canManage: z.boolean(),
   canDelete: z.boolean(),
 })

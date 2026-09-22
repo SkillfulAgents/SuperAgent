@@ -1,19 +1,18 @@
 import { eq, sql } from 'drizzle-orm'
 import { db } from '../db'
 import { llmConnections } from '../db/schema'
-import { getSettings, getEffectiveModels, mutateSettings } from '../config/settings'
+import { getSettings, getEffectiveModels, mutateSettings, type ApiKeySettings } from '../config/settings'
 import { getLlmProvider, resolveModelForProvider } from './index'
 import type { LlmProviderId } from './provider-types'
-import { connectionConfigSchema, parseConnectionJson, connectionModelOverridesSchema } from './connection-schema'
+import { connectionConfigSchema, parseConnectionJson, connectionModelOverridesSchema, mergeConnectionConfig } from './connection-schema'
 import { resolveSelection } from './connection-schema'
 import { connectionCatalog, connectionModelOverrides, getConnection, mutateConnections } from './connections'
-import { connectionFromProviderSettings, legacyLlmProviderId } from './provider-settings'
+import { connectionFromProviderSettings, legacyLlmProviderId, providerCredentialFields } from './provider-settings'
 
 export interface ProviderSettingsSync {
   providers: LlmProviderId[]
-  credentials?: boolean
+  apiKeys?: ApiKeySettings
   catalog?: boolean
-  runtimeEnv?: boolean
   models?: ('agentModel' | 'summarizerModel' | 'browserModel' | 'dashboardBuilderModel')[]
   selectDefault?: boolean
 }
@@ -28,7 +27,8 @@ export async function syncProviderSettings(sync: ProviderSettingsSync): Promise<
     const models = getEffectiveModels()
     for (const id of sync.providers) {
       const existing = await getConnection(legacyLlmProviderId(id))
-      if (!getLlmProvider(id).getApiKeyStatus().isConfigured && !(sync.credentials && existing)) continue
+      const editedKeys = providerCredentialFields[id].filter(key => Object.hasOwn(sync.apiKeys ?? {}, key))
+      if (!getLlmProvider(id).getApiKeyStatus().isConfigured && !(editedKeys.length > 0 && existing)) continue
       const values = connectionFromProviderSettings(id)
       if (!existing) {
         await db.insert(llmConnections).values(values).onConflictDoNothing().run()
@@ -60,11 +60,11 @@ export async function syncProviderSettings(sync: ProviderSettingsSync): Promise<
         syncedOverrides = JSON.stringify(connectionModelOverridesSchema.parse(overrides))
       }
       const updates: Partial<typeof llmConnections.$inferInsert> = {}
-      if (sync.credentials) updates.config = values.config
-      else if (sync.runtimeEnv && id === active) {
-        const config = parseConnectionJson(connectionConfigSchema, existing.config)
-        config.runtimeEnv = parseConnectionJson(connectionConfigSchema, values.config).runtimeEnv
-        updates.config = JSON.stringify(config)
+      if (editedKeys.length > 0) {
+        updates.config = JSON.stringify(mergeConnectionConfig(
+          parseConnectionJson(connectionConfigSchema, existing.config),
+          { apiKeys: Object.fromEntries(editedKeys.map(key => [key, sync.apiKeys?.[key]])), env: {} },
+        ))
       }
       if (syncedOverrides !== undefined) updates.modelOverrides = syncedOverrides
       if (id === active && sync.models?.includes('browserModel')) updates.browserModel = values.browserModel

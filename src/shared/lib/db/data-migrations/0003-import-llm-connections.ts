@@ -1,3 +1,4 @@
+import { isProviderEnvVar } from '../../llm-provider/provider-env'
 import { and, eq, isNull, isNotNull } from 'drizzle-orm'
 import { llmConnections, scheduledTasks, webhookTriggers, chatIntegrations } from '../schema'
 import type { DataMigration } from './index'
@@ -27,7 +28,8 @@ export const importLlmConnections: DataMigration = {
       for (const row of rows) if (row.model) legacyModels.add(row.model)
     }
     for (const id of new Set([active, 'platform'] as const)) {
-      if (!getLlmProvider(id).getApiKeyStatus().isConfigured) continue
+      const hasLegacyOverrides = id === active && Object.keys(settings.customEnvVars ?? {}).some(key => isProviderEnvVar(key, id))
+      if (!getLlmProvider(id).getApiKeyStatus().isConfigured && !hasLegacyOverrides) continue
       await db.insert(llmConnections)
         .values(connectionFromProviderSettings(id, legacyModels))
         .onConflictDoNothing().run()
@@ -48,6 +50,11 @@ export const importLlmConnections: DataMigration = {
       }
     }
     mutateSettings((s) => {
+      // These values are now editable on the imported connection. Keep shared
+      // tool variables (including general AWS credentials) in global settings.
+      if (s.customEnvVars) s.customEnvVars = Object.fromEntries(
+        Object.entries(s.customEnvVars).filter(([key]) => !isProviderEnvVar(key)),
+      )
       s.llmLegacyProviderId ??= imported.id
       s.llmDefault ??= selection(models.agentModel, 'agent')
       // An explicit null already means inherit the app default.

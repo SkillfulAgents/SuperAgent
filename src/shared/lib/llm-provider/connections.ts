@@ -24,6 +24,7 @@ import { type ModelDefinition } from './model-catalog-schema'
 import {
   connectionConfigSchema,
   connectionInputSchema,
+  mergeConnectionConfig,
   modelSelectionSchema,
   resolveSelection,
   type ConnectionInfo,
@@ -107,6 +108,7 @@ export async function listConnections(
       dashboardModel: row.dashboardModel,
       baseUrl: config.apiKeys.genericBaseUrl,
       region: config.apiKeys.bedrockRegion,
+      customEnvVarKeys: canManage ? Object.keys(config.runtimeEnv) : [],
       canManage,
       canDelete:
         canManage &&
@@ -143,43 +145,7 @@ export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, 
   if (previous && (previous.provider !== input.provider || previous.userId !== input.userId))
     throw new Error('Connection type and owner cannot change')
   const oldConfig = previous ? parseConnectionJson(connectionConfigSchema, previous.config) : null
-  const config = connectionConfigSchema.parse({
-    ...input.config,
-    apiKeys: { ...oldConfig?.apiKeys, ...input.config.apiKeys },
-    runtimeEnv: oldConfig?.runtimeEnv ?? {},
-    env: oldConfig?.env ?? {}, // Environment bindings come only from migration.
-  })
-  // Explicit edits replace migrated environment-backed values as well as
-  // saved keys. An old custom bearer must not mask a newly entered key.
-  const editedKeys = Object.keys(input.config.apiKeys)
-  const keyEnvironment: Record<string, string[]> = {
-    anthropicApiKey: ['ANTHROPIC_API_KEY'],
-    openrouterApiKey: ['OPENROUTER_API_KEY'],
-    genericApiKey: ['GENERIC_API_KEY'],
-    genericBaseUrl: ['GENERIC_BASE_URL'],
-    bedrockApiKey: ['AWS_BEARER_TOKEN_BEDROCK'],
-    bedrockAccessKeyId: ['AWS_ACCESS_KEY_ID'],
-    bedrockSecretAccessKey: ['AWS_SECRET_ACCESS_KEY'],
-    bedrockRegion: ['AWS_REGION'],
-  }
-  for (const key of editedKeys) {
-    for (const name of keyEnvironment[key] ?? []) delete config.env[name]
-  }
-  if (editedKeys.some((key) => key !== 'genericBaseUrl' && key !== 'bedrockRegion')) {
-    for (const key of [
-      'ANTHROPIC_API_KEY',
-      'ANTHROPIC_AUTH_TOKEN',
-      'CLAUDE_CODE_OAUTH_TOKEN',
-      'AWS_BEARER_TOKEN_BEDROCK',
-      'AWS_ACCESS_KEY_ID',
-      'AWS_SECRET_ACCESS_KEY',
-      'AWS_SESSION_TOKEN',
-    ]) {
-      delete config.runtimeEnv[key]
-    }
-  }
-  if (editedKeys.includes('genericBaseUrl')) delete config.runtimeEnv.ANTHROPIC_BASE_URL
-  if (editedKeys.includes('bedrockRegion')) delete config.runtimeEnv.AWS_REGION
+  const config = mergeConnectionConfig(oldConfig, input.config)
   const builtins = getLlmProvider(input.provider).getBuiltinCatalog()
   const modelOverrides = normalizeConnectionModelOverrides(
     builtins,
