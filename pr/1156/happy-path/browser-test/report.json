@@ -1,17 +1,26 @@
 {
   "storyId": "browser-test",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: tions \"Example Domain\" and took screenshot — The response clearly stated: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\" Screenshot captured showing the complete response with the \"Example Domain\" text visible.\n\n**Test completed successfully. No bugs found.**\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Verified that the agent can execute browser tools to navigate to a URL and report the page title, with the response correctly mentioning \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 using browser_run_code — Page loaded successfully with title \"Gamut\"",
+    "Found the agent \"QA-20260922-002622-r34i\" in the sidebar by checking page text content — Agent name located in Your Agents list",
+    "Clicked on the agent link \"QA-20260922-002622-r34i\" — Successfully navigated to agent page at /agents/qa-20260922-002622-r34i-z9bzmi4mup",
+    "Located the message input field (ProseMirror markdown-composer-editor) — Found the contenteditable textarea with placeholder \"How can I help? Press cmd+enter to send\"",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" into the message editor — Message typed successfully",
+    "Clicked the send button to submit the message — Message sent successfully, page redirected to session URL with ID 665e08c4-01c7-4de7-b34c-132573827864",
+    "Waited for agent response with up to 3-minute timeout, checking for \"Example Domain\" in page text — Response found within 3 seconds",
+    "Verified response content and took screenshot — Response confirmed: \"Loaded https://example.com — title is \\\"Example Domain\\\". Browser closed.\" with 3 tool calls shown and 148,994 tokens used"
+  ],
   "bugs": [],
-  "durationMs": 65586,
-  "sessionId": "09484fb2-bc1e-41bb-8d43-11553982fbc2",
+  "durationMs": 113449,
+  "sessionId": "56a7f8d8-9906-446e-85b8-531e84468f6d",
   "cost": {
-    "inputTokens": 370,
-    "outputTokens": 10760,
-    "cacheCreationTokens": 75012,
-    "cacheReadTokens": 1074357,
+    "inputTokens": 542,
+    "outputTokens": 17319,
+    "cacheCreationTokens": 61458,
+    "cacheReadTokens": 1549828,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.255371
+    "totalCostUsd": 0.318942
   }
 }
