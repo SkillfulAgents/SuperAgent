@@ -83,24 +83,6 @@ function useInitiatePlatformLogin() {
   })
 }
 
-function useRevokePlatformToken() {
-  return useMutation<{ success: boolean }, Error, { clearLocal?: boolean } | undefined>({
-    meta: { skipGlobalErrorToast: true },
-    mutationFn: async (options) => {
-      const res = await apiFetch('/api/platform-auth/revoke', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(options ?? {}),
-      })
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({}))
-        throw new Error(error.error || 'Failed to revoke platform token')
-      }
-      return res.json()
-    },
-  })
-}
-
 function usePlatformAuthCallbackListener(
   onCallback?: (params: PlatformAuthCallbackParams) => void
 ) {
@@ -271,7 +253,6 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   const platformAuth = platformAuthQuery.data
   const applyPlatformDefaults = useApplyPlatformDefaults()
   const initiateLogin = useInitiatePlatformLogin()
-  const revokePlatformToken = useRevokePlatformToken()
   const { open, close, pending, canCancel } = useLoginWindow()
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
@@ -327,15 +308,14 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
 
     try {
       await open(async () => {
-        if (wasConnected) {
-          await revokePlatformToken.mutateAsync({ clearLocal: false }).catch(() => ({ success: false }))
-        }
+        // Starting or cancelling login must not revoke the working key.
+        // The platform cleans up prior keys for this client instance during issuance.
         return (await initiateLogin.mutateAsync()).loginUrl
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to open platform login.')
     }
-  }, [open, initiateLogin, revokePlatformToken, wasConnected])
+  }, [open, initiateLogin])
 
   return {
     handleConnect,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import type { VariantProps } from 'class-variance-authority'
+import { RefreshCw } from 'lucide-react'
 import { Button, buttonVariants } from '@renderer/components/ui/button'
 import { LoginWindowCancel } from './login-window-cancel'
 
@@ -17,6 +18,7 @@ export type LoginButtonProps = ButtonHTMLAttributes<HTMLButtonElement> &
      * moving. `'none'` renders the Button alone and leaves Cancel to the caller.
      */
     cancelSide: 'left' | 'right' | 'none'
+    cancelTestId?: string
   }
 
 /**
@@ -51,6 +53,7 @@ export function LoginButton({
   canCancel,
   onCancel,
   cancelSide,
+  cancelTestId,
   disabled,
   ...props
 }: LoginButtonProps) {
@@ -87,6 +90,7 @@ export function LoginButton({
   const cancel = (
     <LoginWindowCancel
       visible={canCancel}
+      testId={cancelTestId}
       onCancel={() => {
         focusAfterCancel()
         onCancel()
@@ -100,5 +104,32 @@ export function LoginButton({
       {cancelSide === 'right' && cancel}
       {status}
     </span>
+  )
+}
+
+/** A list row's reconnect: its launch plus the login window's state. */
+export type RowReconnect = Pick<LoginButtonProps, 'pending' | 'canCancel' | 'onCancel'> & { start: () => void }
+
+/** The small Reconnect a list row shows for an account or server that must sign in again. */
+export function RowReconnectButton({ reconnect, disabled }: { reconnect: RowReconnect; disabled?: boolean }) {
+  return (
+    <LoginButton
+      size="xs"
+      variant="outline"
+      className="mx-1 h-6 shrink-0 px-2 text-xs"
+      icon={<RefreshCw />}
+      label="Reconnect"
+      pendingLabel="Reconnecting…"
+      pending={reconnect.pending}
+      canCancel={reconnect.canCancel}
+      onCancel={reconnect.onCancel}
+      cancelSide="right"
+      disabled={disabled}
+      onClick={(e) => {
+        // The row itself toggles selection on click.
+        e.stopPropagation()
+        reconnect.start()
+      }}
+    />
   )
 }

@@ -17,7 +17,6 @@ src/shared/lib/services/agent-integration-session-service.test.ts
 src/shared/lib/services/x-agent-policy-service.test.ts
 src/shared/lib/services/x-agent-policy-service.sup223.test.ts
 src/api/routes/mcp-proxy.integration-identity.test.ts
-
 src/api/routes/agent-integrations.boundary.test.ts
-
 src/api/routes/agent-integration-setup.test.ts
+src/shared/lib/services/scheduled-task-service.overlap-guard.test.ts

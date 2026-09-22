@@ -136,6 +136,16 @@ describe('generateSystemPrompt rendering', () => {
     expect(out).not.toContain('ANTHROPIC_AUTH_TOKEN')
   })
 
+  it.each(['audio.md', 'x.md', 'exa.md', 'media-generation.md', 'lead-enrichment.md'])(
+    '%s uses Platform service credentials independently of the LLM provider', (filename) => {
+      const guide = readFileSync(join(__dirname, '..', 'docs', filename), 'utf8')
+      expect(guide).toContain('$PLATFORM_BASE_URL/v1/')
+      expect(guide).toContain('Bearer $PLATFORM_AUTH_TOKEN')
+      expect(guide).not.toContain('ANTHROPIC_BASE_URL')
+      expect(guide).not.toContain('ANTHROPIC_AUTH_TOKEN')
+    },
+  )
+
   // The platform's model table replaced a scraped catalog: listing is filtered
   // by `kind`, the list row carries the cost the confirmation must quote, and a
   // 403 means re-list rather than retry.
@@ -160,7 +170,7 @@ describe('generateSystemPrompt rendering', () => {
     const guide = readFileSync(join(__dirname, '..', 'docs', 'lead-enrichment.md'), 'utf8')
 
     expect(guide).toContain('/v1/apollo')
-    expect(guide).toContain('POST "$ANTHROPIC_BASE_URL/v1/apollo/people/match"')
+    expect(guide).toContain('POST "$PLATFORM_BASE_URL/v1/apollo/people/match"')
     expect(guide).toContain('GET /organizations/enrich?domain=')
     expect(guide).toContain('POST /people/bulk_match')
     expect(guide).toContain('POST /organizations/bulk_enrich')
@@ -195,7 +205,7 @@ describe('generateSystemPrompt rendering', () => {
 
   it('teaches the OpenAI voice proxy contract in the audio guide', () => {
     const guide = readFileSync(join(__dirname, '..', 'docs', 'audio.md'), 'utf8')
-    expect(guide).toContain('$ANTHROPIC_BASE_URL/v1/openai')
+    expect(guide).toContain('$PLATFORM_BASE_URL/v1/openai')
     for (const endpoint of ['/audio/transcriptions', '/audio/speech']) {
       expect(guide).toContain(`\`${endpoint}\``)
     }
@@ -213,7 +223,7 @@ describe('generateSystemPrompt rendering', () => {
 
   it('teaches Exa script usage and bounded search fallback in the guide', () => {
     const guide = readFileSync(join(__dirname, '..', 'docs', 'exa.md'), 'utf8')
-    expect(guide).toContain('$ANTHROPIC_BASE_URL/v1/exa')
+    expect(guide).toContain('$PLATFORM_BASE_URL/v1/exa')
     expect(guide).toContain('`/search`')
     expect(guide).toContain('`/contents`')
     expect(guide).toContain('Prefer the normal web-search tool')

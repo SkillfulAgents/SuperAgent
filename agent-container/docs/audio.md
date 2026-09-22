@@ -12,8 +12,8 @@ account or API key.
 Use:
 
 ```text
-Base: $ANTHROPIC_BASE_URL/v1/openai
-Authorization: Bearer $ANTHROPIC_AUTH_TOKEN
+Base: $PLATFORM_BASE_URL/v1/openai
+Authorization: Bearer $PLATFORM_AUTH_TOKEN
 ```
 
 Never print either environment variable. Use the supplied token unchanged; do
@@ -41,8 +41,8 @@ webm. Split larger files and transcribe the parts.
 
 ```bash
 curl --fail-with-body -sS \
-  "$ANTHROPIC_BASE_URL/v1/openai/audio/transcriptions" \
-  -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" \
+  "$PLATFORM_BASE_URL/v1/openai/audio/transcriptions" \
+  -H "Authorization: Bearer $PLATFORM_AUTH_TOKEN" \
   -F "file=@/workspace/uploads/audio.mp3" \
   -F "model=whisper-1" \
   -F "response_format=json" \
@@ -71,8 +71,8 @@ split longer text and concatenate the files. `response_format` may be `mp3`
 
 ```bash
 curl --fail-with-body -sS \
-  "$ANTHROPIC_BASE_URL/v1/openai/audio/speech" \
-  -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" \
+  "$PLATFORM_BASE_URL/v1/openai/audio/speech" \
+  -H "Authorization: Bearer $PLATFORM_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini-tts","input":"Your report is ready.","voice":"marin","instructions":"Speak warmly and at an unhurried pace."}' \
   -o /workspace/speech.mp3

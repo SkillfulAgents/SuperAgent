@@ -12,8 +12,8 @@ user to create an Apollo account or supply an API key.
 Use:
 
 ```text
-Base: $ANTHROPIC_BASE_URL/v1/apollo
-Authorization: Bearer $ANTHROPIC_AUTH_TOKEN
+Base: $PLATFORM_BASE_URL/v1/apollo
+Authorization: Bearer $PLATFORM_AUTH_TOKEN
 ```
 
 Never print either environment variable.
@@ -27,8 +27,8 @@ with a variant.
 ### 1. Person match
 
 ```bash
-curl -sS -X POST "$ANTHROPIC_BASE_URL/v1/apollo/people/match" \
-  -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" \
+curl -sS -X POST "$PLATFORM_BASE_URL/v1/apollo/people/match" \
+  -H "Authorization: Bearer $PLATFORM_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"email":"ada@example.com"}'
 ```

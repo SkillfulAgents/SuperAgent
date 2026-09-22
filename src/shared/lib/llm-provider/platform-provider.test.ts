@@ -7,6 +7,7 @@ const forAgentAttribution = vi.fn()
 const requiresActingMember = vi.fn(() => false)
 const captureMessage = vi.fn()
 const platformAuthStatus = vi.fn()
+const platformAccessToken = vi.fn((): string | null => 'platform-token')
 vi.mock('@shared/lib/platform-attribution', () => ({
   attribution: {
     current: () => currentAttribution(),
@@ -18,7 +19,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
   captureMessage: (...args: unknown[]) => captureMessage(...args),
 }))
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: () => 'platform-token',
+  getPlatformAccessToken: () => platformAccessToken(),
   getPlatformAuthStatus: () => platformAuthStatus(),
 }))
 vi.mock('@shared/lib/platform-auth/config', () => ({
@@ -31,6 +32,7 @@ vi.mock('../config/settings', () => ({
 vi.mock('@anthropic-ai/sdk', () => ({ default: class {} }))
 
 import { PlatformLlmProvider, sanitizeAgentName } from './platform-provider'
+import { getPlatformContainerToken } from '../platform-attribution/container-token'
 
 const provider = new PlatformLlmProvider()
 
@@ -39,10 +41,19 @@ beforeEach(() => {
   forAgentAttribution.mockReset().mockReturnValue(null)
   requiresActingMember.mockReset().mockReturnValue(false)
   captureMessage.mockReset()
+  platformAccessToken.mockReset().mockReturnValue('platform-token')
   platformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_123' })
 })
 
 describe('getContainerEnvVars auth token (cold start)', () => {
+  it('does not carry an ambient token into a disconnected container', async () => {
+    platformAccessToken.mockReturnValue(null)
+    currentAttribution.mockReturnValue({ bearerToken: () => 'old-token::member' })
+    expect(await getPlatformContainerToken('abc123')).toBeUndefined()
+    expect(forAgentAttribution).not.toHaveBeenCalled()
+    expect(currentAttribution).not.toHaveBeenCalled()
+  })
+
   it('bakes the agent-resolved attribution token when an identity is provided', async () => {
     forAgentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_owner' })
     const env = (await provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' }))

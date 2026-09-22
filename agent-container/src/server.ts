@@ -457,11 +457,9 @@ app.post('/env', async (c) => {
       return c.json({ error: 'Invalid environment variable name' }, 400);
     }
 
-    // The boot-time agent identity must stay immutable — header composition
-    // reads a boot snapshot anyway, but reject the write outright so the env
-    // never lies about which agent this container is.
-    if (isAgentIdentityEnvKey(body.key)) {
-      console.error(`[ENV] Rejected write to reserved identity env var: ${body.key}`);
+    // Identity and Platform service credentials belong to the host runtime.
+    if (isAgentIdentityEnvKey(body.key) || body.key === 'PLATFORM_BASE_URL' || body.key === 'PLATFORM_AUTH_TOKEN') {
+      console.error(`[ENV] Rejected write to reserved runtime env var: ${body.key}`);
       return c.json({ error: `${body.key} is reserved and cannot be modified` }, 403);
     }
 
