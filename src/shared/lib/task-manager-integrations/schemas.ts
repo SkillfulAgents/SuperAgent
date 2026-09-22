@@ -11,9 +11,3 @@ export const taskEventSchema = z.object({
 export function parseTaskJson<T>(schema: z.ZodType<T>, json: string): T {
   try { return schema.parse(JSON.parse(json)) } catch { throw new Error('Invalid persisted integration data') }
 }
-
-/** Only host failure notices use the durable publication slot; agent replies use MCP. */
-export const taskFailureNoticeSchema = z.object({
-  kind: z.literal('failure_notice'), id: z.string().uuid(), body: z.string().min(1),
-  attempts: z.number().int().nonnegative().default(0),
-})

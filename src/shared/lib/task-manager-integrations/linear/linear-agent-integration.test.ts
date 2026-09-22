@@ -23,7 +23,6 @@ vi.mock('./subscriptions', () => ({ LinearSubscriptions: class {
 import { LinearAgentIntegration } from './linear-agent-integration'
 import { createAgentIntegration, deleteAgentIntegration, getAgentIntegration } from '../../services/agent-integration-service'
 import { updateLinearConfig } from './store'
-import { enqueueTaskEvent, finishTaskEvent, pendingTaskEvents, taskEventHistory, updateTaskEvent } from '../store'
 const at = '2026-09-02T00:00:00.000Z'
 const issue = { id: 'issue', identifier: 'TES-1', title: 'Test', updatedAt: at, archivedAt: null, delegate: { id: 'app' }, state: { id: 'todo', name: 'Todo', type: 'unstarted' } }
 const comment = { id: 'reply', body: 'Please help', createdAt: at, updatedAt: at, archivedAt: null, user: { id: 'human', app: false }, parent: { id: 'root' }, issue }
@@ -66,7 +65,6 @@ describe('Linear live event lifecycle', () => {
     transport.ready = true; await transport.connected()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(outbound.check).toHaveBeenCalledOnce()
-    expect(await taskEventHistory(id)).toEqual([])
     expect(events).toEqual([])
   })
   it('uses subscription readiness for health and reports an outage once', async () => {
@@ -89,8 +87,7 @@ describe('Linear live event lifecycle', () => {
     await transport.event(assignment)
     await transport.event(mention)
     await transport.event({ type: 'commentCreated', data: comment })
-    expect((await pendingTaskEvents(id)).map(row => row.externalEventId).sort()).toEqual(['assignment:assignment', 'comment:reply'])
-    expect(events.filter(event => event.type === 'input')).toHaveLength(1)
+    expect(events.filter(event => event.type === 'input').map(event => event.id)).toEqual(['assignment:assignment', 'comment:reply'])
     const reactions = fetchMock.mock.calls.map(([, options]) => JSON.parse(options.body)).filter(request => request.query.includes('reactionCreate'))
     expect(reactions).toHaveLength(1)
     expect(reactions[0].variables).toEqual({ input: { commentId: 'reply', emoji: 'eyes' } })
@@ -101,26 +98,21 @@ describe('Linear live event lifecycle', () => {
     await transport.event({ ...mention, data: { ...mention.data, issue: undelegated, comment } })
     await transport.event({ type: 'commentCreated', data: { ...comment, id: 'follow-up', issue: undelegated } })
     await transport.event({ type: 'commentCreated', data: { ...comment, id: 'unrelated-thread', parent: null, issue: undelegated } })
-    expect((await pendingTaskEvents(id)).map(row => row.externalEventId).sort()).toEqual(['comment:follow-up', 'comment:reply'])
-    expect((await taskEventHistory(id)).find(row => row.externalEventId.includes('unrelated-thread'))?.status).toBe('context')
+    expect(events.filter(event => event.type === 'input').map(event => event.id)).toEqual(['comment:reply', 'comment:follow-up'])
   })
   it('does not turn edits into replay of missed comments, and ignores unrelated issues and other recipients', async () => {
     await connect()
     await transport.event({ type: 'commentUpdated', data: comment })
     await transport.event({ type: 'commentCreated', data: { ...comment, issue: { ...issue, id: 'unrelated', delegate: null } } })
     await transport.event({ ...mention, data: { ...mention.data, user: { id: 'someone-else' } } })
-    expect(await pendingTaskEvents(id)).toEqual([])
     expect(events).toEqual([])
     expect(fetchMock).toHaveBeenCalledOnce()
   })
   it('applies live external cancellations but lets the agent finish after its own state change', async () => {
     await connect(); await transport.event(assignment)
-    const row = (await pendingTaskEvents(id))[0]
-    await updateTaskEvent(row.id, { sessionId: 'session' })
     await transport.event({ ...cancellation, data: { ...cancellation.data, actor: { id: 'app', app: true } } })
-    expect((await pendingTaskEvents(id))[0].status).toBe('running')
+    expect(events.filter(event => event.type === 'cancel')).toHaveLength(0)
     await transport.event(cancellation)
-    expect(await pendingTaskEvents(id)).toEqual([])
     expect(events.filter(event => event.type === 'cancel')).toHaveLength(1)
   })
   it('runs live human status changes only when enabled', async () => {
@@ -134,35 +126,28 @@ describe('Linear live event lifecycle', () => {
   })
   it('restores local thread participation without retrieving missed messages', async () => {
     await connect(); await transport.event({ ...mention, data: { ...mention.data, issue: { ...issue, delegate: null } } })
-    await finishTaskEvent((await pendingTaskEvents(id))[0].id, 'complete')
     await integration.disconnect()
     integration = new LinearAgentIntegration((await getAgentIntegration(id))!)
     integration.onEvent(event => { events.push(event) })
     await connect()
     expect(fetchMock.mock.calls.filter(([, options]) => JSON.parse(options.body).query.includes('viewer'))).toHaveLength(2)
     await transport.event({ type: 'commentCreated', data: { ...comment, id: 'after-restart', issue: { ...issue, delegate: null } } })
-    expect((await pendingTaskEvents(id))[0].externalEventId).toBe('comment:after-restart')
+    expect(events.filter(event => event.type === 'input').map(event => event.id)).toEqual(['comment:reply', 'comment:after-restart'])
   })
-  it('retries only work already received during an MCP outage and stops retrying when it is dispatched', async () => {
+  it('does not create a task retry queue during an MCP outage', async () => {
     outbound.check.mockResolvedValue(false)
     await connect()
-    await vi.advanceTimersByTimeAsync(3600000)
-    expect(outbound.check).toHaveBeenCalledOnce()
     await transport.event(assignment)
-    expect((await pendingTaskEvents(id))[0].status).toBe('queued')
-    outbound.check.mockResolvedValue(true)
-    await vi.advanceTimersByTimeAsync(30000)
-    expect((await pendingTaskEvents(id))[0].status).toBe('running')
-    const checks = outbound.check.mock.calls.length
+    expect(events.filter(event => event.type === 'input')).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(3600000)
-    expect(outbound.check).toHaveBeenCalledTimes(checks)
-    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(events.filter(event => event.type === 'input')).toHaveLength(1)
+    expect(outbound.check).toHaveBeenCalledOnce()
+    expect(await integration.sessionsToRecover()).toEqual([])
   })
   it('contains deletion errors and ignores late frames after disconnect or reauthorization', async () => {
     await connect()
     await updateLinearConfig(id, config => ({ ...config, authorizationVersion: 'replacement' }))
     await transport.event(assignment)
-    expect(await pendingTaskEvents(id)).toEqual([])
     await deleteAgentIntegration(id)
     await expect(transport.event(assignment)).resolves.toBeUndefined()
     await integration.disconnect()
@@ -177,15 +162,16 @@ describe('Linear live event lifecycle', () => {
     await integration.disconnect()
     await accepting
     expect(events).toEqual([])
-    expect(await pendingTaskEvents(id)).toEqual([])
   })
-  it('declares accepted sessions for manager recovery without any remote catch-up', async () => {
-    await enqueueTaskEvent(id, { id: 'accepted', taskId: 'issue', interactionId: 'issue', kind: 'invocation', timestamp: at, text: 'Already received', replyTarget: {}, payload: {} })
-    const row = (await pendingTaskEvents(id))[0]
-    await updateTaskEvent(row.id, { status: 'running', sessionId: 'existing' })
-    integration.bindHost({ session: async () => undefined }); await integration.connect()
-    expect(await integration.sessionsToRecover()).toEqual([{ externalId: 'issue', sessionId: 'existing' }])
-    transport.ready = true; await transport.connected()
-    expect(fetchMock).toHaveBeenCalledOnce()
+  it('does not replay previously accepted messages when a new connector starts', async () => {
+    await connect(); await transport.event(assignment)
+    expect(events).toHaveLength(1)
+    await integration.disconnect()
+    integration = new LinearAgentIntegration((await getAgentIntegration(id))!)
+    integration.onEvent(event => { events.push(event) })
+    await connect()
+    await vi.advanceTimersByTimeAsync(3600000)
+    expect(events).toHaveLength(1)
+    expect(await integration.sessionsToRecover()).toEqual([])
   })
 })

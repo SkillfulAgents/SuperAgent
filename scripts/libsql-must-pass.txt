@@ -21,7 +21,6 @@ src/api/routes/agent-integrations.boundary.test.ts
 src/api/routes/agent-integration-setup.test.ts
 src/shared/lib/services/scheduled-task-service.overlap-guard.test.ts
 src/shared/lib/agent-integrations/lifecycle.test.ts
-src/shared/lib/db/migrations/linear-upgrade.test.ts
 src/shared/lib/task-manager-integrations/linear/linear-agent-integration.test.ts
 src/shared/lib/task-manager-integrations/linear/mcp.test.ts
 src/shared/lib/task-manager-integrations/linear/setup.test.ts

@@ -2,8 +2,10 @@
 
 `LinearAgentIntegration` extends `TaskManagerAgentIntegration`, which extends
 `AgentIntegration`. The application manager consumes only the base contract.
-The task family owns issue sessions, a durable inbox, per-issue execution order,
-context preparation and run lifecycle. Linear owns OAuth identities and direct
+The task family owns issue routing, context preparation and reply guidance.
+Follow-ups immediately enter the shared runtime's message queue, including during
+running turns; there is no task-specific queue or turn-completion lock.
+Linear owns OAuth identities and direct
 event delivery. The official Linear MCP owns outbound operations, through Gamut's
 shared MCP proxy.
 
@@ -56,9 +58,14 @@ changes invoke work only when enabled. External unassignment, cancellation and
 archival events stop work, while the agent's own state changes let it finish its
 reply. Human assignment and agent delegation remain separate.
 
-Stable event IDs deduplicate overlapping comment and mention deliveries. Local
-accepted work and thread participation survive restarts. Retrying a failed run or
-failure notice does not query Linear for missed events. Sockets pace registration,
+A bounded in-memory event-ID cache deduplicates overlapping comment and mention
+deliveries. Thread participation persists as up to 1,000 issue/thread pairs in the
+existing integration config, scoped to the app identity and workspace. Session
+mappings use the existing integration session store. Received messages and failed
+host notices are not kept in a separate durable queue or replayed after restart.
+Shared durable delivery and bounded retries for all chat integrations are tracked
+in [SUP-922](https://linear.app/datawizz/issue/SUP-922).
+Sockets pace registration,
 maintain heartbeats, renew tokens and reconnect with bounded backoff. Subscription
 failure is reported as an unhealthy connection; it never enables a polling path.
 
@@ -81,8 +88,9 @@ and task metadata remains supported. Integration pages retain their conversation
 
 The session key is `(integration ID, issue UUID)`, with no inactivity timeout. Linear
 does not offer conversation reset, idle timeout, or streaming tool activity controls.
-Events for one issue wait for its current turn to finish; different issues can
-run concurrently. Each invocation retains its reply destination and reads a
+Follow-ups go straight into that session, including during a running turn, using
+the runtime's existing queue/steering behavior. Each incoming message includes
+its own reply destination and reads a
 fresh issue snapshot, including paginated comments and linked attachments (up
 to 1,000 of each, with a truncation indicator).
 
@@ -109,7 +117,7 @@ connection and blocks existing proxy clients. Resuming restores it. A rejected
 credential requires reconnecting the parent integration, not a separate MCP
 OAuth flow. Reauthorization cannot change the app identity.
 
-After durably accepting a new comment request, the adapter adds an eyes reaction
+After handing a new comment request to the manager, the adapter adds an eyes reaction
 to that comment. Deduplicated events do not get a second reaction. A reaction
 failure does not block the run.
 
@@ -125,14 +133,13 @@ There is **no automatic final-comment publisher or summarizer**, no custom ticke
 CRUD gateway, and no second attachment toolset. MCP owns search, read, create,
 update and comment operations. The agent must check results before claiming
 success. An interrupted or failed run cannot retract an MCP mutation that already
-succeeded. Recovery does not replay a potentially side-effecting turn; legacy
-publication drafts are retired without posting them again.
+succeeded. The provider never retries an agent turn or publishes a transcript draft.
 
 For clarification, guidance asks the agent to comment in Linear and end the turn;
 a human follow-up starts the next turn in the same issue session. Gamut-only input
-such as secrets and permissions stays in Gamut. Existing single-question requests
-can also be answered from the originating Linear thread. Reviews only affect a
-task when their agent and session scope match, and resolutions resume that request.
+such as secrets and permissions stays in Gamut. Issue comments remain new messages;
+they are not consumed as answers to Gamut input cards. The shared host owns pending
+requests, review resolution and runtime activity.
 
 ## Outbound file attachments
 
@@ -147,8 +154,9 @@ The integration does not stage files or maintain a second publication outbox.
 
 Discovery runs once on connection and when accepted work needs tools, using a
 five-minute cache for healthy results. It does not run periodically while idle.
-Requests already accepted into the local inbox retry dispatch if MCP is
-unavailable. The shared integration UI shows **Degraded** when inbound events work
+If MCP is unavailable while preparing an input, the manager reports a dispatch
+failure with a best-effort comment asking the user to retry. It does not schedule
+another run. The shared integration UI shows **Degraded** when inbound events work
 but MCP is unavailable; transient failures do not clear credentials. Proxy
 failures also update outbound health. A 401 requires reconnecting the parent
 identity. Neither direction needs platform login or a webhook relay.
@@ -207,11 +215,9 @@ an agent or answer its pending question. App-authored mentions and assignments d
 not invoke another agent, and app-authored status changes do not start new work.
 Human requests and cancellation controls continue to work normally.
 
-## Migration compatibility
+## Storage
 
-The task inbox migrations preserve credentials, sessions, accepted work and audit
-history from earlier PR test installations. `0048_remove_linear_polling_cursors`
-removes the obsolete `linear_issue_sync` table; it contained only recovery
-checkpoints, which live-only delivery no longer uses. The removal is idempotent.
-A redundant audit column from an earlier test build may remain; current code uses
-the existing connection ID for attribution.
+This provider introduces no database migrations or task-event tables. Credentials,
+bounded thread membership and shared session mappings use the existing integration
+storage. Durable inbound delivery and retry state are a separate shared-infrastructure
+enhancement, not part of the Linear provider.

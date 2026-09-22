@@ -115,7 +115,9 @@ installation. The endpoint enforces the same provider management role as creatio
 
 ## Task managers
 
-`TaskManagerAgentIntegration` owns durable inbound work, one session per work item,
-ordering, context hydration and run/request lifecycle. Linear implements the provider
-setup, cleanup and MCP hooks; its UI panels register at the renderer composition point.
+`TaskManagerAgentIntegration` maps each work item to a session and prepares issue
+context and reply guidance. Inputs go directly through the same manager/runtime queue
+as chat messages, including while a turn is running. It has no durable work queue,
+turn lock or retry scheduler. Linear implements provider setup, cleanup and MCP hooks;
+its UI panels register at the renderer composition point.
 See [Linear integration](linear-agent-integration.md) for event delivery and identity setup.

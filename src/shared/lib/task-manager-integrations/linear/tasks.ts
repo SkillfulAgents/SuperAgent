@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { TaskSnapshot } from '../types'
 import { LinearClient } from './client'
-import { reactionResultSchema } from './direct-schema'
+import { reactionResultSchema, commentCreateResultSchema } from './direct-schema'
 
 const person = z.object({ id: z.string(), name: z.string() }).nullable()
 const pageInfo = z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() })
@@ -29,18 +29,12 @@ export class LinearTasks {
     )
     if (!result.reactionCreate.success) throw new Error('Linear rejected the acknowledgement')
   }
-  /** A stable comment ID makes retries safe after an ambiguous network failure. */
-  async failureNotice(taskId: string, notice: { id: string; body: string }, parentId?: string): Promise<void> {
-    const existing = await this.client.request('query($id:ID!){comments(filter:{id:{eq:$id}},first:1){nodes{id issue{id}}}}',
-      { id: notice.id }, z.object({ comments: z.object({ nodes: z.array(z.object({ id: z.string(), issue: z.object({ id: z.string() }).nullable() })) }) }))
-    if (existing.comments.nodes.length) {
-      if (existing.comments.nodes[0].issue?.id !== taskId) throw new Error('Failure notice belongs to another issue')
-      return
-    }
+  /** Host dispatch notices are best-effort, just like chat delivery. */
+  async postMessage(taskId: string, body: string, parentId?: string): Promise<void> {
     const result = await this.client.request('mutation($input:CommentCreateInput!){commentCreate(input:$input){success}}',
-      { input: { id: notice.id, issueId: taskId, body: notice.body, ...(parentId ? { parentId } : {}) } },
-      z.object({ commentCreate: z.object({ success: z.boolean() }) }))
-    if (!result.commentCreate.success) throw new Error('Linear rejected the failure notice')
+      { input: { issueId: taskId, body, ...(parentId ? { parentId } : {}) } },
+      commentCreateResultSchema)
+    if (!result.commentCreate.success) throw new Error('Linear rejected the host message')
   }
   async issue(taskId: string) {
     return (await this.client.request(`query($id:String!){ issue(id:$id){ ${issueFields} } }`, { id: taskId }, z.object({ issue: issueSchema }))).issue

@@ -10,6 +10,11 @@ export const linearTokensSchema = z.object({
   expiresAt: z.number().finite().positive(), scope: z.string(),
 })
 export const linearMcpToolsSchema = z.array(z.object({ name: z.string(), description: z.string().optional(), inputSchema: z.record(z.string(), z.unknown()).optional() }))
+export const MAX_LINEAR_PARTICIPATION = 1000
+export const linearParticipationSchema = z.object({
+  workspaceId: z.string(), appUserId: z.string(),
+  threads: z.array(z.object({ issueId: z.string(), rootId: z.string().optional() })).max(MAX_LINEAR_PARTICIPATION),
+})
 export const linearConfigSchema = z.object({
   redirectUri: z.string().url(),
   clientId: z.string().min(1).optional(), clientSecret: z.string().min(1).optional(),
@@ -21,6 +26,7 @@ export const linearConfigSchema = z.object({
   oauth: z.object({ stateHash: z.string(), verifier: z.string(), expiresAt: z.number(), claimed: z.boolean().optional() }).optional(),
   mcp: z.object({ available: z.boolean(), checkedAt: z.number(), tools: linearMcpToolsSchema.optional() }).optional(),
   runOnStatusChange: z.boolean().default(false),
+  participation: linearParticipationSchema.optional(),
 })
 export type LinearConfig = z.infer<typeof linearConfigSchema>
 export type LinearIdentity = z.infer<typeof linearIdentitySchema>

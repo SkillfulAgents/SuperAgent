@@ -42,3 +42,5 @@ export const directSubscriptionResponseSchema = z.object({
 })
 
 export const reactionResultSchema = z.object({ reactionCreate: z.object({ success: z.boolean() }) })
+
+export const commentCreateResultSchema = z.object({ commentCreate: z.object({ success: z.boolean() }) })

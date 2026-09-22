@@ -1,5 +1,3 @@
-import type { IntegrationSessionContext } from '../agent-integrations/types'
-
 /** Provider-normalized event. Stable item IDs and reply destinations are separate. */
 export interface TaskEvent {
   id: string
@@ -27,5 +25,3 @@ export interface TaskSnapshot {
   attachments: Array<{ id: string; title: string; url: string }>
   truncated: boolean
 }
-
-export type TaskContext = IntegrationSessionContext & { interactionId: string; replyTarget: Record<string, string> }

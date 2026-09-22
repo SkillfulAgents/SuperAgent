@@ -1,1 +1,0 @@
-ALTER TABLE `integration_task_events` ADD `dispatch_attempts` integer DEFAULT 0 NOT NULL;
