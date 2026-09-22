@@ -33,15 +33,17 @@ vi.mock('@shared/lib/services/audit-log-service', () => ({ logAuditEvent: vi.fn(
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { IntegrationSetupError } from '@shared/lib/agent-integrations/setup-types'
 import { prepareIntegrationSetup } from '@shared/lib/agent-integrations/setup'
-import { getAgentIntegration, updateAgentIntegrationStatus } from '@shared/lib/services/agent-integration-service'
+import { getAgentIntegration, listAgentIntegrations, updateAgentIntegrationStatus } from '@shared/lib/services/agent-integration-service'
 import router from './agent-integrations'
 const prepare = vi.fn(async (_input: unknown, context: { callbackUrl: string }) => ({ config: { callbackUrl: context.callbackUrl }, status: 'disconnected' as const }))
+const describeSetup = vi.fn((context: { callbackUrl: string }, name?: string) => ({ redirectUri: context.callbackUrl, creationUrl: `https://provider.invalid/create?name=${encodeURIComponent(name ?? '')}` }))
 agentIntegrationRegistry.register({
   definition: { provider: 'test-oauth', name: 'Test', family: 'task-manager', managementAccess: 'owner', capabilities: [], settings: [], setup: { kind: 'oauth', credentialFields: [] } },
   policy: { isAllowed: async () => true, sessionPolicy: () => ({ name: 'Test', metadata: {} }) },
   create: async () => { throw new Error('not needed') },
   serialize: row => ({ ...row, config: undefined, settings: {}, hasCredentials: row.status === 'active' }),
   setup: {
+    describe: describeSetup,
     prepare,
     authorize: { inputSchema: z.object({ clientId: z.string().min(1) }), async run(row) {
       const state = crypto.randomUUID(); pending.set(state, row.id)
@@ -114,4 +116,24 @@ it('validates replacement credentials before pausing the existing account', asyn
   const response = await app.request(`/api/agent-integrations/${row.id}/authorize`, { method: 'POST', headers, body: JSON.stringify({ clientId: '' }) })
   expect(response.status).toBe(400)
   expect(runtime.pause).not.toHaveBeenCalled()
+})
+
+it('describes setup using the host callback without creating or connecting an installation', async () => {
+  vi.stubEnv('HOST_PUBLIC_URL', 'https://public.example/')
+  const response = await app.request('/api/agent-integrations/agents/agent/providers/test-oauth/setup?name=Release%20Assistant', { headers })
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({ redirectUri: 'https://public.example/api/agent-integrations/providers/test-oauth/callback', creationUrl: 'https://provider.invalid/create?name=Release%20Assistant' })
+  expect(await listAgentIntegrations()).toEqual([])
+  expect(prepare).not.toHaveBeenCalled()
+  expect(runtime.add).not.toHaveBeenCalled()
+})
+it('gates setup metadata with provider management access and validates the name', async () => {
+  const url = '/api/agent-integrations/agents/agent/providers/test-oauth/setup'
+  expect((await app.request(url)).status).toBe(401)
+  owner = false
+  expect((await app.request(url, { headers })).status).toBe(403)
+  owner = true
+  expect((await app.request(`${url}?name=${'a'.repeat(81)}`, { headers })).status).toBe(400)
+  expect(describeSetup).not.toHaveBeenCalled()
+  expect((await app.request('/api/agent-integrations/agents/agent/providers/missing/setup', { headers })).status).toBe(400)
 })

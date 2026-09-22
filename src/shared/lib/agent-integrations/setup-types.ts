@@ -1,4 +1,5 @@
 import type { z } from 'zod'
+import type { IntegrationSetupMetadata } from './setup-schema'
 import type { AgentIntegrationRecord, IntegrationStatus } from './types'
 
 export interface IntegrationSetupContext {
@@ -8,6 +9,8 @@ export interface IntegrationSetupContext {
   callbackUrl: string
 }
 export interface IntegrationProviderSetup {
+  /** Read-only setup links; must not create an installation or persist credentials. */
+  describe?(context: IntegrationSetupContext, name?: string): IntegrationSetupMetadata | Promise<IntegrationSetupMetadata>
   /** Agent-side setup is opt-in; owner-managed accounts require the user UI. */
   allowAgentCreation?: boolean
   prepare(input: unknown, context: IntegrationSetupContext): Promise<{ config: Record<string, unknown>; status?: IntegrationStatus }>

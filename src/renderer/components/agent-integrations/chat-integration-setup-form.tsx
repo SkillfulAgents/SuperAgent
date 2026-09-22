@@ -9,21 +9,16 @@
 
 import { useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
-import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
 import { SessionTimeoutSelect } from './integration-settings-controls'
-import { ServiceIcon } from '@renderer/components/ui/service-icon'
-import {
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/components/ui/dialog'
+import { IntegrationSetupLayout, IntegrationSetupField, IntegrationSetupFeedback } from './integration-setup-layout'
 import {
   useCreateAgentIntegration,
   useTestAgentIntegrationCredentials,
   AgentIntegrationApiError,
 } from '@renderer/hooks/use-agent-integrations'
-import { Loader2, CheckCircle, AlertCircle, Copy, Check, Eye, EyeOff } from 'lucide-react'
+import { Loader2, Copy, Check, Eye, EyeOff } from 'lucide-react'
 import { IMESSAGE_PHONE_E164, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 
 function generateSlackManifest(botName: string): string {
@@ -235,17 +230,10 @@ export function ChatIntegrationSetupForm({
   }
 
   return (
-    <>
-      <DialogHeader>
-        <DialogTitle className="flex items-center gap-2 font-normal">
-          <ServiceIcon slug={info.slug} fallback="mcp" className="h-5 w-5" />
-          Set up integration with {info.label}
-        </DialogTitle>
-      </DialogHeader>
-
-      <div className="flex flex-col md:flex-row gap-6 p-1">
-        {/* Left — setup instructions */}
-        <div className="md:w-[55%] flex flex-col justify-center gap-4 max-h-[60vh] overflow-y-auto">
+    <IntegrationSetupLayout
+      provider={info.slug}
+      label={info.label}
+      instructions={<>
         {provider === 'slack' && slackSetupMode === 'manifest' ? (
           <div className="space-y-3">
             <ol className="list-decimal list-outside ml-5 space-y-2.5">
@@ -333,159 +321,122 @@ export function ChatIntegrationSetupForm({
             <p className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed">{info.note}</p>
           </div>
         )}
-        </div>
-
-        {/* Right — credentials + actions */}
-        <div className="md:w-[45%] rounded-lg border bg-muted/40 shadow-md flex flex-col max-h-[60vh]">
-        <div className="flex flex-col gap-4 overflow-y-auto p-4 flex-1 min-h-0">
-        <div className="space-y-3">
-          <div>
-            <Label className="text-xs font-normal">
-              Bot Name
-            </Label>
-            <Input
-              value={integrationName}
-              onChange={(e) => setIntegrationName(e.target.value)}
-              placeholder={`My ${info.label} Bot`}
-              className="mt-1 shadow-none bg-background"
-            />
-          </div>
-
-          {info.fields.map((field) => (
-            <div key={field.key}>
-              <Label className="text-xs font-normal">
-                {field.label}
-                {field.optional && <span className="ml-1 font-normal text-muted-foreground/70">optional</span>}
-              </Label>
-              <Input
-                type={field.type}
-                value={formData[field.key] || ''}
-                onChange={(e) => setFormData({ ...formData, [field.key]: e.target.value })}
-                placeholder={field.placeholder}
-                className="mt-1 shadow-none bg-background"
-              />
-            </div>
-          ))}
-
-          <div className={`${provider === 'slack' ? 'pt-6' : 'pt-4'} space-y-3`}>
-            <div className="flex items-center justify-between gap-2">
-              <Label htmlFor="setup-show-tool-calls" className="text-xs font-normal cursor-pointer">
-                Show tool calls in chat
-              </Label>
-              <Switch
-                id="setup-show-tool-calls"
-                checked={showToolCalls}
-                onCheckedChange={setShowToolCalls}
-              />
-            </div>
-
-            <SessionTimeoutSelect
-              id="setup-session-timeout"
-              value={sessionTimeout}
-              onCommit={setSessionTimeout}
-              wrapperClassName=""
-            />
-
-            {provider === 'slack' && (
-              <>
-                <div className="flex items-center justify-between gap-2">
-                  <Label htmlFor="setup-only-mentioned" className="text-xs font-normal cursor-pointer">
-                    Only trigger on @mention
-                  </Label>
-                  <Switch
-                    id="setup-only-mentioned"
-                    checked={onlyMentioned}
-                    onCheckedChange={setOnlyMentioned}
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <Label htmlFor="setup-answer-thread" className="text-xs font-normal cursor-pointer">
-                    Reply in thread
-                  </Label>
-                  <Switch
-                    id="setup-answer-thread"
-                    checked={answerInThread}
-                    onCheckedChange={(checked) => {
-                      setAnswerInThread(checked)
-                      if (!checked) setNewSessionPerThread(false)
-                    }}
-                  />
-                </div>
-                {answerInThread && (
-                  <div className="flex items-center justify-between gap-2">
-                    <Label htmlFor="setup-session-per-thread" className="text-xs font-normal cursor-pointer">
-                      New session per thread
-                    </Label>
-                    <Switch
-                      id="setup-session-per-thread"
-                      checked={newSessionPerThread}
-                      onCheckedChange={setNewSessionPerThread}
-                    />
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-
-        {testResult && (
-          <div className={`flex items-center gap-2 p-2 rounded-md border ${
-            testResult.valid
-              ? 'border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950'
-              : 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950'
-          }`}>
-            {testResult.valid ? (
-              <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
-            ) : (
-              <AlertCircle className="h-4 w-4 text-red-500 shrink-0" />
-            )}
-            <p className={`text-xs ${testResult.valid ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-              {testResult.info}
-            </p>
-          </div>
-        )}
-
+      </>}
+      feedback={<>
+        {testResult && <IntegrationSetupFeedback state={testResult.valid ? 'success' : 'error'}>{testResult.info}</IntegrationSetupFeedback>}
         {createIntegration.error && (
-          <p className="text-xs text-red-500">
+          <IntegrationSetupFeedback state="error">
             {createIntegration.error instanceof AgentIntegrationApiError && createIntegration.error.code === 'duplicate_bot_token'
               ? provider === 'imessage'
                 ? 'This phone number is already connected to another integration. Remove the existing one first.'
                 : 'This bot is already connected to another integration. Remove the existing one first, or use a different bot.'
               : createIntegration.error.message}
-          </p>
+          </IntegrationSetupFeedback>
         )}
-
-        </div>
-        <div className="flex items-center justify-end gap-2 p-4">
-          {provider !== 'imessage' && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="mr-auto"
-              onClick={handleTest}
-              disabled={testCredentials.isPending}
-            >
-              {testCredentials.isPending ? (
-                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Verifying...</>
-              ) : (
-                'Verify token'
-              )}
-            </Button>
-          )}
+      </>}
+      actions={<>
+        {provider !== 'imessage' && (
           <Button
             size="sm"
-            onClick={handleCreate}
-            disabled={createIntegration.isPending}
+            variant="ghost"
+            className="mr-auto"
+            onClick={handleTest}
+            disabled={testCredentials.isPending}
           >
-            {createIntegration.isPending ? (
-              <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Connecting...</>
+            {testCredentials.isPending ? (
+              <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Verifying...</>
             ) : (
-              'Connect'
+              'Verify token'
             )}
           </Button>
+        )}
+        <Button
+          size="sm"
+          onClick={handleCreate}
+          disabled={createIntegration.isPending}
+        >
+          {createIntegration.isPending ? (
+            <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Connecting...</>
+          ) : (
+            'Connect'
+          )}
+        </Button>
+      </>}
+    >
+      <IntegrationSetupField
+        id="setup-integration-name" label="Agent name"
+        value={integrationName} onChange={e => setIntegrationName(e.target.value)}
+        placeholder={`My ${info.label} Bot`}
+      />
+
+      {info.fields.map(field => (
+        <IntegrationSetupField
+          key={field.key} id={`setup-${field.key}`} label={field.label} optional={field.optional}
+          type={field.type} value={formData[field.key] || ''}
+          onChange={e => setFormData({ ...formData, [field.key]: e.target.value })}
+          placeholder={field.placeholder}
+        />
+      ))}
+
+      <div className={`${provider === 'slack' ? 'pt-6' : 'pt-4'} space-y-3`}>
+        <div className="flex items-center justify-between gap-2">
+          <Label htmlFor="setup-show-tool-calls" className="text-xs font-normal cursor-pointer">
+            Show tool calls in chat
+          </Label>
+          <Switch
+            id="setup-show-tool-calls"
+            checked={showToolCalls}
+            onCheckedChange={setShowToolCalls}
+          />
         </div>
-        </div>
+
+        <SessionTimeoutSelect
+          id="setup-session-timeout"
+          value={sessionTimeout}
+          onCommit={setSessionTimeout}
+          wrapperClassName=""
+        />
+
+        {provider === 'slack' && (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="setup-only-mentioned" className="text-xs font-normal cursor-pointer">
+                Only trigger on @mention
+              </Label>
+              <Switch
+                id="setup-only-mentioned"
+                checked={onlyMentioned}
+                onCheckedChange={setOnlyMentioned}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="setup-answer-thread" className="text-xs font-normal cursor-pointer">
+                Reply in thread
+              </Label>
+              <Switch
+                id="setup-answer-thread"
+                checked={answerInThread}
+                onCheckedChange={(checked) => {
+                  setAnswerInThread(checked)
+                  if (!checked) setNewSessionPerThread(false)
+                }}
+              />
+            </div>
+            {answerInThread && (
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="setup-session-per-thread" className="text-xs font-normal cursor-pointer">
+                  New session per thread
+                </Label>
+                <Switch
+                  id="setup-session-per-thread"
+                  checked={newSessionPerThread}
+                  onCheckedChange={setNewSessionPerThread}
+                />
+              </div>
+            )}
+          </>
+        )}
       </div>
-    </>
+    </IntegrationSetupLayout>
   )
 }

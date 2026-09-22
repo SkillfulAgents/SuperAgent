@@ -96,3 +96,9 @@ Telegram token validation, Slack bot/app-token checks, and iMessage code exchang
 implement this same contract. Agent-side creation uses the same preparation hooks
 and requires explicit provider opt-in, preserving owner-only interactive setup.
 Initial authorization-required rows are inserted disconnected atomically.
+
+Provider setup uses `IntegrationSetupLayout` for the shared header, instructions,
+credential panel, fields, feedback and actions. Providers supply their content and
+connection flow. An optional read-only `setup.describe` hook supplies app-creation
+and callback URLs through the agent-scoped setup endpoint without creating an
+installation. The endpoint enforces the same provider management role as creation.

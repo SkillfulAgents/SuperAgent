@@ -5,6 +5,7 @@
  */
 
 import type { AgentIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
+import { integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/setup-schema'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 import { isSettling } from '@shared/lib/agent-integrations/presentation'
 import { apiFetch } from '@renderer/lib/api'
@@ -35,6 +36,7 @@ export class AgentIntegrationApiError extends Error {
 
 export const agentIntegrationKeys = {
   all: ['chat-integrations'] as const,
+  setup: (agentSlug: string, provider: string, name?: string) => ['agent-integration-setup', agentSlug, provider, name] as const,
   lists: (agentSlug: string | null) => [...agentIntegrationKeys.all, agentSlug] as const,
   list: (agentSlug: string | null, status?: string) => [...agentIntegrationKeys.lists(agentSlug), status] as const,
   detail: (id: string | null) => ['chat-integration', id] as const,
@@ -353,5 +355,39 @@ export function useTestAgentIntegrationCredentials() {
       }
       return data as { valid: boolean; botName?: string; botUsername?: string; team?: string; user?: string; phoneNumber?: string; token?: string }
     },
+  })
+}
+
+/** Provider-supplied links before an account exists; no installation is created. */
+export function useAgentIntegrationSetup(agentSlug: string, provider: string, name?: string) {
+  return useQuery({
+    queryKey: agentIntegrationKeys.setup(agentSlug, provider, name),
+    queryFn: async ({ signal }) => {
+      const query = new URLSearchParams(name ? { name } : {})
+      const response = await apiFetch(`/api/agent-integrations/agents/${encodeURIComponent(agentSlug)}/providers/${encodeURIComponent(provider)}/setup?${query}`, { signal })
+      if (!response.ok) throw new Error('Could not load integration setup')
+      return integrationSetupMetadataSchema.parse(await response.json())
+    },
+    staleTime: 60_000,
+  })
+}
+
+export function useAuthorizeAgentIntegration() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ id, config }: { id: string; agentSlug: string; config: Record<string, unknown> }) => {
+      const response = await apiFetch(`/api/agent-integrations/${id}/authorize`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config),
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error ?? 'Could not authorize integration')
+      return result as { url: string }
+    },
+    onSuccess: (_, { id, agentSlug }) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(id) }),
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.status(id) }),
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(agentSlug) }),
+    ]),
   })
 }

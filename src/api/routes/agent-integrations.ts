@@ -29,6 +29,7 @@ import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-in
 import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/cleanup'
 import { listAgentIntegrationsHandler } from './agent-integration-list'
 import { getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, setupError } from '@shared/lib/agent-integrations/setup'
+import { integrationSetupQuerySchema, integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/setup-schema'
 import { toPublicAgentIntegration, publicIntegrationStatus } from '@shared/lib/agent-integrations/serialization'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -128,11 +129,27 @@ agentIntegrationsRouter.post('/test-credentials', Authenticated(), async (c) => 
 // owners (ACL is id-keyed) and non-auth mode persists the display slug, splitting
 // the row from the canonical id. AgentUser then validates the 'user' role.
 const RequireSetupManagement: MiddlewareHandler = async (c, next) => {
-  const body = await c.req.json()
-  const definition = agentIntegrationRegistry.getDefinition(body.provider)
+  const provider = c.req.param('provider') ?? (await c.req.json()).provider
+  const definition = agentIntegrationRegistry.getDefinition(provider)
   if (!definition) return c.json({ error: 'Unknown integration provider' }, 400)
   return (definition.managementAccess ?? 'owner') === 'owner' ? AgentAdmin()(c, next) : AgentUser()(c, next)
 }
+// Read setup links before creating an installation, using the same management ACL.
+agentIntegrationsRouter.get('/agents/:id/providers/:provider/setup', ResolveAgent(), RequireSetupManagement, async c => {
+  c.header('Cache-Control', 'no-store')
+  try {
+    const provider = c.req.param('provider')
+    const { name } = integrationSetupQuerySchema.parse(c.req.query())
+    const context = integrationSetupContext(provider, new URL(c.req.url).origin, getAgentId(c), getCurrentUserId(c))
+    const metadata = await getIntegrationSetup(provider).describe?.(context, name) ?? {}
+    return c.json(integrationSetupMetadataSchema.parse(metadata))
+  } catch (error) {
+    const failure = setupError(error)
+    if (failure) return c.json({ error: failure.error }, failure.status)
+    captureException(error, { tags: { ...SENTRY_TAGS, operation: 'describe-setup' } })
+    return c.json({ error: 'Could not load integration setup' }, 500)
+  }
+})
 agentIntegrationsRouter.post('/agents/:id', ResolveAgent(), RequireSetupManagement, createIntegration)
 agentIntegrationsRouter.post('/:id', ResolveAgent(), RequireSetupManagement, createIntegration)
 async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
