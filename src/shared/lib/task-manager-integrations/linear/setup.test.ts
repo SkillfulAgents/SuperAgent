@@ -60,7 +60,7 @@ describe('Linear identity lifecycle', () => {
     expect(await completeLinearSetup(state, 'code')).toBe(id)
     expect((await getAgentIntegration(id))?.status).toBe('active')
     expect((await getLinearConfig(id)).identity).toMatchObject({ appUserId: 'app-user', workspaceId: 'workspace' })
-    await expect(completeLinearSetup(state, 'code')).rejects.toThrow('expired')
+    await expect(completeLinearSetup(state, 'code')).rejects.toMatchObject({ status: 400, message: expect.stringContaining('expired') })
     const publicIntegration = toPublicAgentIntegration((await getAgentIntegration(id))!)
     expect(publicIntegration).toMatchObject({ provider: 'linear', hasCredentials: true, refreshIntervalMs: 30000, capabilities: [], managementAccess: 'owner', linear: { authorized: true } })
     const output = JSON.stringify(publicIntegration)

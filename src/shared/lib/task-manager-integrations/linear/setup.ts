@@ -1,4 +1,4 @@
-import type { IntegrationProviderSetup } from '../../agent-integrations/setup-types'
+import { IntegrationSetupError, type IntegrationProviderSetup } from '../../agent-integrations/setup-types'
 import { linearConfigSchema } from './config'
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -11,7 +11,7 @@ import { deleteAgentIntegration, listAgentIntegrations } from '../../services/ag
 import { linearCredentialsSchema, linearAuthorizationInputSchema } from './config'
 import { getLinearConfig, updateLinearConfig, setLinearStatusForConfig } from './store'
 import { hashOAuthState, linearAuthorization, linearAppCreationUrl } from './oauth'
-import { exchangeLinearToken, LinearClient, revokeLinearToken } from './client'
+import { exchangeLinearToken, LinearAuthorizationError, LinearClient, revokeLinearToken } from './client'
 
 export { publicLinearIntegration } from './presentation'
 export const linearSetup: IntegrationProviderSetup = {
@@ -63,17 +63,17 @@ export async function completeLinearSetup(state: string, code: string): Promise<
     if (row.provider !== 'linear') return false
     try { return parseTaskJson(linearConfigSchema, row.config).oauth?.stateHash === stateHash } catch { return false }
   })
-  if (!row) throw new Error('Authorization expired. Start again in Gamut.')
+  if (!row) throw new IntegrationSetupError('Authorization expired. Start again in Gamut.')
   let config = await getLinearConfig(row.id)
   const oauth = config.oauth
-  if (oauth?.claimed) throw new Error('Authorization already used')
+  if (oauth?.claimed) throw new IntegrationSetupError('Authorization already used')
   if (!oauth || oauth.expiresAt <= Date.now() || !config.clientId || !config.clientSecret) {
     await failLinearSetup(state, 'Authorization expired. Start again to connect Linear.')
-    throw new Error('Authorization expired. Start again in Gamut.')
+    throw new IntegrationSetupError('Authorization expired. Start again in Gamut.')
   }
   // Keep the expiration while exchange is in flight so the UI still shows pending.
   config = (await updateLinearConfig(row.id, latest => {
-    if (latest.oauth?.stateHash !== stateHash || latest.oauth.claimed) throw new Error('Authorization already used')
+    if (latest.oauth?.stateHash !== stateHash || latest.oauth.claimed) throw new IntegrationSetupError('Authorization already used')
     return { ...latest, oauth: { ...latest.oauth, claimed: true } }
   }))
   try {
@@ -81,9 +81,9 @@ export async function completeLinearSetup(state: string, code: string): Promise<
       client_secret: config.clientSecret!, redirect_uri: config.redirectUri, code_verifier: oauth.verifier })
     const identity = await new LinearClient(undefined, tokens.accessToken).identity()
     const authorized = await updateLinearConfig(row.id, latest => {
-      if (latest.authorizationVersion !== config.authorizationVersion) throw new Error('A newer authorization attempt replaced this one')
+      if (latest.authorizationVersion !== config.authorizationVersion) throw new IntegrationSetupError('A newer authorization attempt replaced this one')
       if (latest.identity && (latest.identity.appUserId !== identity.appUserId || latest.identity.workspaceId !== identity.workspaceId)) {
-        throw new Error('This is a different Linear app or workspace. Add a new integration instead.')
+        throw new IntegrationSetupError('This is a different Linear app or workspace. Add a new integration instead.')
       }
       return { ...latest, identity, tokens, oauth: undefined, authorizationError: undefined, authorizationPending: false, mcp: undefined, authorizedAt: latest.authorizedAt ?? Date.now() }
     })
@@ -97,6 +97,7 @@ export async function completeLinearSetup(state: string, code: string): Promise<
   } catch (error) {
     // Never expose provider responses or credentials in the public setup state.
     await failLinearSetup(state, 'Could not authorize Linear. Check the app credentials, workspace, and permissions, then reconnect.', true)
+    if (error instanceof LinearAuthorizationError) throw new IntegrationSetupError(error.message)
     throw error
   }
 }

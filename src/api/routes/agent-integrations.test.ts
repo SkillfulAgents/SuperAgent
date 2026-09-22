@@ -38,9 +38,10 @@ vi.mock('@shared/lib/agent-integrations/registry', async importOriginal => {
   return actual
 })
 import router from './agent-integrations'
+import { captureException } from '@shared/lib/error-reporting'
 import { createAgentIntegration, getAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { createAgentIntegrationSession, listAgentIntegrationSessions } from '@shared/lib/services/agent-integration-session-service'
-import { getLinearConfig } from '@shared/lib/task-manager-integrations/linear/store'
+import { getLinearConfig, updateLinearConfig } from '@shared/lib/task-manager-integrations/linear/store'
 
 const app = new Hono().route('/api/agent-integrations', router)
 let id: string
@@ -147,13 +148,27 @@ describe('shared integration API', () => {
     expect((await app.request(`/api/agent-integrations/${id}`, { method: 'DELETE' })).status).toBe(204)
   })
 
+  it.each(['unknown-state', 'expired-state', 'rejected-code'])('does not report an expected Linear callback rejection: %s', async failure => {
+    const start = await app.request(`/api/agent-integrations/${id}/authorize`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    let state = new URL((await start.json()).url).searchParams.get('state')!
+    if (failure === 'unknown-state') state = 'invalid-state'
+    if (failure === 'expired-state') await updateLinearConfig(id, config => ({ ...config, oauth: { ...config.oauth!, expiresAt: 1 } }))
+    const fetch = vi.fn(async () => new Response(null, { status: 401 }))
+    vi.stubGlobal('fetch', fetch)
+    const response = await app.request(`/api/agent-integrations/providers/linear/callback?state=${state}&code=invalid`)
+    expect(response.status).toBe(400)
+    expect(captureException).not.toHaveBeenCalled()
+    expect(manager.resumeIntegration).not.toHaveBeenCalled()
+    expect(fetch).toHaveBeenCalledTimes(failure === 'rejected-code' ? 1 : 0)
+  })
+
   it('keeps successful authorization when the initial connection fails transiently', async () => {
     const start = await app.request(`/api/agent-integrations/${id}/authorize`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
     const state = new URL((await start.json()).url).searchParams.get('state')!
     vi.stubGlobal('fetch', vi.fn(async (url: string) => Response.json(url.endsWith('/oauth/token')
       ? { access_token: 'new-access', refresh_token: 'new-refresh', expires_in: 3600, scope: 'read write app:mentionable app:assignable' }
       : { data: { viewer: { id: 'app', app: true, name: 'Helper', displayName: 'Helper', avatarUrl: null, organization: { id: 'workspace', name: 'Test' } } } })))
-    manager.addIntegration.mockRejectedValueOnce(new Error('Linear request failed (503)'))
+    manager.resumeIntegration.mockRejectedValueOnce(new Error('Linear request failed (503)'))
     const response = await app.request(`/api/agent-integrations/linear/callback?state=${state}&code=code`)
     expect(response.status).toBe(200)
     expect(await response.text()).toContain('retry automatically')
