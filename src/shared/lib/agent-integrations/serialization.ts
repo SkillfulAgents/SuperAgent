@@ -1,6 +1,12 @@
-import type { AgentIntegrationRecord } from './types'
+import type { AgentIntegrationRecord, IntegrationStatus } from './types'
 import type { PublicAgentIntegration } from './public'
 import { agentIntegrationRegistry } from './registry'
+
+/** Preserve saved intent for a provider restored by a later app version, while
+ * exposing unavailable installations as settled errors to UI and agent discovery. */
+export function publicIntegrationStatus(row: Pick<AgentIntegrationRecord, 'provider' | 'status'>): IntegrationStatus {
+  return row.status === 'active' && !agentIntegrationRegistry.getDefinition(row.provider) ? 'error' : row.status
+}
 
 /** The provider selects its safe settings; management policy comes from the
  * same definition used to authorize writes, never from a client-supplied flag. */
@@ -14,7 +20,7 @@ export function toPublicAgentIntegration(row: AgentIntegrationRecord): PublicAge
     return { ...provider.serialize(row), capabilities, managementAccess }
   } catch {
     return { id: row.id, agentSlug: row.agentSlug, provider: row.provider, name: row.name,
-      status: row.status, model: row.model, effort: row.effort, speed: row.speed,
+      status: publicIntegrationStatus(row), model: row.model, effort: row.effort, speed: row.speed,
       createdByUserId: row.createdByUserId, createdAt: row.createdAt, updatedAt: row.updatedAt,
       hasCredentials: false, settings: {}, capabilities, managementAccess,
       errorMessage: definition

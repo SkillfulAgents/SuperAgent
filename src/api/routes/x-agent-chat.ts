@@ -49,6 +49,7 @@ function getCallerSlug(c: { get: (k: 'callerSlug') => string }): string {
   return c.get('callerSlug')
 }
 
+// TODO(2026-12-01): Delete this legacy chat-only list route; use /api/x-agent/integrations/list.
 // POST /list — list integrations with active chat sessions
 xAgentChat.post('/list', async (c) => {
   try {

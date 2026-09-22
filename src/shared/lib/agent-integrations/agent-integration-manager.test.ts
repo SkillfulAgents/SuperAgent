@@ -354,7 +354,7 @@ describe('AgentIntegration host contract', () => {
     expect(state.interrupt).toHaveBeenCalledWith('session-1')
     expect(acknowledged).toHaveBeenCalledOnce()
   })
-  it('routes matched review creation and resolution without guessing a session', async () => {
+  it.each(['global-first', 'session-first'])('routes reviews once when resolution arrives %s', async order => {
     await manager.start()
     await adapter.input('comment')
     await vi.waitFor(() => expect(state.mappings.size).toBe(1))
@@ -369,8 +369,13 @@ describe('AgentIntegration host contract', () => {
     state.global?.({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a', sessionId: 'session-1' } } })
     await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
     expect(adapter.outputs[0].output.type).toBe('request')
-    state.global?.({ type: 'user_request_resolved', kind: 'proxy_review', requestId: 'review', scope: { agentSlug: 'installation-a', sessionId: 'session-1' } })
+    const resolution = { type: 'user_request_resolved', kind: 'proxy_review', requestId: 'review', scope: { agentSlug: 'installation-a', sessionId: 'session-1' } }
+    if (order === 'global-first') state.global?.(resolution)
+    state.streams.get('session-1')?.(resolution)
+    if (order === 'session-first') state.global?.(resolution)
     await vi.waitFor(() => expect(adapter.outputs).toHaveLength(2))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(adapter.outputs).toHaveLength(2)
     expect(adapter.outputs[1]).toMatchObject({ context: { sessionId: 'session-1' }, output: { type: 'runtime', event: { type: 'user_request_resolved', requestId: 'review' } } })
   })
 
@@ -700,8 +705,8 @@ it('contains a failed review-resolution delivery without poisoning later deliver
   adapter.outputs = []
   vi.spyOn(adapter, 'deliver').mockRejectedValueOnce(new Error('Delivery unavailable'))
   const resolution = { type: 'user_request_resolved', kind: 'proxy_review', requestId: 'review', scope: { agentSlug: 'installation-a', sessionId: 'session-1' } }
-  state.global?.(resolution)
+  state.streams.get('session-1')?.(resolution)
   await vi.waitFor(() => expect(captureException).toHaveBeenCalled())
-  state.global?.(resolution)
+  state.streams.get('session-1')?.(resolution)
   await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
 })

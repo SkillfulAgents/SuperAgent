@@ -2,6 +2,7 @@ import { listAgentIntegrations } from '../services/agent-integration-service'
 import { listChatIntegrationSessions } from '../services/chat-integration-session-service'
 import { agentIntegrationRegistry } from './registry'
 import { integrationMcpName } from './mcp'
+import { publicIntegrationStatus } from './serialization'
 
 /** Agent-scoped discovery, independent of provider family or a live connector.
  * Explicit projection keeps credentials and provider setup secrets off the wire. */
@@ -17,7 +18,7 @@ export async function listAgentIntegrationInventory(agentSlug: string) {
       const connection = row.status === 'paused' ? null : await agentIntegrationRegistry.getMcpConnection(row)
       if (connection) mcp = { name: integrationMcpName(row.id), status: connection.status, identity: connection.identity, tools: connection.tools.map(tool => tool.name) }
     } catch { /* A damaged connection remains listed and cannot hide healthy accounts. */ }
-    return { id: row.id, provider: row.provider, family: definition?.family ?? 'unknown', name: row.name, status: row.status,
+    return { id: row.id, provider: row.provider, family: definition?.family ?? 'unknown', name: row.name, status: publicIntegrationStatus(row),
       capabilities: [...(definition?.capabilities ?? [])], sessions, mcp }
   }))
 }

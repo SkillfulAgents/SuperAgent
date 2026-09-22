@@ -29,7 +29,7 @@ import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-in
 import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema } from '@shared/lib/chat-integrations/config-schema'
 import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/cleanup'
 import { listAgentIntegrationsHandler } from './agent-integration-list'
-import { toPublicAgentIntegration } from '@shared/lib/agent-integrations/serialization'
+import { toPublicAgentIntegration, publicIntegrationStatus } from '@shared/lib/agent-integrations/serialization'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -420,7 +420,7 @@ agentIntegrationsRouter.get('/:integrationId/status', IntegrationAgentRole('view
 
     const connected = agentIntegrationManager.isIntegrationConnected(integration.id)
     return c.json({
-      status: integration.status,
+      status: publicIntegrationStatus(integration),
       connected,
       provider: integration.provider,
     })

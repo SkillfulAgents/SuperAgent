@@ -4591,7 +4591,7 @@ agents.get('/:id/webhook-triggers', AgentRead(), async (c) => {
   }
 })
 
-// Compatibility URL; the canonical integration router uses the same handler.
+// TODO(2026-12-01): Delete this legacy list route; use /api/agent-integrations/agents/:id.
 agents.get('/:id/chat-integrations', AgentRead(), listAgentIntegrationsHandler)
 
 function secretsErrorMessage(error: unknown, fallback: string): string {

@@ -4,6 +4,7 @@ import { chatIntegrations } from '@shared/lib/db/schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { hasMinRole } from '@shared/lib/types/agent'
+import { deriveAgentIntegrationState, isSettling } from '@shared/lib/agent-integrations/presentation'
 import { sql } from 'drizzle-orm'
 import { sqliteTable, text } from 'drizzle-orm/sqlite-core'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
@@ -102,13 +103,26 @@ it('isolates unavailable providers and corrupt configs in management and agent d
   const rows = await management.json()
   expect(rows).toHaveLength(3)
   expect(rows).toContainEqual(expect.objectContaining({ id: healthy, hasCredentials: true }))
-  expect(rows).toContainEqual(expect.objectContaining({ id: 'unavailable', managementAccess: 'owner', capabilities: [], hasCredentials: false }))
+  expect(rows).toContainEqual(expect.objectContaining({ id: 'unavailable', status: 'error', managementAccess: 'owner', capabilities: [], hasCredentials: false }))
+  const unavailable = rows.find((row: { id: string }) => row.id === 'unavailable')
+  const detail = await (await app.request('/manage/unavailable')).json()
+  const health = await (await app.request('/manage/unavailable/status')).json()
+  for (const view of [unavailable, detail, health]) {
+    expect(view.status).toBe('error')
+    expect(deriveAgentIntegrationState(view.status, view.connected)).toBe('error')
+    expect(isSettling(view.status, view.connected)).toBe(false)
+  }
+  // Presentation must not overwrite the saved intent for a provider restored later.
+  expect((await getAgentIntegration('unavailable'))?.status).toBe('active')
   const discovery = await app.request('/agent/list', { method: 'POST', headers: { Authorization: 'Bearer agent-token' } })
   expect(discovery.status).toBe(200)
   const inventory = await discovery.json()
-  expect(inventory.integrations).toContainEqual(expect.objectContaining({ id: 'unavailable', family: 'unknown', capabilities: [], mcp: null }))
+  expect(inventory.integrations).toContainEqual(expect.objectContaining({ id: 'unavailable', status: 'error', family: 'unknown', capabilities: [], mcp: null }))
   expect(inventory.integrations).toContainEqual(expect.objectContaining({ id: healthy, capabilities: ['send_message'] }))
   expect(JSON.stringify([rows, inventory])).not.toMatch(/secret-token|private-token/)
+  await updateAgentIntegrationStatus('unavailable', 'paused')
+  expect(await (await app.request('/manage/unavailable/status')).json()).toMatchObject({ status: 'paused' })
+  expect(await (await app.request('/manage/unavailable')).json()).toMatchObject({ status: 'paused' })
   expect((await app.request('/manage/unavailable', { method: 'DELETE' })).status).toBe(204)
 })
 

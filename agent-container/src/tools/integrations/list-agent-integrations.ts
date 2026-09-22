@@ -16,7 +16,7 @@ Use the named MCP server for integrations with MCP access. For send_message inte
   async () => {
     try {
       const data = await callHost('integrations/list', {}, z.object({ integrations: z.array(integrationSchema) }))
-      return textResult(data.integrations.length ? JSON.stringify(data, null, 2) : 'No agent integrations configured. Set up an external integration from the agent home page.')
+      return textResult(data.integrations.length ? JSON.stringify(data, null, 2) : 'No agent integrations configured. For chat setup, call list_available_chat_providers, collect the required configuration, then call add_chat_integration. Other integrations can be set up from the agent home page.')
     } catch (error) {
       return textResult(`Failed to list agent integrations: ${error instanceof XAgentError ? error.message : String(error)}`, true)
     }

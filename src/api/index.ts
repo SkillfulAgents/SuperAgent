@@ -237,7 +237,8 @@ app.route('/api/settings', settings)
 app.route('/api/providers', providers)
 app.route('/api/scheduled-tasks', scheduledTasks)
 app.route('/api/webhook-triggers', webhookTriggers)
-app.route('/api/chat-integrations', agentIntegrationsRouter) // Legacy URL alias.
+// TODO(2026-12-01): Delete this legacy alias; use /api/agent-integrations.
+app.route('/api/chat-integrations', agentIntegrationsRouter)
 app.route('/api/agent-integrations', agentIntegrationsRouter)
 app.route('/api/notifications', notifications)
 app.route('/api/push', pushRouter)

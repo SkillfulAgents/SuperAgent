@@ -1217,8 +1217,8 @@ export class AgentIntegrationManager {
   // ── Global notification handling (proxy review requests) ─────────
 
   /**
-   * Reviews are agent-scoped, so they reach no session SSE stream — this
-   * subscription is the ONLY way an Allow/Deny card ever gets to chat.
+   * Review requests may be agent-scoped without a session SSE stream. This
+   * subscription routes their Allow/Deny cards; resolutions use the session stream.
    * Idempotent so a harness that drives integrations without start() can arm
    * it without risking a double-send.
    */
@@ -1234,23 +1234,9 @@ export class AgentIntegrationManager {
 
   private async handleGlobalNotification(event: unknown): Promise<void> {
     const data = event as Record<string, unknown>
-    // Reviews are agent-scoped, so they never reach a session SSE stream —
-    // the global registry event is the only place chat can see them. Same
-    // wire the session cards come from, filtered to the review kinds.
-    if (data.type === 'user_request_resolved') {
-      const scope = data.scope as PendingUserInputRequest['scope'] | undefined
-      if (!scope?.agentSlug || !scope.sessionId || typeof data.requestId !== 'string') return
-      if (data.kind !== 'proxy_review' && data.kind !== 'x_agent_review') return
-      // Only an explicit session scope can identify the waiting recipient.
-      // Agent-wide resolutions must not fan out to unrelated work.
-      try {
-        const mapping = await getIntegrationSessionBySessionId(scope.agentSlug, scope.sessionId)
-        if (mapping) await this.deliver(mapping.integrationId, mapping.externalId, { type: 'runtime', event: data }, scope.sessionId)
-      } catch (error) {
-        reportError(error, 'route-review-resolution', { agentSlug: scope.agentSlug, sessionId: scope.sessionId })
-      }
-      return
-    }
+    // Review cards use this global wire because their scope may omit a session.
+    // Resolutions with a session scope already arrive on that session's stream;
+    // forwarding them here as well would deliver each resolution twice.
     if (data.type !== 'user_request_created') return
     const request = data.request as PendingUserInputRequest | undefined
     if (!request) return
