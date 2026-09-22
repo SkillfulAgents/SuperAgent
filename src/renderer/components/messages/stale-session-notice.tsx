@@ -1,11 +1,16 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
+import { ChevronDown, HelpCircle } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@renderer/components/ui/dropdown-menu'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 
 export interface StaleSessionNoticeProps {
   onIgnore: () => void
+  onContinueCompacted: () => void
   onStartFresh: () => void
-  onLearnMoreOpenChange?: (open: boolean) => void
+  isPending?: boolean
+  /** Holds the column's scroll while the menu or help tooltip is open. */
+  onPopoverOpenChange?: (open: boolean) => void
 }
 
 function TeachingPoint({ lead, children }: { lead: string; children: ReactNode }) {
@@ -17,59 +22,93 @@ function TeachingPoint({ lead, children }: { lead: string; children: ReactNode }
   )
 }
 
+/** One row of the options menu: a title with a one-line description under it. */
+function OptionRow({
+  title,
+  description,
+  onSelect,
+  disabled,
+  testId,
+}: {
+  title: string
+  description: string
+  onSelect: () => void
+  disabled: boolean
+  testId: string
+}) {
+  const id = useId()
+  return (
+    <DropdownMenuItem
+      onSelect={onSelect}
+      disabled={disabled}
+      textValue={title}
+      aria-labelledby={`${id}-title`}
+      aria-describedby={`${id}-description`}
+      data-testid={testId}
+      className="w-full flex-col items-start gap-0.5"
+    >
+      <span id={`${id}-title`}>{title}</span>
+      <span id={`${id}-description`} className="w-full truncate text-xs text-muted-foreground">{description}</span>
+    </DropdownMenuItem>
+  )
+}
+
 /** Non-blocking prompt shown above the composer for an old, large conversation. */
 export function StaleSessionNotice({
   onIgnore,
+  onContinueCompacted,
   onStartFresh,
-  onLearnMoreOpenChange,
+  isPending = false,
+  onPopoverOpenChange,
 }: StaleSessionNoticeProps) {
   const [learnMoreOpen, setLearnMoreOpen] = useState(false)
+  const [optionsOpen, setOptionsOpen] = useState(false)
+  const anyOpen = learnMoreOpen || optionsOpen
 
   useEffect(() => {
-    onLearnMoreOpenChange?.(learnMoreOpen)
-    return () => onLearnMoreOpenChange?.(false)
-  }, [learnMoreOpen, onLearnMoreOpenChange])
+    onPopoverOpenChange?.(anyOpen)
+    return () => onPopoverOpenChange?.(false)
+  }, [anyOpen, onPopoverOpenChange])
 
   return (
     <div data-testid="stale-toast" className="mx-auto mb-2 w-full max-w-[740px] px-4">
       <div
-        className="flex items-center justify-between gap-4 rounded-2xl border bg-card p-4"
+        className="flex items-center justify-between gap-4 rounded-2xl bg-muted/80 p-4 backdrop-blur-md"
         data-testid="stale-toast-card"
       >
-        <div className="flex min-w-0 max-w-[60%] flex-col gap-1.5">
-          <p className="text-sm font-medium">Start a new conversation?</p>
-          <p className="text-xs text-muted-foreground">
-            This conversation is getting pretty long. It may be cheaper, faster, and more effective to
-            start a new conversation.{' '}
-            <Popover open={learnMoreOpen} onOpenChange={setLearnMoreOpen}>
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  data-testid="stale-learn-more-trigger"
-                  className="text-foreground underline underline-offset-2 transition-colors hover:text-foreground/80"
+        <div className="flex min-w-0 max-w-[60%] flex-col gap-0.5">
+          <p className="flex items-center gap-1.5 text-sm font-medium">
+            Start a new conversation
+            <TooltipProvider delayDuration={200}>
+              <Tooltip open={learnMoreOpen} onOpenChange={setLearnMoreOpen}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Learn more"
+                    data-testid="stale-learn-more-trigger"
+                    className="inline-flex shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <HelpCircle className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="top"
+                  align="start"
+                  className="flex w-80 flex-col gap-1.5 rounded-lg border bg-popover px-4 py-3 text-popover-foreground shadow-md"
+                  data-testid="stale-learn-more-tooltip"
                 >
-                  Learn more
-                </button>
-              </PopoverTrigger>
-              <PopoverContent
-                side="top"
-                align="start"
-                onOpenAutoFocus={(event) => event.preventDefault()}
-                onCloseAutoFocus={(event) => event.preventDefault()}
-                className="flex w-80 flex-col gap-1.5 rounded-lg px-4 py-3"
-                data-testid="stale-learn-more-popover"
-              >
-                <TeachingPoint lead="Your agent can handle many conversations at once.">
-                  It works better and smarter with focused conversations. We recommend starting a new
-                  conversation with your agent for each task so it isn&apos;t wasting time or tokens on
-                  unrelated chat history.
-                </TeachingPoint>
-                <TeachingPoint lead="Agents re-read everything each time they reply.">
-                  That&apos;s why long conversations slow down and get expensive. Start fresh to keep the
-                  agent fast and sharp.
-                </TeachingPoint>
-              </PopoverContent>
-            </Popover>
+                  <TeachingPoint lead="Agents re-read the whole conversation every reply.">
+                    Long ones get slower and cost more.
+                  </TeachingPoint>
+                  <TeachingPoint lead="One task per conversation works best.">
+                    Your agent can run many at once, so start a new one for each task.
+                  </TeachingPoint>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </p>
+          <p className="text-xs text-muted-foreground">
+            This conversation has gotten long — a fresh one will be faster and cheaper.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -78,18 +117,49 @@ export function StaleSessionNotice({
             variant="outline"
             size="sm"
             onClick={onIgnore}
+            disabled={isPending}
             data-testid="stale-toast-ignore"
           >
-            Ignore
+            Dismiss
           </Button>
-          <Button
-            type="button"
-            size="sm"
-            onClick={onStartFresh}
-            data-testid="stale-new-chat"
-          >
-            New conversation
-          </Button>
+          <DropdownMenu open={optionsOpen} onOpenChange={setOptionsOpen} modal={false}>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                size="sm"
+                loading={isPending}
+                disabled={isPending}
+                aria-busy={isPending}
+                aria-label={isPending ? 'Starting new conversation' : undefined}
+                data-testid="stale-options-trigger"
+              >
+                New conversation
+                {!isPending && <ChevronDown className="ml-1 h-3.5 w-3.5" aria-hidden="true" />}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              side="top"
+              align="end"
+              collisionPadding={8}
+              className="w-96 max-w-[var(--radix-dropdown-menu-content-available-width)] outline-none"
+              data-testid="stale-options-popover"
+            >
+              <OptionRow
+                title="Start with a summary"
+                description="Condenses this conversation's history and picks up there."
+                onSelect={onContinueCompacted}
+                disabled={isPending}
+                testId="stale-summarize-continue"
+              />
+              <OptionRow
+                title="Start totally fresh"
+                description="Nothing carries over except your unsent message."
+                onSelect={onStartFresh}
+                disabled={isPending}
+                testId="stale-new-chat"
+              />
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
     </div>

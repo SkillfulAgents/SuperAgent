@@ -18,8 +18,14 @@ export interface UnifiedRow {
   type: 'oauth' | 'mcp'
   date?: string | number
   granted: boolean
-  /** Opaque link owned by another member; never navigable or mutable. */
+  /**
+   * Opaque link owned by another member: never navigable, and never togglable.
+   * An agent owner can only sever it whole, addressing it by `mappingId` —
+   * which is why that field carries no account identity of its own.
+   */
   foreign?: true
+  /** Set on foreign rows only: the agent↔connection link id. */
+  mappingId?: string
   toolkit?: string
   mcpTools?: Array<{ name: string; description?: string }>
   mcpStatus?: RemoteMcpServer['status']
@@ -50,9 +56,12 @@ export function buildForeignConnectionRows({
   accounts = [],
   mcps = [],
 }: ForeignRowsArgs): UnifiedRow[] {
-  const rows: UnifiedRow[] = accounts.map((account, index) => {
+  const rows: UnifiedRow[] = accounts.map((account) => {
     const provider = getProvider(account.toolkitSlug)
-    const id = `foreign-account-${account.toolkitSlug}-${index}`
+    // Keyed on the link id, not list position: a remove control has to keep
+    // pointing at the same link across the refetch that follows a sibling's
+    // removal, and an index would silently slide onto its neighbour.
+    const id = `foreign-account-${account.mappingId}`
     return {
       key: id,
       id,
@@ -63,11 +72,12 @@ export function buildForeignConnectionRows({
       type: 'oauth',
       granted: true,
       foreign: true,
+      mappingId: account.mappingId,
     }
   })
 
-  mcps.forEach((_mcp, index) => {
-    const id = `foreign-mcp-${index}`
+  for (const mcp of mcps) {
+    const id = `foreign-mcp-${mcp.mappingId}`
     rows.push({
       key: id,
       id,
@@ -77,8 +87,9 @@ export function buildForeignConnectionRows({
       type: 'mcp',
       granted: true,
       foreign: true,
+      mappingId: mcp.mappingId,
     })
-  })
+  }
 
   return rows
 }

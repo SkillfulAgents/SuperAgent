@@ -1,3 +1,5 @@
+import { parseStoredGlobalPricing, type GlobalModelPricing } from '../llm-provider/global-pricing-schema'
+import type { VoiceProvider } from '../voice/provider-types'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -12,6 +14,7 @@ import { captureException } from '@shared/lib/error-reporting'
 import { persistedSettingsSchema } from './settings-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
 import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT } from './shortcuts'
+import { DEFAULT_API_LOG_AUTO_DELETE_DAYS } from './api-log-auto-delete'
 import type { SkillsetConfig, SkillsetCredential } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
@@ -65,10 +68,12 @@ export interface ApiKeySettings {
   exaApiKey?: string
 }
 
-export type SttProvider = 'deepgram' | 'openai' | 'platform'
+export type { VoiceProvider } from '../voice/provider-types'
 
 export interface VoiceSettings {
-  sttProvider?: SttProvider
+  sttProvider?: VoiceProvider
+  /** Text-to-speech voice for reading agent replies aloud: an id from the provider's own catalogue. */
+  ttsVoice?: string
 }
 
 export interface NotificationSettings {
@@ -108,7 +113,11 @@ export interface AppPreferences {
   autoSleepTimeoutMinutes?: number
   /** Pre-start the agent container when the user begins typing a first message. */
   warmStartOnType?: boolean
+  /** MicroVM-only. Resume mid-turn sessions after unexpected VM death. Default on. */
+  autoResumeOnUnexpectedDeath?: boolean
   autoDeleteInactiveDays?: number
+  /** Days after which API / MCP audit log rows are deleted. 0 = Never. Default 30. */
+  apiLogAutoDeleteDays?: number
   setupCompleted?: boolean
   accountProvider?: AccountProviderType
   hostBrowserProvider?: HostBrowserProviderId
@@ -135,6 +144,13 @@ export interface AppPreferences {
   browserbaseProxyCountry?: string
   browserbaseProxyState?: string
   browserbaseProxyCity?: string
+}
+
+/** Default-on MicroVM preference; other runtimes ignore this setting. */
+export function isAutoResumeOnUnexpectedDeathEnabled(
+  settings?: { app?: Pick<AppPreferences, 'autoResumeOnUnexpectedDeath'> } | null,
+): boolean {
+  return settings?.app?.autoResumeOnUnexpectedDeath !== false
 }
 
 export interface AuthSettings {
@@ -266,6 +282,7 @@ export interface AppSettings {
   app?: AppPreferences
   models?: ModelSettings
   modelCatalog?: ModelCatalogSettings
+  modelPricing?: GlobalModelPricing
   agentLimits?: AgentLimitsSettings
   customEnvVars?: Record<string, string>
   skillsets?: SkillsetConfig[]
@@ -354,6 +371,7 @@ export interface GlobalSettingsResponse {
   llmProvider: LlmProviderId
   llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
+  modelPricing?: GlobalModelPricing
   // GET: always the vendor the agent runs (pin when set; Platform-if-login / native when unset).
   // PUT still writes the stored pin (or null to clear). `webProviderIsDefault` is true iff stored unset.
   webProvider: WebProviderId
@@ -430,6 +448,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     showMenuBarIcon: true,
     autoSleepTimeoutMinutes: 30,
     warmStartOnType: true,
+    autoResumeOnUnexpectedDeath: true,
+    apiLogAutoDeleteDays: DEFAULT_API_LOG_AUTO_DELETE_DAYS,
     globalDispatchShortcut: DEFAULT_GLOBAL_DISPATCH_SHORTCUT,
     notifications: {
       enabled: true,
@@ -560,6 +580,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
       }
     })(),
     modelCatalog,
+    modelPricing: parseStoredGlobalPricing(loaded.modelPricing),
     agentLimits: loaded.agentLimits,
     customEnvVars: loaded.customEnvVars,
     // Deep-clone the default when defaulting: callers mutate `s.skillsets` in

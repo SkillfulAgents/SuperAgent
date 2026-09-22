@@ -141,6 +141,85 @@ describe('useMessageStream', () => {
     expect(result.current.isStreaming).toBe(false)
   })
 
+  it('restores and clears active subagents from connected snapshots', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+    const activeSubagents = [{
+      parentToolId: 'nested-agent-tool',
+      agentId: 'nested-agent-id',
+      streamingMessage: null,
+      streamingToolUse: null,
+      progressSummary: 'Inspecting tests',
+      subagentType: 'code-reviewer',
+      description: 'Review the changes',
+      usage: null,
+      lastToolName: 'Read',
+      status: 'running',
+    }]
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+        activeSubagents,
+      })
+    })
+    expect(result.current.activeSubagents).toEqual(activeSubagents)
+    expect(result.current.completedSubagents).toEqual(new Set())
+
+    const completedSubagents = activeSubagents.map((subagent) => ({
+      ...subagent,
+      status: 'completed',
+    }))
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+        activeSubagents: completedSubagents,
+      })
+    })
+    expect(result.current.activeSubagents).toEqual(completedSubagents)
+    expect(result.current.completedSubagents).toEqual(new Set(['nested-agent-tool']))
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+        activeSubagents: [],
+      })
+    })
+    expect(result.current.activeSubagents).toHaveLength(0)
+    expect(result.current.completedSubagents).toEqual(new Set())
+  })
+
+  it('reads waiting-background from the connected snapshot, not from the task list alone', async () => {
+    // A late-joining client can find a background task that a still-streaming
+    // turn launched. Only the snapshot's own word marks the turn as over.
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+    const backgroundTasks = [{ taskId: 'bg-1', startedAt: Date.now() }]
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true, backgroundTasks })
+    })
+    expect(result.current.isActive).toBe(true)
+    expect(result.current.backgroundTasks).toEqual(backgroundTasks)
+    expect(result.current.isWaitingBackground).toBe(false)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected', isActive: true, isWaitingBackground: true, backgroundTasks,
+      })
+    })
+    expect(result.current.isWaitingBackground).toBe(true)
+  })
+
   it('handles session_active event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -163,6 +242,28 @@ describe('useMessageStream', () => {
 
     expect(result.current.isActive).toBe(true)
     expect(result.current.activeStartTime).not.toBeNull()
+  })
+
+  it('session_active echoes running + active into the agent and session caches', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    const agent = { slug: 'agent-1', name: 'Agent', status: 'stopped', hasActiveSessions: false }
+    const session = { id: 'session-1', agentSlug: 'agent-1', isActive: false }
+    wrapper.queryClient.setQueryData(['agents'], [agent])
+    wrapper.queryClient.setQueryData(['agents', 'agent-1'], agent)
+    wrapper.queryClient.setQueryData(['sessions', 'agent-1'], [session])
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false })
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active' })
+    })
+
+    expect(wrapper.queryClient.getQueryData(['agents', 'agent-1'])).toMatchObject({
+      status: 'running',
+      hasActiveSessions: true,
+    })
+    expect(wrapper.queryClient.getQueryData(['sessions', 'agent-1'])).toMatchObject([{ isActive: true }])
   })
 
   it('handles streaming: stream_start → stream_delta → stream_end', async () => {
@@ -395,6 +496,146 @@ describe('useMessageStream', () => {
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'compact_complete' })
+    })
+    expect(result.current.isCompacting).toBe(false)
+  })
+
+  it('keeps compacting through a mid-turn session_active (queued message)', async () => {
+    // Queueing a message during a manual /compact re-broadcasts session_active for
+    // the SAME turn. Compaction is still running, so the label and its boundary line
+    // must survive it — a genuinely new turn still clears the flag. (SUP-736)
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      MockEventSource.instances[0].simulateMessage({ type: 'compact_start' })
+    })
+    expect(result.current.isCompacting).toBe(true)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active', isActive: true, queuedMidTurn: true })
+    })
+    expect(result.current.isCompacting).toBe(true)
+    expect(result.current.isActive).toBe(true)
+
+    // A genuinely new turn still clears a compaction the previous turn left behind.
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active', isActive: true, queuedMidTurn: false })
+    })
+    expect(result.current.isCompacting).toBe(false)
+  })
+
+  it('keeps the retry state and elapsed clock through a mid-turn session_active', async () => {
+    // The turn is one API retry deep and N seconds in; queueing a follow-up neither
+    // resolved the retry nor restarted the clock, so neither may be reset. (SUP-736)
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active', isActive: true, queuedMidTurn: false })
+      MockEventSource.instances[0].simulateMessage({ type: 'api_retry', attempt: 2, maxRetries: 5, delayMs: 1000 })
+    })
+    const startedAt = result.current.activeStartTime
+    expect(result.current.apiRetry?.attempt).toBe(2)
+    expect(startedAt).not.toBeNull()
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active', isActive: true, queuedMidTurn: true })
+    })
+    expect(result.current.apiRetry?.attempt).toBe(2)
+    expect(result.current.activeStartTime).toBe(startedAt)
+
+    // A new turn resets both: fresh clock, no inherited retry.
+    const later = vi.spyOn(Date, 'now').mockReturnValue(startedAt! + 60_000)
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active', isActive: true, queuedMidTurn: false })
+    })
+    later.mockRestore()
+    expect(result.current.apiRetry).toBeNull()
+    expect(result.current.activeStartTime).toBe(startedAt! + 60_000)
+  })
+
+  it('clears message-scoped state on a mid-turn session_active', async () => {
+    // The other half of the rule: what ANY accepted message invalidates is cleared
+    // on both paths — a queued message resumes work parked on background tasks.
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active', isActive: true, queuedMidTurn: false })
+      MockEventSource.instances[0].simulateMessage({ type: 'session_waiting_background' })
+    })
+    expect(result.current.isWaitingBackground).toBe(true)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active', isActive: true, queuedMidTurn: true })
+    })
+    expect(result.current.isWaitingBackground).toBe(false)
+  })
+
+  it('keeps live thinking and running subagents through a mid-turn session_active', async () => {
+    // Same turn, so the open thinking block keeps accumulating and the Task blocks
+    // still running stay on screen — a queued follow-up must not blank them. (SUP-736)
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      MockEventSource.instances[0].simulateMessage({ type: 'thinking_start', thinkingId: 'msg_1:0' })
+      MockEventSource.instances[0].simulateMessage({ type: 'thinking_delta', thinkingId: 'msg_1:0', text: 'weighing it' })
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_started',
+        parentToolId: 'tool-1',
+        agentId: 'sub-1',
+        subagentType: 'Explore',
+        description: 'search',
+      })
+    })
+    expect(result.current.isThinking).toBe(true)
+    expect(result.current.activeSubagents).toHaveLength(1)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active', isActive: true, queuedMidTurn: true })
+    })
+    expect(result.current.isThinking).toBe(true)
+    expect(result.current.thinkingBlocks[0]?.text).toBe('weighing it')
+    expect(result.current.activeSubagents).toHaveLength(1)
+
+    // A genuinely new turn still starts from a clean slate.
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active', isActive: true, queuedMidTurn: false })
+    })
+    expect(result.current.isThinking).toBe(false)
+    expect(result.current.thinkingBlocks).toHaveLength(0)
+    expect(result.current.activeSubagents).toHaveLength(0)
+  })
+
+  it('treats a session_active with no queuedMidTurn flag as a new turn', async () => {
+    // An older remote deployment sends no flag. Only the explicit flag preserves
+    // turn state — the isActive we hold can be stale-true after a dropped idle.
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      MockEventSource.instances[0].simulateMessage({ type: 'compact_start' })
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active', isActive: true })
     })
     expect(result.current.isCompacting).toBe(false)
   })
@@ -2710,6 +2951,50 @@ describe('useMessageStream', () => {
     expect(result.current.isActive).toBe(true)
   })
 
+  it('settles the streaming state but keeps the tasks on an interrupted session_waiting_background', async () => {
+    // The user stopped the turn and the runtime spared its background tasks.
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-1', startedAt: 1000 })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'stream_delta',
+        text: 'partial words',
+      })
+    })
+    expect(result.current.isStreaming).toBe(true)
+    expect(result.current.activeStartTime).not.toBeNull()
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'session_waiting_background',
+        interrupted: true,
+        backgroundTaskCount: 1,
+        backgroundTasks: [{ taskId: 'bg-1', startedAt: 1000 }],
+      })
+    })
+
+    expect(result.current.isActive).toBe(true)
+    expect(result.current.isWaitingBackground).toBe(true)
+    expect(result.current.isStreaming).toBe(false)
+    expect(result.current.activeStartTime).toBeNull()
+    // The partial text stays until persisted data replaces it, as on session_idle.
+    expect(result.current.streamingMessage).toContain('partial words')
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-1', startedAt: 1000 }])
+  })
+
   it('clears isWaitingBackground when the last background task completes', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -2810,7 +3095,7 @@ describe('useMessageStream', () => {
     expect(result.current.isWaitingBackground).toBe(false)
   })
 
-  it('restores isWaitingBackground from connected event with backgroundTasks', async () => {
+  it('restores isWaitingBackground from a connected event that says the turn output ended', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
       () => useMessageStream('session-1', 'agent-1'),
@@ -2821,6 +3106,7 @@ describe('useMessageStream', () => {
       MockEventSource.instances[0].simulateMessage({
         type: 'connected',
         isActive: true,
+        isWaitingBackground: true,
         backgroundTasks: [{ taskId: 'bg-1', startedAt: 500 }],
       })
     })
@@ -3094,5 +3380,31 @@ describe('useMessageStream — extended thinking blocks', () => {
 
     // No thinking event fired — consumers must not re-derive from a fresh array
     expect(result.current.thinkingBlocks).toBe(before)
+  })
+})
+
+
+describe('typing leases', () => {
+  it('keeps the latest photo and typing event alive for a full five seconds, then cleans up on unmount', async () => {
+    const { useMessageStream } = await getHookModule()
+    vi.useFakeTimers()
+    try {
+      const { result, unmount } = renderHook(() => useMessageStream('typing-session', 'agent-1'), { wrapper: createWrapper() })
+      const es = MockEventSource.instances[0]
+      act(() => es.simulateMessage({ type: 'user_typing', sender: { id: 'u2', name: 'Ada', image: 'https://example.com/ada.png' } }))
+      act(() => vi.advanceTimersByTime(3000))
+      act(() => es.simulateMessage({ type: 'user_typing', sender: { id: 'u2', name: 'Ada', image: 'https://example.com/new.png' } }))
+      act(() => vi.advanceTimersByTime(2500))
+      expect(result.current.typingUser?.image).toBe('https://example.com/new.png')
+      act(() => vi.advanceTimersByTime(2500))
+      expect(result.current.typingUser).toBeNull()
+      act(() => es.simulateMessage({ type: 'user_typing', sender: { id: 'u2', name: 'Ada' } }))
+      unmount()
+      const remounted = renderHook(() => useMessageStream('typing-session', 'agent-1'), { wrapper: createWrapper() })
+      expect(remounted.result.current.typingUser).toBeNull()
+      remounted.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

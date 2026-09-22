@@ -1,21 +1,19 @@
 import { db } from '@shared/lib/db'
 import {
   agentConnectedAccounts,
-  agentRemoteMcps,
   connectedAccounts,
-  remoteMcpServers,
 } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
-import { containerManager } from './container-manager'
-import {
-  buildConnectedAccountsProjection,
-  buildRemoteMcpProjection,
-} from './connection-runtime-projections'
+import type { ContainerClient, ContainerInfo } from './types'
+import { buildConnectedAccountsProjection, listAgentMcpConnections } from './connection-runtime-projections'
 
-type RuntimeClient = Pick<
-  ReturnType<typeof containerManager.getClient>,
-  'fetch' | 'getHostApiBaseUrl'
->
+type RuntimeClient = Pick<ContainerClient, 'fetch' | 'getHostApiBaseUrl'>
+
+/** The part of an agent's container runtime a sync needs: is it up, and how to reach it. */
+export interface ConnectionRuntime {
+  getCachedInfo(): ContainerInfo
+  getClient(): RuntimeClient
+}
 
 export type ConnectionRuntimeKind = 'connected-accounts' | 'remote-mcps'
 
@@ -51,20 +49,7 @@ export async function updateRemoteMcpEnvironment(
   client: RuntimeClient,
 ): Promise<Response> {
   const hostApiBaseUrl = await client.getHostApiBaseUrl()
-  const mappings = await db
-    .select({ mcp: remoteMcpServers })
-    .from(agentRemoteMcps)
-    .innerJoin(
-      remoteMcpServers,
-      eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id),
-    )
-    .where(eq(agentRemoteMcps.agentSlug, agentSlug))
-
-  const configs = buildRemoteMcpProjection(
-    mappings.map(({ mcp }) => mcp),
-    agentSlug,
-    hostApiBaseUrl,
-  )
+  const configs = await listAgentMcpConnections(agentSlug, hostApiBaseUrl)
 
   return client.fetch('/env', {
     method: 'POST',
@@ -79,14 +64,15 @@ export async function updateRemoteMcpEnvironment(
 export async function syncAgentConnectionEnvironment(
   agentSlug: string,
   kind: ConnectionRuntimeKind,
+  runtime: ConnectionRuntime,
 ): Promise<boolean> {
-  if (containerManager.getCachedInfo(agentSlug).status !== 'running') {
+  if (runtime.getCachedInfo().status !== 'running') {
     // Container startup rebuilds both projections from the mapping tables.
     return true
   }
 
   try {
-    const client = containerManager.getClient(agentSlug)
+    const client = runtime.getClient()
     const response = kind === 'remote-mcps'
       ? await updateRemoteMcpEnvironment(agentSlug, client)
       : await updateConnectedAccountsEnvironment(agentSlug, client)
@@ -107,70 +93,7 @@ export async function syncAgentConnectionEnvironment(
   }
 }
 
-async function syncAgents(
-  agentSlugs: string[],
-  kind: ConnectionRuntimeKind,
-): Promise<boolean> {
-  const results = await Promise.all(
-    [...new Set(agentSlugs)].map((slug) =>
-      syncAgentConnectionEnvironment(slug, kind),
-    ),
-  )
-  return results.every(Boolean)
-}
-
-export async function findAgentsAssignedRemoteMcp(mcpId: string): Promise<string[]> {
-  const mappings = await db
-    .select({ agentSlug: agentRemoteMcps.agentSlug })
-    .from(agentRemoteMcps)
-    .where(eq(agentRemoteMcps.remoteMcpId, mcpId))
-  return mappings.map(({ agentSlug }) => agentSlug)
-}
-
-export async function findAgentsAssignedConnectedAccount(
-  accountId: string,
-): Promise<string[]> {
-  const mappings = await db
-    .select({ agentSlug: agentConnectedAccounts.agentSlug })
-    .from(agentConnectedAccounts)
-    .where(eq(agentConnectedAccounts.connectedAccountId, accountId))
-  return mappings.map(({ agentSlug }) => agentSlug)
-}
-
-export async function syncRemoteMcpAgents(agentSlugs: string[]): Promise<boolean> {
-  return syncAgents(agentSlugs, 'remote-mcps')
-}
-
-export async function syncConnectedAccountAgents(
-  agentSlugs: string[],
-): Promise<boolean> {
-  return syncAgents(agentSlugs, 'connected-accounts')
-}
-
-export async function syncAgentsAssignedRemoteMcp(mcpId: string): Promise<boolean> {
-  try {
-    return syncRemoteMcpAgents(await findAgentsAssignedRemoteMcp(mcpId))
-  } catch (error) {
-    console.warn(
-      `[ConnectionRuntimeSync] Failed to resolve agents assigned MCP ${mcpId}:`,
-      error,
-    )
-    return false
-  }
-}
-
-export async function syncAgentsAssignedConnectedAccount(
-  accountId: string,
-): Promise<boolean> {
-  try {
-    return syncConnectedAccountAgents(
-      await findAgentsAssignedConnectedAccount(accountId),
-    )
-  } catch (error) {
-    console.warn(
-      `[ConnectionRuntimeSync] Failed to resolve agents assigned account ${accountId}:`,
-      error,
-    )
-    return false
-  }
-}
+// Fanning a sync out over several agents lives in
+// `@shared/lib/services/connection-sync-service`, which goes through the agent
+// actor for each one. This module only knows how to build and push one agent's
+// projection.

@@ -1,12 +1,13 @@
 
-import { useMessages } from '@renderer/hooks/use-messages'
+import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
+import { useMessages, useStopBackgroundTask } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
 import { apiFetch } from '@renderer/lib/api'
-import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
-import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
-import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
+import { labelBackgroundTasks } from '@renderer/lib/background-task-label'
+import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
+import { isProviderFacingError } from '@shared/lib/types/api'
 import { isTurnStartingUserMessage } from './pending-message'
 import { useCallback, useMemo, useState } from 'react'
 
@@ -49,7 +50,7 @@ function extractResumedAgentId(result: unknown): string | null {
 
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
   const {
-    isActive, error, apiErrorCode, activeStartTime, isCompacting, activeSubagents, completedSubagents,
+    isActive, error, apiErrorCode, errorPresentation, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
     isThinking,
   } = useMessageStream(sessionId, agentSlug)
@@ -58,8 +59,13 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
 
-  // Non-null only for a platform billing 402 the workspace can act on (see hook).
-  const billingUrl = usePlatformBillingUrl(error ?? '')
+  const stopBackgroundTask = useStopBackgroundTask()
+  const handleStopTask = useCallback(
+    async (taskId: string) => {
+      await stopBackgroundTask.mutateAsync({ sessionId, agentSlug, taskId })
+    },
+    [stopBackgroundTask, sessionId, agentSlug]
+  )
 
   const handleRevokeComputerUse = useCallback(async () => {
     setRevoking(true)
@@ -79,6 +85,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   // disagree with the sidebar/header. It also covers the kinds the old
   // per-type list silently omitted: script_run, computer_use, and
   // capability_review used to read as "Working…" while a card was parked.
+  const voiceModeActive = useIsVoiceModeActive(sessionId)
   const isAwaitingInput = isActive &&
     (pendingUserRequests ?? []).some((r) => r.blocking && !r.autoApproved)
   const { data: messages } = useMessages(sessionId, agentSlug)
@@ -181,10 +188,11 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         ? resumeByToolId.get(sub.parentToolId)
         : undefined
       const isSendMessageRun = resume !== undefined
+      const isLifecycleAgent = !!sub.subagentType
       // local_workflow also emits subagent lifecycle events, but it has its own
-      // activity UI. Only Agent/Task launches and their SendMessage resumes
-      // belong in this list.
-      if (!directLaunch && !originalLaunch && !isSendMessageRun) continue
+      // activity UI. A lifecycle-identified Agent may originate in a Skill
+      // sidechain and therefore have no launch call in the main transcript.
+      if (!directLaunch && !originalLaunch && !isSendMessageRun && !isLifecycleAgent) continue
 
       const stableAgentId = sub.agentId
         ?? directLaunch?.agentId
@@ -234,9 +242,18 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         description: selected.description || metadata?.description || '',
         status: isCompleted(selected) ? 'completed' as const : 'running' as const,
         progressSummary: selected.progressSummary ?? null,
+        // The agent id is the task id the runtime's stop_task takes.
+        taskId: selectedAgentId ?? null,
       }
     })
   }, [messages, activeSubagents, completedSubagents])
+
+  // Name each background task after the tool call that launched it (the
+  // command, the subagent's description) so the rows say what would be stopped.
+  const labeledBackgroundTasks = useMemo(
+    () => labelBackgroundTasks(backgroundTasks, messages),
+    [backgroundTasks, messages]
+  )
 
   // Derive the todo/task list from TaskCreate/TaskUpdate (newer SDK) or fall back
   // to TodoWrite (older SDK). Memoized on [messages] so it doesn't re-scan the
@@ -250,13 +267,14 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   // Show error if present
   if (error) {
-    const isProviderError = apiErrorCode != null && PROVIDER_ERROR_CODES.has(apiErrorCode)
+    const isProviderError = isProviderFacingError(apiErrorCode, errorPresentation)
+    const providerError = resolveProviderError(errorPresentation)
+    // Routed to another placement (e.g. composer): ProviderErrorPlacement renders it there.
+    if (isProviderError && providerError.placement !== 'inline') return null
     return (
       <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
-        {billingUrl ? (
-          <InsufficientBalanceCard billingUrl={billingUrl} data-testid="insufficient-balance-card" />
-        ) : isProviderError ? (
-          <ProviderErrorCard message={error} data-testid="provider-error-card" />
+        {isProviderError ? (
+          <providerError.Component message={error} presentation={errorPresentation ?? undefined} />
         ) : (
           <ActivityErrorCard message={error} />
         )}
@@ -284,6 +302,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       orbState={orbState}
       elapsed={elapsed}
       isAwaitingInput={isAwaitingInput}
+      detached={voiceModeActive}
       computerUse={computerUseApp ? {
         app: computerUseApp,
         iconBase64: computerUseAppIcon,
@@ -292,8 +311,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         onRevoke: handleRevokeComputerUse,
       } : null}
       subagents={subagentItems}
-      backgroundTasks={backgroundTasks}
+      backgroundTasks={labeledBackgroundTasks}
       todos={todos}
+      onStopTask={handleStopTask}
     />
   )
 }

@@ -1,8 +1,9 @@
-import fs from 'node:fs'
 import { createHash } from 'node:crypto'
 import { Readable, Transform, pipeline } from 'node:stream'
 import { z } from 'zod'
 import type { JsonlEntry, JsonlMessageEntry } from '@shared/lib/types/agent'
+import type { FileOps, OpenFile } from '@shared/lib/agent-actor/types'
+import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 
 /**
  * Media references: images ride in message payloads as an address instead of
@@ -168,17 +169,32 @@ function isValidBase64Length(length: number, pad: number): boolean {
   return pad === 0 || length % 4 === 0
 }
 
-interface ImageBlockLike {
+interface MediaBlockLike {
   type: string
   source?: { type?: string; media_type?: string; data?: string }
   data?: string
   mimeType?: string
 }
 
-/** The base64 payload and declared type of an image block, in either shape the
- * transcripts use: Anthropic's `{source: {data, media_type}}` and MCP's
- * `{data, mimeType}`. */
-function imagePayload(block: ImageBlockLike): { data: string; mimeType: string } | undefined {
+const PDF_MIME = 'application/pdf'
+
+/** The base64 payload and declared type of an image or PDF document block, in
+ * either shape the transcripts use: Anthropic's `{source: {data, media_type}}`
+ * and MCP's `{data, mimeType}`. A `document` block is the Read tool's result
+ * for a .pdf (SDK >= 0.3.243 puts it inside the tool_result), and a whole PDF
+ * is the largest payload a transcript row carries. */
+function mediaPayload(block: MediaBlockLike): { data: string; mimeType: string } | undefined {
+  if (block.type === 'document') {
+    if (
+      block.source?.type === 'base64' &&
+      block.source.media_type === PDF_MIME &&
+      typeof block.source.data === 'string' &&
+      block.source.data.length > 0
+    ) {
+      return { data: block.source.data, mimeType: PDF_MIME }
+    }
+    return undefined
+  }
   if (block.type !== 'image') return undefined
   if (typeof block.source?.data === 'string' && block.source.data.length > 0) {
     return { data: block.source.data, mimeType: block.source.media_type || 'image/png' }
@@ -247,8 +263,8 @@ export function replaceInlineMediaWithRefs(entry: JsonlEntry, ctx: MediaRefConte
   // so repeated identical images resolve to distinct spans.
   let cursor = 0
 
-  const refFor = (block: ImageBlockLike): MediaRefBlock | undefined => {
-    const payload = imagePayload(block)
+  const refFor = (block: MediaBlockLike): MediaRefBlock | undefined => {
+    const payload = mediaPayload(block)
     if (!payload) return undefined
     const pad = payload.data.endsWith('==') ? 2 : payload.data.endsWith('=') ? 1 : 0
     // A payload whose length is not a whole base64 quantum decodes to a
@@ -267,9 +283,9 @@ export function replaceInlineMediaWithRefs(entry: JsonlEntry, ctx: MediaRefConte
     // all, and the dimensions ride along on the wire.
     const probeChars = Math.min(payload.data.length, DIMENSION_PROBE_BYTES * 2) & ~3
     const header = Buffer.from(payload.data.slice(0, probeChars), 'base64')
-    const mimeType = sniffImageType(header)
+    const mimeType = sniffMediaType(header)
     if (!mimeType) return undefined
-    const size = imageDimensions(header)
+    const size = mimeType === PDF_MIME ? undefined : imageDimensions(header)
     const at = findPayload(ctx.line, payload.data, cursor)
     if (at === -1) return undefined
     cursor = at + payload.data.length
@@ -295,14 +311,14 @@ export function replaceInlineMediaWithRefs(entry: JsonlEntry, ctx: MediaRefConte
   if (Array.isArray(message?.content)) {
     const content = message.content as unknown[]
     for (let i = 0; i < content.length; i++) {
-      const block = content[i] as ImageBlockLike & { content?: unknown }
+      const block = content[i] as MediaBlockLike & { content?: unknown }
       if (!block || typeof block !== 'object') continue
-      // Images inside a tool_result — the shape that reaches the wire as
-      // `toolCall.result`, and the reason this exists.
+      // Images and PDFs inside a tool_result — the shape that reaches the wire
+      // as `toolCall.result`, and the reason this exists.
       if (block.type === 'tool_result' && Array.isArray(block.content)) {
         const inner = block.content as unknown[]
         for (let j = 0; j < inner.length; j++) {
-          const ref = refFor(inner[j] as ImageBlockLike)
+          const ref = refFor(inner[j] as MediaBlockLike)
           if (ref) inner[j] = ref
         }
         continue
@@ -324,17 +340,21 @@ export function replaceInlineMediaWithRefs(entry: JsonlEntry, ctx: MediaRefConte
   }
 }
 
-/** Magic numbers of the raster types transcripts carry. SVG is deliberately
- * absent: it isn't sniffable and it executes script when served inline. */
-const IMAGE_SIGNATURES: Array<{ mimeType: string; magic: number[] }> = [
+/** Magic numbers of the raster types transcripts carry, plus PDF (the Read
+ * tool's document block). SVG is deliberately absent: it isn't sniffable and
+ * it executes script when served inline. A PDF is served as its own type, so
+ * the browser hands it to its sandboxed viewer rather than rendering it as a
+ * document of the app's origin. */
+const MEDIA_SIGNATURES: Array<{ mimeType: string; magic: number[] }> = [
   { mimeType: 'image/png', magic: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
   { mimeType: 'image/jpeg', magic: [0xff, 0xd8, 0xff] },
   { mimeType: 'image/gif', magic: [0x47, 0x49, 0x46, 0x38] },
   { mimeType: 'image/bmp', magic: [0x42, 0x4d] },
+  { mimeType: PDF_MIME, magic: [0x25, 0x50, 0x44, 0x46] }, // "%PDF"
 ]
 
-function sniffImageType(head: Buffer): string | undefined {
-  for (const { mimeType, magic } of IMAGE_SIGNATURES) {
+function sniffMediaType(head: Buffer): string | undefined {
+  for (const { mimeType, magic } of MEDIA_SIGNATURES) {
     if (head.length >= magic.length && magic.every((b, i) => head[i] === b)) return mimeType
   }
   // WebP: "RIFF" .... "WEBP"
@@ -475,22 +495,9 @@ function isBenignStreamError(error: unknown): boolean {
   return code === 'ABORT_ERR' || code === 'ERR_STREAM_PREMATURE_CLOSE'
 }
 
-/** Fill `buf` from `position`, looping over short reads. A single positional
- * read is allowed to return fewer bytes than asked for before EOF, and treating
- * that as a truncated file would report a healthy transcript as gone. Returns
- * the count actually available. */
-async function readFully(
-  handle: fs.promises.FileHandle,
-  buf: Buffer,
-  position: number
-): Promise<number> {
-  let filled = 0
-  while (filled < buf.length) {
-    const { bytesRead } = await handle.read(buf, filled, buf.length - filled, position + filled)
-    if (bytesRead === 0) break
-    filled += bytesRead
-  }
-  return filled
+/** The same bytes as a Buffer, without copying them. */
+function asBuffer(bytes: Uint8Array): Buffer {
+  return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
 }
 
 /**
@@ -509,30 +516,31 @@ async function readFully(
  * type. Only then is a stream opened.
  */
 export async function openMediaBlob(
+  files: FileOps,
   jsonlPath: string,
   ref: MediaRef,
   signal?: AbortSignal
 ): Promise<MediaBlob | undefined> {
   signal?.throwIfAborted()
-  let handle: fs.promises.FileHandle
+  let file: OpenFile
   try {
-    handle = await fs.promises.open(jsonlPath, 'r')
+    file = await files.open(jsonlPath)
   } catch (error) {
     // Only a missing transcript is "gone"; anything else is this machine
     // failing to answer a question about a file that may well be there.
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    if (error instanceof WorkspaceFileError && error.code === 'not-found') return undefined
     throw error
   }
   let opened = false
   try {
-    const stat = await handle.stat()
+    const size = await file.size()
     const uuidEnd = ref.o + ref.u.length
     const payloadEnd = ref.s + ref.l
-    if (stat.size < Math.max(uuidEnd, payloadEnd) + 1 || ref.o < 1 || ref.s < 1) return undefined
+    if (size < Math.max(uuidEnd, payloadEnd) + 1 || ref.o < 1 || ref.s < 1) return undefined
 
     // The row that owned this payload is still at the recorded offset.
-    const uuidWindow = Buffer.allocUnsafe(ref.u.length + 2)
-    if ((await readFully(handle, uuidWindow, ref.o - 1)) < uuidWindow.length) return undefined
+    const uuidWindow = asBuffer(await file.readAt(ref.o - 1, ref.u.length + 2))
+    if (uuidWindow.length < ref.u.length + 2) return undefined
     if (uuidWindow[0] !== QUOTE_BYTE || uuidWindow[uuidWindow.length - 1] !== QUOTE_BYTE) {
       return undefined
     }
@@ -541,13 +549,11 @@ export async function openMediaBlob(
     signal?.throwIfAborted()
     // The payload is still exactly this JSON string: quote before it, and
     // quote right after its last byte.
-    const openQuote = Buffer.allocUnsafe(1)
-    if ((await readFully(handle, openQuote, ref.s - 1)) < 1) return undefined
-    if (openQuote[0] !== QUOTE_BYTE) return undefined
+    const openQuote = await file.readAt(ref.s - 1, 1)
+    if (openQuote.length < 1 || openQuote[0] !== QUOTE_BYTE) return undefined
 
-    const closeQuote = Buffer.allocUnsafe(1)
-    if ((await readFully(handle, closeQuote, payloadEnd)) < 1) return undefined
-    if (closeQuote[0] !== QUOTE_BYTE) return undefined
+    const closeQuote = await file.readAt(payloadEnd, 1)
+    if (closeQuote.length < 1 || closeQuote[0] !== QUOTE_BYTE) return undefined
 
     signal?.throwIfAborted()
     // Full content check. The uuid pins the row; this pins which bytes, so a
@@ -556,14 +562,13 @@ export async function openMediaBlob(
     // span — the price of the immutable cache the response advertises, and
     // still O(chunk) memory since nothing is retained.
     const digest = createHash('sha256')
-    const scratch = Buffer.allocUnsafe(Math.min(VERIFY_CHUNK_BYTES, ref.l))
     let head = ''
     let tail = ''
     for (let read = 0; read < ref.l; ) {
       signal?.throwIfAborted()
-      const want = Math.min(scratch.length, ref.l - read)
-      const window = scratch.subarray(0, want)
-      if ((await readFully(handle, window, ref.s + read)) < want) return undefined
+      const want = Math.min(VERIFY_CHUNK_BYTES, ref.l - read)
+      const window = asBuffer(await file.readAt(ref.s + read, want))
+      if (window.length < want) return undefined
       digest.update(window)
       if (read === 0) head = window.subarray(0, Math.min(20, want)).toString('latin1')
       tail = window.subarray(Math.max(0, want - 2)).toString('latin1')
@@ -575,11 +580,14 @@ export async function openMediaBlob(
     if (!isValidBase64Length(ref.l, pad)) return undefined
     if (BASE64_INVALID.test(head)) return undefined
     const usable = head.length - (head.length % 4)
-    const mimeType = sniffImageType(Buffer.from(head.slice(0, usable), 'base64'))
+    const mimeType = sniffMediaType(Buffer.from(head.slice(0, usable), 'base64'))
     if (!mimeType) return undefined
 
     signal?.throwIfAborted()
-    const source = handle.createReadStream({ start: ref.s, end: payloadEnd - 1 })
+    // The stream is the handle's last use; it releases the open when it ends.
+    const source = Readable.fromWeb(
+      file.stream({ start: ref.s, end: payloadEnd - 1 }) as import('stream/web').ReadableStream<Uint8Array>,
+    )
     opened = true
     const decoded = createBase64DecodeStream()
     // pipeline(), not pipe(): pipe leaves the source running when the
@@ -605,6 +613,6 @@ export async function openMediaBlob(
     // returns undefined explicitly above, so anything thrown is unexpected and
     // must reach the caller rather than be reported as "gone". The handle is
     // still released — the stream owns it once opened.
-    if (!opened) await handle.close()
+    if (!opened) await file.close()
   }
 }

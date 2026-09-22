@@ -4,6 +4,7 @@ import { isElectron, getPlatform } from '@renderer/lib/env'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { NotificationsView } from '@renderer/components/notifications/notifications-view'
 import { ContentShell } from './content-shell'
+import { ScrollAwareNavTitle } from './scroll-aware-title'
 
 /**
  * The global `/notifications` route: its own top-level view (no agent slug),
@@ -18,7 +19,11 @@ export function NotificationsRoute() {
   return (
     <ContentShell
       needsTrafficLightPadding={needsTrafficLightPadding}
-      headerContent={<span className="truncate text-sm font-light text-foreground">Notifications</span>}
+      headerContent={
+        <ScrollAwareNavTitle className="truncate text-sm font-light text-foreground">
+          Notifications
+        </ScrollAwareNavTitle>
+      }
     >
       <ErrorBoundary>
         <NotificationsView />

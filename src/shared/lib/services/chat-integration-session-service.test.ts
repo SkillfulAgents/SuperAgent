@@ -2,19 +2,17 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import { eq } from 'drizzle-orm'
 import * as schema from '../db/schema'
+import type { AppDatabase } from '../db/drivers/types'
+import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 
 let testDir: string
-let testDb: ReturnType<typeof drizzle>
-let testSqlite: InstanceType<typeof Database>
+let testDb: AppDatabase
+let handle: TestDatabase
 
 vi.mock('../db', () => ({
   get db() { return testDb },
-  get sqlite() { return testSqlite },
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -25,6 +23,7 @@ import {
   createChatIntegrationSession,
   getChatIntegrationSession,
   getChatIntegrationSessionById,
+  getChatIntegrationSessionBySessionId,
   touchChatIntegrationSession,
   archiveChatIntegrationSession,
   resolveActiveSession,
@@ -37,78 +36,106 @@ describe('chat-integration-session-service', () => {
 
   beforeEach(async () => {
     testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'chat-session-test-'))
-    testSqlite = new Database(':memory:')
-    testDb = drizzle(testSqlite, { schema })
-    migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
+    handle = await createTestDatabase()
+    testDb = handle.db
 
-    integrationId = createChatIntegration({
+    integrationId = (await createChatIntegration({
       agentSlug: 'test-agent',
       provider: 'telegram',
       config: { botToken: 'test-token' },
-    })
+    }))
   })
 
   afterEach(async () => {
-    testSqlite?.close()
+    await handle.close()
     await fs.promises.rm(testDir, { recursive: true, force: true })
+  })
+
+  describe('getChatIntegrationSessionBySessionId', () => {
+    // A session id is unique only within an agent. If two agents' integrations
+    // each have a chat session with the same id, the lookup must return the
+    // one owned by the asking agent — otherwise an approval card for one agent
+    // is routed into a different agent's channel.
+    it('returns the asking agent’s session, not another agent’s same-id session', async () => {
+      const otherIntegrationId = (await createChatIntegration({
+        agentSlug: 'other-agent',
+        provider: 'telegram',
+        config: { botToken: 'other-token' },
+      }))
+      await createChatIntegrationSession({ integrationId, externalChatId: 'chat-mine', sessionId: 'shared-session' })
+      await createChatIntegrationSession({ integrationId: otherIntegrationId, externalChatId: 'chat-theirs', sessionId: 'shared-session' })
+
+      const mine = (await getChatIntegrationSessionBySessionId('test-agent', 'shared-session'))
+      expect(mine?.externalChatId).toBe('chat-mine')
+      expect(mine?.integrationId).toBe(integrationId)
+
+      const theirs = (await getChatIntegrationSessionBySessionId('other-agent', 'shared-session'))
+      expect(theirs?.externalChatId).toBe('chat-theirs')
+      expect(theirs?.integrationId).toBe(otherIntegrationId)
+    })
+
+    it('returns null when the id belongs to a different agent', async () => {
+      await createChatIntegrationSession({ integrationId, externalChatId: 'chat-1', sessionId: 'sess-1' })
+      expect((await getChatIntegrationSessionBySessionId('some-stranger', 'sess-1'))).toBeNull()
+    })
   })
 
   describe('touchChatIntegrationSession', () => {
     it('updates the updatedAt timestamp', async () => {
-      const sessionId = createChatIntegrationSession({
+      const sessionId = (await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
         displayName: 'Test Chat',
-      })
+      }))
 
-      const before = getChatIntegrationSessionById(sessionId)
+      const before = (await getChatIntegrationSessionById(sessionId))
       expect(before).not.toBeNull()
       const beforeTime = before!.updatedAt.getTime()
 
       // Small delay to ensure timestamp differs
       await new Promise(r => setTimeout(r, 20))
 
-      touchChatIntegrationSession(sessionId)
+      await touchChatIntegrationSession(sessionId)
 
-      const after = getChatIntegrationSessionById(sessionId)
+      const after = (await getChatIntegrationSessionById(sessionId))
       expect(after!.updatedAt.getTime()).toBeGreaterThan(beforeTime)
     })
 
-    it('returns true when session exists', () => {
-      const sessionId = createChatIntegrationSession({
+    it('returns true when session exists', async () => {
+      const sessionId = (await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-2',
         sessionId: 'session-2',
-      })
-      expect(touchChatIntegrationSession(sessionId)).toBe(true)
+      }))
+      expect((await touchChatIntegrationSession(sessionId))).toBe(true)
     })
 
-    it('returns false for non-existent session', () => {
-      expect(touchChatIntegrationSession('nonexistent')).toBe(false)
+    it('returns false for non-existent session', async () => {
+      expect((await touchChatIntegrationSession('nonexistent'))).toBe(false)
     })
   })
 
   describe('session rotation scenario', () => {
-    it('archived session is not returned by getChatIntegrationSession', () => {
-      const sessionId = createChatIntegrationSession({
+    it('archived session is not returned by getChatIntegrationSession', async () => {
+      const sessionId = (await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-rotate',
         sessionId: 'old-session',
         displayName: 'Old',
-      })
+      }))
 
       // Session is active
-      expect(getChatIntegrationSession(integrationId, 'chat-rotate')).not.toBeNull()
+      expect((await getChatIntegrationSession(integrationId, 'chat-rotate'))).not.toBeNull()
 
       // Archive it (simulates timeout rotation)
-      archiveChatIntegrationSession(sessionId)
+      await archiveChatIntegrationSession(sessionId)
 
       // Should no longer be found as active
-      expect(getChatIntegrationSession(integrationId, 'chat-rotate')).toBeNull()
+      expect((await getChatIntegrationSession(integrationId, 'chat-rotate'))).toBeNull()
 
       // Create a new session for the same chat
-      createChatIntegrationSession({
+      await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-rotate',
         sessionId: 'new-session',
@@ -116,120 +143,120 @@ describe('chat-integration-session-service', () => {
       })
 
       // New session is returned
-      const newSession = getChatIntegrationSession(integrationId, 'chat-rotate')
+      const newSession = (await getChatIntegrationSession(integrationId, 'chat-rotate'))
       expect(newSession).not.toBeNull()
       expect(newSession!.sessionId).toBe('new-session')
     })
   })
 
   describe('resolveActiveSession', () => {
-    it('returns active session when no timeout configured', () => {
-      createChatIntegrationSession({
+    it('returns active session when no timeout configured', async () => {
+      await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
         displayName: 'Alice',
       })
 
-      const result = resolveActiveSession(integrationId, 'chat-1', null)
+      const result = (await resolveActiveSession(integrationId, 'chat-1', null))
       expect(result).not.toBeNull()
       expect(result!.sessionId).toBe('session-1')
     })
 
-    it('returns null when no session exists', () => {
-      const result = resolveActiveSession(integrationId, 'nonexistent', null)
+    it('returns null when no session exists', async () => {
+      const result = (await resolveActiveSession(integrationId, 'nonexistent', null))
       expect(result).toBeNull()
     })
 
-    it('returns session when within timeout window', () => {
-      createChatIntegrationSession({
+    it('returns session when within timeout window', async () => {
+      await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
       })
 
       // Session was just created — 1 hour timeout should not trigger
-      const result = resolveActiveSession(integrationId, 'chat-1', 1)
+      const result = (await resolveActiveSession(integrationId, 'chat-1', 1))
       expect(result).not.toBeNull()
       expect(result!.sessionId).toBe('session-1')
     })
 
-    it('archives and returns null when session exceeds timeout', () => {
-      const sessionId = createChatIntegrationSession({
+    it('archives and returns null when session exceeds timeout', async () => {
+      const sessionId = (await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
-      })
+      }))
 
       // Backdate the session's updatedAt to 3 hours ago
       const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
-      testDb.update(schema.chatIntegrationSessions)
+      await testDb.update(schema.chatIntegrationSessions)
         .set({ updatedAt: threeHoursAgo })
         .where(eq(schema.chatIntegrationSessions.id, sessionId))
         .run()
 
-      const result = resolveActiveSession(integrationId, 'chat-1', 1)
+      const result = (await resolveActiveSession(integrationId, 'chat-1', 1))
       expect(result).toBeNull()
 
       // Verify the old session was archived
-      const archived = getChatIntegrationSessionById(sessionId)
+      const archived = (await getChatIntegrationSessionById(sessionId))
       expect(archived!.archivedAt).not.toBeNull()
     })
 
-    it('calls onArchive callback when rotating', () => {
-      const sessionId = createChatIntegrationSession({
+    it('calls onArchive callback when rotating', async () => {
+      const sessionId = (await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
-      })
+      }))
 
       const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
-      testDb.update(schema.chatIntegrationSessions)
+      await testDb.update(schema.chatIntegrationSessions)
         .set({ updatedAt: threeHoursAgo })
         .where(eq(schema.chatIntegrationSessions.id, sessionId))
         .run()
 
       const onArchive = vi.fn()
-      resolveActiveSession(integrationId, 'chat-1', 1, onArchive)
+      await resolveActiveSession(integrationId, 'chat-1', 1, onArchive)
 
       expect(onArchive).toHaveBeenCalledWith(sessionId)
     })
 
-    it('does not call onArchive when session is valid', () => {
-      createChatIntegrationSession({
+    it('does not call onArchive when session is valid', async () => {
+      await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
       })
 
       const onArchive = vi.fn()
-      resolveActiveSession(integrationId, 'chat-1', 1, onArchive)
+      await resolveActiveSession(integrationId, 'chat-1', 1, onArchive)
 
       expect(onArchive).not.toHaveBeenCalled()
     })
   })
 
   describe('resolveActiveSession with duplicate active sessions', () => {
-    it('finds the current session even when an older orphaned session exists', () => {
+    it('finds the current session even when an older orphaned session exists', async () => {
       // Simulate the bug: earlier code created a session but never archived it.
       // Then the manager created a new session for the same chat.
       // Now there are TWO non-archived sessions for the same (integrationId, chatId).
-      const orphanId = createChatIntegrationSession({
+      const orphanId = (await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'orphan-session',
         displayName: 'Alice',
-      })
+      }))
 
       // Backdate the orphan to 3 hours ago
       const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
-      testDb.update(schema.chatIntegrationSessions)
+      await testDb.update(schema.chatIntegrationSessions)
         .set({ updatedAt: threeHoursAgo })
         .where(eq(schema.chatIntegrationSessions.id, orphanId))
         .run()
 
       // Create the "real" current session (as the manager would)
-      createChatIntegrationSession({
+      await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'current-session',
@@ -238,142 +265,142 @@ describe('chat-integration-session-service', () => {
 
       // With a 1-hour timeout, resolveActiveSession should find 'current-session',
       // NOT archive the orphan and return null.
-      const result = resolveActiveSession(integrationId, 'chat-1', 1)
+      const result = (await resolveActiveSession(integrationId, 'chat-1', 1))
       expect(result).not.toBeNull()
       expect(result!.sessionId).toBe('current-session')
     })
 
-    it('returns the most recent session when no timeout is configured', () => {
+    it('returns the most recent session when no timeout is configured', async () => {
       // Two non-archived sessions, no timeout
-      const oldId = createChatIntegrationSession({
+      const oldId = (await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'old-session',
-      })
+      }))
 
       // Backdate the old session so updatedAt differs
       const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000)
-      testDb.update(schema.chatIntegrationSessions)
+      await testDb.update(schema.chatIntegrationSessions)
         .set({ updatedAt: oneHourAgo })
         .where(eq(schema.chatIntegrationSessions.id, oldId))
         .run()
 
-      createChatIntegrationSession({
+      await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'new-session',
       })
 
-      const result = resolveActiveSession(integrationId, 'chat-1', null)
+      const result = (await resolveActiveSession(integrationId, 'chat-1', null))
       expect(result).not.toBeNull()
       expect(result!.sessionId).toBe('new-session')
     })
   })
 
   describe('getChatIntegrationSession ordering', () => {
-    it('returns the most recently updated session when duplicates exist', () => {
-      const oldId = createChatIntegrationSession({
+    it('returns the most recently updated session when duplicates exist', async () => {
+      const oldId = (await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'old-session',
-      })
+      }))
 
       // Backdate the old session
       const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000)
-      testDb.update(schema.chatIntegrationSessions)
+      await testDb.update(schema.chatIntegrationSessions)
         .set({ updatedAt: twoHoursAgo })
         .where(eq(schema.chatIntegrationSessions.id, oldId))
         .run()
 
-      createChatIntegrationSession({
+      await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'new-session',
       })
 
       // Should return the newer one, not the older insertion-order one
-      const result = getChatIntegrationSession(integrationId, 'chat-1')
+      const result = (await getChatIntegrationSession(integrationId, 'chat-1'))
       expect(result).not.toBeNull()
       expect(result!.sessionId).toBe('new-session')
     })
 
-    it('ignores archived sessions', () => {
-      const archivedId = createChatIntegrationSession({
+    it('ignores archived sessions', async () => {
+      const archivedId = (await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'archived-session',
-      })
-      archiveChatIntegrationSession(archivedId)
+      }))
+      await archiveChatIntegrationSession(archivedId)
 
-      createChatIntegrationSession({
+      await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'active-session',
       })
 
-      const result = getChatIntegrationSession(integrationId, 'chat-1')
+      const result = (await getChatIntegrationSession(integrationId, 'chat-1'))
       expect(result).not.toBeNull()
       expect(result!.sessionId).toBe('active-session')
     })
   })
 
   describe('getLastDisplayName', () => {
-    it('returns undefined when no sessions exist', () => {
-      expect(getLastDisplayName(integrationId, 'chat-1')).toBeUndefined()
+    it('returns undefined when no sessions exist', async () => {
+      expect((await getLastDisplayName(integrationId, 'chat-1'))).toBeUndefined()
     })
 
-    it('returns display name from the most recent session', () => {
-      const id1 = createChatIntegrationSession({
+    it('returns display name from the most recent session', async () => {
+      const id1 = (await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
         displayName: 'Old Name',
-      })
+      }))
 
       // Backdate first session
       const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000)
-      testDb.update(schema.chatIntegrationSessions)
+      await testDb.update(schema.chatIntegrationSessions)
         .set({ updatedAt: oneHourAgo })
         .where(eq(schema.chatIntegrationSessions.id, id1))
         .run()
 
-      createChatIntegrationSession({
+      await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-2',
         displayName: 'Current Name',
       })
 
-      expect(getLastDisplayName(integrationId, 'chat-1')).toBe('Current Name')
+      expect((await getLastDisplayName(integrationId, 'chat-1'))).toBe('Current Name')
     })
 
-    it('skips sessions without display names', () => {
-      createChatIntegrationSession({
+    it('skips sessions without display names', async () => {
+      await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
         // no displayName
       })
 
-      createChatIntegrationSession({
+      await createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-2',
         displayName: 'Named Session',
       })
 
-      expect(getLastDisplayName(integrationId, 'chat-1')).toBe('Named Session')
+      expect((await getLastDisplayName(integrationId, 'chat-1'))).toBe('Named Session')
     })
 
-    it('does not return display names from other chats', () => {
-      createChatIntegrationSession({
+    it('does not return display names from other chats', async () => {
+      await createChatIntegrationSession({
         integrationId,
         externalChatId: 'other-chat',
         sessionId: 'session-1',
         displayName: 'Other Chat Name',
       })
 
-      expect(getLastDisplayName(integrationId, 'chat-1')).toBeUndefined()
+      expect((await getLastDisplayName(integrationId, 'chat-1'))).toBeUndefined()
     })
   })
 })

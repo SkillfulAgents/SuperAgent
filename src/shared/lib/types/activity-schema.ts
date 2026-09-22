@@ -27,6 +27,11 @@ export const agentActivityStatsSchema = z.object({
   generatedAt: z.string(),
   cronByTaskId: z.record(z.string(), z.array(cronActivityPointSchema)),
   webhookByTriggerId: z.record(z.string(), z.array(dailyActivityPointSchema)),
+  inboundXAgent: z.object({
+    total: z.number().int().nonnegative(),
+    lastInvokedAt: z.string().nullable(),
+    activity: z.array(dailyActivityPointSchema),
+  }),
   connectionById: z.record(z.string(), z.array(dailyActivityPointSchema)),
 }) satisfies z.ZodType<AgentActivityStats>
 

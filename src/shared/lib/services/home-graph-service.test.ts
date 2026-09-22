@@ -10,14 +10,6 @@ let testSqlite: InstanceType<typeof Database>
 
 vi.mock('../db', () => ({
   get db() { return testDb },
-  get sqlite() { return testSqlite },
-}))
-
-// Invocation counting reads per-agent session metadata from disk; the service
-// contract is "count invokedByAgentSlug across visible agents' sessions".
-const metadataByAgent: Record<string, Record<string, { invokedByAgentSlug?: string }>> = {}
-vi.mock('./session-service', () => ({
-  readSessionMetadata: (agentSlug: string) => Promise.resolve(metadataByAgent[agentSlug] ?? {}),
 }))
 
 import { buildHomeGraph } from './home-graph-service'
@@ -132,7 +124,6 @@ describe('home-graph-service', () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
-    for (const key of Object.keys(metadataByAgent)) delete metadataByAgent[key]
     seed()
   })
 
@@ -179,16 +170,12 @@ describe('home-graph-service', () => {
     expect(graph.permissions).toEqual([{ caller: 'agent1', target: 'agent2' }])
   })
 
-  it('counts invocations from session metadata, ignoring self and non-visible callers', async () => {
-    metadataByAgent['agent2'] = {
-      a: { invokedByAgentSlug: 'agent1' },
-      b: { invokedByAgentSlug: 'agent1' },
-      c: { invokedByAgentSlug: 'hidden' },
-      d: { invokedByAgentSlug: 'agent2' },
-      e: {},
-    }
+  it('reports no invocations: agent edges are a projection of the invoke permissions', async () => {
+    // The field stays on the wire, always empty, for one release so a cached
+    // renderer keeps working; the graph never touches session metadata now.
     const graph = await buildHomeGraph(scope())
-    expect(graph.invocations).toEqual([{ caller: 'agent1', target: 'agent2', count: 2 }])
+    expect(graph.invocations).toEqual([])
+    expect(graph.permissions).toContainEqual({ caller: 'agent1', target: 'agent2' })
   })
 
   it('scopes usage counts to visible agents and current links', async () => {

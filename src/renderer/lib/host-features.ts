@@ -21,7 +21,7 @@ import { isElectron } from './env'
  * Note what is deliberately NOT gated on this. Where the answer comes from the
  * *server*, it already comes from the machine that owns it and needs no gate:
  * the host-browser providers and their Chrome profiles (`detectAllProviders()`),
- * STT availability (`/api/stt/configured`), and runtime readiness all describe
+ * STT availability (`/api/voice/configured`), and runtime readiness all describe
  * whichever Superagent is being driven.
  *
  * And do NOT reach for this where the feature acts on the *server* and the web

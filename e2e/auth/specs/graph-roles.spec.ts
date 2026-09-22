@@ -16,7 +16,10 @@ test.describe.configure({ mode: 'serial' })
 
 const owner = { name: 'Olivia Owner', email: 'olivia@test.com', password: 'password123' }
 const viewer = { name: 'Vic Viewer', email: 'vic@test.com', password: 'password123' }
-const agentName = 'Graph Roles Agent'
+// Minted per attempt in the first test: a serial-group retry runs against the
+// same live server, so a fixed name would also match the failed attempt's
+// leftover agent and strict-mode the sidebar lookup in openAccessTab.
+let agentName = ''
 let agentSlug = ''
 
 test.describe('Graph role-gated affordances', () => {
@@ -29,6 +32,7 @@ test.describe('Graph role-gated affordances', () => {
     await appPage.waitForAppLoaded()
     await appPage.dismissWizardIfVisible()
 
+    agentName = test.info().retry === 0 ? 'Graph Roles Agent' : `Graph Roles Agent R${test.info().retry}`
     const response = await user1Page.request.post('/api/agents', { data: { name: agentName } })
     expect(response.ok()).toBeTruthy()
     const agent = await response.json() as { slug: string }

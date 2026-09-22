@@ -9,12 +9,7 @@ import { useHomeCardHealth } from '@renderer/hooks/use-home-card-health'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useNotableSessions } from '@renderer/hooks/use-sessions'
 import { LazyHalftone } from '@renderer/components/agents/halftone'
-import {
-  ActivitySparkChart,
-  CronSparkChart,
-  summarizeDailyActivity,
-} from '@renderer/components/activity/activity-spark-chart'
-import { DEFAULT_ACTIVITY_DAYS } from '@shared/lib/types/activity'
+import { ActivitySparkChart, CronSparkChart } from '@renderer/components/activity/activity-spark-chart'
 import {
   type HomeCardCron,
   type HomeCardHealthData,
@@ -33,9 +28,12 @@ import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { DashboardCard } from './dashboard-card'
+import { WidgetCard } from '@renderer/components/widgets/widget-card'
+import type { ApiAgentWidget } from '@shared/lib/types/api'
+import { HomeEmptyClouds } from './home-empty-clouds'
 import { PwaInstallBanner } from './pwa-install-banner'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { Plus, Bot, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, Waypoints, MoreVertical, Move } from 'lucide-react'
+import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, ChevronUp, ChevronDown, LayoutGrid, LayoutPanelTop, Minimize, Waypoints, MoreVertical, Sparkle, SquareMousePointer } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -120,7 +118,7 @@ function AgentCardPowerButton({ agent }: { agent: ApiAgent }) {
     // Frosted status chip with a white-bordered stop/power button inside. It's a
     // flex item in the card's control row (see AgentCard), so the kebab aligns
     // with it natively.
-    <div className="flex items-center gap-1.5 rounded-md border border-border/50 bg-white/10 py-0.5 pl-1.5 pr-1 text-xs backdrop-blur-sm">
+    <div className="flex items-center gap-1.5 rounded-md border border-border/50 bg-white/10 py-0.5 pl-1.5 pr-0.5 text-xs backdrop-blur-sm">
       <span className="leading-none text-muted-foreground">{label}</span>
       <button
         type="button"
@@ -322,9 +320,12 @@ function AgentCardSessions({
                 </span>
               </button>
               {st === 'unread' || st === 'awaiting' ? (
-                <>
-                  <span className="shrink-0 text-muted-foreground tabular-nums">{right}</span>
-                  <span className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100">
+                /* Time stamp sits flush right; the action buttons are collapsed
+                   to zero width until the row is hovered/focused, then expand
+                   and slide in from the right, nudging the stamp left. */
+                <span className="flex shrink-0 items-center">
+                  <span className="text-muted-foreground tabular-nums">{right}</span>
+                  <span className="flex max-w-0 translate-x-1 items-center gap-0.5 overflow-hidden opacity-0 transition-all duration-200 ease-out group-hover/row:max-w-16 group-hover/row:translate-x-0 group-hover/row:pl-1.5 group-hover/row:opacity-100 group-focus-within/row:max-w-16 group-focus-within/row:translate-x-0 group-focus-within/row:pl-1.5 group-focus-within/row:opacity-100">
                     {st === 'unread' && (
                       <button
                         type="button"
@@ -352,7 +353,7 @@ function AgentCardSessions({
                       <ArrowRight className="h-3.5 w-3.5" />
                     </button>
                   </span>
-                </>
+                </span>
               ) : (
                 <span className="shrink-0 text-muted-foreground tabular-nums">{right}</span>
               )}
@@ -386,7 +387,7 @@ type HealthSlide = { kind: 'cron' | 'webhook'; id: string; name: string }
  * a time — each cron's run history (CronSparkChart) and each webhook's daily
  * volume (ActivitySparkChart), fed by the real /api/activity rollups — so
  * labels get the whole row instead of clipping. Auto-advances every few
- * seconds, pauses on hover; the dots jump straight to a slide; a slide click
+ * seconds, pauses on hover; the pager steps through slides; a slide click
  * opens that trigger's page.
  */
 function AgentHealthCarousel({
@@ -433,19 +434,12 @@ function AgentHealthCarousel({
   }
 
   const renderSlide = (s: HealthSlide) => {
-    let chart: ReactNode
-    let metric = ''
-    if (s.kind === 'cron') {
-      const activity = health?.cronByTaskId[s.id] ?? []
-      const succeeded = activity.filter((p) => p.status === 'succeeded').length
-      chart = <CronSparkChart label={s.name} data={activity} className="h-5 w-24" />
-      metric = `${succeeded}/${activity.length}`
-    } else {
-      const activity = health?.webhookByTriggerId[s.id] ?? []
-      const { total } = summarizeDailyActivity(activity)
-      chart = <ActivitySparkChart label={s.name} data={activity} className="h-5 w-24" />
-      metric = `${total}/${health?.days ?? DEFAULT_ACTIVITY_DAYS}d`
-    }
+    const chart: ReactNode =
+      s.kind === 'cron' ? (
+        <CronSparkChart label={s.name} data={health?.cronByTaskId[s.id] ?? []} />
+      ) : (
+        <ActivitySparkChart label={s.name} data={health?.webhookByTriggerId[s.id] ?? []} />
+      )
     return (
       <button
         type="button"
@@ -453,14 +447,13 @@ function AgentHealthCarousel({
           e.stopPropagation()
           openSlide(s)
         }}
-        className="flex w-full cursor-pointer items-center gap-2 text-xs"
+        className="flex w-full cursor-pointer items-center gap-2 text-left text-xs"
       >
         <span className="min-w-0 flex-1 truncate">
           <span className="text-foreground">{s.name}</span>{' '}
           <span className="text-muted-foreground">{s.kind === 'cron' ? 'Cron' : 'Webhook'}</span>
         </span>
         <span className="shrink-0">{chart}</span>
-        <span className="shrink-0 tabular-nums text-muted-foreground">{metric}</span>
       </button>
     )
   }
@@ -487,29 +480,39 @@ function AgentHealthCarousel({
           {renderSlide(active)}
         </div>
       </div>
-      {/* Vertical position dots, outside the chip to the right */}
+      {/* Fixed-width up/down pager outside the chip. Unlike a dot per slide,
+          its footprint doesn't grow with the trigger count, so the chip keeps
+          its width however many crons + webhooks an agent has. The position is
+          announced to screen readers only. */}
       {count > 1 && (
-        <span className="flex shrink-0 items-center">
-          {slides.map((s, i) => (
+        <span className="flex shrink-0 items-center text-muted-foreground">
+          <span aria-live="polite" className="sr-only">
+            {(index % count) + 1} of {count}
+          </span>
+          <span className="flex flex-col">
             <button
               type="button"
-              key={s.id}
               onClick={(e) => {
                 e.stopPropagation()
-                setIndex(i)
+                setIndex((i) => (i - 1 + count) % count)
               }}
-              aria-label={`Show health row ${i + 1} of ${count}`}
-              aria-pressed={i === index % count}
-              className="group inline-flex h-6 w-6 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Previous health row"
+              className="inline-flex h-3 w-5 cursor-pointer items-center justify-center rounded-t transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <span
-                className={cn(
-                  'h-[3px] w-[3px] rounded-full transition-colors',
-                  i === index % count ? 'bg-foreground/70' : 'bg-muted-foreground/30 group-hover:bg-muted-foreground/60'
-                )}
-              />
+              <ChevronUp className="h-3 w-3" />
             </button>
-          ))}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setIndex((i) => (i + 1) % count)
+              }}
+              aria-label="Next health row"
+              className="inline-flex h-3 w-5 cursor-pointer items-center justify-center rounded-b transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ChevronDown className="h-3 w-3" />
+            </button>
+          </span>
         </span>
       )}
     </div>
@@ -669,8 +672,9 @@ function AgentCard({
         ) : (
           /* Wide: same glance-tile footing as Small — halftone fills the card,
              title in the bottom-left corner — with the notifications + health
-             carousel overlaid on top. The content reserves bottom space (pb-11)
-             so it clears the title pill. */
+             carousel overlaid on top. The content reserves top space (pt-5) so
+             it clears the status chip and bottom space (pb-11) so it clears
+             the title pill. */
           <>
             <div className="absolute inset-0">
               <AgentCardMatrix
@@ -681,7 +685,7 @@ function AgentCard({
                 className="h-full"
               />
             </div>
-            <div className="pointer-events-none relative z-30 flex min-h-0 flex-1 flex-col gap-1.5 pb-11">
+            <div className="pointer-events-none relative z-30 flex min-h-0 flex-1 flex-col gap-1.5 pt-5 pb-11">
               {/* Notifications sit directly above the cron/webhook carousel
                   (bottom-aligned); any slack opens up above them. Scrolls when
                   the list overflows. */}
@@ -705,7 +709,10 @@ function AgentCard({
   )
 }
 
-/** Widget-grid key for a dashboard tile. Agents use their bare slug. */
+/**
+ * Widget-grid key for an artifact tile (dashboard screenshot or widget — one
+ * tile per artifact either way). Agents use their bare slug.
+ */
 const dashKey = (agentSlug: string, dashSlug: string) => `dash::${agentSlug}::${dashSlug}`
 
 function dashboardAgentSlugFromKey(id: string): string | null {
@@ -746,11 +753,79 @@ function HomeArrangeMenu({
           }}
           className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
         >
-          <Move className="h-4 w-4" />
+          <LayoutPanelTop className="h-4 w-4" />
           Arrange
         </button>
       </PopoverContent>
     </Popover>
+  )
+}
+
+/**
+ * The empty state's ghost board: the card grid this page becomes, at whisper
+ * opacity. Mirrors WidgetBoard's geometry — square cells around its 232px
+ * target, 16px gaps, Small = 1x1 and Wide = 2x1 (dense-packed so the wide
+ * ghosts don't strand holes) — with each ghost sketching the real card's
+ * landmarks: title pill bottom-left, status chip top-right. The top-left wide
+ * cell is the one live element: the real create button sits where its title
+ * pill would. Rows fade out toward the bottom (see .home-empty-skeleton) so a
+ * clipped last row never shows a cut card edge.
+ */
+const SKELETON_PATTERN: WidgetSizeKey[] = ['W', 'S', 'S', 'S', 'S', 'W', 'S', 'W', 'S', 'S', 'W', 'S']
+
+function HomeEmptySkeletonBoard({
+  onCreate,
+  isCreating,
+  ctaRef,
+}: {
+  onCreate: () => void
+  isCreating: boolean
+  /** The live cell, exposed so the bloom can centre itself on it. */
+  ctaRef?: React.Ref<HTMLDivElement>
+}) {
+  return (
+    <div
+      data-testid="home-empty-skeleton"
+      className="home-empty-skeleton relative grid gap-4 [grid-auto-flow:dense]"
+      style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gridAutoRows: '216px' }}
+    >
+      {/* The live cell — a wide card with the same ghost shell as the rest,
+          its title-pill position holding the actual call to action. Second
+          row, second slot on md+; below md it auto-places at the row start,
+          because pinning columns 2-3 on a 2-column board would conjure an
+          implicit third column and squeeze every row. */}
+      <div
+        ref={ctaRef}
+        className="relative rounded-lg border border-border/40 bg-card/25 [grid-row:2] [grid-column:span_2] md:[grid-column:2/span_2]"
+      >
+        <div aria-hidden="true" className="absolute top-2 right-4 h-6 w-20 rounded-md bg-muted/30" />
+        {/* Backgrounded like the ghost title pills it stands in for; hover
+            firms it up so it still declares itself interactive. */}
+        <Button
+          variant="secondary"
+          className="absolute bottom-3 left-4 bg-muted/40 hover:bg-muted/40 text-foreground"
+          onClick={onCreate}
+          disabled={isCreating}
+          data-testid="home-empty-create-button"
+        >
+          <Sparkle className="h-4 w-4 mr-1" />
+          Create your first agent
+        </Button>
+      </div>
+      {SKELETON_PATTERN.map((size, i) => (
+        <div
+          key={i}
+          aria-hidden="true"
+          className={cn(
+            'pointer-events-none relative rounded-lg border border-border/40 bg-card/25',
+            size === 'W' && 'col-span-2',
+          )}
+        >
+          <div className="absolute bottom-2 left-4 h-9 w-32 rounded-md bg-muted/40" />
+          <div className="absolute top-2 right-4 h-6 w-20 rounded-md bg-muted/30" />
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -774,6 +849,8 @@ export function HomePage() {
     () => applyAgentOrder(agents ?? [], userSettings?.agentOrder),
     [agents, userSettings?.agentOrder]
   )
+
+  const hasAgents = orderedAgents.length > 0
 
   // Desktop and phone layouts are intentionally independent. A phone without a
   // customized layout starts from the desktop map and is responsively re-packed
@@ -804,29 +881,39 @@ export function HomePage() {
   const [arrangeHiddenApps, setArrangeHiddenApps] = useState<Set<string> | null>(null)
   const displayedHiddenApps = arrangeHiddenApps ?? hiddenApps
 
-  const { widgetItems, dashboardsById, agentsWithApp } = useMemo(() => {
+  const { widgetItems, dashboardsById, agentWidgetsById, agentsWithApp } = useMemo(() => {
     const items: WidgetItem[] = []
     const dashes = new Map<string, { agentSlug: string; dashboard: { slug: string; name: string } }>()
+    const widgets = new Map<string, { agentSlug: string; widget: ApiAgentWidget }>()
     const withApp = new Set<string>()
     for (const agent of orderedAgents) {
       items.push({ id: agent.slug, rect: displayedLayout?.[agent.slug], defaultSize: 'W' })
       const dashboards = Array.isArray(agent.dashboards) ? agent.dashboards : []
-      if (dashboards.length > 0) withApp.add(agent.slug)
-      if (displayedHiddenApps.has(agent.slug)) continue // app card toggled off — skip its dashboard tiles
+      const agentWidgets = Array.isArray(agent.widgets) ? agent.widgets : []
+      if (dashboards.length > 0 || agentWidgets.length > 0) withApp.add(agent.slug)
+      if (displayedHiddenApps.has(agent.slug)) continue // app card toggled off — skip its dashboard/widget tiles
+      // One tile per artifact: an artifact with a widget shows the widget
+      // (its own default footprint) instead of the dashboard screenshot.
+      for (const w of agentWidgets) {
+        const id = dashKey(agent.slug, w.slug)
+        items.push({ id, rect: displayedLayout?.[id], defaultSize: w.size === 'medium' ? 'W' : 'S' })
+        widgets.set(id, { agentSlug: agent.slug, widget: w })
+      }
       for (const d of dashboards) {
         const id = dashKey(agent.slug, d.slug)
+        if (widgets.has(id)) continue
         items.push({ id, rect: displayedLayout?.[id], defaultSize: 'S' })
         dashes.set(id, { agentSlug: agent.slug, dashboard: d })
       }
     }
-    return { widgetItems: items, dashboardsById: dashes, agentsWithApp: withApp }
+    return { widgetItems: items, dashboardsById: dashes, agentWidgetsById: widgets, agentsWithApp: withApp }
   }, [orderedAgents, displayedLayout, displayedHiddenApps])
 
   const agentBySlug = useMemo(() => new Map(orderedAgents.map((a) => [a.slug, a])), [orderedAgents])
 
   // Card view owns a compact automation+activity projection. The full graph
   // topology is fetched only by the lazily mounted AgentGraph.
-  const { data: cardHealth } = useHomeCardHealth(view === 'cards' && orderedAgents.length > 0)
+  const { data: cardHealth } = useHomeCardHealth(view === 'cards' && hasAgents)
   const { cronsByAgent, webhooksByAgent } = useMemo(() => {
     const cronsMap = new Map<string, HomeCardCron[]>()
     const webhooksMap = new Map<string, HomeCardWebhook[]>()
@@ -905,11 +992,12 @@ export function HomePage() {
   }
 
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
+  // The empty state's live card — the bloom anchors to it.
+  const emptyCtaRef = useRef<HTMLDivElement>(null)
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 
-  const hasAgents = orderedAgents.length > 0
   const { openSearch } = useSearch()
   const isMac = getPlatform() === 'darwin'
   const setView = (next: 'cards' | 'graph') => {
@@ -1058,8 +1146,15 @@ export function HomePage() {
           {/* Mobile web/PWA only — "Install Gamut" prompt; renders nothing on desktop/Electron. */}
           <PwaInstallBanner />
 
-          {/* Agents Section */}
-          <section>
+          {/* Agents Section — relative so the empty state's ghost board can
+              anchor to the section's full footprint. */}
+          <section className="relative">
+            {/* No header on the empty state: with nothing to title, arrange, or
+                add to, the row is chrome around a void — and its New Agent
+                button only competes with the empty state's own call to action.
+                Kept while loading so resolving to a populated board doesn't
+                shift the layout. */}
+            {(hasAgents || agentsLoading) && (
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-1">
                 <h2 className="text-lg font-medium">Your Agents</h2>
@@ -1086,6 +1181,7 @@ export function HomePage() {
                 </Button>
               )}
             </div>
+            )}
 
             {agentsLoading ? (
               <div className="flex items-center justify-center py-12 text-muted-foreground">
@@ -1099,6 +1195,17 @@ export function HomePage() {
                 dragEnabled={!isMobile || isArranging}
                 disableContextMenu={isMobile && isArranging}
                 renderItem={(id, size, onResize) => {
+                  const agentWidget = agentWidgetsById.get(id)
+                  if (agentWidget) {
+                    return (
+                      <div className="relative h-full transition-transform duration-150 group-hover/widget:-translate-y-0.5">
+                        <WidgetCard widget={agentWidget.widget} agentSlug={agentWidget.agentSlug} variant="fill" />
+                        <div className="absolute right-4 top-2 z-30 flex h-[26px] items-center">
+                          <WidgetSizePopover size={size} onPick={onResize} />
+                        </div>
+                      </div>
+                    )
+                  }
                   const dash = dashboardsById.get(id)
                   if (dash) {
                     return (
@@ -1121,12 +1228,13 @@ export function HomePage() {
                       additionalOptions={
                         <>
                           <ContextMenuSwitchItem
-                            checked={size === 'W'}
+                            checked={size === 'S'}
                             onCheckedChange={() => {
                               onResize(size === 'W' ? 'S' : 'W')
                             }}
                           >
-                            Expanded
+                            <Minimize className="h-4 w-4 mr-2" />
+                            Compact View
                           </ContextMenuSwitchItem>
                           {agentsWithApp.has(agent.slug) && (
                             <ContextMenuSwitchItem
@@ -1135,6 +1243,7 @@ export function HomePage() {
                                 toggleAppCard(agent.slug)
                               }}
                             >
+                              <SquareMousePointer className="h-4 w-4 mr-2" />
                               Show app
                             </ContextMenuSwitchItem>
                           )}
@@ -1148,13 +1257,17 @@ export function HomePage() {
                 }}
               />
             ) : (
-              <div className="text-center py-12 border rounded-lg bg-muted/30">
-                <Bot className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
-                <p className="text-muted-foreground mb-4">No agents yet</p>
-                <Button onClick={() => { void createUntitledAgent() }} disabled={isCreatingAgent}>
-                  <Plus className="h-4 w-4 mr-1" />
-                  Create your first agent
-                </Button>
+              /* The empty state IS the ghost board: faint card outlines in
+                 both widget sizes, with the top-right cell alive — it carries
+                 the real call to action where a card's title pill would sit,
+                 and the colour bloom glows behind that corner of the board. */
+              <div className="relative" data-testid="home-empty-state">
+                <HomeEmptyClouds anchorTo={emptyCtaRef} fill={0.625} masked={false} />
+                <HomeEmptySkeletonBoard
+                  ctaRef={emptyCtaRef}
+                  onCreate={() => { void createUntitledAgent() }}
+                  isCreating={isCreatingAgent}
+                />
               </div>
             )}
           </section>

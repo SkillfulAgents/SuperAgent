@@ -5,6 +5,7 @@ import { and, desc, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 
 import { getRequestUserId } from './request-context'
@@ -15,8 +16,8 @@ export { runWithOptionalUser, runWithRequestUser } from './request-context'
 
 const PLATFORM_PROVIDER_ID = 'platform'
 
-function getPlatformAccountIdForUserId(userId: string): string | null {
-  const rows = db
+async function getPlatformAccountIdForUserId(userId: string): Promise<string | null> {
+  const rows = await db
     .select({ accountId: authAccount.accountId })
     .from(authAccount)
     .where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, PLATFORM_PROVIDER_ID)))
@@ -31,8 +32,8 @@ function getPlatformAccountIdForUserId(userId: string): string | null {
 // member id persisted with a settings-stored connection (single-connection
 // case). Opaque `plat_sa_` access keys are not org-scoped, so memberId is
 // unused for them — this only matters if an org-scoped token lives in settings.
-function resolveMemberIdForUserId(userId: string): string | null {
-  return getPlatformAccountIdForUserId(userId) ?? getStoredPlatformMemberId()
+async function resolveMemberIdForUserId(userId: string): Promise<string | null> {
+  return (await getPlatformAccountIdForUserId(userId)) ?? getStoredPlatformMemberId()
 }
 
 // Org JWTs carry the acting member as `<token>::<memberId>` (proxy splits
@@ -41,6 +42,8 @@ export interface Attribution {
   applyTo(headers: Headers): void
   bearerToken(): string
   getKey(): string
+  /** Acting member id for org-scoped tokens; null in opaque-access-key mode. */
+  actingMemberId(): string | null
 }
 
 class PlatformAttribution implements Attribution {
@@ -64,6 +67,10 @@ class PlatformAttribution implements Attribution {
     if (!this.orgScoped) return 'access_key'
     return this.memberId ? `member:${this.memberId}` : 'org'
   }
+
+  actingMemberId(): string | null {
+    return this.orgScoped ? this.memberId : null
+  }
 }
 
 function buildAttribution(memberId: string | null): Attribution | null {
@@ -86,9 +93,9 @@ export function runWithAttribution<T>(
   return auth ? attributionContext.run({ auth }, fn) : fn()
 }
 
-function fromCurrentRequest(): Attribution | null {
+async function fromCurrentRequest(): Promise<Attribution | null> {
   const userId = getRequestUserId()
-  return userId ? buildAttribution(resolveMemberIdForUserId(userId)) : null
+  return userId ? buildAttribution(await resolveMemberIdForUserId(userId)) : null
 }
 
 // True when the active platform token is an org JWT, so every proxy call must
@@ -101,14 +108,29 @@ function requiresActingMember(): boolean {
 
 export const attribution = {
   fromCurrentRequest,
-  fromUserId(userId: string): Attribution | null {
-    return buildAttribution(resolveMemberIdForUserId(userId))
+  async fromUserId(userId: string): Promise<Attribution | null> {
+    return buildAttribution(await resolveMemberIdForUserId(userId))
   },
-  fromResourceCreator(ownerUserId: string | null): Attribution | null {
-    return ownerUserId ? buildAttribution(getPlatformAccountIdForUserId(ownerUserId)) : null
+  async fromResourceCreator(ownerUserId: string | null): Promise<Attribution | null> {
+    return ownerUserId ? buildAttribution(await getPlatformAccountIdForUserId(ownerUserId)) : null
   },
-  current(): Attribution | null {
-    return attributionContext.getStore()?.auth ?? fromCurrentRequest()
+  // For callers that already hold a member id (e.g. the recorded minting member).
+  fromMemberId(memberId: string): Attribution | null {
+    return buildAttribution(memberId)
+  },
+  async current(): Promise<Attribution | null> {
+    return attributionContext.getStore()?.auth ?? (await fromCurrentRequest())
+  },
+  // Container cold start: ambient scope, else the agent owner, else the stored
+  // member. Same fallback chain as trigger minting (SUP-765); null only when
+  // nothing resolves, so callers never bake a bare org token by accident (SUP-805).
+  async forAgent(agentSlug: string): Promise<Attribution | null> {
+    const ambient = attributionContext.getStore()?.auth ?? (await fromCurrentRequest())
+    if (ambient) return ambient
+    const ownerUserId = await getAgentOwnerUserId(agentSlug)
+    return buildAttribution(
+      ownerUserId ? await resolveMemberIdForUserId(ownerUserId) : getStoredPlatformMemberId(),
+    )
   },
   requiresActingMember,
 } as const

@@ -6,19 +6,26 @@
  * complete message. Approvals use tapback reactions; questions use plain text.
  */
 
+import type { AgentIntegrationRecord } from '../agent-integrations/types'
+import { getAgentRecord } from '../services/agent-service'
+import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
+import { displaySlug } from '../utils/file-storage'
+import { sanitizeUploadFilename } from '../utils/path-safety'
+
 import WebSocket from 'ws'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import {
-  ChatClientConnector,
+  ChatAgentIntegration,
   isMultiPartyChatType,
   type ChatClassifyContext,
   type ChatConversationType,
   type OutgoingMessage,
   type SystemPromptContext,
-} from './base-connector'
+} from './chat-agent-integration'
 import { buildSessionContextPrompt } from './chat-session-context'
-import { describeUnsupportedRequest, isUnsupportedInChat, withSessionUrl, type AppLinkContext } from './utils'
+import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
+import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { captureException } from '@shared/lib/error-reporting'
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -96,7 +103,17 @@ export function buildIMessageSystemPrompt(message: SystemPromptContext): string 
 
 // ── Connector ───────────────────────────────────────────────────────────
 
-export class IMessageConnector extends ChatClientConnector {
+export class IMessageConnector extends ChatAgentIntegration {
+  /** Introduce this identity once at setup, never on boot or reconnect. */
+  async onCreated(integration: AgentIntegrationRecord): Promise<void> {
+    const agent = await getAgentRecord(integration.agentSlug)
+    if (!agent) return
+    const name = integration.name?.trim() || agent.name
+    const card = buildAgentContactCard({ slug: integration.agentSlug, name, description: agent.description,
+      appUrl: resolveAgentWebUrl(displaySlug(agent.name, integration.agentSlug)) })
+    await this.sendFile('', card, `${sanitizeUploadFilename(name)}.vcf`, "Save me as a contact so I'm not just a number. Text me anytime.")
+  }
+
   readonly provider = 'imessage' as const
 
   static generateSystemPrompt = buildIMessageSystemPrompt

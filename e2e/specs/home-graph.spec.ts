@@ -8,7 +8,14 @@
  *
  * Position persistence writes global user settings, so the drag test asserts
  * through the API rather than screen coordinates — screen positions depend on
- * fitView and on how many agents other parallel specs have created.
+ * fitView and on how many agents exist on the board.
+ *
+ * Runs under the dedicated `web-graph` project (test:e2e:graph) on its own
+ * server and data dir, serially: canvas mouse gestures need a still layout,
+ * and on the shared web server sibling specs' agent churn re-solved the graph
+ * under the cursor often enough to make this file the suite's top flake. The
+ * in-test pin/zoom/retry armor below predates that isolation and stays as a
+ * second line of defense against the file's own re-layouts.
  */
 import { test, expect, type Page } from '@playwright/test'
 import { createAgent, uniqueName, type TestAgent } from '../helpers/agents'
@@ -47,6 +54,31 @@ test.describe('home connections graph', () => {
     // Deep link straight into the graph view
     await page.goto('/?view=graph')
     await expect(page.getByTestId(`graph-node-agent-${agent.slug}`)).toBeVisible()
+
+    expect(errors).toEqual([])
+  })
+
+  test('a right-click on an agent node opens the unified agent menu', async ({ page, request }, testInfo) => {
+    const agent = await createAgent(request, uniqueName(testInfo, 'Graph Menu'))
+    const errors = collectPageErrors(page)
+
+    await page.goto('/?view=graph')
+    const node = page.getByTestId(`graph-node-agent-${agent.slug}`)
+    await expect(node).toBeVisible()
+
+    // The same menu the sidebar row and the home cards open.
+    await node.click({ button: 'right' })
+    await expect(page.getByTestId('agent-context-menu')).toBeVisible()
+    await expect(page.getByTestId('rename-agent-item')).toBeVisible()
+    await expect(page.getByTestId('move-agent-to-folder-trigger')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByTestId('agent-context-menu')).toHaveCount(0)
+
+    // Keyboard: the focused node opens it with Shift+F10.
+    await node.focus()
+    await page.keyboard.press('Shift+F10')
+    await expect(page.getByTestId('agent-context-menu')).toBeVisible()
+    await page.keyboard.press('Escape')
 
     expect(errors).toEqual([])
   })

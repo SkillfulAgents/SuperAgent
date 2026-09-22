@@ -1,0 +1,19 @@
+# Unit test files that pass with DB_DRIVER=libsql (see scripts/run-libsql-tests.mjs).
+# Only grows: add a file once its database access is fully awaited and it uses
+# createTestDatabase() from src/shared/lib/db/testing.
+src/shared/lib/db/batch.test.ts
+src/shared/lib/db/migrations/bundle.test.ts
+src/shared/lib/db/data-migrations/index.test.ts
+src/shared/lib/db/data-migrations/0002-global-model-pricing.test.ts
+src/shared/lib/db/testing/create-test-database.test.ts
+src/shared/lib/services/api-log-auto-delete.test.ts
+src/shared/lib/notifications/push/apns-device-service.test.ts
+src/shared/lib/notifications/push/push-subscription-service.test.ts
+src/shared/lib/agent-actor/agent-catalog.test.ts
+src/shared/lib/services/user-settings-service.test.ts
+src/shared/lib/services/chat-integration-access-service.test.ts
+src/shared/lib/services/chat-integration-service.test.ts
+src/shared/lib/services/chat-integration-session-service.test.ts
+src/shared/lib/services/x-agent-policy-service.test.ts
+src/shared/lib/services/x-agent-policy-service.sup223.test.ts
+src/api/routes/mcp-proxy.integration-identity.test.ts

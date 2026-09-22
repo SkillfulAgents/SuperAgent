@@ -4,12 +4,12 @@
  * `pauseWebhookTrigger()` keeps the upstream Composio subscription alive (see
  * `countActiveTriggersForComposioId`, which counts active+paused), and the
  * docstring promises paused-period events will be acked/discarded. But the
- * platform poll filter is built from `getActiveComposioTriggerIds()`
+ * platform poll filter is built from `(await getActiveComposioTriggerIds())`
  * (status='active' only), so events for a Composio ID whose only local trigger
  * is paused are never claimed/acked — they accumulate and fire a session on
  * resume.
  *
- * Fix: a dedicated `getSubscribedComposioTriggerIds()` helper returns the
+ * Fix: a dedicated `(await getSubscribedComposioTriggerIds())` helper returns the
  * distinct composio IDs for rows still subscribed (status IN active/paused),
  * and `pollAndClaimEvents` uses it to scope the poll. `processEventGroup` then
  * acks/discards events for paused-only IDs (no active local trigger).
@@ -34,9 +34,6 @@ let testSqlite: InstanceType<typeof Database>
 vi.mock('@shared/lib/db', () => ({
   get db() {
     return testDb
-  },
-  get sqlite() {
-    return testSqlite
   },
 }))
 
@@ -109,10 +106,10 @@ describe('SUP-225: paused webhook triggers stay pollable', () => {
       // active and the paused composio IDs so the platform keeps handing us
       // paused-period events to ack/discard. Before the fix this helper does not
       // exist; the active-only helper returns just ['ti_active'].
-      expect(getSubscribedComposioTriggerIds().sort()).toEqual(['ti_active', 'ti_paused'])
+      expect((await getSubscribedComposioTriggerIds()).sort()).toEqual(['ti_active', 'ti_paused'])
 
       // Guard the existing helper's narrower contract is unchanged.
-      expect(getActiveComposioTriggerIds().sort()).toEqual(['ti_active'])
+      expect((await getActiveComposioTriggerIds()).sort()).toEqual(['ti_active'])
     })
 
     it('skips cancelled and null-composioId rows', async () => {
@@ -136,7 +133,7 @@ describe('SUP-225: paused webhook triggers stay pollable', () => {
         prompt: 'No composio id yet',
       })
 
-      expect(getSubscribedComposioTriggerIds().sort()).toEqual(['ti_active', 'ti_paused'])
+      expect((await getSubscribedComposioTriggerIds()).sort()).toEqual(['ti_active', 'ti_paused'])
     })
   })
 

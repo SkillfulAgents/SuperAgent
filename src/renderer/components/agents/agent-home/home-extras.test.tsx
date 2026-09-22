@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeExtras } from './home-extras'
 
@@ -21,6 +21,7 @@ vi.mock('@renderer/context/file-preview-context', () => ({
 // home-default-model.test.tsx) — only its data hooks are stubbed, so this
 // file still covers the composition rather than a placeholder.
 vi.mock('@renderer/hooks/use-settings', () => ({
+  useSettings: () => ({ data: { app: { autoDeleteInactiveDays: 0, apiLogAutoDeleteDays: 30 } } }),
   useModelSettings: () => ({
     data: {
       llmProvider: 'anthropic',
@@ -49,6 +50,25 @@ vi.mock('@renderer/context/user-context', () => ({
 }))
 
 describe('HomeExtras', () => {
+  it('keeps the three pickers in a standalone group, apart from the navigation rows', () => {
+    render(<HomeExtras agentSlug="test-agent" />)
+
+    const group = within(screen.getByTestId('home-preferences-group'))
+    expect(group.getByTestId('home-default-model-card')).toBeInTheDocument()
+    expect(group.getByTestId('home-session-auto-delete-card')).toBeInTheDocument()
+    expect(group.getByTestId('home-api-log-auto-delete-card')).toBeInTheDocument()
+    // The navigation rows are their own card.
+    expect(group.queryByTestId('home-secrets-open-page')).not.toBeInTheDocument()
+    expect(screen.getByTestId('home-secrets-open-page')).toBeInTheDocument()
+  })
+
+  it('opens the Memories page', async () => {
+    const user = userEvent.setup()
+    render(<HomeExtras agentSlug="test-agent" />)
+    await user.click(screen.getByTestId('home-memories-open-page'))
+    expect(mocks.navigate).toHaveBeenCalledWith({ to: '/agents/$slug/memories', params: { slug: 'test-agent' } })
+  })
+
   it('opens Agent Directory in the built-in folder browser', async () => {
     const user = userEvent.setup()
     render(<HomeExtras agentSlug="test-agent" />)

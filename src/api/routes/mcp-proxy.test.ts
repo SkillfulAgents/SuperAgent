@@ -556,6 +556,21 @@ describe('mcp-proxy route', () => {
       )
     })
 
+    it('requires reconnect without persisting a malformed token refresh response', async () => {
+      setupSuccessPath({ mcpOverrides: { tokenExpiresAt: new Date(1) } })
+      mockFetch.mockResolvedValueOnce(Response.json({ access_token: 123, expires_in: 3600 }))
+      mockRequestMcpReauth.mockRejectedValueOnce(new Error('Reconnect timed out'))
+
+      const response = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST', headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'search' } }),
+      })
+      expect(response.status).toBe(408)
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(mockUpdateSet).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'auth_required' }))
+      expect(mockUpdateSet.mock.calls[0][0]).not.toHaveProperty('accessToken')
+    })
+
     it('includes client_secret in refresh body when present', async () => {
       mockValidateProxyToken.mockResolvedValue('my-agent')
       const mcp = buildMcp({
@@ -1395,6 +1410,24 @@ describe('mcp-proxy route', () => {
           errorMessage: 'Remote server returned 401',
         })
       )
+    })
+
+    it('uses the reconnected account endpoint and credentials for its single retry', async () => {
+      setupSuccessPath()
+      const reconnected = buildMcp({ url: 'https://reconnected.example.com/mcp', accessToken: 'new-token' })
+      mockLimit.mockResolvedValueOnce([{ mcp: buildMcp() }]).mockResolvedValue([{ mcp: reconnected }])
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 401 }))
+        .mockResolvedValueOnce(Response.json({ result: {} }))
+
+      const response = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST', headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'search' } }),
+      })
+      expect(response.status).toBe(200)
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+      expect(mockFetch.mock.calls[1][0]).toBe('https://reconnected.example.com/mcp')
+      expect(new Headers(mockFetch.mock.calls[1][1].headers).get('Authorization')).toBe('Bearer new-token')
+      expect(mockRequestMcpReauth).toHaveBeenCalledTimes(1)
     })
 
     it('does not mark auth_required when upstream returns 200', async () => {

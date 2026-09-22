@@ -1,0 +1,226 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { fireEvent, screen } from '@testing-library/react'
+import { renderWithProviders } from '@renderer/test/test-utils'
+import { OPENAI_TTS_VOICES } from '@shared/lib/voice/openai-voices'
+import { VoiceTab } from './voice-tab'
+
+const state = {
+  isAuthMode: false,
+  isAdmin: true,
+  ttsConfigured: true,
+  sttProvider: 'deepgram' as string | undefined,
+  defaultVoice: undefined as string | undefined,
+  userVoice: undefined as { ttsVoice?: string; ttsSpeed?: number; holdSound?: boolean } | undefined,
+  platformConnected: false,
+}
+const VOICES = [
+  { id: 'aura-2-thalia-en', label: 'Thalia', description: 'Clear' },
+  { id: 'aura-2-luna-en', label: 'Luna', description: 'Friendly' },
+  { id: 'aura-2-zeus-en', label: 'Zeus', description: 'Deep' },
+]
+const updateSettings = vi.fn()
+const updateUserSettings = vi.fn()
+const useSettingsCalls: ({ enabled?: boolean } | undefined)[] = []
+
+vi.mock('@renderer/context/user-context', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/context/user-context')>()),
+  useUser: () => ({ isAuthMode: state.isAuthMode, isAdmin: state.isAdmin }),
+}))
+vi.mock('@renderer/hooks/use-settings', () => ({
+  useSettings: (options?: { enabled?: boolean }) => {
+    useSettingsCalls.push(options)
+    if (options?.enabled === false) return { data: undefined, isLoading: false }
+    return {
+      data: {
+        voice: { sttProvider: state.sttProvider, ttsVoice: state.defaultVoice },
+        apiKeyStatus: { deepgram: { isConfigured: true, source: 'settings' }, openai: { isConfigured: false, source: 'none' } },
+      },
+      isLoading: false,
+    }
+  },
+  useUpdateSettings: () => ({ mutate: updateSettings, mutateAsync: updateSettings }),
+}))
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: { voice: state.userVoice }, isLoading: false }),
+  useUpdateUserSettings: () => ({ mutate: updateUserSettings }),
+}))
+vi.mock('@renderer/hooks/use-voice-input', () => ({
+  useIsTtsConfigured: () => state.ttsConfigured,
+  useVoiceConversationEngine: () => (state.sttProvider === 'openai' || state.sttProvider === 'platform') ? 'openai-live' : state.ttsConfigured ? 'chained' : null,
+  // What the member-readable endpoint reports: the provider's voices and the
+  // deployment default among them.
+  useTtsVoices: () => ({ voices: (state.sttProvider === 'openai' || state.sttProvider === 'platform') ? OPENAI_TTS_VOICES : VOICES, defaultVoice: state.defaultVoice ?? ((state.sttProvider === 'openai' || state.sttProvider === 'platform') ? 'marin' : 'aura-2-thalia-en') }),
+  useVoiceInput: () => ({ state: 'idle', isRecording: false, isConnecting: false, isFinalizing: false, error: null, clearError: vi.fn(), isSupported: false, analyserRef: { current: null }, startRecording: vi.fn(), stopRecording: vi.fn() }),
+}))
+const readAloudRestart = vi.fn()
+vi.mock('@renderer/lib/voice/services/read-aloud', () => ({ readAloud: { restart: () => readAloudRestart() } }))
+vi.mock('@renderer/hooks/use-read-aloud', () => ({
+  useReadAloud: () => ({ status: 'idle', isActive: false, toggle: vi.fn(), error: null }),
+}))
+vi.mock('@renderer/hooks/use-platform-auth', () => ({
+  usePlatformAuthStatus: () => ({ data: { connected: state.platformConnected } }),
+}))
+vi.mock('@renderer/components/ui/voice-input-button', () => ({
+  VoiceInputButton: () => null,
+  VoiceInputError: () => null,
+}))
+
+describe('VoiceTab', () => {
+  beforeEach(() => {
+    state.isAuthMode = false
+    state.isAdmin = true
+    state.ttsConfigured = true
+    state.sttProvider = 'deepgram'
+    state.defaultVoice = undefined
+    state.userVoice = undefined
+    state.platformConnected = false
+    updateSettings.mockReset()
+    updateUserSettings.mockReset()
+    useSettingsCalls.length = 0
+  })
+
+  it('a member of a shared deployment sees only their own voice and speed', () => {
+    state.isAuthMode = true
+    state.isAdmin = false
+    renderWithProviders(<VoiceTab />)
+    expect(screen.getByTestId('personal-voice-section')).toBeInTheDocument()
+    expect(screen.getByText('Your Voice')).toBeInTheDocument()
+    expect(screen.getByLabelText('Speed')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Provider')).toBeNull()
+    expect(screen.queryByTestId('default-voice-section')).toBeNull()
+    expect(screen.queryByText('Test')).toBeNull()
+    // The settings endpoint is admin-only: a member's tab must never request it.
+    expect(useSettingsCalls.length).toBeGreaterThan(0)
+    expect(useSettingsCalls.every((o) => o?.enabled === false)).toBe(true)
+  })
+
+  it('tells a member to ask an admin when speech is not set up', () => {
+    state.isAuthMode = true
+    state.isAdmin = false
+    state.ttsConfigured = false
+    renderWithProviders(<VoiceTab />)
+    expect(screen.getByTestId('voice-unavailable-note')).toBeInTheDocument()
+    expect(screen.queryByTestId('personal-voice-section')).toBeNull()
+  })
+
+  it('an admin of a shared deployment also gets the provider, key, and default voice', () => {
+    state.isAuthMode = true
+    state.isAdmin = true
+    renderWithProviders(<VoiceTab />)
+    expect(screen.getByTestId('personal-voice-section')).toBeInTheDocument()
+    expect(screen.getByLabelText('Provider')).toBeInTheDocument()
+    expect(screen.getByTestId('default-voice-section')).toBeInTheDocument()
+  })
+
+  it('a local install has one person, so there is no separate default voice', () => {
+    renderWithProviders(<VoiceTab />)
+    expect(screen.getByText('Text-to-Speech')).toBeInTheDocument()
+    expect(screen.getByLabelText('Provider')).toBeInTheDocument()
+    expect(screen.queryByTestId('default-voice-section')).toBeNull()
+  })
+
+  it('shows the workspace default until the user picks, then their own pick and pace', () => {
+    state.isAuthMode = true
+    state.isAdmin = false
+    state.defaultVoice = 'aura-2-zeus-en'
+    const first = renderWithProviders(<VoiceTab />)
+    expect(screen.getByLabelText('Voice', { selector: '#tts-voice' })).toHaveTextContent('Workspace Default (Zeus)')
+    expect(screen.getByLabelText('Speed')).toHaveTextContent('Normal')
+    first.unmount()
+
+    state.userVoice = { ttsVoice: 'aura-2-luna-en', ttsSpeed: 1.2 }
+    renderWithProviders(<VoiceTab />)
+    expect(screen.getByLabelText('Voice', { selector: '#tts-voice' })).toHaveTextContent('Luna')
+    expect(screen.getByLabelText('Speed')).toHaveTextContent('1.2×')
+  })
+
+  it('picking the workspace default again unsets the personal voice', () => {
+    state.isAuthMode = true
+    state.isAdmin = false
+    state.defaultVoice = 'aura-2-zeus-en'
+    state.userVoice = { ttsVoice: 'aura-2-luna-en' }
+    renderWithProviders(<VoiceTab />)
+    fireEvent.click(screen.getByLabelText('Voice', { selector: '#tts-voice' }))
+    fireEvent.click(screen.getByRole('option', { name: /Workspace Default \(Zeus\)/ }))
+    expect(updateUserSettings).toHaveBeenCalledWith({ voice: { ttsVoice: null } }, expect.anything())
+  })
+
+  it('describes Platform as OpenAI voice through the platform connection', () => {
+    state.sttProvider = 'platform'
+    state.platformConnected = true
+    renderWithProviders(<VoiceTab />)
+    fireEvent.click(screen.getByLabelText('Provider'))
+    expect(screen.getByRole('option', { name: /Platform/ })).toHaveTextContent('GPT-4o Mini Transcribe')
+    expect(screen.getByRole('option', { name: /Platform/ })).toHaveTextContent('GPT-Live')
+    expect(screen.getByText(/Uses OpenAI voice via your platform connection/)).toBeInTheDocument()
+    expect(screen.getByText(/No API key required/)).toBeInTheDocument()
+    expect(screen.queryByText('API Key')).toBeNull()
+  })
+
+  it('offers OpenAI read-aloud voices while explaining the separate Live voice', () => {
+    state.sttProvider = 'openai'
+    renderWithProviders(<VoiceTab />)
+    expect(screen.getByLabelText('Voice', { selector: '#tts-voice' })).toHaveTextContent('Marin')
+    expect(screen.getByLabelText('Speed')).toHaveTextContent('Normal')
+    expect(screen.getByText(/Conversation voice uses OpenAI Live with the Marin voice/)).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Voice', { selector: '#tts-voice' }))
+    fireEvent.click(screen.getByRole('option', { name: /Cedar/ }))
+    expect(updateUserSettings).toHaveBeenCalledWith({ voice: { ttsVoice: 'cedar' } }, expect.anything())
+  })
+
+  it('a local install offers no workspace default: there is nobody else to follow', () => {
+    renderWithProviders(<VoiceTab />)
+    expect(screen.getByLabelText('Voice', { selector: '#tts-voice' })).toHaveTextContent('Thalia')
+    fireEvent.click(screen.getByLabelText('Voice', { selector: '#tts-voice' }))
+    expect(screen.queryByRole('option', { name: /Workspace Default/ })).toBeNull()
+  })
+
+  it('the hold sound is on until turned off, and the choice is the person\'s own', () => {
+    renderWithProviders(<VoiceTab />)
+    const toggle = screen.getByLabelText('Hold sound in voice mode')
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(toggle)
+    expect(updateUserSettings).toHaveBeenCalledWith({ voice: { holdSound: false } })
+  })
+
+  it('a muted hold sound shows as off', () => {
+    state.userVoice = { holdSound: false }
+    renderWithProviders(<VoiceTab />)
+    expect(screen.getByLabelText('Hold sound in voice mode')).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('a saved speed reaches the reader, which drops its cached credentials', () => {
+    state.userVoice = { ttsSpeed: 1.2 }
+    renderWithProviders(<VoiceTab />)
+    fireEvent.click(screen.getByLabelText('Speed'))
+    fireEvent.click(screen.getByRole('option', { name: 'Normal' }))
+    expect(updateUserSettings).toHaveBeenLastCalledWith({ voice: { ttsSpeed: 1 } }, expect.objectContaining({ onSuccess: expect.any(Function) }))
+    expect(readAloudRestart).not.toHaveBeenCalled()
+    updateUserSettings.mock.calls.at(-1)?.[1].onSuccess()
+    expect(readAloudRestart).toHaveBeenCalledTimes(1)
+  })
+
+  it('a speed off the preset list still renders readably', () => {
+    state.userVoice = { ttsSpeed: 1.05 }
+    renderWithProviders(<VoiceTab />)
+    expect(screen.getByLabelText('Speed')).toHaveTextContent('1.05×')
+  })
+
+  it('a stored pick the provider no longer offers reads as no pick', () => {
+    state.isAuthMode = true
+    state.isAdmin = false
+    state.defaultVoice = 'aura-2-zeus-en'
+    state.userVoice = { ttsVoice: 'aura-retired-en' }
+    renderWithProviders(<VoiceTab />)
+    expect(screen.getByLabelText('Voice', { selector: '#tts-voice' })).toHaveTextContent('Workspace Default (Zeus)')
+  })
+
+  it('writes the personal pick to user settings, not the deployment settings', () => {
+    renderWithProviders(<VoiceTab />)
+    fireEvent.click(screen.getByLabelText('Voice', { selector: '#tts-voice' }))
+    fireEvent.click(screen.getByRole('option', { name: /Luna/ }))
+    expect(updateUserSettings).toHaveBeenCalledWith({ voice: { ttsVoice: 'aura-2-luna-en' } }, expect.anything())
+    expect(updateSettings).not.toHaveBeenCalled()
+  })
+})

@@ -5,9 +5,8 @@ import type { Duplex } from 'stream'
 import type { ServerType } from '@hono/node-server'
 import { WebSocketServer, WebSocket } from 'ws'
 
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 import { captureException } from '@shared/lib/error-reporting'
-import { resolveAgentId } from '@shared/lib/utils/file-storage'
 import { authenticateAgentWebSocket } from './agent-websocket-auth'
 
 interface ArtifactWebSocketRoute {
@@ -159,28 +158,23 @@ export function setupArtifactStreamProxy(server: ServerType): void {
     const route = parseArtifactWebSocketRoute(url.pathname)
     if (!route) return
 
-    resolveAgentId(route.routeAgentId)
+    agentCatalog.resolve(route.routeAgentId)
       .then(async (agentSlug) => {
         if (!agentSlug) return deny(socket, '404 Not Found')
         if (!(await authenticateAgentWebSocket(request, agentSlug, 'viewer'))) {
           return deny(socket, '403 Forbidden')
         }
 
-        const client = containerManager.getClient(agentSlug)
-        const info = containerManager.getCachedInfo(agentSlug)
+        const actor = agentRegistry.get(agentSlug)
+        const info = actor.container.status()
         if (info.status !== 'running' || !info.port) return deny(socket, '503 Service Unavailable')
 
-        const protocols = requestedProtocols(request)
-        const upstream = new WebSocket(
-          `${client.getWebSocketBaseUrl(info.port)}${route.containerPath}${url.search}`,
-          protocols,
-          {
-            headers: {
-              ...artifactWebSocketForwardHeaders(request, route.publicBasePath),
-              ...client.getHostAuthHeaders(),
-            },
-          },
-        )
+        // Forwarded headers first; the actor adds the container's auth headers after them.
+        const upstream = actor.container.openWebSocket(route.containerPath, {
+          search: url.search,
+          protocols: requestedProtocols(request),
+          headers: artifactWebSocketForwardHeaders(request, route.publicBasePath),
+        })
 
         let settled = false
         const fail = (error?: unknown) => {

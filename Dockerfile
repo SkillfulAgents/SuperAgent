@@ -63,8 +63,6 @@ RUN apt-get update && apt-get install -y git ca-certificates \
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY package*.json ./
-# Drizzle migrations are read from cwd at startup (src/shared/lib/db/index.ts)
-COPY src/shared/lib/db/migrations ./src/shared/lib/db/migrations
 # Agent container build context for buildImage() when running DooD without the
 # compose bind-mount (docker-compose mounts ./agent-container over this)
 COPY agent-container ./agent-container

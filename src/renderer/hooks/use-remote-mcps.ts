@@ -37,18 +37,27 @@ export function useRemoteMcps() {
   })
 }
 
-/** Whether the current viewer owns this MCP server or is an administrator. */
-export function useCanManageRemoteMcp(mcpId: string) {
-  return useQuery<boolean>({
-    queryKey: ['remote-mcp-manage-access', mcpId],
+/**
+ * The redirect URIs this deployment sends for an OAuth flow, for showing a user
+ * what to allowlist in a provider console. Comes from the API rather than being
+ * rebuilt here so it cannot drift from what the flow actually sends.
+ */
+export function useMcpOAuthRedirectUris() {
+  const electron = !!window.electronAPI
+  const protocol = window.electronAPI?.desktopProtocol
+  return useQuery<{ candidates: string[]; preferred: string }>({
+    queryKey: ['mcp-oauth-redirect-uris', electron, protocol],
     queryFn: async () => {
-      const res = await apiFetch(`/api/remote-mcps/${mcpId}`)
-      if (res.status === 403 || res.status === 404) return false
-      if (!res.ok) throw new Error('Failed to check MCP reconnect access')
-      return true
+      const params = new URLSearchParams()
+      if (electron) {
+        params.set('electron', '1')
+        if (protocol) params.set('protocol', protocol)
+      }
+      const res = await apiFetch(`/api/remote-mcps/oauth-redirect-uris?${params.toString()}`)
+      if (!res.ok) throw new Error('Failed to fetch OAuth redirect URIs')
+      return res.json()
     },
-    enabled: !!mcpId,
-    retry: false,
+    staleTime: Infinity,
   })
 }
 
@@ -206,6 +215,30 @@ export function useRemoveMcpFromAgent() {
       // Bare prefix — see useAssignMcpToAgent: reaches the id-keyed home card too.
       queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
       queryClient.invalidateQueries({ queryKey: ['mcp-agents', mcpId] })
+    },
+  })
+}
+
+/**
+ * Remove a remote MCP from an agent by LINK id — the agent-owner twin of
+ * useRemoveMcpFromAgent, for a server another member shared onto the agent
+ * whose id the owner never sees. Server-gated on owning the agent.
+ */
+export function useRemoveAgentMcpMapping() {
+  const queryClient = useQueryClient()
+
+  return useMutation<void, Error, { agentSlug: string; mappingId: string }>({
+    mutationFn: async ({ agentSlug, mappingId }) => {
+      const res = await apiFetch(
+        `/api/agents/${agentSlug}/remote-mcps/mapping/${mappingId}`,
+        { method: 'DELETE' },
+      )
+      if (!res.ok) throw new Error('Failed to remove the shared connection from this agent')
+      warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
+    },
+    onSuccess: () => {
+      // Bare prefix — see useAssignMcpToAgent: reaches the id-keyed home card too.
+      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
     },
   })
 }

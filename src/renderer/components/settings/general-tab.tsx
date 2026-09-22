@@ -16,6 +16,7 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { ShortcutsSection } from './shortcuts-section'
 import { AutoDeleteSelect } from './auto-delete-select'
+import { ApiLogAutoDeleteSelect } from './api-log-auto-delete-select'
 import { applyWebFavicon, getWebFaviconHref } from '@renderer/lib/favicon'
 import {
   Wand2,
@@ -374,8 +375,8 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
         </div>
       )}
 
-      {/* Telemetry toggles are desktop-only; Session Auto-Delete is a
-          server-wide retention setting, so in auth mode it is admin-only. */}
+      {/* Telemetry toggles are desktop-only; retention controls are
+          server-wide, so in auth mode they are admin-only. */}
       {showAdminFeatures && (
         <div className="space-y-2">
           <h3 className={SECTION_HEADING}>Privacy</h3>
@@ -422,6 +423,18 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
                   value={globalSettings?.app?.autoDeleteInactiveDays}
                   onChange={(days) => {
                     updateGlobalSettings.mutate({ app: { autoDeleteInactiveDays: days } })
+                  }}
+                />
+              }
+            />
+            <SettingRow
+              name="API Log Auto-Delete"
+              subtitle="Automatically delete API and MCP request logs older than this."
+              right={
+                <ApiLogAutoDeleteSelect
+                  value={globalSettings?.app?.apiLogAutoDeleteDays}
+                  onChange={(days) => {
+                    updateGlobalSettings.mutate({ app: { apiLogAutoDeleteDays: days } })
                   }}
                 />
               }

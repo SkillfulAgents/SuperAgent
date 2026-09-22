@@ -2,6 +2,60 @@
 
 import { render, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
+import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
+
+const completeInstall = vi.fn()
+const mutateAsync = vi.fn()
+const toastError = vi.fn()
+let mockDiscoverableAgents: ApiDiscoverableAgent[] | undefined
+let mockDiscoverableAgentsFailed = false
+let mockDiscoverableAgentsLoading = false
+let mockSetupCompleted = true
+let mockGlobalSetupCompleted = true
+let mockIsAuthMode = true
+
+vi.mock('sonner', () => ({ toast: { error: (...args: unknown[]) => toastError(...args) } }))
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => ({ isAuthMode: mockIsAuthMode }),
+}))
+vi.mock('@renderer/hooks/use-settings', () => ({
+  useSettings: () => ({ data: { setupCompleted: mockGlobalSetupCompleted } }),
+}))
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: { setupCompleted: mockSetupCompleted } }),
+  useUpdateUserSettings: () => ({ mutateAsync }),
+}))
+vi.mock('@renderer/hooks/use-agent-templates', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/hooks/use-agent-templates')>()
+  return {
+    ...actual,
+    useDiscoverableAgents: () => ({
+      data: mockDiscoverableAgents,
+      isError: mockDiscoverableAgentsFailed,
+      isLoading: mockDiscoverableAgentsLoading,
+    }),
+  }
+})
+vi.mock('@renderer/hooks/use-complete-template-install', () => ({
+  useCompleteTemplateInstall: () => completeInstall,
+}))
+vi.mock('@renderer/components/agents/template-install-dialog', () => ({
+  TemplateInstallDialog: ({
+    template,
+    onInstalled,
+  }: {
+    template: ApiDiscoverableAgent | null
+    onInstalled: (agent: { slug: string }) => void | Promise<void>
+  }) => {
+    if (!template) return null
+    return (
+      <button type="button" data-testid="template-install-dialog" onClick={() => void onInstalled({ slug: 'seo-agent' })}>
+        {template.name}
+      </button>
+    )
+  },
+}))
 import {
   createMemoryHistory,
   createRootRoute,
@@ -47,9 +101,26 @@ function makeRouter(initialEntry: string) {
   })
 }
 
+const match: ApiDiscoverableAgent = {
+  skillsetId: DEFAULT_PUBLIC_SKILLSET.id,
+  skillsetName: 'Public',
+  name: 'SEO Agent',
+  description: 'seo',
+  version: '1.0.0',
+  path: 'agents/seo-agent/',
+}
+
 describe('SignupHandoffConsumer', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockDiscoverableAgents = []
+    mockDiscoverableAgentsFailed = false
+    mockDiscoverableAgentsLoading = false
+    mockSetupCompleted = true
+    mockGlobalSetupCompleted = true
+    mockIsAuthMode = true
+    completeInstall.mockResolvedValue(undefined)
+    mutateAsync.mockResolvedValue({})
   })
 
   it('moves prompt+model into the one-shot and strips those keys from the URL', async () => {
@@ -101,7 +172,7 @@ describe('SignupHandoffConsumer', () => {
     })
   })
 
-  it('slug-only URL moves template_slug into the one-shot', async () => {
+  it('completed first-run keeps a slug-only handoff after stripping the URL', async () => {
     const router = makeRouter('/?template_slug=research-agent')
     const { getByTestId } = render(
       <NavTransientProvider>
@@ -110,9 +181,10 @@ describe('SignupHandoffConsumer', () => {
     )
 
     await waitFor(() => {
-      expect(JSON.parse(getByTestId('handoff').textContent ?? 'null')).toEqual({
-        template_slug: 'research-agent',
-      })
+      expect((router.state.location.search as { template_slug?: string }).template_slug).toBeUndefined()
+    })
+    expect(JSON.parse(getByTestId('handoff').textContent ?? 'null')).toEqual({
+      template_slug: 'research-agent',
     })
   })
 
@@ -146,5 +218,142 @@ describe('SignupHandoffConsumer', () => {
         prompt: 'x'.repeat(400),
       })
     })
+  })
+})
+
+function renderSlugFirstRun(slug = 'seo-agent') {
+  mockSetupCompleted = false
+  const router = makeRouter(`/?template_slug=${slug}`)
+  return render(
+    <NavTransientProvider>
+      <RouterProvider router={router} />
+    </NavTransientProvider>,
+  )
+}
+
+describe('SignupHandoffConsumer template-only first run', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDiscoverableAgents = undefined
+    mockDiscoverableAgentsFailed = false
+    mockSetupCompleted = false
+    mockGlobalSetupCompleted = true
+    mockIsAuthMode = true
+    completeInstall.mockResolvedValue(undefined)
+    mutateAsync.mockResolvedValue({})
+  })
+
+  it('match → opens the install dialog; complete then writes setupCompleted', async () => {
+    mockDiscoverableAgents = [match]
+    const { getByTestId } = renderSlugFirstRun()
+    await waitFor(() => expect(getByTestId('template-install-dialog')).toHaveTextContent('SEO Agent'))
+    getByTestId('template-install-dialog').click()
+    await waitFor(() => expect(completeInstall).toHaveBeenCalledWith({ slug: 'seo-agent' }))
+    expect(mutateAsync).toHaveBeenCalledWith({ setupCompleted: true, onboardingProgress: null })
+    expect(toastError).not.toHaveBeenCalled()
+  })
+
+  it('populated, no match → toast, no dialog', async () => {
+    mockDiscoverableAgents = [{ ...match, path: 'agents/other/' }]
+    const { queryByTestId } = renderSlugFirstRun()
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Couldn't load that template", expect.anything()))
+    expect(queryByTestId('template-install-dialog')).toBeNull()
+    expect(completeInstall).not.toHaveBeenCalled()
+  })
+
+  it('catalog still loading → keeps waiting past any fixed deadline, no toast', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      mockDiscoverableAgents = undefined
+      mockDiscoverableAgentsLoading = true
+      const { queryByTestId } = renderSlugFirstRun()
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(toastError).not.toHaveBeenCalled()
+      expect(queryByTestId('template-install-dialog')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('catalog settled with nothing to show → toast, no dialog', async () => {
+    mockDiscoverableAgents = undefined
+    mockDiscoverableAgentsLoading = false
+    const { queryByTestId } = renderSlugFirstRun()
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Couldn't load that template", expect.anything()))
+    expect(queryByTestId('template-install-dialog')).toBeNull()
+  })
+
+  it('catalog error → toast, no dialog', async () => {
+    mockDiscoverableAgentsFailed = true
+    renderSlugFirstRun()
+    await waitFor(() => expect(toastError).toHaveBeenCalled())
+    expect(completeInstall).not.toHaveBeenCalled()
+  })
+
+  it('setup write fails after install → toast, agent already handed off', async () => {
+    mockDiscoverableAgents = [match]
+    mutateAsync.mockRejectedValue(new Error('PUT failed'))
+    const { getByTestId } = renderSlugFirstRun()
+    await waitFor(() => expect(getByTestId('template-install-dialog')).toBeInTheDocument())
+    getByTestId('template-install-dialog').click()
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith('Agent installed, but setup status could not be saved.', expect.anything()))
+    expect(completeInstall).toHaveBeenCalled()
+  })
+
+  it('prompt + slug first-run → no install, one-shot keeps both', async () => {
+    mockDiscoverableAgents = [match]
+    const router = makeRouter('/?prompt=hello&template_slug=seo-agent')
+    const { getByTestId, queryByTestId } = render(
+      <NavTransientProvider>
+        <RouterProvider router={router} />
+      </NavTransientProvider>,
+    )
+    await waitFor(() => {
+      expect(JSON.parse(getByTestId('handoff').textContent ?? 'null')).toEqual({
+        prompt: 'hello',
+        template_slug: 'seo-agent',
+      })
+    })
+    expect(queryByTestId('template-install-dialog')).toBeNull()
+    expect(completeInstall).not.toHaveBeenCalled()
+  })
+
+  it('already finished first-run → no install', async () => {
+    mockSetupCompleted = true
+    mockDiscoverableAgents = [match]
+    const { queryByTestId } = render(
+      <NavTransientProvider>
+        <RouterProvider router={makeRouter('/?template_slug=seo-agent')} />
+      </NavTransientProvider>,
+    )
+    await waitFor(() => expect(queryByTestId('home')).toBeTruthy())
+    expect(queryByTestId('template-install-dialog')).toBeNull()
+    expect(completeInstall).not.toHaveBeenCalled()
+  })
+
+  it('global setup incomplete → leaves the handoff for the full wizard', async () => {
+    mockGlobalSetupCompleted = false
+    mockDiscoverableAgents = [match]
+    const { getByTestId, queryByTestId } = renderSlugFirstRun()
+    await waitFor(() => {
+      expect(JSON.parse(getByTestId('handoff').textContent ?? 'null')).toEqual({
+        template_slug: 'seo-agent',
+      })
+    })
+    expect(queryByTestId('template-install-dialog')).toBeNull()
+    expect(completeInstall).not.toHaveBeenCalled()
+  })
+
+  it('local first run → leaves the handoff for the full wizard', async () => {
+    mockIsAuthMode = false
+    mockDiscoverableAgents = [match]
+    const { getByTestId, queryByTestId } = renderSlugFirstRun()
+    await waitFor(() => {
+      expect(JSON.parse(getByTestId('handoff').textContent ?? 'null')).toEqual({
+        template_slug: 'seo-agent',
+      })
+    })
+    expect(queryByTestId('template-install-dialog')).toBeNull()
+    expect(completeInstall).not.toHaveBeenCalled()
   })
 })

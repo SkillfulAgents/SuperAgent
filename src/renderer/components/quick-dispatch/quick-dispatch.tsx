@@ -3,9 +3,8 @@ import { ArrowUp, AtSign, ChevronDown, Cloud, Loader2, Paperclip } from 'lucide-
 import { cn } from '@shared/lib/utils'
 import { targetIsRemote } from '@renderer/lib/api-target'
 import { Button } from '@renderer/components/ui/button'
-import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { apiFetch } from '@renderer/lib/api'
-import { uploadFileChunked } from '@renderer/lib/upload'
+import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
 import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
@@ -111,12 +110,15 @@ export function QuickDispatch() {
   const composer = useMessageComposer({
     agentSlug,
     uploadFile: useCallback(
-      ({ file }: { file: File }) =>
-        uploadFileChunked<{ path: string }>({ url: `/api/agents/${agentSlug}/upload-file`, file }),
+      ({ file, onProgress, signal, stallMs }: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => {
+        if (!agentSlug) return Promise.reject(new Error('No agent selected'))
+        return uploadFileChunked<{ path: string }>({ url: `/api/agents/${agentSlug}/upload-file`, file, onProgress, signal, stallMs })
+      },
       [agentSlug],
     ),
     uploadFolder: useCallback(
       async ({ sourcePath }: { sourcePath: string }) => {
+        if (!agentSlug) throw new Error('No agent selected')
         const res = await apiFetch(`/api/agents/${agentSlug}/upload-folder`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -329,6 +331,7 @@ export function QuickDispatch() {
     // Matches the main app's composer (submit on `Enter && !shiftKey`).
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
+      if (!composer.canSubmit) return
       void composer.handleSubmit(e)
     }
   }
@@ -387,7 +390,7 @@ export function QuickDispatch() {
         >
           {composer.attachments.length > 0 && (
             <div className="mb-2">
-              <AttachmentPreview attachments={composer.attachments} onRemove={composer.removeAttachment} />
+              <AttachmentPreview attachments={composer.attachments} onRemove={composer.removeAttachment} onRetry={composer.retryAttachment} />
             </div>
           )}
           <MarkdownComposerEditor
@@ -417,7 +420,6 @@ export function QuickDispatch() {
             <Paperclip className="h-3.5 w-3.5 shrink-0" />
           </TriggerButton>
           <TriggerButton active={openMenu === 'model'} onClick={() => toggleMenu('model')} testId="composer-options-trigger">
-            {selectedModel && <ModelIcon icon={selectedModel.icon} className="h-3.5 w-3.5 shrink-0" />}
             <span className="truncate">
               {selectedModel?.label}
               <span className="text-muted-foreground">

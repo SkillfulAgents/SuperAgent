@@ -117,6 +117,7 @@ registerUpdateHandlers()
 // Now safe to import API (env var is set)
 import { serve } from '@hono/node-server'
 import api from '../api'
+import { openDatabase } from '@shared/lib/db'
 import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
@@ -126,7 +127,7 @@ import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target
 import { applyPreferredApiTarget, resolveApiTargetForRenderer } from './api-target'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
-import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
+import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
 // Set the app name (shows in macOS menu bar instead of "Electron" during dev)
@@ -226,9 +227,9 @@ function dismissReviewNotification(reviewId: string): void {
  * path; the IPC handler runs after the renderer's gate so it doesn't need
  * this check itself).
  */
-function isNotificationTypeAllowedLocally(notificationType: string | undefined): boolean {
+async function isNotificationTypeAllowedLocally(notificationType: string | undefined): Promise<boolean> {
   try {
-    const settings = getUserSettings('local')
+    const settings = await getUserSettings('local')
     const n = settings.notifications
     if (!n.enabled) return false
     switch (notificationType) {
@@ -1212,7 +1213,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
           const text = await res.text()
           mainWindow?.webContents.send(
             'mcp-oauth-callback',
-            parseMcpOAuthCompletionResponse(text),
+            { ...parseMcpOAuthCompletionResponse(text), state: plan.state },
           )
         })
         .catch((err) => {
@@ -1220,6 +1221,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
           mainWindow?.webContents.send('mcp-oauth-callback', {
             success: false,
             error: err.message || 'Failed to complete OAuth',
+            state: plan.state,
           })
         })
     }
@@ -1321,7 +1323,7 @@ function startNotificationListener(): void {
   const es = new EventSource(url)
   notificationEventSource = es
 
-  es.onmessage = (event) => {
+  es.onmessage = async (event) => {
     try {
       const data = JSON.parse(event.data)
 
@@ -1357,7 +1359,7 @@ function startNotificationListener(): void {
         const notificationType = data.notificationType as string | undefined
         if (
           (!mainWindow || mainWindow.isDestroyed()) &&
-          isNotificationTypeAllowedLocally(notificationType) &&
+          (await isNotificationTypeAllowedLocally(notificationType)) &&
           Notification.isSupported()
         ) {
           const actions = data.actions as Array<{ text: string }> | undefined
@@ -1451,6 +1453,20 @@ function stopNotificationListener(): void {
 
 // Start the API server and app
 async function startApp() {
+  // The database first: SUPERAGENT_DATA_DIR is set above, and nothing below
+  // (the API, the launcher, notifications) runs without a current schema.
+  // A failure here is fatal and already reported; the app cannot run on an
+  // unmigrated database, so it quits instead of serving errors.
+  try {
+    await openDatabase()
+  } catch (error) {
+    console.error('Failed to open the database:', error)
+    // The fatal report was captured in openDatabase(); let it send before quitting.
+    await flushErrorReporting(2_000)
+    app.quit()
+    return
+  }
+
   // Download-carried enrollment nonce recovery. The channels are all
   // best-effort reads of the install's surroundings; the handoff file is the
   // Windows installer's note of its own (stamped) filename, and the dev-only
@@ -1494,10 +1510,10 @@ async function startApp() {
 
   void afterBindInitialize()
 
-  // Reconnect chat integrations after system sleep
+  // Reconnect agent integrations after system sleep
   powerMonitor.on('resume', () => {
-    chatIntegrationManager.reconnectAll().catch((err) => {
-      console.error('Failed to reconnect chat integrations after resume:', err)
+    agentIntegrationManager.reconnectAll().catch((err) => {
+      console.error('Failed to reconnect agent integrations after resume:', err)
     })
   })
 
@@ -1536,7 +1552,7 @@ async function startApp() {
   }
 
   // Restore keep-awake state from previous session (after window is ready so dialogs display correctly)
-  const userSettings = getUserSettings('local')
+  const userSettings = await getUserSettings('local')
   restoreKeepAwakeOnStartup(userSettings.keepAwakeEnabled).catch((error) => {
     console.error('Failed to restore keep-awake state:', error)
   })

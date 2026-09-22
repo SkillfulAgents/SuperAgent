@@ -244,25 +244,106 @@ export async function registerDynamicClient(
   return { clientId: data.client_id, clientSecret: data.client_secret, scope: data.scope }
 }
 
-/**
- * Register a dynamic client, trying each candidate redirect URI in order until
- * one is accepted. Returns the winning redirect URI alongside the credentials.
- *
- * Strict authorization servers (e.g. cal.com) reject any non-http(s) redirect
- * during registration ("only http and https are allowed"), so the caller passes
- * the custom app scheme first and an http loopback URL as the fallback. Whatever
- * the AS accepts is what we must then use on the authorization and token
- * requests — so it is returned here rather than assumed by the caller.
- */
+function isCustomSchemeRedirect(redirectUri: string): boolean {
+  return !/^https?:/i.test(redirectUri)
+}
+
+// 4xx body / Location only — a 200 login page must not match on page text.
+function authorizeResponseRejectsRedirect(
+  status: number,
+  body: string,
+  location: string | null,
+): boolean {
+  if (location) {
+    const query = location.includes('?') ? location.slice(location.indexOf('?') + 1) : ''
+    if (query) {
+      const error = new URLSearchParams(query).get('error')
+      if (error === 'invalid_redirect_uri') return true
+    }
+  }
+  if (status < 400 || status > 499) return false
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown; error_description?: unknown }
+    if (parsed.error === 'invalid_redirect_uri') return true
+    if (
+      typeof parsed.error_description === 'string' &&
+      /invalid redirect uri/i.test(parsed.error_description)
+    ) {
+      return true
+    }
+  } catch {
+    // Not JSON — Canva returns text/plain "Invalid redirect URI."
+  }
+  return /invalid[_\s-]?redirect[_\s-]?uri/i.test(body)
+}
+
+async function authorizeRejectsRedirect(
+  authorizationEndpoint: string,
+  clientId: string,
+  redirectUri: string,
+  resource?: string,
+): Promise<boolean> {
+  let authUrl: URL
+  try {
+    authUrl = new URL(authorizationEndpoint)
+  } catch {
+    return false
+  }
+  const { codeChallenge } = generatePKCE()
+  authUrl.searchParams.set('response_type', 'code')
+  authUrl.searchParams.set('client_id', clientId)
+  authUrl.searchParams.set('redirect_uri', redirectUri)
+  authUrl.searchParams.set('code_challenge', codeChallenge)
+  authUrl.searchParams.set('code_challenge_method', 'S256')
+  authUrl.searchParams.set('state', 'redirect-probe')
+  if (resource) authUrl.searchParams.set('resource', resource)
+
+  try {
+    const res = await mcpSafeFetch(authUrl.toString(), { method: 'GET' }, undefined, {
+      followRedirects: false,
+    })
+    const body = await res.text().catch(() => '')
+    return authorizeResponseRejectsRedirect(res.status, body, res.headers.get('location'))
+  } catch (error) {
+    console.error(
+      `[mcp/oauth] Authorize redirect probe failed for ${redirectUri}; keeping candidate:`,
+      error,
+    )
+    return false
+  }
+}
+
+// Try each redirect until register AND authorize accept it (Canva 400s only at authorize).
 async function registerDynamicClientWithFallback(
   registrationEndpoint: string,
   redirectCandidates: string[],
   clientName: string,
+  authorizationEndpoint: string,
+  resource?: string,
 ): Promise<{ clientId: string; clientSecret?: string; scope?: string; redirectUri: string }> {
   let lastError: McpOAuthSetupError | undefined
-  for (const redirectUri of redirectCandidates) {
+  for (let i = 0; i < redirectCandidates.length; i++) {
+    const redirectUri = redirectCandidates[i]
     try {
       const registration = await registerDynamicClient(registrationEndpoint, redirectUri, clientName)
+      const hasFallback = i < redirectCandidates.length - 1
+      if (hasFallback && isCustomSchemeRedirect(redirectUri)) {
+        const rejected = await authorizeRejectsRedirect(
+          authorizationEndpoint,
+          registration.clientId,
+          redirectUri,
+          resource,
+        )
+        if (rejected) {
+          console.error(
+            `[mcp/oauth] Authorization rejected redirect ${redirectUri}; trying next candidate`,
+          )
+          lastError = new McpOAuthSetupError(
+            'The authorization server rejected the redirect URI',
+          )
+          continue
+        }
+      }
       return { ...registration, redirectUri }
     } catch (error) {
       if (!(error instanceof McpOAuthSetupError)) throw error
@@ -398,6 +479,20 @@ export function validateAndConsumeOAuthErrorResponse(
  * Initiate an OAuth flow for a remote MCP server.
  * Returns the authorization URL to redirect the user to.
  */
+/**
+ * Pick the redirect to send when the caller supplied its own client_id.
+ *
+ * Dynamic registration learns which redirect an authorization server accepts by
+ * trying each candidate, but a supplied client_id skips registration entirely,
+ * so there is nothing to learn it from. A supplied client_id also means the
+ * redirect was registered by hand in the provider's console, and those consoles
+ * take http(s) only — a custom app scheme could never have been registered
+ * there. Prefer the http(s) candidate, which on desktop is the loopback URL.
+ */
+function redirectForSuppliedClient(redirectCandidates: string[], fallback: string): string {
+  return redirectCandidates.find((candidate) => /^https?:/i.test(candidate)) ?? fallback
+}
+
 export async function initiateOAuthFlow(
   mcpId: string,
   mcpUrl: string,
@@ -431,7 +526,8 @@ export async function initiateOAuthFlow(
   let registeredScope: string | undefined
   // Redirect actually used on the authorization + token requests. Defaults to the
   // preferred candidate; dynamic registration may switch it to a fallback the AS
-  // accepts (e.g. an http loopback URL when the custom app scheme is rejected).
+  // accepts (e.g. an http loopback URL when the custom app scheme is rejected),
+  // and a supplied client_id pins it to the http(s) candidate.
   let redirectUri = redirectCandidates[0]
 
   // Check if we already have client credentials stored
@@ -444,6 +540,7 @@ export async function initiateOAuthFlow(
   if (clientIdOverride) {
     clientId = clientIdOverride
     clientSecret = clientSecretOverride || undefined
+    redirectUri = redirectForSuppliedClient(redirectCandidates, redirectUri)
   } else if (metadata.registration_endpoint) {
     // Prefer a fresh dynamic registration over a stored client_id on re-auth: it
     // self-heals which redirect the AS accepts (custom scheme vs http loopback)
@@ -454,6 +551,8 @@ export async function initiateOAuthFlow(
         metadata.registration_endpoint,
         redirectCandidates,
         clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Gamut',
+        metadata.authorization_endpoint,
+        resource,
       )
       clientId = registration.clientId
       clientSecret = registration.clientSecret
@@ -584,17 +683,21 @@ export async function initiateNewServerOAuth(
   let registeredScope: string | undefined
   // Redirect actually used on the authorization + token requests. Defaults to the
   // preferred candidate; dynamic registration may switch it to a fallback the AS
-  // accepts (e.g. an http loopback URL when the custom app scheme is rejected).
+  // accepts (e.g. an http loopback URL when the custom app scheme is rejected),
+  // and a supplied client_id pins it to the http(s) candidate.
   let redirectUri = redirectCandidates[0]
 
   if (clientIdOverride) {
     clientId = clientIdOverride
     clientSecret = clientSecretOverride || undefined
+    redirectUri = redirectForSuppliedClient(redirectCandidates, redirectUri)
   } else if (metadata.registration_endpoint) {
     const registration = await registerDynamicClientWithFallback(
       metadata.registration_endpoint,
       redirectCandidates,
       clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Gamut',
+      metadata.authorization_endpoint,
+      resource,
     )
     clientId = registration.clientId
     clientSecret = registration.clientSecret

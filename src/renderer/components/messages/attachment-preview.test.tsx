@@ -2,36 +2,25 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { AttachmentPreview, type Attachment, type FolderAttachment, type MountAttachment } from './attachment-preview'
+import { AttachmentPreview, type Attachment, type FolderAttachment, type MountAttachment, type UploadState } from './attachment-preview'
 
 function createFile(name: string, size: number, type: string): File {
   const blob = new Blob(['x'.repeat(size)], { type })
   return new File([blob], name, { type })
 }
 
-function createAttachment(overrides: { name?: string; size?: number; type?: string; id?: string; preview?: string } = {}): Attachment {
-  const { name = 'file.txt', size = 1024, type = 'text/plain', id = 'att-1', preview } = overrides
-  return {
-    type: 'file',
-    file: createFile(name, size, type),
-    id,
-    preview,
-  }
+function createAttachment(overrides: { name?: string; size?: number; type?: string; id?: string; preview?: string; upload?: UploadState; error?: string } = {}): Attachment {
+  const { name = 'file.txt', size = 1024, type = 'text/plain', id = 'att-1', preview, upload, error } = overrides
+  return { type: 'file', file: createFile(name, size, type), id, preview, upload, error }
 }
 
-function createFolderAttachment(overrides: { id?: string; folderName?: string; fileCount?: number; totalSize?: number } = {}): FolderAttachment {
-  const { id = 'folder-1', folderName = 'my-folder', fileCount = 3, totalSize = 3072 } = overrides
+function createFolderAttachment(overrides: { id?: string; folderName?: string; fileCount?: number; totalSize?: number; upload?: UploadState; error?: string } = {}): FolderAttachment {
+  const { id = 'folder-1', folderName = 'my-folder', fileCount = 3, totalSize = 3072, upload, error } = overrides
   const files = Array.from({ length: fileCount }, (_, i) => ({
     file: createFile(`file${i}.txt`, Math.floor(totalSize / fileCount), 'text/plain'),
     relativePath: `${folderName}/file${i}.txt`,
   }))
-  return {
-    type: 'folder',
-    id,
-    folderName,
-    files,
-    totalSize,
-  }
+  return { type: 'folder', id, folderName, files, totalSize, upload, error }
 }
 
 describe('AttachmentPreview', () => {
@@ -78,6 +67,84 @@ describe('AttachmentPreview', () => {
     const img = screen.getByAltText('photo.png')
     expect(img).toBeInTheDocument()
     expect(img).toHaveAttribute('src', 'blob:http://localhost/abc123')
+  })
+
+  it('image chips are a bare square: no name or size text, details on hover', () => {
+    const attachments = [
+      createAttachment({ name: 'photo.png', size: 2048, type: 'image/png', preview: 'blob:http://localhost/abc123' }),
+    ]
+    render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
+    const chip = screen.getByTestId('attachment-preview')
+    expect(chip.className).toContain('h-11 w-11')
+    expect(screen.queryByText('photo.png')).toBeNull()
+    expect(screen.queryByText('2.0 KB')).toBeNull()
+    expect(screen.getByAltText('photo.png')).toHaveAttribute('title', 'photo.png · 2.0 KB')
+    expect(screen.getByRole('button', { name: 'Remove photo.png' })).toBeInTheDocument()
+  })
+
+  // A picture-only chip has no meta line, so the three things that line would
+  // have said are drawn over the image rather than lost.
+  describe('image chip upload state', () => {
+    const image = (over: Record<string, unknown>) =>
+      [createAttachment({ name: 'photo.png', type: 'image/png', preview: 'blob:x', ...over })]
+
+    // A bar, like the text chip's — narrow enough that it reports movement
+    // rather than a figure, which is what it is there for.
+    it('fills a bar as the upload moves', () => {
+      const { rerender } = render(
+        <AttachmentPreview attachments={image({ upload: { status: 'uploading', percent: 40, agentSlug: 'a' } })} onRemove={vi.fn()} />,
+      )
+      // overlay > Progress track > fill
+      const fill = () =>
+        screen.getByTestId('attachment-progress').firstElementChild!.firstElementChild as HTMLElement
+      expect(fill()).not.toBeNull()
+      expect(fill().style.width).toBe('40%')
+      expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'uploading')
+
+      rerender(<AttachmentPreview attachments={image({ upload: { status: 'uploading', percent: 85, agentSlug: 'a' } })} onRemove={vi.fn()} />)
+      expect(fill().style.width).toBe('85%')
+    })
+
+    it('spins instead when there is no byte progress to report', () => {
+      render(<AttachmentPreview attachments={image({ upload: { status: 'uploading', agentSlug: 'a' } })} onRemove={vi.fn()} />)
+      const progress = screen.getByTestId('attachment-progress')
+      expect(progress.querySelector('.animate-spin')).not.toBeNull()
+    })
+
+    it('marks a queued upload as waiting', () => {
+      render(<AttachmentPreview attachments={image({ upload: { status: 'queued', agentSlug: 'a' } })} onRemove={vi.fn()} />)
+      expect(screen.getByTestId('attachment-queued')).toHaveAttribute('title', 'Waiting to upload')
+    })
+
+    // The whole square is the retry target — a second button beside the remove
+    // control, inside 44px, would be too small to aim at.
+    it('offers retry over the picture when the upload failed', async () => {
+      const user = userEvent.setup()
+      const onRetry = vi.fn()
+      render(<AttachmentPreview attachments={image({ id: 'att-9', error: 'network down' })} onRetry={onRetry} onRemove={vi.fn()} />)
+
+      const retry = screen.getByRole('button', { name: 'Retry upload of photo.png' })
+      expect(retry).toHaveAttribute('title', 'network down — click to retry')
+      await user.click(retry)
+      expect(onRetry).toHaveBeenCalledWith('att-9')
+    })
+
+    it('still reports a failure when there is nothing to retry with', () => {
+      render(<AttachmentPreview attachments={image({ error: 'network down' })} onRemove={vi.fn()} />)
+      expect(screen.queryByTestId('attachment-retry')).toBeNull()
+      expect(screen.getByTitle('network down')).toBeInTheDocument()
+    })
+  })
+
+  // The composer asked the browser's MIME and the sent message asked the
+  // extension, so a .tiff drew as a picture before send and a chip after.
+  it('treats a file no renderer can display as a chip, whatever its MIME says', () => {
+    const attachments = [
+      createAttachment({ name: 'scan.tiff', size: 2048, type: 'image/tiff', preview: 'blob:x' }),
+    ]
+    render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
+    expect(screen.queryByAltText('scan.tiff')).toBeNull()
+    expect(screen.getByText('scan.tiff')).toBeInTheDocument()
   })
 
   it('calls onRemove with attachment id when remove button is clicked', async () => {
@@ -225,3 +292,51 @@ describe('AttachmentPreview', () => {
     expect(screen.getByText('mounted, read-write')).toBeInTheDocument()
   })
 })
+
+describe('upload status', () => {
+  it('queued shows "waiting" without a spinner', () => {
+    render(<AttachmentPreview attachments={[createAttachment({ upload: { status: 'queued', agentSlug: 'a' } })]} onRemove={vi.fn()} />)
+    const chip = screen.getByTestId('attachment-preview')
+    expect(chip).toHaveAttribute('data-attachment-status', 'queued')
+    expect(screen.getByText('waiting')).toBeInTheDocument()
+    expect(chip.querySelector('.animate-spin')).toBeNull()
+  })
+
+  it('uploading with percent shows a bar and the size, no percent text', () => {
+    render(<AttachmentPreview attachments={[createAttachment({ size: 2048, upload: { status: 'uploading', percent: 31, agentSlug: 'a' } })]} onRemove={vi.fn()} />)
+    expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'uploading')
+    expect(screen.getByTestId('attachment-progress')).toBeInTheDocument()
+    expect(screen.getByText('2.0 KB')).toBeInTheDocument()
+    expect(screen.queryByText(/31/)).toBeNull()
+  })
+
+  it('uploading without percent shows a spinner', () => {
+    render(<AttachmentPreview attachments={[createFolderAttachment({ upload: { status: 'uploading', agentSlug: 'a' } })]} onRemove={vi.fn()} />)
+    expect(screen.getByTestId('attachment-preview').querySelector('.animate-spin')).not.toBeNull()
+  })
+
+  it('done shows just the size, with no badge or progress', () => {
+    render(<AttachmentPreview attachments={[createAttachment({ size: 2048, upload: { status: 'done', path: '/p', agentSlug: 'a' } })]} onRemove={vi.fn()} />)
+    expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'done')
+    expect(screen.getByText('2.0 KB')).toBeInTheDocument()
+    expect(screen.queryByTestId('attachment-done')).toBeNull()
+    expect(screen.queryByTestId('attachment-progress')).toBeNull()
+  })
+
+  it('error shows the reason on hover and a retry control', async () => {
+    const onRetry = vi.fn()
+    render(<AttachmentPreview attachments={[createAttachment({ id: 'x', error: 'Upload stalled for 30 seconds. Check your connection and retry.' })]} onRemove={vi.fn()} onRetry={onRetry} />)
+    const chip = screen.getByTestId('attachment-preview')
+    expect(chip).toHaveAttribute('data-attachment-status', 'error')
+    expect(chip).toHaveAttribute('data-attachment-error', 'Upload stalled for 30 seconds. Check your connection and retry.')
+    expect(screen.getByText('upload failed')).toHaveAttribute('title', 'Upload stalled for 30 seconds. Check your connection and retry.')
+    await userEvent.click(screen.getByRole('button', { name: 'retry' }))
+    expect(onRetry).toHaveBeenCalledWith('x')
+  })
+
+  it('a chip with neither field has no status attribute (mount, pre-upload)', () => {
+    render(<AttachmentPreview attachments={[createAttachment()]} onRemove={vi.fn()} />)
+    expect(screen.getByTestId('attachment-preview')).not.toHaveAttribute('data-attachment-status')
+  })
+})
+

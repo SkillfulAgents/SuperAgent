@@ -25,6 +25,13 @@ const CORRUPT_SNAPSHOT_MSG =
   'Command failed: /Users/nick/.superagent/bin/lima-nerdctl run -d --name superagent-abc123 ' +
   'time="2026-07-13T11:33:27-07:00" level=fatal msg="mount callback failed on /tmp/containerd-mount3006401431: no users found"'
 
+// The other corruption shape: the snapshotter's metadata references a layer
+// directory that is missing from disk (dirty VM shutdown mid-unpack).
+const BROKEN_PARENT_CHAIN_MSG =
+  'Command failed: /Users/nick/.superagent/bin/lima-nerdctl run -d --name superagent-abc123 ' +
+  'time="2026-08-24T17:22:54+01:00" level=fatal msg="failed to stat parent: stat ' +
+  '/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/402/fs: no such file or directory"'
+
 vi.mock('child_process', () => {
   // promisify(exec) calls exec(command, options, callback) and resolves with
   // the callback's second arg, so every command resolves with { stdout, stderr }
@@ -178,6 +185,17 @@ describe('start() recovers from a corrupt image snapshot', () => {
     // No build context (packaged app) → the registry pull restores the image.
     expect(pullImageMock).toHaveBeenCalledWith('docker', IMAGE)
     expect(buildImageMock).not.toHaveBeenCalled()
+    expect(countRunAttempts()).toBe(2)
+  })
+
+  it('recovers from a broken snapshot parent chain the same way', async () => {
+    runScript = [BROKEN_PARENT_CHAIN_MSG, 'ok']
+    const client = new TestContainerClient({ agentId: 'abc123' } as ContainerConfig)
+
+    await client.start()
+
+    expect(execCommands.some((c) => c.includes(`rmi -f ${IMAGE}`))).toBe(true)
+    expect(pullImageMock).toHaveBeenCalledWith('docker', IMAGE)
     expect(countRunAttempts()).toBe(2)
   })
 

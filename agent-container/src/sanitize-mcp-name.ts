@@ -6,11 +6,11 @@ export const RESERVED_MCP_NAMES = new Set(['user_input', 'browser', 'dashboards'
 /**
  * Sanitize an MCP server name for use as an SDK MCP server key.
  * Lowercases, replaces non-alphanumeric chars with underscores,
- * and prefixes with "remote_" if the result collides with a built-in name.
+ * User names cannot occupy built-in or integration-owned namespaces.
  */
-export function sanitizeMcpName(name: string): string {
+export function sanitizeMcpName(name: string, agentOwned = false): string {
   let sanitized = name.toLowerCase().replace(/[^a-z0-9]/g, '_');
-  if (RESERVED_MCP_NAMES.has(sanitized)) {
+  if (RESERVED_MCP_NAMES.has(sanitized) || (!agentOwned && sanitized.startsWith('agent_integration_'))) {
     sanitized = `remote_${sanitized}`;
   }
   return sanitized;

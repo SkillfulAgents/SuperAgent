@@ -171,6 +171,12 @@ vi.mock('@renderer/lib/env', () => ({
   getApiBaseUrl: () => '',
 }))
 
+// Keep the lazily loaded graph (xyflow + d3-force) out of jsdom; tests only
+// care whether HomePage mounts it or the empty state.
+vi.mock('./graph/agent-graph', () => ({
+  AgentGraph: () => <div data-testid="agent-graph-stub" />,
+}))
+
 // Import after mocks
 import { HomePage } from './home-page'
 
@@ -313,7 +319,32 @@ describe('HomePage AgentCard', () => {
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    expect(screen.getByText('No agents yet')).toBeInTheDocument()
+    const empty = screen.getByTestId('home-empty-state')
+    expect(screen.getByRole('button', { name: /Create your first agent/ })).toBeInTheDocument()
+    // The heading was dropped — the ghost board and the live cell's button
+    // are the whole message.
+    expect(screen.queryByText(/haven’t created any agents/)).not.toBeInTheDocument()
+    // The colour bloom is a decorative sibling layer behind the glass card
+    // (home-empty-clouds.tsx), never a wrapper around the text.
+    expect(empty.querySelector('[data-testid="home-empty-clouds"]')).not.toBeNull()
+    // The ghost board sits outside the dialog block, anchored to the section.
+    expect(screen.getByTestId('home-empty-skeleton')).toBeInTheDocument()
+  })
+
+  it('drops the section header on the empty state, keeping it while loading', () => {
+    mockAgentsData.mockReturnValue({ data: [], isLoading: false })
+    const { unmount } = renderWithProviders(<HomePage />)
+    // No title, arrange menu, or New Agent button competing with the empty
+    // state's own call to action.
+    expect(screen.queryByText('Your Agents')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^New Agent$/ })).not.toBeInTheDocument()
+    unmount()
+
+    // Still shown while loading, so resolving to a populated board doesn't
+    // shift the layout.
+    mockAgentsData.mockReturnValue({ data: [], isLoading: true })
+    renderWithProviders(<HomePage />)
+    expect(screen.getByText('Your Agents')).toBeInTheDocument()
   })
 
   it('renders last activity with dashboard summaries', () => {
@@ -425,7 +456,7 @@ describe('HomePage AgentCard', () => {
     renderWithProviders(<HomePage />)
 
     expect(screen.queryByRole('button', { name: 'Options for Test Agent' })).not.toBeInTheDocument()
-    expect(screen.getByRole('switch', { name: 'Expanded' })).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Compact View' })).toBeInTheDocument()
     expect(document.querySelector('button button')).toBeNull()
     const contextMenuEvent = vi.fn()
     screen.getByTestId('agent-context-trigger').addEventListener('contextmenu', contextMenuEvent)
@@ -458,7 +489,7 @@ describe('HomePage AgentCard', () => {
     })
     renderWithProviders(<HomePage />)
 
-    screen.getByRole('switch', { name: 'Expanded' }).click()
+    screen.getByRole('switch', { name: 'Compact View' }).click()
 
     const layoutCall = mockUpdateSettingsMutate.mock.calls.find(
       ([data]) => data && typeof data === 'object' && 'homeGridLayout' in data
@@ -481,7 +512,7 @@ describe('HomePage AgentCard', () => {
     })
     renderWithProviders(<HomePage />)
 
-    screen.getByRole('switch', { name: 'Expanded' }).click()
+    screen.getByRole('switch', { name: 'Compact View' }).click()
 
     const layoutCall = mockUpdateSettingsMutate.mock.calls.find(
       ([data]) => data && typeof data === 'object' && 'homeGridLayout' in data
@@ -502,9 +533,10 @@ describe('HomePage AgentCard', () => {
     })
     renderWithProviders(<HomePage />)
 
-    screen.getByRole('switch', { name: 'Expanded' }).click()
+    screen.getByRole('switch', { name: 'Compact View' }).click()
 
-    expect(screen.getByRole('switch', { name: 'Expanded' })).toHaveAttribute('aria-checked', 'true')
+    // Save failed, so the card is still Wide: Compact stays off.
+    expect(screen.getByRole('switch', { name: 'Compact View' })).toHaveAttribute('aria-checked', 'false')
     expect(mockToastError).toHaveBeenCalledWith('Failed to save the home layout', {
       description: 'offline',
     })
@@ -649,10 +681,11 @@ describe('HomePage AgentCard', () => {
     mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
     renderWithProviders(<HomePage />)
 
-    // With no mobile map yet, the phone inherits the desktop card size.
-    const expanded = screen.getByRole('switch', { name: 'Expanded' })
-    expect(expanded).toHaveAttribute('aria-checked', 'true')
-    expanded.click()
+    // With no mobile map yet, the phone inherits the desktop card size (Wide,
+    // so Compact is off).
+    const compact = screen.getByRole('switch', { name: 'Compact View' })
+    expect(compact).toHaveAttribute('aria-checked', 'false')
+    compact.click()
 
     expect(mockUpdateSettingsMutate).toHaveBeenCalledWith(
       {

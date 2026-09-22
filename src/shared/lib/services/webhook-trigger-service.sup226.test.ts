@@ -2,7 +2,7 @@
  * SUP-226 — Webhook polling skips the connected-account owner when the trigger
  * creator lacks a platform auth row.
  *
- * `getDistinctPlatformMemberIdsForActiveTriggers()` collapses the creator/owner
+ * `(await getDistinctPlatformMemberIdsForActiveTriggers())` collapses the creator/owner
  * candidates with `??` and only resolves a member ID for whichever user `??`
  * picked. When `createdByUserId` is set but that user has no platform
  * `authAccount` row, the function never tries the connected-account owner, so an
@@ -29,13 +29,16 @@ vi.mock('@shared/lib/db', () => ({
   get db() {
     return testDb
   },
-  get sqlite() {
-    return testSqlite
-  },
 }))
 
 vi.mock('../analytics/server-analytics', () => ({
   trackServerEvent: vi.fn(),
+}))
+
+// Hermetic: the stored-member fallback must not read this machine's settings.
+vi.mock('@shared/lib/services/platform-auth-service', () => ({
+  getPlatformAccessToken: () => null,
+  getStoredPlatformMemberId: () => null,
 }))
 
 import {
@@ -113,7 +116,7 @@ describe('SUP-226: getDistinctPlatformMemberIdsForActiveTriggers owner fallback'
 
     // Before the fix the `??` resolves to creator_user, whose lookup returns
     // null, and the owner is never tried → returns []. The trigger is dropped.
-    expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual(['sub_owner_member'])
+    expect((await getDistinctPlatformMemberIdsForActiveTriggers())).toEqual(['sub_owner_member'])
   })
 
   it('prefers the creator when the creator does have a platform member (creator priority)', async () => {
@@ -132,7 +135,7 @@ describe('SUP-226: getDistinctPlatformMemberIdsForActiveTriggers owner fallback'
       createdByUserId: 'creator_user',
     })
 
-    expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual(['sub_creator_member'])
+    expect((await getDistinctPlatformMemberIdsForActiveTriggers())).toEqual(['sub_creator_member'])
   })
 
   it('resolves the owner when the trigger has no creator at all', async () => {
@@ -149,7 +152,7 @@ describe('SUP-226: getDistinctPlatformMemberIdsForActiveTriggers owner fallback'
       // no createdByUserId
     })
 
-    expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual(['sub_owner_member'])
+    expect((await getDistinctPlatformMemberIdsForActiveTriggers())).toEqual(['sub_owner_member'])
   })
 
   it('drops triggers when neither creator nor owner resolves to a platform member', async () => {
@@ -166,6 +169,30 @@ describe('SUP-226: getDistinctPlatformMemberIdsForActiveTriggers owner fallback'
       createdByUserId: 'creator_user',
     })
 
-    expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual([])
+    expect((await getDistinctPlatformMemberIdsForActiveTriggers())).toEqual([])
+  })
+
+  // SUP-765: the proxy scopes the subscription (and its events) to the minting
+  // member, so it must lead the poll set or the trigger silently never fires.
+  // The creator stays in the set behind it: if the minter has since left the
+  // org their poll throws and the loop only logs it, so dropping the SUP-226
+  // fallback here would strand the trigger for good.
+  it('leads with the recorded minting member, keeping the creator as fallback', async () => {
+    await insertUser('creator_user')
+    await insertPlatformAccount('creator_user', 'sub_creator_member')
+
+    await createWebhookTrigger({
+      agentSlug: 'agent-1',
+      composioTriggerId: 'ti_1',
+      triggerType: 'GMAIL_NEW_EMAIL',
+      prompt: 'Handle email',
+      createdByUserId: 'creator_user',
+      mintedByMemberId: 'sub_minted_member',
+    })
+
+    expect((await getDistinctPlatformMemberIdsForActiveTriggers())).toEqual([
+      'sub_minted_member',
+      'sub_creator_member',
+    ])
   })
 })

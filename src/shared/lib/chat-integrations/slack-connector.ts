@@ -11,7 +11,7 @@ import { App as SlackApp, SocketModeReceiver } from '@slack/bolt'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import {
-  ChatClientConnector,
+  ChatAgentIntegration,
   isMultiPartyChatType,
   type ChatConversationType,
   type ChatDirectoryChannel,
@@ -20,10 +20,12 @@ import {
   type ChatClassifyContext,
   type OutgoingMessage,
   type SystemPromptContext,
-} from './base-connector'
+} from './chat-agent-integration'
 import { buildSessionContextPrompt } from './chat-session-context'
-import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage, withSessionUrl, type AppLinkContext } from './utils'
+import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
+import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { isUnrecoverableSlackError } from './slack-error'
+import { MAX_TRACKED_SLACK_THREADS, type SlackThreadStateStore } from './slack-thread-state'
 import { captureException } from '@shared/lib/error-reporting'
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -311,7 +313,7 @@ export function reactionsForChat(activeReactions: Set<string>, chatId: string): 
 
 // ── Connector ───────────────────────────────────────────────────────────
 
-export class SlackConnector extends ChatClientConnector {
+export class SlackConnector extends ChatAgentIntegration {
   readonly provider = 'slack' as const
 
   static generateSystemPrompt = buildSlackSystemPrompt
@@ -370,9 +372,13 @@ export class SlackConnector extends ChatClientConnector {
   // a busy workspace can't grow threadContextMap/activeThreads without limit. Evicts
   // least-recently-touched threads; an evicted thread just re-fetches history /
   // requires a re-mention if it ever resurfaces.
-  private static readonly MAX_TRACKED_THREADS = 1000
+  private static readonly MAX_TRACKED_THREADS = MAX_TRACKED_SLACK_THREADS
 
-  constructor(private config: SlackConfig, private appLink?: AppLinkContext) {
+  constructor(
+    private config: SlackConfig,
+    private appLink?: AppLinkContext,
+    private threadState?: SlackThreadStateStore,
+  ) {
     super()
   }
 
@@ -422,9 +428,10 @@ export class SlackConnector extends ChatClientConnector {
 
     // Handle incoming messages
     app.message(async ({ message, say: _say }: { message: any; say: any }) => {
+      if (!message || this.disconnecting) return
       // Skip bot messages, edits, etc. — but allow file_share (user sent an image/file)
       const subtype = (message as any).subtype
-      if (!message || (subtype && subtype !== 'file_share')) return
+      if (subtype && subtype !== 'file_share') return
       const msg = message as any
 
       const rawText = msg.text || ''
@@ -461,6 +468,16 @@ export class SlackConnector extends ChatClientConnector {
       }
       if (routing.threadKey) {
         touchAndCapSet(this.activeThreads, routing.threadKey, SlackConnector.MAX_TRACKED_THREADS)
+        // Persist on receipt, not disconnect: abrupt process exits must retain
+        // participation too. A disk error must not swallow the current message.
+        if (this.threadState && this.botUserId) {
+          try {
+            await this.threadState.save(this.botUserId, [...this.activeThreads])
+          } catch (err) {
+            console.error('[SlackConnector] Failed to persist thread participation:', err)
+            captureException(err, { tags: { component: 'slack', operation: 'save-thread-state' } })
+          }
+        }
       }
 
       // Track message ts for reaction-based typing (bounded: in-thread sessions
@@ -589,6 +606,15 @@ export class SlackConnector extends ChatClientConnector {
       this.connected = false
       if (!this.disconnecting && this.started) this.scheduleReconnect()
     })
+
+    // Restore before Socket Mode can deliver the first event. Session restore
+    // alone is insufficient when several threads share a single agent session.
+    if (this.threadState && this.botUserId && !this.disconnecting) {
+      this.activeThreads.clear()
+      for (const key of await this.threadState.load(this.botUserId)) {
+        touchAndCapSet(this.activeThreads, key, SlackConnector.MAX_TRACKED_THREADS)
+      }
+    }
 
     // Start Socket Mode (requires valid app-level token with connections:write)
     try {

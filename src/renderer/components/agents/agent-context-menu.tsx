@@ -1,11 +1,14 @@
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo, useRef } from 'react'
 import { toast } from 'sonner'
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu'
 import {
@@ -18,18 +21,70 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import { useDeleteAgent, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@renderer/components/ui/dialog'
+import { Button } from '@renderer/components/ui/button'
+import { useAgents, useRouteAgentId, useUpdateAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
-import { AgentSettingsDialog } from './agent-settings-dialog'
+import { useNavTransient } from '@renderer/context/nav-transient-context'
+import { DeleteAgentConfirmDialog } from './delete-agent-confirm-dialog'
 import { apiFetch } from '@renderer/lib/api'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
-import { Settings, FolderOpen, Copy, Trash2, LogOut, Move } from 'lucide-react'
+import {
+  Trash2,
+  LogOut,
+  LayoutPanelTop,
+  FolderInput,
+  Pencil,
+  Plus,
+  ArrowDownToLine,
+  FolderTree,
+  ChevronRight,
+} from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
+import { Input } from '@renderer/components/ui/input'
+import { useUserSettings, useUpdateUserSettings, type UserSettingsData } from '@renderer/hooks/use-user-settings'
+import { applyAgentOrder } from '@renderer/lib/agent-ordering'
+import {
+  ROOT_FOLDER_ID,
+  ROOT_FOLDER_NAME,
+  applyTreeOperation,
+  buildFolderSections,
+  newFolderId,
+  sanitizeFolders,
+  sectionsToSettings,
+  uniqueFolderName,
+  type FolderSection,
+} from '@renderer/lib/agent-folders'
 
 interface AgentContextMenuProps {
   agent: ApiAgent
   children: React.ReactNode
+  /**
+   * Where the surface has an inline-editable title (the agent home), Rename
+   * hands off to it instead of opening the rename dialog.
+   */
+  onRename?: () => void
+  /**
+   * Where the Share popover is mounted (the agent home), Export opens it on
+   * its Export pane directly. Elsewhere the menu navigates to the agent home
+   * and the popover opens on arrival.
+   */
+  onExport?: () => void
+  /**
+   * Where the workspace folder panel is mounted (the agent home), Agent
+   * Directory opens it directly. Elsewhere the menu navigates to the agent
+   * home and the panel opens on arrival.
+   */
+  onOpenDirectory?: () => void
+  /** Reports the menu opening and closing (e.g. for a button's aria-expanded). */
+  onOpenChange?: (open: boolean) => void
   /** Homepage-only controls that should share the agent's single menu surface. */
   additionalOptions?: React.ReactNode
   /** Enables the homepage grid's explicit arrange mode from any agent card. */
@@ -38,22 +93,40 @@ interface AgentContextMenuProps {
   disableTouchLongPress?: boolean
 }
 
+/**
+ * The one agent menu. Every entry point — sidebar row right-click, home card
+ * right-click/long-press, breadcrumb right-click, and the agent home's
+ * three-dot button — opens this same list, so an action is never only
+ * reachable from one of them.
+ */
 export function AgentContextMenu({
   agent,
   children,
+  onRename,
+  onExport,
+  onOpenDirectory,
+  onOpenChange,
   additionalOptions,
   onArrange,
   disableTouchLongPress,
 }: AgentContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showLeaveDialog, setShowLeaveDialog] = useState(false)
-  const [showSettingsDialog, setShowSettingsDialog] = useState(false)
-  const [showPathDialog, setShowPathDialog] = useState(false)
-  const [agentPath, setAgentPath] = useState('')
-  const [isDeleting, setIsDeleting] = useState(false)
+  const [showNewFolderDialog, setShowNewFolderDialog] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [showRenameDialog, setShowRenameDialog] = useState(false)
+  const [newName, setNewName] = useState(agent.name)
   const [isLeaving, setIsLeaving] = useState(false)
-  const deleteAgent = useDeleteAgent()
+  // Hand-offs to another surface on the page (the inline title, the Share
+  // popover) wait for the menu to finish closing (onCloseAutoFocus): the menu
+  // is modal, so an input mounted while it is still open has its autofocus
+  // pulled straight back into the menu by the focus trap, and on close the
+  // menu would then restore focus to whatever opened it. Deferring past both
+  // leaves focus where the hand-off put it.
+  const pendingCloseActionRef = useRef<(() => void) | null>(null)
+  const updateAgent = useUpdateAgent()
   const navigate = useNavigate()
+  const { setPendingAgentHomeAction } = useNavTransient()
   // undefined when the menu is opened off the agent route (e.g. from the sidebar
   // list), so the up-nav only fires when we're actually viewing the agent being
   // deleted/left. Resolves the URL display slug to the canonical id to compare.
@@ -62,43 +135,137 @@ export function AgentContextMenu({
   const queryClient = useQueryClient()
   const isOwner = canAdminAgent(agent.slug)
 
-  // `open: true` makes the API run the file manager on ITS OWN host. That is
-  // what you want when the API is this computer; against a cloud workspace it
-  // asks the deployment to launch `open`/`explorer`/`xdg-open` somewhere nobody
-  // is looking. Remotely this becomes the copy-the-path action the web build
-  // already uses, which is the part that still works.
-  const canShowDirectory = canUseHostFeatures()
+  // Left-nav folders are a per-user projection (see `agent-folders.ts`), so
+  // this is offered for shared agents too — filing one moves it for nobody
+  // else. It is also the only way to file an agent on touch, where dragging a
+  // row between folders is not a realistic gesture.
+  const { data: userSettings } = useUserSettings()
+  const { data: allAgents } = useAgents()
+  const updateSettings = useUpdateUserSettings()
+  const folders = useMemo(() => sanitizeFolders(userSettings?.agentFolders), [userSettings?.agentFolders])
+  const assignedFolderId = userSettings?.agentFolderAssignments?.[agent.slug]
+  // An assignment naming a folder that no longer exists reads as the default
+  // folder, the same way the sidebar renders it.
+  const currentFolderId =
+    assignedFolderId && folders.some((f) => f.id === assignedFolderId)
+      ? assignedFolderId
+      : ROOT_FOLDER_ID
+  // The submenu offers only where the agent can go. Leaving out the folder it
+  // is already in means there is no current value to mark, so the list is
+  // plain items rather than a radio group.
+  const destinations: Array<{ id: string; name: string }> = [
+    { id: ROOT_FOLDER_ID, name: ROOT_FOLDER_NAME },
+    ...folders,
+  ].filter((folder) => folder.id !== currentFolderId)
 
-  const handleDirectoryAction = useCallback(async () => {
-    const res = await apiFetch(`/api/agents/${agent.slug}/open-directory`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ open: canShowDirectory }),
+  // Filing writes the whole canonical tree — the same shape a drag writes —
+  // so the two filing paths leave identical settings and the flat agentOrder
+  // the home grid, graph and tray read always matches the sidebar's reading
+  // order. (An assignment-only write left agentOrder stale until the next
+  // drag.) Both writes use the updater form: they resolve against the
+  // settings as of when the (scope-serialized) mutation runs, so a filing
+  // queued behind an in-flight write cannot revert it. Filing appends to the
+  // target folder, matching a drop on the folder's header.
+  const buildSections = useCallback(
+    (current: UserSettingsData) =>
+      buildFolderSections(
+        applyAgentOrder(allAgents ?? [], current.agentOrder),
+        current.agentFolders,
+        current.agentFolderAssignments,
+        current.agentListOrder
+      ),
+    [allAgents]
+  )
+
+  const handleMoveToFolder = useCallback((folderId: string) => {
+    updateSettings.mutate((current) =>
+      sectionsToSettings(
+        applyTreeOperation(buildSections(current), {
+          kind: 'placeAgent',
+          slug: agent.slug,
+          folderId,
+          index: Number.MAX_SAFE_INTEGER,
+        })
+      )
+    )
+  }, [agent.slug, buildSections, updateSettings])
+
+  const handleCreateFolderWithAgent = useCallback(() => {
+    const name = newFolderName.trim()
+    if (!name) return
+    const id = newFolderId()
+    updateSettings.mutate((current) => {
+      const sections = buildSections(current)
+      const currentFolders = sections.filter((s) => !s.isRoot).map((s) => s.folder)
+      const withFolder: FolderSection[] = [
+        ...sections,
+        { folder: { id, name: uniqueFolderName(currentFolders, name) }, isRoot: false, agents: [] },
+      ]
+      return sectionsToSettings(
+        applyTreeOperation(withFolder, {
+          kind: 'placeAgent',
+          slug: agent.slug,
+          folderId: id,
+          index: 0,
+        })
+      )
     })
-    if (!canShowDirectory && res.ok) {
-      const { path } = await res.json()
-      try {
-        await navigator.clipboard.writeText(path)
-      } catch {
-        setAgentPath(path)
-        setShowPathDialog(true)
-      }
-    }
-  }, [agent.slug, canShowDirectory])
+    setShowNewFolderDialog(false)
+    setNewFolderName('')
+  }, [agent.slug, buildSections, newFolderName, updateSettings])
 
-  const handleDelete = async () => {
-    setIsDeleting(true)
+  // Runs from the close hook, never from the item click: if the agent home is
+  // already the page underneath, its effect opens the popover at once, and
+  // the still-closing menu then hands focus back to its trigger — which the
+  // non-modal Share popover reads as an outside interaction and dismisses.
+  // Waiting for the close (and suppressing that focus return) keeps it open.
+  const parkAgentHomeAction = (action: 'export' | 'directory') => {
+    setPendingAgentHomeAction({ slug: agent.slug, action })
+    void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
+  }
+
+  const handleRenameItem = () => {
+    if (onRename) {
+      pendingCloseActionRef.current = onRename
+      return
+    }
+    setNewName(agent.name)
+    setShowRenameDialog(true)
+  }
+
+  const handleExportItem = () => {
+    if (onExport) {
+      pendingCloseActionRef.current = onExport
+      return
+    }
+    // Away from the agent home: go there, and let it open the Export pane
+    // once the Share popover is mounted.
+    pendingCloseActionRef.current = () => parkAgentHomeAction('export')
+  }
+
+  const handleDirectoryItem = () => {
+    if (onOpenDirectory) {
+      pendingCloseActionRef.current = onOpenDirectory
+      return
+    }
+    // Same hand-off as Export: the folder panel lives on the agent home.
+    pendingCloseActionRef.current = () => parkAgentHomeAction('directory')
+  }
+
+  const handleRename = async () => {
+    const trimmed = newName.trim()
+    if (!trimmed || trimmed === agent.name) {
+      setShowRenameDialog(false)
+      return
+    }
     try {
-      await deleteAgent.mutateAsync(agent.slug)
-      setShowDeleteDialog(false)
-      if (routeAgentId === agent.slug) {
-        void navigate({ to: '/' })
-      }
+      await updateAgent.mutateAsync({ slug: agent.slug, name: trimmed })
+      setShowRenameDialog(false)
     } catch (error) {
-      console.error('Failed to delete agent:', error)
-      toast.error(error instanceof Error ? error.message : 'Failed to delete agent')
-    } finally {
-      setIsDeleting(false)
+      console.error('Failed to rename agent:', error)
+      toast.error('Failed to rename agent', {
+        description: error instanceof Error ? error.message : 'Please try again.',
+      })
     }
   }
 
@@ -126,11 +293,24 @@ export function AgentContextMenu({
 
   return (
     <>
-      <ContextMenu>
+      <ContextMenu onOpenChange={onOpenChange}>
         <ContextMenuTrigger asChild disableTouchLongPress={disableTouchLongPress}>
           {children}
         </ContextMenuTrigger>
-        <ContextMenuContent>
+        <ContextMenuContent
+          data-testid="agent-context-menu"
+          // Fixed width so the panel reads the same from every entry point; items
+          // stay edge-aligned (text left, chevrons right) rather than inset.
+          className="w-52 rounded-xl p-2"
+          onCloseAutoFocus={(e) => {
+            const action = pendingCloseActionRef.current
+            if (!action) return
+            pendingCloseActionRef.current = null
+            e.preventDefault()
+            action()
+          }}
+        >
+          {additionalOptions}
           {onArrange && (
             <ContextMenuItem
               onClick={() => {
@@ -138,50 +318,83 @@ export function AgentContextMenu({
               }}
               data-testid="arrange-agent-cards-item"
             >
-              <Move className="h-4 w-4 mr-2" />
+              <LayoutPanelTop className="h-4 w-4 mr-2" />
               Arrange
             </ContextMenuItem>
           )}
-          {additionalOptions}
-          {(onArrange || additionalOptions) && <ContextMenuSeparator />}
-          <ContextMenuItem
-            onClick={() => setShowSettingsDialog(true)}
-            data-testid="agent-settings-item"
-          >
-            <Settings className="h-4 w-4 mr-2" />
-            Settings
-          </ContextMenuItem>
+          {(onArrange || additionalOptions) && <ContextMenuSeparator className="mx-1" />}
           {isOwner && (
-            <ContextMenuItem
-              onClick={handleDirectoryAction}
-              data-testid="open-agent-directory-item"
-            >
-              {canShowDirectory ? (
-                <>
-                  <FolderOpen className="h-4 w-4 mr-2" />
-                  Show Agent Directory
-                </>
-              ) : (
-                <>
-                  <Copy className="h-4 w-4 mr-2" />
-                  Copy Agent Directory Path
-                </>
-              )}
+            <ContextMenuItem onClick={handleRenameItem} data-testid="rename-agent-item">
+              <Pencil className="h-4 w-4 mr-2" />
+              Rename Agent
             </ContextMenuItem>
           )}
           {isOwner && (
-            <ContextMenuItem
-              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-              onClick={() => setShowDeleteDialog(true)}
-              data-testid="delete-agent-item"
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete Agent
+            <ContextMenuItem onClick={handleExportItem} data-testid="export-agent-item">
+              <ArrowDownToLine className="h-4 w-4 mr-2" />
+              Export Agent
             </ContextMenuItem>
+          )}
+          <ContextMenuSeparator className="mx-1" />
+          <ContextMenuSub>
+            <ContextMenuSubTrigger data-testid="move-agent-to-folder-trigger">
+              <FolderInput className="h-4 w-4 mr-2" />
+              Move to Folder
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent className="rounded-xl p-2" data-testid="move-agent-to-folder-menu">
+              {destinations.map((folder) => (
+                <ContextMenuItem
+                  key={folder.id}
+                  onClick={() => handleMoveToFolder(folder.id)}
+                  data-testid={
+                    folder.id === ROOT_FOLDER_ID
+                      ? 'move-agent-to-no-folder-item'
+                      : `move-agent-to-folder-${folder.id}`
+                  }
+                >
+                  {folder.name}
+                </ContextMenuItem>
+              ))}
+              {/* With nowhere to go (no folders, agent already in the default
+                  one) the list is empty, so no rule sits above New Folder. */}
+              {destinations.length > 0 && <ContextMenuSeparator className="mx-1" />}
+              <ContextMenuItem
+                // Secondary to the destinations above: muted until focused.
+                className="text-muted-foreground"
+                onClick={() => {
+                  setNewFolderName('')
+                  setShowNewFolderDialog(true)
+                }}
+                data-testid="move-agent-to-new-folder-item"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                New Folder
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+          {isOwner && (
+            <ContextMenuItem onClick={handleDirectoryItem} data-testid="open-agent-directory-item">
+              <FolderTree className="h-4 w-4 mr-2" />
+              Agent Directory
+              <ChevronRight className="ml-auto h-4 w-4" />
+            </ContextMenuItem>
+          )}
+          {isOwner && (
+            <>
+              <ContextMenuSeparator className="mx-1" />
+              <ContextMenuItem
+                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                onClick={() => setShowDeleteDialog(true)}
+                data-testid="delete-agent-item"
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete Agent
+              </ContextMenuItem>
+            </>
           )}
           {isAuthMode && !isOwner && (
             <>
-              <ContextMenuSeparator />
+              <ContextMenuSeparator className="mx-1" />
               <ContextMenuItem
                 className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                 onClick={() => setShowLeaveDialog(true)}
@@ -195,34 +408,49 @@ export function AgentContextMenu({
         </ContextMenuContent>
       </ContextMenu>
 
-      <AgentSettingsDialog
-        agent={agent}
-        open={showSettingsDialog}
-        onOpenChange={setShowSettingsDialog}
+      <DeleteAgentConfirmDialog
+        agentSlug={agent.slug}
+        agentName={agent.name}
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
       />
 
-      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <AlertDialogContent data-testid="confirm-delete-agent-dialog">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Agent</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete &quot;{agent.name}&quot;? This will permanently
-              delete the agent and all its sessions. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              disabled={isDeleting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              data-testid="confirm-delete-agent-button"
-            >
-              {isDeleting ? 'Deleting...' : 'Delete'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* Rename for surfaces without an inline title (sidebar, home cards). */}
+      <Dialog open={showRenameDialog} onOpenChange={setShowRenameDialog}>
+        <DialogContent className="overflow-hidden" data-testid="rename-agent-dialog">
+          <DialogHeader>
+            <DialogTitle>Rename Agent</DialogTitle>
+            <DialogDescription>Enter a new name for this agent.</DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              void handleRename()
+            }}
+          >
+            <Input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Agent name"
+              aria-label="Agent name"
+              autoFocus
+              data-testid="rename-agent-name-input"
+            />
+            <DialogFooter className="mt-4">
+              <Button type="button" variant="outline" onClick={() => setShowRenameDialog(false)}>
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={updateAgent.isPending || !newName.trim()}
+                data-testid="confirm-rename-agent-button"
+              >
+                {updateAgent.isPending ? 'Renaming...' : 'Rename'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={showLeaveDialog} onOpenChange={setShowLeaveDialog}>
         <AlertDialogContent data-testid="confirm-leave-agent-dialog">
@@ -247,16 +475,39 @@ export function AgentContextMenu({
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={showPathDialog} onOpenChange={setShowPathDialog}>
-        <AlertDialogContent>
+      <AlertDialog open={showNewFolderDialog} onOpenChange={setShowNewFolderDialog}>
+        <AlertDialogContent data-testid="new-agent-folder-dialog">
           <AlertDialogHeader>
-            <AlertDialogTitle>Agent Directory Path</AlertDialogTitle>
-            <AlertDialogDescription className="break-all font-mono text-sm select-all">
-              {agentPath}
+            <AlertDialogTitle>New Folder</AlertDialogTitle>
+            <AlertDialogDescription>
+              Folders organise your left nav only. Shared agents keep their own
+              place for everybody else.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <Input
+            value={newFolderName}
+            onChange={(e) => setNewFolderName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                handleCreateFolderWithAgent()
+              }
+            }}
+            placeholder="Folder name"
+            aria-label="Folder name"
+            autoFocus
+            maxLength={120}
+            data-testid="new-agent-folder-name-input"
+          />
           <AlertDialogFooter>
-            <AlertDialogCancel>Close</AlertDialogCancel>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleCreateFolderWithAgent}
+              disabled={!newFolderName.trim()}
+              data-testid="confirm-new-agent-folder-button"
+            >
+              Create &amp; Move
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -10,6 +10,11 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getStoredPlatformMemberId: () => mockGetStoredPlatformMemberId(),
 }))
 
+const mockGetAgentOwnerUserId = vi.fn((_slug: string): string | null => null)
+vi.mock('@shared/lib/services/agent-owner', () => ({
+  getAgentOwnerUserId: (slug: string) => mockGetAgentOwnerUserId(slug),
+}))
+
 vi.mock('@shared/lib/db', () => {
   const chainable = {
     select: () => chainable,
@@ -64,15 +69,15 @@ beforeEach(() => {
 })
 
 describe('decodeOrgIdFromToken', () => {
-  it('returns the orgId from a 3-segment JWT-shaped token', () => {
+  it('returns the orgId from a 3-segment JWT-shaped token', async () => {
     expect(decodeOrgIdFromToken(buildOrgToken('org_42'))).toBe('org_42')
   })
 
-  it('returns null for opaque tokens (not three segments)', () => {
+  it('returns null for opaque tokens (not three segments)', async () => {
     expect(decodeOrgIdFromToken('opaque-key')).toBeNull()
   })
 
-  it('returns null when payload has no orgId claim', () => {
+  it('returns null when payload has no orgId claim', async () => {
     const header = Buffer.from('{"alg":"none"}').toString('base64url')
     const payload = Buffer.from('{}').toString('base64url')
     expect(decodeOrgIdFromToken(`${header}.${payload}.sig`)).toBeNull()
@@ -80,17 +85,17 @@ describe('decodeOrgIdFromToken', () => {
 })
 
 describe('attribution.requiresActingMember', () => {
-  it('is true for an org-scoped JWT', () => {
+  it('is true for an org-scoped JWT', async () => {
     mockGetPlatformAccessToken.mockReturnValue(ORG_TOKEN)
     expect(attribution.requiresActingMember()).toBe(true)
   })
 
-  it('is false for an opaque access key', () => {
+  it('is false for an opaque access key', async () => {
     mockGetPlatformAccessToken.mockReturnValue(ACCESS_KEY)
     expect(attribution.requiresActingMember()).toBe(false)
   })
 
-  it('is false when no platform token is configured', () => {
+  it('is false when no platform token is configured', async () => {
     mockGetPlatformAccessToken.mockReturnValue(null)
     expect(attribution.requiresActingMember()).toBe(false)
   })
@@ -98,8 +103,8 @@ describe('attribution.requiresActingMember', () => {
 
 describe('attribution.fromCurrentRequest', () => {
   it('resolves the acting user from the request scope', async () => {
-    await runWithRequestUser('user_request_xyz', () => {
-      const auth = attribution.fromCurrentRequest()
+    await runWithRequestUser('user_request_xyz', async () => {
+      const auth = (await attribution.fromCurrentRequest())
       const headers = new Headers()
       auth?.applyTo(headers)
 
@@ -109,14 +114,14 @@ describe('attribution.fromCurrentRequest', () => {
     })
   })
 
-  it('returns null when called outside a request scope', () => {
-    expect(attribution.fromCurrentRequest()).toBeNull()
+  it('returns null when called outside a request scope', async () => {
+    expect((await attribution.fromCurrentRequest())).toBeNull()
   })
 })
 
 describe('attribution.fromUserId', () => {
-  it('builds attribution for an explicit userId', () => {
-    const auth = attribution.fromUserId('user_alice')
+  it('builds attribution for an explicit userId', async () => {
+    const auth = (await attribution.fromUserId('user_alice'))
     const headers = new Headers()
     auth?.applyTo(headers)
     expect(headers.get('Authorization')).toBe(`Bearer ${ORG_TOKEN}::sub_user_123`)
@@ -124,40 +129,91 @@ describe('attribution.fromUserId', () => {
 })
 
 describe('attribution.fromResourceCreator', () => {
-  it('builds attribution from a connection creator userId', () => {
-    const auth = attribution.fromResourceCreator('user_alice')
+  it('builds attribution from a connection creator userId', async () => {
+    const auth = (await attribution.fromResourceCreator('user_alice'))
     expect(auth?.getKey()).toBe('member:sub_user_123')
   })
 
-  it('returns null when the creator is missing', () => {
-    expect(attribution.fromResourceCreator(null)).toBeNull()
+  it('returns null when the creator is missing', async () => {
+    expect((await attribution.fromResourceCreator(null))).toBeNull()
   })
 })
 
 describe('attribution.current', () => {
   it('prefers the runWithAttribution scope', async () => {
-    const scoped = attribution.fromUserId('user_scoped')!
-    await runWithAttribution(scoped, () => {
-      expect(attribution.current()).toBe(scoped)
+    const scoped = (await attribution.fromUserId('user_scoped'))!
+    await runWithAttribution(scoped, async () => {
+      expect((await attribution.current())).toBe(scoped)
     })
   })
 
   it('falls back to the request-user scope', async () => {
-    await runWithRequestUser('user_xyz', () => {
-      expect(attribution.current()).not.toBeNull()
+    await runWithRequestUser('user_xyz', async () => {
+      expect((await attribution.current())).not.toBeNull()
     })
   })
 
-  it('returns null when neither scope is active', () => {
-    expect(attribution.current()).toBeNull()
+  it('returns null when neither scope is active', async () => {
+    expect((await attribution.current())).toBeNull()
+  })
+})
+
+describe('attribution.forAgent (container cold start)', () => {
+  beforeEach(() => {
+    mockGetAgentOwnerUserId.mockReturnValue(null)
+    mockGetStoredPlatformMemberId.mockReturnValue(null)
+  })
+
+  it('prefers the ambient request user over the agent owner', async () => {
+    mockGetAgentOwnerUserId.mockReturnValue('user_owner')
+    await runWithRequestUser('user_request', async () => {
+      (await attribution.forAgent('agent_a'))
+      expect(mockGetAgentOwnerUserId).not.toHaveBeenCalled()
+    })
+  })
+
+  it('prefers an explicit runWithAttribution scope', async () => {
+    const scoped = (await attribution.fromUserId('user_scoped'))!
+    await runWithAttribution(scoped, async () => {
+      expect((await attribution.forAgent('agent_a'))).toBe(scoped)
+    })
+  })
+
+  it('falls back to the agent owner when no scope is active', async () => {
+    mockGetAgentOwnerUserId.mockReturnValue('user_owner')
+    const auth = (await attribution.forAgent('agent_a'))
+    expect(mockGetAgentOwnerUserId).toHaveBeenCalledWith('agent_a')
+    expect(auth?.bearerToken()).toBe(`${ORG_TOKEN}::sub_user_123`)
+  })
+
+  it('falls back to the stored member when the agent has no owner', async () => {
+    mockGetStoredPlatformMemberId.mockReturnValue('sub_settings_789')
+    expect((await attribution.forAgent('agent_a'))?.bearerToken()).toBe(`${ORG_TOKEN}::sub_settings_789`)
+  })
+
+  it('falls back to the stored member when the owner has no platform account', async () => {
+    mockGetAgentOwnerUserId.mockReturnValue('user_orphan')
+    mockDbAll.mockReturnValue([])
+    mockGetStoredPlatformMemberId.mockReturnValue('sub_settings_789')
+    expect((await attribution.forAgent('agent_a'))?.bearerToken()).toBe(`${ORG_TOKEN}::sub_settings_789`)
+  })
+
+  it('returns null for an org token when nothing in the chain resolves a member', async () => {
+    mockDbAll.mockReturnValue([])
+    expect((await attribution.forAgent('agent_a'))).toBeNull()
+  })
+
+  it('returns a member-less attribution for an opaque access key', async () => {
+    mockGetPlatformAccessToken.mockReturnValue(ACCESS_KEY)
+    expect((await attribution.forAgent('agent_a'))?.bearerToken()).toBe(ACCESS_KEY)
   })
 })
 
 describe('access-key path', () => {
   beforeEach(() => mockGetPlatformAccessToken.mockReturnValue(ACCESS_KEY))
 
-  it('passes the access key through unchanged and uses the access_key cache key', () => {
-    const auth = attribution.fromUserId('user_alice')
+  it('passes the access key through unchanged and uses the access_key cache key', async () => {
+    const auth = (await attribution.fromUserId('user_alice'))
     const headers = new Headers()
     auth?.applyTo(headers)
 
@@ -166,35 +222,35 @@ describe('access-key path', () => {
     expect(auth?.getKey()).toBe('access_key')
   })
 
-  it('builds an attribution even when memberId is null', () => {
+  it('builds an attribution even when memberId is null', async () => {
     mockDbAll.mockReturnValue([])
-    expect(attribution.fromResourceCreator('local')?.getKey()).toBe('access_key')
+    expect((await attribution.fromResourceCreator('local'))?.getKey()).toBe('access_key')
   })
 })
 
 describe('refusals', () => {
-  it('returns null when no platform token is configured', () => {
+  it('returns null when no platform token is configured', async () => {
     mockGetPlatformAccessToken.mockReturnValue(null)
-    expect(attribution.fromUserId('user_alice')).toBeNull()
+    expect((await attribution.fromUserId('user_alice'))).toBeNull()
   })
 
-  it('refuses org-scoped tokens without a memberId', () => {
+  it('refuses org-scoped tokens without a memberId', async () => {
     mockDbAll.mockReturnValue([])
-    expect(attribution.fromUserId('user_orphan')).toBeNull()
+    expect((await attribution.fromUserId('user_orphan'))).toBeNull()
   })
 
-  it('falls back to the settings-stored memberId when no authAccount row exists', () => {
+  it('falls back to the settings-stored memberId when no authAccount row exists', async () => {
     mockDbAll.mockReturnValue([])
     mockGetStoredPlatformMemberId.mockReturnValue('sub_settings_789')
-    const auth = attribution.fromUserId('user_orphan')
+    const auth = (await attribution.fromUserId('user_orphan'))
     expect(auth?.bearerToken()).toBe(`${ORG_TOKEN}::sub_settings_789`)
     expect(auth?.getKey()).toBe('member:sub_settings_789')
   })
 })
 
 describe('member-lookup query (via attribution.fromUserId)', () => {
-  it('queries the newest linked platform account', () => {
-    attribution.fromUserId('user_1')
+  it('queries the newest linked platform account', async () => {
+    (await attribution.fromUserId('user_1'))
     expect(mockDbAll).toHaveBeenCalledTimes(1)
     expect(orderByCalls).toEqual([['DESC(account.updated_at)']])
   })

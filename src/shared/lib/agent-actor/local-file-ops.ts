@@ -1,0 +1,531 @@
+/**
+ * Workspace file operations for an agent whose workspace is a directory on
+ * this machine.
+ *
+ * Containment is lexical, as it was for the plain filesystem calls these
+ * operations replace: a workspace path is resolved against the root and
+ * refused when it leaves it (`..`, an absolute path). Links are followed the
+ * way the filesystem follows them. `resolve` answers where a path really
+ * leads, for the callers that served a file by its real location or scoped a
+ * shared sub-tree by it before; checking every operation by real location is
+ * tracked separately. Cross-agent transfers opt into `confined` operations,
+ * which validate canonical paths and opened file handles.
+ *
+ * Writes go through the same temp-file, fsync, rename core as every other
+ * atomic write in the app: a crash never leaves a torn or empty file, a
+ * reader (the container included) never sees a half-written one, and an
+ * existing file keeps its mode and owner unless a mode is asked for. A
+ * document (`putDoc`) is flushed to disk before the write returns; bulk
+ * content (`write`: uploads, imports) is renamed into place whole but not
+ * flushed, as it never was, because a flush per file is what makes a
+ * thousand-file import slow.
+ */
+import * as fs from 'fs'
+import * as path from 'path'
+import { Readable } from 'stream'
+import { isPathWithinDir } from '@shared/lib/utils/path-safety'
+import { writeFileAtomicStream } from '@shared/lib/utils/file-storage'
+import type { ByteRange, FileEntry, FileOps, FileStat, OpenFile, WriteOptions } from './types'
+import { WorkspaceFileError, normalizeWorkspacePath } from './workspace-path'
+
+export interface LocalFileOpsDeps {
+  getAgentWorkspaceDir: (slug: string) => string
+}
+
+export function createLocalFileOps(slug: string, deps: LocalFileOpsDeps): FileOps {
+  // Read at call time: tests and embedded deployments change the data dir in-process.
+  return new LocalFileOps(() => deps.getAgentWorkspaceDir(slug))
+}
+
+type ErrnoLike = { code?: string }
+
+function errnoCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null ? (error as ErrnoLike).code : undefined
+}
+
+/** Translate a filesystem error into the contract's error, or rethrow it. */
+function fromFsError(error: unknown): never {
+  switch (errnoCode(error)) {
+    // A link that loops (ELOOP) resolves to nothing trustworthy: the same as nothing there.
+    case 'ENOENT':
+    case 'ENOTDIR':
+    case 'ELOOP':
+      throw new WorkspaceFileError('not-found')
+    case 'EEXIST':
+      throw new WorkspaceFileError('already-exists')
+    case 'EISDIR':
+      throw new WorkspaceFileError('not-a-file')
+    case 'ENAMETOOLONG':
+      throw new WorkspaceFileError('invalid-path')
+    case 'EACCES':
+    case 'EPERM':
+      throw new WorkspaceFileError('not-accessible')
+    default:
+      throw error
+  }
+}
+
+/** A write's filesystem error: a file where a parent directory should be is `not-a-directory`; the rest as for reads. */
+function fromWriteError(error: unknown): never {
+  if (errnoCode(error) === 'ENOTDIR') throw new WorkspaceFileError('not-a-directory', 'A file is in the way')
+  return fromFsError(error)
+}
+
+/**
+ * Copy a file onto `to`, replacing whatever is there rather than writing
+ * through it. A plain copy follows a link at the destination, and the agent
+ * can plant one in the workspace from inside the container, so the copy
+ * would land on the file the link points at. The exclusive create refuses
+ * any existing entry, link or file; that entry is removed and the create
+ * tried once more, so a link planted in between is refused, not followed.
+ * In the common case, a fresh destination, this is the one copy it was.
+ */
+async function copyFileReplacing(from: string, to: string): Promise<void> {
+  const exclusive = fs.constants.COPYFILE_EXCL
+  try {
+    await fs.promises.copyFile(from, to, exclusive)
+  } catch (error) {
+    if (errnoCode(error) !== 'EEXIST') throw error
+    await fs.promises.unlink(to)
+    await fs.promises.copyFile(from, to, exclusive)
+  }
+}
+
+/** True for the errors that mean "nothing is there": absent, a file in a directory's place, a link loop. */
+function isAbsence(error: unknown): boolean {
+  const code = errnoCode(error)
+  return code === 'ENOENT' || code === 'ENOTDIR' || code === 'ELOOP'
+}
+
+async function realpathOrNull(p: string): Promise<string | null> {
+  try {
+    return await fs.promises.realpath(p)
+  } catch (error) {
+    if (isAbsence(error)) return null
+    return fromFsError(error)
+  }
+}
+
+async function statOrNull(p: string): Promise<fs.Stats | null> {
+  try {
+    return await fs.promises.stat(p)
+  } catch (error) {
+    if (isAbsence(error)) return null
+    return fromFsError(error)
+  }
+}
+
+/**
+ * A mode the caller asks for is applied whatever the file had before: the
+ * rename transfers ownership to this process, and a preserved restrictive
+ * mode would leave a file another uid (the container) can no longer read.
+ * With no mode asked for, an existing file keeps its mode and owner.
+ */
+function atomicWriteOptions(options?: WriteOptions): { mode: number; forceMode: true } | undefined {
+  return options?.mode === undefined ? undefined : { mode: options.mode, forceMode: true }
+}
+
+/** A host-relative path in workspace spelling: posix separators, `''` for the root. */
+function toWorkspacePath(relative: string): string {
+  return relative.split(path.sep).join('/')
+}
+
+/** The same bytes as a Buffer, without copying them. */
+function asBuffer(bytes: Uint8Array): Buffer {
+  return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+}
+
+/** The permission bits of a stat, the part a caller may keep or carry. */
+function modeBits(stat: fs.Stats): number {
+  return stat.mode & 0o777
+}
+
+/**
+ * Appends in flight, by host path. The filesystem writes a large buffer in
+ * several calls, so two appends to the same file at once would interleave
+ * their bytes; an append waits for the one before it. Module level, not per
+ * instance: every `LocalFileOps` over the same workspace shares the file.
+ */
+const appendsInFlight = new Map<string, Promise<void>>()
+
+async function appendSerialized(abs: string, write: () => Promise<void>): Promise<void> {
+  const previous = appendsInFlight.get(abs) ?? Promise.resolve()
+  const run = previous.then(write, write)
+  appendsInFlight.set(abs, run)
+  try {
+    await run
+  } finally {
+    if (appendsInFlight.get(abs) === run) appendsInFlight.delete(abs)
+  }
+}
+
+/**
+ * A file handle for reads at byte offsets. Each call is the one filesystem
+ * call it names: `size` a stat of the handle, `readAt` positional reads until
+ * the buffer is full or the file ends (a network filesystem may fill it in
+ * several), `stream` a read stream over the handle, which closes the handle
+ * when it ends or is destroyed. `close` after that is a no-op, as the
+ * handle's own is.
+ */
+class LocalOpenFile implements OpenFile {
+  constructor(private readonly handle: fs.promises.FileHandle) {}
+
+  async size(): Promise<number> {
+    const stat = await this.handle.stat().catch(fromFsError)
+    if (stat.isDirectory()) throw new WorkspaceFileError('not-a-file')
+    return stat.size
+  }
+
+  async readAt(offset: number, length: number, signal?: AbortSignal): Promise<Uint8Array> {
+    const buffer = Buffer.allocUnsafe(length)
+    let filled = 0
+    while (filled < length) {
+      signal?.throwIfAborted()
+      const { bytesRead } = await this.handle
+        .read(buffer, filled, length - filled, offset + filled)
+        .catch(fromFsError)
+      if (bytesRead === 0) break
+      filled += bytesRead
+    }
+    return buffer.subarray(0, filled)
+  }
+
+  stream(range?: { start: number; end?: number }): ReadableStream<Uint8Array> {
+    const source = this.handle.createReadStream(range ? { start: range.start, end: range.end } : undefined)
+    return Readable.toWeb(source) as ReadableStream<Uint8Array>
+  }
+
+  close(): Promise<void> {
+    return this.handle.close()
+  }
+}
+
+/** Create the directories a path is written under. A file in the way is `not-a-directory`. */
+async function ensureDirectory(dir: string): Promise<void> {
+  try {
+    await fs.promises.mkdir(dir, { recursive: true })
+  } catch (error) {
+    if (errnoCode(error) === 'EEXIST' || errnoCode(error) === 'ENOTDIR') {
+      throw new WorkspaceFileError('not-a-directory', 'A file is in the way')
+    }
+    return fromFsError(error)
+  }
+}
+
+export class LocalFileOps implements FileOps {
+  /** The root's real location, kept for `resolve`: the same string for the life of the workspace. */
+  private realRootCache: { root: string; real: string } | null = null
+
+  constructor(private readonly rootDir: () => string) {}
+
+  /** Resolve a workspace path lexically and check it stays under the root. */
+  private absolute(workspacePath: string): { rel: string; abs: string; root: string } {
+    const rel = normalizeWorkspacePath(workspacePath)
+    const root = path.resolve(this.rootDir())
+    const abs = rel === '' ? root : path.resolve(root, ...rel.split('/'))
+    if (!isPathWithinDir(root, abs)) throw new WorkspaceFileError('outside-workspace')
+    return { rel, abs, root }
+  }
+
+  /** A path to write at: any workspace path but the root. */
+  private forWrite(workspacePath: string): { rel: string; abs: string } {
+    const { rel, abs } = this.absolute(workspacePath)
+    if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root is not a file')
+    return { rel, abs }
+  }
+
+  /** Canonical destination parents are checked before creating each child. */
+  private async confinedDestination(workspacePath: string): Promise<{ rel: string; abs: string; root: string }> {
+    const { rel, root } = this.absolute(workspacePath)
+    if (!rel) throw new WorkspaceFileError('invalid-path')
+    const canonicalRoot = await fs.promises.realpath(root).catch(fromFsError)
+    let parent = canonicalRoot
+    for (const segment of path.posix.dirname(rel).split('/').filter((part) => part !== '.')) {
+      const candidate = path.join(parent, segment)
+      await fs.promises.mkdir(candidate).catch((error) => { if (errnoCode(error) !== 'EEXIST') throw error })
+      parent = await fs.promises.realpath(candidate)
+      if (!isPathWithinDir(canonicalRoot, parent)) throw new WorkspaceFileError('outside-workspace')
+    }
+    return { rel, abs: path.join(parent, path.posix.basename(rel)), root: canonicalRoot }
+  }
+
+  private async assertConfinedHandle(handle: fs.promises.FileHandle, location: string, root: string): Promise<void> {
+    // Linux proves the opened inode's location. Other supported hosts additionally
+    // compare the open inode with the canonical pathname before any bytes are read.
+    const opened = await fs.promises.realpath(process.platform === 'linux' ? `/proc/self/fd/${handle.fd}` : location)
+    if (!isPathWithinDir(root, opened) || opened === root) throw new WorkspaceFileError('outside-workspace')
+    const stats = await handle.stat()
+    if (!stats.isFile()) throw new WorkspaceFileError('not-a-file')
+    if (process.platform !== 'linux') {
+      const current = await fs.promises.stat(opened)
+      if (stats.ino !== current.ino || stats.dev !== current.dev) throw new WorkspaceFileError('outside-workspace')
+    }
+  }
+
+  /**
+   * Run a write, creating the target's parent directories only when the
+   * write finds them missing: the common case, the parent in place, costs
+   * the write alone, as the plain writes did. The attempt must not have
+   * consumed its source when it fails to open the target, which the atomic
+   * writer and a rename guarantee.
+   */
+  private async writing<T>(abs: string, attempt: () => Promise<T>): Promise<T> {
+    try {
+      return await attempt()
+    } catch (error) {
+      if (errnoCode(error) !== 'ENOENT') throw error
+      await ensureDirectory(path.dirname(abs))
+      return attempt()
+    }
+  }
+
+  /** The root's real location, resolved once per root path; null while the root does not exist. */
+  private async realRoot(root: string, refresh = false): Promise<string | null> {
+    if (!refresh && this.realRootCache?.root === root) return this.realRootCache.real
+    const real = await realpathOrNull(root)
+    this.realRootCache = real ? { root, real } : null
+    return real
+  }
+
+  async resolve(workspacePath: string): Promise<string | null> {
+    const { abs, root } = this.absolute(workspacePath)
+    const cachedRoot = await this.realRoot(root)
+    if (!cachedRoot) return null
+    // An absent path still leads somewhere: through its nearest existing
+    // ancestor. A link swapped in for a directory (the agent's transcripts
+    // directory, say) escapes for every name below it, present or not, so
+    // the ancestor is what is checked when the path itself is not there.
+    let existing = abs
+    let real = await realpathOrNull(existing)
+    while (!real) {
+      const parent = path.dirname(existing)
+      if (parent === existing) return null
+      existing = parent
+      if (!isPathWithinDir(root, existing)) return null
+      real = await realpathOrNull(existing)
+    }
+    // A miss re-resolves the root once, so a root replaced underneath the
+    // cache is not mistaken for an escape; a miss against the fresh root is one.
+    let realRoot = cachedRoot
+    if (!isPathWithinDir(realRoot, real)) {
+      const fresh = await this.realRoot(root, true)
+      if (!fresh || !isPathWithinDir(fresh, real)) throw new WorkspaceFileError('outside-workspace')
+      realRoot = fresh
+    }
+    if (existing !== abs) return null
+    return toWorkspacePath(path.relative(realRoot, real))
+  }
+
+  /**
+   * Copy a file from this machine into the workspace in one filesystem copy,
+   * keeping its mode. Not part of `FileOps`: the source is a host path, which
+   * only a workspace on this machine can reach directly. A bulk import (a
+   * folder upload, a skillset install, a template checkout) uses it instead
+   * of streaming each file through `write`; the caller creates the
+   * directories, as the plain copy it replaces did once per directory rather
+   * than once per file.
+   */
+  async copyHostFile(hostPath: string, workspacePath: string): Promise<void> {
+    const { rel, abs } = this.absolute(workspacePath)
+    if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root is not a file')
+    await copyFileReplacing(hostPath, abs).catch(fromWriteError)
+  }
+
+  /**
+   * Move a file from this machine into the workspace: one rename when the
+   * two are on the same filesystem, a copy and a delete otherwise. Not part
+   * of `FileOps` for the same reason as `copyHostFile`. An assembled chunked
+   * upload arrives this way: the temp dir usually shares the data dir's
+   * filesystem, so a file that was already written in full is not written a
+   * second time.
+   */
+  async moveHostFile(hostPath: string, workspacePath: string): Promise<{ size: number }> {
+    const { abs } = this.forWrite(workspacePath)
+    try {
+      await this.writing(abs, () => fs.promises.rename(hostPath, abs))
+    } catch (error) {
+      if (errnoCode(error) !== 'EXDEV') fromWriteError(error)
+      await copyFileReplacing(hostPath, abs).catch(fromWriteError)
+      await fs.promises.unlink(hostPath)
+    }
+    const stat = await fs.promises.stat(abs).catch(fromFsError)
+    return { size: stat.size }
+  }
+
+  async list(dir: string): Promise<FileEntry[]> {
+    const { rel, abs } = this.absolute(dir)
+    let dirents: fs.Dirent[]
+    try {
+      dirents = await fs.promises.readdir(abs, { withFileTypes: true })
+    } catch (error) {
+      // The root exists by definition; it is empty until the first write.
+      if (rel === '' && isAbsence(error)) return []
+      if (errnoCode(error) === 'ENOTDIR') throw new WorkspaceFileError('not-a-directory')
+      return fromFsError(error)
+    }
+    return dirents
+      .filter((entry) => !entry.isSymbolicLink() && (entry.isDirectory() || entry.isFile()))
+      .map((entry) => ({
+        name: entry.name,
+        path: rel === '' ? entry.name : `${rel}/${entry.name}`,
+        kind: entry.isDirectory() ? ('directory' as const) : ('file' as const),
+      }))
+  }
+
+  async stat(workspacePath: string): Promise<FileStat | null> {
+    const { rel, abs } = this.absolute(workspacePath)
+    const stat = await statOrNull(abs)
+    if (!stat) return rel === '' ? { kind: 'directory', size: 0, mtimeMs: 0 } : null
+    const mode = modeBits(stat)
+    const birthtimeMs = stat.birthtimeMs
+    if (stat.isDirectory()) return { kind: 'directory', size: stat.size, mtimeMs: stat.mtimeMs, mode, birthtimeMs }
+    if (stat.isFile()) return { kind: 'file', size: stat.size, mtimeMs: stat.mtimeMs, mode, birthtimeMs }
+    return null
+  }
+
+  async open(workspacePath: string, options?: { confined?: boolean }): Promise<OpenFile> {
+    const { rel, abs, root } = this.absolute(workspacePath)
+    if (rel === '') throw new WorkspaceFileError('not-a-file')
+    if (!options?.confined) {
+      return new LocalOpenFile(await fs.promises.open(abs, 'r').catch(fromFsError))
+    }
+    const canonicalRoot = await fs.promises.realpath(root).catch(fromFsError)
+    const canonicalPath = await fs.promises.realpath(abs).catch(fromFsError)
+    if (!isPathWithinDir(canonicalRoot, canonicalPath)) throw new WorkspaceFileError('outside-workspace')
+    const stats = await fs.promises.stat(canonicalPath).catch(fromFsError)
+    if (!stats.isFile()) throw new WorkspaceFileError('not-a-file')
+    const handle = await fs.promises.open(canonicalPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK).catch(fromFsError)
+    try {
+      await this.assertConfinedHandle(handle, canonicalPath, canonicalRoot)
+      return new LocalOpenFile(handle)
+    } catch (error) {
+      await handle.close().catch(() => {})
+      throw error
+    }
+  }
+
+  async read(workspacePath: string, range?: ByteRange): Promise<ReadableStream<Uint8Array>> {
+    const { abs } = this.absolute(workspacePath)
+    const stat = await fs.promises.stat(abs).catch(fromFsError)
+    if (!stat.isFile()) throw new WorkspaceFileError('not-a-file')
+    if (range && (range.start < 0 || range.end < range.start || range.end >= stat.size)) {
+      throw new WorkspaceFileError('invalid-path', 'Byte range out of bounds')
+    }
+    const source = fs.createReadStream(abs, range ? { start: range.start, end: range.end } : undefined)
+    return Readable.toWeb(source) as ReadableStream<Uint8Array>
+  }
+
+  async getDoc(workspacePath: string): Promise<Uint8Array | null> {
+    const { abs } = this.absolute(workspacePath)
+    try {
+      // The Buffer itself: a copy into a plain Uint8Array would double the
+      // memory of every document read.
+      return await fs.promises.readFile(abs)
+    } catch (error) {
+      if (isAbsence(error)) return null
+      return fromFsError(error)
+    }
+  }
+
+  async putDoc(workspacePath: string, bytes: Uint8Array | string, options?: WriteOptions): Promise<void> {
+    if (options?.confined || options?.overwrite === false || options?.signal) {
+      await this.write(workspacePath, typeof bytes === 'string' ? Buffer.from(bytes) : bytes, { ...options, flush: true })
+      return
+    }
+    const { abs } = this.forWrite(workspacePath)
+    const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : asBuffer(bytes)
+    await this.writing(abs, () => writeFileAtomicStream(abs, [data], atomicWriteOptions(options))).catch(fromWriteError)
+  }
+
+  async write(
+    workspacePath: string,
+    body: ReadableStream<Uint8Array> | Uint8Array,
+    options?: WriteOptions,
+  ): Promise<{ size: number }> {
+    let target: { rel: string; abs: string; root?: string }
+    try {
+      target = options?.confined ? await this.confinedDestination(workspacePath) : this.forWrite(workspacePath)
+    } catch (error) {
+      // The caller may already hold the source open; a refused destination
+      // must not leave it dangling.
+      if (!(body instanceof Uint8Array)) await body.cancel().catch(() => {})
+      throw error
+    }
+    const source = body instanceof Uint8Array
+      ? null
+      : Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>, { signal: options?.signal })
+    // The source can fail before the writer reads it: a zip entry that
+    // inflates past its declared size is failed by the reader at once, while
+    // the writer is still opening its temp file. A stream failing with no
+    // listener is fatal to the process; with one, the failure reaches the
+    // writer's iteration and rejects the write like any other.
+    source?.on('error', () => {})
+    const chunks = source ?? [asBuffer(body as Uint8Array)]
+    try {
+      options?.signal?.throwIfAborted()
+      const attempt = () => writeFileAtomicStream(target.abs, chunks, {
+        ...atomicWriteOptions(options),
+        fsync: options?.flush === true,
+        overwrite: options?.overwrite,
+        validate: async (handle, temporaryPath) => {
+          options?.signal?.throwIfAborted()
+          if (target.root) {
+            await this.assertConfinedHandle(handle, temporaryPath, target.root)
+            const parent = path.dirname(target.abs)
+            if (await fs.promises.realpath(parent) !== parent) throw new WorkspaceFileError('outside-workspace')
+          }
+        },
+      })
+      if (options?.confined) await attempt()
+      else await this.writing(target.abs, attempt)
+    } catch (error) {
+      // A destination that could not be opened (or written) leaves the
+      // source unread; end it, or the file behind it stays open.
+      source?.destroy()
+      fromWriteError(error)
+    }
+    const stat = await fs.promises.stat(target.abs).catch(fromFsError)
+    return { size: stat.size }
+  }
+
+  async delete(workspacePath: string, options?: { recursive?: boolean; confined?: boolean }): Promise<void> {
+    const { rel, abs, root } = this.absolute(workspacePath)
+    if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root cannot be deleted')
+    // lstat, not stat: a link is removed as a link, never followed.
+    let stat: fs.Stats
+    try {
+      stat = await fs.promises.lstat(abs)
+    } catch (error) {
+      if (isAbsence(error)) return
+      return fromFsError(error)
+    }
+    if (stat.isDirectory() && !options?.recursive) {
+      throw new WorkspaceFileError('not-a-file', 'Path is a directory; delete it with recursive')
+    }
+    let destination = abs
+    if (options?.confined) {
+      if (stat.isSymbolicLink()) throw new WorkspaceFileError('outside-workspace')
+      const canonicalRoot = await fs.promises.realpath(root).catch(fromFsError)
+      destination = await fs.promises.realpath(abs).catch(fromFsError)
+      if (!isPathWithinDir(canonicalRoot, destination) || destination === canonicalRoot) {
+        throw new WorkspaceFileError('outside-workspace')
+      }
+      const current = await fs.promises.lstat(destination).catch(fromFsError)
+      if (current.ino !== stat.ino || current.dev !== stat.dev || current.isSymbolicLink()) {
+        throw new WorkspaceFileError('outside-workspace')
+      }
+    }
+    await fs.promises.rm(destination, { recursive: stat.isDirectory(), force: true }).catch(fromFsError)
+  }
+
+  async mkdir(workspacePath: string): Promise<void> {
+    const { abs } = this.absolute(workspacePath)
+    await ensureDirectory(abs)
+  }
+
+  async append(workspacePath: string, bytes: Uint8Array | string): Promise<void> {
+    const { abs } = this.forWrite(workspacePath)
+    const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : asBuffer(bytes)
+    await appendSerialized(abs, () => this.writing(abs, () => fs.promises.appendFile(abs, data))).catch(fromWriteError)
+  }
+}

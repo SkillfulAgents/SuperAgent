@@ -29,7 +29,9 @@ for (const file of ['superagent.db', 'superagent.db-wal', 'superagent.db-shm']) 
   try { fs.unlinkSync(path.join(resolvedDir, file)) } catch { /* may not exist */ }
 }
 
-// Remove agents directory
+// Remove agents directory. The database above is removed with it, so the
+// data migration that imports agent directories runs again at the next
+// launch and finds nothing; every E2E agent is created through the API.
 try { fs.rmSync(path.join(resolvedDir, 'agents'), { recursive: true }) } catch { /* may not exist */ }
 
 // Seed a fake skillset on disk so /discoverable-skills returns content
@@ -93,7 +95,9 @@ execFileSync('git', [...GIT_AUTHOR, 'commit', '-q', '-m', 'seed'], { cwd: SKILLS
 execFileSync('git', ['remote', 'add', 'origin', SKILLSET_FAKE_URL], { cwd: SKILLSET_REPO_DIR, stdio: 'pipe' })
 
 // Seed a public-provider skillset (no .git, uses .skillset-cache-meta.json marker).
-const PUBLIC_SKILLSET_ID = 'e2e-public-skillset'
+// Must equal DEFAULT_PUBLIC_SKILLSET.id (src/shared/lib/skillset-provider/default-public-skillset.ts):
+// the signup template handoff only matches entries from the default public skillset.
+const PUBLIC_SKILLSET_ID = 'github-com-skillfulagents-public-skillset'
 const PUBLIC_SKILLSET_DIR = path.join(resolvedDir, 'skillset-cache', PUBLIC_SKILLSET_ID)
 fs.rmSync(PUBLIC_SKILLSET_DIR, { recursive: true, force: true })
 fs.mkdirSync(PUBLIC_SKILLSET_DIR, { recursive: true })

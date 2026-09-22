@@ -4,11 +4,11 @@ import {
   Check,
   MoreVertical,
   Pencil,
-  RefreshCw,
   X,
 } from 'lucide-react'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { Button } from '@renderer/components/ui/button'
+import { RowReconnectButton, type RowReconnect } from '@renderer/components/connections/login-button'
 import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { ToolPolicySummaryPill } from '@renderer/components/ui/tool-policy-summary-pill'
@@ -86,7 +86,7 @@ export interface McpServerCardProps {
   // Policy
   onOpenPolicies: () => void
   // Re-auth (shown when the server is not active)
-  onReconnect?: () => void
+  reconnect?: RowReconnect
   // State
   disabled?: boolean
 }
@@ -105,27 +105,13 @@ export function McpServerCard({
   onMenuOpenChange,
   onStartRename,
   onOpenPolicies,
-  onReconnect,
+  reconnect,
   disabled,
 }: McpServerCardProps) {
   const serverSlug = COMMON_MCP_SERVERS.find((commonServer) => commonServer.url === server.url)?.slug || ''
   const needsReauth = server.status !== 'active'
 
-  const reconnectButton = onReconnect ? (
-    <Button
-      size="xs"
-      variant="outline"
-      className="mx-1 h-6 shrink-0 gap-1 px-2 text-xs"
-      disabled={disabled}
-      onClick={(e) => {
-        e.stopPropagation()
-        onReconnect()
-      }}
-    >
-      <RefreshCw className="h-3 w-3" />
-      Reconnect
-    </Button>
-  ) : null
+  const reconnectButton = reconnect ? <RowReconnectButton reconnect={reconnect} disabled={disabled} /> : null
 
   const renameMenu = (
     <Popover

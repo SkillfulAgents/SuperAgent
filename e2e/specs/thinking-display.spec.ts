@@ -113,8 +113,9 @@ test.describe('Thinking Display', () => {
     await sessionPage.getStopButton().click()
     await expect(sessionPage.getStopButton()).not.toBeVisible({ timeout: 10000 })
 
-    // The CLI appends the interrupt marker as a user message ending the turn
-    const marker = sessionPage.getUserMessages().filter({ hasText: '[Request interrupted by user]' })
+    // The CLI appends the interrupt marker as a user message ending the turn;
+    // it renders as a bare "Stopped" chip.
+    const marker = sessionPage.getInterruptMarkers()
     await expect(marker).toBeVisible({ timeout: 10000 })
     await page.getByTestId('turn-summary').last().click()
 
@@ -124,7 +125,7 @@ test.describe('Thinking Display', () => {
     // not re-render clumped at the end of the transcript (the marker is a user
     // message, so the dedup scan must not mistake it for a new turn's start).
     const cardsBelowMarker = page.locator(
-      'xpath=//*[@data-testid="message-user" and contains(., "Request interrupted by user")]/following::*[@data-testid="thinking-block"]'
+      'xpath=//*[@data-testid="message-user" and .//*[@data-testid="interrupt-marker"]]/following::*[@data-testid="thinking-block"]'
     )
     await expect(cardsBelowMarker).toHaveCount(0)
 

@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import crypto from 'crypto'
 import { db } from '@shared/lib/db'
 import { remoteMcpServers, agentRemoteMcps } from '@shared/lib/db/schema'
@@ -24,7 +24,7 @@ import {
   findAgentsAssignedRemoteMcp,
   syncAgentsAssignedRemoteMcp,
   syncRemoteMcpAgents,
-} from '@shared/lib/container/connection-runtime-sync'
+} from '@shared/lib/services/connection-sync-service'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 
 function safeParseTools(json: string | null): McpToolInfo[] {
@@ -61,6 +61,7 @@ function escapeHtml(str: string): string {
 
 type McpOAuthCallbackPayload = {
   type: 'mcp-oauth-callback'
+  state?: string
   success: boolean
   mcpId?: string
   error?: string
@@ -116,12 +117,46 @@ function resolveDesktopOAuthProtocol(candidate?: string): string {
   return 'superagent'
 }
 
+/**
+ * Ordered redirect candidates for an OAuth flow. In Electron we prefer the custom
+ * app scheme (port-independent, no external-browser hand-off needed) but fall back
+ * to an http loopback URL for authorization servers that reject non-http(s)
+ * redirects during dynamic client registration (e.g. cal.com). Web only has the
+ * http URL.
+ *
+ * The loopback base must come from the request URL's origin (http://localhost:<apiPort>),
+ * not getAppBaseUrlFromRequest: the packaged renderer is served from file://, so its
+ * fetches carry `Origin: null`. The AS redirects the external browser here to complete
+ * the flow, so the URL must be one the local API server actually answers on.
+ *
+ * Scheme from the Electron client (allowlisted): a cloud deployment serving a
+ * proxied client has no SUPERAGENT_PROTOCOL of its own (SUP-560).
+ *
+ * Shared with the read-only redirect-uris route so the string we show a user to
+ * paste into a provider console is the same one we later send.
+ */
+function buildRedirectCandidates(
+  c: Context,
+  options: { electron: boolean; protocol?: string },
+): string[] {
+  const protocol = resolveDesktopOAuthProtocol(options.protocol)
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
+  const loopbackRedirect = `${new URL(c.req.url).origin}/api/remote-mcps/oauth-callback`
+  const httpRedirect = options.electron
+    ? loopbackRedirect
+    : `${getAppBaseUrlFromRequest(c)}/api/remote-mcps/oauth-callback`
+  return options.electron
+    ? [`${protocol}://mcp-oauth-callback`, httpRedirect]
+    : [httpRedirect]
+}
+
 function renderMcpOAuthHandoffHtml(payload: McpOAuthCallbackPayload, desktopProtocol?: string): string {
   // Prefer the scheme recorded on the flow: a cloud deployment serving this
   // callback has no SUPERAGENT_PROTOCOL of its own (SUP-560).
   const protocol = resolveDesktopOAuthProtocol(desktopProtocol)
   const params = new URLSearchParams()
   params.set('success', payload.success ? 'true' : 'false')
+  if (payload.state) params.set('state', payload.state)
   if (payload.mcpId) params.set('mcpId', payload.mcpId)
   if (payload.error) params.set('error', payload.error)
   const deepLink = `${protocol}://mcp-oauth-callback?${params.toString()}`
@@ -259,7 +294,7 @@ remoteMcps.post('/', async (c) => {
     .where(eq(remoteMcpServers.id, id))
     .limit(1)
 
-  logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'created', details: { name: body.name.trim(), url: body.url.trim() } })
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'created', details: { name: body.name.trim(), url: body.url.trim() } })
 
   return c.json({
     server: sanitizeServer(server),
@@ -267,6 +302,24 @@ remoteMcps.post('/', async (c) => {
 })
 
 // Initiate OAuth flow for an MCP server (existing or new)
+/**
+ * The redirect URIs this deployment will send for an OAuth flow, so the connect
+ * UI can show a user exactly what to allowlist in a provider console. Built by
+ * the same helper initiate-oauth uses, so the two cannot drift.
+ */
+remoteMcps.get('/oauth-redirect-uris', async (c) => {
+  const electron = c.req.query('electron') === '1'
+  const candidates = buildRedirectCandidates(c, {
+    electron,
+    protocol: c.req.query('protocol') ?? undefined,
+  })
+  return c.json({
+    candidates,
+    // What a hand-registered client_id will actually be paired with.
+    preferred: candidates.find((candidate) => /^https?:/i.test(candidate)) ?? candidates[0],
+  })
+})
+
 remoteMcps.post('/initiate-oauth', async (c) => {
   const body = await c.req.json<{
     mcpId?: string
@@ -292,29 +345,10 @@ remoteMcps.post('/initiate-oauth', async (c) => {
       ? body.clientSecret.trim()
       : undefined
 
-  // Ordered redirect candidates. In Electron we prefer the custom app scheme
-  // (port-independent, no external-browser hand-off needed) but fall back to an
-  // http loopback URL for authorization servers that reject non-http(s) redirects
-  // during dynamic client registration (e.g. cal.com). Web only has the http URL.
-  //
-  // The loopback base must come from the request URL's origin (http://localhost:<apiPort>),
-  // not getAppBaseUrlFromRequest: the packaged renderer is served from file://, so its
-  // fetches carry `Origin: null`. The AS redirects the external browser here to complete
-  // the flow, so the URL must be one the local API server actually answers on.
-  //
-  // Scheme from the Electron client (allowlisted): a cloud deployment serving a
-  // proxied client has no SUPERAGENT_PROTOCOL of its own (SUP-560).
-  const protocol = resolveDesktopOAuthProtocol(
-    typeof body.protocol === 'string' ? body.protocol : undefined,
-  )
-  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
-  const loopbackRedirect = `${new URL(c.req.url).origin}/api/remote-mcps/oauth-callback`
-  const httpRedirect = body.electron
-    ? loopbackRedirect
-    : `${getAppBaseUrlFromRequest(c)}/api/remote-mcps/oauth-callback`
-  const redirectCandidates = body.electron
-    ? [`${protocol}://mcp-oauth-callback`, httpRedirect]
-    : [httpRedirect]
+  const redirectCandidates = buildRedirectCandidates(c, {
+    electron: !!body.electron,
+    protocol: typeof body.protocol === 'string' ? body.protocol : undefined,
+  })
 
   if (body.mcpId) {
     // Existing server re-auth
@@ -390,14 +424,14 @@ remoteMcps.get('/oauth-callback', async (c) => {
     const issuerValidation = validateAndConsumeOAuthErrorResponse(state, iss)
     if (!issuerValidation.valid) {
       return c.html(mcpOAuthCallbackBody(
-        { type: 'mcp-oauth-callback', success: false, error: 'OAuth callback validation failed' },
+        { type: 'mcp-oauth-callback', state, success: false, error: 'OAuth callback validation failed' },
         'OAuth callback validation failed. You can close this window.',
         issuerValidation,
       ))
     }
 
     return c.html(mcpOAuthCallbackBody(
-      { type: 'mcp-oauth-callback', success: false, error },
+      { type: 'mcp-oauth-callback', state, success: false, error },
       `OAuth error: ${error}. You can close this window.`,
       issuerValidation,
     ))
@@ -416,7 +450,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
 
   if (!result.success || !result.mcpId) {
     return c.html(mcpOAuthCallbackBody(
-      { type: 'mcp-oauth-callback', success: false, error: 'Token exchange failed' },
+      { type: 'mcp-oauth-callback', state, success: false, error: 'Token exchange failed' },
       'OAuth failed. You can close this window.',
       delivery,
     ))
@@ -460,6 +494,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
     return c.html(mcpOAuthCallbackBody(
       {
         type: 'mcp-oauth-callback',
+        state,
         success: false,
         error: `Connected but failed to discover tools: ${errorMsg}`,
       },
@@ -474,7 +509,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
 
   trackServerEvent('mcp_oauth_succeeded', { url: serverUrl, mcpId: result.mcpId })
   return c.html(mcpOAuthCallbackBody(
-    { type: 'mcp-oauth-callback', success: true, mcpId: result.mcpId },
+    { type: 'mcp-oauth-callback', state, success: true, mcpId: result.mcpId },
     'OAuth successful! You can close this window.',
     delivery,
   ))
@@ -560,7 +595,7 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     .where(eq(remoteMcpServers.id, id))
     .limit(1)
 
-  logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'updated' })
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'updated' })
   const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
 
   return c.json({
@@ -594,7 +629,7 @@ remoteMcps.delete('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     ? await syncRemoteMcpAgents(assignedAgentSlugs)
     : false
 
-  logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'deleted', details: { name: existing.name } })
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'deleted', details: { name: existing.name } })
 
   return c.json({ success: true, liveRefresh })
 })

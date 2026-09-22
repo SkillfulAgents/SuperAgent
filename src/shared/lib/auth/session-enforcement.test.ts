@@ -60,30 +60,30 @@ describe('enforceMaxConcurrentSessions', () => {
     deletedSessionIds.length = 0
   })
 
-  it('does nothing when sessions are within limit', () => {
+  it('does nothing when sessions are within limit', async () => {
     mockSessions = [
       { id: 's1', createdAt: new Date('2025-01-01') },
       { id: 's2', createdAt: new Date('2025-01-02') },
     ]
 
-    const deleted = enforceMaxConcurrentSessions('user1', 3)
+    const deleted = await enforceMaxConcurrentSessions('user1', 3)
     expect(deleted).toBe(0)
     expect(deletedSessionIds).toEqual([])
   })
 
-  it('does nothing when sessions are exactly at the limit', () => {
+  it('does nothing when sessions are exactly at the limit', async () => {
     mockSessions = [
       { id: 's1', createdAt: new Date('2025-01-01') },
       { id: 's2', createdAt: new Date('2025-01-02') },
       { id: 's3', createdAt: new Date('2025-01-03') },
     ]
 
-    const deleted = enforceMaxConcurrentSessions('user1', 3)
+    const deleted = await enforceMaxConcurrentSessions('user1', 3)
     expect(deleted).toBe(0)
     expect(deletedSessionIds).toEqual([])
   })
 
-  it('deletes oldest session when one over limit', () => {
+  it('deletes oldest session when one over limit', async () => {
     mockSessions = [
       { id: 's1', createdAt: new Date('2025-01-01') },
       { id: 's2', createdAt: new Date('2025-01-02') },
@@ -91,12 +91,12 @@ describe('enforceMaxConcurrentSessions', () => {
       { id: 's4', createdAt: new Date('2025-01-04') },
     ]
 
-    const deleted = enforceMaxConcurrentSessions('user1', 3)
+    const deleted = await enforceMaxConcurrentSessions('user1', 3)
     expect(deleted).toBe(1)
     expect(deletedSessionIds).toEqual(['s1'])
   })
 
-  it('deletes multiple oldest sessions when several over limit', () => {
+  it('deletes multiple oldest sessions when several over limit', async () => {
     mockSessions = [
       { id: 's1', createdAt: new Date('2025-01-01') },
       { id: 's2', createdAt: new Date('2025-01-02') },
@@ -105,32 +105,32 @@ describe('enforceMaxConcurrentSessions', () => {
       { id: 's5', createdAt: new Date('2025-01-05') },
     ]
 
-    const deleted = enforceMaxConcurrentSessions('user1', 2)
+    const deleted = await enforceMaxConcurrentSessions('user1', 2)
     expect(deleted).toBe(3)
     expect(deletedSessionIds).toEqual(['s1', 's2', 's3'])
   })
 
-  it('handles maxSessions of 1', () => {
+  it('handles maxSessions of 1', async () => {
     mockSessions = [
       { id: 's1', createdAt: new Date('2025-01-01') },
       { id: 's2', createdAt: new Date('2025-01-02') },
       { id: 's3', createdAt: new Date('2025-01-03') },
     ]
 
-    const deleted = enforceMaxConcurrentSessions('user1', 1)
+    const deleted = await enforceMaxConcurrentSessions('user1', 1)
     expect(deleted).toBe(2)
     expect(deletedSessionIds).toEqual(['s1', 's2'])
   })
 
-  it('handles empty sessions list', () => {
+  it('handles empty sessions list', async () => {
     mockSessions = []
 
-    const deleted = enforceMaxConcurrentSessions('user1', 5)
+    const deleted = await enforceMaxConcurrentSessions('user1', 5)
     expect(deleted).toBe(0)
     expect(deletedSessionIds).toEqual([])
   })
 
-  it('counts sessions created before the creationMethod column as capped', () => {
+  it('counts sessions created before the creationMethod column as capped', async () => {
     // Null is what every row written before this column existed reads as.
     // Treating those as exempt would silently uncap an entire installed base.
     mockSessions = [
@@ -139,7 +139,7 @@ describe('enforceMaxConcurrentSessions', () => {
       { id: 's3', createdAt: new Date('2025-01-03'), creationMethod: null },
     ]
 
-    const deleted = enforceMaxConcurrentSessions('user1', 2)
+    const deleted = await enforceMaxConcurrentSessions('user1', 2)
     expect(deleted).toBe(1)
     expect(deletedSessionIds).toEqual(['s1'])
   })
@@ -151,7 +151,7 @@ describe('enforceMaxConcurrentSessions — non-interactive sessions', () => {
     deletedSessionIds.length = 0
   })
 
-  it('never evicts a token-exchange session, even as the oldest', () => {
+  it('never evicts a token-exchange session, even as the oldest', async () => {
     // The exact regression: the installed client's session is the oldest, so
     // oldest-first eviction would take it and the client would re-mint on its
     // next call — evicting another browser session, indefinitely.
@@ -162,12 +162,12 @@ describe('enforceMaxConcurrentSessions — non-interactive sessions', () => {
       { id: 's4', createdAt: new Date('2025-01-04'), creationMethod: 'password' },
     ]
 
-    const deleted = enforceMaxConcurrentSessions('user1', 2)
+    const deleted = await enforceMaxConcurrentSessions('user1', 2)
     expect(deleted).toBe(1)
     expect(deletedSessionIds).toEqual(['s2'])
   })
 
-  it('does not let a token-exchange session push a browser session out', () => {
+  it('does not let a token-exchange session push a browser session out', async () => {
     // Three interactive sessions under a cap of three. Adding the desktop
     // client must not put the user over — otherwise installing the app costs
     // them a browser session.
@@ -178,12 +178,12 @@ describe('enforceMaxConcurrentSessions — non-interactive sessions', () => {
       { id: 'desktop', createdAt: new Date('2025-01-04'), creationMethod: 'token-exchange' },
     ]
 
-    const deleted = enforceMaxConcurrentSessions('user1', 3)
+    const deleted = await enforceMaxConcurrentSessions('user1', 3)
     expect(deleted).toBe(0)
     expect(deletedSessionIds).toEqual([])
   })
 
-  it('holds several token-exchange sessions clear of the interactive cap', () => {
+  it('holds several token-exchange sessions clear of the interactive cap', async () => {
     // A user with the app on more than one machine. None of them counts
     // against the interactive cap, or is a candidate for it — even at a cap
     // of one. They are bounded by their own ceiling instead.
@@ -193,12 +193,12 @@ describe('enforceMaxConcurrentSessions — non-interactive sessions', () => {
       { id: 's3', createdAt: new Date('2025-01-03'), creationMethod: 'password' },
     ]
 
-    const deleted = enforceMaxConcurrentSessions('user1', 1)
+    const deleted = await enforceMaxConcurrentSessions('user1', 1)
     expect(deleted).toBe(0)
     expect(deletedSessionIds).toEqual([])
   })
 
-  it('prunes expired token-exchange sessions', () => {
+  it('prunes expired token-exchange sessions', async () => {
     // Nothing else in the codebase deletes expired sessions, and a client
     // re-mints on a schedule — so without this, exempting them from the
     // interactive cap would mean a row per re-mint, forever.
@@ -209,12 +209,12 @@ describe('enforceMaxConcurrentSessions — non-interactive sessions', () => {
       { id: 's1', createdAt: past(1), expiresAt: future(1), creationMethod: 'password' },
     ]
 
-    const deleted = enforceMaxConcurrentSessions('user1', 5)
+    const deleted = await enforceMaxConcurrentSessions('user1', 5)
     expect(deleted).toBe(2)
     expect(deletedSessionIds.sort()).toEqual(['dead1', 'dead2'])
   })
 
-  it('bounds live token-exchange sessions by their own ceiling, oldest first', () => {
+  it('bounds live token-exchange sessions by their own ceiling, oldest first', async () => {
     // The backstop: even with nothing expiring, the table cannot grow forever.
     mockSessions = Array.from({ length: 13 }, (_, i) => ({
       id: `x${i}`,
@@ -223,12 +223,12 @@ describe('enforceMaxConcurrentSessions — non-interactive sessions', () => {
       creationMethod: 'token-exchange',
     }))
 
-    const deleted = enforceMaxConcurrentSessions('user1', 5)
+    const deleted = await enforceMaxConcurrentSessions('user1', 5)
     expect(deleted).toBe(3)
     expect(deletedSessionIds).toEqual(['x0', 'x1', 'x2'])
   })
 
-  it('does not let expired exchange rows consume the interactive cap', () => {
+  it('does not let expired exchange rows consume the interactive cap', async () => {
     // Pruning them must not evict a browser session as a side effect.
     mockSessions = [
       { id: 'dead', createdAt: past(3), expiresAt: past(2), creationMethod: 'token-exchange' },
@@ -236,12 +236,12 @@ describe('enforceMaxConcurrentSessions — non-interactive sessions', () => {
       { id: 's2', createdAt: past(1), expiresAt: future(1), creationMethod: 'password' },
     ]
 
-    const deleted = enforceMaxConcurrentSessions('user1', 2)
+    const deleted = await enforceMaxConcurrentSessions('user1', 2)
     expect(deleted).toBe(1)
     expect(deletedSessionIds).toEqual(['dead'])
   })
 
-  it('leaves expired interactive sessions counted, as before', () => {
+  it('leaves expired interactive sessions counted, as before', async () => {
     // Deliberately unchanged: those rows are counted today, so dropping them
     // would change the effective cap for every existing deployment. Separate
     // decision, separate change.
@@ -251,12 +251,12 @@ describe('enforceMaxConcurrentSessions — non-interactive sessions', () => {
       { id: 's3', createdAt: past(1), expiresAt: future(1), creationMethod: 'password' },
     ]
 
-    const deleted = enforceMaxConcurrentSessions('user1', 2)
+    const deleted = await enforceMaxConcurrentSessions('user1', 2)
     expect(deleted).toBe(1)
     expect(deletedSessionIds).toEqual(['s1'])
   })
 
-  it('still caps other methods, including impersonation', () => {
+  it('still caps other methods, including impersonation', async () => {
     // The exemption is for one method, not a general "leave sessions alone".
     mockSessions = [
       { id: 's1', createdAt: new Date('2025-01-01'), creationMethod: 'impersonation' },
@@ -265,7 +265,7 @@ describe('enforceMaxConcurrentSessions — non-interactive sessions', () => {
       { id: 'desktop', createdAt: new Date('2025-01-04'), creationMethod: 'token-exchange' },
     ]
 
-    const deleted = enforceMaxConcurrentSessions('user1', 1)
+    const deleted = await enforceMaxConcurrentSessions('user1', 1)
     expect(deleted).toBe(2)
     expect(deletedSessionIds).toEqual(['s1', 's2'])
   })

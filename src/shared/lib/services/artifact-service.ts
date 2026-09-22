@@ -1,8 +1,16 @@
-import * as fs from 'fs'
-import * as path from 'path'
-import { getAgentWorkspaceDir, writeFileAtomic } from '@shared/lib/utils/file-storage'
-import { isPathWithinDir } from '@shared/lib/utils/path-safety'
+import pLimit from 'p-limit'
+import { agentRegistry, joinWorkspacePath, type FileEntry } from '@shared/lib/agent-actor'
+import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
+import {
+  artifactsDirFor,
+  describeWidgetFromManifest,
+  isMissingDirectoryError,
+  isWidgetOnlyArtifact,
+  isWidgetSlug,
+  resolveArtifactPath,
+} from './widget-service'
 
+const ARTIFACT_MANIFEST_FILENAME = 'package.json'
 const ARTIFACT_SCREENSHOT_FILENAME = 'screenshot.png'
 
 export interface ArtifactInfo {
@@ -16,77 +24,134 @@ export interface ArtifactInfo {
   firstRun?: boolean
 }
 
+/** Both halves of an agent's artifacts, from one scan. */
+export interface ArtifactListing {
+  dashboards: ArtifactInfo[]
+  widgets: ApiAgentWidget[]
+}
+
 /**
- * List dashboard artifacts for an agent by reading the host filesystem.
+ * List dashboard artifacts for an agent from its workspace.
  * Used when the container is not running (all dashboards reported as 'stopped').
  */
 export async function listArtifactsFromFilesystem(
   agentSlug: string
 ): Promise<ArtifactInfo[]> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const artifactsDir = path.join(workspaceDir, 'artifacts')
+  return (await scanArtifacts(agentSlug, { includeWidgets: false })).dashboards
+}
 
-  let entries: fs.Dirent[]
+/**
+ * Both halves of every artifact, from a single directory scan.
+ *
+ * An artifact's package.json decides whether it is a dashboard, a widget or
+ * both, so the agents-list path reads it ONCE and answers both questions from
+ * that copy. Listing the two separately doubled the listing and the manifest
+ * read of every artifact of every agent on every poll — including the warm
+ * iOS poll, which is meant to be nearly free.
+ */
+export async function listArtifactsAndWidgets(agentSlug: string): Promise<ArtifactListing> {
+  return scanArtifacts(agentSlug, { includeWidgets: true })
+}
+
+async function scanArtifacts(
+  agentSlug: string,
+  opts: { includeWidgets: boolean },
+): Promise<ArtifactListing> {
+  const files = agentRegistry.get(agentSlug).files
+
+  // The directory as named, the way the plain listing read it; checking where
+  // it really leads is part of the containment work tracked separately.
+  const artifactsDir = artifactsDirFor(agentSlug)
+  let entries: FileEntry[]
   try {
-    entries = await fs.promises.readdir(artifactsDir, { withFileTypes: true })
-  } catch {
-    return []
-  }
-
-  const dashboards: ArtifactInfo[] = []
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-
-    const pkgPath = path.join(artifactsDir, entry.name, 'package.json')
-    try {
-      const pkgContent = await fs.promises.readFile(pkgPath, 'utf-8')
-      const pkg = JSON.parse(pkgContent)
-      const screenshotPath = path.join(
-        artifactsDir,
-        entry.name,
-        ARTIFACT_SCREENSHOT_FILENAME
-      )
-      const hasScreenshot = await fileExists(screenshotPath)
-      const firstRun = !(await directoryExists(path.join(artifactsDir, entry.name, 'node_modules')))
-      const info: ArtifactInfo = {
-        slug: entry.name,
-        name: pkg.name || entry.name,
-        description: pkg.description || '',
-        status: 'stopped',
-        port: 0,
-      }
-      // Only include hasScreenshot when true — keeps the API shape minimal
-      // and avoids spurious `hasScreenshot: false` fields in common responses.
-      if (hasScreenshot) info.hasScreenshot = true
-      // The host can report this before the agent container is running. That
-      // lets the dashboard view explain first-run preparation during container
-      // startup instead of flashing the state only during a fast install.
-      if (firstRun) info.firstRun = true
-      dashboards.push(info)
-    } catch {
-      // No valid package.json, skip
+    entries = await files.list(artifactsDir)
+  } catch (error) {
+    // No artifacts directory yet: nothing to list. Any other failure reads the
+    // same way: this runs for every agent on every agents-list poll, and one
+    // agent's unreadable directory must not take the whole list down.
+    if (!isMissingDirectoryError(error)) {
+      console.warn(`[artifact-service] Could not list artifacts for ${agentSlug}; treating as none:`, error)
     }
+    return { dashboards: [], widgets: [] }
   }
 
-  return dashboards
+  // Three independent lookups per artifact, artifacts independent of each
+  // other: issue them concurrently instead of one round trip at a time —
+  // this runs for every agent on every agents-list poll. The limiter bounds
+  // individual probes, not artifacts: wrapping the artifact would let each
+  // slot fan out to three probes, and an artifact that gives up early (no
+  // package.json) would free its slot while its two siblings still ran.
+  // Result order follows the directory listing, as before.
+  const limit = pLimit(10)
+  // One clock for the whole scan, so two widgets never disagree about staleness.
+  const now = Date.now()
+  const scanned = await Promise.all(
+    entries
+      .filter((entry) => entry.kind === 'directory')
+      .map(async (entry): Promise<{ dashboard: ArtifactInfo | null; widget: ApiAgentWidget | null }> => {
+        const nothing = { dashboard: null, widget: null }
+        const dir = entry.path
+        let pkg: { name?: unknown; description?: unknown }
+        let hasScreenshot: boolean
+        let hasNodeModules: boolean
+        try {
+          const [manifest, screenshot, nodeModules] = await Promise.all([
+            limit(() => files.getDoc(joinWorkspacePath(dir, ARTIFACT_MANIFEST_FILENAME))),
+            limit(() => files.stat(joinWorkspacePath(dir, ARTIFACT_SCREENSHOT_FILENAME))),
+            limit(() => files.stat(joinWorkspacePath(dir, 'node_modules'))),
+          ])
+          if (manifest === null) return nothing
+          pkg = JSON.parse(new TextDecoder().decode(manifest))
+          hasScreenshot = screenshot?.kind === 'file'
+          hasNodeModules = nodeModules?.kind === 'directory'
+        } catch {
+          // No valid package.json, skip
+          return nothing
+        }
+
+        // The widget half needs its own snapshot state, but not another
+        // manifest read — it is handed the copy above.
+        const widget = opts.includeWidgets && isWidgetSlug(entry.name)
+          ? await describeWidgetFromManifest(agentSlug, entry.name, pkg, now)
+          : null
+
+        // A widget-only artifact has no server; it is listed as a widget only.
+        if (isWidgetOnlyArtifact(pkg)) return { dashboard: null, widget }
+
+        const info: ArtifactInfo = {
+          slug: entry.name,
+          name: (typeof pkg.name === 'string' && pkg.name) || entry.name,
+          description: (typeof pkg.description === 'string' && pkg.description) || '',
+          status: 'stopped',
+          port: 0,
+        }
+        // Only include hasScreenshot when true — keeps the API shape minimal
+        // and avoids spurious `hasScreenshot: false` fields in common responses.
+        if (hasScreenshot) info.hasScreenshot = true
+        // The host can report this before the agent container is running. That
+        // lets the dashboard view explain first-run preparation during container
+        // startup instead of flashing the state only during a fast install.
+        if (!hasNodeModules) info.firstRun = true
+        return { dashboard: info, widget }
+      }),
+  )
+
+  return {
+    dashboards: scanned.map((r) => r.dashboard).filter((info): info is ArtifactInfo => info !== null),
+    widgets: scanned.map((r) => r.widget).filter((w): w is ApiAgentWidget => w !== null),
+  }
 }
 
-async function fileExists(p: string): Promise<boolean> {
-  try {
-    await fs.promises.access(p, fs.constants.R_OK)
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function directoryExists(p: string): Promise<boolean> {
-  try {
-    return (await fs.promises.stat(p)).isDirectory()
-  } catch {
-    return false
-  }
+/**
+ * Workspace path of one artifact's directory. The slug has to be a plain
+ * directory name under the rule the container's dashboard manager applies to
+ * every artifact it creates; anything else is a bad slug, answered here rather
+ * than handed to the actor as a path.
+ */
+function artifactDirFor(agentSlug: string, artifactSlug: string): string {
+  const dir = resolveArtifactPath(agentSlug, artifactSlug)
+  if (dir === null) throw new Error('Invalid artifact slug')
+  return dir
 }
 
 /**
@@ -97,46 +162,29 @@ export async function renameArtifactOnFilesystem(
   artifactSlug: string,
   newName: string
 ): Promise<void> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const artifactDir = path.join(workspaceDir, 'artifacts', artifactSlug)
+  const manifestPath = joinWorkspacePath(artifactDirFor(agentSlug, artifactSlug), ARTIFACT_MANIFEST_FILENAME)
+  const files = agentRegistry.get(agentSlug).files
 
-  // Ensure the path is within the expected artifacts directory
-  const artifactsDir = path.join(workspaceDir, 'artifacts')
-  const resolved = path.resolve(artifactDir)
-  if (!isPathWithinDir(artifactsDir, resolved)) {
-    throw new Error('Invalid artifact slug')
-  }
-
-  const pkgPath = path.join(artifactDir, 'package.json')
-  const pkgContent = await fs.promises.readFile(pkgPath, 'utf-8')
+  const manifest = await files.getDoc(manifestPath)
+  if (manifest === null) throw new Error(`No such file: ${manifestPath}`)
   let pkg: Record<string, unknown>
   try {
-    pkg = JSON.parse(pkgContent)
+    pkg = JSON.parse(new TextDecoder().decode(manifest))
   } catch {
-    throw new Error(`Failed to parse ${pkgPath}`)
+    throw new Error(`Failed to parse ${manifestPath}`)
   }
   pkg.name = newName
   // Atomic write: the read already throws on a corrupt package.json,
   // so this never overwrites with a default — just make the write crash-safe.
-  await writeFileAtomic(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
+  await files.putDoc(manifestPath, JSON.stringify(pkg, null, 2) + '\n')
 }
 
 /**
- * Delete a dashboard artifact by removing its directory from the host filesystem.
+ * Delete a dashboard artifact by removing its directory from the workspace.
  */
 export async function deleteArtifactFromFilesystem(
   agentSlug: string,
   artifactSlug: string
 ): Promise<void> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const artifactDir = path.join(workspaceDir, 'artifacts', artifactSlug)
-
-  // Ensure the path is within the expected artifacts directory
-  const artifactsDir = path.join(workspaceDir, 'artifacts')
-  const resolved = path.resolve(artifactDir)
-  if (!isPathWithinDir(artifactsDir, resolved)) {
-    throw new Error('Invalid artifact slug')
-  }
-
-  await fs.promises.rm(artifactDir, { recursive: true, force: true })
+  await agentRegistry.get(agentSlug).files.delete(artifactDirFor(agentSlug, artifactSlug), { recursive: true })
 }

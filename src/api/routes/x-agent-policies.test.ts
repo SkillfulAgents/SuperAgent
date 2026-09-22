@@ -27,9 +27,6 @@ vi.mock('@shared/lib/db', async () => ({
   get db() {
     return testDb
   },
-  get sqlite() {
-    return testSqlite
-  },
 }))
 
 // ----------------------------------------------------------------------------
@@ -74,6 +71,12 @@ const mockGetAgent = vi.fn()
 vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: vi.fn(async () => true),
   getAgent: (...args: unknown[]) => mockGetAgent(...args),
+  // The policy routes read identity from the catalog record; project the
+  // CLAUDE.md-shaped fixtures the tests hand getAgent.
+  getAgentRecord: async (...args: unknown[]) => {
+    const agent = (await mockGetAgent(...args)) as { slug: string; frontmatter: { name: string } } | null
+    return agent ? { slug: agent.slug, name: agent.frontmatter.name, createdAt: new Date(0), placement: { runtime: 'local', workspaceHandle: null } } : null
+  },
   getAgentWithStatus: vi.fn(),
   listAgentsWithStatus: vi.fn(async () => []),
   createAgent: vi.fn(),
@@ -84,18 +87,24 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   getAgentClaudeMdContent: vi.fn(),
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: vi.fn(),
-    ensureRunning: vi.fn(),
-    getCachedInfo: vi.fn(() => ({ status: 'stopped', port: null })),
-    getHealthWarnings: vi.fn(() => []),
-    removeClient: vi.fn(),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: vi.fn(),
+      ensureRunning: vi.fn(),
+      getCachedInfo: vi.fn(() => ({ status: 'stopped', port: null })),
+      getHealthWarnings: vi.fn(() => []),
+      removeClient: vi.fn(),
+    }),
+  }
+})
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
+    withSessionSend: async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
+      return send()
+    },
     isSessionActive: vi.fn(() => false),
     isSessionAwaitingInput: vi.fn(() => false),
     hasActiveSessionsForAgent: vi.fn(() => false),
@@ -258,8 +267,8 @@ describe('PATCH /api/agents/:id/x-agent-policies', () => {
     const res = await patchPolicy({ operation: 'invoke', targetSlug: TARGET_A, decision: 'review' })
 
     expect(res.status).toBe(200)
-    expect(getPolicy(CALLER, 'invoke', TARGET_A)?.decision).toBe('review')
-    expect(getPolicy(CALLER, 'read', TARGET_B)?.decision).toBe('block')
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('review')
+    expect((await getPolicy(CALLER, 'read', TARGET_B))?.decision).toBe('block')
   })
 
   it('clears only the selected row when decision is default', async () => {
@@ -270,8 +279,8 @@ describe('PATCH /api/agents/:id/x-agent-policies', () => {
 
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ ok: true, removed: 1 })
-    expect(getPolicy(CALLER, 'read', null)).toBeNull()
-    expect(getPolicy(CALLER, 'read', TARGET_A)?.decision).toBe('block')
+    expect((await getPolicy(CALLER, 'read', null))).toBeNull()
+    expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('block')
   })
 
   it('does not lose either of two concurrent changes', async () => {
@@ -285,8 +294,20 @@ describe('PATCH /api/agents/:id/x-agent-policies', () => {
 
     expect(a.status).toBe(200)
     expect(b.status).toBe(200)
-    expect(getPolicy(CALLER, 'invoke', TARGET_A)).toBeNull()
-    expect(getPolicy(CALLER, 'invoke', TARGET_B)).toBeNull()
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))).toBeNull()
+    expect((await getPolicy(CALLER, 'invoke', TARGET_B))).toBeNull()
+  })
+
+  it('returns 404 for a target that is not an agent', async () => {
+    // The target slug is raw request input; getAgent answers null for
+    // anything that is not an agent directory (see agent-service tests for
+    // the malformed-path cases), and the route turns that into a 404.
+    mockGetAgent.mockImplementation(async (slug: string) => (slug === 'not-an-agent' ? null : { slug, frontmatter: { name: slug }, instructions: '' }))
+
+    const res = await patchPolicy({ operation: 'invoke', targetSlug: 'not-an-agent', decision: 'allow' })
+
+    expect(res.status).toBe(404)
+    expect((await getPolicy(CALLER, 'invoke', 'not-an-agent'))).toBeNull()
   })
 
   it('rejects self-targeted and targeted list policies', async () => {
@@ -310,7 +331,7 @@ describe('PATCH /api/agents/:id/x-agent-policies', () => {
     const res = await patchPolicy({ operation: 'read', targetSlug: TARGET_B, decision: 'allow' })
 
     expect(res.status).toBe(404)
-    expect(getPolicy(CALLER, 'read', TARGET_B)).toBeNull()
+    expect((await getPolicy(CALLER, 'read', TARGET_B))).toBeNull()
   })
 })
 
@@ -334,13 +355,13 @@ describe('PUT /api/agents/:id/x-agent-policies', () => {
     })
     expect(res.status).toBe(200)
 
-    const remaining = listPoliciesForCaller(CALLER)
+    const remaining = (await listPoliciesForCaller(CALLER))
     expect(remaining).toHaveLength(1)
     expect(remaining[0].targetAgentSlug).toBe(TARGET_B)
     expect(remaining[0].decision).toBe('block')
     // Old rows are gone
-    expect(getPolicy(CALLER, 'invoke', TARGET_A)).toBeNull()
-    expect(getPolicy(CALLER, 'list', null)).toBeNull()
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))).toBeNull()
+    expect((await getPolicy(CALLER, 'list', null))).toBeNull()
   })
 
   it('rejects invalid payload with 400', async () => {
@@ -371,7 +392,7 @@ describe('PUT /api/agents/:id/x-agent-policies', () => {
       body: JSON.stringify({ policies: [] }),
     })
     expect(res.status).toBe(200)
-    expect(listPoliciesForCaller(CALLER)).toHaveLength(0)
+    expect((await listPoliciesForCaller(CALLER))).toHaveLength(0)
   })
 
   it('does not affect policies of other callers', async () => {
@@ -383,7 +404,7 @@ describe('PUT /api/agents/:id/x-agent-policies', () => {
         policies: [{ operation: 'invoke', targetSlug: TARGET_B, decision: 'block' }],
       }),
     })
-    expect(getPolicy('other-caller', 'invoke', TARGET_A)?.decision).toBe('allow')
+    expect((await getPolicy('other-caller', 'invoke', TARGET_A))?.decision).toBe('allow')
   })
 
   it('persists decision=review rows (review is a valid explicit override)', async () => {
@@ -397,7 +418,7 @@ describe('PUT /api/agents/:id/x-agent-policies', () => {
         ],
       }),
     })
-    const rows = listPoliciesForCaller(CALLER)
+    const rows = (await listPoliciesForCaller(CALLER))
     expect(rows).toHaveLength(2)
     const byOp = Object.fromEntries(rows.map((r) => [r.operation, r.decision]))
     expect(byOp.invoke).toBe('allow')
@@ -421,7 +442,7 @@ describe('atomic single invoke policy endpoints', () => {
     })
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ ok: true, created: true, previousDecision: null })
-    expect(getPolicy(CALLER, 'invoke', TARGET_A)?.decision).toBe('allow')
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
   })
 
   it('PUT over an existing allow reports created=false / previousDecision=allow', async () => {
@@ -442,7 +463,20 @@ describe('atomic single invoke policy endpoints', () => {
       body: JSON.stringify({ decision: 'allow' }),
     })
     expect(await res.json()).toMatchObject({ created: false, previousDecision: 'block' })
-    expect(getPolicy(CALLER, 'invoke', TARGET_A)?.decision).toBe('allow')
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+  })
+
+  it('PUT returns 404 for a target that is not an agent', async () => {
+    mockGetAgent.mockImplementation(async (slug: string) => (slug === 'not-an-agent' ? null : { slug, frontmatter: { name: slug }, instructions: '' }))
+
+    const res = await app.request(invokeUrl(CALLER, 'not-an-agent'), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+
+    expect(res.status).toBe(404)
+    expect((await getPolicy(CALLER, 'invoke', 'not-an-agent'))).toBeNull()
   })
 
   it('PUT rejects targeting the caller itself', async () => {
@@ -459,7 +493,7 @@ describe('atomic single invoke policy endpoints', () => {
     const res = await app.request(invokeUrl(CALLER, TARGET_A), { method: 'DELETE' })
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ ok: true, removed: 1 })
-    expect(getPolicy(CALLER, 'invoke', TARGET_A)).toBeNull()
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))).toBeNull()
   })
 
   it('DELETE PRESERVES an explicit block (no silent escalation)', async () => {
@@ -467,7 +501,7 @@ describe('atomic single invoke policy endpoints', () => {
     const res = await app.request(invokeUrl(CALLER, TARGET_A), { method: 'DELETE' })
     expect(await res.json()).toMatchObject({ removed: 0 })
     // The block survives — deleting a drawn edge must never lift it.
-    expect(getPolicy(CALLER, 'invoke', TARGET_A)?.decision).toBe('block')
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('block')
   })
 
   it('in auth mode, PUT toward an invisible target returns 404 (same as nonexistent — no existence oracle)', async () => {
@@ -487,7 +521,7 @@ describe('atomic single invoke policy endpoints', () => {
     })
     expect(res.status).toBe(404)
     // No row was written toward the invisible target.
-    expect(getPolicy(CALLER, 'invoke', TARGET_B)).toBeNull()
+    expect((await getPolicy(CALLER, 'invoke', TARGET_B))).toBeNull()
   })
 
   it('in auth mode, PUT toward a visible target succeeds', async () => {
@@ -506,6 +540,6 @@ describe('atomic single invoke policy endpoints', () => {
       body: JSON.stringify({ decision: 'allow' }),
     })
     expect(res.status).toBe(200)
-    expect(getPolicy(CALLER, 'invoke', TARGET_A)?.decision).toBe('allow')
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
   })
 })

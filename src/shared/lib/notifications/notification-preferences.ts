@@ -1,6 +1,18 @@
 import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
 
 /**
+ * Notification types that drive any unread dot or count in the UI.
+ * Lifecycle events (`session_scheduled`, `session_chat_integration`,
+ * `session_webhook`) live in the popover history but do not contribute
+ * to badges — the user didn't take an action that requires their attention.
+ *
+ * Lives in this renderer-safe leaf (not notification-service, which imports
+ * the DB) so the renderer's optimistic unread-dot raise and the server's
+ * unread queries share one list and can never drift.
+ */
+export const USER_ACTIONABLE_NOTIFICATION_TYPES = ['session_complete', 'session_waiting'] as const
+
+/**
  * Per-type notification preference check — the single source of truth for
  * mapping a notification type to its settings toggle. Used by every gate:
  * NotificationManager (non-auth mode, before the DB record is created),

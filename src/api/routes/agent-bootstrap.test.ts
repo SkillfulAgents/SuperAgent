@@ -121,3 +121,62 @@ describe('POST /:agentSlug/events/dashboard-screenshot-ready', () => {
     expect(broadcastGlobal).not.toHaveBeenCalled()
   })
 })
+
+describe('POST /:agentSlug/events/dashboard-status-changed', () => {
+  it('broadcasts an authenticated status event to renderer clients', async () => {
+    validateProxyToken.mockResolvedValue('agent-1')
+
+    const res = await post(
+      '/agent-1/events/dashboard-status-changed',
+      { dashboardSlug: 'sales-dashboard', status: 'running' },
+      { Authorization: 'Bearer synth_x' },
+    )
+
+    expect(res.status).toBe(204)
+    expect(broadcastGlobal).toHaveBeenCalledWith({
+      type: 'dashboard_status_changed',
+      agentSlug: 'agent-1',
+      dashboardSlug: 'sales-dashboard',
+      status: 'running',
+    })
+  })
+
+  it('rejects a token belonging to another agent', async () => {
+    validateProxyToken.mockResolvedValue('agent-2')
+
+    const res = await post(
+      '/agent-1/events/dashboard-status-changed',
+      { dashboardSlug: 'sales-dashboard', status: 'running' },
+      { Authorization: 'Bearer synth_other' },
+    )
+
+    expect(res.status).toBe(403)
+    expect(broadcastGlobal).not.toHaveBeenCalled()
+  })
+
+  it('rejects non-terminal statuses', async () => {
+    validateProxyToken.mockResolvedValue('agent-1')
+
+    const res = await post(
+      '/agent-1/events/dashboard-status-changed',
+      { dashboardSlug: 'sales-dashboard', status: 'starting' },
+      { Authorization: 'Bearer synth_x' },
+    )
+
+    expect(res.status).toBe(400)
+    expect(broadcastGlobal).not.toHaveBeenCalled()
+  })
+
+  it('rejects unsafe dashboard slugs', async () => {
+    validateProxyToken.mockResolvedValue('agent-1')
+
+    const res = await post(
+      '/agent-1/events/dashboard-status-changed',
+      { dashboardSlug: '../sales', status: 'running' },
+      { Authorization: 'Bearer synth_x' },
+    )
+
+    expect(res.status).toBe(400)
+    expect(broadcastGlobal).not.toHaveBeenCalled()
+  })
+})

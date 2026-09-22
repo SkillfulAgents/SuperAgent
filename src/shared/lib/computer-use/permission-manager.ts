@@ -1,257 +1,77 @@
 /**
- * ComputerUsePermissionManager
+ * The router in front of every agent's computer-use permissions.
  *
- * Manages per-agent computer use permissions with three grant types:
- * - "once": in-memory only, consumed after single use
- * - "timed": in-memory with 15-min expiry
- * - "always": persisted to settings.json + in-memory
+ * The grants and the grabbed app live in each agent's actor
+ * (`AgentComputerUse`); this singleton dispatches the calls that arrive with
+ * a slug — the persister's permission check on a computer-use tool call, the
+ * runtime's ungrab when a container stops — to that agent's store. A read for
+ * an agent that has no handle finds nothing in memory; a check loads the
+ * agent's persisted grants through its store, as it always did.
  */
-
-import { getSettings, mutateSettings } from '@shared/lib/config/settings'
-import type {
-  ComputerUsePermissionLevel,
-  PermissionGrant,
-  PermissionGrantType,
-  ComputerUseSettings,
-} from './types'
-import { TIMED_GRANT_DURATION_MS } from './types'
+import { AttachedStores, type AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
+import { AgentComputerUse } from './agent-permissions'
+import type { ComputerUsePermissionLevel, PermissionGrant, PermissionGrantType } from './types'
 
 export class ComputerUsePermissionManager {
-  /** In-memory grants: agentSlug → grants[] */
-  private grants = new Map<string, PermissionGrant[]>()
+  private readonly agents = new AttachedStores<AgentComputerUse>('computer-use permissions')
 
-  /** Per-agent grabbed app tracking: agentSlug → app name */
-  private grabbedApps = new Map<string, string>()
-
-  /** Whether persisted grants have been loaded from settings.json yet. */
-  private loaded = false
-
-  /** Lazily load persisted grants on first access. */
-  private ensureLoaded(): void {
-    if (!this.loaded) {
-      this.loaded = true
-      this.loadFromSettings()
-    }
+  /** Called once by the agent registry with the way to each agent's store. */
+  attachAgents(directory: AgentStoreDirectory<AgentComputerUse> | null): void {
+    this.agents.attach(directory)
   }
 
-  /**
-   * Check if a permission is currently granted.
-   * Returns 'granted' if an active (non-expired, non-consumed) grant exists.
-   * Returns 'prompt_needed' if the user must be prompted.
-   */
+  /** `AgentComputerUse.check` */
   checkPermission(
     agentSlug: string,
     level: ComputerUsePermissionLevel,
     appName?: string,
   ): 'granted' | 'prompt_needed' {
-    this.ensureLoaded()
-    const agentGrants = this.grants.get(agentSlug)
-    if (!agentGrants) return 'prompt_needed'
-
-    const now = Date.now()
-    for (const grant of agentGrants) {
-      if (!this.grantMatches(grant, level, appName)) continue
-      // Check expiry for timed grants
-      if (grant.grantType === 'timed' && grant.expiresAt && grant.expiresAt < now) continue
-      return 'granted'
-    }
-
-    return 'prompt_needed'
+    return this.agents.get(agentSlug).check(level, appName)
   }
 
-  /**
-   * Record a permission grant. For "always" grants, also persists to settings.
-   */
+  /** `AgentComputerUse.grant` */
   grantPermission(
     agentSlug: string,
     level: ComputerUsePermissionLevel,
     grantType: PermissionGrantType,
     appName?: string,
   ): void {
-    this.ensureLoaded()
-    const now = Date.now()
-    const grant: PermissionGrant = {
-      level,
-      grantType,
-      grantedAt: now,
-      ...(appName && { appName }),
-      ...(grantType === 'timed' && { expiresAt: now + TIMED_GRANT_DURATION_MS }),
-    }
-
-    if (!this.grants.has(agentSlug)) {
-      this.grants.set(agentSlug, [])
-    }
-
-    // For 'timed' and 'always': remove existing matching grants before adding new one
-    if (grantType !== 'once') {
-      this.removeMatchingGrants(agentSlug, level, appName)
-    }
-
-    this.grants.get(agentSlug)!.push(grant)
-    console.log(`[ComputerUsePermissions] Granted ${grantType} ${level}${appName ? ` for ${appName}` : ''} to ${agentSlug}`)
-
-    if (grantType === 'always') {
-      this.persistToSettings()
-    }
+    this.agents.get(agentSlug).grant(level, grantType, appName)
   }
 
-  /**
-   * Consume a "once" grant after use. Removes the first matching "once" grant.
-   */
-  consumeOnceGrant(
-    agentSlug: string,
-    level: ComputerUsePermissionLevel,
-    appName?: string,
-  ): void {
-    const agentGrants = this.grants.get(agentSlug)
-    if (!agentGrants) return
-
-    const idx = agentGrants.findIndex(
-      (g) => g.grantType === 'once' && this.grantMatches(g, level, appName),
-    )
-    if (idx >= 0) {
-      agentGrants.splice(idx, 1)
-      console.log(`[ComputerUsePermissions] Consumed once grant ${level}${appName ? ` for ${appName}` : ''} from ${agentSlug}`)
-    }
+  /** `AgentComputerUse.consumeOnce` */
+  consumeOnceGrant(agentSlug: string, level: ComputerUsePermissionLevel, appName?: string): void {
+    this.agents.peek(agentSlug)?.consumeOnce(level, appName)
   }
 
-  /**
-   * Revoke all permissions for an agent.
-   */
+  /** `AgentComputerUse.revokeAll` */
   revokeAllForAgent(agentSlug: string): void {
-    console.log(`[ComputerUsePermissions] Revoking all grants for ${agentSlug}`)
-    this.grants.delete(agentSlug)
-    this.grabbedApps.delete(agentSlug)
-    this.persistToSettings()
+    this.agents.get(agentSlug).revokeAll()
   }
 
-  /**
-   * Revoke a specific "always" grant for an agent.
-   */
-  revokeGrant(
-    agentSlug: string,
-    level: ComputerUsePermissionLevel,
-    appName?: string,
-  ): void {
-    console.log(`[ComputerUsePermissions] Revoking ${level}${appName ? ` for ${appName}` : ''} from ${agentSlug}`)
-    this.removeMatchingGrants(agentSlug, level, appName)
-    this.persistToSettings()
+  /** `AgentComputerUse.revoke` */
+  revokeGrant(agentSlug: string, level: ComputerUsePermissionLevel, appName?: string): void {
+    this.agents.get(agentSlug).revoke(level, appName)
   }
 
-  /**
-   * Get all active (non-expired) grants for an agent.
-   */
+  /** `AgentComputerUse.activeGrants` */
   getGrantsForAgent(agentSlug: string): PermissionGrant[] {
-    this.ensureLoaded()
-    const agentGrants = this.grants.get(agentSlug)
-    if (!agentGrants) return []
-
-    const now = Date.now()
-    return agentGrants.filter((g) => {
-      if (g.grantType === 'timed' && g.expiresAt && g.expiresAt < now) return false
-      return true
-    })
+    return this.agents.get(agentSlug).activeGrants()
   }
 
-  /**
-   * Track which app is currently grabbed by an agent session.
-   */
+  /** `AgentComputerUse.setGrabbed` */
   setGrabbedApp(agentSlug: string, appName: string): void {
-    this.grabbedApps.set(agentSlug, appName)
+    this.agents.get(agentSlug).setGrabbed(appName)
   }
 
+  /** `AgentComputerUse.clearGrabbed` */
   clearGrabbedApp(agentSlug: string): void {
-    this.grabbedApps.delete(agentSlug)
+    this.agents.peek(agentSlug)?.clearGrabbed()
   }
 
+  /** `AgentComputerUse.grabbed` */
   getGrabbedApp(agentSlug: string): string | undefined {
-    return this.grabbedApps.get(agentSlug)
-  }
-
-  /**
-   * Load persisted "always" grants from settings.json on startup.
-   */
-  loadFromSettings(): void {
-    try {
-      const settings = getSettings()
-      const cu = settings.computerUse
-      if (!cu?.agentPermissions) return
-
-      for (const [agentSlug, agentPerms] of Object.entries(cu.agentPermissions)) {
-        const existingGrants = this.grants.get(agentSlug) || []
-        for (const g of agentPerms.grants) {
-          existingGrants.push({
-            level: g.level,
-            appName: g.appName,
-            grantType: 'always',
-            grantedAt: Date.now(),
-          })
-        }
-        this.grants.set(agentSlug, existingGrants)
-      }
-    } catch (error) {
-      console.error('[ComputerUsePermissionManager] Failed to load from settings:', error)
-    }
-  }
-
-  /**
-   * Persist all "always" grants to settings.json.
-   */
-  persistToSettings(): void {
-    try {
-      const agentPermissions: ComputerUseSettings['agentPermissions'] = {}
-
-      for (const [agentSlug, agentGrants] of this.grants) {
-        const alwaysGrants = agentGrants.filter((g) => g.grantType === 'always')
-        if (alwaysGrants.length > 0) {
-          agentPermissions[agentSlug] = {
-            grants: alwaysGrants.map((g) => ({
-              level: g.level,
-              appName: g.appName,
-              grantType: 'always' as const,
-            })),
-          }
-        }
-      }
-
-      // Serialized fresh-read + atomic write: preserves any concurrent
-      // settings change instead of overwriting from a stale snapshot.
-      mutateSettings((settings) => {
-        settings.computerUse = {
-          ...settings.computerUse,
-          agentPermissions,
-        }
-      })
-    } catch (error) {
-      console.error('[ComputerUsePermissionManager] Failed to persist to settings:', error)
-    }
-  }
-
-  // --- Private helpers ---
-
-  private grantMatches(
-    grant: PermissionGrant,
-    level: ComputerUsePermissionLevel,
-    appName?: string,
-  ): boolean {
-    if (grant.level !== level) return false
-    // For 'use_application', appName must match
-    if (level === 'use_application') {
-      return grant.appName === appName
-    }
-    return true
-  }
-
-  private removeMatchingGrants(
-    agentSlug: string,
-    level: ComputerUsePermissionLevel,
-    appName?: string,
-  ): void {
-    const agentGrants = this.grants.get(agentSlug)
-    if (!agentGrants) return
-
-    const filtered = agentGrants.filter((g) => !this.grantMatches(g, level, appName))
-    this.grants.set(agentSlug, filtered)
+    return this.agents.peek(agentSlug)?.grabbed()
   }
 }
 

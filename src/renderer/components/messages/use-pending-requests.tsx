@@ -1,3 +1,4 @@
+import { xAgentFileTransferSchema, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
@@ -26,7 +27,7 @@ type PendingRequestBuckets = {
   connectedAccountRequests: { toolUseId: string; toolkit: string; reason?: string }[]
   questionRequests: { toolUseId: string; questions: Question[] }[]
   fileRequests: { toolUseId: string; description: string; fileTypes?: string }[]
-  remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }[]
+  remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer'; clientId?: string; clientName?: string }[]
   browserInputRequests: { toolUseId: string; message: string; requirements: string[] }[]
   scriptRunRequests: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[]
   computerUseRequests: { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }[]
@@ -140,6 +141,8 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         name: typeof input.name === 'string' ? input.name : undefined,
         reason: typeof input.reason === 'string' ? input.reason : undefined,
         authHint: input.authHint === 'oauth' || input.authHint === 'bearer' ? input.authHint : undefined,
+        clientId: typeof input.clientId === 'string' ? input.clientId : undefined,
+        clientName: typeof input.clientName === 'string' ? input.clientName : undefined,
       })
     }
   } else if (toolCall.name === 'mcp__user-input__request_file') {
@@ -230,12 +233,7 @@ export interface PendingReview {
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
   displayText?: string
-  xAgent?: {
-    targetAgentSlug: string
-    targetAgentName: string
-    operation: 'list' | 'read' | 'invoke' | 'create'
-    preview?: string
-  }
+  xAgent?: XAgentReview
 }
 
 export interface PendingAccountReauth {
@@ -335,6 +333,10 @@ export function reviewFromEnvelope(
       targetAgentName: raw.targetAgentName,
       operation: raw.operation,
       preview: typeof raw.preview === 'string' ? raw.preview : undefined,
+      fileTransfer: xAgentFileTransferSchema.safeParse(raw.fileTransfer).data,
+      attachments: Array.isArray(raw.attachments)
+        ? raw.attachments.filter((item): item is string => typeof item === 'string')
+        : undefined,
     }
   }
   return {
@@ -421,6 +423,8 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
             name: typeof payload.name === 'string' ? payload.name : undefined,
             reason: typeof payload.reason === 'string' ? payload.reason : undefined,
             authHint: payload.authHint === 'oauth' || payload.authHint === 'bearer' ? payload.authHint : undefined,
+            clientId: typeof payload.clientId === 'string' ? payload.clientId : undefined,
+            clientName: typeof payload.clientName === 'string' ? payload.clientName : undefined,
           })
         }
         break
@@ -557,7 +561,7 @@ export function usePendingBrowserInputRequests(
 export type PendingRequestDescriptor =
   | { kind: 'secret'; key: string; toolUseId: string; secretName: string; reason?: string; onComplete: () => void }
   | { kind: 'connected_account'; key: string; toolUseId: string; toolkit: string; reason?: string; onComplete: () => void }
-  | { kind: 'remote_mcp'; key: string; toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer'; onComplete: () => void }
+  | { kind: 'remote_mcp'; key: string; toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer'; clientId?: string; clientName?: string; onComplete: () => void }
   | { kind: 'question'; key: string; toolUseId: string; questions: Question[]; onComplete: () => void }
   | { kind: 'file'; key: string; toolUseId: string; description: string; fileTypes?: string; onComplete: () => void }
   | { kind: 'browser_input'; key: string; toolUseId: string; message: string; requirements: string[]; onComplete: () => void }
@@ -830,6 +834,8 @@ export function usePendingRequests({
         name: r.name,
         reason: r.reason,
         authHint: r.authHint,
+        clientId: r.clientId,
+        clientName: r.clientName,
         onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }

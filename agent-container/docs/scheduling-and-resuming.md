@@ -47,7 +47,9 @@ destination, relevant scope, and any conditions that should suppress action.
 ## Managing Scheduled Tasks
 
 Call `mcp__user-input__list_scheduled_tasks` first to resolve task IDs and see
-current state. Then use the dedicated cancel, pause, or resume tool.
+current state. Use `mcp__user-input__update_scheduled_task` to change the timing,
+prompt, or both without replacing the task and losing its execution history.
+Then use the dedicated cancel, pause, or resume tool when needed.
 
 - One-time tasks disappear after they execute.
 - Recurring tasks continue until cancelled.

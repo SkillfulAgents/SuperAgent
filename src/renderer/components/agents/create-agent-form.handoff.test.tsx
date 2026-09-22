@@ -106,10 +106,10 @@ vi.mock('@renderer/hooks/use-typewriter-placeholder', () => ({
   DEFAULT_AGENT_PROMPT_EXAMPLES: [],
 }))
 
-vi.mock('@renderer/components/agents/agent-creation-aids', () => ({
-  AgentCreationAids: ({ onAidOpened }: { onAidOpened?: () => void }) => (
-    <button type="button" data-testid="aid-opened" onClick={() => onAidOpened?.()}>
-      aid
+vi.mock('@renderer/components/agents/create-agent-templates', () => ({
+  CreateAgentTemplates: ({ onImportClick }: { onImportClick?: () => void }) => (
+    <button type="button" data-testid="aid-opened" onClick={() => onImportClick?.()}>
+      import
     </button>
   ),
 }))
@@ -143,6 +143,11 @@ vi.mock('@renderer/hooks/use-voice-input', () => ({
   },
 }))
 
+const toastError = vi.fn()
+vi.mock('sonner', () => ({
+  toast: { error: (...args: unknown[]) => toastError(...args), success: vi.fn() },
+}))
+
 vi.mock('@renderer/components/agents/template-install-dialog', () => ({
   TemplateInstallDialog: (props: { template: unknown }) => {
     lastDialogProps = props
@@ -162,6 +167,7 @@ vi.mock('@renderer/components/ui/voice-input-button', () => ({
 vi.mock('@renderer/components/messages/chat-composer-box', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@renderer/components/messages/chat-composer-box')>()
   return {
+    FLOATING_COMPOSER_CLASS: actual.FLOATING_COMPOSER_CLASS,
     ChatComposerBox: (props: Parameters<typeof actual.ChatComposerBox>[0]) => {
       lastComposerAutoFocus = props.autoFocus
       return actual.ChatComposerBox(props)
@@ -444,6 +450,7 @@ describe('CreateAgentForm signup handoff', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(6000)
       })
+      expect(toastError).toHaveBeenCalledWith('Could not load templates')
       expect(screen.getByTestId('create-agent-prompt')).toHaveFocus()
 
       // Settled for good — a list that shows up afterwards must not pop the offer.
@@ -606,7 +613,7 @@ describe('CreateAgentForm signup handoff', () => {
     expect(lastDialogProps?.template).toEqual(discoverable('model-bot'))
   })
 
-  it('opening a creation aid forfeits before a late match can open the dialog', async () => {
+  it('opening the import card forfeits before a late match can open the dialog', async () => {
     mockDiscoverableAgents = []
     mockSignupHandoff = { template_slug: 'aid-bot' }
     const user = userEvent.setup()

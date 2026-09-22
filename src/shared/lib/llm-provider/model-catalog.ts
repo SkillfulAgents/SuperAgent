@@ -1,3 +1,4 @@
+import { withGlobalModelPricing } from './global-pricing'
 import type { LlmProviderId, ModelPurpose } from './base-llm-provider'
 import {
   modelDefinitionSchema,
@@ -5,7 +6,7 @@ import {
   type ModelDefinition,
 } from './model-catalog-schema'
 import { getLlmProvider } from './index'
-import { getModelCatalogSettings } from '../config/settings'
+import { getModelCatalogSettings, getSettings } from '../config/settings'
 
 /**
  * Host-side source of truth for which concrete models a provider offers and
@@ -58,10 +59,32 @@ function withoutDisabled(entry: CatalogOverrideEntry): Partial<ModelDefinition> 
   return model
 }
 
+function mergeModelPatch(
+  base: Partial<ModelDefinition> & { id: string },
+  patch: Partial<ModelDefinition> & { id: string },
+): Partial<ModelDefinition> & { id: string } {
+  const next = { ...base, ...patch }
+  if (base.pricing && patch.pricing) {
+    next.pricing = {
+      ...base.pricing,
+      ...patch.pricing,
+      ...(base.pricing.speedMultipliers && patch.pricing.speedMultipliers
+        ? {
+            speedMultipliers: {
+              ...base.pricing.speedMultipliers,
+              ...patch.pricing.speedMultipliers,
+            },
+          }
+        : {}),
+    }
+  }
+  return next
+}
+
 /**
  * A provider's user-effective catalog:
- * built-ins → shallow per-id overrides → disabled entries removed → structural
- * validation → family latest normalization.
+ * built-ins → per-id overrides (with nested pricing merged) → disabled
+ * entries removed → structural validation → family latest normalization.
  */
 export function getEffectiveCatalog(providerId: LlmProviderId): ModelDefinition[] {
   const builtins = getProviderCatalog(providerId)
@@ -83,7 +106,7 @@ export function getEffectiveCatalog(providerId: LlmProviderId): ModelDefinition[
 
     const patch = withoutDisabled(entry)
     const base = current ?? builtin
-    const next = base ? { ...base, ...patch } : patch
+    const next = base ? mergeModelPatch(base, patch) : patch
     if (!base && !order.includes(entry.id)) order.push(entry.id)
     byId.set(entry.id, next)
   }
@@ -104,7 +127,7 @@ export function getEffectiveCatalog(providerId: LlmProviderId): ModelDefinition[
     valid.push(parsed.data)
   }
 
-  return normalizeCatalog(valid)
+  return withGlobalModelPricing(normalizeCatalog(valid), getSettings().modelPricing)
 }
 
 /** Look up a concrete model definition by id within a provider's catalog. */
@@ -121,6 +144,21 @@ export function getModelContextWindow(
   providerId: LlmProviderId,
 ): number | undefined {
   return getModelDefinition(id, providerId)?.contextWindow
+}
+
+/**
+ * Model id → catalog context window for every entry that declares one.
+ * Sent to the agent container so the Claude Agent SDK can be told the real
+ * window for non-Claude models (it otherwise assumes a 200k default).
+ */
+export function getModelContextWindowMap(
+  providerId: LlmProviderId,
+): Record<string, number> {
+  return Object.fromEntries(
+    getEffectiveCatalog(providerId)
+      .filter(model => model.contextWindow !== undefined)
+      .map(model => [model.id, model.contextWindow as number]),
+  )
 }
 
 /** Static catalog prompt hints for a model, or an empty list if unset. */

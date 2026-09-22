@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
-import { and, eq, isNull, count } from 'drizzle-orm'
+import { and, count, eq, exists, isNull, lt, or, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { changesOf, insertWhere } from '@shared/lib/db/batch'
 import { pushSubscriptions } from '@shared/lib/db/schema'
 
 export type PushSubscriptionRow = typeof pushSubscriptions.$inferSelect
@@ -22,72 +23,61 @@ export const MAX_PUSH_SUBSCRIPTIONS_PER_OWNER = 10
  * Returns false when the owner is at MAX_PUSH_SUBSCRIPTIONS_PER_OWNER and the
  * endpoint is new (the route surfaces this as 429).
  */
-export function upsertPushSubscription(params: {
+export async function upsertPushSubscription(params: {
   endpoint: string
   p256dh: string
   auth: string
   origin: string
   userId: string | null
   deviceName?: string | null
-}): boolean {
+}): Promise<boolean> {
   const now = new Date()
-  return db.transaction((tx) => {
-    const exists = tx
-      .select({ id: pushSubscriptions.id })
-      .from(pushSubscriptions)
-      .where(eq(pushSubscriptions.endpoint, params.endpoint))
-      .limit(1)
-      .all()
-
-    if (exists.length === 0) {
-      const ownerFilter =
-        params.userId === null
-          ? isNull(pushSubscriptions.userId)
-          : eq(pushSubscriptions.userId, params.userId)
-      const [{ ownerCount }] = tx
-        .select({ ownerCount: count() })
-        .from(pushSubscriptions)
-        .where(ownerFilter)
-        .all()
-      if (ownerCount >= MAX_PUSH_SUBSCRIPTIONS_PER_OWNER) {
-        return false
-      }
-    }
-
-    tx.insert(pushSubscriptions)
-      .values({
-        id: randomUUID(),
-        endpoint: params.endpoint,
+  const ownerFilter =
+    params.userId === null
+      ? isNull(pushSubscriptions.userId)
+      : eq(pushSubscriptions.userId, params.userId)
+  // A known endpoint is always refreshed; a new one is admitted only while the
+  // owner is under the cap. The driver evaluates both inside the insert, so
+  // two concurrent subscribes at the cap admit exactly one.
+  const known = db.select({ one: sql`1` }).from(pushSubscriptions)
+    .where(eq(pushSubscriptions.endpoint, params.endpoint))
+  const owned = db.select({ n: count() }).from(pushSubscriptions).where(ownerFilter)
+  const result = await insertWhere(
+    pushSubscriptions,
+    {
+      id: randomUUID(),
+      endpoint: params.endpoint,
+      keysP256dh: params.p256dh,
+      keysAuth: params.auth,
+      origin: params.origin,
+      userId: params.userId,
+      deviceName: params.deviceName ?? null,
+      createdAt: now,
+      updatedAt: now,
+    },
+    or(exists(known), lt(owned, MAX_PUSH_SUBSCRIPTIONS_PER_OWNER)),
+  )
+    .onConflictDoUpdate({
+      target: pushSubscriptions.endpoint,
+      set: {
         keysP256dh: params.p256dh,
         keysAuth: params.auth,
         origin: params.origin,
         userId: params.userId,
         deviceName: params.deviceName ?? null,
-        createdAt: now,
         updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: pushSubscriptions.endpoint,
-        set: {
-          keysP256dh: params.p256dh,
-          keysAuth: params.auth,
-          origin: params.origin,
-          userId: params.userId,
-          deviceName: params.deviceName ?? null,
-          updatedAt: now,
-        },
-      })
-      .run()
-    return true
-  })
+      },
+    })
+    .run()
+  return changesOf(result) > 0
 }
 
-export function listPushSubscriptions(): PushSubscriptionRow[] {
+export async function listPushSubscriptions(): Promise<PushSubscriptionRow[]> {
   return db.select().from(pushSubscriptions).all()
 }
 
-export function deletePushSubscriptionById(id: string): void {
-  db.delete(pushSubscriptions).where(eq(pushSubscriptions.id, id)).run()
+export async function deletePushSubscriptionById(id: string): Promise<void> {
+  await db.delete(pushSubscriptions).where(eq(pushSubscriptions.id, id)).run()
 }
 
 /**
@@ -97,15 +87,15 @@ export function deletePushSubscriptionById(id: string): void {
  * the single local user owns every device, including rows created under a
  * previous auth-mode life of the same database — those must stay deletable.
  */
-export function deletePushSubscriptionByEndpoint(
+export async function deletePushSubscriptionByEndpoint(
   endpoint: string,
   ownerUserId?: string
-): boolean {
+): Promise<boolean> {
   const ownerFilter =
     ownerUserId === undefined ? undefined : eq(pushSubscriptions.userId, ownerUserId)
-  const result = db
+  const result = await db
     .delete(pushSubscriptions)
     .where(and(eq(pushSubscriptions.endpoint, endpoint), ownerFilter))
     .run()
-  return result.changes > 0
+  return changesOf(result) > 0
 }

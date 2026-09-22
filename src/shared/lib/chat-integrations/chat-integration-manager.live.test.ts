@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 //
 //   SLACK_LIVE=1 SLACK_LIVE_CONFIG=/path/slack-config.json \
 //   npx vitest run --disableConsoleIntercept \
-//     src/shared/lib/chat-integrations/chat-integration-manager.live.test.ts
+//     src/shared/lib/agent-integrations/agent-integration-manager.live.test.ts
 //
 // The service layer is mocked (no real DB writes); the connector, socket, and
 // Slack workspace are real. Validates the exact production failure paths:
@@ -59,7 +59,7 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
   },
 }))
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
 import {
   listStartupChatIntegrations,
   getChatIntegration,
@@ -86,7 +86,7 @@ interface ManagerTestSurface {
   enqueueMessage(integrationId: string, message: IncomingMessage): void
 }
 
-const mgr = chatIntegrationManager as unknown as ManagerTestSurface
+const mgr = agentIntegrationManager as unknown as ManagerTestSurface
 
 function liveRow(status: 'active' | 'error'): ChatIntegration {
   const config = readFileSync(process.env.SLACK_LIVE_CONFIG!, 'utf8')
@@ -126,7 +126,7 @@ async function waitFor(label: string, cond: () => boolean, timeoutMs: number, in
 }
 
 describe.runIf(LIVE)('ChatIntegrationManager live reconcile against real Slack', () => {
-  beforeAll(() => {
+  beforeAll(async () => {
     mgr.isRunning = true
   })
 
@@ -139,8 +139,8 @@ describe.runIf(LIVE)('ChatIntegrationManager live reconcile against real Slack',
 
   it('ORPHAN RECOVERY: a health tick rebuilds an integration missing from the map and clears the badge', async () => {
     const row = liveRow('error') // orphaned integrations end up badged 'error'
-    listStartupMock.mockReturnValue([row])
-    getIntegrationMock.mockReturnValue(row)
+    listStartupMock.mockResolvedValue([row])
+    getIntegrationMock.mockResolvedValue(row)
 
     expect(mgr.connections.has(INT)).toBe(false)
     await mgr.runHealthChecks()
@@ -154,8 +154,8 @@ describe.runIf(LIVE)('ChatIntegrationManager live reconcile against real Slack',
 
   it('MANAGER TAKEOVER: a dead socket past the grace window is torn down and rebuilt connected', async () => {
     const row = liveRow('active')
-    listStartupMock.mockReturnValue([row])
-    getIntegrationMock.mockReturnValue(row)
+    listStartupMock.mockResolvedValue([row])
+    getIntegrationMock.mockResolvedValue(row)
 
     const before = connectorOf(INT)!
     expect(before.isConnected()).toBe(true)
@@ -177,8 +177,8 @@ describe.runIf(LIVE)('ChatIntegrationManager live reconcile against real Slack',
 
   it('RESUME: reconnectAll force-rebuilds and the fresh socket receives real inbound events', async () => {
     const row = liveRow('active')
-    listStartupMock.mockReturnValue([row])
-    getIntegrationMock.mockReturnValue(row)
+    listStartupMock.mockResolvedValue([row])
+    getIntegrationMock.mockResolvedValue(row)
 
     const before = connectorOf(INT)!
     const resume = mgr.reconnectAll()

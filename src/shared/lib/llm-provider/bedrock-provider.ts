@@ -82,7 +82,7 @@ export class BedrockLlmProvider extends BaseLlmProvider {
     return BEDROCK_CATALOG
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
     const settings = getSettings()
     const region = this.getRegion()
     const bearerToken = this.getEffectiveApiKey()

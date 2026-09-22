@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { notifyDashboardScreenshotReady } from './host-events'
+import { notifyDashboardScreenshotReady, notifyDashboardStatusChanged } from './host-events'
 
 describe('notifyDashboardScreenshotReady', () => {
   beforeEach(() => {
@@ -45,5 +45,31 @@ describe('notifyDashboardScreenshotReady', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 403 }))
 
     await expect(notifyDashboardScreenshotReady('sales-dashboard')).rejects.toThrow('HTTP 403')
+  })
+
+  it('posts dashboard status transitions with container authentication', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }))
+
+    await expect(notifyDashboardStatusChanged('sales-dashboard', 'running')).resolves.toBe(true)
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://host.internal/api/agent-bootstrap/agent-a/events/dashboard-status-changed',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer proxy-token',
+        },
+        body: JSON.stringify({ dashboardSlug: 'sales-dashboard', status: 'running' }),
+      },
+    )
+  })
+
+  it('status notifier is a no-op when host callback configuration is unavailable', async () => {
+    delete process.env.SUPERAGENT_HOST_API_URL
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+
+    await expect(notifyDashboardStatusChanged('sales-dashboard', 'crashed')).resolves.toBe(false)
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 })

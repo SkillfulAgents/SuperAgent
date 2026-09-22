@@ -78,9 +78,30 @@ describe('agent-preferences-service', () => {
       expect(agentPreferencesSchema.parse({})).toEqual({})
     })
 
-    it('rejects zero', () => {
+    it('accepts zero as an explicit "Never" override', () => {
+      expect(agentPreferencesSchema.parse({ autoDeleteInactiveDays: 0 })).toEqual({
+        autoDeleteInactiveDays: 0,
+      })
+    })
+
+    it('rejects negative days', () => {
       expect(() =>
-        agentPreferencesSchema.parse({ autoDeleteInactiveDays: 0 })
+        agentPreferencesSchema.parse({ autoDeleteInactiveDays: -1 })
+      ).toThrow()
+    })
+
+    it('accepts apiLogAutoDeleteDays 0 (Never) and 30', () => {
+      expect(agentPreferencesSchema.parse({ apiLogAutoDeleteDays: 0 })).toEqual({
+        apiLogAutoDeleteDays: 0,
+      })
+      expect(agentPreferencesSchema.parse({ apiLogAutoDeleteDays: 30 })).toEqual({
+        apiLogAutoDeleteDays: 30,
+      })
+    })
+
+    it('rejects negative apiLogAutoDeleteDays', () => {
+      expect(() =>
+        agentPreferencesSchema.parse({ apiLogAutoDeleteDays: -1 })
       ).toThrow()
     })
 
@@ -246,6 +267,14 @@ describe('agent-preferences-service', () => {
 
       const content = JSON.parse(await readPrefsFile('test-agent'))
       expect(content).toEqual({ autoDeleteInactiveDays: 30 })
+    })
+
+    it('persists apiLogAutoDeleteDays = 0 (Never)', async () => {
+      await createWorkspaceDir('test-agent')
+      const result = await updateAgentPreferences('test-agent', {
+        apiLogAutoDeleteDays: 0,
+      })
+      expect(result).toEqual({ apiLogAutoDeleteDays: 0 })
     })
 
     it('merges with existing preferences', async () => {

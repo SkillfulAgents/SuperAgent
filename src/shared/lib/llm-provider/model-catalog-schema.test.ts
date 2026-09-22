@@ -77,6 +77,42 @@ describe('modelDefinitionSchema', () => {
     ).toThrow()
   })
 
+  it('accepts optional cache pricing, including an explicit free cache-write rate', () => {
+    expect(
+      modelDefinitionSchema.parse({
+        ...base,
+        pricing: {
+          inputPerMtok: 5,
+          outputPerMtok: 25,
+          cacheCreationPerMtok: 0,
+          cacheCreation1hPerMtok: 10,
+          cacheReadPerMtok: 0.5,
+        },
+      }),
+    ).toMatchObject({
+      pricing: {
+        cacheCreationPerMtok: 0,
+        cacheCreation1hPerMtok: 10,
+        cacheReadPerMtok: 0.5,
+      },
+    })
+  })
+
+  it('rejects negative cache pricing', () => {
+    for (const field of [
+      'cacheCreationPerMtok',
+      'cacheCreation1hPerMtok',
+      'cacheReadPerMtok',
+    ] as const) {
+      expect(() =>
+        modelDefinitionSchema.parse({
+          ...base,
+          pricing: { inputPerMtok: 5, outputPerMtok: 25, [field]: -1 },
+        }),
+      ).toThrow()
+    }
+  })
+
   it('accepts pricing with speedMultipliers (full or partial) and omits cleanly', () => {
     expect(
       modelDefinitionSchema.parse({

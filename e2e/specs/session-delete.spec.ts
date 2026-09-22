@@ -116,17 +116,14 @@ test.describe('Session deletion', () => {
 
     await gotoAgentHome(page, agent)
 
-    // exact:true — role-name matching is substring by default, and the row
-    // button's accessible name embeds the kebab's label, so a substring match
-    // resolves to both the row and its kebab
     const kebabFor = (session: TestSession) =>
-      page.getByRole('button', { name: `Actions for ${session.name}`, exact: true })
+      page.locator(`[data-testid="session-row-menu-${session.id}"]`)
     const deleteDialog = page.getByRole('alertdialog')
 
-    // Cancel path: open the kebab, choose Delete Session, then back out — the
-    // session must survive
+    // Cancel path: open the kebab (the shared session menu), choose Delete,
+    // then back out — the session must survive
     await kebabFor(sessionB).click()
-    await page.getByRole('button', { name: 'Delete Session', exact: true }).click()
+    await page.locator('[data-testid="delete-session-item"]').click()
     await expect(deleteDialog).toBeVisible()
     await deleteDialog.getByRole('button', { name: 'Cancel' }).click()
     await expect(deleteDialog).not.toBeVisible()
@@ -137,7 +134,7 @@ test.describe('Session deletion', () => {
     // Confirm path: the dialog names the session, and confirming deletes it
     // without navigating away from the agent home
     await kebabFor(sessionB).click()
-    await page.getByRole('button', { name: 'Delete Session', exact: true }).click()
+    await page.locator('[data-testid="delete-session-item"]').click()
     await expect(deleteDialog).toBeVisible()
     await expect(deleteDialog).toContainText(sessionB.name)
     await deleteDialog.getByRole('button', { name: 'Delete', exact: true }).click()

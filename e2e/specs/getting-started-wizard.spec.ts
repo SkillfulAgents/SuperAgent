@@ -159,7 +159,7 @@ test.describe('Getting Started Wizard', () => {
     // Step 6: Create Agent (skippable)
     await wizardPage.clickNext()
     await wizardPage.expectStep(6)
-    await expect(page.getByRole('heading', { name: /create your first agent/i })).toBeVisible()
+    await expect(page.getByRole('heading', { name: /describe your first ai teammate/i })).toBeVisible()
 
     // Skip on last step finishes
     await wizardPage.clickSkip()
@@ -224,25 +224,19 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.clickNext() // Privacy -> Agent
     await wizardPage.expectStep(6)
 
-    // Browsing templates leaves the wizard for the marketplace page. The wizard
-    // renders above the router, so it must finish itself on the way out —
-    // that's what completes onboarding here, before anything is installed.
-    await page.getByRole('button', { name: /Browse Templates/ }).click()
-    await wizardPage.expectNotVisible()
-    await expect(page.locator('[data-testid="explore-view"]')).toBeVisible()
+    // The template roster renders inline under the composer; clicking a card
+    // installs it in place (no marketplace detour, no naming step — the agent
+    // takes the template's own name) and finishing the install completes the
+    // wizard.
+    await page
+      .locator('[data-testid="explore-template-card"]', { hasText: 'E2E Onboarding Template' })
+      .click()
 
-    // Card → details page → install. The agent takes the template's own name;
-    // there is no naming step.
-    await page.getByRole('button', { name: /E2E Onboarding Template/ }).first().click()
-    await expect(page.locator('[data-testid="template-detail-view"]')).toBeVisible()
-    await page.locator('[data-testid="template-detail-install"]').click()
-
-    // Both assertions have to be things the details page itself cannot satisfy.
-    // A bare `app-sidebar` check is not one: /explore renders inside the same
-    // shell, so it is already visible. Neither is an unscoped name match — the
-    // details page heading IS the template name. The install opens the new
-    // agent, so the URL leaves /explore and the name appears in the sidebar.
+    // Both assertions have to be things the wizard itself cannot satisfy: the
+    // install navigates to the new agent's page and the name appears in the
+    // sidebar, neither of which exists while the wizard overlay is up.
     await expect(page).toHaveURL(/\/agents\//)
+    await wizardPage.expectNotVisible()
     await expect(
       page
         .locator('[data-testid="app-sidebar"]')

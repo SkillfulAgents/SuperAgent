@@ -1,8 +1,9 @@
 import crypto from 'node:crypto'
-import { and, asc, eq, gt, lt } from 'drizzle-orm'
+import { and, asc, eq, exists, gt, lt, sql } from 'drizzle-orm'
 import { captureException } from '@shared/lib/error-reporting'
 import { db } from '@shared/lib/db'
-import { authSession, mobileDevice, mobilePairingToken } from '@shared/lib/db/schema'
+import { batch, changesOf } from '@shared/lib/db/batch'
+import { apnsDevices, authSession, mobileDevice, mobilePairingToken } from '@shared/lib/db/schema'
 import { DEFAULT_AUTH_SETTINGS, getSettings } from '@shared/lib/config/settings'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import {
@@ -61,18 +62,18 @@ function newRefreshToken(): string {
 }
 
 /** Opportunistic TTL cleanup keeps the one-time grant table bounded. */
-function sweepExpiredPairingTokens(): void {
-  db.delete(mobilePairingToken).where(lt(mobilePairingToken.expiresAt, new Date())).run()
+async function sweepExpiredPairingTokens(): Promise<void> {
+  await db.delete(mobilePairingToken).where(lt(mobilePairingToken.expiresAt, new Date())).run()
 }
 
 /**
  * Mint a short-lived, single-use authorization grant for `userId`. Plaintext is
  * returned exactly once; only its SHA-256 hash is stored.
  */
-export function mintPairingToken(userId: string): { token: string; expiresAt: Date } {
-  sweepExpiredPairingTokens()
+export async function mintPairingToken(userId: string): Promise<{ token: string; expiresAt: Date }> {
+  await sweepExpiredPairingTokens()
 
-  const outstanding = db
+  const outstanding = await db
     .select({ tokenHash: mobilePairingToken.tokenHash })
     .from(mobilePairingToken)
     .where(eq(mobilePairingToken.userId, userId))
@@ -80,13 +81,13 @@ export function mintPairingToken(userId: string): { token: string; expiresAt: Da
     .all()
   const excess = outstanding.length - (MAX_OUTSTANDING_PAIRING_TOKENS - 1)
   for (const row of excess > 0 ? outstanding.slice(0, excess) : []) {
-    db.delete(mobilePairingToken).where(eq(mobilePairingToken.tokenHash, row.tokenHash)).run()
+    await db.delete(mobilePairingToken).where(eq(mobilePairingToken.tokenHash, row.tokenHash)).run()
   }
 
   const token = PAIRING_TOKEN_PREFIX + crypto.randomBytes(32).toString('base64url')
   const now = new Date()
   const expiresAt = new Date(now.getTime() + PAIRING_TOKEN_TTL_MS)
-  db.insert(mobilePairingToken)
+  await db.insert(mobilePairingToken)
     .values({ tokenHash: sha256Hex(token), userId, createdAt: now, expiresAt })
     .run()
   return { token, expiresAt }
@@ -143,7 +144,7 @@ export async function redeemPairingToken(
 ): Promise<MobileSessionResponse> {
   let row: { userId: string; expiresAt: Date } | undefined
   try {
-    row = db
+    row = await db
       .delete(mobilePairingToken)
       .where(eq(mobilePairingToken.tokenHash, sha256Hex(token)))
       .returning({ userId: mobilePairingToken.userId, expiresAt: mobilePairingToken.expiresAt })
@@ -160,7 +161,7 @@ export async function redeemPairingToken(
   const refreshToken = newRefreshToken()
   const now = new Date()
   const refreshExpiresAt = new Date(now.getTime() + mobileDeviceLifetimeMs())
-  db.insert(mobileDevice)
+  await db.insert(mobileDevice)
     .values({
       id: deviceId,
       userId: row.userId,
@@ -179,8 +180,8 @@ export async function redeemPairingToken(
   } catch (error) {
     // Device creation and access-session issuance are one logical operation.
     // Deleting the device also removes any partially created family sessions.
-    db.delete(authSession).where(eq(authSession.deviceId, deviceId)).run()
-    db.delete(mobileDevice).where(eq(mobileDevice.id, deviceId)).run()
+    await db.delete(authSession).where(eq(authSession.deviceId, deviceId)).run()
+    await db.delete(mobileDevice).where(eq(mobileDevice.id, deviceId)).run()
     throw error
   }
 }
@@ -196,7 +197,7 @@ export async function renewMobileSession(
 ): Promise<MobileSessionResponse> {
   const oldHash = sha256Hex(refreshToken)
   const now = new Date()
-  const device = db
+  const device = await db
     .select()
     .from(mobileDevice)
     .where(and(eq(mobileDevice.refreshTokenHash, oldHash), gt(mobileDevice.expiresAt, now)))
@@ -208,7 +209,7 @@ export async function renewMobileSession(
   const refreshExpiresAt = new Date(now.getTime() + mobileDeviceLifetimeMs())
   const deviceName = normalizeDeviceName(meta.deviceName) ?? device.deviceName ?? undefined
 
-  const rotated = db
+  const rotated = await db
     .update(mobileDevice)
     .set({
       refreshTokenHash: rotatedHash,
@@ -224,12 +225,12 @@ export async function renewMobileSession(
       ),
     )
     .run()
-  if (rotated.changes !== 1) throw new MobilePairingError('invalid_refresh_token')
+  if (changesOf(rotated) !== 1) throw new MobilePairingError('invalid_refresh_token')
 
   try {
     // The CAS above elected one rotation winner, so it is now safe to remove
     // the previous access token before minting its replacement.
-    db.delete(authSession).where(eq(authSession.deviceId, device.id)).run()
+    await db.delete(authSession).where(eq(authSession.deviceId, device.id)).run()
     const issued = await mintMobileAccessSession(device.userId, device.id, {
       ...meta,
       deviceName,
@@ -239,7 +240,7 @@ export async function renewMobileSession(
   } catch (error) {
     // The new secret has not left this process. Restore the old grant so a
     // transient session-mint failure is retryable rather than unpairing the app.
-    db.update(mobileDevice)
+    await db.update(mobileDevice)
       .set({
         refreshTokenHash: oldHash,
         deviceName: device.deviceName,
@@ -262,7 +263,7 @@ export interface MobileDevice {
 }
 
 /** One row per physical paired device; expired refresh grants are not paired. */
-export function listMobileDevices(userId: string): MobileDevice[] {
+export async function listMobileDevices(userId: string): Promise<MobileDevice[]> {
   return db
     .select({
       id: mobileDevice.id,
@@ -280,20 +281,21 @@ export function listMobileDevices(userId: string): MobileDevice[] {
 
 /** Revoke an entire mobile device family, including every access session. */
 export async function revokeMobileDevice(userId: string, deviceId: string): Promise<boolean> {
-  const deleted = db.transaction((tx) => {
-    const owned = tx
-      .select({ id: mobileDevice.id })
-      .from(mobileDevice)
-      .where(and(eq(mobileDevice.id, deviceId), eq(mobileDevice.userId, userId)))
-      .get()
-    if (!owned) return false
-    // Explicit deletion keeps revocation correct even on SQLite builds that do
-    // not enforce foreign-key cascades, while the schema FK remains the backstop.
-    tx.delete(authSession).where(eq(authSession.deviceId, deviceId)).run()
-    tx.delete(mobileDevice).where(eq(mobileDevice.id, deviceId)).run()
-    return true
-  })
-  if (!deleted) return false
+  // Ownership is a condition on every statement rather than a read up front:
+  // the child rows go only while the device belongs to the caller, and the
+  // device delete's own change count is the answer. Explicit child deletion
+  // keeps revocation correct even on SQLite builds that do not enforce
+  // foreign-key cascades, while the schema FK remains the backstop.
+  const owned = exists(
+    db.select({ one: sql`1` }).from(mobileDevice)
+      .where(and(eq(mobileDevice.id, deviceId), eq(mobileDevice.userId, userId))),
+  )
+  const results = await batch([
+    db.delete(authSession).where(and(eq(authSession.deviceId, deviceId), owned)),
+    db.delete(apnsDevices).where(and(eq(apnsDevices.mobileDeviceId, deviceId), owned)),
+    db.delete(mobileDevice).where(and(eq(mobileDevice.id, deviceId), eq(mobileDevice.userId, userId))),
+  ])
+  if (changesOf(results[2]) === 0) return false
 
   await logAuditEvent({
     userId,

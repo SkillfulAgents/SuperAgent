@@ -46,6 +46,20 @@ describe('fetchPlatformBillingInfo', () => {
     expect(result).toEqual(VALID_SNAPSHOT)
   })
 
+  it('keeps an optional hasPaymentMethod flag from newer proxies', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(jsonResponse({ ...VALID_SNAPSHOT, hasPaymentMethod: true }))
+    const result = await fetchPlatformBillingInfo()
+    expect(result.hasPaymentMethod).toBe(true)
+  })
+
+  it('keeps a proxy access verdict from newer proxies', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      jsonResponse({ ...VALID_SNAPSHOT, access: { allowed: false, reason: 'insufficient_balance' } }),
+    )
+    const result = await fetchPlatformBillingInfo()
+    expect(result.access).toEqual({ allowed: false, reason: 'insufficient_balance' })
+  })
+
   it('accepts a configured:false snapshot with null seat', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(
       jsonResponse({

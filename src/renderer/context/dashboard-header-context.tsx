@@ -11,6 +11,8 @@ export interface DashboardHeaderRegistration {
   agentSlug: string
   dashboardSlug: string
   dashboardName: string
+  /** Start mutations owned by the dashboard view, outside AgentShell. */
+  isAgentStarting?: boolean
   actions: {
     onOpenExternal: () => void
     onRefresh: () => void

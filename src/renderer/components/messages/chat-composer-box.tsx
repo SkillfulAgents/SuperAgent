@@ -15,6 +15,14 @@ import { MarkdownComposerEditor } from './markdown-composer-editor'
 const EMPTY_POTENTIAL_SECRETS: PotentialSecret[] = []
 const EMPTY_SECURED_SECRETS: SecuredSecret[] = []
 
+/**
+ * The floating translucent treatment for a composer that sits over content —
+ * the session composer's look, shared so the wizard's create-agent composer
+ * matches it instead of drifting on its own copy of the recipe.
+ */
+export const FLOATING_COMPOSER_CLASS =
+  'relative z-10 border-border/70 bg-background/85 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]'
+
 interface SecureSecretsProps {
   agentSlug: string
   potentialSecrets?: PotentialSecret[]
@@ -27,6 +35,7 @@ interface SecureSecretsProps {
 interface ChatComposerBoxProps {
   attachments: Attachment[]
   onRemoveAttachment: (id: string) => void
+  onRetryAttachment?: (id: string) => void
   textareaRef?: Ref<HTMLDivElement>
   value: string
   onChange: (value: string) => void
@@ -52,6 +61,7 @@ interface ChatComposerBoxProps {
 export function ChatComposerBox({
   attachments,
   onRemoveAttachment,
+  onRetryAttachment,
   textareaRef,
   value,
   onChange,
@@ -94,7 +104,7 @@ export function ChatComposerBox({
       {topRightActions && (
         <div className="absolute top-2 right-2 z-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100">{topRightActions}</div>
       )}
-      <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} />
+      <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} onRetry={onRetryAttachment} />
       <div
         className={cn('relative', attachments.length > 0 && 'mt-2')}
         onPaste={onPaste}

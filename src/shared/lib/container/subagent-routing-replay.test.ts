@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
 import * as path from 'path'
 import * as os from 'os'
 import { promises as fs } from 'fs'
@@ -181,15 +182,17 @@ describe('subagent routing replay — sequential subagents across state reset', 
     // message-persister is a module-level singleton, so import fresh per test.
     vi.resetModules()
     const { messagePersister } = await import('./message-persister')
+    // The registry attaches the real stores; this test drives the persister alone.
+    messagePersister.attachSessionStores(createInMemorySessionStore)
     const { client, send } = createReplayClient()
 
     // Collect SSE events
-    const cleanup = messagePersister.addSSEClient(meta.sessionId, (data) => {
+    const cleanup = messagePersister.addSSEClient(meta.agentSlug, meta.sessionId, (data) => {
       sseEvents.push(data as Record<string, unknown>)
     })
 
     // Subscribe (mirrors what happens on app launch / session resume)
-    await messagePersister.subscribeToSession(meta.sessionId, client, meta.sessionId, meta.agentSlug)
+    await messagePersister.subscribeToSession(meta.agentSlug, meta.sessionId, client, meta.sessionId)
 
     // Replay the captured stream
     for (const entry of streamEntries) {
@@ -202,7 +205,7 @@ describe('subagent routing replay — sequential subagents across state reset', 
     await new Promise((r) => setTimeout(r, 100))
 
     cleanup()
-    messagePersister.unsubscribeFromSession(meta.sessionId)
+    messagePersister.unsubscribeFromSession(meta.agentSlug, meta.sessionId)
 
     // ----- Assertions -----
 

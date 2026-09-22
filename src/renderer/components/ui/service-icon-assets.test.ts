@@ -28,6 +28,21 @@ describe('service icon assets', () => {
     }
   })
 
+  it('keeps placeholder art out of the checked-in icons', () => {
+    const iconFiles = readdirSync(ICONS_DIR)
+      .filter((fileName) => fileName.endsWith('.svg'))
+      .sort()
+
+    // The logos API answers 200 with a generic grey grid placeholder for names it
+    // holds no logo for, so a slug can silently acquire non-art that still parses
+    // as a valid SVG. These two colors draw that grid and appear in no real mark.
+    for (const fileName of iconFiles) {
+      const source = readFileSync(path.join(ICONS_DIR, fileName), 'utf8').toLowerCase()
+      const isPlaceholder = source.includes('#e4e4e7') && source.includes('#fafafa')
+      expect(isPlaceholder, fileName).toBe(false)
+    }
+  })
+
   it('keeps checked-in icons normalized by the download pipeline', () => {
     const iconFiles = readdirSync(ICONS_DIR)
       .filter((fileName) => fileName.endsWith('.svg'))

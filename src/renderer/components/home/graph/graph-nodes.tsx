@@ -16,6 +16,7 @@ import { formatDistanceToNow } from 'date-fns'
 import { cn } from '@shared/lib/utils/cn'
 import { getAgentActivityStatus, type AgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { useNotableSessions } from '@renderer/hooks/use-sessions'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
@@ -42,6 +43,24 @@ function activateOnKey(event: KeyboardEvent<HTMLDivElement>) {
   if (event.key !== 'Enter' && event.key !== ' ') return
   event.preventDefault()
   event.currentTarget.click()
+}
+
+// The standard keyboard gesture for a context menu (the Menu key, or
+// Shift+F10) replays as a contextmenu event on the card, anchored at its
+// top-right, so the agent menu is reachable without a pointer — same as the
+// home cards.
+function openMenuOnKey(event: KeyboardEvent<HTMLDivElement>) {
+  if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+  event.preventDefault()
+  const rect = event.currentTarget.getBoundingClientRect()
+  event.currentTarget.dispatchEvent(
+    new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: rect.right,
+      clientY: rect.top,
+    })
+  )
 }
 
 type NavigateFn = ReturnType<typeof useNavigate>
@@ -268,11 +287,18 @@ export function AgentGraphNode({ data, selected }: NodeProps<Node<AgentNodeData,
     ? formatDistanceToNow(new Date(agent.lastActivityAt), { addSuffix: true })
     : null
   return (
+    // Right-click (and the Menu key / Shift+F10) opens the same agent menu as
+    // the sidebar row and the home cards. Touch long-press stays with React
+    // Flow, which owns touch dragging of nodes.
+    <AgentContextMenu agent={agent} disableTouchLongPress>
     <div
       role="button"
       tabIndex={0}
       aria-label={`Agent ${agent.name}`}
-      onKeyDown={activateOnKey}
+      onKeyDown={(event) => {
+        activateOnKey(event)
+        openMenuOnKey(event)
+      }}
       className={cn(
         'group relative flex h-20 w-44 cursor-pointer flex-col rounded-xl border-[0.5px] px-3 py-2.5 shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg',
         CARD_SURFACE,
@@ -310,6 +336,7 @@ export function AgentGraphNode({ data, selected }: NodeProps<Node<AgentNodeData,
       </div>
       <CenterHandles />
     </div>
+    </AgentContextMenu>
   )
 }
 

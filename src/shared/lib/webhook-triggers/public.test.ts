@@ -21,6 +21,7 @@ const trigger: WebhookTrigger = {
   lastSessionId: null,
   createdBySessionId: null,
   createdByUserId: 'owner-private-id',
+  mintedByMemberId: 'sub_member-private-id',
   model: null,
   effort: null,
   speed: null,
@@ -40,6 +41,7 @@ describe('toPublicWebhookTrigger', () => {
       expect(result).not.toHaveProperty('composioTriggerId')
       expect(result).not.toHaveProperty('connectedAccountId')
       expect(result).not.toHaveProperty('createdByUserId')
+      expect(result).not.toHaveProperty('mintedByMemberId')
       expect(result).toMatchObject({ id: 'trigger-1', name: 'Inbound events' })
       expect(serialized).not.toContain('private-capability')
       expect(serialized).not.toContain('private-id')

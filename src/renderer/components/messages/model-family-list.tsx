@@ -15,7 +15,13 @@ function capitalize(s: string): string {
 }
 
 // Acronym families that shouldn't be title-cased (e.g. 'gpt' → 'GPT', not 'Gpt').
-const FAMILY_LABELS: Record<string, string> = { gpt: 'GPT', glm: 'GLM' }
+const FAMILY_LABELS: Record<string, string> = {
+  gpt: 'GPT',
+  glm: 'GLM',
+  deepseek: 'DeepSeek',
+  muse: 'Muse Spark',
+  'muse-contributor': 'Muse Spark Contributor',
+}
 
 /** Display name for a family key, special-casing acronyms. */
 export function familyDisplayName(family: string): string {
@@ -30,6 +36,7 @@ const VENDOR_LABELS: Record<string, string> = {
   zai: 'Z.AI',
   xai: 'xAI',
   kimi: 'Moonshot AI',
+  deepseek: 'DeepSeek',
 }
 
 const NO_VENDOR = 'other'
@@ -60,7 +67,7 @@ export function vendorDefault(
  * Families outside this set (e.g. 'gpt', where each entry is a distinct tier)
  * keep one row per concrete model.
  */
-const LINEAGE_FAMILIES = new Set(['fable', 'opus', 'sonnet', 'haiku', 'kimi'])
+const LINEAGE_FAMILIES = new Set(['fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse', 'muse-contributor'])
 
 /** Chip label for a version: its label minus the family prefix ("Opus 4.8" → "4.8"). */
 function versionChipLabel(label: string, familyName: string): string {
@@ -81,7 +88,7 @@ function lineBase(label: string): string {
   return match ? match[1] : label
 }
 
-/** Partition models into label-derived lines, preserving order of first appearance. */
+/** Partition models into label-derived lines, strongest line first (ties keep first appearance). */
 function splitIntoLines(models: ModelDefinition[]): { base: string; models: ModelDefinition[] }[] {
   const byBase = new Map<string, ModelDefinition[]>()
   for (const m of models) {
@@ -89,7 +96,33 @@ function splitIntoLines(models: ModelDefinition[]): { base: string; models: Mode
     if (!byBase.has(base)) byBase.set(base, [])
     byBase.get(base)!.push(m)
   }
-  return [...byBase.entries()].map(([base, lineModels]) => ({ base, models: lineModels }))
+  return [...byBase.entries()]
+    .map(([base, lineModels]) => ({ base, models: lineModels }))
+    .sort((a, b) => comparePriceDesc(strongestOf(a.models), strongestOf(b.models)))
+}
+
+/** The entry a row picks: the declared latest, else the first (newest) listed. */
+function latestOf(models: ModelDefinition[]): ModelDefinition {
+  return models.find((m) => m.isLatest) ?? models[0]
+}
+
+// Rows list strongest-first, using price as the proxy: output rate, then input
+// rate, descending. Unpriced entries sink to the bottom; on a price tie the
+// family's latest wins, then catalog order.
+function comparePriceDesc(a: ModelDefinition, b: ModelDefinition): number {
+  const ap = a.pricing
+  const bp = b.pricing
+  if (!ap || !bp) return (bp ? 1 : 0) - (ap ? 1 : 0)
+  return (
+    bp.outputPerMtok - ap.outputPerMtok ||
+    bp.inputPerMtok - ap.inputPerMtok ||
+    Number(!!b.isLatest) - Number(!!a.isLatest)
+  )
+}
+
+/** The priciest member — what ranks a collapsed row among its siblings. */
+function strongestOf(models: ModelDefinition[]): ModelDefinition {
+  return models.reduce((best, m) => (comparePriceDesc(m, best) < 0 ? m : best))
 }
 
 /** Row-suffix slug for a line base: "GPT-5.6" → "gpt-5.6". */
@@ -191,11 +224,6 @@ interface ModelFamilyListProps {
   value: string | undefined
   /** Called with the value to store: a concrete id, or a bare alias for the "latest" row. */
   onPick: (value: string) => void
-  /**
-   * Section label (e.g. "Models") rendered INSIDE the picker, above the vendor
-   * tabs — passed in by the parent so the label and tabs stack as one block.
-   */
-  header?: ReactNode
   /**
    * Offer a "· latest" row per family that stores the bare alias (rides upgrades).
    * ON for saved-setting selectors; OFF for the per-message composer, where
@@ -406,8 +434,9 @@ function LineRow({
  * — single-model vendors need no second click. Lineage families (Opus, Sonnet,
  * …) collapse to one row with per-version pin chips revealed on hover/selection,
  * and non-lineage models whose labels share a versioned base ("GPT-5.6
- * Sol/Terra/Luna") collapse the same way;
- * remaining models render one row each, newest-first. When `offerLatest` is set,
+ * Sol/Terra/Luna") collapse the same way; remaining models render one row each.
+ * Rows list strongest-first, ranked by each row's priciest model; version chips
+ * within a row stay newest-first. When `offerLatest` is set,
  * rows carry an explicit "Latest" chip storing the bare alias (rides upgrades) —
  * lit when the alias is the stored selection, while a lit version chip means a
  * pin; row clicks store the alias too. Otherwise labels pick the latest concrete
@@ -418,7 +447,6 @@ export function ModelFamilyList({
   catalog,
   value,
   onPick,
-  header,
   offerLatest = false,
   webProvider,
 }: ModelFamilyListProps) {
@@ -466,6 +494,9 @@ export function ModelFamilyList({
       versions: [...byFamily.get(family)!].reverse(),
       lineage: LINEAGE_FAMILIES.has(family),
     }))
+    // Strongest family first, ranked by its priciest version.
+    groups.sort((a, b) => comparePriceDesc(strongestOf(a.versions), strongestOf(b.versions)))
+    loose.sort(comparePriceDesc)
     return { families: groups, standalone: loose }
   }, [catalog, activeVendor])
   const isLatestSelected = offerLatest && value !== undefined && families.some((g) => g.family === value)
@@ -478,75 +509,68 @@ export function ModelFamilyList({
 
   return (
     <div className="flex flex-col gap-0.5">
-      {(header !== undefined || vendors.length > 1) && (
-        // One row: section label left, vendor tabs right. The tab bar is an
-        // icon-only single-select segmented control, mirroring the Appearance
-        // picker in general settings (intentionally not Radix Tabs — see that
-        // comment). Names live in standard-delay tooltips so the bar scales to
-        // many vendors without crowding.
-        <div className="flex items-center justify-between gap-2 pb-1 pl-2 pr-1 pt-1">
-          <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground/70">
-            {header}
-          </span>
-          {vendors.length > 1 && (
-            <TooltipProvider>
-              <div
-                role="radiogroup"
-                aria-label="Model vendor"
-                className="inline-flex shrink-0 items-center rounded-lg bg-muted p-0.5 text-muted-foreground"
-              >
-                {vendors.map((key) => {
-                  const isActive = key === activeVendor
-                  return (
-                    <Tooltip key={key}>
-                      <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          role="radio"
-                          aria-checked={isActive}
-                          aria-label={vendorDisplayName(key)}
-                          data-testid={`model-vendor-tab-${key}`}
-                          // A tab click also SELECTS the vendor's declared default —
-                          // without this, single-model tabs (Grok, Kimi) read
-                          // as selected while nothing changed. Skipped when the
-                          // selection already lives on the clicked tab, so
-                          // re-clicking your own tab can't clobber a pinned
-                          // version or bare alias. The pick is provisional:
-                          // picks never dismiss, so the check lands in view
-                          // and any other row is one click away.
-                          onClick={() => {
-                            setPickedVendor(key)
-                            if (resolved && vendorKey(resolved) === key) return
-                            const defaultModel = vendorDefault(catalog, key)
-                            if (defaultModel) {
-                              // The catalog declares a concrete default. Do
-                              // not turn it into a family alias on settings
-                              // surfaces: the family's latest may be a
-                              // different model now or after an upgrade.
-                              onPick(defaultModel.id)
-                            }
-                          }}
-                          className={cn(
-                            'inline-flex h-6 w-8 items-center justify-center rounded-md transition-all hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                            isActive && 'bg-background text-foreground shadow'
-                          )}
-                        >
-                          <ModelIcon icon={key === NO_VENDOR ? undefined : key} className="h-3.5 w-3.5 shrink-0" />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent>{vendorDisplayName(key)}</TooltipContent>
-                    </Tooltip>
-                  )
-                })}
-              </div>
-            </TooltipProvider>
-          )}
-        </div>
+      {vendors.length > 1 && (
+        // Full-width icon-only single-select segmented control, mirroring the
+        // Appearance picker in general settings (intentionally not Radix Tabs —
+        // see that comment). No section label beside it: provider catalogs grew
+        // past the point where one fits, so the tabs get the whole row and the
+        // names live in standard-delay tooltips.
+        <TooltipProvider>
+          <div
+            role="radiogroup"
+            aria-label="Model vendor"
+            className="mx-1 my-1 flex items-center rounded-lg bg-muted p-0.5 text-muted-foreground"
+          >
+            {vendors.map((key) => {
+              const isActive = key === activeVendor
+              return (
+                <Tooltip key={key}>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={isActive}
+                      aria-label={vendorDisplayName(key)}
+                      data-testid={`model-vendor-tab-${key}`}
+                      // A tab click also SELECTS the vendor's declared default —
+                      // without this, single-model tabs (Grok, Kimi) read
+                      // as selected while nothing changed. Skipped when the
+                      // selection already lives on the clicked tab, so
+                      // re-clicking your own tab can't clobber a pinned
+                      // version or bare alias. The pick is provisional:
+                      // picks never dismiss, so the check lands in view
+                      // and any other row is one click away.
+                      onClick={() => {
+                        setPickedVendor(key)
+                        if (resolved && vendorKey(resolved) === key) return
+                        const defaultModel = vendorDefault(catalog, key)
+                        if (defaultModel) {
+                          // The catalog declares a concrete default. Do
+                          // not turn it into a family alias on settings
+                          // surfaces: the family's latest may be a
+                          // different model now or after an upgrade.
+                          onPick(defaultModel.id)
+                        }
+                      }}
+                      className={cn(
+                        'inline-flex h-6 flex-1 items-center justify-center rounded-md transition-all hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        isActive && 'bg-background text-foreground shadow'
+                      )}
+                    >
+                      <ModelIcon icon={key === NO_VENDOR ? undefined : key} className="h-3.5 w-3.5 shrink-0" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>{vendorDisplayName(key)}</TooltipContent>
+                </Tooltip>
+              )
+            })}
+          </div>
+        </TooltipProvider>
       )}
       {families.map((group) => {
         const familyHasSelection = selectedFamily === group.family
         if (group.lineage) {
-          const latestVersion = group.versions.find((v) => v.isLatest) ?? group.versions[0]
+          const latestVersion = latestOf(group.versions)
           return (
             <LineRow
               key={group.family}
@@ -596,7 +620,7 @@ export function ModelFamilyList({
             )}
             {splitIntoLines(group.versions).map((line) => {
               if (line.models.length > 1) {
-                const lineLatest = line.models.find((m) => m.isLatest) ?? line.models[0]
+                const lineLatest = latestOf(line.models)
                 return (
                   <LineRow
                     key={line.base}

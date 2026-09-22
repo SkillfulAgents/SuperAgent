@@ -74,11 +74,13 @@ export async function mcpSafeFetch(
   url: string,
   init?: RequestInit,
   policy?: DiscoveryHostPolicy,
+  options?: { followRedirects?: boolean },
 ): Promise<Response> {
   let currentUrl = url
   let currentInit = init
   let response = await pinnedFetch(currentUrl, currentInit, policy)
   let redirects = 0
+  if (options?.followRedirects === false) return response
 
   while (REDIRECT_STATUS.has(response.status) && redirects < MAX_REDIRECTS) {
     const location = response.headers.get('location')

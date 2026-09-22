@@ -123,7 +123,7 @@ describe('SpeechRecognition polyfill', () => {
   describe('start() — token fetch', () => {
     beforeEach(() => installPolyfill())
 
-    it('fetches /api/stt/token on start', async () => {
+    it('fetches /api/voice/token on start', async () => {
       const fetchSpy = vi.fn().mockResolvedValue({
         ok: true,
         json: () => Promise.resolve({ provider: 'deepgram', token: 'test-token' }),
@@ -135,14 +135,14 @@ describe('SpeechRecognition polyfill', () => {
       r.start()
 
       await vi.waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledWith('/api/stt/token')
+        expect(fetchSpy).toHaveBeenCalledWith('/api/voice/token')
       })
     })
 
     it('fires error event when token fetch returns non-ok', async () => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
         ok: false,
-        json: () => Promise.resolve({ error: 'No STT provider configured' }),
+        json: () => Promise.resolve({ error: 'No voice provider configured' }),
       }))
 
       const SR = getSpeechRecognition()
@@ -222,7 +222,7 @@ describe('SpeechRecognition polyfill', () => {
       installPolyfill()
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ provider: 'openai', token: 'oai-token' }),
+        json: () => Promise.resolve({ provider: 'openai', protocol: 'openai-realtime', token: 'oai-token' }),
       }))
     })
 
@@ -238,6 +238,46 @@ describe('SpeechRecognition polyfill', () => {
       const ws = MockWebSocket.instances[0]
       expect(ws.url).toContain('wss://api.openai.com/v1/realtime')
       expect(ws.protocols).toContain('openai-insecure-api-key.oai-token')
+    })
+
+    it('sends session.update config after connecting', async () => {
+      const SR = getSpeechRecognition()
+      const r = new SR()
+      r.start()
+
+      await vi.waitFor(() => {
+        const ws = MockWebSocket.instances[0]
+        return expect(ws?.sent.length).toBeGreaterThan(0)
+      })
+
+      const ws = MockWebSocket.instances[0]
+      const config = JSON.parse(ws.sent[0] as string)
+      expect(config.type).toBe('session.update')
+      expect(config.session.type).toBe('transcription')
+    })
+  })
+
+  describe('start() — platform uses the OpenAI realtime protocol', () => {
+    beforeEach(() => {
+      installPolyfill()
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ provider: 'platform', protocol: 'openai-realtime', token: 'ek-token' }),
+      }))
+    })
+
+    it('opens WebSocket to OpenAI realtime with the proxy-minted client secret', async () => {
+      const SR = getSpeechRecognition()
+      const r = new SR()
+      r.start()
+
+      await vi.waitFor(() => {
+        expect(MockWebSocket.instances.length).toBeGreaterThan(0)
+      })
+
+      const ws = MockWebSocket.instances[0]
+      expect(ws.url).toContain('wss://api.openai.com/v1/realtime')
+      expect(ws.protocols).toContain('openai-insecure-api-key.ek-token')
     })
 
     it('sends session.update config after connecting', async () => {

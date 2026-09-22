@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
+import type React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { screen } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { HomeTriggers } from './home-triggers'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
 
 const mockUseAgentActivityStats = vi.fn()
+const mockUseCompletedOneTimeSessions = vi.fn()
 vi.mock('@renderer/hooks/use-activity-stats', () => ({
   useAgentActivityStats: (...args: unknown[]) => mockUseAgentActivityStats(...args),
 }))
@@ -14,12 +16,19 @@ vi.mock('@renderer/hooks/use-humanized-cron', () => ({
   useHumanizedCron: () => 'Every hour',
 }))
 
+const cronMutations = vi.hoisted(() => ({
+  runNow: vi.fn(),
+  cancel: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
+}))
 vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useScheduledTasks: () => ({ data: [] }),
-  useRunScheduledTaskNow: () => ({ mutate: vi.fn(), isPending: false }),
-  useCancelScheduledTask: () => ({ mutate: vi.fn(), isPending: false }),
-  usePauseScheduledTask: () => ({ mutate: vi.fn(), isPending: false }),
-  useResumeScheduledTask: () => ({ mutate: vi.fn(), isPending: false }),
+  useRunScheduledTaskNow: () => ({ mutate: cronMutations.runNow, isPending: false }),
+  useCancelScheduledTask: () => ({ mutate: cronMutations.cancel, isPending: false }),
+  usePauseScheduledTask: () => ({ mutate: cronMutations.pause, isPending: false }),
+  useResumeScheduledTask: () => ({ mutate: cronMutations.resume, isPending: false }),
+  useCompletedOneTimeSessions: (...args: unknown[]) => mockUseCompletedOneTimeSessions(...args),
 }))
 
 vi.mock('@renderer/hooks/use-webhook-triggers', () => ({
@@ -67,6 +76,7 @@ const task: ApiScheduledTask = {
 describe('HomeTriggers activity charts', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockUseCompletedOneTimeSessions.mockReturnValue({ data: [] })
     mockUseAgentActivityStats.mockReturnValue({
       data: {
         days: 2,
@@ -82,6 +92,14 @@ describe('HomeTriggers activity charts', () => {
             { date: '2026-07-09', succeeded: 1, failed: 0 },
           ],
         },
+        inboundXAgent: {
+          total: 2,
+          lastInvokedAt: '2026-07-09T11:30:00.000Z',
+          activity: [
+            { date: '2026-07-08', succeeded: 1, failed: 0 },
+            { date: '2026-07-09', succeeded: 1, failed: 0 },
+          ],
+        },
         connectionById: {},
       },
     })
@@ -93,6 +111,8 @@ describe('HomeTriggers activity charts', () => {
       scheduledTasks={[task]}
       onSelectTask={vi.fn()}
       onSelectWebhook={vi.fn()}
+      onSelectInboundXAgent={vi.fn()}
+      onSelectCompletedTasks={vi.fn()}
     />)
 
     expect(mockUseAgentActivityStats).toHaveBeenCalledWith('agent-a')
@@ -101,6 +121,10 @@ describe('HomeTriggers activity charts', () => {
     })).toBeInTheDocument()
     expect(screen.getByRole('img', {
       name: 'Inbound webhook activity: 4 calls over 2 days, 3 succeeded and 1 failed.',
+    })).toBeInTheDocument()
+    expect(screen.getByText('Called from Other Agents')).toBeInTheDocument()
+    expect(screen.getByRole('img', {
+      name: 'Invocations: 2 calls over 2 days, 2 succeeded and 0 failed.',
     })).toBeInTheDocument()
   })
 
@@ -111,6 +135,8 @@ describe('HomeTriggers activity charts', () => {
       scheduledTasks={[task]}
       onSelectTask={vi.fn()}
       onSelectWebhook={vi.fn()}
+      onSelectInboundXAgent={vi.fn()}
+      onSelectCompletedTasks={vi.fn()}
     />)
 
     expect(screen.getAllByTestId('activity-chart-skeleton')).toHaveLength(2)
@@ -124,11 +150,114 @@ describe('HomeTriggers activity charts', () => {
       scheduledTasks={[task]}
       onSelectTask={vi.fn()}
       onSelectWebhook={vi.fn()}
+      onSelectInboundXAgent={vi.fn()}
+      onSelectCompletedTasks={vi.fn()}
     />)
 
     expect(screen.getByText('Hourly report')).toBeInTheDocument()
     expect(screen.getByText('Inbound webhook')).toBeInTheDocument()
     expect(screen.queryByRole('img', { name: /activity|schedule/i })).not.toBeInTheDocument()
     expect(screen.queryByTestId('activity-chart-skeleton')).not.toBeInTheDocument()
+  })
+
+  it('shows a completed-session footer only when one-time runs exist', () => {
+    const onSelectCompletedTasks = vi.fn()
+    mockUseCompletedOneTimeSessions.mockReturnValue({
+      data: [
+        { id: 'session-a', name: 'First run', createdAt: '2026-08-24T12:00:00.000Z' },
+        { id: 'session-b', name: 'Second run', createdAt: '2026-08-25T12:00:00.000Z' },
+      ],
+    })
+
+    renderWithProviders(<HomeTriggers
+      agentSlug="agent-a"
+      scheduledTasks={[task]}
+      onSelectTask={vi.fn()}
+      onSelectWebhook={vi.fn()}
+      onSelectInboundXAgent={vi.fn()}
+      onSelectCompletedTasks={onSelectCompletedTasks}
+    />)
+
+    expect(mockUseCompletedOneTimeSessions).toHaveBeenCalledWith('agent-a')
+    expect(screen.getByText('Completed (2)')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'View 2 completed one-time sessions' }))
+    expect(onSelectCompletedTasks).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('HomeTriggers rows', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockUseCompletedOneTimeSessions.mockReturnValue({ data: [] })
+    mockUseAgentActivityStats.mockReturnValue({ data: undefined, isError: true })
+  })
+
+  function renderTriggers(overrides: Partial<React.ComponentProps<typeof HomeTriggers>> = {}) {
+    return renderWithProviders(<HomeTriggers
+      agentSlug="agent-a"
+      scheduledTasks={[task]}
+      onSelectTask={vi.fn()}
+      onSelectWebhook={vi.fn()}
+      onSelectInboundXAgent={vi.fn()}
+      onSelectCompletedTasks={vi.fn()}
+      {...overrides}
+    />)
+  }
+
+  it('opens the trigger on click and has no inline actions button', () => {
+    const onSelectTask = vi.fn()
+    renderTriggers({ onSelectTask })
+
+    expect(screen.queryByRole('button', { name: /actions/i })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('home-trigger-row-cron'))
+    expect(onSelectTask).toHaveBeenCalledWith('cron-a')
+  })
+
+  it('exposes pause, run now, and delete in a right-click menu', () => {
+    renderTriggers()
+
+    fireEvent.contextMenu(screen.getByTestId('home-trigger-row-cron'))
+    const active = screen.getByRole('menuitemcheckbox', { name: 'Active' })
+    expect(active).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('menuitem', { name: 'View Details' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Delete Cron' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Run Now' }))
+    expect(cronMutations.runNow).toHaveBeenCalledWith({ taskId: 'cron-a', agentSlug: 'agent-a' })
+
+    fireEvent.contextMenu(screen.getByTestId('home-trigger-row-cron'))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Active' }))
+    expect(cronMutations.pause).toHaveBeenCalledWith({ taskId: 'cron-a', agentSlug: 'agent-a' })
+  })
+
+  it('confirms deletion through a dialog before cancelling the task', () => {
+    renderTriggers()
+
+    fireEvent.contextMenu(screen.getByTestId('home-trigger-row-cron'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete Cron' }))
+    expect(cronMutations.cancel).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Cron' }))
+    expect(cronMutations.cancel).toHaveBeenCalledWith({ id: 'cron-a', agentSlug: 'agent-a' })
+  })
+
+  it('offers only View Details for a paused-incapable or deleted trigger', () => {
+    renderTriggers({ scheduledTasks: [{ ...task, status: 'cancelled', cancelledAt: new Date() }] })
+
+    fireEvent.contextMenu(screen.getByTestId('home-trigger-row-cron'))
+    expect(screen.getByRole('menuitem', { name: 'View Details' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitemcheckbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Run Now' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Delete Cron' })).not.toBeInTheDocument()
+  })
+
+  it('shows the webhook menu without Run Now', () => {
+    renderTriggers({ scheduledTasks: [] })
+
+    fireEvent.contextMenu(screen.getByTestId('home-trigger-row-webhook'))
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Active' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Run Now' })).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Delete Webhook' })).toBeInTheDocument()
   })
 })

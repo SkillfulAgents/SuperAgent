@@ -111,4 +111,27 @@ describe('ToolPolicyEditor — Save enable/disable', () => {
     toolToggle('search', 'allow').click() // clicking the active option resets to default
     await waitFor(() => expect(screen.getByTestId('tool-policy-save')).toBeDisabled())
   })
+
+  it('shows the MCP default on tools that have no rule of their own', async () => {
+    policiesFixture = [{ toolName: '*', decision: 'allow' }]
+    renderEditor('mcp-5')
+    await waitFor(() => expect(screen.getByTestId('tool-row-search')).toBeInTheDocument())
+
+    expect(toolToggle('search', 'allow')).toHaveAttribute('data-active', 'true')
+    expect(toolToggle('search', 'allow')).toHaveAttribute('data-inherited', 'true')
+    expect(toolToggle('send', 'allow')).toHaveAttribute('data-inherited', 'true')
+  })
+
+  it('keeps an explicit tool rule visible over the MCP default', async () => {
+    policiesFixture = [
+      { toolName: '*', decision: 'allow' },
+      { toolName: 'send', decision: 'block' },
+    ]
+    renderEditor('mcp-6')
+    await waitFor(() => expect(screen.getByTestId('tool-row-send')).toBeInTheDocument())
+
+    expect(toolToggle('send', 'block')).toHaveAttribute('data-active', 'true')
+    expect(toolToggle('send', 'block')).toHaveAttribute('data-inherited', 'false')
+    expect(toolToggle('search', 'allow')).toHaveAttribute('data-inherited', 'true')
+  })
 })

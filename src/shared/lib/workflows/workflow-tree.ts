@@ -1,21 +1,22 @@
-import * as path from 'path'
-import { promises as fs } from 'fs'
 import pLimit from 'p-limit'
-import { isPathWithinDir } from '../utils/path-safety'
-import { streamJsonlFile } from '../utils/file-storage'
+import { streamJsonl } from '@shared/lib/agent-actor/jsonl-files'
+import type { FileOps } from '@shared/lib/agent-actor/types'
+import { WorkspaceFileError, joinWorkspacePath, normalizeWorkspacePath } from '@shared/lib/agent-actor/workspace-path'
 import { parseWorkflowScript } from './workflow-script-parser'
 import {
+  AgentMetaSchema,
   JournalLineSchema,
   WorkflowTreeSchema,
   displayAgentResult,
+  modelSlugFromAgentType,
   type ParsedScript,
   type WorkflowAgentNode,
   type WorkflowTree,
 } from './workflow-schemas'
 
 // The join produces the structural fields; per-agent transcript stats (prompt,
-// toolCount, tokens, durationMs) are layered on afterwards from readAgentStats.
-type JoinedAgent = Omit<WorkflowAgentNode, 'prompt' | 'toolCount' | 'tokens' | 'durationMs'>
+// toolCount, tokens, durationMs, model) are layered on afterwards from readAgentStats.
+type JoinedAgent = Omit<WorkflowAgentNode, 'prompt' | 'toolCount' | 'tokens' | 'durationMs' | 'model'>
 
 /**
  * How many agent transcripts readAgentStats has open concurrently. Peak memory
@@ -24,36 +25,46 @@ type JoinedAgent = Omit<WorkflowAgentNode, 'prompt' | 'toolCount' | 'tokens' | '
  */
 const AGENT_STATS_CONCURRENCY = 10
 
+/** The agent's workspace and the directory its transcripts are in, as workspace paths. */
+export interface WorkflowTreeSource {
+  files: FileOps
+  transcriptsDir: string
+  sessionId: string
+  runId: string
+}
+
+/** A workspace text file, or null when it is absent or not a file. */
+async function readText(files: FileOps, path: string): Promise<string | null> {
+  try {
+    const bytes = await files.getDoc(path)
+    return bytes === null ? null : Buffer.from(bytes).toString('utf8')
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return null
+    throw error
+  }
+}
+
 /**
- * Reconstruct a workflow's per-agent tree from its on-disk artifacts and join each
- * agent back to its script call site to recover the (label, phase) the wire never
- * carries.
+ * Reconstruct a workflow's per-agent tree from its stored artifacts and join
+ * each agent back to its script call site to recover the (label, phase) the
+ * wire never carries.
  *
- * Sources (under the agent workspace, host-readable):
- *   <sessionsDir>/<sessionId>/subagents/workflows/<runId>/journal.jsonl   (status + result, ordered)
- *   <sessionsDir>/<sessionId>/subagents/workflows/<runId>/agent-<id>.jsonl (first user msg = the join key)
- *   <sessionsDir>/<sessionId>/workflows/scripts/<name>-<runId>.js          (phases + per-call label/phase)
- *   — plus the Workflow invocation mined from <sessionsDir>/<sessionId>.jsonl:
+ * Sources (under the agent workspace, read through its file operations):
+ *   <transcriptsDir>/<sessionId>/subagents/workflows/<runId>/journal.jsonl   (status + result, ordered)
+ *   <transcriptsDir>/<sessionId>/subagents/workflows/<runId>/agent-<id>.jsonl (first user msg = the join key)
+ *   <transcriptsDir>/<sessionId>/workflows/scripts/<name>-<runId>.js          (phases + per-call label/phase)
+ *   — plus the Workflow invocation mined from <transcriptsDir>/<sessionId>.jsonl:
  *     the executed script's path for `scriptPath` runs (no session-dir copy
  *     exists) and the `args` input, which sizes `args.<key>` fan-outs.
  *
  * Returns null when the run dir / journal doesn't exist (→ the route 404s).
  */
-export async function buildWorkflowTree(opts: {
-  sessionsDir: string
-  sessionId: string
-  runId: string
-}): Promise<WorkflowTree | null> {
-  const { sessionsDir, sessionId, runId } = opts
-  const runDir = path.join(sessionsDir, sessionId, 'subagents', 'workflows', runId)
-  const journalPath = path.join(runDir, 'journal.jsonl')
+export async function buildWorkflowTree(opts: WorkflowTreeSource): Promise<WorkflowTree | null> {
+  const { files, transcriptsDir, sessionId, runId } = opts
+  const runDir = joinWorkspacePath(transcriptsDir, sessionId, 'subagents', 'workflows', runId)
 
-  let journalRaw: string
-  try {
-    journalRaw = await fs.readFile(journalPath, 'utf8')
-  } catch {
-    return null
-  }
+  const journalRaw = await readText(files, joinWorkspacePath(runDir, 'journal.jsonl'))
+  if (journalRaw === null) return null
 
   // Parse the journal in append order. A live-tailed journal can have a
   // half-written trailing line, so skip lines that don't validate rather than
@@ -83,8 +94,8 @@ export async function buildWorkflowTree(opts: {
     }
   }
 
-  const invocation = await findWorkflowInvocation(sessionsDir, sessionId, runId)
-  const script = await loadScript(sessionsDir, sessionId, runId, invocation.scriptHostPath)
+  const invocation = await findWorkflowInvocation(opts)
+  const script = await loadScript(opts, invocation.scriptPath)
   const stats = new Map<string, AgentStats>()
   // A wide run has hundreds of agent transcripts and they are individually
   // large; reading them all at once puts the whole run dir in memory at peak.
@@ -92,7 +103,13 @@ export async function buildWorkflowTree(opts: {
   await Promise.all(
     startedOrder.map((agentId) =>
       statsLimit(async () => {
-        stats.set(agentId, await readAgentStats(path.join(runDir, `agent-${agentId}.jsonl`)))
+        const s = await readAgentStats(files, joinWorkspacePath(runDir, `agent-${agentId}.jsonl`))
+        // The transcript names the model only once the first assistant turn lands;
+        // the meta.json sidecar is written at spawn, so it fills the gap.
+        if (s.model === null) {
+          s.model = await readAgentMetaModel(files, joinWorkspacePath(runDir, `agent-${agentId}.meta.json`))
+        }
+        stats.set(agentId, s)
       })
     )
   )
@@ -112,6 +129,7 @@ export async function buildWorkflowTree(opts: {
       toolCount: s?.toolCount ?? 0,
       tokens: s?.tokens ?? 0,
       durationMs: s && s.firstTs != null && s.lastTs != null ? Math.max(0, s.lastTs - s.firstTs) : null,
+      model: s?.model ?? null,
     }
   })
 
@@ -202,27 +220,70 @@ function resolveLabel(
   if (!label.includes('${')) return label
   let unresolved = false
   label = label.replace(/\$\{([^}]*)\}/g, (_m, expr: string) => {
-    const i = call.holeExprs.indexOf(expr.trim())
+    const e = expr.trim()
+    const i = call.holeExprs.indexOf(e)
     if (i >= 0 && i < captures.length) return captures[i]
+    const viaJson = resolveFromJsonHole(e, call.holeExprs, captures)
+    if (viaJson !== null) return viaJson
     unresolved = true
     return ''
   })
   return unresolved ? fallback : label
 }
 
+/**
+ * A label hole like `${c.slug}` whose variable never appears bare in the prompt
+ * but IS embedded whole as `${JSON.stringify(c, ...)}` (the common "here's the
+ * record" fan-out shape): parse that capture and read the property path off it.
+ * Returns null when the shape doesn't apply or the capture isn't valid JSON.
+ */
+function resolveFromJsonHole(labelExpr: string, holeExprs: string[], captures: string[]): string | null {
+  const pathMatch = /^([A-Za-z_$][\w$]*)((?:\.[A-Za-z_$][\w$]*)+)$/.exec(labelExpr)
+  if (!pathMatch) return null
+  const root = pathMatch[1]
+  const props = pathMatch[2].slice(1).split('.')
+  const rootRe = new RegExp(`^JSON\\.stringify\\(\\s*${root.replace(/\$/g, '\\$')}\\s*[,)]`)
+  const i = holeExprs.findIndex((h) => rootRe.test(h))
+  if (i < 0 || i >= captures.length) return null
+  let value: unknown
+  try {
+    value = JSON.parse(captures[i])
+  } catch {
+    return null
+  }
+  for (const p of props) {
+    if (value === null || typeof value !== 'object') return null
+    value = (value as Record<string, unknown>)[p]
+  }
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : null
+}
+
+/** The model slug from an agent's spawn-time meta.json, or null if absent/unparsable. */
+async function readAgentMetaModel(files: FileOps, metaPath: string): Promise<string | null> {
+  try {
+    const raw = await readText(files, metaPath)
+    if (raw === null) return null
+    const parsed = AgentMetaSchema.safeParse(JSON.parse(raw))
+    return parsed.success ? modelSlugFromAgentType(parsed.data.agentType) : null
+  } catch {
+    return null
+  }
+}
+
 async function loadScript(
-  sessionsDir: string,
-  sessionId: string,
-  runId: string,
+  { files, transcriptsDir, sessionId, runId }: WorkflowTreeSource,
   invocationScriptPath: string | null
 ): Promise<ParsedScript> {
   const empty: ParsedScript = { name: null, description: null, phases: [], agentCalls: [] }
   // Canonical location: inline-`script` invocations get a copy persisted here.
-  const scriptsDir = path.join(sessionsDir, sessionId, 'workflows', 'scripts')
+  const scriptsDir = joinWorkspacePath(transcriptsDir, sessionId, 'workflows', 'scripts')
   try {
-    const entries = await fs.readdir(scriptsDir)
-    const file = entries.find((f) => f.endsWith(`${runId}.js`))
-    if (file) return parseWorkflowScript(await fs.readFile(path.join(scriptsDir, file), 'utf8'))
+    const entries = await files.list(scriptsDir)
+    const file = entries.find((entry) => entry.kind === 'file' && entry.name.endsWith(`${runId}.js`))
+    if (file) {
+      const source = await readText(files, file.path)
+      if (source !== null) return parseWorkflowScript(source)
+    }
   } catch {
     // fall through to the invocation-referenced path
   }
@@ -230,7 +291,8 @@ async function loadScript(
   // persist nothing under the session dir — read the file the invocation named.
   if (invocationScriptPath) {
     try {
-      return parseWorkflowScript(await fs.readFile(invocationScriptPath, 'utf8'))
+      const source = await readText(files, invocationScriptPath)
+      if (source !== null) return parseWorkflowScript(source)
     } catch {
       // unreadable/unparsable script → same degraded tree as before
     }
@@ -257,8 +319,8 @@ function expectedAgentCount(script: ParsedScript, args: unknown): number {
 }
 
 interface WorkflowInvocation {
-  /** Host path of the executed script, contained within the agent workspace; null if unknown. */
-  scriptHostPath: string | null
+  /** Workspace path of the executed script, or null if unknown or outside the workspace. */
+  scriptPath: string | null
   /** The invocation's `args` input, verbatim; undefined if unknown. */
   args: unknown
 }
@@ -268,16 +330,10 @@ interface WorkflowInvocation {
  * tool_result names the executed script (`Script file: <container path>`) and its
  * paired tool_use input carries `args` (sizes fan-outs) and, for `scriptPath`
  * invocations, the caller-owned script location. Container paths (`/workspace/...`)
- * are mapped onto the host workspace dir; anything escaping it is ignored.
+ * are workspace paths; anything that is not one is ignored.
  */
-async function findWorkflowInvocation(
-  sessionsDir: string,
-  sessionId: string,
-  runId: string
-): Promise<WorkflowInvocation> {
-  const none: WorkflowInvocation = { scriptHostPath: null, args: undefined }
-  // sessionsDir = <workspace>/.claude/projects/-workspace
-  const workspaceDir = path.resolve(sessionsDir, '..', '..', '..')
+async function findWorkflowInvocation({ files, transcriptsDir, sessionId, runId }: WorkflowTreeSource): Promise<WorkflowInvocation> {
+  const none: WorkflowInvocation = { scriptPath: null, args: undefined }
 
   const inputsByToolUseId = new Map<string, Record<string, unknown>>()
   let resultText: string | null = null
@@ -285,8 +341,9 @@ async function findWorkflowInvocation(
   try {
     // The parent transcript is the largest file this module touches; stream it
     // rather than holding it whole to pull one tool_use/tool_result pair out.
-    const lines = streamJsonlFile<{ message?: { content?: unknown } }>(
-      path.join(sessionsDir, `${sessionId}.jsonl`)
+    const lines = streamJsonl<{ message?: { content?: unknown } }>(
+      files,
+      joinWorkspacePath(transcriptsDir, `${sessionId}.jsonl`)
     )
     for await (const entry of lines) {
       const content = entry.message?.content
@@ -316,12 +373,15 @@ async function findWorkflowInvocation(
   const containerPath =
     /Script file: (\/workspace\/\S+)/.exec(resultText)?.[1] ??
     (typeof input?.scriptPath === 'string' ? input.scriptPath : null)
-  let scriptHostPath: string | null = null
+  let scriptPath: string | null = null
   if (containerPath?.startsWith('/workspace/')) {
-    const host = path.join(workspaceDir, containerPath.slice('/workspace/'.length))
-    if (isPathWithinDir(workspaceDir, host)) scriptHostPath = host
+    try {
+      scriptPath = normalizeWorkspacePath(containerPath)
+    } catch {
+      // A path that climbs out of the workspace names nothing readable here.
+    }
   }
-  return { scriptHostPath, args: input?.args }
+  return { scriptPath, args: input?.args }
 }
 
 interface AgentStats {
@@ -333,6 +393,8 @@ interface AgentStats {
   /** Error text when the transcript's FINAL entry is a synthetic error frame
    *  (`error` + `errorDetails` fields) — the durable marker of a dead agent. */
   trailingError: string | null
+  /** Model id from the first assistant turn (`message.model`), or null before one lands. */
+  model: string | null
 }
 
 function messageText(content: unknown): string {
@@ -351,7 +413,7 @@ function messageText(content: unknown): string {
  * the task it started with), tool-call count, generated (output) tokens, and the
  * first/last timestamps (for duration). Tolerant of a half-written trailing line.
  */
-async function readAgentStats(filePath: string): Promise<AgentStats> {
+async function readAgentStats(files: FileOps, filePath: string): Promise<AgentStats> {
   const empty: AgentStats = {
     firstPrompt: '',
     toolCount: 0,
@@ -359,6 +421,7 @@ async function readAgentStats(filePath: string): Promise<AgentStats> {
     firstTs: null,
     lastTs: null,
     trailingError: null,
+    model: null,
   }
   let firstPrompt = ''
   let toolCount = 0
@@ -366,16 +429,17 @@ async function readAgentStats(filePath: string): Promise<AgentStats> {
   let firstTs: number | null = null
   let lastTs: number | null = null
   let trailingError: string | null = null
+  let model: string | null = null
   try {
     // Streamed, not read whole: a single agent transcript can be tens of MB and
     // a wide run holds AGENT_STATS_CONCURRENCY of them open at once.
-    const lines = streamJsonlFile<{
+    const lines = streamJsonl<{
       type?: string
       timestamp?: string
       error?: unknown
       errorDetails?: unknown
-      message?: { content?: unknown; usage?: { output_tokens?: number } }
-    }>(filePath)
+      message?: { content?: unknown; usage?: { output_tokens?: number }; model?: unknown }
+    }>(files, filePath)
     for await (const entry of lines) {
       // Track the error marker of the LAST entry only: a mid-transcript error the
       // agent recovered from must not read as failure, so any later entry clears it.
@@ -401,10 +465,13 @@ async function readAgentStats(filePath: string): Promise<AgentStats> {
           toolCount += content.filter((b) => (b as { type?: string })?.type === 'tool_use').length
         }
         tokens += entry.message?.usage?.output_tokens ?? 0
+        if (model === null && typeof entry.message?.model === 'string' && entry.message.model) {
+          model = entry.message.model
+        }
       }
     }
   } catch {
     return empty
   }
-  return { firstPrompt, toolCount, tokens, firstTs, lastTs, trailingError }
+  return { firstPrompt, toolCount, tokens, firstTs, lastTs, trailingError, model }
 }

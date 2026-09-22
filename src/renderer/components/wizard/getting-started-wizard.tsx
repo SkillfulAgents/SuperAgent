@@ -62,6 +62,23 @@ export function stepsForPath(path: 'platform' | 'manual' | null) {
   return targetIsRemote() ? all.filter((step) => step.id !== 'runtime') : all
 }
 
+/**
+ * The create-agent step is the one step wider than a form: it inlines the
+ * template roster under the composer, which wants three card columns. It also
+ * carries the only horizontal padding in the wizard — 480px of form has
+ * gutters to spare in any window big enough to run the app, but the roster at
+ * this width does not. `max-w` is border-box, so the cap is 760px of content
+ * plus that padding.
+ *
+ * Unlike the other steps this one is a HEIGHT-FILLING column, not a centered
+ * block, and the step container must not scroll: the composer stays pinned
+ * while CreateAgentForm scrolls the template roster in the room below it, so
+ * every layer between here and the form passes height down (h-full/flex-1
+ * with min-h-0 at each level — any level missing min-h-0 lets flex content
+ * push the column taller than the window and the pin silently breaks).
+ */
+const AGENT_STEP_MAX_WIDTH = 'max-w-[808px] px-6'
+
 interface GettingStartedWizardProps {
   agentOnly?: boolean
   onClose: () => void
@@ -172,14 +189,14 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
       <div className="flex h-svh bg-background overflow-hidden" data-testid="wizard-container">
         {isElectron() && <div className="absolute top-0 left-0 right-0 h-12 app-drag-region z-10" />}
         <div className="relative flex flex-col h-svh w-full">
-          <div className="flex flex-1 min-h-0 flex-col py-10 w-full mx-auto max-w-[640px] justify-center">
-            <div className="w-full">
-              <div className="min-h-[320px]" data-testid="wizard-step-content">
+          <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+            <div className={`flex h-full min-h-0 w-full mx-auto flex-col pt-10 ${AGENT_STEP_MAX_WIDTH}`}>
+              <div className="min-h-0 flex-1" data-testid="wizard-step-content">
                 <CreateAgentStep onAgentCreated={handleFinish} />
               </div>
             </div>
           </div>
-          <div className="flex justify-end pb-10 w-full mx-auto max-w-[640px]">
+          <div className={`flex justify-end pb-10 w-full mx-auto ${AGENT_STEP_MAX_WIDTH}`}>
             <Button
               variant="outline"
               onClick={() => void handleFinish()}
@@ -203,11 +220,12 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
       <div className={`relative flex flex-col h-svh transition-[width] duration-500 ease-in-out ${isAgentStep ? 'w-full' : 'w-full lg:w-1/2'}`}>
         <h1 className="sr-only">Getting Started</h1>
 
-        <div className={`flex flex-1 min-h-0 flex-col py-10 w-full mx-auto transition-[max-width] duration-500 justify-center ${isAgentStep ? 'max-w-[640px]' : 'max-w-[480px]'}`}>
-          <div className="w-full">
+        <div className={`flex flex-1 min-h-0 flex-col ${isAgentStep ? 'overflow-hidden' : 'justify-center'}`}>
+          <div className={`w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? `${AGENT_STEP_MAX_WIDTH} flex h-full min-h-0 flex-col pt-10` : 'max-w-[480px] py-10'}`}>
 
-          {/* Step content */}
-          <div className="min-h-[320px]" data-testid="wizard-step-content" data-step={currentStep}>
+          {/* Step content. The agent step fills the column height (its roster
+              scrolls internally); the rest keep the centered min-height block. */}
+          <div className={isAgentStep ? 'min-h-0 flex-1' : 'min-h-[320px]'} data-testid="wizard-step-content" data-step={currentStep}>
             {!welcomePath && (
               <WelcomeStep
                 onChoosePlatform={handleWelcomePlatformPath}
@@ -230,7 +248,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
         </div>
 
         {/* Navigation buttons — hidden on welcome page */}
-        <div className={`flex items-center justify-between pb-10 w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? 'max-w-[640px]' : 'max-w-[480px]'} ${!welcomePath ? 'hidden' : ''}`}>
+        <div className={`flex items-center justify-between pb-10 w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? AGENT_STEP_MAX_WIDTH : 'max-w-[480px]'} ${!welcomePath ? 'hidden' : ''}`}>
           {!welcomePath ? (
             <div />
           ) : (

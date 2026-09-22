@@ -29,8 +29,8 @@ const pushRouter = new Hono()
 pushRouter.use('*', Authenticated())
 
 // GET /api/push/vapid-public-key - the applicationServerKey for pushManager.subscribe()
-pushRouter.get('/vapid-public-key', (c) => {
-  const { publicKey } = getOrCreateVapidKeys()
+pushRouter.get('/vapid-public-key', async (c) => {
+  const { publicKey } = await getOrCreateVapidKeys()
   return c.json({ publicKey })
 })
 
@@ -53,7 +53,7 @@ pushRouter.post('/subscriptions', async (c) => {
   const ownerUserId = getViewerUserId(c)
 
   const { subscription, origin, deviceName } = parsed.data
-  const stored = upsertPushSubscription({
+  const stored = await upsertPushSubscription({
     endpoint: subscription.endpoint,
     p256dh: subscription.keys.p256dh,
     auth: subscription.keys.auth,
@@ -82,7 +82,7 @@ pushRouter.delete('/subscriptions', async (c) => {
     return c.json({ error: 'Invalid unsubscribe payload' }, 400)
   }
 
-  const deleted = deletePushSubscriptionByEndpoint(
+  const deleted = await deletePushSubscriptionByEndpoint(
     parsed.data.endpoint,
     getViewerUserId(c) ?? undefined
   )
@@ -115,7 +115,7 @@ pushRouter.post('/devices', async (c) => {
   const mobileDeviceId = getRequestDeviceId(c)
 
   const { token, environment, platform, deviceName, workspaceTag } = parsed.data
-  const stored = upsertApnsDevice({
+  const stored = await upsertApnsDevice({
     token: token.toLowerCase(),
     environment,
     userId: ownerUserId,
@@ -132,8 +132,8 @@ pushRouter.post('/devices', async (c) => {
 })
 
 // DELETE /api/push/devices/:token - remove this device's registration (scoped to its owner)
-pushRouter.delete('/devices/:token', (c) => {
-  const deleted = deleteApnsDeviceByToken(
+pushRouter.delete('/devices/:token', async (c) => {
+  const deleted = await deleteApnsDeviceByToken(
     c.req.param('token').toLowerCase(),
     getViewerUserId(c) ?? undefined
   )

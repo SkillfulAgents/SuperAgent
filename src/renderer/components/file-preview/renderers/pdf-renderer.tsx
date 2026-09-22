@@ -19,6 +19,7 @@ try {
 interface PdfRendererProps {
   url: string
   filePath: string
+  agentSlug: string
   pageNumber: number
   onPageChange: (page: number) => void
   commentsEnabled?: boolean
@@ -27,6 +28,7 @@ interface PdfRendererProps {
 export function PdfRenderer({
   url,
   filePath,
+  agentSlug,
   pageNumber,
   onPageChange,
   commentsEnabled = true,
@@ -122,6 +124,7 @@ export function PdfRenderer({
         <CommentOverlay
           selection={selection}
           filePath={filePath}
+          agentSlug={agentSlug}
           onClose={clearSelection}
         />
       )}

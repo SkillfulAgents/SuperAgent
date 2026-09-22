@@ -210,15 +210,18 @@ vi.mock('@shared/lib/services/platform-service', () => ({
 // download route against the REAL filesystem so the actual path resolution and
 // containment check are validated end to end.
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: () => ({ fetch: vi.fn(), sendMessage: vi.fn(), start: vi.fn(), stop: vi.fn() }),
-    ensureRunning: vi.fn(),
-    getCachedInfo: () => ({ status: 'running', port: 8080 }),
-    removeClient: vi.fn(),
-    keepAlive: vi.fn(),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: () => ({ fetch: vi.fn(), sendMessage: vi.fn(), start: vi.fn(), stop: vi.fn() }),
+      ensureRunning: vi.fn(),
+      getCachedInfo: () => ({ status: 'running', port: 8080 }),
+      removeClient: vi.fn(),
+      keepAlive: vi.fn(),
+    }),
+  }
+})
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
@@ -249,7 +252,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(), getSession: vi.fn(), getSessionMetadata: vi.fn(),
-  sessionExists: vi.fn().mockResolvedValue(true), sessionBelongsToAgent: vi.fn().mockResolvedValue(true), reserveSessionOwnership: vi.fn().mockResolvedValue(undefined), updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
+  sessionExists: vi.fn().mockResolvedValue(true), updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   deleteSession: vi.fn(), removeMessage: vi.fn(), removeToolCall: vi.fn(),
   getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null }),
 }))

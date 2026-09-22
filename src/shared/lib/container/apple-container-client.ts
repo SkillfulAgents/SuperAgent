@@ -401,41 +401,33 @@ export class AppleContainerClient extends BaseContainerClient {
   }
 
   /**
-   * Apple Container uses `container image list --format json` + `container image delete`.
-   * Prefer `displayReference` (Apple 1.x); fall back to repository:tag.
+   * Apple Container uses `container image list --quiet` + `container image delete`.
+   * `--quiet` prints one reference per line. `--format json` carries every
+   * variant's config and history (about 22 KB an image) and overflows exec's
+   * 1 MiB stdout buffer near 47 images, the backlog this exists to clear.
    */
   static async removeOldImages(cliCommand: string, registry: string, currentTag: string): Promise<void> {
     try {
-      const { stdout } = await execWithPath(`${cliCommand} image list --format json`)
-      const images = JSON.parse(stdout)
-      if (!Array.isArray(images)) return
-
+      const { stdout } = await execWithPath(`${cliCommand} image list --quiet`)
       const currentImage = `${registry}:${currentTag}`
-      const imagesToRemove = images
-        .map((img: any) =>
-          typeof img.displayReference === 'string'
-            ? img.displayReference
-            : img.repository && img.tag
-              ? `${img.repository}:${img.tag}`
-              : null,
-        )
-        .filter((ref: string | null): ref is string =>
-          !!ref && ref !== currentImage && ref.startsWith(registry + ':'),
-        )
+      const imagesToRemove = stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l && l !== currentImage && l.startsWith(registry + ':'))
 
       if (imagesToRemove.length === 0) return
 
-      console.log(`[ContainerManager] Removing ${imagesToRemove.length} old image(s):`, imagesToRemove)
+      console.log(`[ContainerClient] Removing ${imagesToRemove.length} old image(s):`, imagesToRemove)
       for (const img of imagesToRemove) {
         try {
           await execWithPath(`${cliCommand} image delete ${shellEscape(img)}`)
-          console.log(`[ContainerManager] Removed ${img}`)
+          console.log(`[ContainerClient] Removed ${img}`)
         } catch {
-          console.warn(`[ContainerManager] Could not remove ${img} (may be in use)`)
+          console.warn(`[ContainerClient] Could not remove ${img} (may be in use)`)
         }
       }
     } catch (error) {
-      console.warn('[ContainerManager] Failed to remove old images:', error)
+      console.warn('[ContainerClient] Failed to remove old images:', error)
     }
   }
 

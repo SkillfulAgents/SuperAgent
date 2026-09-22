@@ -99,7 +99,7 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
   updateAgentFromSkillset: vi.fn(), getAgentTemplateStatus: vi.fn(), getDiscoverableAgents: vi.fn(),
   refreshSkillsetCaches: vi.fn(), getAgentPRInfo: vi.fn(), createAgentPR: vi.fn(),
   getAgentPublishInfo: vi.fn(), publishAgentToSkillset: vi.fn(), refreshAgentTemplates: vi.fn(),
-  hasOnboardingSkill: vi.fn().mockResolvedValue(false),
+  hasOnboardingSkill: vi.fn().mockResolvedValue({ hasOnboarding: false }),
   getAgentTemplatePrompt: (...a: unknown[]) => mockGetAgentTemplatePrompt(...a),
 }))
 
@@ -156,13 +156,16 @@ vi.mock('@shared/lib/account-providers', () => ({
   getProvider: (slug: string) => ({ slug, displayName: slug }),
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: () => ({ fetch: vi.fn(), sendMessage: vi.fn(), start: vi.fn(), stop: vi.fn() }),
-    ensureRunning: vi.fn(), getCachedInfo: () => ({ status: 'running', port: 8080 }),
-    removeClient: vi.fn(), keepAlive: vi.fn(),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: () => ({ fetch: vi.fn(), sendMessage: vi.fn(), start: vi.fn(), stop: vi.fn() }),
+      ensureRunning: vi.fn(), getCachedInfo: () => ({ status: 'running', port: 8080 }),
+      removeClient: vi.fn(), keepAlive: vi.fn(),
+    }),
+  }
+})
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
@@ -176,9 +179,9 @@ vi.mock('@shared/lib/container/message-persister', () => ({
 }))
 
 vi.mock('@shared/lib/services/session-service', () => ({
-  listSessions: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
+  listSessions: vi.fn(), listSessionsFromSummary: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(), getSession: vi.fn(), getSessionMetadata: vi.fn(),
-  sessionExists: vi.fn().mockResolvedValue(true), sessionBelongsToAgent: vi.fn().mockResolvedValue(true), reserveSessionOwnership: vi.fn().mockResolvedValue(undefined), updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
+  sessionExists: vi.fn().mockResolvedValue(true), updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   deleteSession: vi.fn(), removeMessage: vi.fn(), removeToolCall: vi.fn(),
   getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null }),
 }))

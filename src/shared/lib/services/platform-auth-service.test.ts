@@ -12,6 +12,28 @@ import {
   type JSONWebKeySet,
 } from 'jose'
 
+// Skillset reconciliation walks the agents this suite writes to the temp data
+// dir; those directories are the agents that exist.
+vi.mock('@shared/lib/agent-actor/agent-catalog', async () => {
+  const { directoryExists, getAgentDir, getAgentsDir, listDirectories } = await import('@shared/lib/utils/file-storage')
+  return {
+    agentCatalog: {
+      list: () => listDirectories(getAgentsDir()),
+      exists: (slug: string) => directoryExists(getAgentDir(slug)),
+    },
+    identityFromInstructions: () => ({}),
+  }
+})
+
+// A token change reaches the host through `@shared/lib/agent-actor`, which
+// re-exports the container-host singleton and runs the real agent registry
+// against it.
+const mockMarkAgentsStale = vi.fn()
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ markAgentsStale: mockMarkAgentsStale }) }
+})
+
 const mockDbGet = vi.fn()
 vi.mock('@shared/lib/db', () => ({
   db: {
@@ -37,6 +59,7 @@ import {
   _resetEnvManagedPlatformStatusForTest,
   getPlatformAccessToken,
   getPlatformAuthStatus,
+  getPlatformAuthStatusForUser,
   getEnrichedPlatformAuthStatus,
   initEnvManagedPlatformStatus,
   savePlatformAuth,
@@ -125,22 +148,22 @@ describe('platform-auth-service', () => {
     vi.restoreAllMocks()
   })
 
-  it('falls back to PLATFORM_TOKEN env in auth mode when settings have no record', () => {
+  it('falls back to PLATFORM_TOKEN env in auth mode when settings have no record', async () => {
     process.env.AUTH_MODE = 'true'
     process.env.PLATFORM_TOKEN = 'env-managed-platform-token'
 
     expect(getPlatformAccessToken('local')).toBe('env-managed-platform-token')
   })
 
-  it('returns null when not in auth mode and no settings record exists', () => {
+  it('returns null when not in auth mode and no settings record exists', async () => {
     process.env.PLATFORM_TOKEN = 'should-be-ignored-when-auth-mode-off'
     delete process.env.AUTH_MODE
 
     expect(getPlatformAccessToken('local')).toBeNull()
   })
 
-  it('leaves the disconnected status contract unchanged', () => {
-    const status = getPlatformAuthStatus('local')
+  it('leaves the disconnected status contract unchanged', async () => {
+    const status = (await getPlatformAuthStatusForUser('local'))
 
     expect(status.connected).toBe(false)
     expect(status).not.toHaveProperty('orgIconUrl')
@@ -152,7 +175,7 @@ describe('platform-auth-service', () => {
 
     await initEnvManagedPlatformStatus()
 
-    expect(getPlatformAuthStatus('local')).toMatchObject({
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({
       connected: true,
       label: 'Managed by organization',
       orgId: 'org_env',
@@ -168,7 +191,7 @@ describe('platform-auth-service', () => {
 
     await initEnvManagedPlatformStatus()
 
-    expect(getPlatformAuthStatus('local')).toMatchObject({
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({
       connected: true,
       orgId: null,
       source: 'env',
@@ -185,7 +208,7 @@ describe('platform-auth-service', () => {
 
     await initEnvManagedPlatformStatus()
 
-    expect(getPlatformAuthStatus('local')).toMatchObject({ orgId: null, source: 'env' })
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({ orgId: null, source: 'env' })
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: claim validation failed: iss'),
     )
@@ -198,7 +221,7 @@ describe('platform-auth-service', () => {
 
     await initEnvManagedPlatformStatus()
 
-    expect(getPlatformAuthStatus('local')).toMatchObject({ orgId: null, source: 'env' })
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({ orgId: null, source: 'env' })
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: claim validation failed: aud'),
     )
@@ -211,7 +234,7 @@ describe('platform-auth-service', () => {
 
     await initEnvManagedPlatformStatus()
 
-    expect(getPlatformAuthStatus('local')).toMatchObject({ orgId: null, source: 'env' })
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({ orgId: null, source: 'env' })
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: token expired'),
     )
@@ -224,7 +247,7 @@ describe('platform-auth-service', () => {
 
     await initEnvManagedPlatformStatus()
 
-    expect(getPlatformAuthStatus('local')).toMatchObject({ orgId: null, source: 'env' })
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({ orgId: null, source: 'env' })
     expect(warn).toHaveBeenCalled()
   })
 
@@ -236,7 +259,7 @@ describe('platform-auth-service', () => {
 
     await initEnvManagedPlatformStatus()
 
-    expect(getPlatformAuthStatus('local')).toMatchObject({ orgId: null, source: 'env' })
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({ orgId: null, source: 'env' })
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: no issuer configured'),
     )
@@ -259,7 +282,7 @@ describe('platform-auth-service', () => {
     await initEnvManagedPlatformStatus()
 
     expect(getPlatformAccessToken('local')).toBe(process.env.PLATFORM_TOKEN)
-    expect(getPlatformAuthStatus('local')).toMatchObject({
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({
       orgId: 'org_env',
       source: 'env',
     })
@@ -300,7 +323,7 @@ describe('platform-auth-service', () => {
       userId: 'auth_user_uuid_123',
       memberId: 'sub_member_456',
     })
-    expect(getPlatformAuthStatus('local')).toMatchObject({
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({
       userId: 'auth_user_uuid_123',
       memberId: 'sub_member_456',
     })
@@ -314,7 +337,7 @@ describe('platform-auth-service', () => {
       orgId: 'org_test_123',
     })
 
-    expect(getPlatformAuthStatus('local')).toMatchObject({
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({
       userId: null,
       memberId: null,
     })
@@ -373,7 +396,7 @@ describe('platform-auth-service', () => {
     })
 
     // Nothing should have been persisted for a rejected key.
-    expect(getPlatformAuthStatus('local').connected).toBe(false)
+    expect((await getPlatformAuthStatusForUser('local')).connected).toBe(false)
   })
 
   it('refreshStoredPlatformAccount updates the record when identity changed', async () => {
@@ -405,7 +428,7 @@ describe('platform-auth-service', () => {
 
     const updated = await refreshStoredPlatformAccount()
     expect(updated).toBe(true)
-    expect(getPlatformAuthStatus('local')).toMatchObject({
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({
       email: 'new@example.com',
       orgId: 'org_new',
       role: 'admin',
@@ -424,7 +447,7 @@ describe('platform-auth-service', () => {
       userId: 'user_same',
       memberId: 'sub_same',
     })
-    const before = getPlatformAuthStatus('local').updatedAt
+    const before = (await getPlatformAuthStatusForUser('local')).updatedAt
 
     process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
     vi.spyOn(global, 'fetch').mockResolvedValue(
@@ -443,7 +466,7 @@ describe('platform-auth-service', () => {
 
     const updated = await refreshStoredPlatformAccount()
     expect(updated).toBe(false)
-    expect(getPlatformAuthStatus('local').updatedAt).toBe(before) // record not rewritten
+    expect((await getPlatformAuthStatusForUser('local')).updatedAt).toBe(before) // record not rewritten
   })
 
   // ---------------------------------------------------------------------------
@@ -468,7 +491,7 @@ describe('platform-auth-service', () => {
       }),
     })
 
-    const status = getPlatformAuthStatus('ba-user-id')
+    const status = (await getPlatformAuthStatusForUser('ba-user-id'))
     expect(status.userId).toBe('uuid-platform-user')
     expect(status.source).toBe('env')
   })
@@ -482,7 +505,7 @@ describe('platform-auth-service', () => {
       idToken: makeIdToken({ sub: 'sub_member_123' }),
     })
 
-    const status = getPlatformAuthStatus('ba-user-id')
+    const status = (await getPlatformAuthStatusForUser('ba-user-id'))
     expect(status.userId).toBeNull()
   })
 
@@ -493,7 +516,7 @@ describe('platform-auth-service', () => {
 
     mockDbGet.mockReturnValue(null)
 
-    const status = getPlatformAuthStatus('ba-user-id')
+    const status = (await getPlatformAuthStatusForUser('ba-user-id'))
     expect(status.userId).toBeNull()
   })
 
@@ -504,7 +527,7 @@ describe('platform-auth-service', () => {
 
     mockDbGet.mockReturnValue({ idToken: null })
 
-    const status = getPlatformAuthStatus('ba-user-id')
+    const status = (await getPlatformAuthStatusForUser('ba-user-id'))
     expect(status.userId).toBeNull()
   })
 
@@ -878,6 +901,29 @@ describe('platform-auth-service', () => {
       getAgentsDir(), 'agent-c', 'workspace', '.claude', 'skills', 'stale-skill',
     )
     expect(fs.existsSync(skillDir)).toBe(false)
+  })
+
+  describe('stale agents on token change', () => {
+    beforeEach(() => {
+      mockMarkAgentsStale.mockClear()
+    })
+
+    it('marks running agents stale when the saved token differs from the stored one', async () => {
+      await savePlatformAuth('local', { token: 'plat_first_token_00000000000000000', orgId: 'org_x' })
+      expect(mockMarkAgentsStale).toHaveBeenCalledTimes(1)
+
+      await savePlatformAuth('local', { token: 'plat_second_token_1111111111111111', orgId: 'org_x' })
+      expect(mockMarkAgentsStale).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not mark agents stale on a same-token metadata re-save', async () => {
+      await savePlatformAuth('local', { token: 'plat_first_token_00000000000000000', orgId: 'org_x', role: 'owner' })
+      mockMarkAgentsStale.mockClear()
+
+      // The refreshStoredPlatformAccount path: same token, new metadata.
+      await savePlatformAuth('local', { token: 'plat_first_token_00000000000000000', orgId: 'org_x', role: 'admin' })
+      expect(mockMarkAgentsStale).not.toHaveBeenCalled()
+    })
   })
 
   describe('cloud-workspace token invalidation on identity change', () => {

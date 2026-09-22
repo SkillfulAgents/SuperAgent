@@ -1,0 +1,27 @@
+{
+  "agentSlug": "probe",
+  "sdkVersion": "0.3.272",
+  "cliVersion": "2.1.272",
+  "capturedAt": "2026-09-14",
+  "model": "claude-haiku-4-5-20251001",
+  "startActive": true,
+  "subagents": [],
+  "source": "scratch probe (probe-bg-idle.mjs): direct Agent SDK query() with streaming input, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, includePartialMessages, perTaskStopAffordance; same wrapper shape as the host captures (t = ms since start, message.content = SDK frame)",
+  "description": "Real capture (2026-09-14, SDK 0.3.272 / CLI 2.1.272). Explicit run_in_background:true subagent (Bash sleep inside). NEW since CLI 2.1.269 (\"headless sessions no longer report waiting-for-input while background agents are still running\"): NO session_state_changed:idle after the lead turn result while the subagent is live, and no running/idle pair around the wake; the session stays running until the wake turn result, then a single idle. The settlement tracker must stay busy throughout and settle only at that final idle.",
+  "backgroundTasks": [
+    {
+      "taskId": "a9b6180bbfb89aa54",
+      "taskType": "local_agent",
+      "startedT": 2369,
+      "prematureIdleT": null,
+      "realCompletionT": 12367
+    },
+    {
+      "taskId": "bxlpffpqu",
+      "taskType": "local_bash",
+      "startedT": 6592,
+      "prematureIdleT": null,
+      "realCompletionT": 11593
+    }
+  ]
+}

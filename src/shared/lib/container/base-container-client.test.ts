@@ -9,7 +9,14 @@ const enableToolSearch = vi.fn((): boolean | undefined => true)
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ enableToolSearch: enableToolSearch() }),
 }))
-const getContainerEnvVars = vi.fn(() => ({ ANTHROPIC_API_KEY: 'provider-key' }))
+const getContainerEnvVars = vi.fn((): Record<string, string> => ({ ANTHROPIC_API_KEY: 'provider-key' }))
+const platformToken = vi.fn(async (_agentId: string): Promise<string | undefined> => undefined)
+vi.mock('../platform-attribution/container-token', () => ({
+  getPlatformContainerToken: (agentId: string) => platformToken(agentId),
+}))
+vi.mock('../platform-auth/config', () => ({
+  getPlatformProxyBaseUrl: () => 'http://localhost:8080',
+}))
 const toolSearchEnv = vi.fn((): 'true' | undefined => 'true')
 vi.mock('@shared/lib/llm-provider', () => ({
   getActiveLlmProvider: () => ({ getContainerEnvVars, toolSearchEnv: toolSearchEnv() }),
@@ -27,7 +34,7 @@ class TestContainerClient extends BaseContainerClient {
   public testExtractInaccessibleMountPath(error: unknown): string | null {
     return this.extractInaccessibleMountPath(error)
   }
-  public testBuildAgentEnv(extra?: Record<string, string>): Record<string, string> {
+  public testBuildAgentEnv(extra?: Record<string, string>): Promise<Record<string, string>> {
     return this.buildAgentEnv(extra)
   }
 }
@@ -36,14 +43,16 @@ describe('buildAgentEnv', () => {
   afterEach(() => {
     enableToolSearch.mockReturnValue(true)
     toolSearchEnv.mockReturnValue('true')
+    platformToken.mockReset().mockResolvedValue(undefined)
+    getContainerEnvVars.mockReset().mockReturnValue({ ANTHROPIC_API_KEY: 'provider-key' })
   })
 
-  it('merges provider env, constants, config.envVars and per-start extra (later wins)', () => {
+  it('merges provider env, constants, config.envVars and per-start extra (later wins)', async () => {
     const client = new TestContainerClient({
       agentId: 'a',
       envVars: { FROM_CONFIG: 'c', ANTHROPIC_API_KEY: 'from-config' }, // config beats provider
     })
-    const env = client.testBuildAgentEnv({ FROM_EXTRA: 'e', FROM_CONFIG: 'from-extra' }) // extra beats config
+    const env = await client.testBuildAgentEnv({ FROM_EXTRA: 'e', FROM_CONFIG: 'from-extra' }) // extra beats config
     expect(env.ANTHROPIC_API_KEY).toBe('from-config')
     expect(env.FROM_CONFIG).toBe('from-extra')
     expect(env.FROM_EXTRA).toBe('e')
@@ -51,29 +60,55 @@ describe('buildAgentEnv', () => {
     expect(env.ENABLE_TOOL_SEARCH).toBe('true')
   })
 
-  it('sets ENABLE_TOOL_SEARCH=false only when the setting is explicitly false', () => {
+  it.each([
+    { ANTHROPIC_API_KEY: 'direct-key' },
+    { ANTHROPIC_BASE_URL: 'https://other-provider.example', ANTHROPIC_AUTH_TOKEN: 'other-token' },
+    { CLAUDE_CODE_USE_BEDROCK: '1', AWS_BEARER_TOKEN_BEDROCK: 'bedrock-key' },
+  ] as Record<string, string>[])('supplies independent Platform service credentials with LLM env %j', async (llmEnv) => {
+    platformToken.mockResolvedValue('platform-token::agent-owner')
+    getContainerEnvVars.mockReturnValue(llmEnv)
+    const client = new TestContainerClient({
+      agentId: 'my-agent',
+      envVars: { PLATFORM_BASE_URL: 'https://wrong.example' },
+    })
+    const env = await client.testBuildAgentEnv({ PLATFORM_AUTH_TOKEN: 'wrong-token' })
+    expect(env).toMatchObject(llmEnv)
+    expect(env.PLATFORM_BASE_URL).toBe('http://host.docker.internal:8080')
+    expect(env.PLATFORM_AUTH_TOKEN).toBe('platform-token::agent-owner')
+    expect(platformToken).toHaveBeenCalledWith('my-agent')
+  })
+
+  it('omits Platform service credentials when disconnected, including old custom overrides', async () => {
+    const client = new TestContainerClient({ agentId: 'a', envVars: { PLATFORM_AUTH_TOKEN: 'stale' } })
+    const env = await client.testBuildAgentEnv({ PLATFORM_BASE_URL: 'https://stale.example' })
+    expect(env).not.toHaveProperty('PLATFORM_BASE_URL')
+    expect(env).not.toHaveProperty('PLATFORM_AUTH_TOKEN')
+    expect(env.ANTHROPIC_API_KEY).toBe('provider-key')
+  })
+
+  it('sets ENABLE_TOOL_SEARCH=false only when the setting is explicitly false', async () => {
     enableToolSearch.mockReturnValue(false)
-    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
 
-  it('leaves ENABLE_TOOL_SEARCH unset when the provider does not declare one', () => {
+  it('leaves ENABLE_TOOL_SEARCH unset when the provider does not declare one', async () => {
     toolSearchEnv.mockReturnValue(undefined)
-    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect('ENABLE_TOOL_SEARCH' in env).toBe(false)
   })
 
   // The setting is a master switch, not a way to force tool search onto an
   // endpoint that rejects deferred tools.
-  it('keeps ENABLE_TOOL_SEARCH=false over the provider value when the setting is off', () => {
+  it('keeps ENABLE_TOOL_SEARCH=false over the provider value when the setting is off', async () => {
     enableToolSearch.mockReturnValue(false)
     toolSearchEnv.mockReturnValue(undefined)
-    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
 
-  it('passes the agent identity to the provider so it can attribute LLM usage', () => {
-    new TestContainerClient({ agentId: 'my-agent', envVars: {} }).testBuildAgentEnv()
+  it('passes the agent identity to the provider so it can attribute LLM usage', async () => {
+    await new TestContainerClient({ agentId: 'my-agent', envVars: {} }).testBuildAgentEnv()
     expect(getContainerEnvVars).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'my-agent' })
     )
@@ -706,6 +741,91 @@ describe('subscribeToStream failure handling', () => {
 })
 
 // ============================================================================
+// fetch() port caching — one runtime inspect per container lifetime, not per
+// request (every proxied dashboard asset used to pay a CLI spawn)
+// ============================================================================
+
+class RunningTestClient extends BaseContainerClient {
+  infoCalls = 0
+  protected getRunnerCommand(): string {
+    return 'docker'
+  }
+  async getInfoFromRuntime(): Promise<ContainerInfo> {
+    this.infoCalls++
+    return { status: 'running', port: 4123 }
+  }
+  // The real implementation lazily persists a per-agent token file on disk
+  getHostAuthHeaders(): Record<string, string> {
+    return {}
+  }
+}
+
+describe('BaseContainerClient.fetch port caching', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('resolves the port from the runtime once and reuses it across fetches', async () => {
+    const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
+    const fetchMock = vi.fn(async () => new Response('ok'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.fetch('/artifacts')
+    await client.fetch('/artifacts')
+    await client.fetch('/health')
+
+    expect(client.infoCalls).toBe(1)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'http://127.0.0.1:4123/artifacts', expect.anything())
+  })
+
+  it('clears the cached port on a connection error and re-resolves on the next fetch', async () => {
+    const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
+    const fetchMock = vi
+      .fn(async () => new Response('ok'))
+      .mockResolvedValueOnce(new Response('ok'))
+      .mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:4123'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.fetch('/artifacts')
+    await expect(client.fetch('/artifacts')).rejects.toThrow('ECONNREFUSED')
+    await client.fetch('/artifacts')
+
+    // First fetch primes the cache, the refused fetch clears it, the third
+    // re-resolves — two inspects total, never one per request.
+    expect(client.infoCalls).toBe(2)
+  })
+
+  it('session-scoped calls clear a stale cached port on connection failure', async () => {
+    const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
+    const fetchMock = vi
+      .fn(async () => new Response('{}'))
+      .mockResolvedValueOnce(new Response('ok'))
+      .mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:4123'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.fetch('/artifacts')
+    // Container was recreated on another port: the very next session call
+    // fails once, clears the cache, and the call after re-resolves the port.
+    await expect(client.getSession('sess-1')).rejects.toThrow('ECONNREFUSED')
+    await client.getSession('sess-1')
+
+    expect(client.infoCalls).toBe(2)
+  })
+
+  it('does not clear the cached port on HTTP-level failures', async () => {
+    const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
+    const fetchMock = vi.fn(async () => new Response('nope', { status: 500 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.fetch('/artifacts')
+    await client.fetch('/artifacts')
+
+    expect(client.infoCalls).toBe(1)
+  })
+})
+
+// ============================================================================
 // run-error classification (port races, inaccessible mounts)
 // ============================================================================
 
@@ -837,5 +957,60 @@ describe('BaseContainerClient.isHealthy', () => {
 
   it('returns false when no port is known', async () => {
     await expect(client.isHealthy(0)).resolves.toBe(false)
+  })
+})
+
+describe('BaseContainerClient.observeUnexpectedDeath', () => {
+  const client = new TestContainerClient({ agentId: 'test-agent' })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('ignores a healthy container with a still-running session', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(true)
+    vi.spyOn(client, 'getSession').mockResolvedValue({ isRunning: true } as never)
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['s1'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['s1'],
+    })
+  })
+
+  it('settles dead sessions and ignores siblings that are still running', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(true)
+    vi.spyOn(client, 'getSession').mockImplementation(async (sessionId: string) => {
+      if (sessionId === 'live') return { isRunning: true } as never
+      return { isRunning: false } as never
+    })
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['live', 'dead'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['live'],
+    })
+  })
+
+  it('settles when the container is unhealthy', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(false)
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['s1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+
+  it('settles when health check throws', async () => {
+    vi.spyOn(client, 'isHealthy').mockRejectedValue(new Error('health exploded'))
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['s1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+
+  it('treats a failed session probe as not live and keeps live siblings', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(true)
+    vi.spyOn(client, 'getSession').mockImplementation(async (sessionId: string) => {
+      if (sessionId === 'dead') throw new Error('probe failed')
+      return { isRunning: true } as never
+    })
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['live', 'dead'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['live'],
+    })
   })
 })

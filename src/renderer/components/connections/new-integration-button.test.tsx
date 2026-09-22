@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
+import { fakeLoginWindow } from '@renderer/test/fake-login-window'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { NewIntegrationButton } from './connections-list'
-import { OAUTH_ABORT_DELAY_MS } from '@renderer/hooks/use-delayed-oauth-abort'
+import { LOGIN_WINDOW_CANCEL_DELAY_MS } from '@renderer/hooks/use-login-window'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 
 const MOCK_ACCOUNT_ID = 'new-account-123'
@@ -15,14 +16,7 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
-const popupMocks = vi.hoisted(() => ({
-  navigate: vi.fn(),
-  close: vi.fn(),
-}))
-
-vi.mock('@renderer/lib/oauth-popup', () => ({
-  prepareOAuthPopup: () => ({ navigate: popupMocks.navigate, close: popupMocks.close }),
-}))
+vi.mock('@renderer/lib/oauth-popup', () => import('@renderer/test/fake-login-window'))
 
 vi.mock('@shared/lib/account-providers', () => ({
   getProvider: (slug: string) => ({
@@ -118,8 +112,8 @@ function mockFetchResponses() {
 beforeEach(() => {
   originalElectronAPI = window.electronAPI
   vi.clearAllMocks()
-  popupMocks.navigate.mockReset()
-  popupMocks.close.mockReset()
+  fakeLoginWindow.navigate.mockReset()
+  fakeLoginWindow.close.mockReset()
   capturedMcpOAuthCallback = null
   lastToolPoliciesPutBody = null
   mockFetchResponses()
@@ -133,6 +127,94 @@ afterEach(() => {
   window.electronAPI = originalElectronAPI
   capturedOAuthCallback = null
   capturedMcpOAuthCallback = null
+})
+
+describe('NewIntegrationButton — All tab', () => {
+  it('opens on the All tab showing both APIs and MCP servers', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+
+    expect(screen.getByTestId('directory-tab-all')).toHaveAttribute('data-state', 'active')
+    await waitFor(() => expect(screen.getByTestId('directory-connect-api-slack')).toBeInTheDocument())
+    expect(screen.getByTestId('directory-connect-mcp-linear')).toBeInTheDocument()
+    expect(screen.getByTestId('directory-connect-mcp-custom')).toBeInTheDocument()
+  })
+
+  it('keeps both sections when the search only matches one of them', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+    await waitFor(() => expect(screen.getByTestId('directory-connect-api-slack')).toBeInTheDocument())
+
+    await userEvent.type(screen.getByPlaceholderText('Search all connections...'), 'linear')
+
+    // The APIs section stays put and says so itself rather than disappearing.
+    await waitFor(() => expect(screen.getByText('No API matches')).toBeInTheDocument())
+    expect(screen.getByRole('heading', { name: 'APIs' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'MCPs' })).toBeInTheDocument()
+    expect(screen.queryByTestId('directory-connect-api-slack')).not.toBeInTheDocument()
+
+    // While searching, Custom MCP trails the real hits instead of leading.
+    const cards = screen.getAllByTestId(/^directory-connect-mcp-/)
+    expect(cards[0]).toHaveAttribute('data-testid', 'directory-connect-mcp-linear')
+    expect(cards.at(-1)).toHaveAttribute('data-testid', 'directory-connect-mcp-custom')
+  })
+
+  it('shows both empty states when nothing matches', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+    await waitFor(() => expect(screen.getByTestId('directory-connect-api-slack')).toBeInTheDocument())
+
+    await userEvent.type(screen.getByPlaceholderText('Search all connections...'), 'zzzznope')
+
+    await waitFor(() => expect(screen.getByText('No API matches')).toBeInTheDocument())
+    expect(screen.getByText('No MCP matches')).toBeInTheDocument()
+    // The browse-time footer note steps aside once a search is running.
+    expect(screen.queryByText(/Don't see what you're looking for/)).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'APIs' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'MCPs' })).toBeInTheDocument()
+  })
+})
+
+describe('NewIntegrationButton — cross-directory search hint', () => {
+  it('offers a jump to All when the scoped tab finds nothing but the other one does', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+    await userEvent.click(screen.getByTestId('directory-tab-apis'))
+    await waitFor(() => expect(screen.getByTestId('directory-connect-api-slack')).toBeInTheDocument())
+
+    await userEvent.type(screen.getByPlaceholderText('Search APIs...'), 'linear')
+
+    await waitFor(() => expect(screen.getByText('No API matches')).toBeInTheDocument())
+    expect(screen.getByText(/1 MCP server matches/)).toBeInTheDocument()
+
+    await userEvent.click(screen.getByTestId('directory-see-all'))
+
+    // Lands on All with the query carried over, not discarded.
+    expect(screen.getByTestId('directory-tab-all')).toHaveAttribute('data-state', 'active')
+    expect(screen.getByPlaceholderText('Search all connections...')).toHaveValue('linear')
+    await waitFor(() => expect(screen.getByTestId('directory-connect-mcp-linear')).toBeInTheDocument())
+  })
+
+  it('omits the hint when neither directory matches', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+    await userEvent.click(screen.getByTestId('directory-tab-mcps'))
+
+    await userEvent.type(screen.getByPlaceholderText('Search MCP servers...'), 'zzzznope')
+
+    await waitFor(() => expect(screen.getByText('No MCP matches')).toBeInTheDocument())
+    expect(screen.queryByTestId('directory-see-all')).not.toBeInTheDocument()
+  })
 })
 
 describe('NewIntegrationButton — post-OAuth policy editor', () => {
@@ -249,19 +331,21 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
     })
     expect(capturedOAuthCallback).not.toBeNull()
     expect(screen.queryByTestId('directory-cancel-api-slack')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(/^Connecting Slack…$/)
 
     act(() => {
-      vi.advanceTimersByTime(OAUTH_ABORT_DELAY_MS)
+      vi.advanceTimersByTime(LOGIN_WINDOW_CANCEL_DELAY_MS)
     })
 
     expect(screen.getByTestId('directory-cancel-api-slack')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Connecting Slack…, Cancel available')
 
     await act(async () => {
       fireEvent.click(screen.getByTestId('directory-cancel-api-slack'))
       await Promise.resolve()
     })
     expect(unsubscribe).toHaveBeenCalledTimes(1)
-    expect(popupMocks.close).toHaveBeenCalledTimes(1)
+    expect(fakeLoginWindow.close).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('directory-connect-api-slack')).not.toBeDisabled()
   })
 

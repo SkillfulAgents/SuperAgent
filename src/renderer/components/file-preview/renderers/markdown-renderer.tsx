@@ -1,7 +1,5 @@
 import { Loader2, AlertCircle } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { Markdown } from '@renderer/components/ui/markdown'
 import { useRef } from 'react'
 import { useTextSelection } from '../comments/use-text-selection'
 import { CommentOverlay } from '../comments/comment-overlay'
@@ -10,10 +8,11 @@ import { useFileContent } from './use-file-content'
 interface MarkdownRendererProps {
   url: string
   filePath: string
+  agentSlug: string
   commentsEnabled?: boolean
 }
 
-export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: MarkdownRendererProps) {
+export function MarkdownRenderer({ url, filePath, agentSlug, commentsEnabled = true }: MarkdownRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const { selection, clearSelection } = useTextSelection(containerRef, commentsEnabled)
 
@@ -34,13 +33,18 @@ export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: Mark
           <span>Failed to load file</span>
         </div>
       ) : (
-        <div className="prose prose-sm max-w-none min-w-0 break-words dark:prose-invert" data-testid="markdown-renderer">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            urlTransform={markdownUrlTransform}
+        <div
+          className="prose prose-sm max-w-none min-w-0 break-words dark:prose-invert [&_pre_code]:bg-transparent [&_pre_code]:p-0"
+          data-testid="markdown-renderer"
+        >
+          <Markdown
             components={{
+              // `prose` colours a code block for its own dark `pre` background
+              // (--tw-prose-pre-code is gray-200). This one is a light tinted
+              // card, so the text colour has to come back to the body colour or
+              // it reads as grey-on-grey. Matches the chat transcript's block.
               pre: ({ children }) => (
-                <pre className="rounded-lg p-3 text-sm overflow-x-auto bg-black/[0.03] dark:bg-white/[0.06]">
+                <pre className="rounded-lg p-3 text-sm overflow-x-auto border border-border/60 bg-black/[0.03] dark:bg-white/[0.06] text-foreground">
                   {children}
                 </pre>
               ),
@@ -49,7 +53,7 @@ export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: Mark
                   return <code className={className}>{children}</code>
                 }
                 return (
-                  <code className="rounded px-1.5 py-0.5 text-sm font-medium bg-black/[0.03] dark:bg-white/[0.06]">
+                  <code className="rounded px-1.5 py-0.5 text-sm font-medium bg-black/[0.03] dark:bg-white/[0.06] text-foreground">
                     {children}
                   </code>
                 )
@@ -65,15 +69,10 @@ export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: Mark
               td: ({ children }) => (
                 <td className="border-b border-border px-3 py-1.5">{children}</td>
               ),
-              a: ({ href, children }) => (
-                <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
-                  {children}
-                </a>
-              ),
             }}
           >
             {content || ''}
-          </ReactMarkdown>
+          </Markdown>
           {data?.truncated && (
             <div className="mt-3 pt-3 border-t text-xs text-muted-foreground text-center not-prose">
               File is larger than 5&nbsp;MB and was truncated. Download the file for the full content.
@@ -85,6 +84,7 @@ export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: Mark
         <CommentOverlay
           selection={selection}
           filePath={filePath}
+          agentSlug={agentSlug}
           onClose={clearSelection}
         />
       )}

@@ -1,5 +1,5 @@
-import { useMemo, useState, type ReactNode } from 'react'
-import { ArrowUpRight, BadgeX, ChevronsUpDown, Loader2, RefreshCw } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { ArrowUpRight, BadgeX, Check, ChevronsUpDown, Loader2, RefreshCw } from 'lucide-react'
 
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
@@ -8,6 +8,10 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Progress } from '@renderer/components/ui/progress'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { RequestError } from '@renderer/components/messages/request-error'
+import { LoginButton } from '@renderer/components/connections/login-button'
+import { ProfileSection } from './profile-section'
+import { StaleAgentsNotice } from './stale-agents-notice'
+import { useUser } from '@renderer/context/user-context'
 import { usePlatformConnect, useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
 import { useCloudWorkspace } from '@renderer/hooks/use-cloud-workspace'
@@ -43,6 +47,7 @@ function SettingRow({ name, subtitle, right }: SettingRowProps) {
 }
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 
 const currencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -291,7 +296,7 @@ function SeatCreditsRow({ seat }: { seat: NonNullable<ParsedPlatformBillingInfo[
         <span className="text-xs font-medium">Seat credits</span>
         <span className="text-xs text-muted-foreground">{Math.round(pct)}% remaining</span>
       </div>
-      <Progress percent={pct} />
+      <Progress percent={pct} thresholds={{ warning: 20, critical: 5 }} />
       <div className="text-[11px] text-muted-foreground">
         {formatCents(seat.balanceCents)} of {formatCents(seat.startingBalanceCents)}
       </div>
@@ -389,10 +394,12 @@ function AccessKeyInput({ onClose }: { onClose: () => void }) {
 interface NotConnectedEmptyStateProps {
   readOnly: boolean
   isLaunching: boolean
+  canCancel: boolean
   onConnect: () => void
+  onCancel: () => void
 }
 
-function NotConnectedEmptyState({ readOnly, isLaunching, onConnect }: NotConnectedEmptyStateProps) {
+function NotConnectedEmptyState({ readOnly, isLaunching, canCancel, onConnect, onCancel }: NotConnectedEmptyStateProps) {
   const [showKeyInput, setShowKeyInput] = useState(false)
 
   return (
@@ -408,14 +415,18 @@ function NotConnectedEmptyState({ readOnly, isLaunching, onConnect }: NotConnect
               <AccessKeyInput onClose={() => setShowKeyInput(false)} />
             ) : (
               <div className="flex items-center justify-center gap-2">
-                <Button size="sm" onClick={onConnect} disabled={isLaunching} className="group gap-0">
-                  {isLaunching ? 'Opening browser…' : 'Connect Account'}
-                  {isLaunching ? (
-                    <Loader2 className="ml-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <HoverArrow />
-                  )}
-                </Button>
+                <LoginButton
+                  size="sm"
+                  onClick={onConnect}
+                  className="group"
+                  label={<span className="inline-flex items-center">Connect Account<HoverArrow /></span>}
+                  pendingLabel="Opening browser…"
+                  pending={isLaunching}
+                  canCancel={canCancel}
+                  onCancel={onCancel}
+                  cancelSide="right"
+                  cancelTestId="platform-cancel-connect"
+                />
                 <Button size="sm" variant="outline" onClick={() => setShowKeyInput(true)}>
                   Add access key
                 </Button>
@@ -431,11 +442,13 @@ function NotConnectedEmptyState({ readOnly, isLaunching, onConnect }: NotConnect
 interface ReconnectRowProps {
   readOnly: boolean
   isLaunching: boolean
+  canCancel: boolean
   connectLabel: string
   onReconnect: () => void
+  onCancel: () => void
 }
 
-function ReconnectRow({ readOnly, isLaunching, connectLabel, onReconnect }: ReconnectRowProps) {
+function ReconnectRow({ readOnly, isLaunching, canCancel, connectLabel, onReconnect, onCancel }: ReconnectRowProps) {
   const [showInput, setShowInput] = useState(false)
 
   if (showInput) {
@@ -456,20 +469,20 @@ function ReconnectRow({ readOnly, isLaunching, connectLabel, onReconnect }: Reco
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <Button
+          <LoginButton
             size="sm"
             variant="outline"
             onClick={onReconnect}
-            disabled={readOnly || isLaunching}
-            className="group gap-0"
-          >
-            {connectLabel}
-            {isLaunching ? (
-              <Loader2 className="ml-2 h-4 w-4 animate-spin" />
-            ) : (
-              <HoverArrow />
-            )}
-          </Button>
+            disabled={readOnly}
+            className="group"
+            label={<span className="inline-flex items-center">{connectLabel}<HoverArrow /></span>}
+            pendingLabel="Opening browser…"
+            pending={isLaunching}
+            canCancel={canCancel}
+            onCancel={onCancel}
+            cancelSide="left"
+            cancelTestId="platform-cancel-reconnect"
+          />
           {!readOnly && (
             <Button size="sm" variant="outline" onClick={() => setShowInput(true)}>
               Add key
@@ -493,6 +506,8 @@ function formatTimestamp(value: string | null): string {
 export function PlatformTab({ readOnly = false }: PlatformTabProps) {
   const {
     handleConnect,
+    cancelConnect,
+    canCancel,
     isLaunching,
     error,
     message,
@@ -500,13 +515,14 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
     platformAuth: data,
     isLoadingPlatformAuth: isLoading,
   } = usePlatformConnect({
-    successMessage: 'Connected. Please restart your running agents for the new token to take effect.',
+    // Agents still on the old token announce themselves below (StaleAgentsNotice).
+    successMessage: 'Connected.',
   })
+  // The signed-in user's own profile leads this tab instead of having a tab of
+  // its own. Only auth mode has a user to edit, so local installs skip it.
+  const { isAuthMode } = useUser()
 
-  const connectLabel = useMemo(() => {
-    if (isLaunching) return 'Opening browser…'
-    return isConnected ? 'Reconnect' : 'Connect'
-  }, [isConnected, isLaunching])
+  const connectLabel = isConnected ? 'Reconnect' : 'Connect'
 
   async function handleOpenPlatform() {
     if (!data?.platformBaseUrl) return
@@ -515,9 +531,22 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        <span>Loading platform status…</span>
+      <div className="space-y-6">
+        {isAuthMode && <ProfileSection />}
+        <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span>Loading platform status…</span>
+        </div>
+      </div>
+    )
+  }
+
+  // Auth-mode users manage their own profile here; an unconfigured platform
+  // connection is deployment-wide and has no action they can take in this tab.
+  if (isAuthMode && !isConnected) {
+    return (
+      <div className="space-y-6">
+        <ProfileSection />
       </div>
     )
   }
@@ -526,50 +555,65 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
 
   return (
     <div className="space-y-6">
-      {isConnected && (
-        <div className={CARD_CLASS}>
-          <SettingRow
-            name="Workspace"
-            right={
-              // Switching workspaces means re-authenticating, so the popover's
-              // action opens the same platform login Reconnect below launches.
-              <WorkspaceSwitcher
-                orgName={data?.orgName ?? '—'}
-                switchDisabled={readOnly || isLaunching}
-                onSwitch={handleConnect}
-              />
-            }
+      {isAuthMode && <ProfileSection />}
+
+      {/* Headed so it reads as its own section under the profile, not as
+          more of it — this card is the Gamut platform account, not the login. */}
+      <div className="space-y-2">
+        <h3 className={SECTION_HEADING}>Gamut Account</h3>
+        {isConnected ? (
+          <div className={CARD_CLASS}>
+            <SettingRow
+              name="Workspace"
+              right={
+                // Switching workspaces means re-authenticating, so the popover's
+                // action opens the same platform login Reconnect below launches.
+                <WorkspaceSwitcher
+                  orgName={data?.orgName ?? '—'}
+                  switchDisabled={readOnly || isLaunching}
+                  onSwitch={handleConnect}
+                />
+              }
+            />
+            <SettingRow
+              name="Email"
+              right={<span className={valueClass}>{data?.email ?? '—'}</span>}
+            />
+            <SettingRow
+              name="Role"
+              right={<span className={`${valueClass} capitalize`}>{data?.role ?? '—'}</span>}
+            />
+            <SettingRow
+              name="Last updated"
+              right={<span className={valueClass}>{formatTimestamp(data?.updatedAt ?? null)}</span>}
+            />
+            <SettingRow
+              name="Manage your account and organization on the web"
+              right={
+                <Button
+                  size="sm"
+                  className="group gap-0"
+                  onClick={() => {
+                    void handleOpenPlatform()
+                  }}
+                  disabled={!data?.platformBaseUrl}
+                >
+                  Go to Account
+                  <HoverArrow />
+                </Button>
+              }
+            />
+          </div>
+        ) : (
+          <NotConnectedEmptyState
+            readOnly={readOnly}
+            isLaunching={isLaunching}
+            canCancel={canCancel}
+            onConnect={handleConnect}
+            onCancel={cancelConnect}
           />
-          <SettingRow
-            name="Email"
-            right={<span className={valueClass}>{data?.email ?? '—'}</span>}
-          />
-          <SettingRow
-            name="Role"
-            right={<span className={`${valueClass} capitalize`}>{data?.role ?? '—'}</span>}
-          />
-          <SettingRow
-            name="Last updated"
-            right={<span className={valueClass}>{formatTimestamp(data?.updatedAt ?? null)}</span>}
-          />
-          <SettingRow
-            name="Manage your account and organization on the web"
-            right={
-              <Button
-                size="sm"
-                className="group gap-0"
-                onClick={() => {
-                  void handleOpenPlatform()
-                }}
-                disabled={!data?.platformBaseUrl}
-              >
-                Go to Account
-                <HoverArrow />
-              </Button>
-            }
-          />
-        </div>
-      )}
+        )}
+      </div>
 
       {isConnected && (
         // Billing is non-critical display data — never let a glitch here take
@@ -588,21 +632,17 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
         </ErrorBoundary>
       )}
 
-      {isConnected ? (
+      {isConnected && (
         <div className={CARD_CLASS}>
           <ReconnectRow
             readOnly={readOnly}
             isLaunching={isLaunching}
+            canCancel={canCancel}
             connectLabel={connectLabel}
             onReconnect={handleConnect}
+            onCancel={cancelConnect}
           />
         </div>
-      ) : (
-        <NotConnectedEmptyState
-          readOnly={readOnly}
-          isLaunching={isLaunching}
-          onConnect={handleConnect}
-        />
       )}
 
       {readOnly && (
@@ -613,10 +653,12 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
         </Alert>
       )}
       {message && (
-        <Alert>
-          <AlertDescription>{message}</AlertDescription>
-        </Alert>
+        <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+          <Check className="h-3 w-3" />
+          {message}
+        </p>
       )}
+      {!readOnly && <StaleAgentsNotice />}
       {error && (
         <Alert variant="destructive" className="py-2 text-xs">
           <AlertDescription className="text-xs">

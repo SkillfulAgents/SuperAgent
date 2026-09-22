@@ -1,21 +1,41 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+
+if (typeof localStorage === 'undefined' || !localStorage) {
+  const memory = new Map<string, string>()
+  const stub = {
+    getItem: (key: string) => memory.get(key) ?? null,
+    setItem: (key: string, value: string) => { memory.set(key, String(value)) },
+    removeItem: (key: string) => { memory.delete(key) },
+    clear: () => memory.clear(),
+  }
+  Object.defineProperty(globalThis, 'localStorage', { value: stub, configurable: true })
+}
 import { cloneElement, isValidElement, type ReactElement } from 'react'
-import { act, screen } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { pointerWithin } from '@dnd-kit/core'
 import { AppSidebar } from './app-sidebar'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
-
+import { APP_VERSION } from '@shared/lib/config/version'
+import { major, minor, patch } from 'semver'
 // AppLink (the sidebar item links) is stubbed globally in test/setup.ts — no
 // file-level mock needed. DialogContext is mocked below to control settings.
 
-vi.stubGlobal('__APP_VERSION__', '0.1.0-test')
 vi.stubGlobal('__RENDER_TRACKING__', false)
 
 const mockIsElectron = vi.hoisted(() => vi.fn(() => false))
 const mockGetPlatform = vi.hoisted(() => vi.fn(() => 'web'))
 const mockOpenDashboardExternal = vi.hoisted(() => vi.fn())
+const mockNavigate = vi.hoisted(() => vi.fn())
+const mockGetItemsFromDataTransfer = vi.hoisted(() => vi.fn())
+const mockToastError = vi.hoisted(() => vi.fn())
+
+vi.mock('sonner', async (importOriginal) => ({
+  ...await importOriginal<typeof import('sonner')>(),
+  toast: { error: mockToastError },
+}))
 
 vi.mock('@renderer/lib/env', () => ({
   isElectron: mockIsElectron,
@@ -26,6 +46,11 @@ vi.mock('@renderer/lib/env', () => ({
 
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve([]) })),
+}))
+
+vi.mock('@renderer/lib/file-utils', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@renderer/lib/file-utils')>(),
+  getItemsFromDataTransfer: mockGetItemsFromDataTransfer,
 }))
 
 const mockUseAgents = vi.fn()
@@ -50,6 +75,11 @@ vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
   }),
 }))
 
+const mockUseAgentMembers = vi.fn()
+vi.mock('@renderer/hooks/use-agent-members', () => ({
+  useAgentMembers: (...args: unknown[]) => mockUseAgentMembers(...args),
+}))
+
 const mockUseSessions = vi.fn()
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useSessions: (slug: string | null) => mockUseSessions(slug),
@@ -66,13 +96,23 @@ vi.mock('@renderer/hooks/use-settings', () => ({
   }),
 }))
 
+const { mockUserSettings, mockUpdateSettings, dndContextProps } = vi.hoisted(() => ({
+  mockUserSettings: vi.fn(),
+  mockUpdateSettings: vi.fn(),
+  // The latest props AppSidebar passed to the mocked DndContext, so tests can
+  // drive the drag orchestration (collision detection → move → end) directly.
+  dndContextProps: { current: null as any },
+}))
 vi.mock('@renderer/hooks/use-user-settings', () => ({
-  useUserSettings: () => ({ data: { setupCompleted: true, agentOrder: [] } }),
-  useUpdateUserSettings: () => ({ mutate: vi.fn() }),
+  useUserSettings: () => ({ data: mockUserSettings() }),
+  useUpdateUserSettings: () => ({ mutate: mockUpdateSettings }),
 }))
 
+const mockRuntimeStatus: { runtimeReadiness: { status: string }; appVersion?: string } = {
+  runtimeReadiness: { status: 'READY' },
+}
 vi.mock('@renderer/hooks/use-runtime-status', () => ({
-  useRuntimeStatus: () => ({ data: { runtimeReadiness: { status: 'READY' } } }),
+  useRuntimeStatus: () => ({ data: mockRuntimeStatus }),
 }))
 
 vi.mock('@renderer/hooks/use-artifacts', () => ({
@@ -117,7 +157,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   return {
     ...actual,
     useRouter: () => ({ history: mockHistory }),
-    useNavigate: () => () => {},
+    useNavigate: () => mockNavigate,
     useParams: () => mockRouteParams,
     useRouterState: (opts?: { select?: (s: { location: { pathname: string } }) => unknown }) =>
       opts?.select ? opts.select({ location: { pathname: mockRoutePathname } }) : undefined,
@@ -134,7 +174,7 @@ const mockUserContext = {
   isAdmin: true,
   user: null,
   signOut: vi.fn(),
-  agentMemberCount: () => 1,
+  agentMemberCount: vi.fn((_slug: string) => 1),
 }
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => mockUserContext,
@@ -144,6 +184,21 @@ vi.mock('@renderer/context/user-context', () => ({
 vi.mock('@renderer/context/connectivity-context', () => ({
   useIsOnline: () => true,
   ConnectivityProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
+const mockUpdateStatus: { state: string; version?: string } = { state: 'idle' }
+vi.mock('@renderer/context/update-status-context', () => ({
+  useUpdateStatus: () => mockUpdateStatus,
+}))
+
+const mockPlatformAuth: { platformBaseUrl?: string; orgId?: string } = {}
+vi.mock('@renderer/hooks/use-platform-auth', () => ({
+  usePlatformAuthStatus: () => ({ data: mockPlatformAuth }),
+}))
+
+const mockOpenExternalUrl = vi.fn()
+vi.mock('@renderer/lib/open-external', () => ({
+  openExternalUrl: (...args: unknown[]) => mockOpenExternalUrl(...args),
 }))
 
 const mockDialogContext = {
@@ -183,7 +238,17 @@ vi.mock('@renderer/components/agents/agent-context-menu', () => ({
 }))
 
 vi.mock('@renderer/components/sessions/session-context-menu', () => ({
-  SessionContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SessionContextMenu: ({
+    children,
+    activity,
+  }: {
+    children: React.ReactNode
+    activity: { isActive: boolean; isAwaitingInput: boolean; isStreaming: boolean }
+  }) => (
+    isValidElement(children)
+      ? cloneElement(children as ReactElement, { 'data-is-active': String(activity.isActive || activity.isStreaming) } as any)
+      : <>{children}</>
+  ),
 }))
 
 vi.mock('@renderer/components/dashboards/dashboard-context-menu', () => ({
@@ -228,14 +293,14 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
     asChild && isValidElement(children)
       ? cloneElement(children as ReactElement, { 'data-active': isActive ? 'true' : 'false', ...props })
       : <button onClick={onClick} data-active={isActive ? 'true' : 'false'} {...props}>{children}</button>,
-  SidebarMenuItem: ({ children, onMouseEnter }: any) => <li onMouseEnter={onMouseEnter}>{children}</li>,
+  SidebarMenuItem: ({ children, ...props }: any) => <li {...props}>{children}</li>,
   SidebarMenuSkeleton: () => <div data-testid="skeleton" />,
   SidebarMenuSub: ({ children }: any) => <ul>{children}</ul>,
   SidebarMenuSubButton: ({ children, isActive, asChild, ...props }: any) =>
     asChild && isValidElement(children)
       ? cloneElement(children as ReactElement, { 'data-active': isActive ? 'true' : 'false', ...props })
       : <div data-active={isActive ? 'true' : 'false'} {...props}>{children}</div>,
-  SidebarMenuSubItem: ({ children }: any) => <li>{children}</li>,
+  SidebarMenuSubItem: ({ children, ...props }: any) => <li {...props}>{children}</li>,
   SidebarRail: () => null,
   useSidebar: () => ({ setOpenMobile: vi.fn() }),
 }))
@@ -254,12 +319,25 @@ vi.mock('@renderer/components/ui/alert', () => ({
 // Stub out @dnd-kit so SortableAgentMenuItem renders the real AgentMenuItem
 // directly — drag-and-drop is out of scope for these tests.
 vi.mock('@dnd-kit/core', () => ({
-  DndContext: ({ children }: any) => <>{children}</>,
-  closestCenter: vi.fn(),
+  DndContext: (props: any) => {
+    dndContextProps.current = props
+    return <>{props.children}</>
+  },
+  DragOverlay: ({ children }: any) => <>{children}</>,
+  MeasuringStrategy: { Always: 'always' },
+  // Faithful enough for the sticky-snap tests: returns whatever candidates it
+  // was given, nearest-first ordering not modeled (callers take [0]).
+  closestCenter: vi.fn(({ droppableContainers }: any) =>
+    (droppableContainers ?? []).map((d: any) => ({ id: d.id }))
+  ),
+  pointerWithin: vi.fn(() => []),
+  rectIntersection: vi.fn(() => []),
   PointerSensor: vi.fn(),
   KeyboardSensor: vi.fn(),
   useSensor: vi.fn(),
   useSensors: vi.fn(() => []),
+  useDroppable: () => ({ setNodeRef: vi.fn(), isOver: false }),
+  defaultDropAnimation: { duration: 250, easing: 'ease', keyframes: vi.fn(() => []) },
 }))
 vi.mock('@dnd-kit/sortable', () => ({
   SortableContext: ({ children }: any) => <>{children}</>,
@@ -270,9 +348,11 @@ vi.mock('@dnd-kit/sortable', () => ({
     attributes: {},
     listeners: {},
     setNodeRef: vi.fn(),
+    setActivatorNodeRef: vi.fn(),
     transform: null,
     transition: null,
     isDragging: false,
+    isOver: false,
   }),
 }))
 vi.mock('@dnd-kit/utilities', () => ({
@@ -323,8 +403,22 @@ function notifyHistory(actionType: string) {
   mockHistorySubscribers.forEach((subscriber) => subscriber({ action: { type: actionType } }))
 }
 
+const localStorageStore = new Map<string, string>()
+const localStorageStub = {
+  getItem: (key: string) => localStorageStore.get(key) ?? null,
+  setItem: (key: string, value: string) => {
+    localStorageStore.set(key, String(value))
+  },
+  removeItem: (key: string) => {
+    localStorageStore.delete(key)
+  },
+  clear: () => localStorageStore.clear(),
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  localStorageStore.clear()
+  vi.stubGlobal('localStorage', localStorageStub)
   vi.stubGlobal('__WEB__', true)
   mockIsElectron.mockReturnValue(false)
   mockGetPlatform.mockReturnValue('web')
@@ -332,6 +426,8 @@ beforeEach(() => {
   mockRoutePathname = '/'
   mockHistorySubscribers = []
   setMockHistoryIndex(0)
+  _resetApiTargetForTest()
+  setActiveTarget('local', null)
   mockUseAgents.mockReturnValue({
     data: [makeAgent(), makeAgent({ slug: 'other-agent', name: 'Other Agent', status: 'stopped', sessionCount: 0 })],
     isLoading: false,
@@ -341,7 +437,23 @@ beforeEach(() => {
     data: slug === 'test-agent' ? [makeSession()] : [],
     isLoading: false,
   }))
+  mockUserContext.isAuthMode = false
+  mockUserContext.user = null
+  mockUserContext.agentMemberCount.mockReturnValue(1)
+  mockUseAgentMembers.mockReturnValue({ data: [], isLoading: false, isError: false })
   mockUnreadCount.mockReturnValue({ data: { count: 0 } })
+  mockUserSettings.mockReturnValue({ setupCompleted: true, agentOrder: [] })
+  delete mockRuntimeStatus.appVersion
+  mockRuntimeStatus.runtimeReadiness = { status: 'READY' }
+  mockUpdateStatus.state = 'idle'
+  delete mockUpdateStatus.version
+  delete mockPlatformAuth.platformBaseUrl
+  delete mockPlatformAuth.orgId
+  mockOpenExternalUrl.mockReset()
+  mockNavigate.mockReset()
+  mockGetItemsFromDataTransfer.mockReset()
+  mockGetItemsFromDataTransfer.mockResolvedValue({ files: [], folders: [] })
+  mockToastError.mockReset()
 })
 
 describe('AppSidebar — layout & top nav', () => {
@@ -388,15 +500,27 @@ describe('AppSidebar — layout & top nav', () => {
     expect(screen.getByTestId('notifications-button')).toHaveAttribute('data-active', 'true')
   })
 
-  it('renders the "Your Agents" group label', () => {
+  it('renders "Your Agents" as the default folder header', () => {
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByText('Your Agents')).toBeInTheDocument()
+    expect(screen.getByTestId('agent-folder-root')).toHaveTextContent('Your Agents')
   })
 
   it('renders Settings + version in the footer', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByTestId('settings-button')).toBeInTheDocument()
-    expect(screen.getByText('v0.1.0-test')).toBeInTheDocument()
+    expect(screen.getByText(`${APP_VERSION}`)).toBeInTheDocument()
+  })
+
+  it('keeps the local update tooltip and aria-label', () => {
+    mockUpdateStatus.state = 'available'
+    mockUpdateStatus.version = '1.2.3'
+
+    renderWithProviders(<AppSidebar />)
+
+    const label = screen.getByTestId('sidebar-version')
+    expect(label).toHaveTextContent(`${APP_VERSION}`)
+    expect(label.getAttribute('title')).toBe('Update available: v1.2.3')
+    expect(screen.getByLabelText('Update available')).toBeInTheDocument()
   })
 
   it('Home links to the global home route', () => {
@@ -458,6 +582,37 @@ describe('AppSidebar — layout & top nav', () => {
 })
 
 describe('AppSidebar — agent rows', () => {
+  it('keeps the member roster control beside the agent navigation link', () => {
+    mockUserContext.isAuthMode = true
+    mockUserContext.agentMemberCount.mockImplementation(slug => slug === 'test-agent' ? 4 : 1)
+    mockUseAgentMembers.mockReturnValue({
+      data: Array.from({ length: 4 }, (_, index) => ({ id: `member-${index}`, name: `Person ${index}`, email: `person-${index}@example.test`, image: null, role: 'viewer' })),
+      isLoading: false,
+      isError: false,
+    })
+    renderWithProviders(<AppSidebar />)
+    const link = screen.getByTestId('agent-item-test-agent')
+    const members = screen.getByRole('button', { name: '4 members of Test Agent' })
+    expect(link).not.toContainElement(members)
+    expect(link.parentElement).toContainElement(members)
+    expect(within(members).getAllByRole('img', { hidden: true })).toHaveLength(4)
+    expect(members).not.toHaveTextContent('+')
+    expect(screen.queryByTestId('sidebar-members-other-agent')).toBeNull()
+    expect(mockUseAgentMembers).toHaveBeenCalledWith('test-agent', true)
+    expect(mockUseAgentMembers).not.toHaveBeenCalledWith('other-agent', expect.anything())
+  })
+
+  it.each([
+    { auth: true, count: 1 },
+    { auth: false, count: 4 },
+  ])('does not fetch sidebar rosters for auth=$auth and member count=$count', ({ auth, count }) => {
+    mockUserContext.isAuthMode = auth
+    mockUserContext.agentMemberCount.mockReturnValue(count)
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByTestId('sidebar-members-test-agent')).toBeNull()
+    expect(mockUseAgentMembers).not.toHaveBeenCalled()
+  })
+
   it('renders agent rows', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
@@ -508,6 +663,7 @@ describe('AppSidebar — agent rows', () => {
     mockRouteParams = { slug: 'test-agent' }
     renderWithProviders(<AppSidebar />)
     expect(screen.getByText('Session 1')).toBeInTheDocument()
+    expect(screen.getByTestId('session-item-session-1')).toHaveAttribute('data-is-active', 'false')
   })
 
   it('session sub-item links to the session route', () => {
@@ -540,6 +696,104 @@ describe('AppSidebar — agent rows', () => {
     renderWithProviders(<AppSidebar />)
     const agentRow = screen.getByTestId('agent-item-test-agent').closest('li')!
     expect(agentRow.querySelector('[aria-label="Expand"]')).toBeNull()
+  })
+
+  it('accepts file drops on an agent row and navigates to its home composer', async () => {
+    const file = new File(['agent'], 'agent.txt', { type: 'text/plain' })
+    mockGetItemsFromDataTransfer.mockResolvedValue({ files: [{ file }], folders: [] })
+    renderWithProviders(<AppSidebar />)
+
+    const row = screen.getByTestId('agent-item-test-agent')
+    const target = row.parentElement!
+    const dataTransfer = { types: ['Files'], items: [{ kind: 'file' }] } as unknown as DataTransfer
+
+    fireEvent.dragEnter(target, { dataTransfer })
+    expect(target).toHaveAttribute('data-file-drop-active', '')
+
+    fireEvent.drop(target, { dataTransfer })
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: '/agents/$slug',
+        params: { slug: 'test-agent' },
+      })
+    })
+    expect(target).not.toHaveAttribute('data-file-drop-active')
+  })
+
+  it('accepts file drops on a session row and navigates to its composer', async () => {
+    const file = new File(['session'], 'session.txt', { type: 'text/plain' })
+    mockGetItemsFromDataTransfer.mockResolvedValue({ files: [{ file }], folders: [] })
+    mockRouteParams = { slug: 'test-agent' }
+    renderWithProviders(<AppSidebar />)
+
+    const row = screen.getByTestId('session-item-session-1')
+    const dataTransfer = { types: ['Files'], items: [{ kind: 'file' }] } as unknown as DataTransfer
+
+    const target = row.closest('li')!
+    fireEvent.dragEnter(target, { dataTransfer })
+    expect(target).toHaveAttribute('data-file-drop-active', '')
+
+    fireEvent.drop(target, { dataTransfer })
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: '/agents/$slug/sessions/$sessionId',
+        params: { slug: 'test-agent', sessionId: 'session-1' },
+      })
+    })
+  })
+
+  it('refuses file drops on a session awaiting input, which has no composer mounted', async () => {
+    const file = new File(['session'], 'session.txt', { type: 'text/plain' })
+    mockGetItemsFromDataTransfer.mockResolvedValue({ files: [{ file }], folders: [] })
+    mockUseSessions.mockImplementation((slug: string | null) => ({
+      data: slug === 'test-agent' ? [makeSession({ isAwaitingInput: true })] : [],
+      isLoading: false,
+    }))
+    mockRouteParams = { slug: 'test-agent' }
+    renderWithProviders(<AppSidebar />)
+
+    const target = screen.getByTestId('session-item-session-1').closest('li')!
+    const dataTransfer = { types: ['Files'], items: [{ kind: 'file' }] } as unknown as DataTransfer
+
+    fireEvent.dragEnter(target, { dataTransfer })
+    expect(target).not.toHaveAttribute('data-file-drop-active')
+
+    fireEvent.drop(target, { dataTransfer })
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalled())
+    expect(mockGetItemsFromDataTransfer).not.toHaveBeenCalled()
+    expect(mockNavigate).not.toHaveBeenCalled()
+  })
+
+  it('reports a failure to read the dropped files instead of failing silently', async () => {
+    mockGetItemsFromDataTransfer.mockRejectedValue(new Error('unreadable directory'))
+    renderWithProviders(<AppSidebar />)
+
+    const target = screen.getByTestId('agent-item-test-agent').parentElement!
+    const dataTransfer = { types: ['Files'], items: [{ kind: 'file' }] } as unknown as DataTransfer
+
+    fireEvent.drop(target, { dataTransfer })
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith("Couldn't read the dropped files")
+    })
+    expect(mockNavigate).not.toHaveBeenCalled()
+  })
+
+  it('ignores non-file drags used by ordinary links and sidebar sorting', () => {
+    renderWithProviders(<AppSidebar />)
+    const row = screen.getByTestId('agent-item-test-agent')
+    const target = row.parentElement!
+    const preventDefault = vi.fn()
+    const dataTransfer = { types: ['text/plain'], items: [] } as unknown as DataTransfer
+
+    fireEvent.dragOver(target, { dataTransfer, preventDefault })
+
+    expect(target).not.toHaveAttribute('data-file-drop-active')
+    expect(mockGetItemsFromDataTransfer).not.toHaveBeenCalled()
+    expect(mockNavigate).not.toHaveBeenCalled()
   })
 })
 
@@ -624,6 +878,7 @@ describe('AppSidebar — agent row indicator', () => {
     renderWithProviders(<AppSidebar />)
     // The agent is expanded — its session sub-row is visible and working…
     expect(screen.getByTestId('session-item-session-1')).toBeInTheDocument()
+    expect(screen.getByTestId('session-item-session-1')).toHaveAttribute('data-is-active', 'true')
     // …and the agent row itself still reports working, like the top nav.
     const status = screen.getByTestId('agent-status-running')
     expect(status).toHaveAttribute('data-active', 'true')
@@ -670,7 +925,7 @@ describe('UserMenu action for the current target', () => {
   // platform connection and would mint another.
   beforeEach(() => {
     mockUserContext.isAuthMode = true
-    mockUserContext.user = { name: 'Ada' } as never
+    mockUserContext.user = { id: 'ada-user', name: 'Ada', email: 'ada@example.test' } as never
     _resetApiTargetForTest()
   })
 
@@ -717,6 +972,157 @@ describe('UserMenu action for the current target', () => {
   })
 })
 
+// The footer compares the deployment against `__APP_VERSION__`, which vitest
+// defines as the real package version. Fixtures are therefore derived from it
+// rather than written as literals: a hardcoded `0.5.13` reads as one patch
+// behind today and a whole minor behind once the app ships 0.6.0, silently
+// flipping the dot these tests assert on from blue to orange.
+const MAJOR = major(APP_VERSION)
+const MINOR = minor(APP_VERSION)
+const PATCH = patch(APP_VERSION)
+
+/** One patch ahead: differs from the desktop build, never behind it. */
+const PATCH_AHEAD = `${MAJOR}.${MINOR}.${PATCH + 1}`
+/** One patch behind — a prerelease of x.y.0 when there is no lower patch. */
+const PATCH_BEHIND = PATCH > 0 ? `${MAJOR}.${MINOR}.${PATCH - 1}` : `${MAJOR}.${MINOR}.0-0`
+/** A whole minor behind (a whole major, on an x.0.z build). */
+const MINOR_BEHIND = MINOR > 0 ? `${MAJOR}.${MINOR - 1}.0` : `${MAJOR - 1}.0.0`
+/** A whole minor ahead, and a whole major ahead. */
+const MINOR_AHEAD = `${MAJOR}.${MINOR + 1}.0`
+const MAJOR_AHEAD = `${MAJOR + 1}.0.0`
+
+describe('footer version in cloud mode', () => {
+  const desktopVersion = APP_VERSION
+
+  beforeEach(() => {
+    _resetApiTargetForTest()
+    setActiveTarget('cloud', null)
+  })
+
+  afterEach(() => {
+    delete mockRuntimeStatus.appVersion
+    mockUpdateStatus.state = 'idle'
+    delete mockUpdateStatus.version
+  })
+
+  it('shows one number when desktop and cloud match and no update is waiting', async () => {
+    mockRuntimeStatus.appVersion = desktopVersion
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-desktop')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Update available')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByTestId('sidebar-version'))
+    expect(mockDialogContext.openSettings).toHaveBeenCalledWith('general')
+  })
+
+  it('shows a quiet pair when they differ and nobody is behind', async () => {
+    mockRuntimeStatus.appVersion = PATCH_AHEAD
+    mockPlatformAuth.platformBaseUrl = 'https://platform.example'
+    mockPlatformAuth.orgId = 'org_1'
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version-desktop')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version-cloud')).toHaveTextContent(PATCH_AHEAD)
+    expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Cloud update available')).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByTestId('sidebar-version-desktop'))
+    expect(mockDialogContext.openSettings).toHaveBeenCalledWith('general')
+
+    await userEvent.click(screen.getByTestId('sidebar-version-cloud'))
+    expect(mockOpenExternalUrl).toHaveBeenCalledWith(
+      'https://platform.example/dashboard/organizations/org_1?tab=cloud',
+    )
+  })
+
+  it('puts a blue dot on cloud when it is a patch behind', () => {
+    mockRuntimeStatus.appVersion = PATCH_BEHIND
+
+    renderWithProviders(<AppSidebar />)
+
+    const cloudDot = screen.getByLabelText('Cloud update available')
+    expect(cloudDot).toHaveClass('bg-blue-500')
+    expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
+  })
+
+  it('puts an orange dot on cloud when it is a major or minor behind', () => {
+    mockRuntimeStatus.appVersion = MINOR_BEHIND
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByLabelText('Cloud update available')).toHaveClass('bg-orange-500')
+    expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
+  })
+
+  it('puts an orange dot on desktop when the feed matches a newer cloud', () => {
+    mockRuntimeStatus.appVersion = MINOR_AHEAD
+    mockUpdateStatus.state = 'available'
+    mockUpdateStatus.version = MINOR_AHEAD
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByLabelText('Desktop update available')).toHaveClass('bg-orange-500')
+    expect(screen.queryByLabelText('Cloud update available')).not.toBeInTheDocument()
+  })
+
+  it('puts orange dots on both when they match and the feed is a major ahead', () => {
+    mockRuntimeStatus.appVersion = desktopVersion
+    mockUpdateStatus.state = 'available'
+    mockUpdateStatus.version = MAJOR_AHEAD
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version-desktop')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version-cloud')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.getByLabelText('Desktop update available')).toHaveClass('bg-orange-500')
+    expect(screen.getByLabelText('Cloud update available')).toHaveClass('bg-orange-500')
+  })
+
+  it('keeps one number and a desktop update dot when they match the feed', () => {
+    mockRuntimeStatus.appVersion = desktopVersion
+    mockUpdateStatus.state = 'available'
+    mockUpdateStatus.version = desktopVersion
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Desktop update available')).toHaveClass('bg-blue-500')
+  })
+
+  it('falls back to the desktop number when the deployment omits appVersion', () => {
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
+  })
+
+  it('falls back to the desktop number when appVersion is not a version', () => {
+    mockRuntimeStatus.appVersion = 'not-a-version'
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
+  })
+
+  it('does not open the cloud tab when org is missing', async () => {
+    mockRuntimeStatus.appVersion = PATCH_AHEAD
+    mockPlatformAuth.platformBaseUrl = 'https://platform.example'
+
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('sidebar-version-cloud'))
+    expect(mockOpenExternalUrl).not.toHaveBeenCalled()
+  })
+})
+
 describe('TargetSwitcher placement', () => {
   // It scopes everything below it, so it belongs at the head of the sidebar's
   // title bar row — not in the footer among the per-window actions.
@@ -740,4 +1146,618 @@ describe('TargetSwitcher placement', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.queryByTestId('target-switcher')).not.toBeInTheDocument()
   })
+})
+
+describe('AppSidebar — agent folders', () => {
+  const FOLDERS = [
+    { id: 'f1', name: 'Work' },
+    { id: 'f2', name: 'Personal' },
+  ]
+  const FOLDER_1 = 'agent-folder::f1'
+  const FOLDER_2 = 'agent-folder::f2'
+  const ROOT = 'agent-folder::root'
+
+  function withThreeAgents() {
+    mockUseAgents.mockReturnValue({
+      data: [
+        makeAgent(),
+        makeAgent({ slug: 'other-agent', name: 'Other Agent' }),
+        makeAgent({ slug: 'third-agent', name: 'Third Agent' }),
+      ],
+      isLoading: false,
+      error: null,
+    })
+  }
+
+  /**
+   * The left nav top to bottom: agent slugs and `folder:<id>` in DOM order,
+   * which is the order the user reads them in.
+   */
+  function listOrder(): string[] {
+    return Array.from(
+      document.querySelectorAll('[data-testid^="agent-item-"], [data-testid^="agent-folder-"]')
+    )
+      .map((el) => el.getAttribute('data-testid')!)
+      .filter(
+        (id) =>
+          !id.startsWith('agent-folder-empty-') &&
+          !id.startsWith('agent-folder-count-') &&
+          !id.startsWith('agent-folder-chevron-')
+      )
+      .map((id) =>
+        id.startsWith('agent-item-')
+          ? id.replace('agent-item-', '')
+          : id.replace('agent-folder-', 'folder:')
+      )
+  }
+
+  it('renders every agent under the always-present default folder', () => {
+    renderWithProviders(<AppSidebar />)
+    expect(listOrder()).toEqual(['folder:root', 'test-agent', 'other-agent'])
+    expect(screen.getByTestId('agent-folder-root')).toHaveTextContent('Your Agents')
+  })
+
+  it('renders a folder with its name, and how many agents are in it only while collapsed', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1', 'other-agent': 'f1' },
+    })
+    const { unmount } = renderWithProviders(<AppSidebar />)
+
+    // Expanded: the rows underneath say how many there are, so no count.
+    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
+    expect(screen.queryByTestId('agent-folder-count-f1')).not.toBeInTheDocument()
+    unmount()
+
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1', 'other-agent': 'f1' },
+      collapsedAgentFolders: ['f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
+    expect(screen.getByTestId('agent-folder-count-f1')).toHaveTextContent('2')
+  })
+
+  it('defaults the default folder first before anything is arranged', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(listOrder()).toEqual(['folder:root', 'other-agent', 'folder:f1', 'test-agent'])
+  })
+
+  it('lets the default folder be placed among the others', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'other-agent': 'f1' },
+      agentListOrder: [FOLDER_1, ROOT],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(listOrder()).toEqual(['folder:f1', 'other-agent', 'folder:root', 'test-agent'])
+  })
+
+  it('orders several folders by the stored order', () => {
+    withThreeAgents()
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent', 'third-agent'],
+      agentFolders: FOLDERS,
+      agentFolderAssignments: { 'other-agent': 'f1' },
+      agentListOrder: [FOLDER_2, ROOT, FOLDER_1],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(listOrder()).toEqual([
+      'folder:f2', 'folder:root', 'test-agent', 'third-agent', 'folder:f1', 'other-agent',
+    ])
+  })
+
+  it('ignores stored order entries in the old interleaved format', () => {
+    // The top level used to store agent slugs between folder markers; those
+    // blobs must render under the new model with folders keeping their order.
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentListOrder: ['test-agent', FOLDER_1, 'other-agent'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    // The slug entries are ignored; the unmarked default folder ranks first.
+    expect(listOrder()).toEqual(['folder:root', 'test-agent', 'other-agent', 'folder:f1'])
+  })
+
+  it('hides a collapsed folder’s agents but keeps its header', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+      collapsedAgentFolders: ['f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('agent-folder-f1')).toBeInTheDocument()
+    // Hidden, not unmounted — expanding a big folder must not mount every row.
+    expect(screen.getByTestId('agent-item-test-agent')).not.toBeVisible()
+    expect(screen.getByTestId('agent-item-other-agent')).toBeVisible()
+  })
+
+  it('collapses the default folder too, and records it in settings', async () => {
+    mockUserSettings.mockReturnValue({ agentOrder: ['test-agent', 'other-agent'] })
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('agent-folder-root'))
+
+    expect(mockUpdateSettings).toHaveBeenCalledWith(
+      { collapsedAgentFolders: ['root'] },
+      expect.anything()
+    )
+    // Painted locally rather than waiting on the write, so it feels instant
+    // even against a cloud workspace.
+    expect(screen.getByTestId('agent-item-test-agent')).not.toBeVisible()
+  })
+
+  it('shows an agent whose folder was deleted under the default folder', () => {
+    // Deleting a folder leaves dangling assignments on purpose — this is the
+    // behaviour that lets folder and agent deletion skip a cascade.
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [],
+      agentFolderAssignments: { 'test-agent': 'deleted-folder' },
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(listOrder()).toEqual(['folder:root', 'test-agent', 'other-agent'])
+  })
+
+  // Folder create/rename use the updater form — a function of the latest
+  // cached settings, resolved when the serialized mutation runs — so tests
+  // resolve the captured payload against explicit "current" settings.
+  const patchWith = (settings: Record<string, unknown>, call = 0) => {
+    const arg = mockUpdateSettings.mock.calls[call][0]
+    return typeof arg === 'function' ? arg(settings) : arg
+  }
+
+  it('adds a uniquely-named folder from the default folder’s header', async () => {
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-folder-button'))
+
+    expect(mockUpdateSettings).toHaveBeenCalledTimes(1)
+    const patch = patchWith({ agentFolders: [] })
+    expect(patch.agentFolders).toHaveLength(1)
+    expect(patch.agentFolders[0].name).toBe('New Folder')
+    expect(patch.agentFolders[0].id).toBeTruthy()
+  })
+
+  it('does not reuse an existing folder name when adding another', async () => {
+    const settings = {
+      agentOrder: [],
+      agentFolders: [{ id: 'f1', name: 'New Folder' }],
+    }
+    mockUserSettings.mockReturnValue(settings)
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-folder-button'))
+
+    const patch = patchWith(settings)
+    expect(patch.agentFolders[1].name).toBe('New Folder 2')
+  })
+
+  it('names a created folder against the folder list at mutation run time', async () => {
+    // A create queued behind an in-flight write resolves after it settles: if
+    // that write added "New Folder", this one must come out "New Folder 2" —
+    // and must carry the other write's folder rather than reverting it.
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-folder-button'))
+
+    const patch = patchWith({ agentFolders: [{ id: 'f9', name: 'New Folder' }] })
+    expect(patch.agentFolders).toHaveLength(2)
+    expect(patch.agentFolders[0]).toEqual({ id: 'f9', name: 'New Folder' })
+    expect(patch.agentFolders[1].name).toBe('New Folder 2')
+  })
+
+  it('renders a folder with no recorded place at the end of the list', () => {
+    // The read-side fallback doubles as the upgrade path for folders stored
+    // before places existed; creation itself now records a place up front.
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentListOrder: [ROOT],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(listOrder()).toEqual(['folder:root', 'test-agent', 'other-agent', 'folder:f1'])
+  })
+
+  it('places a created folder directly above the default folder', async () => {
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-folder-button'))
+
+    // Untouched install: no stored places yet, so root's marker is written
+    // too — without one it would default ahead of the new folder (place -1).
+    const fresh = patchWith({ agentFolders: [] })
+    expect(fresh.agentListOrder).toEqual([
+      `agent-folder::${fresh.agentFolders[0].id}`,
+      ROOT,
+    ])
+
+    // A root the user moved off the top stays put; the new folder splices in
+    // just above it and other folders keep their places.
+    const arranged = patchWith({
+      agentFolders: [FOLDERS[0]],
+      agentListOrder: ['agent-folder::f1', ROOT],
+    })
+    expect(arranged.agentListOrder).toEqual([
+      'agent-folder::f1',
+      `agent-folder::${arranged.agentFolders[1].id}`,
+      ROOT,
+    ])
+  })
+
+  it('still renders folders when the user has no agents at all', () => {
+    // The "No agents yet" empty state must not swallow the folder the user
+    // just created on an empty install.
+    mockUseAgents.mockReturnValue({ data: [], isLoading: false, error: null })
+    mockUserSettings.mockReturnValue({ agentOrder: [], agentFolders: [FOLDERS[0]] })
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('agent-folder-f1')).toBeInTheDocument()
+    expect(screen.queryByText('No agents yet. Create one to get started.')).not.toBeInTheDocument()
+  })
+
+  it('keeps the empty state when there are neither agents nor folders', () => {
+    mockUseAgents.mockReturnValue({ data: [], isLoading: false, error: null })
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByText('No agents yet. Create one to get started.')).toBeInTheDocument()
+  })
+
+  it('invites a drop into an empty folder', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: {},
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByText('Drag agents here')).toBeInTheDocument()
+  })
+})
+
+
+describe('AppSidebar — drag orchestration', () => {
+  // These drive the real handlers through the props AppSidebar hands the
+  // (mocked) DndContext: collision detection computes the folder drop cue,
+  // onDragMove commits it for the insert line, onDragEnd resolves the drop.
+  const dnd = () => dndContextProps.current
+
+  const folderBlock = (folderId: string, top: number, height = 40) => ({
+    id: `agent-folder::${folderId}`,
+    data: { current: { type: 'folder' } },
+    rect: { current: { top, bottom: top + height, height, left: 0, right: 200, width: 200 } },
+  })
+
+  const folderActive = (folderId: string) => ({
+    id: `agent-folder::${folderId}`,
+    data: { current: { type: 'folder', folderId } },
+  })
+
+  const agentActive = (slug: string) => ({
+    id: slug,
+    data: { current: { type: 'agent' } },
+  })
+
+  const patchWith = (settings: Record<string, unknown>, call = 0) => {
+    const arg = mockUpdateSettings.mock.calls[call][0]
+    return typeof arg === 'function' ? arg(settings) : arg
+  }
+
+  const THREE_FOLDERS = [
+    { id: 'f1', name: 'A' },
+    { id: 'f2', name: 'B' },
+    { id: 'f3', name: 'C' },
+  ]
+  const THREE_FOLDER_ORDER = [
+    'agent-folder::root',
+    'agent-folder::f1',
+    'agent-folder::f2',
+    'agent-folder::f3',
+  ]
+  const THREE_FOLDER_BLOCKS = [
+    folderBlock('root', 0),
+    folderBlock('f1', 40),
+    folderBlock('f2', 80),
+    folderBlock('f3', 120),
+  ]
+
+  function renderThreeFolders() {
+    const settings = {
+      setupCompleted: true,
+      agentOrder: [],
+      agentFolders: THREE_FOLDERS,
+      agentListOrder: THREE_FOLDER_ORDER,
+    }
+    mockUserSettings.mockReturnValue(settings)
+    renderWithProviders(<AppSidebar />)
+    return settings
+  }
+
+  /** Run one collision pass with the pointer over `folderId` at height `y`. */
+  function hoverFolder(active: any, folderId: string, y: number) {
+    vi.mocked(pointerWithin).mockReturnValueOnce([{ id: `agent-folder::${folderId}` }])
+    dnd().collisionDetection({
+      active,
+      droppableContainers: THREE_FOLDER_BLOCKS,
+      pointerCoordinates: { x: 10, y },
+    })
+  }
+
+  it('lands a folder dragged DOWN on the upper half where the line showed, before the target', () => {
+    // The two quadrants the E2E does not walk (down+above, up+below) are
+    // exactly where cue semantics and "take the target's slot" disagree — a
+    // drop handler that loses the cue still passes the other two by luck.
+    const settings = renderThreeFolders()
+    const active = folderActive('f1')
+
+    act(() => dnd().onDragStart({ active }))
+    hoverFolder(active, 'f3', 125) // upper half of f3 (120..160)
+    act(() => dnd().onDragMove({}))
+    const line = screen.getByTestId('folder-insert-indicator-f3')
+    expect(line).toHaveAttribute('data-edge', 'above')
+    act(() => dnd().onDragEnd({ active, over: { id: 'agent-folder::f3' } }))
+
+    expect(patchWith(settings).agentListOrder).toEqual([
+      'agent-folder::root',
+      'agent-folder::f2',
+      'agent-folder::f1',
+      'agent-folder::f3',
+    ])
+  })
+
+  it('lands a folder dragged UP on the lower half where the line showed, after the target', () => {
+    const settings = renderThreeFolders()
+    const active = folderActive('f3')
+
+    act(() => dnd().onDragStart({ active }))
+    hoverFolder(active, 'f1', 75) // lower half of f1 (40..80)
+    act(() => dnd().onDragMove({}))
+    expect(screen.getByTestId('folder-insert-indicator-f1')).toHaveAttribute('data-edge', 'below')
+    act(() => dnd().onDragEnd({ active, over: { id: 'agent-folder::f1' } }))
+
+    expect(patchWith(settings).agentListOrder).toEqual([
+      'agent-folder::root',
+      'agent-folder::f1',
+      'agent-folder::f3',
+      'agent-folder::f2',
+    ])
+  })
+
+  it('falls back to slot semantics without a pointer cue, as keyboard drags have none', () => {
+    const settings = renderThreeFolders()
+    const active = folderActive('f3')
+
+    act(() => dnd().onDragStart({ active }))
+    act(() => dnd().onDragEnd({ active, over: { id: 'agent-folder::f1' } }))
+
+    expect(patchWith(settings).agentListOrder).toEqual([
+      'agent-folder::root',
+      'agent-folder::f3',
+      'agent-folder::f1',
+      'agent-folder::f2',
+    ])
+  })
+
+  it('keeps a collapsed folder header as the drop target instead of its hidden rows', () => {
+    // Hidden member rows measure 0×0 — inert for containment/overlap
+    // detectors but perfectly valid for the DISTANCE snap. Unfiltered, the
+    // snap steals `over` from the header one tick after the live re-parent,
+    // killing the drop highlight and landing the agent at the hidden row's
+    // index instead of appending.
+    mockUserSettings.mockReturnValue({
+      setupCompleted: true,
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [{ id: 'f1', name: 'Work' }],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+      agentListOrder: ['agent-folder::root', 'agent-folder::f1'],
+      collapsedAgentFolders: ['f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    const active = agentActive('test-agent')
+    const collapsedBlock = folderBlock('f1', 40)
+    const hiddenRow = {
+      id: 'test-agent',
+      data: { current: { type: 'agent' } },
+      rect: { current: { top: 0, bottom: 0, height: 0, left: 0, right: 0, width: 0 } },
+    }
+    act(() => dnd().onDragStart({ active }))
+    vi.mocked(pointerWithin).mockReturnValueOnce([{ id: 'agent-folder::f1' }])
+    const result = dnd().collisionDetection({
+      active,
+      droppableContainers: [folderBlock('root', 0), collapsedBlock, hiddenRow],
+      pointerCoordinates: { x: 10, y: 60 },
+    })
+
+    expect(result.map((c: any) => c.id)).toEqual(['agent-folder::f1'])
+  })
+
+  it("a drop's write keeps a folder created while the drop was in flight", () => {
+    // The drop below was aimed while settings held [root,f1,f2,f3]; by the
+    // time its (scope-serialized) write runs, a concurrent create added f9.
+    // Writing the drop's snapshot back would erase f9 — the write must
+    // re-apply the drop to the settings it actually lands on.
+    renderThreeFolders()
+    const active = folderActive('f1')
+
+    act(() => dnd().onDragStart({ active }))
+    hoverFolder(active, 'f3', 125)
+    act(() => dnd().onDragEnd({ active, over: { id: 'agent-folder::f3' } }))
+
+    const patch = patchWith({
+      agentOrder: [],
+      agentFolders: [...THREE_FOLDERS, { id: 'f9', name: 'Fresh' }],
+      agentListOrder: [...THREE_FOLDER_ORDER, 'agent-folder::f9'],
+    })
+    expect(patch.agentFolders.map((f: { id: string }) => f.id)).toContain('f9')
+    expect(patch.agentListOrder).toEqual([
+      'agent-folder::root',
+      'agent-folder::f2',
+      'agent-folder::f1',
+      'agent-folder::f3',
+      'agent-folder::f9',
+    ])
+  })
+
+  it("a drop's write keeps a filing made while the drop was in flight", () => {
+    // While the drop's write was queued, a context-menu filing moved
+    // test-agent into f1. The drop recorded other-agent's FINAL place (top of
+    // "Your Agents" — the place the user saw it land), so the write puts it
+    // there and carries the concurrent filing. The pre-fix snapshot write
+    // carried the pre-drag assignment map instead, silently un-filing
+    // test-agent.
+    mockUserSettings.mockReturnValue({
+      setupCompleted: true,
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [{ id: 'f1', name: 'Work' }],
+      agentListOrder: ['agent-folder::root', 'agent-folder::f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    const active = agentActive('other-agent')
+    act(() => dnd().onDragStart({ active }))
+    act(() => dnd().onDragEnd({ active, over: { id: 'test-agent' } }))
+
+    const patch = patchWith({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [{ id: 'f1', name: 'Work' }],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+      agentListOrder: ['agent-folder::root', 'agent-folder::f1'],
+    })
+    expect(patch.agentFolderAssignments).toEqual({ 'test-agent': 'f1' })
+    expect(patch.agentOrder[0]).toBe('other-agent')
+  })
+
+  it('puts a live cross-folder re-parent back where it was when the drag cancels', () => {
+    mockUserSettings.mockReturnValue({
+      setupCompleted: true,
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [{ id: 'f1', name: 'Work' }],
+      agentListOrder: ['agent-folder::root', 'agent-folder::f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+    const active = agentActive('test-agent')
+
+    act(() => dnd().onDragStart({ active }))
+    act(() => dnd().onDragOver({ active, over: { id: 'agent-section::f1' } }))
+    expect(listOrderOf()).toEqual(['folder:root', 'other-agent', 'folder:f1', 'test-agent'])
+
+    act(() => dnd().onDragCancel())
+    expect(listOrderOf()).toEqual(['folder:root', 'test-agent', 'other-agent', 'folder:f1'])
+    expect(mockUpdateSettings).not.toHaveBeenCalled()
+  })
+
+  it("an older drop settling does not clear a newer drop's optimistic tree", () => {
+    mockUseAgents.mockReturnValue({
+      data: [
+        makeAgent(),
+        makeAgent({ slug: 'other-agent', name: 'Other Agent' }),
+        makeAgent({ slug: 'third-agent', name: 'Third Agent' }),
+      ],
+      isLoading: false,
+      error: null,
+    })
+    mockUserSettings.mockReturnValue({
+      setupCompleted: true,
+      agentOrder: ['test-agent', 'other-agent', 'third-agent'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    const first = agentActive('third-agent')
+    act(() => dnd().onDragStart({ active: first }))
+    act(() => dnd().onDragEnd({ active: first, over: { id: 'test-agent' } }))
+    const second = agentActive('other-agent')
+    act(() => dnd().onDragStart({ active: second }))
+    act(() => dnd().onDragEnd({ active: second, over: { id: 'third-agent' } }))
+    expect(listOrderOf()).toEqual(['folder:root', 'other-agent', 'third-agent', 'test-agent'])
+
+    // The FIRST drop's write settles now, after the second was issued. Its
+    // stale token must not tear down the second drop's optimistic view.
+    act(() => mockUpdateSettings.mock.calls[0][1].onSettled())
+    expect(listOrderOf()).toEqual(['folder:root', 'other-agent', 'third-agent', 'test-agent'])
+  })
+
+  it("a drop settling mid-drag does not clear the active drag's re-parent", () => {
+    mockUserSettings.mockReturnValue({
+      setupCompleted: true,
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [{ id: 'f1', name: 'Work' }],
+      agentListOrder: ['agent-folder::root', 'agent-folder::f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    const first = agentActive('other-agent')
+    act(() => dnd().onDragStart({ active: first }))
+    act(() => dnd().onDragEnd({ active: first, over: { id: 'test-agent' } }))
+    expect(listOrderOf()).toEqual(['folder:root', 'other-agent', 'test-agent', 'folder:f1'])
+
+    // A second drag is live and has re-parented a row when the drop's write
+    // settles. Over-change events only fire when `over` CHANGES, so a
+    // mid-drag snap-back would stick for the rest of the drag.
+    const second = agentActive('test-agent')
+    act(() => dnd().onDragStart({ active: second }))
+    act(() => dnd().onDragOver({ active: second, over: { id: 'agent-section::f1' } }))
+    act(() => mockUpdateSettings.mock.calls[0][1].onSettled())
+    expect(listOrderOf()).toEqual(['folder:root', 'other-agent', 'folder:f1', 'test-agent'])
+  })
+
+  it('an earlier collapse settling does not reopen a folder collapsed after it', async () => {
+    mockUserSettings.mockReturnValue({
+      setupCompleted: true,
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [
+        { id: 'f1', name: 'Work' },
+        { id: 'f2', name: 'Personal' },
+      ],
+      agentFolderAssignments: { 'test-agent': 'f1', 'other-agent': 'f2' },
+    })
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('agent-folder-f1'))
+    await userEvent.click(screen.getByTestId('agent-folder-f2'))
+    expect(screen.getByTestId('agent-item-other-agent')).not.toBeVisible()
+
+    // The first toggle's write settles after the second was issued; its stale
+    // token must not drop the fold back to the cached (all-open) state.
+    act(() => mockUpdateSettings.mock.calls[0][1].onSettled())
+    expect(screen.getByTestId('agent-item-other-agent')).not.toBeVisible()
+  })
+
+  /** Same reading as the folders describe's listOrder, local to this one. */
+  function listOrderOf(): string[] {
+    return Array.from(
+      document.querySelectorAll('[data-testid^="agent-item-"], [data-testid^="agent-folder-"]')
+    )
+      .map((el) => el.getAttribute('data-testid')!)
+      .filter(
+        (id) =>
+          !id.startsWith('agent-folder-empty-') &&
+          !id.startsWith('agent-folder-count-') &&
+          !id.startsWith('agent-folder-chevron-') &&
+          !id.startsWith('agent-folder-insert-indicator-')
+      )
+      .map((id) =>
+        id.startsWith('agent-item-')
+          ? id.replace('agent-item-', '')
+          : id.replace('agent-folder-', 'folder:')
+      )
+  }
 })

@@ -9,6 +9,7 @@
  * Bearer <token>. The route resolves the caller's agent slug from that token and
  * applies xAgentPolicies + ACLs accordingly.
  */
+import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -17,6 +18,7 @@ import { randomUUID } from 'crypto'
 import { and, desc, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
+import { insertMessageAuthorBestEffort } from './message-author'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -24,22 +26,12 @@ import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import {
   createAgent,
   listAgents,
-  getAgent,
+  getAgentRecord,
 } from '@shared/lib/services/agent-service'
-import { resolveAgentId, displaySlug } from '@shared/lib/utils/file-storage'
-import {
-  listSessions,
-  getSessionMessagesWithCompact,
-  findLastSessionEntry,
-  getSessionMetadata,
-  registerSession,
-  reserveSessionOwnership,
-  updateSessionMetadata,
-  sessionIsKnown,
-} from '@shared/lib/services/session-service'
-import { containerManager } from '@shared/lib/container/container-manager'
+import { displaySlug } from '@shared/lib/utils/file-storage'
+import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
+import type { FileOps } from '@shared/lib/agent-actor/types'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { reviewManager } from '@shared/lib/proxy/review-manager'
 import {
   evaluate as evaluatePolicy,
   type XAgentOperation,
@@ -50,8 +42,28 @@ import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { captureException } from '@shared/lib/error-reporting'
 import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
+import {
+  removeTransferredAttachments,
+  transferXAgentAttachments,
+  normalizeXAgentAttachmentPaths,
+  openXAgentFile,
+  transferError,
+  XAgentAttachmentError,
+} from '@shared/lib/services/x-agent-attachment-service'
+import {
+  xAgentAttachmentsSchema,
+  xAgentDownloadFileBodySchema,
+} from '@shared/lib/services/x-agent-attachment-schema'
+import {
+  collectDeliveredFiles,
+  compactMessage,
+  findDeliveredFile,
+  pageTranscript,
+} from './x-agent-transcript-view'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
+const invokingSessions = new Set<string>()
 
 // Typed context variables for the x-agent router. Using Hono's generic instead
 // of `as never` casts gives us type safety on c.get/c.set.
@@ -128,28 +140,6 @@ async function getLatestMessageAuthorUserId(
   }
 }
 
-async function insertMessageAuthorBestEffort(params: {
-  id: string
-  sessionId: string
-  agentSlug: string
-  userId: string
-}): Promise<boolean> {
-  try {
-    await db.insert(messageAuthor).values(params)
-    return true
-  } catch (error) {
-    // Includes stale createdByUserId values whose user row has been deleted.
-    // The invocation remains usable; only the optional sender badge is lost.
-    console.warn('[x-agent] failed to record invoked message author; continuing unattributed', {
-      agentSlug: params.agentSlug,
-      sessionId: params.sessionId,
-      userId: params.userId,
-      error: error instanceof Error ? error.message : String(error),
-    })
-    return false
-  }
-}
-
 async function deleteMessageAuthorBestEffort(messageUuid: string): Promise<void> {
   try {
     await db.delete(messageAuthor).where(eq(messageAuthor.id, messageUuid))
@@ -163,8 +153,8 @@ async function deleteMessageAuthorBestEffort(messageUuid: string): Promise<void>
 
 async function getAgentDisplayNameBestEffort(agentSlug: string): Promise<string> {
   try {
-    const agent = await getAgent(agentSlug)
-    return agent?.frontmatter.name || agentSlug
+    const agent = await getAgentRecord(agentSlug)
+    return agent?.name || agentSlug
   } catch (error) {
     // Human-readable naming is cosmetic and must not gate agent invocation.
     console.warn('[x-agent] failed to resolve caller display name; using slug', {
@@ -238,21 +228,22 @@ async function checkAgentPolicy(
   targetSlug: string | null,
   targetName: string,
   preview?: string,
+  fileTransfer?: XAgentFileTransfer,
 ): Promise<{ allowed: boolean; reason?: string }> {
   if (operation !== 'create') {
-    const decision = evaluatePolicy(callerSlug, operation, targetSlug)
-    if (decision === 'allow') return { allowed: true }
+    const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
+    if (decision === 'allow' && !requiresOneTimeXAgentReview({ operation, fileTransfer })) return { allowed: true }
     if (decision === 'block') return { allowed: false, reason: 'Blocked by policy' }
     // 'review' → fall through to interactive prompt
   }
 
   try {
-    const userDecision = await reviewManager.requestXAgentReview(
-      callerSlug,
+    const userDecision = await agentRegistry.get(callerSlug).inputs.reviews.requestXAgent(
       targetSlug ?? '',
       targetName,
       operation,
       preview,
+      fileTransfer,
     )
     if (userDecision === 'deny') {
       return { allowed: false, reason: 'Denied by user' }
@@ -283,11 +274,11 @@ xAgent.post('/list', async (c) => {
     .filter((a) => a.slug !== callerSlug)
     .filter((a) => (visible ? visible.has(a.slug) : true))
     .map((a) => ({
-      // Project the decorative display slug for the model; resolveAgentId tolerates
+      // Project the decorative display slug for the model; the catalog tolerates
       // it (and the bare id / legacy form) on the way back in via invoke/get-*.
-      slug: displaySlug(a.frontmatter.name, a.slug),
-      name: a.frontmatter.name,
-      description: a.frontmatter.description,
+      slug: displaySlug(a.name, a.slug),
+      name: a.name,
+      description: a.description,
     }))
   return c.json({ agents: filtered })
 })
@@ -355,22 +346,23 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
 
   // Resolve the model-supplied display slug to the canonical id and rebind, so
   // every downstream ACL / policy / fs use below keys on the id, not the prefix.
-  const targetSlug = await resolveAgentId(rawTargetSlug)
+  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
   if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
-  const target = await getAgent(targetSlug)
+  const target = await getAgentRecord(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
 
   if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
     return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
   }
 
-  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.frontmatter.name)
+  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.name)
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
-  const allSessions = await listSessions(targetSlug)
+  const actor = agentRegistry.get(targetSlug)
+  const allSessions = await actor.sessions.list()
   const page = allSessions.slice(offset, offset + limit)
   return c.json({
     sessions: page.map((s) => ({
@@ -379,7 +371,7 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
       createdAt: s.createdAt,
       lastActivityAt: s.lastActivityAt,
       messageCount: s.messageCount,
-      isRunning: messagePersister.isSessionActive(s.id),
+      isRunning: actor.sessions.isActive(s.id),
     })),
     total: allSessions.length,
     offset,
@@ -395,68 +387,11 @@ const getTranscriptBodySchema = z.object({
   slug: z.string(),
   sessionId: z.string(),
   sync: z.boolean().optional(),
+  // Most recent N view-rows. Omitted = the whole view.
+  limit: z.number().int().min(1).max(500).optional(),
+  // Default quiet: spoken turns, internals collapsed. true = today's compact view.
+  fullTranscript: z.boolean().optional(),
 })
-
-/**
- * Convert a JSONL message entry into a compact { role, content, toolName? } shape.
- * Strips internal SDK fields, keeps text and tool name only.
- */
-function compactMessage(entry: JsonlMessageEntry | JsonlSystemEntry): {
-  role: string
-  content: string
-  toolName?: string
-} | null {
-  if (entry.type === 'system') {
-    if (entry.subtype === 'compact_boundary') {
-      return { role: 'system', content: '[context compacted]' }
-    }
-    // Surface unknown system subtypes rather than silently dropping them — keeps
-    // future SDK additions visible to invoking agents (and to debugging).
-    return { role: 'system', content: `[system: ${entry.subtype ?? 'unknown'}]` }
-  }
-  const msg = entry.message
-  if (typeof msg.content === 'string') {
-    return { role: entry.type, content: msg.content }
-  }
-  // Array of content blocks: collapse text + summarize tool calls.
-  // Thinking blocks are stripped (internal), but we track whether the turn
-  // *only* had thinking so we can surface a placeholder rather than returning
-  // empty content (which would otherwise look like "the agent didn't respond").
-  const parts: string[] = []
-  let firstToolName: string | undefined
-  let hadThinking = false
-  for (const block of msg.content) {
-    if (block.type === 'text') {
-      parts.push(block.text)
-    } else if (block.type === 'tool_use') {
-      firstToolName = firstToolName ?? block.name
-      parts.push(`[tool_use: ${block.name}]`)
-    } else if (block.type === 'tool_result') {
-      const text = Array.isArray(block.content)
-        ? block.content
-            .filter((p) => p && typeof p === 'object' && 'text' in p)
-            .map((p) => (p as { text: string }).text)
-            .join('\n')
-        : typeof block.content === 'string'
-          ? block.content
-          : ''
-      parts.push(text ? `[tool_result] ${text}` : '[tool_result]')
-    } else if (block.type === 'thinking') {
-      hadThinking = true
-    }
-  }
-  let content = parts.join('\n').trim()
-  if (!content) {
-    // Distinguish thinking-only turns from genuinely-empty turns so callers
-    // (especially sync invoke's lastMessage) don't silently look "blank".
-    content = hadThinking ? '[thinking only — no text response]' : '[no text response]'
-  }
-  return {
-    role: entry.type,
-    content,
-    ...(firstToolName ? { toolName: firstToolName } : {}),
-  }
-}
 
 /**
  * After a sync invoke, the SDK may emit 'result' (which clears isActive) before
@@ -579,6 +514,7 @@ function isWaitForIdleTimeout(error: unknown): boolean {
  * finished — resolving immediately is correct, not a startup race.
  */
 async function waitForTurnWithinBudget(
+  targetSlug: string,
   sessionId: string,
   deadline: number,
 ): Promise<'completed' | 'timeout'> {
@@ -587,10 +523,10 @@ async function waitForTurnWithinBudget(
     // Pre-wait work can eat the whole budget; if the turn already finished
     // during it, that's a completion — reporting 'timeout' here would label a
     // finished turn 'running' and make the caller poll for a result it has.
-    return messagePersister.isSessionActive(sessionId) ? 'timeout' : 'completed'
+    return agentRegistry.get(targetSlug).sessions.isActive(sessionId) ? 'timeout' : 'completed'
   }
   try {
-    await messagePersister.waitForIdle(sessionId, {
+    await agentRegistry.get(targetSlug).sessions.waitForIdle(sessionId, {
       timeoutMs: remainingMs,
       requireActiveFirst: false,
     })
@@ -625,15 +561,22 @@ async function readLastAssistantMessage(
   sessionId: string,
   boundaryUuid?: string,
 ): Promise<{ role: string; content: string; toolName?: string } | null> {
+  const actor = agentRegistry.get(targetSlug)
   for (let i = 0; i < READ_RETRY_ATTEMPTS; i++) {
     // Only the most recent assistant entry matters, so read the transcript
     // from the tail instead of full-parsing it (transcripts reach 100MB+, and
     // this runs up to READ_RETRY_ATTEMPTS times per invoke).
-    const entry = await findLastSessionEntry(targetSlug, sessionId, isReturnableAssistantEntry)
+    const entry = await actor.messages.findLastEntry(sessionId, isReturnableAssistantEntry)
     const isStaleBoundary = boundaryUuid !== undefined && entry?.uuid === boundaryUuid
     if (entry && !isStaleBoundary) {
       const compact = compactMessage(entry)
-      if (compact) return compact
+      if (compact) {
+        return {
+          role: compact.role,
+          content: compact.content,
+          ...(compact.toolName ? { toolName: compact.toolName } : {}),
+        }
+      }
     }
     if (i < READ_RETRY_ATTEMPTS - 1) {
       await new Promise((r) => setTimeout(r, READ_RETRY_INTERVAL_MS))
@@ -647,42 +590,44 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
   // a human decision) so the total response time stays under the transport cap.
   const syncDeadline = Date.now() + SYNC_WAIT_TIMEOUT_MS
   const callerSlug = getCallerSlug(c)
-  const { slug: rawTargetSlug, sessionId, sync } = c.req.valid('json')
+  const { slug: rawTargetSlug, sessionId, sync, limit, fullTranscript } = c.req.valid('json')
 
   // Resolve the model-supplied display slug to the canonical id and rebind.
-  const targetSlug = await resolveAgentId(rawTargetSlug)
+  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
   if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
-  const target = await getAgent(targetSlug)
+  const target = await getAgentRecord(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
 
   if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
     return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
   }
 
-  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.frontmatter.name)
+  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.name)
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
+  const actor = agentRegistry.get(targetSlug)
+
   // Status and wait state live in the process-global persister. Validate the
   // target/session pair before consulting it, not only before reading the
   // target-scoped transcript below.
-  if (!(await sessionIsKnown(targetSlug, sessionId))) {
+  if (!(await actor.sessions.isKnown(sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  if (sync && messagePersister.isSessionActive(sessionId)) {
+  if (sync && actor.sessions.isActive(sessionId)) {
     // Last reply flushed before we started waiting — used below to detect that
     // the turn we waited out has actually reached the transcript file.
-    const boundaryEntry = await findLastSessionEntry(targetSlug, sessionId, isReturnableAssistantEntry)
+    const boundaryEntry = await actor.messages.findLastEntry(sessionId, isReturnableAssistantEntry)
     try {
       // 'timeout' falls through: return the transcript so far with status
       // 'running'. Sync get-transcript is a bounded long-poll the caller can
       // repeat, not an unbounded wait — an unbounded wait would outlive the
       // container's 300s fetch header timeout and surface as a retry-inducing
       // network error. Other failures stay hard errors.
-      const outcome = await waitForTurnWithinBudget(sessionId, syncDeadline)
+      const outcome = await waitForTurnWithinBudget(targetSlug, sessionId, syncDeadline)
       // The turn's 'result' event clears isActive before its final assistant
       // entry hits the JSONL file. When the turn we observed running has ended
       // — the wait said so, or it timed out and the turn ended in the gap
@@ -696,7 +641,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
       // poll budget on sessions that are simply idle. A session that went idle
       // just before the isSessionActive check above keeps plain read-what's-
       // flushed semantics.
-      if (outcome === 'completed' || !messagePersister.isSessionActive(sessionId)) {
+      if (outcome === 'completed' || !actor.sessions.isActive(sessionId)) {
         await readLastAssistantMessage(targetSlug, sessionId, boundaryEntry?.uuid)
       }
     } catch (error) {
@@ -706,20 +651,88 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     }
   }
 
-  const isAwaiting = messagePersister.isSessionAwaitingInput(sessionId)
-  const isActive = messagePersister.isSessionActive(sessionId)
+  const isAwaiting = actor.sessions.isAwaitingInput(sessionId)
+  const isActive = actor.sessions.isActive(sessionId)
   const status: 'running' | 'idle' | 'awaiting_input' = isAwaiting
     ? 'awaiting_input'
     : isActive
       ? 'running'
       : 'idle'
 
-  const entries = await getSessionMessagesWithCompact(targetSlug, sessionId)
-  const messages = entries
-    .map(compactMessage)
-    .filter((m): m is NonNullable<ReturnType<typeof compactMessage>> => m !== null)
+  const entries = await actor.messages.withCompact(sessionId)
+  const { messages, total } = pageTranscript(entries, { fullTranscript, limit })
+  const deliveredFiles = collectDeliveredFiles(entries)
 
-  return c.json({ status, messages })
+  return c.json({ status, messages, total, deliveredFiles })
+})
+
+// ----------------------------------------------------------------------------
+// POST /api/x-agent/download-file - stream a successful deliver_file output
+// ----------------------------------------------------------------------------
+
+function attachmentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_')
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+}
+
+xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), async (c) => {
+  const callerSlug = getCallerSlug(c)
+  const { slug: rawTargetSlug, sessionId, deliveryId } = c.req.valid('json')
+  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
+  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
+
+  const target = await getAgentRecord(targetSlug)
+  if (!target) return c.json({ error: 'Target agent not found' }, 404)
+  if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
+    return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
+  }
+  const actor = agentRegistry.get(targetSlug)
+  if (!(await actor.sessions.isKnown(sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
+  const entries = await actor.messages.withCompact(sessionId)
+  const delivery = findDeliveredFile(entries, deliveryId)
+  if (!delivery) return c.json({ error: 'Delivered file not found' }, 404)
+  const policy = await checkAgentPolicy(
+    callerSlug,
+    'read',
+    targetSlug,
+    target.name,
+    undefined,
+    { kind: 'download', filename: delivery.filename },
+  )
+  if (!policy.allowed) return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
+
+  let sourcePath: string
+  try {
+    [sourcePath] = normalizeXAgentAttachmentPaths([delivery.filePath])
+  } catch {
+    return c.json({ error: 'Delivered file path is invalid' }, 400)
+  }
+  try {
+    const upstream = await openXAgentFile(actor.files, sourcePath)
+    const currentSize = upstream.sizeBytes
+    if (currentSize !== delivery.sizeBytes) {
+      await upstream.body.cancel().catch(() => {})
+      return c.json({ error: 'Delivered file changed after it was published' }, 409)
+    }
+    return new Response(upstream.body, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(currentSize),
+        'Content-Disposition': attachmentDisposition(delivery.filename),
+        'Cache-Control': 'private, no-store, max-age=0',
+      },
+    })
+  } catch (caught) {
+    const error = transferError(caught)
+    if (error instanceof XAgentAttachmentError) {
+      return c.json({ error: error.status === 404 ? 'Delivered file is no longer available' : error.message }, error.status)
+    }
+    return c.json({ error: 'Failed to read delivered file' }, 502)
+  }
 })
 
 // ----------------------------------------------------------------------------
@@ -731,6 +744,7 @@ const invokeBodySchema = z.object({
   prompt: z.string().min(1),
   sessionId: z.string().optional(),
   sync: z.boolean().optional(),
+  attachments: xAgentAttachmentsSchema.optional(),
   // Cycle protection: container sends the calling Claude session ID so the host
   // can reject calls from sessions that were themselves invoked by another agent
   // (one-hop rule — also blocks A→B→A and any deeper chain transitively).
@@ -746,10 +760,17 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   const syncDeadline = Date.now() + SYNC_WAIT_TIMEOUT_MS
   const deliveryCutoff = Date.now() + DELIVERY_CUTOFF_MS
   const callerSlug = getCallerSlug(c)
-  const { slug: rawTargetSlug, prompt, sessionId: existingSessionId, sync, _callerSessionId } = c.req.valid('json')
+  const {
+    slug: rawTargetSlug,
+    prompt,
+    sessionId: existingSessionId,
+    sync,
+    attachments = [],
+    _callerSessionId,
+  } = c.req.valid('json')
 
   // Resolve display slug → canonical id so ACL / policy / runtime all use ids.
-  const targetSlug = await resolveAgentId(rawTargetSlug)
+  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
   if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
   if (targetSlug === callerSlug) {
@@ -758,7 +779,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
 
   // One-hop rule: sessions started by another agent cannot invoke further.
   const callerMeta = _callerSessionId
-    ? await getSessionMetadata(callerSlug, _callerSessionId)
+    ? await agentRegistry.get(callerSlug).sessions.metadata(_callerSessionId)
     : null
   if (callerMeta?.invokedByAgentSlug) {
     return c.json(
@@ -779,7 +800,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     ? await getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
     : undefined
 
-  const target = await getAgent(targetSlug)
+  const target = await getAgentRecord(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
 
   if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'user'))) {
@@ -790,8 +811,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     callerSlug,
     'invoke',
     targetSlug,
-    target.frontmatter.name,
+    target.name,
     prompt.slice(0, 200),
+    attachments.length ? { kind: 'send', paths: attachments } : undefined,
   )
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
@@ -815,30 +837,52 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   return runWithOptionalUser(attributedUserId, async () => {
     // Stages for runtime 500s: ensure_running → create_session / send_message.
     let stage = 'ensure_running'
+    let stagedTargetDirectory: string | undefined
+    let stagedTargetFiles: FileOps | undefined
+    let promptDeliveryStarted = false
+    let invokingSessionKey: string | undefined
     try {
+      const targetActor = agentRegistry.get(targetSlug)
       if (existingSessionId) {
         // Invoke rights on the target say nothing about the session id sent
         // with them. The persister is keyed by session id alone, so a third
         // agent's id would get re-pointed at the target's container here — and
         // the target's transcript written under it.
-        if (!(await sessionIsKnown(targetSlug, existingSessionId))) {
+        if (!(await targetActor.sessions.isKnown(existingSessionId))) {
           return c.json({ error: 'Session not found' }, 404)
         }
-        if (messagePersister.isSessionActive(existingSessionId)) {
+        const candidateKey = `${targetSlug}\0${existingSessionId}`
+        if (targetActor.sessions.isActive(existingSessionId) || invokingSessions.has(candidateKey)) {
           return c.json({ error: 'Target session is currently running' }, 409)
         }
+        invokingSessions.add(candidateKey)
+        invokingSessionKey = candidateKey
         stage = 'ensure_running'
-        const client = await containerManager.ensureRunning(targetSlug)
+        await targetActor.container.start()
+        const files = targetActor.files
+        stagedTargetFiles = files
+        let deliveredPrompt = prompt
+        if (attachments.length > 0) {
+          stage = 'transfer_attachments'
+          const transferred = await transferXAgentAttachments({
+            sourceFiles: agentRegistry.get(callerSlug).files,
+            targetFiles: files,
+            sourcePaths: attachments,
+            signal: c.req.raw.signal,
+          })
+          stagedTargetDirectory = transferred.targetDirectory
+          deliveredPrompt = appendAttachedFiles(prompt, transferred.attachments.map((item) => item.targetPath))
+        }
         // Last reply flushed before THIS prompt goes out — used to make sure a
         // fast turn's answer isn't confused with the previous turn's while the
         // new entry is still being written to the JSONL file.
         const replyBoundary = sync
-          ? await findLastSessionEntry(targetSlug, existingSessionId, isReturnableAssistantEntry)
+          ? await targetActor.messages.findLastEntry(existingSessionId, isReturnableAssistantEntry)
           : null
         stage = 'subscribe'
-        if (!messagePersister.isSubscribed(existingSessionId)) {
+        if (!targetActor.sessions.isStreamSubscribed(existingSessionId)) {
           await subscribeWithTimeout(
-            messagePersister.subscribeToSession(existingSessionId, client, existingSessionId, targetSlug),
+            targetActor.sessions.subscribeStream(existingSessionId, existingSessionId),
           )
         }
         // Checked AFTER every unbounded pre-send await (container startup and
@@ -851,37 +895,60 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             targetSlug,
             sessionId: existingSessionId,
           })
+          if (stagedTargetDirectory) {
+            await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+          }
           return c.json({ error: deliveryCutoffError() }, 504)
         }
-        messagePersister.markSessionActive(existingSessionId, targetSlug)
         stage = 'send_message'
-        let messageUuid: string | undefined
-        if (isAuthMode() && attributedUserId) {
-          const candidateUuid = randomUUID()
-          const recorded = await insertMessageAuthorBestEffort({
-            id: candidateUuid,
-            sessionId: existingSessionId,
-            agentSlug: targetSlug,
-            userId: attributedUserId,
-          })
-          if (recorded) messageUuid = candidateUuid
-        }
-        try {
-          if (messageUuid) {
-            await client.sendMessage(existingSessionId, prompt, messageUuid)
-          } else {
-            await client.sendMessage(existingSessionId, prompt)
+        await targetActor.messages.withSend(existingSessionId, async () => {
+          let messageUuid: string | undefined
+          if (isAuthMode() && attributedUserId) {
+            const candidateUuid = randomUUID()
+            const recorded = await insertMessageAuthorBestEffort({
+              id: candidateUuid,
+              sessionId: existingSessionId,
+              agentSlug: targetSlug,
+              userId: attributedUserId,
+            })
+            if (recorded) messageUuid = candidateUuid
           }
-        } catch (sendError) {
-          if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
-          throw sendError
-        }
+          try {
+            // A failed send can be ambiguous: retain files once delivery starts so
+            // a message accepted just before a transport error never references deleted bytes.
+            promptDeliveryStarted = true
+            if (messageUuid) {
+              await targetActor.messages.send(existingSessionId, deliveredPrompt, messageUuid, { isAutomated: true })
+            } else {
+              await targetActor.messages.send(existingSessionId, deliveredPrompt, undefined, { isAutomated: true })
+            }
+          } catch (sendError) {
+            if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
+            try {
+              const current = await targetActor.sessions.getLive(existingSessionId)
+              if (current?.isRunning === false) {
+                targetActor.sessions.markIdle(existingSessionId)
+                promptDeliveryStarted = false
+                if (stagedTargetDirectory) {
+                  await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+                  stagedTargetDirectory = undefined
+                }
+              }
+            } catch {
+              // Transport failures are ambiguous: stream events reconcile a send
+              // that reached the container, so retain active state and files.
+            }
+            throw sendError
+          }
+        })
+        invokingSessions.delete(invokingSessionKey)
+        invokingSessionKey = undefined
 
         if (sync) {
           stage = 'wait_for_idle'
           let outcome: 'completed' | 'timeout'
           try {
-            outcome = await waitForTurnWithinBudget(existingSessionId, syncDeadline)
+            outcome = await waitForTurnWithinBudget(targetSlug, existingSessionId, syncDeadline)
           } catch (error) {
             return c.json({
               sessionId: existingSessionId,
@@ -915,7 +982,21 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       }
 
       stage = 'ensure_running'
-      const client = await containerManager.ensureRunning(targetSlug)
+      await targetActor.container.start()
+      const files = targetActor.files
+      stagedTargetFiles = files
+      let deliveredPrompt = prompt
+      if (attachments.length > 0) {
+        stage = 'transfer_attachments'
+        const transferred = await transferXAgentAttachments({
+          sourceFiles: agentRegistry.get(callerSlug).files,
+          targetFiles: files,
+          sourcePaths: attachments,
+          signal: c.req.raw.signal,
+        })
+        stagedTargetDirectory = transferred.targetDirectory
+        deliveredPrompt = appendAttachedFiles(prompt, transferred.attachments.map((item) => item.targetPath))
+      }
       const availableEnvVars = await getSecretEnvVars(targetSlug)
       const agentLimits = getEffectiveAgentLimits()
       const customEnvVars = getCustomEnvVars()
@@ -934,6 +1015,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           callerSlug,
           targetSlug,
         })
+        if (stagedTargetDirectory) {
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+        }
         return c.json({ error: deliveryCutoffError() }, 504)
       }
       stage = 'create_session'
@@ -942,9 +1026,10 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       // lands after the caller's fetch is already dead, revoke the session the
       // moment it materializes instead of leaving a ghost run for the caller's
       // retry to duplicate.
-      const createPromise = client.createSession({
+      promptDeliveryStarted = true
+      const createPromise = targetActor.sessions.create({
         availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-        initialMessage: prompt,
+        initialMessage: deliveredPrompt,
         ...(initialMessageUuid ? { initialMessageUuid } : {}),
         model: resolved.model,
         browserModel: models.browserModel,
@@ -957,30 +1042,46 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         maxBudgetUsd: agentLimits.maxBudgetUsd,
         customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
         maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+        metadata: { isAutomated: true },
       })
-      const created = await raceDeadline(createPromise, deliveryCutoff)
+      let created: Awaited<typeof createPromise> | typeof DEADLINE
+      try {
+        created = await raceDeadline(createPromise, deliveryCutoff)
+      } catch (error) {
+        if (stagedTargetDirectory) {
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+        }
+        throw error
+      }
       if (created === DEADLINE) {
         console.warn('[x-agent] delivery cutoff exceeded during create; late session will be revoked', {
           callerSlug,
           targetSlug,
         })
         void createPromise.then(
-          (lateSession) =>
-            client.deleteSession(lateSession.id).catch((cleanupErr) => {
+          async (lateSession) => {
+            await targetActor.sessions.deleteLive(lateSession.id).catch((cleanupErr) => {
               console.error('[x-agent] failed to revoke late-created session', {
                 sessionId: lateSession.id,
                 error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
               })
-            }),
-          () => {}, // create itself failed — nothing to revoke
+            })
+            if (stagedTargetDirectory) {
+              await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+            }
+          },
+          async () => {
+            if (stagedTargetDirectory) {
+              await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+            }
+          },
         )
         return c.json({ error: lateDeliveryRevokedError() }, 504)
       }
       const containerSession = created
       const newSessionId = containerSession.id
-      await reserveSessionOwnership(targetSlug, newSessionId)
       // Mark active before any await so waitForIdle sees state if result arrives early.
-      messagePersister.markSessionActive(newSessionId, targetSlug)
+      targetActor.sessions.markActive(newSessionId)
 
       const authorRecorded = initialMessageUuid && attributedUserId
         ? await insertMessageAuthorBestEffort({
@@ -993,7 +1094,19 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
 
       stage = 'register_session'
       try {
-        await registerSession(targetSlug, newSessionId, `Invoked by ${callerName}`)
+        await targetActor.sessions.register(newSessionId, `Invoked by ${callerName}`, {
+          invokedByAgentSlug: callerSlug,
+          ...(authorRecorded && attributedUserId ? { createdByUserId: attributedUserId } : {}),
+        })
+        // markSessionActive ran before registration so runtime waiters could
+        // not miss a fast result. Publish a metadata-aware update now that the
+        // x-agent provenance exists, allowing the target's trigger/history UI
+        // to appear immediately instead of waiting for its polling interval.
+        messagePersister.broadcastGlobal({
+          type: 'session_updated',
+          sessionId: newSessionId,
+          agentSlug: targetSlug,
+        })
       } catch (registerErr) {
         const message = registerErr instanceof Error ? registerErr.message : String(registerErr)
         console.error('[x-agent] invoke failed', {
@@ -1007,7 +1120,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           tags: { ...X_AGENT_SENTRY, stage },
           extra: { callerSlug, targetSlug, sessionId: newSessionId },
         })
-        await client.deleteSession(newSessionId).catch((cleanupErr) => {
+        await targetActor.sessions.deleteLive(newSessionId).catch((cleanupErr) => {
           console.error('[x-agent] failed to clean up orphaned container session', {
             sessionId: newSessionId,
             error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
@@ -1016,28 +1129,17 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         if (authorRecorded && initialMessageUuid) {
           await deleteMessageAuthorBestEffort(initialMessageUuid)
         }
-        messagePersister.unsubscribeFromSession(newSessionId)
+        targetActor.sessions.unsubscribeStream(newSessionId)
+        if (stagedTargetDirectory) {
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+        }
         return c.json({ error: `Failed to register invoked session: ${message}` }, 500)
-      }
-
-      try {
-        await updateSessionMetadata(targetSlug, newSessionId, {
-          invokedByAgentSlug: callerSlug,
-          ...(authorRecorded && attributedUserId ? { createdByUserId: attributedUserId } : {}),
-        })
-      } catch (metaErr) {
-        console.warn('[x-agent] updateSessionMetadata failed (session usable, provenance not recorded)', {
-          callerSlug,
-          targetSlug,
-          sessionId: newSessionId,
-          error: metaErr instanceof Error ? metaErr.message : String(metaErr),
-        })
       }
 
       stage = 'subscribe'
       try {
         await subscribeWithTimeout(
-          messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug),
+          targetActor.sessions.subscribeStream(newSessionId, newSessionId),
         )
       } catch (subscribeErr) {
         const message = subscribeErr instanceof Error ? subscribeErr.message : String(subscribeErr)
@@ -1055,7 +1157,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         // Without the stream attach nothing would persist this session's
         // transcript — it would run as an invisible ghost. Revoke it, same
         // remediation as a failed registration above.
-        await client.deleteSession(newSessionId).catch((cleanupErr) => {
+        await targetActor.sessions.deleteLive(newSessionId).catch((cleanupErr) => {
           console.error('[x-agent] failed to clean up orphaned container session', {
             sessionId: newSessionId,
             error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
@@ -1064,18 +1166,21 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         if (authorRecorded && initialMessageUuid) {
           await deleteMessageAuthorBestEffort(initialMessageUuid)
         }
-        messagePersister.unsubscribeFromSession(newSessionId)
+        targetActor.sessions.unsubscribeStream(newSessionId)
+        if (stagedTargetDirectory) {
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+        }
         return c.json({ error: `Failed to attach to invoked session: ${message}` }, 500)
       }
       if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
-        messagePersister.setSlashCommands(newSessionId, containerSession.slashCommands)
+        targetActor.sessions.setSlashCommands(newSessionId, containerSession.slashCommands)
       }
 
       if (sync) {
         stage = 'wait_for_idle'
         let outcome: 'completed' | 'timeout'
         try {
-          outcome = await waitForTurnWithinBudget(newSessionId, syncDeadline)
+          outcome = await waitForTurnWithinBudget(targetSlug, newSessionId, syncDeadline)
         } catch (error) {
           return c.json({
             sessionId: newSessionId,
@@ -1103,6 +1208,12 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       }
       return c.json({ sessionId: newSessionId, status: 'running' })
     } catch (err) {
+      if (!promptDeliveryStarted && stagedTargetFiles && stagedTargetDirectory) {
+        await removeTransferredAttachments(stagedTargetFiles, stagedTargetDirectory).catch(() => {})
+      }
+      if (err instanceof XAgentAttachmentError) {
+        return c.json({ error: err.message }, err.status)
+      }
       const message = err instanceof Error ? err.message : String(err)
       console.error('[x-agent] invoke failed', {
         callerSlug,
@@ -1116,6 +1227,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         extra: { callerSlug, targetSlug, existingSessionId: existingSessionId ?? null },
       })
       return c.json({ error: `Failed to invoke agent (${stage}): ${message}` }, 500)
+    } finally {
+      if (invokingSessionKey) invokingSessions.delete(invokingSessionKey)
     }
   })
 })

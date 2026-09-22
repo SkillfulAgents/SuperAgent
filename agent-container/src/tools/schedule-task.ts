@@ -195,7 +195,7 @@ export const listScheduledTasksTool = tool(
   'list_scheduled_tasks',
   `List the scheduled tasks for this agent that are still on the schedule (pending or paused).
 
-Returns each task's ID, name, schedule type ("at" for one-time, "cron" for recurring), schedule expression, next execution time, and prompt. Use the returned task ID with cancel_scheduled_task to remove a task.
+Returns each task's ID, name, schedule type ("at" for one-time, "cron" for recurring), schedule expression, next execution time, and prompt. Use the returned task ID with update_scheduled_task to edit timing or instructions without losing history, or cancel_scheduled_task to remove it.
 
 This only shows tasks that are still scheduled — it does not include tasks that have already executed, failed, or been cancelled.`,
   {},
@@ -227,6 +227,60 @@ This only shows tasks that are still scheduled — it does not include tasks tha
       }
     }
   }
+)
+
+export const updateScheduledTaskTool = tool(
+  'update_scheduled_task',
+  `Update an existing scheduled task in place, preserving its ID and execution history.
+
+Use list_scheduled_tasks first to find the task ID. Pass schedule_expression to change when it runs, prompt to change what it does, or both in one call. The schedule type cannot be changed: use an "at ..." expression for a one-time task and cron syntax for a recurring task. Pending and paused tasks are editable.`,
+  {
+    task_id: z.string().trim().min(1).describe('The scheduled task ID from list_scheduled_tasks'),
+    schedule_expression: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('New timing expression matching the task\'s existing type ("at ..." or cron)'),
+    prompt: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('New self-contained prompt to execute when the task runs'),
+  },
+  async (args) => {
+    if (args.schedule_expression === undefined && args.prompt === undefined) {
+      return {
+        content: [{ type: 'text' as const, text: 'Pass schedule_expression and/or prompt.' }],
+        isError: true,
+      }
+    }
+
+    console.log(`[update_scheduled_task] Updating task ${args.task_id}`)
+    const toolUseId = inputManager.consumeCurrentToolUseId()
+    if (!toolUseId) {
+      return {
+        content: [{ type: 'text' as const, text: 'Unable to process request — no tool use ID available.' }],
+        isError: true,
+      }
+    }
+
+    try {
+      const result = await inputManager.createPendingWithType<string>(
+        toolUseId,
+        'update_scheduled_task',
+        args,
+      )
+      return { content: [{ type: 'text' as const, text: result }] }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown error'
+      return {
+        content: [{ type: 'text' as const, text: `Failed to update scheduled task: ${msg}` }],
+        isError: true,
+      }
+    }
+  },
 )
 
 export const cancelScheduledTaskTool = tool(

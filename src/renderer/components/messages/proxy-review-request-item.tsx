@@ -11,8 +11,7 @@ import {
 import { cn } from '@shared/lib/utils/cn'
 import { getScopeLabel, type ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
-import ReactMarkdown from 'react-markdown'
-import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { Markdown } from '@renderer/components/ui/markdown'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 
@@ -263,8 +262,7 @@ export function ProxyReviewRequestItem({
                             </span>
                             {scopeDescriptions[scope] && (
                               <span className="block w-full truncate text-xs font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
-                                <ReactMarkdown
-                                  urlTransform={markdownUrlTransform}
+                                <Markdown
                                   components={{
                                     p: ({ children }) => <>{children}</>,
                                     a: ({ href, children }) => (
@@ -275,7 +273,7 @@ export function ProxyReviewRequestItem({
                                   }}
                                 >
                                   {scopeDescriptions[scope]}
-                                </ReactMarkdown>
+                                </Markdown>
                               </span>
                             )}
                           </span>
@@ -453,8 +451,7 @@ export function ProxyReviewRequestItem({
                               </span>
                               {scopeDescriptions[scope] && (
                                 <span className="block w-full truncate text-xs font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
-                                  <ReactMarkdown
-                                    urlTransform={markdownUrlTransform}
+                                  <Markdown
                                     components={{
                                       p: ({ children }) => <>{children}</>,
                                       a: ({ href, children }) => (
@@ -465,7 +462,7 @@ export function ProxyReviewRequestItem({
                                     }}
                                   >
                                     {scopeDescriptions[scope]}
-                                  </ReactMarkdown>
+                                  </Markdown>
                                 </span>
                               )}
                             </span>

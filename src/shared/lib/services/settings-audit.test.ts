@@ -30,6 +30,18 @@ describe('buildSettingsAuditDetails', () => {
     expect(details?.changes['container.containerRunner']).toEqual({ from: 'lima', to: 'docker' })
   })
 
+  it('records a global model price change under Model Provider', () => {
+    const before = baseSettings()
+    before.modelPricing = { 'gpt-5.5': { inputPerMtok: 5, outputPerMtok: 30 } }
+    const updated = baseSettings()
+    updated.modelPricing = { 'gpt-5.5': { inputPerMtok: 0.01, outputPerMtok: 30 } }
+
+    const details = buildSettingsAuditDetails(before, updated)
+
+    expect(details?.sections).toEqual(['Model Provider'])
+    expect(details?.changes['modelPricing.gpt-5.5.inputPerMtok']).toEqual({ from: 5, to: 0.01 })
+  })
+
   it('never logs API key values — only set/updated/removed', () => {
     const current = baseSettings()
     current.apiKeys = { anthropicApiKey: 'sk-ant-old-secret', openrouterApiKey: 'sk-or-secret' }

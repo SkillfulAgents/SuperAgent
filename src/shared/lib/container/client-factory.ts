@@ -1,7 +1,7 @@
 import type { ContainerClient, ContainerConfig, ContainerRunner, ImagePullProgress } from './types'
 export { CONTAINER_RUNNER_IDS } from './types'
 export type { ContainerRunner } from './types'
-import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { DockerContainerClient } from './docker-container-client'
 import { PodmanContainerClient } from './podman-container-client'
 import { AppleContainerClient, ensureAppleContainerReady, stopAppleContainerRuntime } from './apple-container-client'
@@ -473,9 +473,185 @@ export function pullImage(
     addErrorBreadcrumb({ category: 'container', message: 'Awaiting already in-flight pull of the same image', data: { image, runner } })
     return existing
   }
-  const pull = doPullImage(runner, image, onProgress).finally(() => inflightPulls.delete(key))
+  const pull = doPullImage(runner, image, onProgress)
+    .then(() => verifyPulledImage(runner, image, onProgress))
+    .finally(() => inflightPulls.delete(key))
   inflightPulls.set(key, pull)
   return pull
+}
+
+// ---------------------------------------------------------------------------
+// Post-pull integrity check
+//
+// A pull verifies every layer's digest as it downloads, but nothing verifies
+// the unpack. On a strained disk (Docker Desktop on Windows, the bundled Lima
+// VM) a file can land truncated or garbled, and the image then fails every
+// start with "Invalid package config /app/node_modules/<pkg>/package.json"
+// until someone deletes it by hand. Two seconds in a throwaway container
+// right after the pull catches that at the moment it happens, while the
+// remedy (delete, pull again) is still cheap and automatic.
+// ---------------------------------------------------------------------------
+
+/** Summary line the in-container check prints; the host reads it back. */
+export const IMAGE_CHECK_MARKER = 'image-check:'
+
+/** Wall-clock cap for the check container; past it the check is inconclusive. */
+export const IMAGE_CHECK_TIMEOUT_MS = 2 * 60 * 1000
+
+/**
+ * Runs inside the image under `node -e`: parses every package.json under
+ * /app/node_modules and loads the modules the agent server needs at boot —
+ * the same reads that crashed the server in the field. It travels to the
+ * container base64-encoded in an env var so no shell on any platform ever
+ * parses it. Exit code 1 means damage was found.
+ */
+const IMAGE_CHECK_SCRIPT = `
+var fs = require('fs'), path = require('path');
+var checked = 0, bad = 0;
+function walk(dir) {
+  var entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i], full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walk(full);
+    else if (entry.name === 'package.json') {
+      checked++;
+      try { JSON.parse(fs.readFileSync(full, 'utf8')); } catch (e) { bad++; console.log('damaged ' + full); }
+    }
+  }
+}
+walk('/app/node_modules');
+try { require('hono'); require('@hono/node-server'); } catch (e) { bad++; console.log('damaged require: ' + e.message); }
+try { require.resolve('@anthropic-ai/claude-agent-sdk'); require.resolve('/app/dist/server.js'); } catch (e) { bad++; console.log('damaged resolve: ' + e.message); }
+console.log('${IMAGE_CHECK_MARKER} ' + checked + ' package.json files checked, ' + bad + ' damaged');
+process.exit(bad ? 1 : 0);
+`
+
+export type ImageCheckVerdict = 'ok' | 'damaged' | 'inconclusive'
+
+/**
+ * Read the check container's output. The summary line is authoritative; if
+ * Node died before printing it, the same crash signatures the agent server
+ * produces on a damaged image still count. Anything else — the runtime
+ * refusing to run a container, a CLI that lacks --entrypoint, a timeout — is
+ * inconclusive: the check must never block a start it cannot judge.
+ */
+export function classifyImageCheckOutput(output: string): ImageCheckVerdict {
+  const summary = output.match(new RegExp(`${IMAGE_CHECK_MARKER} (\\d+) package\\.json files checked, (\\d+) damaged`))
+  if (summary) return Number(summary[2]) > 0 ? 'damaged' : 'ok'
+  if (
+    /Invalid package config \/app\//.test(output) ||
+    /Cannot find module '\/app\//.test(output) ||
+    /\/app\/(?:node_modules|dist)\/[^\n]*:\d+\n[\s\S]{0,500}SyntaxError: Unexpected end of input/.test(output)
+  ) {
+    return 'damaged'
+  }
+  return 'inconclusive'
+}
+
+/**
+ * Run the integrity check in a throwaway container of `image`. Never throws:
+ * a check that cannot run is reported as inconclusive with whatever output
+ * the CLI produced.
+ */
+export function checkImageIntegrity(runner: ContainerRunner, image: string): Promise<{ verdict: ImageCheckVerdict; output: string }> {
+  return new Promise((resolve) => {
+    const cli = getCliCommand(runner)
+    const encoded = Buffer.from(IMAGE_CHECK_SCRIPT, 'utf8').toString('base64')
+    const decodeAndRun = "eval(Buffer.from(process.env.IMAGE_CHECK,'base64').toString())"
+    // spawnWithPath hands args to a shell only on Windows (to reach .cmd
+    // wrappers); there the code argument needs quotes, elsewhere quotes would
+    // reach node verbatim and break the eval.
+    const codeArg = platform() === 'win32' ? `"${decodeAndRun}"` : decodeAndRun
+    const proc = spawnWithPath(cli, ['run', '--rm', '-e', `IMAGE_CHECK=${encoded}`, '--entrypoint', 'node', image, '-e', codeArg])
+
+    const chunks: string[] = []
+    let settled = false
+    const finish = (suffix = '') => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const output = (chunks.join('') + suffix).trim()
+      resolve({ verdict: classifyImageCheckOutput(output), output })
+    }
+    const timer = setTimeout(() => {
+      try { proc.kill('SIGKILL') } catch { /* already gone */ }
+      finish(`\n[image check timed out after ${IMAGE_CHECK_TIMEOUT_MS / 1000}s]`)
+    }, IMAGE_CHECK_TIMEOUT_MS)
+
+    proc.stdout?.on('data', (data: Buffer) => chunks.push(data.toString()))
+    proc.stderr?.on('data', (data: Buffer) => chunks.push(data.toString()))
+    proc.on('close', () => finish())
+    proc.on('error', (err) => finish(`\n[image check could not start: ${err.message}]`))
+  })
+}
+
+/** Best-effort image removal; a failure here just leaves the next pull to overwrite. */
+function removeImage(runner: ContainerRunner, image: string): Promise<void> {
+  return new Promise((resolve) => {
+    const cli = getCliCommand(runner)
+    // Apple's CLI has no rmi; see AppleContainerClient.removeCorruptImage.
+    const args = runner === 'apple-container' ? ['image', 'delete', '--force', image] : ['rmi', '-f', image]
+    const proc = spawnWithPath(cli, args)
+    proc.on('close', () => resolve())
+    proc.on('error', () => resolve())
+  })
+}
+
+/**
+ * Check a freshly pulled image and, if it is damaged, delete it and pull once
+ * more. A second damaged copy is a runtime-storage problem no re-pull will
+ * fix: the copy is deleted (so a later "did the image appear?" re-check does
+ * not mistake it for success) and the pull fails with a message that says so.
+ */
+async function verifyPulledImage(
+  runner: ContainerRunner,
+  image: string,
+  onProgress?: (progress: ImagePullProgress) => void
+): Promise<void> {
+  onProgress?.({ status: 'Checking the downloaded image', percent: null, completedLayers: 0, totalLayers: 0 })
+  const first = await checkImageIntegrity(runner, image)
+  if (first.verdict === 'ok') {
+    addErrorBreadcrumb({ category: 'container', message: 'Pulled image passed integrity check', data: { image, runner } })
+    return
+  }
+  if (first.verdict === 'inconclusive') {
+    captureMessage('Image integrity check inconclusive after pull', {
+      level: 'info',
+      tags: { component: 'container', operation: 'image-integrity' },
+      extra: { image, runner, output: first.output.slice(-2000) },
+    })
+    return
+  }
+
+  captureMessage('Freshly pulled image is damaged; removing and pulling again', {
+    level: 'warning',
+    tags: { component: 'container', operation: 'image-integrity' },
+    extra: { image, runner, output: first.output.slice(-2000) },
+  })
+  await removeImage(runner, image)
+  await doPullImage(runner, image, onProgress)
+
+  onProgress?.({ status: 'Checking the downloaded image', percent: null, completedLayers: 0, totalLayers: 0 })
+  const second = await checkImageIntegrity(runner, image)
+  if (second.verdict !== 'damaged') {
+    addErrorBreadcrumb({ category: 'container', message: 'Re-pulled image passed integrity check', data: { image, runner } })
+    return
+  }
+
+  await removeImage(runner, image)
+  // sentryCaptured: canonical event for the failure — see pullImage's exit-code path.
+  const error = Object.assign(
+    new Error(
+      `The agent image downloaded damaged twice (${image}). The container runtime's storage may be corrupt or the disk nearly full — free up space, restart the container runtime, and try again. ${second.output.slice(-300)}`
+    ),
+    { sentryCaptured: true }
+  )
+  captureException(error, {
+    tags: { component: 'container', operation: 'image-integrity' },
+    extra: { image, runner, firstOutput: first.output.slice(-2000), secondOutput: second.output.slice(-2000) },
+  })
+  throw error
 }
 
 function doPullImage(

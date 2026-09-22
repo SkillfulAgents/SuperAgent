@@ -1,3 +1,5 @@
+const integrations = vi.hoisted(() => ({ projection: vi.fn(async () => [] as unknown[]) }))
+vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: integrations.projection }))
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockWhere = vi.fn()
@@ -33,15 +35,14 @@ vi.mock('drizzle-orm', () => ({
   eq: (column: string, value: string) => ({ column, value }),
 }))
 
-vi.mock('./container-manager', () => ({
-  containerManager: {
-    getCachedInfo: (...args: unknown[]) => mockGetCachedInfo(...args),
-    getClient: () => ({
-      fetch: (...args: unknown[]) => mockFetch(...args),
-      getHostApiBaseUrl: (...args: unknown[]) => mockGetHostApiBaseUrl(...args),
-    }),
-  },
-}))
+// The agent's container runtime, as the actor hands it to a sync.
+const runtime = {
+  getCachedInfo: (...args: unknown[]) => mockGetCachedInfo(...args),
+  getClient: () => ({
+    fetch: (...args: unknown[]) => mockFetch(...args),
+    getHostApiBaseUrl: (...args: unknown[]) => mockGetHostApiBaseUrl(...args),
+  }),
+}
 
 import {
   syncAgentConnectionEnvironment,
@@ -52,6 +53,7 @@ import {
 describe('connection runtime synchronization', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    integrations.projection.mockResolvedValue([])
     mockGetCachedInfo.mockReturnValue({ status: 'running', port: 8080 })
     mockGetHostApiBaseUrl.mockResolvedValue('http://10.20.30.40:3000')
     mockFetch.mockResolvedValue(new Response(null, { status: 200 }))
@@ -126,6 +128,18 @@ describe('connection runtime synchronization', () => {
     ])
   })
 
+  it('hot-adds and removes integration-owned MCPs alongside user connections', async () => {
+    mockWhere.mockResolvedValue([])
+    const owned = { id: 'integration:id', name: 'agent_integration_id', proxyUrl: 'http://host/api/mcp-proxy/agent-1/integration:id', status: 'active', tools: [], integration: { id: 'id', provider: 'Linear', name: 'Agent', workspace: 'Test' } }
+    integrations.projection.mockResolvedValue([owned])
+    await updateRemoteMcpEnvironment('agent-1', runtime.getClient())
+    expect(JSON.parse(JSON.parse(mockFetch.mock.calls[0][1].body).value)).toEqual([owned])
+    expect(integrations.projection).toHaveBeenCalledWith('agent-1', 'http://10.20.30.40:3000')
+    integrations.projection.mockResolvedValue([])
+    await updateRemoteMcpEnvironment('agent-1', runtime.getClient())
+    expect(JSON.parse(JSON.parse(mockFetch.mock.calls[1][1].body).value)).toEqual([])
+  })
+
   it('writes active and reconnectable connected-account metadata grouped by toolkit', async () => {
     mockWhere.mockResolvedValue([
       {
@@ -175,7 +189,7 @@ describe('connection runtime synchronization', () => {
     mockGetHostApiBaseUrl.mockRejectedValue(new Error('container unavailable'))
 
     await expect(
-      syncAgentConnectionEnvironment('agent-1', 'remote-mcps'),
+      syncAgentConnectionEnvironment('agent-1', 'remote-mcps', runtime),
     ).resolves.toBe(false)
   })
 
@@ -186,7 +200,7 @@ describe('connection runtime synchronization', () => {
     )
 
     await expect(
-      syncAgentConnectionEnvironment('agent-1', 'connected-accounts'),
+      syncAgentConnectionEnvironment('agent-1', 'connected-accounts', runtime),
     ).resolves.toBe(false)
   })
 
@@ -194,7 +208,7 @@ describe('connection runtime synchronization', () => {
     mockGetCachedInfo.mockReturnValue({ status: 'stopped', port: null })
 
     await expect(
-      syncAgentConnectionEnvironment('agent-1', 'connected-accounts'),
+      syncAgentConnectionEnvironment('agent-1', 'connected-accounts', runtime),
     ).resolves.toBe(true)
     expect(mockFetch).not.toHaveBeenCalled()
   })

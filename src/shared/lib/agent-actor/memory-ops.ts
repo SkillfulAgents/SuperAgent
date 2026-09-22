@@ -1,0 +1,165 @@
+import { createHash } from 'node:crypto'
+import { load, JSON_SCHEMA } from 'js-yaml'
+import type { FileOps, MemoryOps } from './types'
+import { WorkspaceFileError } from './workspace-path'
+import type { AgentMemoryDocument, AgentMemoryEntry } from '@shared/lib/types/memory'
+
+import { AGENT_MEMORY_DIR, MAX_MEMORY_BYTES, MemoryError } from './memory-schema'
+
+function memoryPath(relative: string): string {
+  if (!relative || relative.includes('\\') || relative.includes('\0') ||
+      relative.split('/').some(part => !part || part === '.' || part === '..') ||
+      !relative.toLowerCase().endsWith('.md')) {
+    throw new MemoryError('Invalid memory path', 400)
+  }
+  return `${AGENT_MEMORY_DIR}/${relative}`
+}
+
+// Resolve through the actor too: reject redirects to other workspace content.
+// All paths remain logical workspace paths; no host filesystem access.
+async function resolveMemoryPath(files: FileOps, target: string): Promise<string | null> {
+  const resolved = await files.resolve(target)
+  if (resolved !== null && resolved !== target) throw new MemoryError('Invalid memory path', 400)
+  return resolved
+}
+
+const FRONTMATTER = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
+const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference']
+
+function isMapping(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function validateMemoryFrontmatter(relative: string, content: string): void {
+  // Only the root index is exempt; nested files named MEMORY.md are memories.
+  if (relative === 'MEMORY.md') return
+  const match = content.match(FRONTMATTER)
+  if (!match) throw new MemoryError('Memory must start with YAML frontmatter enclosed by --- lines.', 422)
+  let parsed: unknown
+  try {
+    parsed = load(match[1], { schema: JSON_SCHEMA })
+  } catch {
+    throw new MemoryError('Frontmatter contains invalid YAML. Check indentation, quoting, and duplicate keys.', 422)
+  }
+  if (!isMapping(parsed)) throw new MemoryError('Frontmatter must contain named fields, not a list or a single value.', 422)
+  for (const field of ['name', 'description']) {
+    if (typeof parsed[field] !== 'string' || !parsed[field].trim()) {
+      throw new MemoryError(`Frontmatter "${field}" must be non-empty text.`, 422)
+    }
+  }
+  if (!isMapping(parsed.metadata) || typeof parsed.metadata.type !== 'string' || !MEMORY_TYPES.includes(parsed.metadata.type)) {
+    throw new MemoryError('Frontmatter "metadata.type" must be user, feedback, project, or reference.', 422)
+  }
+  // Validate without reserializing: preserve comments, extra fields, and body.
+}
+
+function describeMemory(relative: string, content: string): Omit<AgentMemoryDocument, 'revision'> {
+  const isIndex = relative === 'MEMORY.md'
+  const match = content.match(FRONTMATTER)
+  let metadata: Record<string, unknown> = {}
+  let body = content
+  if (match) {
+    try {
+      const parsed = load(match[1], { schema: JSON_SCHEMA })
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        metadata = parsed as Record<string, unknown>
+        body = content.slice(match[0].length)
+      }
+    } catch {
+      // Malformed frontmatter remains readable and editable as raw text.
+    }
+  }
+  const nested = metadata.metadata as Record<string, unknown> | undefined
+  const type = nested?.type ?? metadata.type
+  return {
+    path: relative,
+    title: isIndex ? 'Memory index' : typeof metadata.name === 'string' ? metadata.name : relative,
+    description: isIndex ? 'The index the agent uses to find its memories.' : typeof metadata.description === 'string' ? metadata.description : '',
+    ...(typeof type === 'string' ? { type } : {}),
+    isIndex, content, body,
+  }
+}
+
+async function readAgentMemory(files: FileOps, relative: string): Promise<AgentMemoryDocument> {
+  const target = await resolveMemoryPath(files, memoryPath(relative))
+  if (!target) throw new MemoryError('Memory not found', 404)
+  const stat = await files.stat(target)
+  if (!stat || stat.kind !== 'file') throw new MemoryError('Memory not found', 404)
+  if (stat.size > MAX_MEMORY_BYTES) throw new MemoryError('This memory is too large to edit (maximum 1 MB).', 413)
+  // A bounded handle read supports empty files and short reads across stores.
+  const handle = await files.open(target)
+  let bytes: Uint8Array
+  try {
+    bytes = await handle.readAt(0, MAX_MEMORY_BYTES + 1)
+  } finally {
+    await handle.close()
+  }
+  if (bytes.byteLength > MAX_MEMORY_BYTES) throw new MemoryError('This memory is too large to edit (maximum 1 MB).', 413)
+  let content: string
+  try {
+    content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
+  } catch {
+    throw new MemoryError('This memory is not a UTF-8 text file.', 400)
+  }
+  return { ...describeMemory(relative, content), revision: createHash('sha256').update(bytes).digest('hex') }
+}
+
+async function listAgentMemories(files: FileOps): Promise<AgentMemoryEntry[]> {
+  const root = await resolveMemoryPath(files, AGENT_MEMORY_DIR)
+  if (!root) return []
+  const result: AgentMemoryEntry[] = []
+  async function visit(dir: string): Promise<void> {
+    for (const entry of await files.list(dir)) {
+      if (entry.kind === 'directory') {
+        if (await resolveMemoryPath(files, entry.path)) await visit(entry.path)
+      } else if (entry.name.toLowerCase().endsWith('.md')) {
+        const relative = entry.path.slice(AGENT_MEMORY_DIR.length + 1)
+        try {
+          const doc = await readAgentMemory(files, relative)
+          result.push({ path: doc.path, title: doc.title, description: doc.description, type: doc.type, isIndex: doc.isIndex })
+        } catch (error) {
+          if ((error instanceof MemoryError && error.status === 404) ||
+              (error instanceof WorkspaceFileError && error.code === 'not-found')) continue
+          if (error instanceof MemoryError && error.status === 413) {
+            result.push({ path: relative, title: relative, description: error.message, isIndex: relative === 'MEMORY.md' })
+          } else throw error
+        }
+      }
+    }
+  }
+  await visit(root)
+  return result.sort((a, b) => Number(b.isIndex) - Number(a.isIndex) || a.title.localeCompare(b.title))
+}
+
+/**
+ * Memory operations belong to one actor. The implementation uses its FileOps,
+ * so directory layout, validation, and save serialization stay behind memories.
+ */
+export function createMemoryOps(files: FileOps): MemoryOps {
+  // FileOps has no compare-and-swap: external writers can still race the final
+  // revision check/atomic putDoc. Saves through this actor are serialized.
+  let pendingSave: Promise<unknown> | undefined
+
+  return {
+    list: () => listAgentMemories(files),
+    read: relative => readAgentMemory(files, relative),
+    save: async (relative, content, revision) => {
+      if (Buffer.byteLength(content, 'utf8') > MAX_MEMORY_BYTES) throw new MemoryError('This memory is too large to save (maximum 1 MB).', 413)
+      const previous = pendingSave ?? Promise.resolve()
+      const save = previous.catch(() => {}).then(async () => {
+        const current = await readAgentMemory(files, relative)
+        if (current.revision !== revision) throw new MemoryError('This memory changed since you opened it. Your draft has been kept. Reload the latest version before saving.', 409)
+        if (!await resolveMemoryPath(files, memoryPath(relative))) throw new MemoryError('Memory not found', 404)
+        validateMemoryFrontmatter(relative, content)
+        await files.putDoc(memoryPath(relative), content)
+        return { ...describeMemory(relative, content), revision: createHash('sha256').update(content).digest('hex') }
+      })
+      pendingSave = save
+      try {
+        return await save
+      } finally {
+        if (pendingSave === save) pendingSave = undefined
+      }
+    },
+  }
+}

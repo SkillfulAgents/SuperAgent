@@ -10,6 +10,11 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
+const mockUploadFileChunked = vi.fn()
+vi.mock('@renderer/lib/upload', () => ({
+  uploadFileChunked: (...args: unknown[]) => mockUploadFileChunked(...args),
+}))
+
 const defaultProps = {
   toolUseId: 'tu-1',
   description: 'Please upload a CSV file with user data',
@@ -57,17 +62,11 @@ describe('FileRequestItem', () => {
 
   it('uploads file and provides it to the agent', async () => {
     const user = userEvent.setup()
-    // First call: upload-file, returns path
-    mockApiFetch
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ path: '/uploads/data.csv' }),
-      })
-      // Second call: provide-file
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({}),
-      })
+    mockUploadFileChunked.mockResolvedValueOnce({ path: '/uploads/data.csv' })
+    mockApiFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({}),
+    })
 
     render(<FileRequestItem {...defaultProps} />)
 
@@ -108,10 +107,7 @@ describe('FileRequestItem', () => {
 
   it('shows the backend error message on upload failure', async () => {
     const user = userEvent.setup()
-    mockApiFetch.mockResolvedValueOnce({
-      ok: false,
-      json: () => Promise.resolve({ error: 'Upload failed' }),
-    })
+    mockUploadFileChunked.mockRejectedValueOnce(new Error('Upload failed'))
 
     render(<FileRequestItem {...defaultProps} />)
 

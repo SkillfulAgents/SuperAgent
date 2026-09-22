@@ -690,6 +690,32 @@ describe('transformMessages', () => {
   // ============================================================================
 
   describe('edge cases', () => {
+    it('drops the synthetic "No response requested." placeholder but keeps synthetic API errors', () => {
+      const placeholder = createAssistantMessage('a-synth', 'msg-synth', [
+        { type: 'text', text: 'No response requested.' },
+      ])
+      placeholder.message.model = '<synthetic>'
+      placeholder.isApiErrorMessage = false
+      const apiError = createAssistantMessage('a-err', 'msg-err', [
+        { type: 'text', text: 'API Error: 529 Overloaded.' },
+      ])
+      apiError.message.model = '<synthetic>'
+      apiError.isApiErrorMessage = true
+
+      const result = transformMessages([
+        createUserMessage('u1', 'hello'),
+        createUserMessage('u2', '[Request interrupted by user]'),
+        placeholder,
+        apiError,
+      ])
+
+      expect(result.map((item) => asMessage(item).content.text)).toEqual([
+        'hello',
+        '[Request interrupted by user]',
+        'API Error: 529 Overloaded.',
+      ])
+    })
+
     it('handles empty entries array', () => {
       const result = transformMessages([])
       expect(result).toEqual([])
@@ -1015,6 +1041,47 @@ describe('transformMessages', () => {
   // ============================================================================
   // transformMessages - Subagent Metadata Extraction Tests
   // ============================================================================
+
+  describe('background Bash task id', () => {
+    it('carries the runtime task id of a backgrounded Bash call', () => {
+      // A backgrounded command's stdout is empty at launch, so the result
+      // text alone cannot name the task; the id rides on the call instead.
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'sleep 10', run_in_background: true } },
+        ]),
+        createUserMessage(
+          'uuid-2',
+          [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Command running in background with ID: bg_abc.' }],
+          '2026-01-24T10:00:02.000Z',
+          {
+            toolUseResult: { stdout: '', stderr: '', interrupted: false, isImage: false, backgroundTaskId: 'bg_abc' },
+          }
+        ),
+      ]
+
+      const toolCall = asMessage(transformMessages(entries)[0]).toolCalls[0]
+      expect(toolCall.backgroundTaskId).toBe('bg_abc')
+      expect(toolCall.result).toBe('')
+    })
+
+    it('omits the field for a foreground Bash call', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } },
+        ]),
+        createUserMessage(
+          'uuid-2',
+          [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'a b c' }],
+          '2026-01-24T10:00:02.000Z',
+          { toolUseResult: { stdout: 'a b c', stderr: '', interrupted: false, isImage: false } }
+        ),
+      ]
+
+      const toolCall = asMessage(transformMessages(entries)[0]).toolCalls[0]
+      expect(toolCall).not.toHaveProperty('backgroundTaskId')
+    })
+  })
 
   describe('subagent metadata extraction', () => {
     it('extracts subagent metadata from Task tool result with agentId', () => {
@@ -1912,5 +1979,38 @@ describe('replayed duplicate entries (resume history replay)', () => {
     ])
     expect(result.filter((r) => r.type === 'compact_boundary')).toHaveLength(1)
     expect(result).toHaveLength(2)
+  })
+})
+
+describe('fork stamp', () => {
+  it('flags a copied line as forked and leaves an unstamped line unflagged', () => {
+    const copied = createUserMessage('u1', 'before the fork', '2026-01-24T10:00:00.000Z', {
+      forkedFrom: { sessionId: 'src-1', messageUuid: 'old-u1' },
+    })
+    const fresh = createUserMessage('u2', 'after the fork', '2026-01-24T10:05:00.000Z')
+
+    const result = transformMessages([copied, fresh])
+
+    expect(asMessage(result[0]).forked).toBe(true)
+    expect(asMessage(result[1])).not.toHaveProperty('forked')
+  })
+
+  it('flags a copied compaction boundary too, so a fork made right after compacting ends on it', () => {
+    const copied = createUserMessage('u1', 'before', '2026-01-24T10:00:00.000Z', {
+      forkedFrom: { sessionId: 'src-1', messageUuid: 'old-u1' },
+    })
+    const copiedBoundary: JsonlSystemEntry = {
+      uuid: 'cb-1',
+      type: 'system',
+      subtype: 'compact_boundary',
+      content: '',
+      isMeta: false,
+      timestamp: '2026-01-24T10:01:00.000Z',
+      forkedFrom: { sessionId: 'src-1', messageUuid: 'old-cb-1' },
+    }
+
+    const result = transformMessages([copied, copiedBoundary])
+
+    expect(result[1]).toMatchObject({ type: 'compact_boundary', forked: true })
   })
 })

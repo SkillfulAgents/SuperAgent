@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 
 import { apiFetch } from '@renderer/lib/api'
 import { useUpdateSettings } from '@renderer/hooks/use-settings'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { useLoginWindow } from '@renderer/hooks/use-login-window'
 import type {
   PlatformAuthSource,
   PlatformAuthStatus as SharedPlatformAuthStatus,
@@ -97,6 +97,8 @@ function usePlatformAuthCallbackListener(
 
     const handleCallback = (params: PlatformAuthCallbackParams) => {
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      // A changed token marks running agents stale; nothing else refetches the agent list for it.
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
       // Reset, not invalidate: this key holds another account's deployment URL
       // behind a live "Open" button, and invalidation keeps serving stale data
       // while the refetch runs. Reset drops it and refetches from scratch.
@@ -177,6 +179,7 @@ export function useRedeemDownloadNonce() {
     onSuccess: async () => {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
       // Reset, not invalidate: this key holds another account's deployment URL
       // behind a live "Open" button, and invalidation keeps serving stale data
       // while the refetch runs. Reset drops it and refetches from scratch.
@@ -232,6 +235,7 @@ export function useSavePlatformAccessKey() {
     onSuccess: async () => {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
       // Reset, not invalidate: this key holds another account's deployment URL
       // behind a live "Open" button, and invalidation keeps serving stale data
       // while the refetch runs. Reset drops it and refetches from scratch.
@@ -249,7 +253,7 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   const platformAuth = platformAuthQuery.data
   const applyPlatformDefaults = useApplyPlatformDefaults()
   const initiateLogin = useInitiatePlatformLogin()
-  const [isLaunching, setIsLaunching] = useState(false)
+  const { open, close, pending, canCancel } = useLoginWindow()
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const wasConnected = !!platformAuth?.connected
@@ -259,8 +263,21 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   const successMessageRef = useRef(options?.successMessage)
   successMessageRef.current = options?.successMessage
 
+  // In a browser window the login callback is a deep link that lands in the
+  // desktop app, so nothing here ever ends the launch. A token saved by any
+  // path (access key included) bumps updatedAt and ends the wait.
+  const updatedAt = platformAuth?.updatedAt
+  const seenUpdatedAtRef = useRef(updatedAt)
+  useEffect(() => {
+    if (updatedAt === seenUpdatedAtRef.current) return
+    seenUpdatedAtRef.current = updatedAt
+    // On desktop the callback owns the launch; a metadata refresh mid-login must not end it.
+    if (window.electronAPI?.onPlatformAuthCallback) return
+    close()
+  }, [updatedAt, close])
+
   usePlatformAuthCallbackListener((params) => {
-    setIsLaunching(false)
+    close()
     if (params.success) {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       setError(null)
@@ -286,26 +303,25 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   })
 
   const handleConnect = useCallback(async () => {
-    const popup = prepareOAuthPopup()
     setError(null)
     setMessage(null)
-    setIsLaunching(true)
 
-    // No pre-revoke: the issue endpoint atomically swaps the old key for this
-    // client_instance_id, so an abandoned login can't leave a split-brain.
     try {
-      const result = await initiateLogin.mutateAsync()
-      await popup.navigate(result.loginUrl)
+      await open(async () => {
+        // Starting or cancelling login must not revoke the working key.
+        // The platform cleans up prior keys for this client instance during issuance.
+        return (await initiateLogin.mutateAsync()).loginUrl
+      })
     } catch (err) {
-      popup.close()
-      setIsLaunching(false)
       setError(err instanceof Error ? err.message : 'Failed to open platform login.')
     }
-  }, [initiateLogin])
+  }, [open, initiateLogin])
 
   return {
     handleConnect,
-    isLaunching: isLaunching || initiateLogin.isPending,
+    cancelConnect: close,
+    canCancel,
+    isLaunching: pending,
     error,
     message,
     isConnected: !!platformAuth?.connected,

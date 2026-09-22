@@ -1,14 +1,14 @@
 /**
  * Deliver File Tool - Allows agents to send files to users
  *
- * This tool is non-blocking. The agent provides a file path and optional description,
- * the tool validates the file exists, and the frontend renders a download link.
+ * The agent provides a file path and optional description. The tool validates
+ * confined regular-file metadata without reading contents, then the frontend
+ * renders a download link.
  */
 
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
-import * as fs from 'fs'
-import * as path from 'path'
+import { resolveWorkspaceRegularFile, WorkspaceFileError } from '../workspace-file-transfer'
 
 export const deliverFileTool = tool(
   'deliver_file',
@@ -31,39 +31,31 @@ Example usage:
       .describe('Brief description of the file being delivered'),
   },
   async (args) => {
-    const fullPath = args.filePath.startsWith('/workspace/')
-      ? args.filePath
-      : path.join('/workspace', args.filePath)
-
     try {
-      const stats = await fs.promises.stat(fullPath)
-      if (!stats.isFile()) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Error: ${args.filePath} is not a file.`,
-            },
-          ],
-          isError: true,
-        }
-      }
-
-      const relativePath = path.relative('/workspace', fullPath)
+      const file = await resolveWorkspaceRegularFile(args.filePath)
+      // The trailing `Delivered: {...}` line is the renderer contract (read back
+      // by src/shared/lib/tool-definitions/deliver-file.ts): the tool already
+      // stat'd the file, so the size travels as data rather than as a number the
+      // renderer has to scrape out of the sentence above it. The prose is what
+      // the model reasons over; the JSON line is what the UI parses.
+      const delivered = JSON.stringify({ sizeBytes: file.size })
       return {
         content: [
           {
             type: 'text' as const,
-            text: `File "${relativePath}" (${stats.size} bytes) has been delivered to the user. They can now download it from the chat.\n\nHint: If this is a file the user will access frequently (e.g. a report, dashboard, or reference doc), consider adding it to /workspace/bookmarks.json so it appears on their agent homepage.`,
+            text: `File "${file.relativePath}" (${file.size} bytes) has been delivered to the user. They can now download it from the chat.\n\nHint: If this is a file the user will access frequently (e.g. a report, dashboard, or reference doc), consider adding it to /workspace/bookmarks.json so it appears on their agent homepage.\n\nDelivered: ${delivered}`,
           },
         ],
       }
-    } catch {
+    } catch (error) {
+      const message = error instanceof WorkspaceFileError
+        ? error.status === 404 ? `File not found at ${args.filePath}` : error.message
+        : 'Unable to access the file for delivery'
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Error: File not found at ${args.filePath}`,
+            text: `Error: ${message}`,
           },
         ],
         isError: true,

@@ -6,10 +6,11 @@ interface CompleteAgentTemplateHandoffOptions {
   agentSlug: string
   hasOnboarding?: boolean
   templatePrompt?: string
+  onboardingFirstPrompt?: string
   /** Update a surviving composer's baseline before its draft changes. */
   noteProgrammaticChange?: (prompt: string) => void
   openAgent: () => void | Promise<void>
-  startOnboardingSession: (agentSlug: string) => void | Promise<void>
+  startOnboardingSession: (agentSlug: string, firstPrompt?: string) => void | Promise<void>
 }
 
 /**
@@ -21,6 +22,7 @@ export async function completeAgentTemplateHandoff({
   agentSlug,
   hasOnboarding,
   templatePrompt,
+  onboardingFirstPrompt,
   noteProgrammaticChange,
   openAgent,
   startOnboardingSession,
@@ -29,6 +31,6 @@ export async function completeAgentTemplateHandoff({
   const hasTemplatePrompt = seedAgentTemplatePrompt(draftsStore, agentSlug, templatePrompt)
   await openAgent()
   if (!hasTemplatePrompt && hasOnboarding) {
-    await startOnboardingSession(agentSlug)
+    await startOnboardingSession(agentSlug, onboardingFirstPrompt)
   }
 }

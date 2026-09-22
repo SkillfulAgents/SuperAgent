@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AgentActivityIndicator } from './agent-activity-indicator'
+import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 
 // Mock useMessageStream
 const mockStreamState = {
@@ -18,6 +20,7 @@ const mockStreamState = {
   pendingBrowserInputRequests: [] as any[],
   error: null as string | null,
   apiErrorCode: null as string | null,
+  errorPresentation: null as ProviderErrorPresentation | null,
   browserActive: false,
   activeStartTime: null as number | null,
   isCompacting: false,
@@ -34,8 +37,10 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
 
 // Mock useMessages
 const mockMessages: any[] = []
+const mockStopBackgroundTask = { mutateAsync: vi.fn().mockResolvedValue({ success: true }) }
 vi.mock('@renderer/hooks/use-messages', () => ({
   useMessages: () => ({ data: mockMessages }),
+  useStopBackgroundTask: () => mockStopBackgroundTask,
 }))
 
 // Mock useElapsedTimer
@@ -48,11 +53,11 @@ vi.mock('@shared/lib/utils', () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
 }))
 
-// Mock the platform billing card — its usePlatformBillingUrl hook uses React Query,
-// which these tests don't provide. Default to no billing error (returns null).
-vi.mock('./insufficient-balance-card', () => ({
-  usePlatformBillingUrl: () => null,
-  InsufficientBalanceCard: () => <div data-testid="insufficient-balance-card" />,
+const platformAuth = { connected: false as boolean }
+const BILLING_URL = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
+
+vi.mock('@renderer/hooks/use-platform-auth', () => ({
+  usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
 
 // Mock the unified pending-request store — the indicator derives awaiting
@@ -74,6 +79,7 @@ describe('AgentActivityIndicator', () => {
       isActive: false,
       error: null,
       apiErrorCode: null,
+      errorPresentation: null,
       activeStartTime: null,
       activeSubagents: [],
       completedSubagents: null,
@@ -88,6 +94,7 @@ describe('AgentActivityIndicator', () => {
     })
     mockMessages.length = 0
     mockPendingUserRequests = []
+    platformAuth.connected = false
   })
 
   it('returns null when not active and no error', () => {
@@ -112,6 +119,37 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByTestId('provider-error-card')).not.toHaveClass('dark:bg-red-950/30')
     // Selectable despite the app-wide user-select: none — errors get copied.
     expect(screen.getByTestId('provider-error-card')).toHaveClass('select-text', '[&_*]:select-text')
+  })
+
+  it('shows an orange spend-limit card for a platform spend cap', () => {
+    mockStreamState.error = 'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
+    mockStreamState.apiErrorCode = 'rate_limit'
+    // Presentation is authored server-side by PlatformLlmProvider.presentationForTurnError
+    // and arrives on the session_error event.
+    mockStreamState.errorPresentation = parsePlatformErrorResponse(429, mockStreamState.error, BILLING_URL)
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    const card = screen.getByTestId('provider-error-card')
+    expect(card).toHaveTextContent('Spend Limit Reached')
+    expect(card).not.toHaveTextContent('LLM Provider Error')
+    expect(card).toHaveAttribute('data-severity', 'warning')
+    expect(card).toHaveClass('bg-orange-50', 'dark:bg-orange-950')
+    expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
+  })
+
+  it('shows the provider card for a generic SDK code when a presentation is attached', () => {
+    mockStreamState.error = 'API Error: 402'
+    mockStreamState.apiErrorCode = 'unknown'
+    mockStreamState.errorPresentation = { severity: 'error', message: '**Attached**', icon: 'info' }
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Attached')
+  })
+
+  it('renders nothing for a provider error routed to the composer placement', () => {
+    mockStreamState.error = 'API Error: 402 insufficient balance'
+    mockStreamState.apiErrorCode = 'billing_error'
+    mockStreamState.errorPresentation = { severity: 'error', message: '**Routed**', icon: 'info', placement: 'composer' }
+    const { container } = render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(container.innerHTML).toBe('')
   })
 
   it('shows generic error alert when no apiErrorCode', () => {
@@ -680,7 +718,7 @@ describe('AgentActivityIndicator', () => {
     expect(screen.queryByText('Old todo item')).not.toBeInTheDocument()
   })
 
-  it('shows background process count when background tasks are running', () => {
+  it('shows one row per running background task', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
@@ -688,10 +726,12 @@ describe('AgentActivityIndicator', () => {
     ]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('1 background process')).toBeInTheDocument()
+    const rows = screen.getAllByTestId('background-task-row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveTextContent('Background command')
   })
 
-  it('shows plural "processes" for multiple background tasks', () => {
+  it('shows a row for each of several background tasks', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
@@ -700,19 +740,44 @@ describe('AgentActivityIndicator', () => {
     ]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('2 background processes')).toBeInTheDocument()
+    expect(screen.getAllByTestId('background-task-row')).toHaveLength(2)
   })
 
-  it('does not show background section when no background tasks', () => {
+  it('names a background command after the Bash call that launched it', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'bg_abc', startedAt: Date.now() - 5000 },
+    ]
+    mockMessages.push({
+      id: 'msg-bash',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-bash',
+        name: 'Bash',
+        input: { command: 'npm run build', run_in_background: true },
+        result: 'Command running in background with ID: bg_abc. Output is being written to /tmp/x.',
+      }],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    const row = screen.getByTestId('background-task-row')
+    expect(row).toHaveTextContent('Background command')
+    expect(row).toHaveTextContent('npm run build')
+  })
+
+  it('does not show background rows when no background tasks', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = []
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.queryByText(/background process/)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('background-task-row')).not.toBeInTheDocument()
   })
 
-  it('labels a background workflow as "workflow" instead of "process"', () => {
+  it('labels a background workflow as a workflow', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
@@ -720,24 +785,47 @@ describe('AgentActivityIndicator', () => {
     ]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('1 background workflow')).toBeInTheDocument()
+    expect(screen.getByTestId('background-task-row')).toHaveTextContent('Background workflow')
   })
 
-  it('pluralizes multiple background workflows as "workflows"', () => {
+  it('stops a background task from its row', async () => {
+    const user = userEvent.setup()
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
-      { taskId: 'wf-1', startedAt: Date.now() - 5000, isWorkflow: true },
-      { taskId: 'wf-2', startedAt: Date.now() - 3000, isWorkflow: true },
+      { taskId: 'bg-1', startedAt: Date.now() - 5000 },
     ]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('2 background workflows')).toBeInTheDocument()
+    await user.click(screen.getByTestId('stop-task-button'))
+
+    expect(mockStopBackgroundTask.mutateAsync).toHaveBeenCalledWith({
+      sessionId: 's-1',
+      agentSlug: 'agent-1',
+      taskId: 'bg-1',
+    })
   })
 
-  it('hides the background section when the only task is a background subagent', () => {
-    // A background subagent already renders as a named subagent row; counting it
-    // in "N background processes" would show the same work twice.
+  it('keeps the row and offers a retry when the stop fails', async () => {
+    const user = userEvent.setup()
+    mockStopBackgroundTask.mutateAsync.mockRejectedValueOnce(new Error('nope'))
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'bg-1', startedAt: Date.now() - 5000 },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    await user.click(screen.getByTestId('stop-task-button'))
+
+    expect(await screen.findByText('Stop failed')).toBeInTheDocument()
+    expect(screen.getByTestId('background-task-row')).toBeInTheDocument()
+    expect(screen.getByTestId('stop-task-button')).toHaveAttribute('aria-label', expect.stringMatching(/^Retry:/))
+  })
+
+  it('hides the background rows when the only task is a background subagent', () => {
+    // A background subagent already renders as a named subagent row; a row
+    // here too would show the same work twice.
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
@@ -745,10 +833,10 @@ describe('AgentActivityIndicator', () => {
     ]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.queryByText(/background process/)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('background-task-row')).not.toBeInTheDocument()
   })
 
-  it('counts only non-subagent tasks when background subagents and bash tasks mix', () => {
+  it('lists only non-subagent tasks when background subagents and bash tasks mix', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
@@ -757,7 +845,7 @@ describe('AgentActivityIndicator', () => {
     ]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('1 background process')).toBeInTheDocument()
+    expect(screen.getAllByTestId('background-task-row')).toHaveLength(1)
   })
 
   it('collapses activity details into an active-only summary', () => {
@@ -880,6 +968,36 @@ describe('AgentActivityIndicator', () => {
   })
 
   describe('subagent status', () => {
+    it('shows lifecycle-only subagents launched inside a Skill', () => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [{
+        parentToolId: 'nested-agent-tool',
+        agentId: 'nested-agent-id',
+        subagentType: 'code-reviewer',
+        description: 'Review the changes',
+        progressSummary: 'Inspecting tests',
+      }]
+      mockStreamState.completedSubagents = new Set()
+      mockMessages.push({
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'skill-tool',
+          name: 'Skill',
+          input: { skill: 'code-review' },
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getByText('code-reviewer')).toBeInTheDocument()
+      expect(screen.getByText('Review the changes')).toBeInTheDocument()
+      expect(screen.getByText('Inspecting tests')).toBeInTheDocument()
+    })
+
     const renderWithSubagent = (opts: { result?: unknown; subagentStatus?: string; completed?: boolean }) => {
       mockStreamState.isActive = true
       mockStreamState.activeStartTime = Date.now()

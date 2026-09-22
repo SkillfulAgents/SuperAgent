@@ -78,8 +78,8 @@ function overflow<T>(rows: T[], max: number): T[] {
  * non-interactive ones to their own ceiling, having first dropped any that
  * have expired. The two groups never evict each other.
  */
-export function enforceMaxConcurrentSessions(userId: string, maxSessions: number): number {
-  const userSessions = db
+export async function enforceMaxConcurrentSessions(userId: string, maxSessions: number): Promise<number> {
+  const userSessions = (await db
     .select({
       id: authSession.id,
       createdAt: authSession.createdAt,
@@ -89,7 +89,7 @@ export function enforceMaxConcurrentSessions(userId: string, maxSessions: number
     .from(authSession)
     .where(eq(authSession.userId, userId))
     .orderBy(authSession.createdAt)
-    .all() as SessionRow[]
+    .all()) as SessionRow[]
 
   // Partitioned in memory rather than in SQL: the set is small, and
   // `creation_method IS NOT 'x'` has null semantics that are easy to get subtly
@@ -116,7 +116,7 @@ export function enforceMaxConcurrentSessions(userId: string, maxSessions: number
   ]
 
   for (const session of doomed) {
-    db.delete(authSession)
+    await db.delete(authSession)
       .where(eq(authSession.id, session.id))
       .run()
   }

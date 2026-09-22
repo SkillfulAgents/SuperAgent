@@ -113,6 +113,29 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: vi.fn(() => undefined),
 }))
 
+// The service reaches an agent's skills tree through the agent actor's
+// `files`. The real registry drags the container layer in at import time,
+// which this suite has no use for; hand it the same `LocalFileOps` the real
+// actor uses, rooted at the temp data dir, so fixtures written to disk and
+// assertions read from disk keep meaning what they always did.
+vi.mock('@shared/lib/agent-actor', async () => {
+  const workspacePath = await import('@shared/lib/agent-actor/workspace-path')
+  const { createLocalFileOps } = await import('@shared/lib/agent-actor/local-file-ops')
+  const { directoryExists, getAgentDir, getAgentsDir, listDirectories } = await import('@shared/lib/utils/file-storage')
+  const { getAgentWorkspaceDir } = await import('@shared/lib/utils/file-storage')
+  return {
+    ...workspacePath,
+    // The agents this suite writes to disk are the agents that exist.
+    agentCatalog: {
+      list: () => listDirectories(getAgentsDir()),
+      exists: (slug: string) => directoryExists(getAgentDir(slug)),
+    },
+    agentRegistry: {
+      get: (slug: string) => ({ slug, files: createLocalFileOps(slug, { getAgentWorkspaceDir }) }),
+    },
+  }
+})
+
 import {
   contentHash,
   parseSkillFrontmatter,
@@ -127,6 +150,7 @@ import {
   getSkillPRInfo,
   getInstalledSkillMetadata,
   getSkillsetRepoDir,
+  ensureSkillsetCached,
   isCacheReady,
   isGitAvailable,
   deleteSkill,
@@ -852,6 +876,77 @@ Instructions here`
       expect(setUrlCalls).toBe(2)
     })
 
+    it('coalesces concurrent first-time cache builds for the same cache directory', async () => {
+      const config = buildSkillsetConfig()
+      const ref = {
+        skillsetId: config.id,
+        skillsetUrl: config.url,
+        provider: config.provider,
+        providerData: config.providerData,
+      }
+
+      let cloneCalls = 0
+      let releaseClone!: () => void
+      let notifyCloneStarted!: () => void
+      const cloneStarted = new Promise<void>((resolve) => {
+        notifyCloneStarted = resolve
+      })
+      const cloneCanFinish = new Promise<void>((resolve) => {
+        releaseClone = resolve
+      })
+
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === '--version') {
+          return { stdout: 'git version 2.44.0\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'clone') {
+          cloneCalls += 1
+          notifyCloneStarted()
+          return cloneCanFinish.then(() => ({ stdout: '', stderr: '' }))
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      const first = ensureSkillsetCached(ref)
+      await cloneStarted
+      const second = ensureSkillsetCached(ref)
+      releaseClone()
+
+      const repoDir = getSkillsetRepoDir(config.id)
+      await expect(Promise.all([first, second])).resolves.toEqual([repoDir, repoDir])
+      expect(cloneCalls).toBe(1)
+    })
+
+    it('coalesces cold builds that start before the first readiness probe completes', async () => {
+      const config = buildSkillsetConfig()
+      const ref = {
+        skillsetId: config.id,
+        skillsetUrl: config.url,
+        provider: config.provider,
+        providerData: config.providerData,
+      }
+
+      let cloneCalls = 0
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === '--version') {
+          return { stdout: 'git version 2.44.0\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'clone') {
+          cloneCalls += 1
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      // Same tick, no await between them: the second caller arrives while the
+      // first is still inside its readiness probe, before any build is running.
+      const first = ensureSkillsetCached(ref)
+      const second = ensureSkillsetCached(ref)
+
+      const repoDir = getSkillsetRepoDir(config.id)
+      await expect(Promise.all([first, second])).resolves.toEqual([repoDir, repoDir])
+      expect(cloneCalls).toBe(1)
+    })
+
     it('gitPull swallows expected drift errors from fetch+reset without throwing', async () => {
       const skillContent = '# Test Skill\nOriginal content'
       const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
@@ -1188,6 +1283,71 @@ Instructions here`
   // ============================================================================
 
   describe('validateSkillsetUrl', () => {
+    function mockCloneWritingIndex(getIndex: () => unknown, cloneCalls: string[]) {
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === '--version') {
+          return { stdout: 'git version 2.44.0\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'clone') {
+          const dest = args[4]
+          cloneCalls.push(dest)
+          fs.mkdirSync(path.join(dest, '.git'), { recursive: true })
+          fs.writeFileSync(
+            path.join(dest, 'index.json'),
+            JSON.stringify(getIndex()),
+            'utf-8',
+          )
+        }
+        return { stdout: '', stderr: '' }
+      })
+    }
+
+    it('drops a newly cloned invalid cache so retry reads the corrected remote', async () => {
+      const url = 'https://github.com/TestOrg/stale-validation'
+      const repoDir = getSkillsetRepoDir(urlToSkillsetId(url))
+      const correctedIndex = buildIndex({ skillset_name: 'Corrected Skillset' })
+      let remoteIndex: unknown = { skills: [] }
+      const cloneCalls: string[] = []
+      mockCloneWritingIndex(() => remoteIndex, cloneCalls)
+
+      await expect(validateSkillsetUrl(url)).rejects.toThrow(
+        /skillset_name.*expected string.*received undefined/i,
+      )
+      expect(fs.existsSync(repoDir)).toBe(false)
+
+      remoteIndex = correctedIndex
+      await expect(validateSkillsetUrl(url)).resolves.toEqual(correctedIndex)
+      expect(cloneCalls).toEqual([repoDir, repoDir])
+    })
+
+    it('re-clones a malformed cache left by an older build on the first retry', async () => {
+      const url = 'https://github.com/TestOrg/legacy-stale-validation'
+      const repoDir = getSkillsetRepoDir(urlToSkillsetId(url))
+      await fs.promises.mkdir(path.join(repoDir, '.git'), { recursive: true })
+      await fs.promises.writeFile(
+        path.join(repoDir, 'index.json'),
+        JSON.stringify({ skills: [] }),
+        'utf-8',
+      )
+
+      const correctedIndex = buildIndex({ skillset_name: 'Corrected Skillset' })
+      const cloneCalls: string[] = []
+      mockCloneWritingIndex(() => correctedIndex, cloneCalls)
+
+      await expect(validateSkillsetUrl(url)).resolves.toEqual(correctedIndex)
+      expect(cloneCalls).toEqual([repoDir])
+    })
+
+    it('keeps the zero-network fast path for an already valid cache', async () => {
+      const url = 'https://github.com/TestOrg/valid-validation-cache'
+      const index = buildIndex()
+      await createSkillsetCache(urlToSkillsetId(url), index)
+      mockExecFileAsNoOp()
+
+      await expect(validateSkillsetUrl(url)).resolves.toEqual(index)
+      expect(mockExecFile).not.toHaveBeenCalled()
+    })
+
     it('throws helpful error with install link when git is not installed', async () => {
       mockExecFile.mockImplementation((cmd: string) => {
         if (cmd === 'git') {
@@ -2931,6 +3091,43 @@ metadata:
   })
 
   describe('skill zip round-trip', () => {
+    it('preserves binary assets through import, export and reimport', async () => {
+      const files: Record<string, Buffer> = {
+        'binary-skill/SKILL.md': Buffer.from(MINIMAL_SKILL_MD),
+        'binary-skill/assets/payload.bin': Buffer.from([0, 255, 254, 128, 13, 10, 70, 73, 76, 69]),
+        'binary-skill/assets/all-bytes.bin': Buffer.from(Array.from({ length: 256 }, (_, i) => i)),
+        'binary-skill/assets/empty.bin': Buffer.alloc(0),
+        'binary-skill/notes.txt': Buffer.from('Unicode: café 日本語\r\n'),
+      }
+      const sourceSlug = 'binary-source'
+      const targetSlug = 'binary-target'
+      for (const slug of [sourceSlug, targetSlug]) {
+        fs.mkdirSync(path.join(testDir, 'agents', slug, 'workspace'), { recursive: true })
+      }
+      const source = await importSkillFromZip(sourceSlug, await createZipBuffer(files))
+      const sourceDir = path.join(testDir, 'agents', sourceSlug, 'workspace', '.claude', 'skills', source.skillDir)
+      for (const [name, content] of Object.entries(files)) {
+        expect(fs.readFileSync(path.join(sourceDir, name.slice('binary-skill/'.length)))).toEqual(content)
+      }
+
+      const { zipBuffer } = await exportSkill(sourceSlug, source.skillDir)
+      const reader = await openZipFromBuffer(zipBuffer)
+      try {
+        for (const [name, content] of Object.entries(files)) {
+          const exportedName = source.skillDir + '/' + name.slice('binary-skill/'.length)
+          expect(await reader.readEntry(exportedName)).toEqual(content)
+        }
+      } finally {
+        reader.close()
+      }
+
+      const target = await importSkillFromZip(targetSlug, zipBuffer)
+      const targetDir = path.join(testDir, 'agents', targetSlug, 'workspace', '.claude', 'skills', target.skillDir)
+      for (const [name, content] of Object.entries(files)) {
+        expect(fs.readFileSync(path.join(targetDir, name.slice('binary-skill/'.length)))).toEqual(content)
+      }
+    })
+
     it('export then import preserves files', async () => {
       const agentSlug = 'roundtrip-agent'
       const agentDir = path.join(testDir, 'agents', agentSlug, 'workspace')

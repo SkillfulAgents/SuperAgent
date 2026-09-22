@@ -1,8 +1,8 @@
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getApnsRelayConfig } from '@shared/lib/config/settings'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { getAccessibleAgentSlugs } from '@shared/lib/services/notification-service'
-import { getSessionMetadata } from '@shared/lib/services/session-service'
 import {
   listDeliverableApnsDevices,
   deleteApnsDeviceById,
@@ -100,7 +100,7 @@ export class ApnsRelayChannel implements NotificationChannel {
       return
     }
 
-    const devices = listDeliverableApnsDevices()
+    const devices = await listDeliverableApnsDevices()
     if (devices.length === 0) {
       return
     }
@@ -135,7 +135,7 @@ export class ApnsRelayChannel implements NotificationChannel {
    */
   private async getOriginDeviceId(event: NotificationEvent): Promise<string | null> {
     try {
-      const meta = await getSessionMetadata(event.agentSlug, event.sessionId)
+      const meta = await agentRegistry.get(event.agentSlug).sessions.metadata(event.sessionId)
       if (!meta) return null
       if (meta.alertDeviceId !== undefined) return meta.alertDeviceId
       return meta.createdByDeviceId ?? null
@@ -176,7 +176,7 @@ export class ApnsRelayChannel implements NotificationChannel {
       // including rows that retain a userId from a previous auth-mode life of
       // this database (that user's old per-user settings row is stale there).
       const ownerId = isAuthMode() ? (device.userId as string) : 'local'
-      const settings = getUserSettings(ownerId)
+      const settings = await getUserSettings(ownerId)
       if (isNotificationTypeEnabled(settings.notifications, event.type)) {
         // Alert AND background: the alert draws the banner but wakes no app
         // code on iOS, so the paired silent push is what refreshes the
@@ -217,14 +217,14 @@ export class ApnsRelayChannel implements NotificationChannel {
     }
 
     // Results come back in input order, one per push.
-    results.forEach((result, index) => {
+    for (const [index, result] of results.entries()) {
       const entry = chunk[index]
       if (!entry) {
-        return
+        continue
       }
       if (isTokenDead(result.status, result.reason)) {
-        deleteApnsDeviceById(entry.device.id)
-        return
+        await deleteApnsDeviceById(entry.device.id)
+        continue
       }
       if (result.status < 200 || result.status >= 300) {
         // Transient (RelayRateLimited 429, RelayFetchFailed 0, 5xx): log, keep.
@@ -232,6 +232,6 @@ export class ApnsRelayChannel implements NotificationChannel {
           `[ApnsRelayChannel] push failed (${result.status}${result.reason ? ` ${result.reason}` : ''}) for device ${entry.device.id}`
         )
       }
-    })
+    }
   }
 }

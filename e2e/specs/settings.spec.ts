@@ -6,7 +6,7 @@ import { AppPage } from '../pages/app.page'
 // ---------------------------------------------------------------------------
 
 type DefaultApiPolicy = 'allow' | 'review' | 'block'
-type SttProvider = 'deepgram' | 'openai' | 'platform'
+type VoiceProvider = 'deepgram' | 'openai' | 'platform'
 
 interface GlobalSettingsSnapshot {
   app: {
@@ -17,7 +17,7 @@ interface GlobalSettingsSnapshot {
   customEnvVars: Record<string, string>
   shareAnalytics: boolean
   voice?: {
-    sttProvider?: SttProvider
+    sttProvider?: VoiceProvider
   }
 }
 
@@ -149,7 +149,6 @@ test.describe('Settings Page', () => {
     await expect(page.locator('[data-testid="settings-nav-admin"]')).toBeVisible()
 
     // Auth-only tabs should NOT be visible in non-auth mode
-    await expect(page.locator('[data-testid="settings-nav-profile"]')).not.toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-users"]')).not.toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-auth"]')).not.toBeVisible()
   })

@@ -130,7 +130,7 @@ export function PackageImportHandler() {
         const hasTemplatePrompt = seedAgentTemplatePrompt(draftsStore, result.slug, result.templatePrompt)
         void navigate({ to: '/agents/$slug', params: { slug: result.displaySlug } })
         if (!hasTemplatePrompt && result.hasOnboarding) {
-          await startOnboardingSession(result.slug)
+          await startOnboardingSession(result.slug, result.onboardingFirstPrompt)
         }
       } catch {
         // Error surfaces in the dialog via importTemplate.error
