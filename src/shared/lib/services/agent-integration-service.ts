@@ -349,11 +349,11 @@ export async function updateAgentIntegrationStatus(
   id: string,
   status: ChatIntegration['status'],
   errorMessage?: string | null,
-  expectedConfig?: string,
+  condition?: { config?: string; unlessDisconnected?: boolean },
 ): Promise<boolean> {
   const result = await db.update(chatIntegrations).set({ status, errorMessage: errorMessage ?? null, updatedAt: new Date() })
-    .where(and(eq(chatIntegrations.id, id), expectedConfig === undefined && (status === 'error' || status === 'active') ? ne(chatIntegrations.status, 'disconnected') : undefined,
-      expectedConfig === undefined ? undefined : eq(chatIntegrations.config, expectedConfig))).run()
+    .where(and(eq(chatIntegrations.id, id), status === 'error' || condition?.unlessDisconnected ? ne(chatIntegrations.status, 'disconnected') : undefined,
+      condition?.config === undefined ? undefined : eq(chatIntegrations.config, condition.config))).run()
   return changesOf(result) > 0
 }
 
