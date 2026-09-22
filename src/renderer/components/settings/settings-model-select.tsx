@@ -150,12 +150,13 @@ function SettingsModelSelectImpl({
         <fieldset disabled={disabled} className="contents">
         {/* Keep provider → brand → model together when the outer sections reverse. */}
         <div className="flex flex-col">
-          {onSelectionChange && choices.length > 1 && <label className="px-2 pb-2 text-xs">Connection
-            <select aria-label="Connection" className="mt-1 w-full rounded border bg-background p-2" value={selectedConnection?.id ?? ''} onChange={e => {
+          {onSelectionChange && choices.length > 1 && <div className="relative mx-1 mb-1 text-xs">
+            <select aria-label="Connection" className="w-full cursor-pointer appearance-none rounded-sm border-0 bg-transparent py-1 pl-1 pr-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={selectedConnection?.id ?? ''} onChange={e => {
               const next = choices.find(c => c.id === e.target.value)
               if (next?.defaultModel) onSelectionChange({ llmProviderId: next.id, model: next.defaultModel })
             }}>{choices.map(c => <option key={c.id} value={c.id}>{c.name}{c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}</option>)}</select>
-          </label>}
+            <ChevronDown className="pointer-events-none absolute right-1 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+          </div>}
           <ModelFamilyList
             catalog={catalog}
             value={selectedModel}
