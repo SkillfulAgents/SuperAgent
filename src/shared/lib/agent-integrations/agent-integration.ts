@@ -33,6 +33,9 @@ export abstract class AgentIntegration {
   abstract prepareInput(event: IntegrationInputEvent, context: IntegrationInputContext): Promise<PreparedIntegrationInput>
   abstract deliver(context: IntegrationSessionContext, output: IntegrationOutput): Promise<void>
 
+  /** Called only after a new provider event has been durably accepted. Best-effort UX. */
+  async acknowledgeInput(_event: IntegrationInputEvent): Promise<void> {}
+
   async consumeInput(_event: IntegrationInputEvent, _context: IntegrationInputContext, _input: PreparedIntegrationInput): Promise<boolean> { return false }
   getTools(_context: IntegrationSessionContext): readonly IntegrationTool[] { return [] }
   shouldUpdateDisplayName(current: string | null | undefined): boolean { return !current }

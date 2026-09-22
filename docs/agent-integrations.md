@@ -35,7 +35,7 @@ The registry exposes serializable definitions (family, agent capabilities, manag
 
 `ChatAgentIntegration` owns `/clear`, Telegram's `/start`, sender attribution, input preparation, session naming, streaming delivery, working indicators, user-request cards, and chat tools. `chat-input.ts` contains the attachment download/upload and transcription path; `chat-delivery.ts` contains response formatting and streaming state. The concrete providers retain their protocol, threading, formatting, reaction, directory, and native-card implementations.
 
-The normalized response event carries a request ID, request kind, and value. Chat-specific callback strings and question-answer envelopes are decoded in the chat family. The host retains actor-bound review submission, input claims, and stale-response checks. `emitEvent` awaits its subscribers: the host queues inputs and processes responses inline. The host logs and reports event-processing failures without changing connection status; connector errors still update status and notify the user. All chat events use `onEvent`.
+The normalized response event carries a request ID, request kind, and value. Chat-specific callback strings and question-answer envelopes are decoded in the chat family. The host retains actor-bound review submission, input claims, and stale-response checks. `emitEvent` awaits its subscribers: the host persists accepted inputs before returning and processes responses inline. Shared delivery, retries and restart semantics are described in [Durable integration delivery](integration-delivery.md). The host logs and reports event-processing failures without changing connection status; connector errors still update status and notify the user. All chat events use `onEvent`.
 
 ## Runtime recovery and authorization loss
 
@@ -117,7 +117,8 @@ installation. The endpoint enforces the same provider management role as creatio
 
 `TaskManagerAgentIntegration` maps each work item to a session and prepares issue
 context and reply guidance. Inputs go directly through the same manager/runtime queue
-as chat messages, including while a turn is running. It has no durable work queue,
-turn lock or retry scheduler. Linear implements provider setup, cleanup and MCP hooks;
+as chat messages, including while a turn is running. Its family has no separate
+durable work queue, turn lock or retry scheduler; the shared manager owns delivery
+durability for all integrations. Linear implements provider setup, cleanup and MCP hooks;
 its UI panels register at the renderer composition point.
 See [Linear integration](linear-agent-integration.md) for event delivery and identity setup.

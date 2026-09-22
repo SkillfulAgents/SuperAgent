@@ -1,3 +1,7 @@
+import { testDeliveryAttempt } from './testing/delivery-attempt'
+import type { IntegrationRoute } from './types'
+import type { DeliveryAttempt } from './delivery-queue'
+vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testing/memory-delivery-store')).memoryDeliveryStore() }))
 import { inputEvent, mockChatIntegration } from '../chat-integrations/test-helpers'
 import type { IntegrationInputEvent } from './types'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -26,13 +30,13 @@ import { agentIntegrationManager } from './agent-integration-manager'
 //   5. bounded growth: many entries across many keys all drain to zero,
 //   6. removeIntegration force-drops that integration's queues only — using
 //      prefix-colliding ids ('intg' vs 'intg2') to lock in the ':' delimiter,
-//   7. a rejecting handler still self-evicts (the .catch keeps the tail resolving).
+//   7. a rejecting handler still self-evicts (the durable scheduler receives the rejection).
 // ---------------------------------------------------------------------------
 
 interface ManagerInternals {
   connections: Map<string, unknown>
   messageQueues: Map<string, unknown>
-  enqueueMessage: (integrationId: string, message: IntegrationInputEvent) => void
+  enqueueMessage: (integrationId: string, message: IntegrationInputEvent, route: IntegrationRoute, attempt: DeliveryAttempt) => Promise<void>
   enqueueSSEEvent: (integrationId: string, chatId: string, event: unknown, sessionId: string) => void
   handleIncomingMessage: (integrationId: string, message: unknown) => Promise<void>
   handleSSEEvent: (integrationId: string, chatId: string, event: unknown, sessionId: string) => Promise<void>
@@ -43,7 +47,7 @@ const mgr = agentIntegrationManager as unknown as ManagerInternals
 
 function enqueue(id: string, message: { chatId: string; text?: string }): void {
   if (!mgr.connections.has(id)) mgr.connections.set(id, { connector: mockChatIntegration({}), integration: { id } })
-  mgr.enqueueMessage(id, inputEvent(message))
+  void mgr.enqueueMessage(id, inputEvent(message), { externalId: message.chatId, action: 'run' }, testDeliveryAttempt).catch(() => {})
 }
 
 /** Let queued `.then`/`.finally` microtasks drain. */

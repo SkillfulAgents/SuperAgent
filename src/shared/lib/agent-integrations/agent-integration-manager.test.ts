@@ -1,3 +1,4 @@
+vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testing/memory-delivery-store')).memoryDeliveryStore() }))
 import * as integrationStore from './store'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { InterruptSessionResult } from '../container/types'
@@ -140,7 +141,7 @@ describe('AgentIntegration host contract', () => {
     await adapter.input('comment-one')
     await vi.waitFor(() => expect(state.mappings.size).toBe(1))
     await adapter.input('comment-two', 'follow-up')
-    await vi.waitFor(() => expect(state.send).toHaveBeenCalledWith('session-1', 'Object context: follow-up'))
+    await vi.waitFor(() => expect(state.send).toHaveBeenCalledWith('session-1', 'Object context: follow-up', expect.any(String)))
     expect(state.create).toHaveBeenCalledOnce()
     expect(state.mappings.get('installation-a:object-7')?.sessionId).toBe('session-1')
     expect(state.metadata).toHaveBeenCalledWith('session-1', { isAgentIntegrationSession: true, agentIntegrationId: 'installation-a' })
@@ -306,7 +307,7 @@ describe('AgentIntegration host contract', () => {
     const failure = new Error('Invalid route')
     vi.spyOn(adapter, 'resolveRoute').mockImplementationOnce(() => { throw failure })
 
-    await expect(adapter.input('bad-comment')).resolves.toBeUndefined()
+    await expect(adapter.input('bad-comment')).rejects.toThrow('Invalid route')
     await vi.dynamicImportSettled()
 
     expect(captureException).toHaveBeenCalledWith(failure, expect.objectContaining({

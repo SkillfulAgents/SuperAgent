@@ -1,3 +1,7 @@
+import { testDeliveryAttempt } from './testing/delivery-attempt'
+import type { IntegrationRoute } from './types'
+import type { DeliveryAttempt } from './delivery-queue'
+vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testing/memory-delivery-store')).memoryDeliveryStore() }))
 import { inputEvent, mockChatIntegration } from '../chat-integrations/test-helpers'
 import type { IntegrationInputEvent } from './types'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -44,7 +48,7 @@ import { agentIntegrationManager } from './agent-integration-manager'
 const manager = agentIntegrationManager as unknown as {
   connections: Map<string, unknown>
   lastSessionTouch: Map<string, number>
-  handleIncomingMessageInner(id: string, message: IntegrationInputEvent, integration: ChatIntegration): Promise<void>
+  handleIncomingMessageInner(id: string, message: IntegrationInputEvent, integration: ChatIntegration, route: IntegrationRoute, attempt: DeliveryAttempt): Promise<void>
   subscribeChatSession(integrationId: string, chatId: string, sessionId: string): void
 }
 const message: IncomingMessage = {
@@ -72,11 +76,11 @@ afterEach(() => {
 
 describe('chat session delivery', () => {
   it.each(['slack', 'telegram', 'imessage'] as const)('uses the shared send lifecycle for the same %s session', async (provider) => {
-    await manager.handleIncomingMessageInner('integration', inputEvent(message), integration(provider))
+    await manager.handleIncomingMessageInner('integration', inputEvent(message), integration(provider), connector.resolveRoute(inputEvent(message)), testDeliveryAttempt)
     expect(mocks.withSessionSend).toHaveBeenCalledExactlyOnceWith(
       'agent', 'existing-session', expect.objectContaining({ sendMessage: mocks.send }), expect.any(Function),
     )
-    expect(mocks.send).toHaveBeenCalledExactlyOnceWith('existing-session', 'continue')
+    expect(mocks.send).toHaveBeenCalledExactlyOnceWith('existing-session', 'continue', 'delivery-uuid')
   })
 
   it('enters the shared send lifecycle after attachment preparation', async () => {
@@ -89,14 +93,14 @@ describe('chat session delivery', () => {
       expect(prepared).toBe(true)
       await send()
     })
-    await manager.handleIncomingMessageInner('integration', inputEvent(message), integration('slack'))
+    await manager.handleIncomingMessageInner('integration', inputEvent(message), integration('slack'), connector.resolveRoute(inputEvent(message)), testDeliveryAttempt)
     expect(mocks.send).toHaveBeenCalledOnce()
   })
 
-  it('reports a shared reconnect failure without sending', async () => {
+  it('propagates a shared reconnect failure to the durable scheduler without sending', async () => {
     mocks.withSessionSend.mockRejectedValueOnce(new Error('connection unavailable'))
-    await manager.handleIncomingMessageInner('integration', inputEvent(message), integration('slack'))
+    await expect(manager.handleIncomingMessageInner('integration', inputEvent(message), integration('slack'), connector.resolveRoute(inputEvent(message)), testDeliveryAttempt)).rejects.toThrow('connection unavailable')
     expect(mocks.send).not.toHaveBeenCalled()
-    expect(mocks.notice).toHaveBeenCalledWith('chat', expect.objectContaining({ text: expect.stringContaining('Failed to send') }))
+    expect(mocks.notice).not.toHaveBeenCalled()
   })
 })

@@ -686,6 +686,29 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   statusIdx: index('chat_integrations_status_idx').on(table.status),
 }))
 
+// Locally accepted integration inputs. This tracks handoff, never ownership of a turn.
+export const integrationDeliveries = sqliteTable('integration_deliveries', {
+  id: text('id').primaryKey(), // Also the runtime message UUID
+  integrationId: text('integration_id').notNull().references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  externalId: text('external_id').notNull(),
+  eventId: text('event_id').notNull(),
+  envelope: text('envelope'),
+  sessionId: text('session_id'),
+  state: text('state', { enum: ['pending', 'preparing', 'sending', 'delivered', 'failed', 'uncertain', 'cancelled'] }).notNull().default('pending'),
+  attempts: integer('attempts').notNull().default(0),
+  owner: text('owner'),
+  nextAttemptAt: integer('next_attempt_at', { mode: 'timestamp_ms' }).notNull(),
+  noticeState: text('notice_state', { enum: ['none', 'pending', 'sending', 'sent', 'failed'] }).notNull().default('none'),
+  noticeAttempts: integer('notice_attempts').notNull().default(0),
+  error: text('error'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, table => ({
+  eventKey: uniqueIndex('integration_deliveries_event_idx').on(table.integrationId, table.externalId, table.eventId),
+  due: index('integration_deliveries_due_idx').on(table.state, table.nextAttemptAt),
+  noticeDue: index('integration_deliveries_notice_idx').on(table.noticeState, table.nextAttemptAt),
+}))
+
 // Chat integration sessions - maps external chat IDs to agent sessions (supports multi-DM)
 export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', {
   id: text('id').primaryKey(),

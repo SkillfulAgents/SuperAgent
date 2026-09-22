@@ -1,3 +1,4 @@
+import { MessageNotAcceptedError } from './message-dispatch-error'
 import { EventEmitter } from 'events'
 import { createHash, randomUUID } from 'crypto'
 import * as fs from 'fs'
@@ -3278,7 +3279,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     })
     const session = this.sessions.get(sessionId)
     if (!session) {
-      throw new Error(`Session ${sessionId} not found`)
+      throw new MessageNotAcceptedError('session-gone', `Session ${sessionId} not found`)
     }
 
     // Update last activity

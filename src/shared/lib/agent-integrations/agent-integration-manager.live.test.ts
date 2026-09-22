@@ -1,3 +1,6 @@
+import type { IntegrationInputEvent } from './types'
+import { incomingMessageSchema } from '../chat-integrations/message-schema'
+vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testing/memory-delivery-store')).memoryDeliveryStore() }))
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 
@@ -83,7 +86,7 @@ interface ManagerTestSurface {
   isRunning: boolean
   runHealthChecks(): Promise<void>
   reconnectAll(): Promise<void>
-  enqueueMessage(integrationId: string, message: IncomingMessage): void
+  enqueueMessage(integrationId: string, message: IntegrationInputEvent): Promise<void>
 }
 
 const mgr = agentIntegrationManager as unknown as ManagerTestSurface
@@ -127,14 +130,14 @@ async function waitFor(label: string, cond: () => boolean, timeoutMs: number, in
 
 describe.runIf(LIVE)('AgentIntegrationManager live reconcile against real Slack', () => {
   beforeAll(async () => {
-    mgr.isRunning = true
+    await agentIntegrationManager.start()
   })
 
   afterAll(async () => {
     const conn = connectorOf(INT)
     mgr.connections.delete(INT)
     await conn?.disconnect().catch(() => {})
-    mgr.isRunning = false
+    agentIntegrationManager.stop()
   })
 
   it('ORPHAN RECOVERY: a health tick rebuilds an integration missing from the map and clears the badge', async () => {
@@ -198,7 +201,8 @@ describe.runIf(LIVE)('AgentIntegrationManager live reconcile against real Slack'
     }
 
     const inbound: IncomingMessage[] = []
-    const enqueueSpy = vi.spyOn(mgr, 'enqueueMessage').mockImplementation((_id, msg) => {
+    const enqueueSpy = vi.spyOn(mgr, 'enqueueMessage').mockImplementation(async (_id, event) => {
+      const msg = incomingMessageSchema.parse(event.payload)
       console.log(`[live-mgr] inbound reached manager queue: ${JSON.stringify(msg.text.slice(0, 60))}`)
       inbound.push(msg)
     })

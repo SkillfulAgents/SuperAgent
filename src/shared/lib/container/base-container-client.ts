@@ -1,3 +1,4 @@
+import { MessageNotAcceptedError } from './message-dispatch-error'
 import { exec, execSync, spawn } from 'child_process'
 import path from 'path'
 import { promisify } from 'util'
@@ -1408,7 +1409,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
-    const port = await this.getPortOrThrow()
+    const port = await this.getPortOrThrow().catch(error => {
+      throw new MessageNotAcceptedError('unavailable', error instanceof Error ? error.message : 'Container unavailable', { cause: error })
+    })
     const timeoutMs = 30000 // 30 second timeout
     const effort = options?.effort
     const speed = options?.speed
@@ -1459,6 +1462,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         } catch {
           errorDetail = response.statusText
         }
+        if (response.status === 404) throw new MessageNotAcceptedError('session-gone', `Failed to send message: ${errorDetail || response.statusText}`)
         throw new Error(`Failed to send message: ${errorDetail || response.statusText}`)
       }
     } catch (error) {

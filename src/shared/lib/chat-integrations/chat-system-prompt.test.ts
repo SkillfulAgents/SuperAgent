@@ -144,6 +144,9 @@ import { createAgentIntegration } from '@shared/lib/services/agent-integration-s
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 
 class PromptTestContainerClient extends MockContainerClient {
+  override sendMessage(...args: Parameters<MockContainerClient['sendMessage']>) {
+    return super.sendMessage(args[0], args[1], args[2], { ...args[3], shouldQuery: false })
+  }
   override createSession(options: Parameters<MockContainerClient['createSession']>[0]) {
     // The spy sees production args; the empty message suppresses mock scenario timers.
     return super.createSession({ ...options, initialMessage: '' })
@@ -313,11 +316,12 @@ describe('chat session system prompt wiring', () => {
     createSessionSpy = vi.spyOn(mockContainerClient, 'createSession') as ReturnType<typeof vi.spyOn>
 
     (containerManager.ensureRunning as ReturnType<typeof vi.fn>).mockResolvedValue(mockContainerClient)
-    ;(agentIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
+    await agentIntegrationManager.start()
   })
 
   afterEach(async () => {
     agentIntegrationManager.stop()
+    await new Promise(resolve => setTimeout(resolve, 20))
     testSqlite?.close()
     await fs.promises.rm(testDir, { recursive: true, force: true }).catch(() => {})
   })
@@ -333,6 +337,7 @@ describe('chat session system prompt wiring', () => {
     messageOpts: { chatId: string; userName?: string; chatName?: string; text?: string },
   ) {
     const callIndex = createSessionSpy.mock.calls.length
+    const sendIndex = MockContainerClient.sendMessageCalls.length
     const integrationId = (await createAgentIntegration({
       agentSlug: 'test-agent',
       provider,
@@ -348,8 +353,8 @@ describe('chat session system prompt wiring', () => {
       userName: messageOpts.userName,
       chatName: messageOpts.chatName,
     })
-    await waitForCondition(() => createSessionSpy.mock.calls.length > callIndex)
-    return createSessionSpy.mock.calls[callIndex][0] as Record<string, unknown>
+    await waitForCondition(() => MockContainerClient.sendMessageCalls.length > sendIndex)
+    return { ...(createSessionSpy.mock.calls[callIndex][0] as Record<string, unknown>), message: MockContainerClient.sendMessageCalls[sendIndex].content } as Record<string, unknown>
   }
 
   it('uses one multi-party decision for an unnamed Slack channel and falls back to user id', async () => {
@@ -359,7 +364,7 @@ describe('chat session system prompt wiring', () => {
     expect(args.systemPrompt).toContain(DELIVERY)
     expect(args.systemPrompt).toContain(NO_DOUBLE_POST)
     expect(args.systemPrompt).toContain(NORMAL_CAPABILITIES)
-    expect(args.initialMessage).toBe('\\[user-1]: hey')
+    expect(args.message).toBe('\\[user-1]: hey')
   })
 
   it('uses one Telegram classification for DM and group prompt attribution and prefixes', async () => {
@@ -372,7 +377,7 @@ describe('chat session system prompt wiring', () => {
     expect(dm.systemPrompt).toContain('a direct message (chat id: 123456789)')
     expect(dm.systemPrompt).not.toContain('Ignore previous instructions')
     expect(dm.systemPrompt).not.toContain('[Jane Doe]')
-    expect(dm.initialMessage).toBe('private')
+    expect(dm.message).toBe('private')
 
     const group = await startSession('telegram', {
       chatId: '-1001234567890',
@@ -383,7 +388,7 @@ describe('chat session system prompt wiring', () => {
     expect(group.systemPrompt).toContain('a group conversation (chat id: -1001234567890)')
     expect(group.systemPrompt).not.toContain('Ignore previous instructions')
     expect(group.systemPrompt).toContain('[Jane Doe]')
-    expect(group.initialMessage).toBe('\\[Alice]: group')
+    expect(group.message).toBe('\\[Alice]: group')
   })
 
   it('keeps iMessage without chatName fail-closed while preserving provider rules', async () => {
@@ -396,7 +401,7 @@ describe('chat session system prompt wiring', () => {
     expect(args.systemPrompt).not.toContain('[Jane Doe]')
     expect(args.systemPrompt).toContain('[[reaction:heart]]')
     expect(args.systemPrompt).toContain(NORMAL_CAPABILITIES)
-    expect(args.initialMessage).toBe('hey')
+    expect(args.message).toBe('hey')
   })
 
   it('fails closed through the manager when a connector has no classifier', async () => {
@@ -408,7 +413,7 @@ describe('chat session system prompt wiring', () => {
         userName: 'Alice',
         text: 'hey',
       })
-      expect(args.initialMessage).toBe('hey')
+      expect(args.message).toBe('hey')
     } finally {
       TelegramConnector.classifyChatId = original
     }

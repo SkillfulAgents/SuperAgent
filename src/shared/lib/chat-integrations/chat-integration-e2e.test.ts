@@ -1,3 +1,4 @@
+import { MessageNotAcceptedError } from '../container/message-dispatch-error'
 /**
  * Chat integration E2E tests.
  *
@@ -188,7 +189,7 @@ describe('Chat integration E2E', () => {
 
     // connectIntegration cancels itself on a stopped manager; this harness
     // drives addIntegration directly (no start()), so mark the manager running.
-    ;(agentIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
+    await agentIntegrationManager.start()
   })
 
   afterEach(async () => {
@@ -210,8 +211,8 @@ describe('Chat integration E2E', () => {
       mockConnector.simulateIncomingMessage('Hello agent!', '123456789', 'user-1')
 
       // MockContainerClient should receive createSession with the message
-      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
-      expect(MockContainerClient.createSessionCalls[0].initialMessage).toBe('Hello agent!')
+      await waitForCondition(() => MockContainerClient.sendMessageCalls.length > 0)
+      expect(MockContainerClient.sendMessageCalls[0].content).toBe('Hello agent!')
 
       // Wait for the mock scenario to produce a response back through the connector
       await waitForCondition(() => mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0, 3000)
@@ -227,7 +228,7 @@ describe('Chat integration E2E', () => {
 
       // First message — creates session
       mockConnector.simulateIncomingMessage('First message', 'chat-1', 'user-1')
-      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
+      await waitForCondition(() => MockContainerClient.sendMessageCalls.length > 0)
 
       // Wait for response to complete before sending follow-up
       await waitForCondition(
@@ -237,10 +238,10 @@ describe('Chat integration E2E', () => {
 
       // Second message — should use sendMessage, not createSession
       mockConnector.simulateIncomingMessage('Follow-up message', 'chat-1', 'user-1')
-      await waitForCondition(() => MockContainerClient.sendMessageCalls.length > 0)
+      await waitForCondition(() => MockContainerClient.sendMessageCalls.length > 1)
 
       expect(MockContainerClient.createSessionCalls).toHaveLength(1)
-      expect(MockContainerClient.sendMessageCalls[0].content).toBe('Follow-up message')
+      expect(MockContainerClient.sendMessageCalls[1].content).toBe('Follow-up message')
     })
 
     it('creates separate sessions for different chats', async () => {
@@ -259,8 +260,8 @@ describe('Chat integration E2E', () => {
       mockConnector.simulateIncomingMessage('Hello from chat 2', 'chat-2', 'user-2')
       await waitForCondition(() => MockContainerClient.createSessionCalls.length === 2)
 
-      expect(MockContainerClient.createSessionCalls[0].initialMessage).toBe('Hello from chat 1')
-      expect(MockContainerClient.createSessionCalls[1].initialMessage).toBe('Hello from chat 2')
+      expect(MockContainerClient.sendMessageCalls[0].content).toBe('Hello from chat 1')
+      expect(MockContainerClient.sendMessageCalls[1].content).toBe('Hello from chat 2')
     })
 
     it('escapes [userName] prefix so markdown does not swallow single-word messages', async () => {
@@ -276,9 +277,9 @@ describe('Chat integration E2E', () => {
         chatName: '#general',
       })
 
-      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
+      await waitForCondition(() => MockContainerClient.sendMessageCalls.length > 0)
 
-      const sent = MockContainerClient.createSessionCalls[0].initialMessage!
+      const sent = MockContainerClient.sendMessageCalls[0].content!
       // The bracket must be escaped so markdown renders it as visible text
       expect(sent).toBe('\\[Alice]: Heyy')
       expect(sent).not.toBe('[Alice]: Heyy')
@@ -307,7 +308,7 @@ describe('Chat integration E2E', () => {
       mockConnector.simulateIncomingMessage('After clear', 'chat-1', 'user-1')
       await waitForCondition(() => MockContainerClient.createSessionCalls.length === 2)
 
-      expect(MockContainerClient.createSessionCalls[1].initialMessage).toBe('After clear')
+      expect(MockContainerClient.sendMessageCalls[1].content).toBe('After clear')
     })
   })
 
@@ -337,7 +338,7 @@ describe('Chat integration E2E', () => {
       await waitForCondition(() => MockContainerClient.createSessionCalls.length === 2)
 
       // The user's message was carried into the fresh session as its first message.
-      expect(MockContainerClient.createSessionCalls[1].initialMessage).toBe('Still there?')
+      expect(MockContainerClient.sendMessageCalls[1].content).toBe('Still there?')
 
       // The dead row is archived; a fresh non-archived row now serves this chat.
       const rows = (await listAgentIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
@@ -361,7 +362,7 @@ describe('Chat integration E2E', () => {
       ]
       await waitForCondition(() => replies().some((t) => t.includes('This is a mock response')), 3000)
 
-      expect(MockContainerClient.createSessionCalls.map((c) => c.initialMessage)).toEqual(['Yes, go ahead'])
+      expect(MockContainerClient.sendMessageCalls.map((c) => c.content)).toEqual(['Yes, go ahead'])
       const rows = (await listAgentIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
       expect(rows.find((r) => r.sessionId === phantomSessionId)?.archivedAt).toBeTruthy()
       expect(rows.find((r) => r.sessionId !== phantomSessionId && !r.archivedAt)).toBeDefined()
@@ -383,17 +384,14 @@ describe('Chat integration E2E', () => {
       // Next send fails with a TRANSIENT error (not "session not found").
       const sendSpy = vi
         .spyOn(mockContainerClient, 'sendMessage')
-        .mockRejectedValueOnce(new Error('Container is not running'))
+        .mockRejectedValueOnce(new MessageNotAcceptedError('unavailable', 'Container is not running'))
 
       const createBefore = MockContainerClient.createSessionCalls.length
       const sentBefore = mockConnector.sentMessages.length
       mockConnector.simulateIncomingMessage('Transient please', 'chat-1', 'user-1')
 
-      // Manager surfaces a retry prompt and does NOT rotate the session.
-      await waitForCondition(
-        () => mockConnector.sentMessages.slice(sentBefore).some((m) => /try again/i.test(m.message.text ?? '')),
-        3000,
-      )
+      await waitForCondition(() => sendSpy.mock.calls.length === 2, 3000)
+      expect(mockConnector.sentMessages.slice(sentBefore).some(m => /could not deliver/i.test(m.message.text))).toBe(false)
       expect(MockContainerClient.createSessionCalls.length).toBe(createBefore)
 
       const rows = (await listAgentIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
@@ -435,7 +433,7 @@ describe('Chat integration E2E', () => {
       // spending and bail — no fresh session for a chat that is no longer allowed.
       const sendSpy = vi.spyOn(mockContainerClient, 'sendMessage').mockImplementationOnce(async () => {
         await revokeChatAccess(accessId, 'owner')
-        throw new Error('Session not found')
+        throw new MessageNotAcceptedError('session-gone', 'Session not found')
       })
 
       mockConnector.simulateIncomingMessage('Are you there?', 'chat-1', 'user-1')
@@ -791,7 +789,7 @@ describe('Chat integration E2E', () => {
       await agentIntegrationManager.addIntegration(integrationId)
 
       mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
-      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
+      await waitForCondition(() => MockContainerClient.sendMessageCalls.length > 0)
 
       // Follow-up triggers typing indicator
       await waitForCondition(
@@ -808,7 +806,7 @@ describe('Chat integration E2E', () => {
       const integrationId = await createTestIntegration()
       await agentIntegrationManager.addIntegration(integrationId)
       mockConnector.simulateIncomingMessage('hi', 'chat-1', 'user-1')
-      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
+      await waitForCondition(() => MockContainerClient.sendMessageCalls.length > 0)
       await waitForCondition(() => mockConnector.typingIndicators.includes('chat-1'), 2000)
       expect(mockConnector.typingIndicators).toContain('chat-1') // came up via snapshot or event
     })
@@ -819,7 +817,7 @@ describe('Chat integration E2E', () => {
 
       // Establish a live managed session for chat-1.
       mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
-      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
+      await waitForCondition(() => MockContainerClient.sendMessageCalls.length > 0)
       await waitForCondition(
         () => mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0,
         3000,
