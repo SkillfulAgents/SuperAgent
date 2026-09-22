@@ -27,7 +27,9 @@ export const deliveryStore = {
   async due(availableIds: readonly string[]) {
     if (!availableIds.length) return []
     return db.select().from(rows).where(and(runnable(), inArray(rows.integrationId, [...availableIds]), waiting()))
-      .orderBy(asc(rows.nextAttemptAt), asc(rows.createdAt), asc(rows.id)).limit(100).all()
+      // Bursts can share both timestamps. Use database insertion order to break
+      // that tie; the random delivery UUID is an identity, not an ordering key.
+      .orderBy(asc(rows.nextAttemptAt), asc(rows.createdAt), asc(sql`${rows}.rowid`)).limit(100).all()
   },
   async nextDue(availableIds?: readonly string[]) {
     if (availableIds && !availableIds.length) return undefined

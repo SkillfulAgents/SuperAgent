@@ -50,6 +50,23 @@ describe('durable integration delivery (common SQL path)', () => {
     expect(dispatch).toHaveBeenCalledOnce()
     expect(await rows()).toHaveLength(1)
   })
+  it('dispatches equal-timestamp inputs in insertion order, independent of their random UUIDs', async () => {
+    const ids = vi.spyOn(crypto, 'randomUUID')
+      .mockReturnValueOnce('ffffffff-ffff-4fff-8fff-ffffffffffff')
+      .mockReturnValueOnce('88888888-8888-4888-8888-888888888888')
+      .mockReturnValueOnce('00000000-0000-4000-8000-000000000000')
+    try {
+      for (const id of ['first', 'second', 'third']) await deliveryStore.accept('integration', event(id), route)
+    } finally { ids.mockRestore() }
+    // Reproduce a same-millisecond burst deterministically, without sleeping or
+    // hoping random UUIDs happen to sort differently from acceptance order.
+    await database.update(integrationDeliveries).set({ nextAttemptAt: new Date(0), createdAt: new Date(0) }).run()
+    expect((await deliveryStore.due(['integration'])).map(row => row.eventId)).toEqual(['first', 'second', 'third'])
+    // Starting after acceptance also exercises ordering of persisted work.
+    await queue().start()
+    await vi.waitFor(async () => expect((await rows()).filter(row => row.state === 'delivered')).toHaveLength(3))
+    expect(dispatch.mock.calls.map(([row]) => row.eventId)).toEqual(['first', 'second', 'third'])
+  })
   it('recovers an interrupted preparation, retaining its attempt budget', async () => {
     await deliveryStore.accept('integration', event(), route)
     const row = (await rows())[0]
@@ -194,6 +211,25 @@ describe('durable integration delivery (common SQL path)', () => {
     await vi.waitFor(async () => expect((await rows()).find(row => row.integrationId === 'integration')).toMatchObject({ state: 'delivered', attempts: 2 }), { timeout: 4000 })
     expect(dispatch).toHaveBeenCalledTimes(2)
     expect((await rows()).find(row => row.integrationId === 'offline')?.attempts).toBe(0)
+  })
+  it('does not defer a retry whose deadline passes during the scheduling query', async () => {
+    await deliveryStore.accept('integration', event(), route)
+    const now = Date.now()
+    await database.update(integrationDeliveries).set({ nextAttemptAt: new Date(now + 1) }).run()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    const nextDue = deliveryStore.nextDue.bind(deliveryStore)
+    const lookup = vi.spyOn(deliveryStore, 'nextDue').mockImplementationOnce(async ids => {
+      const next = await nextDue(ids)
+      // The input was not due when pump examined it, but is due by the time
+      // the scheduling query returns. It must not fall into the 30s fallback.
+      clock.mockReturnValue(now + 1)
+      return next
+    })
+    try {
+      await queue().start()
+      await settled({ state: 'delivered' })
+      expect(dispatch).toHaveBeenCalledOnce()
+    } finally { lookup.mockRestore(); clock.mockRestore() }
   })
   it('resumes accepted work when an offline connector reconnects internally without a wake event', async () => {
     available = false

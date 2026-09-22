@@ -154,7 +154,7 @@ describe('shared manager durability with real integration storage', () => {
     } else runtime.send.mockRejectedValueOnce(new MessageNotAcceptedError('session-gone', 'Session not found'))
     runtime.create.mockRejectedValueOnce(new MessageNotAcceptedError('unavailable', 'Container stopped'))
     await adapter.input('retry-me')
-    await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === 'retry-me')).toMatchObject({ state: 'pending', sessionId: null }))
+    await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === 'retry-me')).toMatchObject({ state: 'pending', sessionId: null, attempts: 1 }))
     // A newer input creates a replacement mapping during the first input's backoff.
     await adapter.input('follow-up')
     await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === 'follow-up')?.state).toBe('delivered'))

@@ -78,7 +78,14 @@ export class IntegrationDeliveryQueue {
       if (!this.running) return
       for (const row of rows) {
         const key = JSON.stringify([row.integrationId, row.externalId, row.noticeState === 'pending' ? 'notice' : 'input'])
-        if (row.nextAttemptAt.getTime() > Date.now() || this.active.has(key) || !this.host.connectedIds().includes(row.integrationId)) continue
+        if (this.active.has(key) || !this.host.connectedIds().includes(row.integrationId)) continue
+        const delay = row.nextAttemptAt.getTime() - Date.now()
+        if (delay > 0) {
+          // Reserve this wake before another awaited query can cross the deadline
+          // and mistake newly due work for a blocked lane's 30-second fallback.
+          this.wake(Math.min(delay, 30_000))
+          continue
+        }
         const work = this.process(row).catch(error => this.report(error, 'process', row)).finally(() => {
           if (this.active.get(key) === work) this.active.delete(key)
           this.wake()

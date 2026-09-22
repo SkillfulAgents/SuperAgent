@@ -8,7 +8,9 @@ supply stable event IDs, routing, context preparation, and output delivery.
 This is a handoff queue, not a turn lock. Once the runtime accepts one input,
 another input can enter that same session immediately through the runtime's
 existing queue/steering behavior. An earlier message in retry backoff does not
-block a newer follow-up. Host failure notices have a separate scheduling lane.
+block a newer follow-up. Equal due/acceptance timestamps are ordered by database
+insertion order, never by the random delivery UUID. Host failure notices have a
+separate scheduling lane.
 
 ## Acceptance and dispatch
 
