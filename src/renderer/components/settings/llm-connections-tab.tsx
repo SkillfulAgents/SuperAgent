@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { Switch } from '@renderer/components/ui/switch'
 import { Input } from '@renderer/components/ui/input'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useUser } from '@renderer/context/user-context'
 import { useModelSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useLlmConnections, useConnectionMutation } from '@renderer/hooks/use-llm-connections'
@@ -126,22 +127,41 @@ export function LlmConnectionsTab() {
               <Pencil className="h-4 w-4" />
             </Button>
           )}
-          {connection.canDelete && (
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={`Delete ${connection.name}`}
-              disabled={mutation.isPending}
-              onClick={() =>
-                mutation.mutate(
-                  { path: `/${connection.id}`, method: 'DELETE' },
-                  { onError: (e) => toast.error(e.message) }
-                )
-              }
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          )}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex" tabIndex={!connection.canDelete ? 0 : undefined}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Delete ${connection.name}`}
+                    disabled={!connection.canDelete || mutation.isPending}
+                    onClick={() =>
+                      mutation.mutate(
+                        { path: `/${connection.id}`, method: 'DELETE' },
+                        { onError: (e) => toast.error(e.message) }
+                      )
+                    }
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-64">
+                {!connection.canManage
+                  ? connection.userId
+                    ? 'Only the owner can delete this provider.'
+                    : 'Only an administrator can delete global providers.'
+                  : connection.managed && connection.isConfigured
+                    ? 'Disconnect Platform before deleting this provider.'
+                    : !connection.canDelete
+                      ? 'Choose another provider as the app default before deleting this one.'
+                      : mutation.isPending
+                        ? 'Wait for the current change to finish.'
+                        : 'Delete provider'}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
       ))}
       {editing && (
