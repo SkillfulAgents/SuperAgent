@@ -44,7 +44,7 @@ describe('useOAuthReconnect', () => {
 
   it('returns true only after the Electron completion endpoint succeeds', async () => {
     mockApiFetch
-      .mockResolvedValueOnce(new Response(JSON.stringify({ redirectUrl: 'https://oauth.test' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ connectionId: 'connection-new', redirectUrl: 'https://oauth.test' }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     const { result } = renderHook(() => useOAuthReconnect(), { wrapper })
@@ -72,9 +72,33 @@ describe('useOAuthReconnect', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['pending-user-requests'] })
   })
 
+  it('settles only on its own connection, not an earlier sign-in that ends while it waits', async () => {
+    mockApiFetch
+      .mockResolvedValueOnce(new Response(JSON.stringify({ connectionId: 'conn-B', redirectUrl: 'https://oauth.test' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
+    const { result } = renderHook(() => useOAuthReconnect(), { wrapper })
+
+    let reconnectPromise!: Promise<boolean>
+    await act(async () => { reconnectPromise = result.current.reconnect('account-B', 'gmail') })
+    await waitFor(() => expect(oauthCallback).toBeTypeOf('function'))
+
+    // A cancelled sign-in for the same service finishes in the external browser.
+    await act(async () => { oauthCallback?.({ connectionId: 'conn-A', toolkit: 'gmail' }) })
+    // A failure that names no connection cannot be traced to this reconnect either.
+    await act(async () => { oauthCallback?.({ connectionId: null, status: 'failed', toolkit: 'gmail' }) })
+    expect(mockApiFetch).toHaveBeenCalledTimes(1)
+    expect(result.current.pendingAccountId).toBe('account-B')
+
+    await act(async () => { oauthCallback?.({ connectionId: 'conn-B', toolkit: 'gmail' }) })
+    await expect(reconnectPromise).resolves.toBe(true)
+    expect(mockApiFetch).toHaveBeenLastCalledWith('/api/connected-accounts/complete', expect.objectContaining({
+      body: JSON.stringify({ connectionId: 'conn-B', toolkit: 'gmail', reconnectAccountId: 'account-B' }),
+    }))
+  })
+
   it('returns false and leaves the request pending when OAuth completion fails', async () => {
     mockApiFetch
-      .mockResolvedValueOnce(new Response(JSON.stringify({ redirectUrl: 'https://oauth.test' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ connectionId: 'connection-bad', redirectUrl: 'https://oauth.test' }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'failed' }), { status: 500 }))
     const { result } = renderHook(() => useOAuthReconnect(), { wrapper })
 
@@ -114,7 +138,7 @@ describe('useOAuthReconnect', () => {
       if (url === '/api/connected-accounts/complete') {
         return new Promise<Response>((resolve) => { resolveComplete = resolve })
       }
-      return new Response(JSON.stringify({ redirectUrl: 'https://oauth.test' }), { status: 200 })
+      return new Response(JSON.stringify({ connectionId: 'connection-new', redirectUrl: 'https://oauth.test' }), { status: 200 })
     })
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     const { result } = renderHook(() => useOAuthReconnect(), { wrapper })

@@ -31,6 +31,9 @@ export function useOAuthReconnect() {
     const latest = ++latestRef.current
     setLaunchedAccountId(accountId)
     let canceled = false
+    // On the desktop, Cancel cannot close the external browser, so an earlier
+    // sign-in can still finish. Only this reconnect's connection completes it.
+    let connectionId: string | null = null
     try {
       const outcome = await open(async () => {
         const res = await apiFetch('/api/connected-accounts/initiate', {
@@ -47,6 +50,7 @@ export function useOAuthReconnect() {
           console.error('Failed to initiate reconnection:', data.error)
           return null
         }
+        connectionId = data.connectionId ?? null
         return data.redirectUrl
       })
       if (outcome !== 'waiting') return false
@@ -82,6 +86,8 @@ export function useOAuthReconnect() {
           unsubscribe = window.electronAPI!.onOAuthCallback(async (params) => {
             // Ignore callbacks for other toolkits; keep waiting for ours.
             if (params.toolkit && params.toolkit !== toolkit) return
+            // Only this reconnect's own connection settles the wait and completes it.
+            if (!connectionId || params.connectionId !== connectionId) return
             // Remove only this reconnect listener; other OAuth subscribers stay.
             if (!settle()) return
             if (params.connectionId && params.toolkit) {
