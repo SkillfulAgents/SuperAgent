@@ -1456,20 +1456,26 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const preserveRuntime = options?.preserveRuntime || isQueuedSessionSend(this.config.agentId, sessionId)
     let llmRuntime: Awaited<ReturnType<typeof connectionRuntime>> | undefined
     if (!preserveRuntime) {
-      const { agentRegistry } = await import('@shared/lib/agent-actor')
-      const actor = agentRegistry.get(this.config.agentId)
-      const metadata = await actor.sessions.metadata(sessionId)
-      const prefs = await actor.config.get('preferences')
-      const selected = await resolveExecutionSelection(
-        options?.model || options?.llmProviderId !== undefined
-          ? storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId)
-          : null,
-        storedSelection(metadata?.model, metadata?.llmProviderId),
-        storedSelection(prefs?.defaultModel, prefs?.defaultLlmProviderId),
-      )
-      llmRuntime = await connectionRuntime(selected, this.config.agentId)
-      rememberSessionRuntime(this.config.agentId, sessionId, llmRuntime)
-      await actor.sessions.updateMetadata(sessionId, { llmProviderId: selected.llmProviderId, model: selected.model })
+      try {
+        const { agentRegistry } = await import('@shared/lib/agent-actor')
+        const actor = agentRegistry.get(this.config.agentId)
+        const metadata = await actor.sessions.metadata(sessionId)
+        const prefs = await actor.config.get('preferences')
+        const selected = await resolveExecutionSelection(
+          options?.model || options?.llmProviderId !== undefined
+            ? storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId)
+            : null,
+          storedSelection(metadata?.model, metadata?.llmProviderId),
+          storedSelection(prefs?.defaultModel, prefs?.defaultLlmProviderId),
+        )
+        llmRuntime = await connectionRuntime(selected, this.config.agentId)
+        rememberSessionRuntime(this.config.agentId, sessionId, llmRuntime)
+        await actor.sessions.updateMetadata(sessionId, { llmProviderId: selected.llmProviderId, model: selected.model })
+      } catch (error) {
+        // Provider preparation happens before HTTP, so durable delivery can
+        // retry it without risking a second copy of the user's message.
+        throw new MessageNotAcceptedError('unavailable', error instanceof Error ? error.message : 'Provider unavailable', { cause: error })
+      }
     }
     const model = llmRuntime?.model
     const shouldQuery = options?.shouldQuery
