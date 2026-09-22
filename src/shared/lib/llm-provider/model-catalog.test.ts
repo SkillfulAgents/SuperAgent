@@ -107,6 +107,8 @@ describe('getProviderCatalog', () => {
     ['gpt-5.6-luna', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-5.6-terra', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-5.6-sol', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['gpt-6-luna', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['gpt-6-sol', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-6-astra', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['grok-4.7', ['low', 'medium', 'high', 'xhigh']],
     ['grok-4.6', ['low', 'medium', 'high', 'xhigh']],
@@ -255,6 +257,20 @@ describe('getProviderCatalog', () => {
       supportsWebFetch: false,
       pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     })
+    expect(catalog.find((m) => m.id === 'gpt-6-luna')).toMatchObject({
+      family: 'gpt',
+      supportsWebSearch: true,
+      supportsWebFetch: false,
+      pricing: { inputPerMtok: 0.1, outputPerMtok: 0.5 },
+      contextWindow: 1_050_000,
+    })
+    expect(catalog.find((m) => m.id === 'gpt-6-sol')).toMatchObject({
+      family: 'gpt',
+      supportsWebSearch: true,
+      supportsWebFetch: false,
+      pricing: { inputPerMtok: 2, outputPerMtok: 10 },
+      contextWindow: 1_050_000,
+    })
     // Astra is selectable but not the family default: the bare `gpt` alias stays on Sol.
     expect(catalog.find((m) => m.id === 'gpt-6-astra')).toMatchObject({
       family: 'gpt',
@@ -264,6 +280,8 @@ describe('getProviderCatalog', () => {
       contextWindow: 1_050_000,
     })
     expect(catalog.find((m) => m.id === 'gpt-6-astra')!.isLatest).toBeFalsy()
+    expect(catalog.find((m) => m.id === 'gpt-6-sol')!.isLatest).toBeFalsy()
+    expect(catalog.find((m) => m.id === 'gpt-6-luna')!.isLatest).toBeFalsy()
     const gptLatest = catalog.filter((m) => m.family === 'gpt' && m.isLatest)
     expect(gptLatest.map((m) => m.id)).toEqual(['gpt-5.6-sol'])
     // Grok rides the same Responses wire (xai-responses upstream); bare id only.
@@ -548,6 +566,8 @@ describe('getModelContextWindow', () => {
     expect(getModelContextWindow('gpt-5.5', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-5.4', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-5.6-sol', 'platform')).toBe(1_050_000)
+    expect(getModelContextWindow('gpt-6-sol', 'platform')).toBe(1_050_000)
+    expect(getModelContextWindow('gpt-6-luna', 'platform')).toBe(1_050_000)
   })
 
   it('returns the catalog window for Platform Grok models', () => {

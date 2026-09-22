@@ -911,6 +911,9 @@ describe('usage-service', () => {
       // OpenAI canonical ids, official snapshots, proxy snapshots, and aliases.
       ['gpt-5.5', 5, 30],
       ['gpt-5.6-sol', 5, 30],
+      ['gpt-6-sol', 2, 10],
+      ['gpt-6-luna', 0.1, 0.5],
+      ['openai/gpt-6-sol', 2, 10],
       ['openai/gpt-5.5-20260423', 5, 30],
       ['gpt-5.5-2026-04-23', 5, 30],
       ['openai/gpt-5.5-2026-04-23', 5, 30],
