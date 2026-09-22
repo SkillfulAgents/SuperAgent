@@ -351,6 +351,13 @@
       "when": 1790031377205,
       "tag": "0049_remove_linear_polling_cursors",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1790040447108,
+      "tag": "0050_ensure_linear_task_events",
+      "breakpoints": true
     }
   ]
 }

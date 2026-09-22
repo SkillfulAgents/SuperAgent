@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { sql } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../testing/create-test-database'
 import { migrationBundle } from './bundle'
+import { migrateFromBundle } from '../open-database'
 import { chatIntegrations, integrationTaskEvents, mcpAuditLog } from '../schema'
 
 let handle: TestDatabase | undefined
@@ -50,4 +51,50 @@ describe('consolidated Linear migration', () => {
     // The upgraded tables remain writable even when they existed before migration.
     await db.insert(integrationTaskEvents).values({ id: 'next', integrationId: 'kept', externalEventId: 'next', taskId: 'task', interactionId: 'thread', eventJson: '{}', createdAt: now, updatedAt: now })
   })
+})
+
+
+// createTestDatabase always opens a private :memory: database. Reconstruct old
+// schema/ledger states there to exercise the real timestamp-based boot migrator.
+it.each(['base', 'legacy-create', 'legacy-retry', 'legacy-live', 'legacy-live-on-base'])('upgrades %s through the rebased bundle without losing work', async version => {
+  handle = await createTestDatabase()
+  const db = handle.db
+  const onBase = version === 'base' || version === 'legacy-live-on-base'
+  const hasTasks = version !== 'base'
+  const hasAttempts = hasTasks && version !== 'legacy-create'
+  if (!onBase) {
+    await db.run(sql`ALTER TABLE scheduled_tasks DROP COLUMN consecutive_skips`)
+    await db.run(sql`ALTER TABLE scheduled_tasks DROP COLUMN last_skipped_at`)
+  }
+  if (!hasTasks) await db.run(sql`DROP TABLE integration_task_events`)
+  else if (!hasAttempts) await db.run(sql`ALTER TABLE integration_task_events DROP COLUMN dispatch_attempts`)
+
+  const now = new Date()
+  await db.insert(chatIntegrations).values({ id: 'kept', agentSlug: 'test', provider: 'linear', config: '{"credential":"unchanged"}', createdAt: now, updatedAt: now })
+  if (hasTasks) {
+    await db.run(sql`INSERT INTO integration_task_events
+      (id, integration_id, external_event_id, task_id, interaction_id, event_json, created_at, updated_at)
+      VALUES ('queued', 'kept', 'event', 'task', 'thread', '{}', ${now.getTime()}, ${now.getTime()})`)
+    if (hasAttempts) await db.run(sql`UPDATE integration_task_events SET dispatch_attempts = 2 WHERE id = 'queued'`)
+  }
+  const taskMigration = migrationBundle.findIndex(entry => entry.sql.some(statement => statement.includes('CREATE TABLE IF NOT EXISTS `integration_task_events`')))
+  const baseMigration = taskMigration - 1
+  const lastLegacy = version === 'legacy-create' ? taskMigration : version === 'legacy-retry' ? taskMigration + 1 : taskMigration + 2
+  // Restore the ledger each actual release would have left. Historical SQL hashes
+  // and timestamps are retained across the rebase even though filenames moved.
+  await db.run(sql`DELETE FROM __drizzle_migrations`)
+  for (const [index, entry] of migrationBundle.entries()) {
+    if (index < baseMigration || (onBase && index === baseMigration) || (hasTasks && index >= taskMigration && index <= lastLegacy)) {
+      await db.run(sql`INSERT INTO __drizzle_migrations (hash, created_at) VALUES (${entry.hash}, ${entry.folderMillis})`)
+    }
+  }
+  await migrateFromBundle(db)
+  const ledger = await db.all(sql`SELECT * FROM __drizzle_migrations`)
+  await migrateFromBundle(db)
+  expect(await db.all(sql`SELECT * FROM __drizzle_migrations`)).toEqual(ledger)
+  expect(await db.select().from(chatIntegrations)).toMatchObject([{ id: 'kept', config: '{"credential":"unchanged"}' }])
+  expect(await db.select().from(integrationTaskEvents)).toEqual(hasTasks ? [expect.objectContaining({ id: 'queued', dispatchAttempts: hasAttempts ? 2 : 0 })] : [])
+  const scheduledColumns = await db.all<{ name: string }>(sql`PRAGMA table_info(scheduled_tasks)`)
+  expect(scheduledColumns.map(column => column.name)).toEqual(expect.arrayContaining(['consecutive_skips', 'last_skipped_at']))
+  expect(await db.all(sql`SELECT name FROM sqlite_master WHERE name = 'linear_issue_sync'`)).toEqual([])
 })
