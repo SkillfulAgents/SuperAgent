@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { resolvePublicAppBaseUrl } from './app-link'
 import { agentIntegrationRegistry } from './registry'
 import { IntegrationSetupError, type IntegrationSetupContext } from './setup-types'
 
@@ -7,8 +8,9 @@ export function getIntegrationSetup(provider: string) {
   if (!setup) throw new IntegrationSetupError('Provider setup is unavailable')
   return setup
 }
-export function integrationSetupContext(provider: string, origin: string, agentSlug: string, userId?: string): IntegrationSetupContext {
-  const baseUrl = process.env.HOST_PUBLIC_URL?.trim().replace(/\/+$/, '') || origin
+export function integrationSetupContext(provider: string, request: Request | string, agentSlug: string, userId?: string): IntegrationSetupContext {
+  const baseUrl = resolvePublicAppBaseUrl(request)
+  if (!baseUrl) throw new IntegrationSetupError('Public app URL is unavailable')
   return { agentSlug, userId, callbackUrl: `${baseUrl}/api/agent-integrations/providers/${encodeURIComponent(provider)}/callback` }
 }
 export async function prepareIntegrationSetup(provider: string, input: unknown, context: IntegrationSetupContext, fromAgent = false) {
@@ -18,10 +20,10 @@ export async function prepareIntegrationSetup(provider: string, input: unknown, 
 }
 export async function testIntegrationCredentials(provider: string, input: unknown) {
   const setup = getIntegrationSetup(provider)
-  if (!setup.testCredentials) throw new IntegrationSetupError('This provider requires interactive authorization')
+  if (!setup.testCredentials) throw new IntegrationSetupError('Credentials are verified when this integration connects')
   return setup.testCredentials(input)
 }
-export function setupError(error: unknown): { error: string; status: 400 | 401 | 403 | 404 | 429 } | undefined {
+export function setupError(error: unknown): { error: string; status: 400 | 403 | 404 | 429 } | undefined {
   if (error instanceof IntegrationSetupError) return { error: error.message, status: error.status }
   if (error instanceof z.ZodError) return { error: error.issues[0]?.message ?? 'Invalid integration settings', status: 400 }
 }

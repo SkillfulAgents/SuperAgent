@@ -94,7 +94,7 @@ xAgentChat.post('/add', async (c) => {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
-    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, new URL(c.req.url).origin, callerSlug), true)
+    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, callerSlug), true)
 
     let id: string
     try {
@@ -102,7 +102,8 @@ xAgentChat.post('/add', async (c) => {
         agentSlug: callerSlug,
         provider,
         name,
-        config,
+        config: prepared.config,
+        status: prepared.status,
       })
     } catch (err) {
       if (err instanceof DuplicateIntegrationIdentityError) {

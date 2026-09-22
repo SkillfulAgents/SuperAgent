@@ -7,6 +7,7 @@ import { db } from '@shared/lib/db'
 import { changesOf, insertWhere } from '@shared/lib/db/batch'
 import { chatIntegrations, chatIntegrationSessions } from '@shared/lib/db/schema'
 import type { ChatIntegration, NewChatIntegration } from '@shared/lib/db/schema'
+import type { IntegrationStatus } from '../agent-integrations/types'
 import { agentIntegrationRegistry } from '../agent-integrations/registry'
 import { integrationConfigSchema } from '../agent-integrations/config-schema'
 import { captureException } from '@shared/lib/error-reporting'
@@ -36,7 +37,7 @@ export interface CreateAgentIntegrationParams {
   agentSlug: string
   provider: string
   name?: string
-  status?: 'active' | 'paused' | 'error' | 'disconnected'
+  status?: IntegrationStatus
   config: Record<string, unknown>
   showToolCalls?: boolean
   sessionTimeout?: number | null
@@ -55,7 +56,7 @@ export interface UpdateAgentIntegrationParams {
   model?: string | null
   effort?: string | null
   speed?: string | null
-  status?: 'active' | 'paused' | 'error' | 'disconnected'
+  status?: IntegrationStatus
   errorMessage?: string | null
 }
 

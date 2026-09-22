@@ -1,5 +1,5 @@
-import { afterEach, describe, it, expect } from 'vitest'
-import { resolveAppLinkContext, withSessionUrl } from './app-link'
+import { afterEach, describe, it, expect, vi } from 'vitest'
+import { resolveAppLinkContext, resolvePublicAppBaseUrl, withSessionUrl } from './app-link'
 
 describe('resolveAppLinkContext', () => {
   const originalType = (process as { type?: string }).type
@@ -113,5 +113,29 @@ describe('withSessionUrl', () => {
 
   it('passes through undefined context', () => {
     expect(withSessionUrl(undefined, 'sess-1')).toBeUndefined()
+  })
+})
+
+
+describe('resolvePublicAppBaseUrl', () => {
+  afterEach(() => vi.unstubAllEnvs())
+  it('prefers the configured public URL and preserves path prefixes', () => {
+    vi.stubEnv('HOST_PUBLIC_URL', ' https://public.example/gamut/// ')
+    const request = new Request('http://internal:3000/path', { headers: { 'X-Forwarded-Host': 'proxy.example', 'X-Forwarded-Proto': 'https' } })
+    expect(resolvePublicAppBaseUrl(request)).toBe('https://public.example/gamut')
+  })
+  it.each([
+    [{ 'X-Forwarded-Host': 'public.example:8443', 'X-Forwarded-Proto': 'https' }, 'https://public.example:8443'],
+    [{ 'X-Forwarded-Host': 'public.example, internal', 'X-Forwarded-Proto': 'https, http' }, 'https://public.example'],
+    [{ 'X-Forwarded-Proto': 'https' }, 'https://internal:3000'],
+    [{ 'X-Forwarded-Host': 'bad.example/path', 'X-Forwarded-Proto': 'javascript' }, 'http://internal:3000'],
+    [{}, 'http://internal:3000'],
+  ])('resolves forwarded origin %j without retaining the API path', (headers, expected) => {
+    vi.stubEnv('HOST_PUBLIC_URL', '')
+    expect(resolvePublicAppBaseUrl(new Request('http://internal:3000/api/setup', { headers }))).toBe(expected)
+  })
+  it('supports a direct local request without proxy headers', () => {
+    vi.stubEnv('HOST_PUBLIC_URL', '')
+    expect(resolvePublicAppBaseUrl('http://localhost:3000/path')).toBe('http://localhost:3000')
   })
 })

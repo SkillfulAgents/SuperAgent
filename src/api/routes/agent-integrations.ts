@@ -55,20 +55,25 @@ async function completeAuthorization(c: Context) {
     if (result.cancelled || !result.integrationId) return c.html('<h1>Authorization cancelled</h1><p>Return to Gamut to try again.</p>', 400)
     const installed = await getAgentIntegration(result.integrationId)
     if (installed?.provider !== c.req.param('provider')) throw new Error('Authorization belongs to another provider')
-    try { await agentIntegrationManager.addIntegration(result.integrationId) }
+    try { await agentIntegrationManager.resumeIntegration(result.integrationId) }
     catch (error) {
       captureException(error, { tags: { component: 'agent-integration', operation: 'initial-connect' } })
       return c.html('<h1>Account authorized</h1><p>Event delivery is temporarily unavailable and will retry automatically. You can close this window and return to Gamut.</p>')
     }
     return c.html('<h1>Account connected</h1><p>You can close this window and return to Gamut.</p>')
   } catch (error) {
-    captureException(error, { tags: { component: 'agent-integration', operation: 'authorization-callback' } })
+    if (!setupError(error)) captureException(error, { tags: { component: 'agent-integration', operation: 'authorization-callback' } })
     return c.html('<h1>Could not authorize account</h1><p>Return to Gamut and check the app credentials, workspace and permissions.</p>', 400)
   }
 }
 agentIntegrationsRouter.get('/providers/:provider/callback', completeAuthorization)
 // Existing installed apps may retain this shorter callback URL.
-agentIntegrationsRouter.get('/:provider/callback', completeAuthorization)
+agentIntegrationsRouter.get('/:provider/callback', async (c, next) => {
+  const provider = c.req.param('provider')
+  // Only actual callback providers own this alias; /agents/callback is a list URL.
+  if (!agentIntegrationRegistry.getDefinition(provider) || !agentIntegrationRegistry.getProvider(provider).setup?.callback) return next()
+  return completeAuthorization(c)
+})
 agentIntegrationsRouter.use('*', Authenticated())
 agentIntegrationsRouter.get('/agents/:id', ResolveAgent(), AgentRead(), listAgentIntegrationsHandler)
 
@@ -140,7 +145,7 @@ agentIntegrationsRouter.get('/agents/:id/providers/:provider/setup', ResolveAgen
   try {
     const provider = c.req.param('provider')
     const { name } = integrationSetupQuerySchema.parse(c.req.query())
-    const context = integrationSetupContext(provider, new URL(c.req.url).origin, getAgentId(c), getCurrentUserId(c))
+    const context = integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
     const metadata = await getIntegrationSetup(provider).describe?.(context, name) ?? {}
     return c.json(integrationSetupMetadataSchema.parse(metadata))
   } catch (error) {
@@ -169,7 +174,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
-    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, new URL(c.req.url).origin, agentSlug, getCurrentUserId(c)))
+    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, agentSlug, getCurrentUserId(c)))
 
     // Get the authenticated user ID if available
     const user = c.get('user' as never) as { id: string } | undefined
@@ -245,8 +250,11 @@ agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('
     const authorization = getIntegrationSetup(row.provider).authorize
     if (!authorization) return c.json({ error: 'This provider does not use external authorization' }, 400)
     const input = authorization.inputSchema.parse(await c.req.json())
+    const result = await authorization.run(row, input, integrationSetupContext(row.provider, c.req.raw, row.agentSlug, getCurrentUserId(c)))
+    // Validation, credential lookup and attempt persistence may fail. Keep the
+    // current account running until the provider has a usable authorization URL.
     await agentIntegrationManager.pauseIntegration(row.id)
-    return c.json(await authorization.run(row, input, integrationSetupContext(row.provider, new URL(c.req.url).origin, row.agentSlug, getCurrentUserId(c))))
+    return c.json(result)
   } catch (error) {
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)
