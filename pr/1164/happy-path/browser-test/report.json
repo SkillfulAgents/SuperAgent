@@ -1,24 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature test: Agent successfully opened a browser, navigated to https://example.com, retrieved the page title, and reported \"Example Domain\" back to the user",
+  "reason": "Browser navigation functionality test - Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported the result",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage with agent list visible in sidebar",
-    "Step 2 - Found and clicked agent \"QA-20260922-211719-9kmj\" in the sidebar — Successfully opened the agent's configuration page with empty chat interface",
-    "Step 3 - Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message successfully entered into the text input box and send button became enabled",
-    "Step 4 - Clicked the send button to submit the message — Message was successfully sent, a new session \"Browser Page Title Lookup\" was created, and the agent entered \"working\" state",
-    "Step 5 - Waited for agent response (timeout: 3 minutes) — Agent completed work in 11 seconds after making 3 tool calls, consuming 147,944 tokens",
-    "Step 6 - Verified response mentions \"Example Domain\" — Response successfully retrieved and clearly states: \"The page title at https://example.com is \\\"Example Domain\\\". I've closed the browser.\""
+    "Navigated to http://localhost:47891 - Successfully loaded the Gamut home page with sidebar showing available agents",
+    "Found and clicked \"QA-20260922-215608-95gk\" agent in the sidebar - Successfully opened the agent interface and chat session",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field - Message successfully entered in the textbox",
+    "Clicked send button to submit the message - Message successfully sent, agent status changed to \"working\"",
+    "Waited for agent response (within 3-minute timeout) - Agent completed in approximately 8 seconds, working status changed to idle",
+    "Verified response content mentions \"Example Domain\" - CONFIRMED: Agent response states \"The page title is \\\"Example Domain\\\". The page at https://example.com loaded normally (HTTP 200), and I've closed the browser.\"",
+    "Took screenshot of the response - Successfully captured the chat interface showing the user message and agent response with \"Example Domain\" clearly visible"
   ],
   "bugs": [],
-  "durationMs": 71067,
-  "sessionId": "4b960e48-796f-4286-b90b-d4b0d1ca454e",
+  "durationMs": 69643,
+  "sessionId": "891122f8-748b-4672-810c-ee716fae77f2",
   "cost": {
-    "inputTokens": 458,
-    "outputTokens": 11034,
-    "cacheCreationTokens": 88727,
-    "cacheReadTokens": 1482739,
+    "inputTokens": 320,
+    "outputTokens": 8661,
+    "cacheCreationTokens": 72865,
+    "cacheReadTokens": 915891,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.314811
+    "totalCostUsd": 0.226295
   }
 }
