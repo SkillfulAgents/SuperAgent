@@ -364,9 +364,9 @@ export function ChatIntegrationSetupForm({
       </>}
     >
       <IntegrationSetupField
-        id="setup-integration-name" label="Agent name"
+        id="setup-integration-name" label="Integration name"
         value={integrationName} onChange={e => setIntegrationName(e.target.value)}
-        placeholder={`My ${info.label} Bot`}
+        placeholder={`My ${info.label} integration`}
       />
 
       {info.fields.map(field => (

@@ -1,5 +1,10 @@
-import { afterEach, describe, it, expect, vi } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { resolveAppLinkContext, resolvePublicAppBaseUrl, withSessionUrl } from './app-link'
+
+const settings = vi.hoisted(() => ({ auth: { trustedOrigins: [] as string[] } }))
+vi.mock('@shared/lib/config/settings', () => ({ getSettings: () => settings }))
+beforeEach(() => { vi.stubEnv('TRUSTED_ORIGINS', ''); settings.auth.trustedOrigins = [] })
+afterEach(() => vi.unstubAllEnvs())
 
 describe('resolveAppLinkContext', () => {
   const originalType = (process as { type?: string }).type
@@ -118,21 +123,33 @@ describe('withSessionUrl', () => {
 
 
 describe('resolvePublicAppBaseUrl', () => {
-  afterEach(() => vi.unstubAllEnvs())
+  const forwarded = { 'X-Forwarded-Host': 'untrusted.example:8443', 'X-Forwarded-Proto': 'https' }
   it('prefers the configured public URL and preserves path prefixes', () => {
     vi.stubEnv('HOST_PUBLIC_URL', ' https://public.example/gamut/// ')
-    const request = new Request('http://internal:3000/path', { headers: { 'X-Forwarded-Host': 'proxy.example', 'X-Forwarded-Proto': 'https' } })
+    vi.stubEnv('TRUSTED_ORIGINS', 'https://trusted.example')
+    const request = new Request('http://internal:3000/path', { headers: forwarded })
     expect(resolvePublicAppBaseUrl(request)).toBe('https://public.example/gamut')
   })
-  it.each([
-    [{ 'X-Forwarded-Host': 'public.example:8443', 'X-Forwarded-Proto': 'https' }, 'https://public.example:8443'],
-    [{ 'X-Forwarded-Host': 'public.example, internal', 'X-Forwarded-Proto': 'https, http' }, 'https://public.example'],
-    [{ 'X-Forwarded-Proto': 'https' }, 'https://internal:3000'],
-    [{ 'X-Forwarded-Host': 'bad.example/path', 'X-Forwarded-Proto': 'javascript' }, 'http://internal:3000'],
-    [{}, 'http://internal:3000'],
-  ])('resolves forwarded origin %j without retaining the API path', (headers, expected) => {
+  it('uses the first configured trusted origin for callbacks and integration links', () => {
     vi.stubEnv('HOST_PUBLIC_URL', '')
-    expect(resolvePublicAppBaseUrl(new Request('http://internal:3000/api/setup', { headers }))).toBe(expected)
+    vi.stubEnv('TRUSTED_ORIGINS', ' https://public.example/, https://second.example ')
+    expect(resolvePublicAppBaseUrl(new Request('http://internal:3000/api/setup', { headers: forwarded }))).toBe('https://public.example')
+    expect(resolveAppLinkContext('agent')).toEqual({ isDesktop: false, url: 'https://public.example/agents/agent' })
+  })
+  it('uses the same saved-settings fallback as authentication', () => {
+    vi.stubEnv('HOST_PUBLIC_URL', '')
+    settings.auth.trustedOrigins = ['https://settings.example/']
+    expect(resolvePublicAppBaseUrl(new Request('http://internal:3000/api/setup', { headers: forwarded }))).toBe('https://settings.example')
+  })
+  it.each<Record<string, string>>([
+    forwarded,
+    { 'X-Forwarded-Host': 'public.example, internal', 'X-Forwarded-Proto': 'https, http' },
+    { 'X-Forwarded-Proto': 'https' },
+    { 'X-Forwarded-Host': 'bad.example/path', 'X-Forwarded-Proto': 'javascript' },
+    {},
+  ])('ignores client-supplied forwarded headers without configured public origins: %j', headers => {
+    vi.stubEnv('HOST_PUBLIC_URL', '')
+    expect(resolvePublicAppBaseUrl(new Request('http://localhost:3000/api/setup', { headers }))).toBe('http://localhost:3000')
   })
   it('supports a direct local request without proxy headers', () => {
     vi.stubEnv('HOST_PUBLIC_URL', '')

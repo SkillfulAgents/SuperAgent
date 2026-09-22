@@ -1,3 +1,5 @@
+import { getTrustedOrigins } from '../auth/trusted-origins'
+
 /** Where to send the user when an integration can't fulfill a request. */
 export interface AppLinkContext {
   isDesktop: boolean
@@ -5,23 +7,14 @@ export interface AppLinkContext {
 }
 
 /** Canonical public base for integration links and OAuth callbacks.
- * Reverse proxies must overwrite forwarded host/proto headers at the edge.
- * HOST_PUBLIC_URL takes precedence, including deployments under a path prefix.
+ * HOST_PUBLIC_URL takes precedence, then the documented first trusted origin.
+ * Client-supplied forwarded headers cannot select the callback host or protocol.
  */
 export function resolvePublicAppBaseUrl(request?: Request | string): string | null {
-  const configured = process.env.HOST_PUBLIC_URL?.trim().replace(/\/+$/, '')
-  if (configured) return configured
+  const configured = process.env.HOST_PUBLIC_URL?.trim() || getTrustedOrigins()[0]?.trim()
+  if (configured) return configured.replace(/\/+$/, '')
   if (!request) return null
-  const url = URL.parse(typeof request === 'string' ? request : request.url)
-  if (!url) return null
-  if (typeof request === 'string') return url.origin
-  const forwardedHost = request.headers.get('x-forwarded-host')?.split(',')[0].trim()
-  const forwardedProtocol = request.headers.get('x-forwarded-proto')?.split(',')[0].trim()
-  // A forwarded host replaces the internal port too. Preserve host/port when
-  // only TLS termination is forwarded; reject paths, user-info and non-HTTP schemes.
-  const host = forwardedHost && !/[\s/\\?#@]/.test(forwardedHost) ? forwardedHost : url.host
-  const protocol = forwardedProtocol === 'https' || forwardedProtocol === 'http' ? `${forwardedProtocol}:` : url.protocol
-  return URL.parse(`${protocol}//${host}`)?.origin ?? url.origin
+  return URL.parse(typeof request === 'string' ? request : request.url)?.origin ?? null
 }
 
 /**

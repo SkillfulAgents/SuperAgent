@@ -181,10 +181,11 @@ it('reserves the agent list URL for an agent named callback and enforces authent
   expect(await response.json()).toEqual([])
   expect(runtime.resume).not.toHaveBeenCalled()
 })
-it('describes the public callback behind a TLS-terminating proxy', async () => {
+it('uses the configured trusted origin behind a TLS-terminating proxy', async () => {
   vi.stubEnv('HOST_PUBLIC_URL', '')
+  vi.stubEnv('TRUSTED_ORIGINS', 'https://gamut.example')
   const response = await app.request('http://internal:3000/api/agent-integrations/agents/agent/providers/test-oauth/setup', {
-    headers: { ...headers, 'X-Forwarded-Host': 'gamut.example', 'X-Forwarded-Proto': 'https' },
+    headers: { ...headers, 'X-Forwarded-Host': 'untrusted.example', 'X-Forwarded-Proto': 'http' },
   })
   expect(response.status).toBe(200)
   expect(await response.json()).toMatchObject({ redirectUri: 'https://gamut.example/api/agent-integrations/providers/test-oauth/callback' })

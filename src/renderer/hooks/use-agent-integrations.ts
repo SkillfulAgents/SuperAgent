@@ -380,9 +380,11 @@ export function useAuthorizeAgentIntegration() {
       const response = await apiFetch(`/api/agent-integrations/${id}/authorize`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config),
       })
-      const result = await response.json()
-      if (!response.ok) throw new Error(result.error ?? 'Could not authorize integration')
-      return result as { url: string }
+      if (!response.ok) {
+        const result = await response.json().catch(() => null)
+        throw new Error(typeof result?.error === 'string' && result.error ? result.error : 'Could not authorize integration')
+      }
+      return await response.json() as { url: string }
     },
     onSuccess: (_, { id, agentSlug }) => Promise.all([
       queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(id) }),
