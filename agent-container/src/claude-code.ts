@@ -24,6 +24,7 @@ import { computerUseTools } from './tools/computer-use';
 import { fileHooks, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
 import { promptDate } from './prompt-date';
+import { prepareResumeDiagnostics } from './resume-diagnostics';
 
 /**
  * `Query` plus the `cancel_async_message` control request, which drops a queued
@@ -906,7 +907,9 @@ export class ClaudeCodeProcess extends EventEmitter {
       console.log(`[Session ${this.sessionId}] createQuery: claiming pre-warmed subprocess`);
       return warm.query(this.messageQueue!);
     }
-    return query({ prompt: this.messageQueue!, options: this.buildQueryOptions() });
+    const options = this.buildQueryOptions();
+    if (options.resume) prepareResumeDiagnostics(options.resume, options.env?.CLAUDE_CONFIG_DIR);
+    return query({ prompt: this.messageQueue!, options });
   }
 
   /**
@@ -1895,6 +1898,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
     console.log(`[Session ${this.sessionId}] Restarting session`);
     this.stopping = false;
+    await this.queryInstance?.return(undefined);
     this.initializeQuery();
     this.processingDone = this.processMessages();
   }
@@ -1973,6 +1977,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       ]);
     }
 
+    await this.queryInstance?.return(undefined);
     this.isReady = false;
     this.queryInstance = null;
     this.messageQueue = null;
@@ -2238,6 +2243,10 @@ export class ClaudeCodeProcess extends EventEmitter {
 
     // Abort the current query
     this.abortController!.abort();
+
+    // Drain SDK teardown before replacing a transcript or resuming it. The
+    // message iterator can finish before the child has flushed and exited.
+    await this.queryInstance?.return(undefined);
 
     // Wait for the current processing to stop
     await new Promise<void>((resolve) => {
