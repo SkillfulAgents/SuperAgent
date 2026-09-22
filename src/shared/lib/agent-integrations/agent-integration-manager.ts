@@ -122,7 +122,7 @@ export class AgentIntegrationManager {
   // Invalidate connects immediately, then serialize status writes so an already
   // executing resume/error write cannot land after a completed pause.
   private pausedIds = new Set<string>()
-  private statusWrites = new Map<string, Promise<void>>()
+  private statusWrites = new Map<string, Promise<unknown>>()
   // Bumped synchronously each time a chat session is cleared (see noteSessionClear).
   private sessionClears = 0
   // Session row ids whose clear has begun (see noteSessionClear); the row may
@@ -261,16 +261,16 @@ export class AgentIntegrationManager {
     return this.generations.get(id) ?? 0
   }
 
-  private async writeStatus(id: string, generation: number, ...update: [status: IntegrationStatus, error?: string | null, allowReconnect?: boolean]): Promise<void> {
+  private async writeStatus(id: string, generation: number, ...update: [status: IntegrationStatus, error?: string | null, expectedConfig?: string]): Promise<boolean | undefined> {
     const previous = this.statusWrites.get(id) ?? Promise.resolve()
     const write = previous.catch(() => {}).then(async () => {
       if (this.generationOf(id) !== generation || (this.pausedIds.has(id) && update[0] !== 'paused')) return
       // A credential invalidation can originate outside this connector (MCP).
       // It must not be overwritten by an in-flight transport error/recovery.
-      await updateIntegrationStatus(id, ...update)
+      return updateIntegrationStatus(id, ...update)
     })
     this.statusWrites.set(id, write)
-    try { await write }
+    try { return await write }
     finally { if (this.statusWrites.get(id) === write) this.statusWrites.delete(id) }
   }
 
@@ -464,7 +464,8 @@ export class AgentIntegrationManager {
     const integration = await getIntegration(id)
     if (!integration) throw new Error(`Chat integration ${id} not found`)
     if (this.generationOf(id) !== generation) return
-    await this.writeStatus(id, generation, 'active', null, true)
+    // A token invalidation or replacement after the read must win this activation.
+    if (await this.writeStatus(id, generation, 'active', null, integration.config) === false) return
     if (this.generationOf(id) !== generation) return
     await this.connectIntegration({ ...integration, status: 'active' }, generation)
   }

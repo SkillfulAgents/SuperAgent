@@ -832,3 +832,13 @@ it('ignores mismatched and malformed session request frames', async () => {
   await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
   expect(adapter.outputs[0].output.type).toBe('turn-completed')
 })
+
+
+it('does not connect when the activation credential revision was invalidated during resume', async () => {
+  state.rows[0].status = 'paused'
+  const activate = vi.mocked(updateAgentIntegrationStatus).mockResolvedValueOnce(false)
+  const connecting = vi.spyOn(adapter, 'connect')
+  await manager.resumeIntegration('installation-a')
+  expect(activate).toHaveBeenCalledWith('installation-a', 'active', null, state.rows[0].config)
+  expect(connecting).not.toHaveBeenCalled()
+})

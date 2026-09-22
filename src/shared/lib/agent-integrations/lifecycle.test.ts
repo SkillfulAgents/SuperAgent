@@ -25,7 +25,9 @@ describe('terminal integration authorization loss', () => {
         expect(await updateAgentIntegrationStatus(id, 'error', 'Late transport failure')).toBe(false)
         expect(await updateAgentIntegrationStatus(id, 'active')).toBe(false)
         expect((await getAgentIntegration(id))?.status).toBe('disconnected')
-        expect(await updateAgentIntegrationStatus(id, 'active', null, true)).toBe(true)
+        expect(await updateAgentIntegrationStatus(id, 'active', null, before.config)).toBe(false)
+        expect((await getAgentIntegration(id))?.status).toBe('disconnected')
+        expect(await updateAgentIntegrationStatus(id, 'active', null, after.config)).toBe(true)
       }
     } finally { unsubscribe() }
   })
