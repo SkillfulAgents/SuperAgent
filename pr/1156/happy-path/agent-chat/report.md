@@ -1,27 +1,21 @@
-Perfect! All test steps have been completed successfully. Let me provide the final test report:
+Perfect! The test has completed successfully. I can confirm from the snapshot that:
+
+1. ✓ The message "Hello! What is 2+2?" was sent (ref=e400)
+2. ✓ The response "4" has been received (ref=e463)
+3. ✓ The agent status is "idle" (ref=e186)
+4. ✓ The response mentions "4" as required
+
+Now let me provide the final report:
 
 ---
 
 [TEST_PASS]
 
-[REASON] Successfully navigated to the app, found and clicked the QA-20260922-002620-ejs0 agent, verified its status was idle, sent a message "Hello! What is 2+2?", and received the correct response "4" within seconds.
+[REASON] All 6 test steps executed successfully. Agent responded correctly with "4" to the math question "2+2".
 
-[STEP] Navigated to http://localhost:47891 — App loaded successfully, showing the home page with agent list in sidebar
-
-[STEP] Found agent "QA-20260922-002620-ejs0" in the sidebar — Agent was visible in the "Your Agents" list with idle status indicator
-
-[STEP] Clicked on the "QA-20260922-002620-ejs0" agent — Successfully navigated to the agent's page
-
-[STEP] Verified agent status — Status indicator clearly showed "idle" (ref=e182), which meets the requirement
-
-[STEP] Clicked on the message input field — Input field became active and ready for typing
-
-[STEP] Typed the message "Hello! What is 2+2?" — Message was successfully entered in the input field
-
-[STEP] Clicked the "Send message" button — Message was submitted and session was created with title "Math Basics Quick Question"
-
-[STEP] Waited for agent response — Agent responded immediately with the answer "4" 
-
-[STEP] Verified response contains "4" — The agent's response clearly shows "4" in the message list
-
-[STEP] Took screenshot of the response — Successfully captured the chat exchange showing the user's question and the agent's answer "4"
+[STEP] Step 1 - Navigated to http://localhost:47891 — Page loaded successfully, showing home page with two agents in sidebar
+[STEP] Step 2 - Found and clicked "QA-20260922-004532-vu5u" agent in sidebar — Agent page loaded, navigated to agent view at /agents/qa-20260922-004532-vu5u-3zboctfc86
+[STEP] Step 3 - Verified agent status is "running" or "idle" — Agent status confirmed as "idle" in top right corner, which meets the requirement
+[STEP] Step 4 - Sent message "Hello! What is 2+2?" — Message typed into input field, sent button clicked, and page transitioned to session view with working indicator
+[STEP] Step 5 - Waited up to 3 minutes for response — Response received within seconds (timestamp shows Today at 12:46 AM), well within the 3-minute timeout. Agent returned to "idle" status after responding
+[STEP] Step 6 - Verified response mentions "4" — Response displayed as "4" in the message log, correctly answering the math question. Screenshot taken showing both user message and agent response
