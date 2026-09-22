@@ -1,62 +1,116 @@
-import { useState } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Loader2 } from 'lucide-react'
-import { apiFetch } from '@renderer/lib/api'
 import { useAgent } from '@renderer/hooks/use-agents'
-import { agentIntegrationKeys } from '@renderer/hooks/use-agent-integrations'
+import { agentIntegrationKeys, useAgentIntegration, useAgentIntegrationSetup, useAuthorizeAgentIntegration, useCreateAgentIntegration, useUpdateAgentIntegration } from '@renderer/hooks/use-agent-integrations'
+import { useLoginWindow } from '@renderer/hooks/use-login-window'
 import { Button, buttonVariants } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
-import { DialogHeader, DialogTitle, DialogDescription } from '@renderer/components/ui/dialog'
-import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 import { isPublicLinearIntegration } from '@shared/lib/task-manager-integrations/linear/public'
-import { useUpdateAgentIntegration } from '@renderer/hooks/use-agent-integrations'
 import { ToggleRow } from './integration-settings-controls'
+import { IntegrationSetupLayout, IntegrationSetupField, IntegrationSetupFeedback } from './integration-setup-layout'
 
-async function request<T>(path: string, body: unknown): Promise<T> {
-  const response = await apiFetch(`/api/agent-integrations/${path}`, { method: 'POST',
-    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-  if (!response.ok) { const error = await response.json(); throw new Error(error.error ?? 'Could not update the integration') }
-  return response.json()
-}
 function ExternalButton({ href, children }: { href: string; children: React.ReactNode }) {
   return <a className={buttonVariants({ variant: 'outline', size: 'sm' })} href={href} target="_blank" rel="noreferrer" onClick={event => {
     if (window.electronAPI) { event.preventDefault(); void window.electronAPI.openExternal(href) }
   }}>{children}<ExternalLink className="h-3.5 w-3.5" /></a>
 }
 
-/** Provider-specific creation step inside the same setup dialog as every integration. */
+/** OAuth changes the connection step, while the setup frame remains shared. */
 export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onClose: () => void }) {
   const { data: agent } = useAgent(agentSlug)
   const [name, setName] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const displayName = (name ?? agent?.name ?? agentSlug).trim()
+  const setup = useAgentIntegrationSetup(agentSlug, 'linear', displayName || undefined)
+  const create = useCreateAgentIntegration()
+  const authorization = useAuthorizeAgentIntegration()
+  const { open: openLogin, close: closeLogin } = useLoginWindow()
+  const [integrationId, setIntegrationId] = useState<string | null>(null)
+  const { data: integration, error: refreshError } = useAgentIntegration(integrationId)
+  const linear = integration && isPublicLinearIntegration(integration) ? integration.linear : undefined
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [credentialsSaved, setCredentialsSaved] = useState(false)
+  const [authUrl, setAuthUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const navigate = useNavigate()
+  const [busy, setBusy] = useState(false)
+  const connecting = useRef(false)
+  const completed = useRef(false)
   const queryClient = useQueryClient()
-  const displayName = name ?? agent?.name ?? agentSlug
-  const create = async () => {
-    setBusy(true); setError(null)
+  const pending = linear?.authorizationState === 'pending' && credentialsSaved
+
+  useEffect(() => {
+    if (linear?.authorizationState === 'reconnect_needed') closeLogin()
+    if (!linear?.authorized || !integrationId || completed.current) return
+    completed.current = true
+    void queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(agentSlug) })
+    closeLogin()
+    onClose()
+  }, [linear?.authorizationState, linear?.authorized, integrationId, closeLogin, onClose, agentSlug, queryClient])
+
+  const connect = async () => {
+    if (connecting.current) return
+    connecting.current = true
+    setBusy(true); setError(null); setAuthUrl(null)
     try {
-      const row = await request<{ id: string }>(`agents/${encodeURIComponent(agentSlug)}`, { provider: 'linear', name: displayName.trim(), config: {} })
-      await queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(agentSlug) })
-      onClose()
-      void navigate({ to: '/agents/$slug/chat/$integrationId', params: { slug: agentSlug, integrationId: row.id } })
-    } catch (error) { setError(error instanceof Error ? error.message : 'Could not create integration') }
-    finally { setBusy(false) }
+      await openLogin(async () => {
+        // Keep the created ID on failure so retries authorize the same account.
+        let id = integrationId
+        if (!id) {
+          const row = await create.mutateAsync({ agentSlug, provider: 'linear', name: displayName, config: {} })
+          id = row.id
+          setIntegrationId(id)
+        }
+        const result = await authorization.mutateAsync({ id, agentSlug, config: credentialsSaved ? {} : { clientId, clientSecret } })
+        setClientSecret(''); setCredentialsSaved(true); setAuthUrl(result.url)
+        return result.url
+      })
+    } catch (error) { setError(error instanceof Error ? error.message : 'Could not connect integration') }
+    finally { connecting.current = false; setBusy(false) }
   }
-  return <>
-    <DialogHeader><DialogTitle className="flex items-center gap-2 font-normal"><ServiceIcon slug="linear" fallback="mcp" className="h-5 w-5 dark:invert" />Set up integration with Linear</DialogTitle>
-      <DialogDescription>Give this agent its own identity in your Linear workspace.</DialogDescription></DialogHeader>
-    <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">Create a separate private app for this agent using a prefilled form, then authorize its access to your workspace and teams.</p>
-      <div className="space-y-1"><Label htmlFor="linear-agent-name">Agent name in Linear</Label><Input id="linear-agent-name" value={displayName} onChange={event => setName(event.target.value)} maxLength={80} /></div>
-      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      <div className="flex justify-end"><Button disabled={busy || !displayName.trim()} onClick={() => void create()}>{busy && <Loader2 className="h-4 w-4 animate-spin" />}Continue</Button></div>
-    </div>
-  </>
+
+  return <IntegrationSetupLayout
+    provider="linear" label="Linear" iconClassName="dark:invert"
+    instructions={<>
+      <ol className="list-decimal list-outside ml-5 space-y-2.5 text-sm font-normal text-foreground">
+        <li>Choose a name for this agent, then create its own private app in Linear.
+          <div className="mt-3">
+            {setup.data?.creationUrl ? <ExternalButton href={setup.data.creationUrl}>Create app in Linear</ExternalButton> : <span className="text-xs text-muted-foreground">Loading app setup…</span>}
+          </div>
+        </li>
+        <li>Add an avatar, keep the app private, and leave webhooks off. The callback URL is prefilled.</li>
+        <li>Copy the app’s Client ID and Client secret into this form.</li>
+        <li>Click Connect, then authorize the agent in Linear. Choose the workspace and teams it can access.</li>
+      </ol>
+      <p className="text-xs text-muted-foreground">This agent will have its own identity. Mention it in comments or delegate issues to it to start work.</p>
+      {setup.data?.redirectUri && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Callback URL</summary><p className="mt-2 break-all select-all">{setup.data.redirectUri}</p></details>}
+    </>}
+    feedback={<>
+      {setup.error && <IntegrationSetupFeedback state="error">{setup.error.message} <button className="underline" onClick={() => void setup.refetch()}>Try again</button></IntegrationSetupFeedback>}
+      {(error || linear?.authorizationMessage || refreshError) && <IntegrationSetupFeedback state="error">{error ?? linear?.authorizationMessage ?? 'Could not check authorization. Reopen this integration to continue.'}</IntegrationSetupFeedback>}
+      {pending && <IntegrationSetupFeedback state="pending">
+        <p>Waiting for authorization in Linear. This window will update when you’re connected.</p>
+        {authUrl && <a href={authUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block underline" onClick={event => {
+          if (window.electronAPI) { event.preventDefault(); void window.electronAPI.openExternal(authUrl) }
+        }}>Open Linear again</a>}
+      </IntegrationSetupFeedback>}
+    </>}
+    actions={<>
+      {credentialsSaved && <Button size="sm" variant="ghost" className="mr-auto" disabled={busy} onClick={() => {
+        closeLogin(); setCredentialsSaved(false); setAuthUrl(null); setError(null)
+      }}>Edit credentials</Button>}
+      <Button size="sm" disabled={busy || !displayName || !setup.data || (!credentialsSaved && (!clientId.trim() || !clientSecret.trim()))} onClick={() => void connect()}>
+        {busy ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Connecting...</> : pending ? 'Start again' : 'Connect'}
+      </Button>
+    </>}
+  >
+    <IntegrationSetupField id="setup-integration-name" label="Agent name" value={name ?? agent?.name ?? agentSlug} onChange={event => setName(event.target.value)} maxLength={80} disabled={busy || !!integrationId} />
+    <IntegrationSetupField id="linear-client-id" label="Client ID" value={clientId} onChange={event => setClientId(event.target.value)} autoComplete="off" disabled={busy || credentialsSaved} />
+    <IntegrationSetupField id="linear-client-secret" label="Client secret" type="password" value={clientSecret} onChange={event => setClientSecret(event.target.value)} autoComplete="new-password" placeholder={credentialsSaved ? 'Saved securely' : undefined} disabled={busy || credentialsSaved} />
+  </IntegrationSetupLayout>
 }
 
 /** Only credentials differ by provider; lifecycle, settings and history stay shared. */
@@ -67,7 +121,10 @@ export function LinearConnectionSettings({ integration }: { integration: PublicA
   const [editCredentials, setEditCredentials] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const queryClient = useQueryClient()
+  const authorization = useAuthorizeAgentIntegration()
+  const { open: openLogin, close: closeLogin } = useLoginWindow()
+  const connected = isPublicLinearIntegration(integration) && integration.linear.authorized
+  useEffect(() => { if (connected) closeLogin() }, [connected, closeLogin])
   if (!isPublicLinearIntegration(integration)) return null
   const linear = integration.linear
   const needsCredentials = !linear.canReconnect || editCredentials
@@ -75,14 +132,11 @@ export function LinearConnectionSettings({ integration }: { integration: PublicA
   const authorize = async (useSaved = false) => {
     setBusy(true); setError(null); setAuthUrl(null)
     try {
-      const result = await request<{ url: string }>(`${integration.id}/authorize`, useSaved ? {} : { clientId, clientSecret })
-      setClientSecret(''); setEditCredentials(false)
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(integration.id) }),
-        queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.status(integration.id) }),
-        queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(integration.agentSlug) }),
-      ])
-      setAuthUrl(result.url)
+      await openLogin(async () => {
+        const result = await authorization.mutateAsync({ id: integration.id, agentSlug: integration.agentSlug, config: useSaved ? {} : { clientId, clientSecret } })
+        setClientSecret(''); setEditCredentials(false); setAuthUrl(result.url)
+        return result.url
+      })
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not authorize integration') }
     finally { setBusy(false) }
   }

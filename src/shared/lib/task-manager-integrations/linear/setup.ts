@@ -10,11 +10,14 @@ import { randomUUID } from 'node:crypto'
 import { deleteAgentIntegration, listAgentIntegrations } from '../../services/agent-integration-service'
 import { linearCredentialsSchema, linearAuthorizationInputSchema } from './config'
 import { getLinearConfig, updateLinearConfig, setLinearStatusForConfig } from './store'
-import { hashOAuthState, linearAuthorization } from './oauth'
+import { hashOAuthState, linearAuthorization, linearAppCreationUrl } from './oauth'
 import { exchangeLinearToken, LinearClient, revokeLinearToken } from './client'
 
 export { publicLinearIntegration } from './presentation'
 export const linearSetup: IntegrationProviderSetup = {
+  describe(context, name) {
+    return { redirectUri: context.callbackUrl, creationUrl: linearAppCreationUrl(name ?? context.agentSlug, { redirectUri: context.callbackUrl }) }
+  },
   async prepare(_input, context) {
     return { config: linearConfigSchema.parse({ redirectUri: context.callbackUrl, runOnStatusChange: false }), status: 'disconnected' }
   },

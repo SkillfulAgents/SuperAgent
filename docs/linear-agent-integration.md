@@ -12,12 +12,14 @@ shared MCP proxy.
 From the agent home, open **External Integrations → Add Integration → Linear**. This works without a
 Gamut platform account, hosted relay, or public webhook listener.
 
-1. Choose the agent's name and continue to its integration page. Open the prefilled Linear application form there.
+1. Choose the agent's name in the shared setup modal and open its prefilled Linear application form.
 2. Create a **private** OAuth app for this agent. Choose its avatar in Linear.
    The form supplies the callback URL and leaves webhooks disabled.
-3. Copy the client ID and client secret into Gamut.
-4. Authorize in Linear. A workspace admin may need to approve the app and grant
-   access to the intended teams.
+3. Copy the client ID and client secret into the same modal, then click **Connect**.
+4. Authorize in the Linear window that opens. A workspace admin may need to approve the app and grant
+   access to the intended teams. The setup modal stays open until authorization succeeds,
+   then closes to show the account on agent home, like the other integrations. Errors and retries remain in the modal and reuse
+   the same installation. Opening setup alone does not create an account.
 
 Authorization uses `actor=app`, PKCE, expiring single-use state and the `read`,
 `write`, `app:mentionable`, and `app:assignable` scopes. Gamut verifies `viewer.app`
