@@ -199,7 +199,9 @@ function extractWorkflow(entry) {
   const { source } = chunkAt(start);
   if (!/export\{\w+ as initBundledWorkflows\}\s*$/.test(source)) fail('bundled-workflows chunk does not end with `export{<fn> as initBundledWorkflows}` — the bundle layout changed');
   const init = source.match(/export\{(\w+) as initBundledWorkflows\}/)[1];
-  const register = source.match(/(\w+)\(`export const meta/);
+  // The registration helper is a minified import whose name may contain `$`
+  // (2.1.280: `q$r(`), so match beyond \w.
+  const register = source.match(/([\w$]+)\(`export const meta/);
   if (!register) fail('registration call before `export const meta` not found — the bundle layout changed');
 
   const captured = [];

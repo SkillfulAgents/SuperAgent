@@ -44,20 +44,20 @@ describe('getProviderCatalog', () => {
         .map((model) => [model.icon, model.id])
 
     expect(defaultsByIcon('anthropic')).toEqual([
-      ['anthropic', 'claude-opus-5'],
+      ['anthropic', 'claude-opus-5-5'],
     ])
     expect(defaultsByIcon('bedrock')).toEqual([
       ['anthropic', 'us.anthropic.claude-opus-4-8'],
     ])
     expect(defaultsByIcon('openrouter')).toEqual([
-      ['anthropic', 'claude-opus-5'],
+      ['anthropic', 'claude-opus-5-5'],
       ['openai', 'openai/gpt-5.5'],
       ['zai', 'z-ai/glm-5.2'],
       ['xai', 'x-ai/grok-4.7'],
       ['kimi', 'moonshotai/kimi-k3'],
     ])
     expect(defaultsByIcon('platform')).toEqual([
-      ['anthropic', 'claude-opus-5'],
+      ['anthropic', 'claude-opus-5-5'],
       ['openai', 'gpt-5.6-sol'],
       ['xai', 'grok-4.7'],
       ['kimi', 'kimi-k3'],
@@ -84,7 +84,7 @@ describe('getProviderCatalog', () => {
     const catalog = getProviderCatalog('anthropic')
     const opusLatest = catalog.filter((m) => m.family === 'opus' && m.isLatest)
     expect(opusLatest).toHaveLength(1)
-    expect(opusLatest[0].id).toBe('claude-opus-5')
+    expect(opusLatest[0].id).toBe('claude-opus-5-5')
   })
 
   // Effort lists mirror what each serving path accepted live on 2026-09-18.
@@ -647,7 +647,7 @@ describe('resolveModelForProvider', () => {
   })
 
   it('resolves a bare family alias to that family latest id', () => {
-    expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-5')
+    expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-5-5')
     expect(resolveModelForProvider('sonnet', 'anthropic', 'agent')).toBe('claude-sonnet-5')
   })
 
@@ -657,7 +657,7 @@ describe('resolveModelForProvider', () => {
 
   it('falls back to the provider default (alias-resolved) for an unknown family-less alias', () => {
     // Anthropic agent default is 'opus' → resolves to its latest concrete id.
-    expect(resolveModelForProvider('mystery', 'anthropic', 'agent')).toBe('claude-opus-5')
+    expect(resolveModelForProvider('mystery', 'anthropic', 'agent')).toBe('claude-opus-5-5')
     // Summarizer default 'haiku' → latest haiku.
     expect(resolveModelForProvider('mystery', 'anthropic', 'summarizer')).toBe('claude-haiku-4-5')
   })
@@ -697,7 +697,7 @@ describe('resolveModelForProvider', () => {
   })
 
   it('resolves the SAME bare alias to each provider concrete id (cross-provider portability)', () => {
-    expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-5')
+    expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-5-5')
     // Bedrock's opus family stays on 4.8 until AWS publishes an Opus 5 region id.
     expect(resolveModelForProvider('opus', 'bedrock', 'agent')).toBe('us.anthropic.claude-opus-4-8')
   })

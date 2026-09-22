@@ -137,6 +137,16 @@
       "fast": 2
     }
   },
+  "claude-opus-5-5": {
+    "input": 4,
+    "output": 20,
+    "cacheCreation": 5,
+    "cacheCreation1h": 8,
+    "cacheRead": 0.2,
+    "speedMultipliers": {
+      "fast": 2
+    }
+  },
   "claude-sonnet-4-20250514": {
     "input": 3,
     "output": 15,

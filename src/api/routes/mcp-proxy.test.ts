@@ -294,6 +294,25 @@ describe('mcp-proxy route', () => {
       expect(mockFetch).not.toHaveBeenCalled()
     })
 
+    it('answers the 2026-07-28 era probe locally with "method not found" for an MCP marked auth_required', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      setupDbMocks(buildMcp({ status: 'auth_required' }))
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'server/discover', params: {} }),
+      })
+
+      // The client treats -32601 as "pre-2026-07-28 server" and falls back to
+      // the classic initialize handshake — which the stub above completes.
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ jsonrpc: '2.0', id: 3, error: { code: -32601 } })
+      expect(mockRequestMcpReauth).not.toHaveBeenCalled()
+      expect(mockRequestReview).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
     it('binds the local session id to a stateful upstream session before resuming', async () => {
       mockValidateProxyToken.mockResolvedValue('my-agent')
       const stale = buildMcp({ status: 'auth_required', accessToken: 'stale-token' })
@@ -2027,6 +2046,8 @@ describe('mcp-proxy route', () => {
       'completion/complete',
       'roots/list',
       'ping',
+      // MCP 2026-07-28 era probe, sent by CLI 2.1.274+ before `initialize`.
+      'server/discover',
     ])('discovery/protocol method "%s" skips policy enforcement and review', async (method) => {
       setupSuccessPath()
       // Force policy to "review" — if the method weren't whitelisted, requestReview would fire.

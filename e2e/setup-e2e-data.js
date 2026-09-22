@@ -199,6 +199,7 @@ const settings = {
       overrides: [
         { id: 'claude-opus-4-8', supportedSpeeds: ['slow', 'normal', 'fast'] },
         { id: 'claude-opus-5', supportedSpeeds: ['slow', 'normal', 'fast'] },
+        { id: 'claude-opus-5-5', supportedSpeeds: ['slow', 'normal', 'fast'] },
       ],
     },
   },

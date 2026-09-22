@@ -45,7 +45,7 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
  *   - OpenAI GPT-5.x: `service_tier` flex (0.5x price, slower) / priority
  *     (2x, 2.5x on gpt-5.5) → slow/normal/fast.
  *   - xAI grok: `service_tier` priority only (2x when granted) → normal/fast.
- *   - Anthropic: fast mode (research preview) on Opus 4.8 only → normal/fast.
+ *   - Anthropic: fast mode (research preview) on Opus 5.5 / 5 / 4.8 → normal/fast.
  *   - Z.AI GLM: no request-level tier → normal only.
  *   - Fireworks (kimi-k3): fast is a separate `-fast` router resource, not a
  *     request param — the proxy swaps the outbound model id → normal/fast.
@@ -53,8 +53,8 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 const FLEX_AND_PRIORITY_SPEEDS: SpeedLevel[] = ['slow', 'normal', 'fast']
 const PRIORITY_ONLY_SPEEDS: SpeedLevel[] = ['normal', 'fast']
 
-// Anthropic fast mode covers Opus 5 and 4.8 (4.7's was removed 2026-07-24).
-const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-4-8', 'claude-opus-5'])
+// Anthropic fast mode covers Opus 5.5, 5 and 4.8 (4.7's was removed 2026-07-24).
+const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5'])
 
 /** Claude entries with the speed tiers the Platform proxy can request. */
 function withPlatformClaudeSpeeds(catalog: ModelDefinition[]): ModelDefinition[] {
@@ -182,13 +182,25 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
   {
     id: 'claude-opus-5',
     label: 'Opus 5',
+    family: 'opus',
+    icon: ICON,
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-opus-5'),
+  },
+  {
+    // Opus 5.5 (2026-09-22): the CLI's bare `opus` alias resolves here from
+    // 2.1.280, at $4/$20 per Mtok against Opus 5's $5/$25. Thinking cannot be
+    // disabled (effort is the only depth control) and the API default effort
+    // is medium, one level below Opus 5's high.
+    id: 'claude-opus-5-5',
+    label: 'Opus 5.5',
     blurb: 'Most capable',
     family: 'opus',
     isLatest: true,
     isDefault: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
-    pricing: pricingFor('claude-opus-5'),
+    pricing: pricingFor('claude-opus-5-5'),
   },
   {
     id: 'claude-fable-5',
