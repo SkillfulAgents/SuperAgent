@@ -11,10 +11,13 @@ export type AgentView =
   | { kind: 'session'; id: string }
   | { kind: 'task'; id: string }
   | { kind: 'webhook'; id: string }
+  | { kind: 'inboundXAgent' }
+  | { kind: 'completedTasks' }
   | { kind: 'chat'; integrationId: string; sessionId?: string }
   | { kind: 'dashboard'; slug: string }
   | { kind: 'apiLogs' }
   | { kind: 'secrets' }
+  | { kind: 'memories' }
   | { kind: 'xAgentPermissions' }
   | {
       kind: 'connections'
@@ -76,6 +79,10 @@ export function encodeLocation(loc: AppLocation): NavigateOptions {
       return { to: '/agents/$slug/tasks/$taskId', params: { slug, taskId: view.id } }
     case 'webhook':
       return { to: '/agents/$slug/webhooks/$webhookId', params: { slug, webhookId: view.id } }
+    case 'inboundXAgent':
+      return { to: '/agents/$slug/called-from-agents', params: { slug } }
+    case 'completedTasks':
+      return { to: '/agents/$slug/completed-tasks', params: { slug } }
     case 'chat':
       return {
         to: '/agents/$slug/chat/$integrationId',
@@ -86,6 +93,8 @@ export function encodeLocation(loc: AppLocation): NavigateOptions {
       return { to: '/agents/$slug/dashboards/$dashSlug', params: { slug, dashSlug: view.slug } }
     case 'apiLogs':
       return { to: '/agents/$slug/api-logs', params: { slug } }
+    case 'memories':
+      return { to: '/agents/$slug/memories', params: { slug } }
     case 'secrets':
       return { to: '/agents/$slug/secrets', params: { slug } }
     case 'xAgentPermissions':
@@ -129,6 +138,10 @@ export function decodeLocation(snap: RouteSnapshot): AppLocation {
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'task', id: p.taskId ?? '' } }
     case '/agents/$slug/webhooks/$webhookId':
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'webhook', id: p.webhookId ?? '' } }
+    case '/agents/$slug/called-from-agents':
+      return { selectedAgentSlug: p.slug ?? null, view: { kind: 'inboundXAgent' } }
+    case '/agents/$slug/completed-tasks':
+      return { selectedAgentSlug: p.slug ?? null, view: { kind: 'completedTasks' } }
     case '/agents/$slug/chat/$integrationId': {
       const session = typeof search.session === 'string' ? search.session : undefined
       return {
@@ -140,6 +153,8 @@ export function decodeLocation(snap: RouteSnapshot): AppLocation {
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'dashboard', slug: p.dashSlug ?? '' } }
     case '/agents/$slug/api-logs':
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'apiLogs' } }
+    case '/agents/$slug/memories':
+      return { selectedAgentSlug: p.slug ?? null, view: { kind: 'memories' } }
     case '/agents/$slug/secrets':
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'secrets' } }
     case '/agents/$slug/x-agent-permissions':

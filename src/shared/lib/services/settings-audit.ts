@@ -20,6 +20,7 @@ const AUDITED_KEYS: (keyof AppSettings)[] = [
   'app',
   'models',
   'modelCatalog',
+  'modelPricing',
   'agentLimits',
   'customEnvVars',
   'auth',
@@ -59,6 +60,7 @@ const SECTION_RULES: Array<[prefix: string, label: string]> = [
   ['llmProvider', 'Model Provider'],
   ['models', 'Model Provider'],
   ['modelCatalog', 'Model Provider'],
+  ['modelPricing', 'Model Provider'],
   ['enableToolSearch', 'Model Provider'],
   ['webProvider', 'Web Search'],
   ['webAllowedSites', 'Web Search'],
@@ -82,6 +84,7 @@ const SECTION_RULES: Array<[prefix: string, label: string]> = [
   ['app.browserbase', 'Browser Use'],
   ['app.autoSleepTimeoutMinutes', 'Container Runtime'],
   ['app.warmStartOnType', 'Container Runtime'],
+  ['app.autoResumeOnUnexpectedDeath', 'Container Runtime'],
   ['app.', 'General'],
 ]
 

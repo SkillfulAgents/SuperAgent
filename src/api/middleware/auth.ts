@@ -1,12 +1,14 @@
 import type { Context, Next, MiddlewareHandler } from 'hono'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { runWithOptionalUser, runWithRequestUser } from '@shared/lib/platform-attribution'
 import { db } from '@shared/lib/db'
 import { agentAcl, connectedAccounts, remoteMcpServers, notifications } from '@shared/lib/db/schema'
 import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
-import { resolveAgentId } from '@shared/lib/utils/file-storage'
+// The catalog leaf, not the actor package index: the index loads the
+// container layer, which every route test would then have to mock.
+import { agentCatalog } from '@shared/lib/agent-actor/agent-catalog'
 
 // Lazy import to avoid pulling in better-auth ESM at import time
 let _getAuth: (() => ReturnType<typeof import('@shared/lib/auth/index').getAuth>) | null = null
@@ -116,7 +118,7 @@ function isAdmin(user: { role?: string }): boolean {
  */
 export function ResolveAgent(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    const id = await resolveAgentId(c.req.param('id') ?? '')
+    const id = await agentCatalog.resolve(c.req.param('id') ?? '')
     if (!id) return c.json({ error: 'Agent not found' }, 404)
     c.set('agentId' as never, id as never)
     return next()
@@ -140,6 +142,16 @@ function resolvedAgentSlug(c: Context): string {
   return (c.get('agentId' as never) as string | undefined) ?? c.req.param('id')!
 }
 
+/** AgentRead's policy for a collection of already-resolved IDs, in one ACL query. */
+export async function getReadableAgentIds(c: Context, agentIds: readonly string[]): Promise<Set<string>> {
+  if (!isAuthMode()) return new Set(agentIds)
+  const user = getUser(c)
+  if (isAdmin(user)) return new Set(agentIds)
+  if (!agentIds.length) return new Set()
+  const rows = await db.select({ agentSlug: agentAcl.agentSlug, role: agentAcl.role }).from(agentAcl)
+    .where(and(eq(agentAcl.userId, user.id), inArray(agentAcl.agentSlug, [...agentIds]))).all()
+  return new Set(rows.filter(row => hasMinRole(row.role, 'viewer')).map(row => row.agentSlug))
+}
 
 /**
  * AgentRead — user has any role on the agent (viewer+).
@@ -433,7 +445,7 @@ export function IsAgent(): MiddlewareHandler {
       return c.json({ error: 'Unauthorized' }, 401)
     }
     c.set('agentSlug' as never, agentSlug as never)
-    return runWithOptionalUser(getAgentOwnerUserId(agentSlug), () => next())
+    return runWithOptionalUser(await getAgentOwnerUserId(agentSlug), () => next())
   }
 }
 

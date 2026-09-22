@@ -10,7 +10,7 @@ Honest answers to the security questions users ask most. Where a detail depends 
 
 ## Where does the agent actually run?
 
-Each agent runs in its own isolated container with its own filesystem and its own persistent workspace. Agents do not share files, secrets, or sessions with each other **unless you explicitly connect them**: cross-agent collaboration is opt-in — calls between agents require your approval (or a policy you've saved), and even connected agents exchange prompts and session transcripts, never each other's secrets. Mounting the same host folder into two agents likewise shares those files by your choice. The agent process runs as a non-root user inside the container.
+Each agent runs in its own isolated container with its own filesystem and its own persistent workspace. Agents do not share files, secrets, or sessions with each other **unless you explicitly connect them**: cross-agent collaboration is opt-in, and calls between agents require your approval (or a policy you've saved). An approved invocation can copy only the caller workspace files specifically attached to that message; it does not grant either agent general access to the other's workspace or secrets. A caller with approved transcript-read access can also download files the called agent explicitly published with `deliver_file`. Mounting the same host folder into two agents likewise shares those files by your choice. The agent process runs as a non-root user inside the container.
 
 The container itself runs on whichever runtime the deployment uses — Docker, OrbStack, Podman, Lima, Apple Containers, or WSL2 on the desktop app, or the managed runtime in a cloud deployment. The isolation properties above hold in all of them.
 

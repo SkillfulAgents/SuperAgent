@@ -6,6 +6,7 @@ import { useState, type ReactNode } from 'react'
 import { AgentHome } from './agent-home'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import type { AgentHomeAction } from '@renderer/context/nav-transient-context'
 import { useDraftsStore } from '@renderer/context/drafts-context'
 import {
   newSessionCarryoverKey,
@@ -35,9 +36,14 @@ const mockUpdateAgentMutate = vi.fn()
 const mockUpdateAgentMutateAsync = vi.fn()
 const mockDeleteAgentMutate = vi.fn()
 
+vi.mock('@renderer/context/analytics-context', () => ({
+  useAnalyticsTracking: () => ({ track: vi.fn() }),
+}))
+
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgent: () => ({ data: { ...testAgent, mounts: [] } }),
   useAgents: () => ({ data: [testAgent] }),
+  useRouteAgentId: () => 'test-agent',
   useUpdateAgent: () => ({
     mutate: mockUpdateAgentMutate,
     mutateAsync: mockUpdateAgentMutateAsync,
@@ -59,6 +65,10 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 let mockSessionsData: unknown = []
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
+  // The session list rows now render SessionContextMenu, which reads these.
+  useSetSessionMarkedUnread: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useForkSession: () => ({ mutate: vi.fn(), isPending: false }),
+  useForkAndCompact: () => ({ mutate: vi.fn(), isPending: false }),
   useCreateSession: () => mockCreateSession,
   useSessions: () => ({ data: mockSessionsData }),
   useDeleteSession: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
@@ -102,26 +112,28 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useScheduledTasks: () => ({ data: [] }),
   useRunScheduledTaskNow: () => ({ mutate: vi.fn(), isPending: false }),
   useCancelScheduledTask: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+  useCompletedOneTimeSessions: () => ({ data: [] }),
 }))
 
 // The morph one-shots live in NavTransientContext. Controllable so the
 // intro-morph test can flip justCreatedSlug and assert the clear.
 let mockJustCreatedSlug: string | null = null
 const mockSetJustCreatedSlug = vi.fn()
+// A parked "Export Agent" / "Agent Directory" from a menu elsewhere. Seeded
+// at mount by the hand-off test, which asserts it is consumed.
+let mockPendingAgentHomeAction: AgentHomeAction | null = null
+const mockSetPendingAgentHomeAction = vi.fn()
 
 vi.mock('@renderer/context/nav-transient-context', () => ({
   useNavTransient: () => ({
     justCreatedSlug: mockJustCreatedSlug,
     setJustCreatedSlug: mockSetJustCreatedSlug,
+    pendingAgentHomeAction: mockPendingAgentHomeAction,
+    setPendingAgentHomeAction: mockSetPendingAgentHomeAction,
   }),
   NavTransientProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
-// The agent-scoped settings dialogs render inside AgentHome. Stub them
-// — their internals aren't under test here and would pull in extra hooks.
-vi.mock('@renderer/components/agents/agent-settings-dialog', () => ({
-  AgentSettingsDialog: () => null,
-}))
 vi.mock('@renderer/components/agents/agent-context-menu', () => ({
   AgentContextMenu: ({ agent, children }: { agent: ApiAgent; children: React.ReactNode }) => (
     <div data-testid="agent-title-context-menu" data-agent-slug={agent.slug}>{children}</div>
@@ -164,6 +176,7 @@ const mockComposer = {
   handleSubmit: vi.fn(),
   handlePaste: vi.fn(),
   canSubmit: false,
+  retryAttachment: vi.fn(),
 }
 
 let capturedComposerOptions: any
@@ -247,6 +260,7 @@ describe('AgentHome', () => {
     capturedComposerOptions = undefined
     mockSessionsData = []
     mockJustCreatedSlug = null
+    mockPendingAgentHomeAction = null
   })
 
   // --- Rendering ---
@@ -256,6 +270,67 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
+  })
+
+  it('orders sessions by last activity rather than creation time', () => {
+    mockSessionsData = [
+      {
+        id: 'newer-created',
+        agentSlug: testAgent.slug,
+        name: 'Newer created session',
+        createdAt: new Date('2026-08-25T12:00:00.000Z'),
+        lastActivityAt: new Date('2026-08-25T12:00:00.000Z'),
+        messageCount: 1,
+      },
+      {
+        id: 'recently-active',
+        agentSlug: testAgent.slug,
+        name: 'Recently active session',
+        createdAt: new Date('2026-08-24T12:00:00.000Z'),
+        lastActivityAt: new Date('2026-08-26T12:00:00.000Z'),
+        messageCount: 2,
+      },
+    ]
+
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    const sessionRows = screen.getAllByRole('button')
+      .filter((row) => row.textContent?.includes('session'))
+      .map((row) => row.textContent)
+
+    expect(sessionRows).toEqual([
+      expect.stringContaining('Recently active session'),
+      expect.stringContaining('Newer created session'),
+    ])
+  })
+
+  it('stamps each session with its last activity rather than its creation time', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-27T12:00:00.000Z'))
+      mockSessionsData = [
+        {
+          id: 'old-but-active',
+          agentSlug: testAgent.slug,
+          name: 'Old but active session',
+          createdAt: new Date('2026-08-17T12:00:00.000Z'),
+          lastActivityAt: new Date('2026-08-27T11:00:00.000Z'),
+          messageCount: 2,
+        },
+      ]
+
+      renderWithProviders(
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      )
+
+      expect(screen.getByText('Old but active session')).toBeInTheDocument()
+      expect(screen.getByText('about 1 hour ago')).toBeInTheDocument()
+      expect(screen.queryByText('10 days ago')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps the non-owner layout full-width below the desktop breakpoint', () => {
@@ -348,6 +423,28 @@ describe('AgentHome', () => {
 
   // --- Send button disabled state ---
 
+  it('runs a parked Export Agent only after the composer has taken its mount focus', async () => {
+    // "Export Agent" from a menu away from this page parks the action and
+    // navigates here. The composer autofocuses on the frame after it mounts,
+    // and the Share popover is non-modal, so opening it before that frame let
+    // the focus land outside it and dismiss it — the flaky sidebar export.
+    mockCanAdminAgent = true
+    mockPendingAgentHomeAction = { slug: testAgent.slug, action: 'export' }
+    renderWithProviders(<AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />)
+
+    // Consumed at mount, but not opened in the same tick.
+    expect(mockSetPendingAgentHomeAction).toHaveBeenCalledWith(null)
+    expect(screen.queryByTestId('agent-export-pane')).not.toBeInTheDocument()
+
+    const pane = await screen.findByTestId('agent-export-pane')
+    // Let the composer's autofocus frame (and a spare) fire: the popover must
+    // still be open, i.e. it opened after that focus rather than before it.
+    await act(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    )
+    expect(pane).toBeInTheDocument()
+  })
+
   it('send button is disabled when canSubmit is false', () => {
     mockComposer.canSubmit = false
     renderWithProviders(
@@ -403,6 +500,20 @@ describe('AgentHome', () => {
     const input = screen.getByTestId('home-message-input')
     await user.click(input)
     await user.keyboard('{Enter}')
+
+    expect(mockComposer.handleSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not submit on Cmd+Enter when canSubmit is false', async () => {
+    const user = userEvent.setup()
+    mockComposer.canSubmit = false
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    const input = screen.getByTestId('home-message-input')
+    await user.click(input)
+    await user.keyboard('{Meta>}{Enter}{/Meta}')
 
     expect(mockComposer.handleSubmit).not.toHaveBeenCalled()
   })

@@ -60,6 +60,7 @@ function BuiltinPricingDialogBody({
       <DialogHeader>
         <DialogTitle>{`Edit pricing — ${model.label}`}</DialogTitle>
       </DialogHeader>
+      <p className="text-xs text-muted-foreground">Applies to this model across all providers, including past usage estimates.</p>
       <div className="grid gap-3 md:grid-cols-2">
         <CurrencyPriceInput
           id="builtin-model-input-price"

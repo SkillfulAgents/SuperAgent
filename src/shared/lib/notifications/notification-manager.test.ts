@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   createSummarizerText: vi.fn(),
   resolveActiveProviderModel: vi.fn(() => 'resolved-summarizer'),
   getEffectiveModels: vi.fn(() => ({ summarizerModel: 'configured-summarizer' })),
-  getAgent: vi.fn(async () => ({ frontmatter: { name: 'Demo Agent' } })),
+  getAgentRecord: vi.fn(async () => ({ name: 'Demo Agent' })),
   getUserSettings: vi.fn((_userId: string) => ({
     notifications: {
       enabled: true,
@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   promoteAutomatedSession: vi.fn(async () => {}),
   isAuthMode: vi.fn(() => false),
   captureException: vi.fn(),
+  getAgentOwnerUserId: vi.fn((_agentSlug: string): string | null => null),
 }))
 
 vi.mock('@shared/lib/services/notification-service', () => ({
@@ -45,7 +46,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: mocks.getEffectiveModels,
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({
-  getAgent: mocks.getAgent,
+  getAgentRecord: mocks.getAgentRecord,
 }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: mocks.getUserSettings,
@@ -55,6 +56,9 @@ vi.mock('@shared/lib/auth/mode', () => ({
 }))
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: mocks.captureException,
+}))
+vi.mock('@shared/lib/services/agent-owner', () => ({
+  getAgentOwnerUserId: mocks.getAgentOwnerUserId,
 }))
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
@@ -78,10 +82,12 @@ const mockBroadcastGlobal = mocks.broadcastGlobal
 const mockPromoteAutomatedSession = mocks.promoteAutomatedSession
 
 import { notificationManager } from './notification-manager'
+import { getRequestUserId } from '@shared/lib/platform-attribution/request-context'
 
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.isAuthMode.mockReturnValue(false)
+  mocks.getAgentOwnerUserId.mockReturnValue(null)
   mocks.getAgentAccessUserIds.mockResolvedValue(['user-a'])
   mocks.getUserSettings.mockReturnValue({
     notifications: {
@@ -195,6 +201,67 @@ describe('triggerSessionComplete — automated-session gating', () => {
     )
   })
 
+  it('runs the summarizer under the agent owner request scope', async () => {
+    mocks.getAgentOwnerUserId.mockReturnValue('owner-user')
+    let scopeAtClientBuild: string | undefined
+    let scopeAtSummarize: string | undefined
+    mocks.getConfiguredLlmClient.mockImplementationOnce(() => {
+      scopeAtClientBuild = getRequestUserId()
+      return { messages: {} }
+    })
+    mocks.createSummarizerText.mockImplementationOnce(async () => {
+      await Promise.resolve()
+      scopeAtSummarize = getRequestUserId()
+      return 'A concise completion summary.'
+    })
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(mocks.getAgentOwnerUserId).toHaveBeenCalledWith('agent-x')
+    expect(scopeAtClientBuild).toBe('owner-user')
+    expect(scopeAtSummarize).toBe('owner-user')
+    expect(getRequestUserId()).toBeUndefined()
+  })
+
+  it('runs the summarizer unscoped when the agent has no owner', async () => {
+    let scopeAtSummarize: string | undefined = 'unset'
+    mocks.createSummarizerText.mockImplementationOnce(async () => {
+      scopeAtSummarize = getRequestUserId()
+      return 'A concise completion summary.'
+    })
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(mocks.createSummarizerText).toHaveBeenCalledTimes(1)
+    expect(scopeAtSummarize).toBeUndefined()
+  })
+
+  it('falls back to the plain body when the owner lookup throws', async () => {
+    mocks.getAgentOwnerUserId.mockImplementationOnce(() => {
+      throw new Error('acl unavailable')
+    })
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(mocks.createSummarizerText).not.toHaveBeenCalled()
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'session_complete',
+        body: 'Demo Agent has finished running',
+      }),
+    )
+    expect(mocks.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ tags: { area: 'notifications', op: 'session-complete-body' } }),
+    )
+  })
+
   it('preserves per-session notification order when an earlier summary is slow', async () => {
     let resolveFirstSummary: ((value: string) => void) | undefined
     mocks.createSummarizerText.mockImplementationOnce(
@@ -268,6 +335,12 @@ describe('triggerSessionComplete — automated-session gating', () => {
 
   it('skips creation for a chat-integration session', async () => {
     mockGetSessionMetadata.mockResolvedValue({ isChatIntegrationSession: true })
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
+    expect(mockCreateNotification).not.toHaveBeenCalled()
+  })
+
+  it('skips creation for an x-agent session', async () => {
+    mockGetSessionMetadata.mockResolvedValue({ invokedByAgentSlug: 'caller-agent' })
     await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
     expect(mockCreateNotification).not.toHaveBeenCalled()
   })
@@ -363,7 +436,7 @@ describe('session_waiting promotes automated sessions to interactive', () => {
   it('triggerSessionWaitingInput promotes before creating the notification', async () => {
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'secret')
 
-    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('sess-1', 'agent-x')
+    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
     expect(mockPromoteAutomatedSession.mock.invocationCallOrder[0]).toBeLessThan(
       mockCreateNotification.mock.invocationCallOrder[0],
@@ -373,7 +446,7 @@ describe('session_waiting promotes automated sessions to interactive', () => {
   it('triggerSessionApiReviewWaiting promotes too — the proxy-review path was the original gap', async () => {
     await notificationManager.triggerSessionApiReviewWaiting('sess-1', 'agent-x', 'review-1', 'Allow?')
 
-    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('sess-1', 'agent-x')
+    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
   })
 
@@ -398,7 +471,7 @@ describe('session_waiting promotes automated sessions to interactive', () => {
       },
     })
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'secret')
-    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('sess-1', 'agent-x')
+    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).not.toHaveBeenCalled()
   })
 })

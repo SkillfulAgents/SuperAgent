@@ -14,6 +14,13 @@ export function useKeepAlive(agentSlug: string): void {
 
     ping()
     const id = setInterval(ping, INTERVAL_MS)
-    return () => clearInterval(id)
+    // Browser timers are throttled while a tab is backgrounded. Refresh the
+    // lease immediately when the dashboard becomes visible again instead of
+    // waiting for whichever interval tick the browser next schedules.
+    document.addEventListener('visibilitychange', ping)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', ping)
+    }
   }, [agentSlug])
 }

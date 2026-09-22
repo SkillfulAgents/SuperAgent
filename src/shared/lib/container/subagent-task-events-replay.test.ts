@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
+import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
 import * as path from 'path'
 import * as os from 'os'
 import { promises as fs } from 'fs'
@@ -192,14 +193,16 @@ async function replayFixture(fixtureName: string): Promise<{
   // Fresh import to get a clean singleton
   vi.resetModules()
   const { messagePersister } = await import('./message-persister')
+  // The registry attaches the real stores; this test drives the persister alone.
+  messagePersister.attachSessionStores(createInMemorySessionStore)
   const { client, send } = createReplayClient()
 
   const sseEvents: Array<Record<string, unknown>> = []
-  const cleanup = messagePersister.addSSEClient(meta.sessionId, (data) => {
+  const cleanup = messagePersister.addSSEClient(meta.agentSlug, meta.sessionId, (data) => {
     sseEvents.push(data as Record<string, unknown>)
   })
 
-  await messagePersister.subscribeToSession(meta.sessionId, client, meta.sessionId, meta.agentSlug)
+  await messagePersister.subscribeToSession(meta.agentSlug, meta.sessionId, client, meta.sessionId)
 
   // Replay
   for (const entry of streamEntries) {
@@ -211,7 +214,7 @@ async function replayFixture(fixtureName: string): Promise<{
   await new Promise((r) => setTimeout(r, 200))
 
   cleanup()
-  messagePersister.unsubscribeFromSession(meta.sessionId)
+  messagePersister.unsubscribeFromSession(meta.agentSlug, meta.sessionId)
 
   // Clean up tmpDir
   await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
@@ -258,19 +261,21 @@ async function replayFixtureTracked(fixtureName: string): Promise<{
 
   vi.resetModules()
   const { messagePersister } = await import('./message-persister')
+  // The registry attaches the real stores; this test drives the persister alone.
+  messagePersister.attachSessionStores(createInMemorySessionStore)
   const { client, send } = createReplayClient()
 
   const sseEvents: Array<Record<string, unknown>> = []
-  const cleanup = messagePersister.addSSEClient(meta.sessionId, (data) => {
+  const cleanup = messagePersister.addSSEClient(meta.agentSlug, meta.sessionId, (data) => {
     sseEvents.push(data as Record<string, unknown>)
   })
 
   // The real turn was kicked off by a user message before the capture window, so
   // mark active first; subscribeToSession preserves the prior isActive.
   if (meta.startActive) {
-    messagePersister.markSessionActive(meta.sessionId, meta.agentSlug)
+    messagePersister.markSessionActive(meta.agentSlug, meta.sessionId)
   }
-  await messagePersister.subscribeToSession(meta.sessionId, client, meta.sessionId, meta.agentSlug)
+  await messagePersister.subscribeToSession(meta.agentSlug, meta.sessionId, client, meta.sessionId)
 
   const timeline: ReplaySnapshot[] = []
   for (let i = 0; i < streamEntries.length; i++) {
@@ -289,7 +294,7 @@ async function replayFixtureTracked(fixtureName: string): Promise<{
       status: c['status'] as string | undefined,
       patchStatus: (c['patch'] as { status?: string } | undefined)?.status,
       taskType: c['task_type'] as string | undefined,
-      isActive: messagePersister.isSessionActive(meta.sessionId),
+      isActive: messagePersister.isSessionActive(meta.agentSlug, meta.sessionId),
       bgCompletedIds: sseEvents
         .filter((e) => e['type'] === 'background_task_completed')
         .map((e) => e['taskId'] as string),
@@ -302,7 +307,7 @@ async function replayFixtureTracked(fixtureName: string): Promise<{
 
   await new Promise((r) => setTimeout(r, 50))
   cleanup()
-  messagePersister.unsubscribeFromSession(meta.sessionId)
+  messagePersister.unsubscribeFromSession(meta.agentSlug, meta.sessionId)
 
   return { meta, sseEvents, timeline }
 }

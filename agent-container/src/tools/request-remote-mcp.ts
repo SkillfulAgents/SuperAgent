@@ -17,7 +17,11 @@ import { sanitizeMcpName } from '../sanitize-mcp-name'
  * tool module doesn't import back into claude-code.ts.
  */
 export interface RemoteMcpInjectionTarget {
-  addRemoteMcpServer(name: string): void
+  /**
+   * Resolves once the approved server's tools are available to the running
+   * query; rejects when the server was registered but could not connect.
+   */
+  addRemoteMcpServer(name: string): Promise<void> | void
 }
 
 /**
@@ -32,7 +36,11 @@ export function createRequestRemoteMcpTool(getProcess: () => RemoteMcpInjectionT
   'request_remote_mcp',
   `Request access to a remote MCP server. The user will be prompted to connect the MCP server (potentially going through OAuth), then assign it to this agent. After approval, the MCP tools become available.
 
-Use this when you need to interact with an MCP server that hasn't been configured for this agent yet. You should know the URL of the MCP server you want to connect to.`,
+Use this when you need to interact with an MCP server that hasn't been configured for this agent yet. You should know the URL of the MCP server you want to connect to.
+
+Some servers cannot be connected by approving this request alone: the user must first register an OAuth app in the provider's own console and allowlist our callback URL. search_remote_mcp_services flags those servers. When one is flagged, say so before calling this tool, so the user knows the approval prompt will ask them for setup they have to do outside this session. The prompt itself shows them the exact steps and callback URL.
+
+Never ask the user to paste a client secret into the chat. If they want you to look up a client_id in their provider console, do that with the browser tools and pass it as clientId — they can still edit it before connecting.`,
   {
     url: z
       .url()
@@ -49,6 +57,14 @@ Use this when you need to interact with an MCP server that hasn't been configure
       .enum(['oauth', 'bearer'])
       .optional()
       .describe('Authentication type hint if known (e.g., from reading the MCP server docs). Use "oauth" for servers requiring OAuth authorization, "bearer" for servers requiring a bearer token.'),
+    clientId: z
+      .string()
+      .optional()
+      .describe('OAuth client_id to prefill, for servers that reject dynamic client registration and require an app the user registered themselves. Only pass a value the user gave you or that you read from their provider console at their request — never invent one. The user can edit it before connecting.'),
+    clientName: z
+      .string()
+      .optional()
+      .describe('Override the client_name sent during dynamic client registration. Rarely needed.'),
   },
   async (args) => {
     console.log(
@@ -81,7 +97,14 @@ Use this when you need to interact with an MCP server that hasn't been configure
       const resolvedRemoteMcpIds = await inputManager.createPendingWithType<string | string[]>(
         toolUseId,
         'remote_mcp',
-        { url: args.url, name: args.name, reason: args.reason, authHint: args.authHint }
+        {
+          url: args.url,
+          name: args.name,
+          reason: args.reason,
+          authHint: args.authHint,
+          clientId: args.clientId,
+          clientName: args.clientName,
+        }
       )
       const remoteMcpIds = Array.isArray(resolvedRemoteMcpIds) ? resolvedRemoteMcpIds : [resolvedRemoteMcpIds]
 
@@ -103,12 +126,32 @@ Use this when you need to interact with an MCP server that hasn't been configure
               const fullToolNames = matchingMcp.tools.map((t) => `mcp__${sanitizedName}__${t.name}`).join(', ')
               return `MCP Server registered as: ${sanitizedName}\nUse these tools: ${fullToolNames}`
             })
-            mcpInfo = `\n\n${mcpBlocks.join('\n\n')}`
+            mcpInfo = `\n\n${mcpBlocks.join('\n\n')}\n\nThe tools are live in this session now (load them with ToolSearch if they are deferred) — continue with the original request.`
 
-            // Trigger interrupt + restart so the new query picks up the MCP from env var.
+            // Hot-add the approved server(s) to the running query. Awaited so
+            // the tool result that names the tools is delivered only once they
+            // can actually be called. A server that registered but failed to
+            // connect rejects, and the model is told instead of being sent
+            // after tools that do not exist.
             const proc = getProcess()
             if (proc) {
-              matchingMcps.forEach((matchingMcp) => proc.addRemoteMcpServer(matchingMcp.name))
+              try {
+                for (const matchingMcp of matchingMcps) {
+                  await proc.addRemoteMcpServer(matchingMcp.name)
+                }
+              } catch (err) {
+                const detail = err instanceof Error ? err.message : String(err)
+                console.error('[request_remote_mcp] Hot-adding the approved MCP server failed:', detail)
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `Access to the remote MCP server was granted, but it could not be connected to this session: ${detail}. Tell the user the server is assigned but unreachable right now (they can check its connection settings), and do not assume its tools are available.`,
+                    },
+                  ],
+                  isError: true,
+                }
+              }
             } else {
               console.error('[request_remote_mcp] No active ClaudeCodeProcess found')
             }

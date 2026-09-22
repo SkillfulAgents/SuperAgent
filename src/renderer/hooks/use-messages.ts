@@ -1,10 +1,10 @@
 import { apiFetch } from '@renderer/lib/api'
 import { captureRendererException } from '@renderer/lib/error-reporting'
-import { uploadFileChunked } from '@renderer/lib/upload'
+import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ApiMessage, ApiMessageOrBoundary, ApiSession } from '@shared/lib/types/api'
-import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import type { EffortLevel, InterruptScope, SpeedLevel } from '@shared/lib/container/types'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
 import { pickDeltaAnchor, mergeDeltaMessages } from '@shared/lib/messages-delta'
@@ -296,10 +296,26 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
   }
 }
 
-export function useSendMessage() {
+export function useSendMessage(options: {
+  /** No error toast: the caller handles (or accepts) a failed send. */
+  quiet?: boolean
+} = {}) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (data: { sessionId: string; agentSlug: string; content: string; effort?: EffortLevel; speed?: SpeedLevel; model?: string }) => {
+    ...(options.quiet ? { meta: { skipGlobalErrorToast: true } } : {}),
+    mutationFn: async (data: {
+      sessionId: string
+      agentSlug: string
+      content: string
+      effort?: EffortLevel
+      speed?: SpeedLevel
+      model?: string
+      /**
+       * false appends the message to the transcript for the agent to read
+       * with its next turn, without starting one (the voice-mode notices).
+       */
+      shouldQuery?: boolean
+    }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions/${data.sessionId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -308,6 +324,7 @@ export function useSendMessage() {
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.speed ? { speed: data.speed } : {}),
           ...(data.model ? { model: data.model } : {}),
+          ...(data.shouldQuery === false ? { shouldQuery: false } : {}),
         }),
       })
       if (!res.ok) throw new Error('Failed to send message')
@@ -316,6 +333,14 @@ export function useSendMessage() {
       return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean }>
     },
     onSuccess: (result, variables) => {
+      if (variables.shouldQuery === false) {
+        // No turn follows an append, so no stream frame triggers the refetch
+        // that shows it. The CLI writes the entry within moments of the POST.
+        const invalidate = () => queryClient.invalidateQueries({ queryKey: ['messages', variables.sessionId, variables.agentSlug] })
+        invalidate()
+        setTimeout(invalidate, 1500)
+        return
+      }
       // Keep every cached spelling of this session detail (canonical agent id
       // or a pre-resolution display slug) aligned with the runtime options the
       // server accepted. Without this, leaving and returning to the session
@@ -355,11 +380,22 @@ export function useCancelQueuedMessage() {
 
 export function useUploadFile() {
   return useMutation({
-    mutationFn: async (data: { sessionId: string; agentSlug: string; file: File; relativePath?: string }) => {
+    mutationFn: async (data: {
+      sessionId: string
+      agentSlug: string
+      file: File
+      relativePath?: string
+      onProgress?: (p: UploadProgress) => void
+      signal?: AbortSignal
+      stallMs?: number
+    }) => {
       return uploadFileChunked<{ path: string; filename: string; size: number }>({
         url: `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`,
         file: data.file,
         fields: data.relativePath ? { relativePath: data.relativePath } : undefined,
+        onProgress: data.onProgress,
+        signal: data.signal,
+        stallMs: data.stallMs,
       })
     },
   })
@@ -470,7 +506,10 @@ export function useWorkflowTree(
     queryFn: async ({ signal }) => {
       const res = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/tree`,
-        { signal }
+        // The route answers in milliseconds from local disk; a request that hangs
+        // (stalled connection, host busy) must fail fast so the poll below retries
+        // it instead of pinning the drawer on "Loading…".
+        { signal: AbortSignal.any([signal, AbortSignal.timeout(WORKFLOW_TREE_TIMEOUT_MS)]) }
       )
       if (!res.ok) throw new Error('Failed to fetch workflow tree')
       return res.json()
@@ -480,9 +519,15 @@ export function useWorkflowTree(
     // (the tree route 404s), and new agents/labels appear as the run progresses. Stops once
     // the workflow completes (SSE-driven refetch handles the final state).
     refetchInterval: opts?.active ? 2000 : false,
-    retry: opts?.active ? 5 : false,
+    // No built-in retries: the poll IS the retry. Query retries back off
+    // exponentially (1s, 2s, 4s, 8s, 16s) and the whole sequence renders as the
+    // initial "Loading…" state, so a launch-window 404 would hide behind a
+    // half-minute spinner instead of surfacing as "Starting workflow…" at once.
+    retry: false,
   })
 }
+
+const WORKFLOW_TREE_TIMEOUT_MS = 10_000
 
 /**
  * One workflow subagent's transcript (same shape as a regular subagent). Polls
@@ -511,13 +556,20 @@ export function useWorkflowAgentMessages(
   })
 }
 
+/**
+ * Stop the agent. scope 'turn' (default) ends the current turn and leaves
+ * background tasks running; 'all' stops those too.
+ */
 export function useInterruptSession() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ sessionId, agentSlug }: { sessionId: string; agentSlug: string }) => {
+    mutationFn: async ({ sessionId, agentSlug, scope = 'turn', signal }: { sessionId: string; agentSlug: string; scope?: InterruptScope; signal?: AbortSignal }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/interrupt`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope }),
+        signal,
       })
       if (!res.ok) throw new Error('Failed to interrupt session')
       return res.json()
@@ -525,6 +577,20 @@ export function useInterruptSession() {
     onSuccess: (_, { sessionId }) => {
       // Invalidate messages to refresh state
       queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+    },
+  })
+}
+
+/** Stop one background task (backgrounded command, background subagent, workflow). */
+export function useStopBackgroundTask() {
+  return useMutation({
+    mutationFn: async ({ sessionId, agentSlug, taskId }: { sessionId: string; agentSlug: string; taskId: string }) => {
+      const res = await apiFetch(
+        `/api/agents/${agentSlug}/sessions/${sessionId}/tasks/${encodeURIComponent(taskId)}/stop`,
+        { method: 'POST' },
+      )
+      if (!res.ok) throw new Error('Failed to stop background task')
+      return res.json()
     },
   })
 }

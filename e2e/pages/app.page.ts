@@ -39,7 +39,7 @@ export class AppPage {
     }
 
     const manualSetup = this.page.locator('[data-testid="wizard-manual-setup"]')
-    const agentOnlyHeading = wizard.getByRole('heading', { name: /create your first agent/i })
+    const agentOnlyHeading = wizard.getByRole('heading', { name: /describe your first ai teammate/i })
     await expect(manualSetup.or(agentOnlyHeading).first()).toBeVisible({ timeout: 5000 })
 
     if (await manualSetup.isVisible()) {

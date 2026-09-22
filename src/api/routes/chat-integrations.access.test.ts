@@ -24,7 +24,6 @@ let testSqlite: InstanceType<typeof Database>
 
 vi.mock('@shared/lib/db', () => ({
   get db() { return testDb },
-  get sqlite() { return testSqlite },
 }))
 
 // ── Auth middleware: faithful passthrough (mirrors sup229 test) ──────────
@@ -70,7 +69,10 @@ vi.mock('@shared/lib/services/chat-integration-service', () => ({
   createChatIntegration: vi.fn(),
   updateChatIntegration: vi.fn(() => true),
   updateChatIntegrationStatus: vi.fn(),
-  deleteChatIntegration: vi.fn(),
+  deleteChatIntegration: vi.fn(() => {
+    expect(mockPauseIntegration).toHaveBeenCalledOnce()
+    return true
+  }),
   DuplicateBotTokenError: class DuplicateBotTokenError extends Error {},
 }))
 
@@ -87,20 +89,21 @@ const mockNotifyChatApproved = vi.fn().mockResolvedValue(undefined)
 const mockTearDownChatSession = vi.fn().mockResolvedValue(undefined)
 const mockReconcileAccess = vi.fn().mockResolvedValue(undefined)
 const mockClearChatSessionById = vi.fn()
+const mockPauseIntegration = vi.fn().mockResolvedValue(undefined)
 const mockRemoveIntegration = vi.fn().mockResolvedValue(undefined)
 const mockSendContactCard = vi.fn().mockResolvedValue(undefined)
 
-vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
-  chatIntegrationManager: {
-    clearChatSessionById: (id: string) => mockClearChatSessionById(id),
-    notifyChatApproved: (...args: unknown[]) => mockNotifyChatApproved(...args),
-    tearDownChatSession: (...args: unknown[]) => mockTearDownChatSession(...args),
+vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
+  agentIntegrationManager: {
+    clearSessionById: (id: string) => mockClearChatSessionById(id),
+    notifyAccessApproved: (...args: unknown[]) => mockNotifyChatApproved(...args),
+    releaseExternalSession: (...args: unknown[]) => mockTearDownChatSession(...args),
     reconcileAccess: (...args: unknown[]) => mockReconcileAccess(...args),
     isIntegrationConnected: vi.fn(() => false),
     addIntegration: vi.fn(),
-    sendContactCard: (...args: unknown[]) => mockSendContactCard(...args),
+    integrationCreated: (...args: unknown[]) => mockSendContactCard(...args),
     removeIntegration: (...args: unknown[]) => mockRemoveIntegration(...args),
-    pauseIntegration: vi.fn(),
+    pauseIntegration: (...args: unknown[]) => mockPauseIntegration(...args),
     resumeIntegration: vi.fn(),
   },
 }))
@@ -160,7 +163,7 @@ function seedAccess(integrationId: string, externalChatId: string, status: 'pend
 // ── Tests ────────────────────────────────────────────────────────────────
 
 describe('chat-integrations access routes', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
@@ -174,9 +177,17 @@ describe('chat-integrations access routes', () => {
     seedIntegration(INTEGRATION_B, 'agent-b')
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     testSqlite?.close()
   })
+
+  it('pauses and refreshes the running identity before deleting an integration', async () => {
+    const response = await app().request(`/api/chat-integrations/${INTEGRATION_A}`, { method: 'DELETE' })
+    expect(response.status).toBe(204)
+    expect(mockPauseIntegration).toHaveBeenCalledWith(INTEGRATION_A)
+    expect(mockRemoveIntegration).not.toHaveBeenCalled()
+  })
+
 
   // ── GET /:integrationId/access ─────────────────────────────────────────
 
@@ -217,7 +228,7 @@ describe('chat-integrations access routes', () => {
 
   describe('PATCH /:integrationId', () => {
     it('maps config validation failures from the service to 400', async () => {
-      vi.mocked(updateChatIntegration).mockImplementationOnce(() => {
+      vi.mocked(updateChatIntegration).mockImplementationOnce(async () => {
         z.object({ botToken: z.string() }).parse({})
         return true
       })
@@ -466,7 +477,7 @@ describe('chat-integrations access routes', () => {
         .get(accessId) as { status: string } | undefined
       expect(row?.status).toBe('denied')
 
-      // tearDownChatSession invoked with the right args
+      // releaseExternalSession invoked with the right args
       expect(mockTearDownChatSession).toHaveBeenCalledWith(INTEGRATION_A, 'chat-allowed')
     })
 
@@ -502,7 +513,7 @@ describe('chat-integrations access routes', () => {
         .prepare(`SELECT status FROM chat_integration_access WHERE id = ?`)
         .get(accessId) as { status: string } | undefined
       expect(row?.status).toBe('denied')
-      // tearDownChatSession IS called (it's a no-op when no live session exists);
+      // releaseExternalSession IS called (it's a no-op when no live session exists);
       // the key is that it does not throw.
       expect(mockTearDownChatSession).toHaveBeenCalledWith(INTEGRATION_A, 'chat-pending')
     })
@@ -524,7 +535,7 @@ describe('chat-integrations access routes', () => {
         .get(accessId) as { status: string } | undefined
       expect(row?.status).toBe('denied')
 
-      // tearDownChatSession must be called to kill the live SSE/forwarding session
+      // releaseExternalSession must be called to kill the live SSE/forwarding session
       expect(mockTearDownChatSession).toHaveBeenCalledWith(INTEGRATION_A, 'chat-allowed')
     })
   })
@@ -617,7 +628,7 @@ describe('chat-integrations access routes', () => {
 
   describe('POST /:id create — requireApproval not settable at create', () => {
     it('ignores requireApproval in the body so the public flip cannot bypass the owner gate', async () => {
-      vi.mocked(createChatIntegration).mockReturnValue('new-int')
+      vi.mocked(createChatIntegration).mockResolvedValue('new-int')
       mockGetChatIntegration.mockImplementation((id: string) =>
         id === 'new-int' ? { id: 'new-int', agentSlug: 'agent-a' } : (integrations[id] ?? null),
       )
@@ -637,7 +648,7 @@ describe('chat-integrations access routes', () => {
     })
 
     it('returns 500 instead of a null success body when the created row cannot be read back', async () => {
-      vi.mocked(createChatIntegration).mockReturnValue('missing-int')
+      vi.mocked(createChatIntegration).mockResolvedValue('missing-int')
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
 
       const res = await app().request('http://localhost/api/chat-integrations/agent-a', {

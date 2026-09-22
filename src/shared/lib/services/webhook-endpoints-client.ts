@@ -21,6 +21,16 @@ import {
   type WebhookFilterTestResult,
 } from './webhook-endpoint-schema'
 
+export class WebhookEndpointsApiError extends Error {
+  constructor(
+    message: string,
+    public statusCode: number,
+  ) {
+    super(message)
+    this.name = 'WebhookEndpointsApiError'
+  }
+}
+
 // Org JWTs encode the acting member as `<token>::<memberId>`; opaque keys ignore it.
 function buildBearer(memberId: string): string {
   const token = getPlatformAccessToken()
@@ -52,7 +62,10 @@ async function endpointsFetch(
     // transcript. Mask any `"secret":"…"` value, then cap the length so a
     // full-body echo can't leak wholesale.
     const masked = text.replace(/("secret"\s*:\s*")(?:\\.|[^"\\])*/g, '$1***')
-    throw new Error(`Webhook endpoints API error ${response.status}: ${masked.slice(0, 500)}`)
+    throw new WebhookEndpointsApiError(
+      `Webhook endpoints API error ${response.status}: ${masked.slice(0, 500)}`,
+      response.status,
+    )
   }
 
   // Disable responds with the updated row today, but a bodyless 204 must not

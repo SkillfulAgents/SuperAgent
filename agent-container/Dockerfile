@@ -22,6 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     # Timezone data (required for TZ env var to resolve IANA names)
     tzdata \
+    # Colour emoji for headless Chromium: widget snapshots rasterized in the
+    # container ship to native surfaces (iOS) and would show tofu without it.
+    fonts-noto-color-emoji \
     # Network/DNS utilities
     dnsutils \
     iputils-ping \
@@ -187,19 +190,30 @@ RUN if [ -d /root/.agent-browser/browsers ]; then \
       chown -R claude:claude /home/claude/.agent-browser; \
     fi
 
-# Copy skills into the user's Claude config directory (after user creation).
-# NOTE: session-transcript retention (cleanupPeriodDays) is NOT set here. The
-# CLI reads its user settings.json from CLAUDE_CONFIG_DIR (/workspace/.claude),
-# not ~/.claude, so a settings.json baked in here would be ignored. The
-# SessionManager provisions /workspace/.claude/settings.json at runtime instead
-# (see agent-container/src/session-manager.ts:ensureClaudeSettings).
-COPY --chown=claude:claude skills/ /home/claude/.claude/skills/
+# The Gamut plugin: our skills (dashboards, widgets) and vendored workflows
+# (deep-research), loaded into every session via the SDK `plugins` option
+# (claude-code.ts / gamut-plugin.ts). Image-owned and read-only like the docs:
+# the CLI ignores ~/.claude entirely (it reads CLAUDE_CONFIG_DIR =
+# /workspace/.claude, which is the agent-writable bind mount), so a plugin
+# outside both is the only way to ship skills the agent can neither miss nor
+# edit. See plugin/README.md.
+# NOTE: session-transcript retention (cleanupPeriodDays) is NOT set here for
+# the same reason — SessionManager provisions /workspace/.claude/settings.json
+# at runtime instead (see session-manager.ts:ensureClaudeSettings).
+COPY --chown=root:root plugin/ /opt/gamut/plugin/
+RUN chmod -R a-w /opt/gamut/plugin
 
 # Platform capability guides are image-owned rather than stored in /workspace,
 # which is replaced by a writable per-agent bind mount at runtime. The agent can
 # read these guides on demand but cannot edit them.
 COPY --chown=root:root docs/ /opt/gamut/docs/
 RUN chmod -R a-w /opt/gamut/docs
+
+# Helper scripts the guides tell the agent to run (session-history readers).
+# Image-owned and read-only for the same reason as the guides above; the agent
+# runs them with `python3 <path>`, so only the read bit is load-bearing.
+COPY --chown=root:root bin/ /opt/gamut/bin/
+RUN chmod -R a-w /opt/gamut/bin && chmod a+rx /opt/gamut/bin/*.py
 
 # Switch to non-root user
 USER claude
@@ -224,6 +238,11 @@ ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage,--disable-blink-fea
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
 ENV DISABLE_AUTOUPDATER=1
+# Keep bun's package cache on the persistent workspace mount. The default
+# ($HOME/.bun/install/cache) lives in the container's writable layer, which is
+# discarded on every restart (each start is `rm -f` + a fresh `run`), so any
+# dashboard dependency install after a wake re-downloaded every package.
+ENV BUN_INSTALL_CACHE_DIR=/workspace/.bun-cache
 # ENABLE_TOOL_SEARCH is deliberately NOT set here. The host passes it at
 # `docker run` only for providers whose endpoint expands deferred tools; for
 # the rest it must stay unset so the CLI applies its own guard (it disables

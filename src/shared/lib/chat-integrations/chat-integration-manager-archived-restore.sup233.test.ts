@@ -31,7 +31,6 @@ let testSqlite: InstanceType<typeof Database>
 
 vi.mock('../db', () => ({
   get db() { return testDb },
-  get sqlite() { return testSqlite },
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -43,9 +42,10 @@ vi.mock('@shared/lib/platform-attribution', () => ({
   runWithOptionalUser: (_userId: string | undefined, fn: () => unknown) => fn(),
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: { ensureRunning: vi.fn() },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ ensureRunning: vi.fn() }) }
+})
 
 vi.mock('@shared/lib/services/session-service', () => ({
   registerSession: vi.fn(),
@@ -86,9 +86,13 @@ import {
   listActiveChatIntegrationSessions,
 } from '@shared/lib/services/chat-integration-session-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+
+// The registry attaches the real stores; these tests drive the persister alone.
+messagePersister.attachSessionStores((slug) => createLocalSessionStore(slug))
 
 describe('SUP-233 reconnect restore ignores archived sessions', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sup233-'))
     process.env.SUPERAGENT_DATA_DIR = testDir
     testSqlite = new Database(':memory:')
@@ -111,26 +115,26 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
     // Public bot so the access gate is a no-op and this test isolates SUP-233's
     // concern (active sessions restore, archived don't). requireApproval is
     // owner-only post-create, so flip it directly on the row.
-    const integrationId = createChatIntegration({
+    const integrationId = (await createChatIntegration({
       agentSlug: 'test-agent',
       provider: 'telegram',
       config: { botToken: 'test-token-123' },
       name: 'Test Bot',
-    })
+    }))
     testSqlite.prepare('UPDATE chat_integrations SET require_approval = 0 WHERE id = ?').run(integrationId)
 
     // One active session, one archived session for the same integration.
-    createChatIntegrationSession({
+    await createChatIntegrationSession({
       integrationId,
       externalChatId: 'chat-active',
       sessionId: 'active-agent-session',
     })
-    const archivedRowId = createChatIntegrationSession({
+    const archivedRowId = (await createChatIntegrationSession({
       integrationId,
       externalChatId: 'chat-archived',
       sessionId: 'archived-agent-session',
-    })
-    archiveChatIntegrationSession(archivedRowId)
+    }))
+    await archiveChatIntegrationSession(archivedRowId)
 
     const addSSEClient = vi
       .spyOn(messagePersister, 'addSSEClient')
@@ -139,24 +143,24 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
     // Drives connectIntegration -> restore loop.
     await chatIntegrationManager.addIntegration(integrationId)
 
-    const subscribedSessionIds = addSSEClient.mock.calls.map((c) => c[0])
+    const subscribedSessionIds = addSSEClient.mock.calls.map((c) => c[1])
     expect(subscribedSessionIds).toContain('active-agent-session')
     expect(subscribedSessionIds).not.toContain('archived-agent-session')
   })
 
-  it('listActiveChatIntegrationSessions excludes archived rows; listChatIntegrationSessions keeps them', () => {
-    const integrationId = createChatIntegration({
+  it('listActiveChatIntegrationSessions excludes archived rows; listChatIntegrationSessions keeps them', async () => {
+    const integrationId = (await createChatIntegration({
       agentSlug: 'test-agent-2',
       provider: 'telegram',
       config: { botToken: 'test-token-456' },
       name: 'Test Bot 2',
-    })
-    createChatIntegrationSession({ integrationId, externalChatId: 'c-a', sessionId: 's-active' })
-    const archivedId = createChatIntegrationSession({ integrationId, externalChatId: 'c-b', sessionId: 's-archived' })
-    archiveChatIntegrationSession(archivedId)
+    }))
+    await createChatIntegrationSession({ integrationId, externalChatId: 'c-a', sessionId: 's-active' })
+    const archivedId = (await createChatIntegrationSession({ integrationId, externalChatId: 'c-b', sessionId: 's-archived' }))
+    await archiveChatIntegrationSession(archivedId)
 
-    const active = listActiveChatIntegrationSessions(integrationId).map((s) => s.sessionId)
-    const all = listChatIntegrationSessions(integrationId).map((s) => s.sessionId)
+    const active = (await listActiveChatIntegrationSessions(integrationId)).map((s) => s.sessionId)
+    const all = (await listChatIntegrationSessions(integrationId)).map((s) => s.sessionId)
 
     expect(active).toContain('s-active')
     expect(active).not.toContain('s-archived')

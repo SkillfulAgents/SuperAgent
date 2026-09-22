@@ -9,11 +9,21 @@ const mockEnsureRunning = vi.fn().mockResolvedValue({
   createSession: mockCreateSession,
 })
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
-  },
-}))
+// The actor reaches the container client through getClient after start();
+// hand back whatever ensureRunning last resolved to.
+let mockClient: unknown
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning: async (...args: unknown[]) => {
+        mockClient = await mockEnsureRunning(...args)
+        return mockClient
+      },
+      getClient: () => mockClient,
+    }),
+  }
+})
 
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'http://localhost:3000',
@@ -47,17 +57,15 @@ const mockGetWebhookTriggersByComposioId = vi.fn()
 const mockMarkTriggerFired = vi.fn().mockResolvedValue(undefined)
 const mockMarkTriggerFailed = vi.fn().mockResolvedValue(undefined)
 const mockGetDistinctMemberIds = vi.fn(() => ['sub_test_member'])
-const mockResolvePlatformMemberForCandidates =
-  vi.fn<(candidates: Array<string | null | undefined>) => { userId: string; memberId: string } | null>(
-    () => null,
-  )
+const mockResolveTriggerPrincipal =
+  vi.fn<(trigger: unknown) => { userId: string; memberId: string } | null>(() => null)
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   getDistinctPlatformMemberIdsForActiveTriggers: () => mockGetDistinctMemberIds(),
   getWebhookTriggersByComposioId: (...args: unknown[]) => mockGetWebhookTriggersByComposioId(...args),
   markTriggerFired: (...args: unknown[]) => mockMarkTriggerFired(...args),
   markTriggerFailed: (...args: unknown[]) => mockMarkTriggerFailed(...args),
-  resolvePlatformMemberForCandidates: (...args: [Array<string | null | undefined>]) =>
-    mockResolvePlatformMemberForCandidates(...args),
+  resolveTriggerPrincipal: (trigger: unknown) => mockResolveTriggerPrincipal(trigger),
+  getConnectedAccountOwnerUserId: () => null,
 }))
 
 const mockRegisterSession = vi.fn().mockResolvedValue(undefined)
@@ -144,7 +152,7 @@ describe('TriggerManager', () => {
     mockGetDistinctMemberIds.mockReturnValue(['sub_test_member'])
     mockGetPlatformAccessToken.mockReturnValue('opaque_test_token')
     mockDecodeOrgIdFromToken.mockReturnValue(null)
-    mockResolvePlatformMemberForCandidates.mockReturnValue(null)
+    mockResolveTriggerPrincipal.mockReturnValue(null)
   })
 
   describe('start', () => {
@@ -200,7 +208,7 @@ describe('TriggerManager', () => {
       // Verify trigger was marked as fired
       expect(mockMarkTriggerFired).toHaveBeenCalledWith('trigger_1', 'session_123')
       expect(mockRegisterSession).toHaveBeenCalledWith(
-        'test-agent',
+        expect.objectContaining({ slug: 'test-agent' }),
         'session_123',
         'Email Handler',
         expect.objectContaining({
@@ -248,7 +256,7 @@ describe('TriggerManager', () => {
       expect(prompt).toContain('Event 2:')
       expect(prompt).toContain('Event 3:')
       expect(mockRegisterSession).toHaveBeenCalledWith(
-        'test-agent',
+        expect.objectContaining({ slug: 'test-agent' }),
         'session_123',
         'Batch Test',
         expect.objectContaining({
@@ -336,18 +344,19 @@ describe('TriggerManager', () => {
       })
       mockGetWebhookTriggersByComposioId.mockResolvedValue([trigger])
       // Creator has no platform member; resolution falls back to the owner.
-      mockResolvePlatformMemberForCandidates.mockReturnValue({
+      mockResolveTriggerPrincipal.mockReturnValue({
         userId: 'owner_user',
         memberId: 'sub_owner_member',
       })
 
       await triggerManager.start()
 
-      expect(mockResolvePlatformMemberForCandidates).toHaveBeenCalledWith([
-        'creator_user',
-        // resolveConnectedAccountOwner is read through the db mock (returns null here).
-        null,
-      ])
+      expect(mockResolveTriggerPrincipal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          createdByUserId: 'creator_user',
+          connectedAccountId: 'ca_owned',
+        }),
+      )
       expect(mockRunWithOptionalUser).toHaveBeenCalledWith('owner_user', expect.any(Function))
       expect(mockCreateSession).toHaveBeenCalledTimes(1)
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { TelegramConnector } from './telegram-connector'
 import type { IncomingMessage } from './base-connector'
+import type { IntegrationResponseEvent } from '../agent-integrations/types'
 
 // ── grammY mock ────────────────────────────────────────────────────────────────
 // The photo/document handlers are inline closures registered inside connect(),
@@ -65,15 +66,13 @@ function callHandleText(connector: TelegramConnector, ctx: unknown): void {
 
 function collectEmits(connector: TelegramConnector): IncomingMessage[] {
   const msgs: IncomingMessage[] = []
-  connector.onMessage((m) => msgs.push(m))
+  connector.onEvent(event => { if (event.type === 'input') msgs.push(event.payload as IncomingMessage) })
   return msgs
 }
 
-interface CapturedResponse { toolUseId: string; response: any; chatId?: string }
-
-function collectInteractiveResponses(connector: TelegramConnector): CapturedResponse[] {
-  const out: CapturedResponse[] = []
-  connector.onInteractiveResponse((toolUseId, response, chatId) => out.push({ toolUseId, response, chatId }))
+function collectInteractiveResponses(connector: TelegramConnector): IntegrationResponseEvent[] {
+  const out: IntegrationResponseEvent[] = []
+  connector.onEvent(event => { if (event.type === 'response') out.push(event) })
   return out
 }
 
@@ -117,26 +116,30 @@ describe('TelegramConnector — chatType propagation', () => {
     ;(connector as any).hasCompletedFirstPoll = true
   })
 
-  it('emits chatType=private for a private chat message', () => {
+  it('emits chatType=private for a private chat message', async () => {
     callHandleText(connector, makeCtx({ type: 'private' }))
+    await Promise.resolve()
     expect(emitted).toHaveLength(1)
     expect(emitted[0].chatType).toBe('private')
   })
 
-  it('emits chatType=group for a group chat message', () => {
+  it('emits chatType=group for a group chat message', async () => {
     callHandleText(connector, makeCtx({ type: 'group', title: 'My Group' }))
+    await Promise.resolve()
     expect(emitted).toHaveLength(1)
     expect(emitted[0].chatType).toBe('group')
   })
 
-  it('emits chatType=supergroup for a supergroup message', () => {
+  it('emits chatType=supergroup for a supergroup message', async () => {
     callHandleText(connector, makeCtx({ type: 'supergroup', title: 'My Supergroup' }))
+    await Promise.resolve()
     expect(emitted).toHaveLength(1)
     expect(emitted[0].chatType).toBe('supergroup')
   })
 
-  it('drops channel updates (returns without emitting)', () => {
+  it('drops channel updates (returns without emitting)', async () => {
     callHandleText(connector, makeCtx({ type: 'channel' }))
+    await Promise.resolve()
     expect(emitted).toHaveLength(0)
   })
 })
@@ -151,17 +154,19 @@ describe('TelegramConnector — /start routing', () => {
     ;(connector as any).hasCompletedFirstPoll = true
   })
 
-  it('emits /start as a normal IncomingMessage (no early-return greeting)', () => {
+  it('emits /start as a normal IncomingMessage (no early-return greeting)', async () => {
     callHandleText(connector, makeCtx({ type: 'private', text: '/start' }))
+    await Promise.resolve()
     expect(emitted).toHaveLength(1)
     expect(emitted[0].text).toBe('/start')
     expect(emitted[0].chatType).toBe('private')
   })
 
-  it('does not call ctx.reply for /start (greeting removed from connector)', () => {
+  it('does not call ctx.reply for /start (greeting removed from connector)', async () => {
     const ctx = makeCtx({ type: 'private', text: '/start' }) as any
     ctx.reply = vi.fn()
     callHandleText(connector, ctx)
+    await Promise.resolve()
     expect(ctx.reply).not.toHaveBeenCalled()
   })
 })
@@ -177,7 +182,7 @@ describe('TelegramConnector — first-poll batch flush', () => {
     ;(connector as any).hasCompletedFirstPoll = false
   })
 
-  it('flushBatch includes userName, chatName, and chatType from the buffered message', () => {
+  it('flushBatch includes userName, chatName, and chatType from the buffered message', async () => {
     const ctx = makeCtx({
       type: 'group',
       chatId: 999,
@@ -192,6 +197,7 @@ describe('TelegramConnector — first-poll batch flush', () => {
 
     // Manually flush (bypasses the setTimeout)
     ;(connector as any).flushBatch('999', '111', '42')
+    await Promise.resolve()
 
     expect(emitted).toHaveLength(1)
     const msg = emitted[0]
@@ -203,13 +209,14 @@ describe('TelegramConnector — first-poll batch flush', () => {
     expect(msg.userId).toBe('111')
   })
 
-  it('batches multiple messages and carries chatType through the combined emit', () => {
+  it('batches multiple messages and carries chatType through the combined emit', async () => {
     const ctx1 = makeCtx({ type: 'private', chatId: 200, userId: 300, firstName: 'Eve', text: 'first', messageId: 10 })
     const ctx2 = makeCtx({ type: 'private', chatId: 200, userId: 300, firstName: 'Eve', text: 'second', messageId: 11 })
 
     callHandleText(connector, ctx1)
     callHandleText(connector, ctx2)
     ;(connector as any).flushBatch('200', '300', '11')
+    await Promise.resolve()
 
     expect(emitted).toHaveLength(1)
     expect(emitted[0].chatType).toBe('private')
@@ -311,7 +318,7 @@ describe('startWorking (dumb, no self-heartbeat)', () => {
 describe('TelegramConnector — AskUserQuestion multi-select', () => {
   let connector: TelegramConnector
   let sent: any[]
-  let responses: CapturedResponse[]
+  let responses: IntegrationResponseEvent[]
 
   beforeEach(() => {
     connector = makeConnector()
@@ -367,8 +374,8 @@ describe('TelegramConnector — AskUserQuestion multi-select', () => {
     await (connector as any).handleCallbackQuery(makeCbCtx(kb[1][0].callback_data)) // S3
     await (connector as any).handleCallbackQuery(makeCbCtx(kb[3][0].callback_data)) // Done
     expect(responses).toHaveLength(1)
-    expect(responses[0].toolUseId).toBe('tu-multi')
-    expect(responses[0].response.answer).toBe('Redis, S3')
+    expect(responses[0].requestId).toBe('tu-multi')
+    expect(responses[0].value).toEqual({ 'Pick your stack': 'Redis, S3' })
   })
 
   it('re-tapping a checked option unchecks it (callback is not consumed on tap)', async () => {
@@ -401,14 +408,14 @@ describe('TelegramConnector — AskUserQuestion multi-select', () => {
     const ok = await (connector as any).answerOpenQuestionWithText('123', 'tu-multi', 'use whatever you think best')
     expect(ok).toBe(true)
     expect(responses).toHaveLength(1)
-    expect(responses[0].response.answer).toBe('use whatever you think best') // text wins, not 'Redis'
+    expect(responses[0].value).toEqual({ 'Pick your stack': 'use whatever you think best' }) // text wins, not 'Redis'
   })
 })
 
 describe('TelegramConnector — typed message answers an open question (Other)', () => {
   let connector: TelegramConnector
   let sent: any[]
-  let responses: CapturedResponse[]
+  let responses: IntegrationResponseEvent[]
 
   beforeEach(() => {
     connector = makeConnector()
@@ -429,8 +436,8 @@ describe('TelegramConnector — typed message answers an open question (Other)',
     const ok = await (connector as any).answerOpenQuestionWithText('123', 'tu-q', 'actually use SQLite')
     expect(ok).toBe(true)
     expect(responses).toHaveLength(1)
-    expect(responses[0].toolUseId).toBe('tu-q')
-    expect(responses[0].response.answer).toBe('actually use SQLite')
+    expect(responses[0].requestId).toBe('tu-q')
+    expect(responses[0].value).toEqual({ 'Which database?': 'actually use SQLite' })
   })
 
   it('resolves an options-less (free-form) single question typed as the Other answer', async () => {
@@ -444,7 +451,7 @@ describe('TelegramConnector — typed message answers an open question (Other)',
     const ok = await (connector as any).answerOpenQuestionWithText('123', 'tu-open', 'report.csv')
     expect(ok).toBe(true)
     expect(responses).toHaveLength(1)
-    expect(responses[0].response.answer).toBe('report.csv')
+    expect(responses[0].value).toEqual({ 'What should I name the file?': 'report.csv' })
   })
 
   it('single-select tap rebuilds the confirmation from the stored question text (rich path has no message.text)', async () => {
@@ -540,7 +547,7 @@ describe('TelegramConnector — typed message answers an open question (Other)',
     await tap
     expect(racingText).toBe(false) // the tap already owns the resolution
     expect(responses).toHaveLength(1) // exactly one resolution, not two
-    expect(responses[0].response.answer).toBe('Postgres')
+    expect(responses[0].value).toEqual({ 'Which database?': 'Postgres' })
   })
 
   it('a fast tap on two different single-select options resolves only once (siblings invalidated)', async () => {
@@ -549,7 +556,7 @@ describe('TelegramConnector — typed message answers an open question (Other)',
     await (connector as any).handleCallbackQuery(makeCbCtx(kb[0][0].callback_data)) // Postgres
     await (connector as any).handleCallbackQuery(makeCbCtx(kb[1][0].callback_data)) // MySQL (stale sibling)
     expect(responses).toHaveLength(1)
-    expect(responses[0].response.answer).toBe('Postgres')
+    expect(responses[0].value).toEqual({ 'Which database?': 'Postgres' })
   })
 
   it('a stale sibling tap on the last sub-question of a multi-question card does not double-emit', async () => {
@@ -573,7 +580,7 @@ describe('TelegramConnector — typed message answers an open question (Other)',
 describe('TelegramConnector — dismissOpenCards (cancel strips abandoned cards)', () => {
   let connector: TelegramConnector
   let sent: any[]
-  let responses: CapturedResponse[]
+  let responses: IntegrationResponseEvent[]
 
   beforeEach(() => {
     connector = makeConnector()

@@ -15,7 +15,19 @@ import {
   calculateCost,
 } from './usage-service'
 
+import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
+
 const FIXTURES_DIR = path.resolve(__dirname, '__fixtures__/usage-data')
+
+/** A fixture's Claude directory as a workspace: the usage loaders read through file operations. */
+function dailyOptions(claudePath: string) {
+  return { files: new LocalFileOps(() => claudePath), dir: 'projects' }
+}
+
+/** One transcript by host path, as the workspace it sits in plus its name. */
+function sessionOptions(sessionPath: string) {
+  return { files: new LocalFileOps(() => path.dirname(sessionPath)), transcript: path.basename(sessionPath) }
+}
 const RUNTIME_MODEL_FIXTURE = path.join(FIXTURES_DIR, 'runtime-model-ids')
 const MISSING_PRICE_FIXTURE = path.join(FIXTURES_DIR, 'missing-model-price')
 
@@ -95,7 +107,7 @@ describe('usage-service', () => {
 
         const [ccusageResult, lightweightResult] = await Promise.all([
           loadWithCcusage(claudePath),
-          loadDailyUsageDataLightweight({ claudePath }),
+          loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) }),
         ])
 
         const normalizedCcusage = normalize(ccusageResult as DailyResult[])
@@ -109,8 +121,8 @@ describe('usage-service', () => {
 
           expect(lw.date).toBe(cc.date)
           expect(lw.inputTokens).toBe(cc.inputTokens)
-          // ccusage keeps the first snapshot for duplicate assistant message IDs.
-          // We keep the highest output_tokens snapshot, so output/cost can be higher.
+          // This pinned ccusage version keeps the first duplicate snapshot.
+          // We keep the richest total-token snapshot, so output/cost can be higher.
           expect(lw.outputTokens).toBeGreaterThanOrEqual(cc.outputTokens)
           expect(lw.cacheCreationTokens).toBe(cc.cacheCreationTokens)
           expect(lw.cacheReadTokens).toBe(cc.cacheReadTokens)
@@ -137,8 +149,8 @@ describe('usage-service', () => {
       // Agent 4b41 has data across 3 days: 2025-12-04, 2025-12-05, 2025-12-06
       const claudePath = getClaudePath('4b41c573-4c33-456d-9cc5-3df6ee95dc32')
 
-      const allData = await loadDailyUsageDataLightweight({ claudePath })
-      const filteredData = await loadDailyUsageDataLightweight({ claudePath, since: '20251206' })
+      const allData = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
+      const filteredData = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath), since: '20251206' })
 
       expect(allData.length).toBeGreaterThanOrEqual(2)
       expect(filteredData.length).toBe(1)
@@ -151,7 +163,7 @@ describe('usage-service', () => {
 
       const [ccusageResult, lightweightResult] = await Promise.all([
         loadWithCcusage(claudePath, since),
-        loadDailyUsageDataLightweight({ claudePath, since }),
+        loadDailyUsageDataLightweight({ ...dailyOptions(claudePath), since }),
       ])
 
       const normalizedCcusage = normalize(ccusageResult as DailyResult[])
@@ -169,7 +181,7 @@ describe('usage-service', () => {
   describe('loadDailyUsageData — empty/missing directory', () => {
     it('returns empty array for non-existent path', async () => {
       const result = await loadDailyUsageDataLightweight({
-        claudePath: '/tmp/nonexistent-usage-test-path',
+        ...dailyOptions('/tmp/nonexistent-usage-test-path'),
       })
       expect(result).toEqual([])
     })
@@ -178,8 +190,8 @@ describe('usage-service', () => {
   describe('loadDailyUsageData — deduplication', () => {
     it('produces consistent results (idempotent dedup)', async () => {
       const claudePath = getClaudePath('4b41c573-4c33-456d-9cc5-3df6ee95dc32')
-      const result1 = await loadDailyUsageDataLightweight({ claudePath })
-      const result2 = await loadDailyUsageDataLightweight({ claudePath })
+      const result1 = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
+      const result2 = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
       expect(normalize(result1)).toEqual(normalize(result2))
     })
   })
@@ -188,7 +200,7 @@ describe('usage-service', () => {
     it('includes usage from subagent (agent-*) files', async () => {
       // Agent 4b41 has agent-*.jsonl files alongside regular session files
       const claudePath = getClaudePath('4b41c573-4c33-456d-9cc5-3df6ee95dc32')
-      const result = await loadDailyUsageDataLightweight({ claudePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
 
       // Verify we have data (subagent tokens should be counted)
       const totalTokens = result.reduce(
@@ -213,8 +225,8 @@ describe('usage-service', () => {
       const sessionPath = path.join(claudePath, 'projects', '-workspace', 'session-a.jsonl')
 
       const [totals, allDaily] = await Promise.all([
-        loadSessionUsageTotals({ sessionPath }),
-        loadDailyUsageDataLightweight({ claudePath }),
+        loadSessionUsageTotals({ ...sessionOptions(sessionPath) }),
+        loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) }),
       ])
       const sessionDay = allDaily.find((day) => day.date === '2025-12-10')!
 
@@ -237,7 +249,7 @@ describe('usage-service', () => {
 
       try {
         const totals = await loadSessionUsageTotals({
-          sessionPath: path.join(dir, 'missing-session.jsonl'),
+          ...sessionOptions(path.join(dir, 'missing-session.jsonl')),
         })
 
         expect(totals).toEqual({
@@ -278,8 +290,8 @@ describe('usage-service', () => {
       writeFileSync(transcript, `${partialSnapshot}\n${finalSnapshotWithoutRequestId}\n`)
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
-          totalCost: 0.2,
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
+          totalCost: (100 * 3 + 20 * 15) / 1_000_000,
           totalTokens: 120,
           priceMissing: false,
           usageIncomplete: false,
@@ -300,8 +312,8 @@ describe('usage-service', () => {
 
     it('deduplicates repeated snapshots that omit requestId', async () => {
       const result = await loadDailyUsageDataLightweight({
-        claudePath: RUNTIME_MODEL_FIXTURE,
-        providerId: 'anthropic',
+        ...dailyOptions(RUNTIME_MODEL_FIXTURE),
+
       })
       const day = result.find((entry) => entry.date === '2026-01-01')!
 
@@ -318,19 +330,19 @@ describe('usage-service', () => {
           day.cacheCreationTokens +
           day.cacheReadTokens,
       ).toBe(138_263)
-      expect(day.totalCost).toBeCloseTo(0.3591282, 10)
+      expect(day.totalCost).toBeCloseTo(0.2394188, 10)
       expect(day.modelBreakdowns).toEqual([
         expect.objectContaining({
           modelName: 'anthropic/claude-sonnet-5-20260630',
-          cost: 0.3591282,
+          cost: 0.2394188,
         }),
       ])
     })
 
     it('prices each provider-qualified dated model id retained in the fixture', async () => {
       const result = await loadDailyUsageDataLightweight({
-        claudePath: RUNTIME_MODEL_FIXTURE,
-        providerId: 'anthropic',
+        ...dailyOptions(RUNTIME_MODEL_FIXTURE),
+
       })
       const day = result.find((entry) => entry.date === '2026-01-02')!
       const costs = new Map(day.modelBreakdowns.map((entry) => [entry.modelName, entry.cost]))
@@ -345,9 +357,9 @@ describe('usage-service', () => {
 
     it('returns corrected all-time totals through the session calculation path', async () => {
       await expect(
-        loadSessionUsageTotals({ sessionPath, providerId: 'anthropic' }),
+        loadSessionUsageTotals({ ...sessionOptions(sessionPath) }),
       ).resolves.toEqual({
-        totalCost: 0.8979571,
+        totalCost: 0.7782477,
         totalTokens: 286_966,
         priceMissing: false,
         usageIncomplete: false,
@@ -364,7 +376,7 @@ describe('usage-service', () => {
     )
 
     it('marks an unpriced discovered model without changing its deduplicated tokens', async () => {
-      await expect(loadSessionUsageTotals({ sessionPath, providerId: 'anthropic' })).resolves.toEqual({
+      await expect(loadSessionUsageTotals({ ...sessionOptions(sessionPath) })).resolves.toEqual({
         totalCost: 0,
         totalTokens: 79_429,
         priceMissing: true,
@@ -372,7 +384,7 @@ describe('usage-service', () => {
       })
     })
 
-    it('does not mark a numeric recorded zero as missing pricing', async () => {
+    it('marks unknown pricing as missing even when the SDK records zero', async () => {
       const dir = mkdtempSync(path.join(tmpdir(), 'usage-recorded-zero-'))
       const transcript = path.join(dir, 'recorded-zero.jsonl')
       writeFileSync(
@@ -390,10 +402,10 @@ describe('usage-service', () => {
       )
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0,
           totalTokens: 110,
-          priceMissing: false,
+          priceMissing: true,
           usageIncomplete: false,
         })
       } finally {
@@ -438,9 +450,9 @@ describe('usage-service', () => {
       writeFileSync(transcript, `${cacheReadRow}\n${cacheCreationRow}\n`)
 
       try {
-        const totals = await loadSessionUsageTotals({ sessionPath: transcript })
+        const totals = await loadSessionUsageTotals({ ...sessionOptions(transcript) })
         expect(totals).toEqual({
-          totalCost: 0.0000369,
+          totalCost: (123 * 0.3 + 456 * 3.75) / 1_000_000,
           totalTokens: 579,
           priceMissing: false,
           usageIncomplete: false,
@@ -482,8 +494,8 @@ describe('usage-service', () => {
       )
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
-          totalCost: 0.1,
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
+          totalCost: 0.00045,
           totalTokens: 110,
           priceMissing: false,
           usageIncomplete: true,
@@ -508,7 +520,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, `${validRow}\n{"message":{"usage":{"input_tokens":50}\n`)
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.00045,
           totalTokens: 110,
           priceMissing: false,
@@ -528,7 +540,7 @@ describe('usage-service', () => {
         .mockRejectedValueOnce(Object.assign(new Error('Permission denied'), { code: 'EACCES' }))
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0,
           totalTokens: 0,
           priceMissing: false,
@@ -572,7 +584,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, `${rows.join('\n')}\n`)
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.00135,
           totalTokens: 330,
           priceMissing: false,
@@ -598,7 +610,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, `${row}\n`)
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.00045,
           totalTokens: 110,
           priceMissing: false,
@@ -615,7 +627,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, usageRow({ id: 'last' }))
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.00045,
           totalTokens: 110,
           priceMissing: false,
@@ -632,7 +644,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, `\n   \n${usageRow({ id: 'crlf' })}\r\n\r\n`)
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.00045,
           totalTokens: 110,
           priceMissing: false,
@@ -654,7 +666,7 @@ describe('usage-service', () => {
       writeFileSync(transcript, `${decoy}\n${usageRow({ id: 'real' })}\n`)
 
       try {
-        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+        await expect(loadSessionUsageTotals({ ...sessionOptions(transcript) })).resolves.toEqual({
           totalCost: 0.00045,
           totalTokens: 110,
           priceMissing: false,
@@ -667,24 +679,24 @@ describe('usage-service', () => {
   })
 
   describe('loadDailyUsageData — costUSD field', () => {
-    it('uses costUSD from entries when available', async () => {
+    it('computes API-equivalent costs even when entries contain costUSD', async () => {
       const claudePath = getClaudePath('bedrock-agent')
-      const result = await loadDailyUsageDataLightweight({ claudePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
 
       const sorted = normalize(result)
 
-      // 2025-12-05: two entries with costUSD 0.0023 + 0.0045 = 0.0068
+      // Two Sonnet entries: 1100 input, 250 output, 100 cache writes, 200 cache reads.
       expect(sorted[0].date).toBe('2025-12-05')
-      expect(sorted[0].totalCost).toBeCloseTo(0.0068, 6)
+      expect(sorted[0].totalCost).toBeCloseTo((1100 * 3 + 250 * 15 + 100 * 3.75 + 200 * 0.3) / 1_000_000, 6)
 
       // 2025-12-06: one entry with costUSD 0.0005
       expect(sorted[1].date).toBe('2025-12-06')
-      expect(sorted[1].totalCost).toBeCloseTo(0.0005, 6)
+      expect(sorted[1].totalCost).toBeCloseTo((300 * 1 + 50 * 5) / 1_000_000, 6)
     })
 
     it('preserves Bedrock model names for downstream normalization', async () => {
       const claudePath = getClaudePath('bedrock-agent')
-      const result = await loadDailyUsageDataLightweight({ claudePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
 
       const allModels = result.flatMap((d) => d.modelBreakdowns.map((mb) => mb.modelName))
       // Should keep the raw Bedrock model name — normalization happens in the route
@@ -694,13 +706,13 @@ describe('usage-service', () => {
 
     it('aggregates cost per model breakdown', async () => {
       const claudePath = getClaudePath('bedrock-agent')
-      const result = await loadDailyUsageDataLightweight({ claudePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
 
       const dec5 = result.find((d) => d.date === '2025-12-05')!
       const sonnetBreakdown = dec5.modelBreakdowns.find((mb) =>
         mb.modelName === 'us.anthropic.claude-sonnet-4-5-20250929-v1'
       )!
-      expect(sonnetBreakdown.cost).toBeCloseTo(0.0068, 6)
+      expect(sonnetBreakdown.cost).toBeCloseTo((1100 * 3 + 250 * 15 + 100 * 3.75 + 200 * 0.3) / 1_000_000, 6)
       expect(sonnetBreakdown.inputTokens).toBe(1100)
       expect(sonnetBreakdown.outputTokens).toBe(250)
     })
@@ -710,7 +722,7 @@ describe('usage-service', () => {
     it('computes non-zero costs for known Claude models', async () => {
       // Agent 4b41 uses claude-sonnet-4-5-20250929 and claude-haiku-4-5-20251001
       const claudePath = getClaudePath('4b41c573-4c33-456d-9cc5-3df6ee95dc32')
-      const result = await loadDailyUsageDataLightweight({ claudePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
 
       const totalCost = result.reduce((sum, d) => sum + d.totalCost, 0)
       expect(totalCost).toBeGreaterThan(0)
@@ -726,15 +738,13 @@ describe('usage-service', () => {
       }
     })
 
-    it('prefers costUSD over hardcoded pricing', async () => {
-      // Bedrock fixture has costUSD — should use that, not hardcoded pricing
+    it('ignores provider-recorded costs when a global rate exists', async () => {
+      // Bedrock fixture has costUSD; the shared rate card still determines the estimate.
       const claudePath = getClaudePath('bedrock-agent')
-      const result = await loadDailyUsageDataLightweight({ claudePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(claudePath) })
 
       const dec5 = result.find((d) => d.date === '2025-12-05')!
-      // costUSD was 0.0023 + 0.0045 = 0.0068
-      // Hardcoded pricing would give a different number
-      expect(dec5.totalCost).toBeCloseTo(0.0068, 6)
+      expect(dec5.totalCost).toBeCloseTo((1100 * 3 + 250 * 15 + 100 * 3.75 + 200 * 0.3) / 1_000_000, 6)
     })
   })
 
@@ -787,6 +797,17 @@ describe('usage-service', () => {
   })
 
   describe('calculateCost — Grok 200K long-context cliff', () => {
+    it('bills grok-4.7 on the same card as grok-4.6', () => {
+      expect(calculateCost('grok-4.7', 100_000, 1_000, 0, 0)).toBeCloseTo(
+        (100_000 * 2 + 1_000 * 6) / 1_000_000,
+        9,
+      )
+      expect(calculateCost('grok-4.7', 250_000, 2_000, 0, 0)).toBeCloseTo(
+        (250_000 * 4 + 2_000 * 12) / 1_000_000,
+        9,
+      )
+    })
+
     it('bills grok-4.6 below 200k at $2 / $6', () => {
       expect(calculateCost('grok-4.6', 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * 2 + 1_000 * 6) / 1_000_000,
@@ -809,21 +830,17 @@ describe('usage-service', () => {
     })
   })
 
-  describe('calculateCost — catalog overrides and unknown ids', () => {
+  describe('calculateCost — global overrides and unknown ids', () => {
     it('returns 0 for unknown models', () => {
       expect(calculateCost('totally-unknown', 100_000, 1_000, 0, 0)).toBe(0)
     })
 
-    it('uses a patched built-in price from the effective provider catalog', () => {
+    it('uses a global override for a built-in model', () => {
       settingsMock.mockReturnValue({
-        modelCatalog: {
-          platform: {
-            overrides: [{ id: 'gpt-5.5', pricing: { inputPerMtok: 6, outputPerMtok: 36 } }],
-          },
-        },
+        modelPricing: { 'gpt-5.5': { inputPerMtok: 6, outputPerMtok: 36 } },
       })
 
-      expect(calculateCost('gpt-5.5', 100_000, 1_000, 0, 0, 'platform')).toBeCloseTo(
+      expect(calculateCost('gpt-5.5', 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * 6 + 1_000 * 36) / 1_000_000,
         9,
       )
@@ -831,87 +848,57 @@ describe('usage-service', () => {
 
     it('uses net-new custom model pricing and returns 0 when pricing is absent', () => {
       settingsMock.mockReturnValue({
-        modelCatalog: {
-          anthropic: {
-            overrides: [
-              {
-                id: 'custom-priced-1',
-                label: 'Custom Priced',
-                supportedEfforts: ['low'],
-                pricing: { inputPerMtok: 1, outputPerMtok: 2 },
-              },
-              {
-                id: 'custom-freeform-1',
-                label: 'Custom Freeform',
-                supportedEfforts: ['low'],
-              },
-            ],
-          },
-        },
+        modelPricing: { 'custom-priced-1': { inputPerMtok: 1, outputPerMtok: 2 } },
       })
 
-      expect(calculateCost('custom-priced-1', 100_000, 1_000, 0, 0, 'anthropic')).toBeCloseTo(
+      expect(calculateCost('custom-priced-1', 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * 1 + 1_000 * 2) / 1_000_000,
         9,
       )
-      expect(calculateCost('custom-freeform-1', 100_000, 1_000, 0, 0, 'anthropic')).toBe(0)
+      expect(calculateCost('custom-freeform-1', 100_000, 1_000, 0, 0)).toBe(0)
     })
 
     it('honors a patched custom long-context cliff', () => {
       settingsMock.mockReturnValue({
-        modelCatalog: {
-          anthropic: {
-            overrides: [
-              {
-                id: 'custom-cliff-1',
-                label: 'Custom Cliff',
-                supportedEfforts: ['low'],
-                pricing: { inputPerMtok: 1, outputPerMtok: 2 },
-                longContextPriceCliff: {
+        modelPricing: { 'custom-cliff-1': { ...{ inputPerMtok: 1, outputPerMtok: 2 }, longContextPriceCliff: {
                   thresholdTokens: 100,
                   inputMultiplier: 3,
                   outputMultiplier: 4,
-                },
-              },
-            ],
-          },
-        },
+                } } },
       })
 
-      expect(calculateCost('custom-cliff-1', 200, 10, 0, 0, 'anthropic')).toBeCloseTo(
+      expect(calculateCost('custom-cliff-1', 200, 10, 0, 0)).toBeCloseTo(
         (200 * 3 + 10 * 8) / 1_000_000,
         9,
       )
     })
 
-    it('keeps pricing patches isolated by provider', () => {
+    it('uses the same global override for every provider alias', () => {
       settingsMock.mockReturnValue({
-        modelCatalog: {
-          anthropic: {
-            overrides: [{ id: 'claude-opus-4-8', pricing: { inputPerMtok: 9, outputPerMtok: 45 } }],
-          },
-        },
+        modelPricing: { 'claude-opus-4-8': { inputPerMtok: 9, outputPerMtok: 45 } },
       })
 
-      expect(calculateCost('claude-opus-4-8', 100_000, 1_000, 0, 0, 'anthropic')).toBeCloseTo(
+      expect(calculateCost('us.anthropic.claude-opus-4-8', 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * 9 + 1_000 * 45) / 1_000_000,
         9,
       )
-      expect(calculateCost('claude-opus-4-8', 100_000, 1_000, 0, 0, 'openrouter')).toBeCloseTo(
-        (100_000 * 5 + 1_000 * 25) / 1_000_000,
+      expect(calculateCost('claude-opus-4-8', 100_000, 1_000, 0, 0)).toBeCloseTo(
+        (100_000 * 9 + 1_000 * 45) / 1_000_000,
         9,
       )
     })
   })
 
   describe('calculateCost — runtime model id aliases', () => {
+    const aliasPricingTimestamp = Date.parse('2026-08-20T12:00:00.000Z')
+
     it.each([
       // Anthropic API canonical ids and pre-4.6 convenience aliases.
-      ['claude-sonnet-5', 3, 15],
+      ['claude-sonnet-5', 2, 10],
       ['claude-haiku-4-5-20251001', 1, 5],
       ['claude-haiku-4-5', 1, 5],
       // Provider-translated runtime ids observed in sanitized transcripts.
-      ['anthropic/claude-sonnet-5-20260630', 3, 15],
+      ['anthropic/claude-sonnet-5-20260630', 2, 10],
       ['anthropic/claude-4.6-sonnet-20260217', 3, 15],
       ['anthropic/claude-4.6-opus-20260205', 5, 25],
       ['anthropic/claude-4.5-haiku-20251001', 1, 5],
@@ -939,8 +926,13 @@ describe('usage-service', () => {
       ['x-ai/grok-build-latest', 2, 6],
       ['grok-4.6', 2, 6],
       ['x-ai/grok-4.6', 2, 6],
+      ['grok-4.7', 2, 6],
+      ['x-ai/grok-4.7', 2, 6],
+      ['x-ai/grok-4.7-20260916', 2, 6],
     ])('prices %s through its canonical rate card', (model, inputRate, outputRate) => {
-      expect(calculateCost(model, 100_000, 1_000, 0, 0)).toBeCloseTo(
+      expect(
+        calculateCost(model, 100_000, 1_000, 0, 0, aliasPricingTimestamp),
+      ).toBeCloseTo(
         (100_000 * inputRate + 1_000 * outputRate) / 1_000_000,
         9,
       )
@@ -977,55 +969,29 @@ describe('usage-service', () => {
       expect(calculateCost('openai/gpt-5.5:free', 100_000, 1_000, 0, 0)).toBe(0)
     })
 
-    it('uses exact catalog pricing for an OpenRouter variant', () => {
+    it('uses exact global pricing for an OpenRouter variant', () => {
       settingsMock.mockReturnValue({
-        modelCatalog: {
-          openrouter: {
-            overrides: [
-              {
-                id: 'openai/gpt-5.5:thinking',
-                label: 'GPT-5.5 Thinking',
-                supportedEfforts: ['low'],
-                pricing: { inputPerMtok: 7, outputPerMtok: 42 },
-              },
-            ],
-          },
-        },
+        modelPricing: { 'openai/gpt-5.5:thinking': { inputPerMtok: 7, outputPerMtok: 42 } },
       })
 
       expect(
-        calculateCost('openai/gpt-5.5:thinking', 100_000, 1_000, 0, 0, 'openrouter'),
+        calculateCost('openai/gpt-5.5:thinking', 100_000, 1_000, 0, 0),
       ).toBeCloseTo((100_000 * 7 + 1_000 * 42) / 1_000_000, 9)
     })
 
-    it('uses exact catalog pricing for an arbitrary Generic/private deployment id', () => {
+    it('uses exact global pricing for an arbitrary Generic/private deployment id', () => {
       settingsMock.mockReturnValue({
-        modelCatalog: {
-          generic: {
-            overrides: [
-              {
-                id: 'private-deployment-west',
-                label: 'Private Deployment',
-                supportedEfforts: ['low'],
-                pricing: { inputPerMtok: 8, outputPerMtok: 24 },
-              },
-            ],
-          },
-        },
+        modelPricing: { 'private-deployment-west': { inputPerMtok: 8, outputPerMtok: 24 } },
       })
 
       expect(
-        calculateCost('private-deployment-west', 100_000, 1_000, 0, 0, 'generic'),
+        calculateCost('private-deployment-west', 100_000, 1_000, 0, 0),
       ).toBeCloseTo((100_000 * 8 + 1_000 * 24) / 1_000_000, 9)
     })
 
-    it('applies a canonical catalog pricing override to a dated runtime id', () => {
+    it('applies a canonical global pricing override to a dated runtime id', () => {
       settingsMock.mockReturnValue({
-        modelCatalog: {
-          anthropic: {
-            overrides: [{ id: 'claude-sonnet-5', pricing: { inputPerMtok: 6, outputPerMtok: 36 } }],
-          },
-        },
+        modelPricing: { 'claude-sonnet-5': { inputPerMtok: 6, outputPerMtok: 36 } },
       })
 
       expect(
@@ -1035,24 +1001,13 @@ describe('usage-service', () => {
           1_000,
           0,
           0,
-          'anthropic',
         ),
       ).toBeCloseTo((100_000 * 6 + 1_000 * 36) / 1_000_000, 9)
     })
 
-    it('respects an exact custom runtime id with intentionally absent pricing', () => {
+    it('uses the shared built-in rate when no override is configured', () => {
       settingsMock.mockReturnValue({
-        modelCatalog: {
-          anthropic: {
-            overrides: [
-              {
-                id: 'anthropic/claude-sonnet-5-20260630',
-                label: 'Unpriced Runtime Model',
-                supportedEfforts: ['low'],
-              },
-            ],
-          },
-        },
+        modelPricing: {  },
       })
 
       expect(
@@ -1062,9 +1017,8 @@ describe('usage-service', () => {
           1_000,
           0,
           0,
-          'anthropic',
         ),
-      ).toBe(0)
+      ).toBeCloseTo((100_000 * 2 + 1_000 * 10) / 1_000_000, 9)
     })
   })
 
@@ -1072,14 +1026,14 @@ describe('usage-service', () => {
     const edgePath = getClaudePath('edge-cases')
 
     it('skips non-usage lines (queue-operation, user messages, malformed JSON)', async () => {
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
       // Should not crash — malformed lines and non-usage entries are silently skipped
       expect(result.length).toBeGreaterThan(0)
     })
 
-    it('deduplicates entries across files and keeps the highest output_tokens snapshot', async () => {
+    it('deduplicates entries across files and keeps the richest token snapshot', async () => {
       // msg_dup1/req_dup1 appears multiple times with output snapshots 50, 75, and 50.
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
       const dec10 = result.find((d) => d.date === '2025-12-10')!
 
       // opus-4-6 entries: msg_dup1 (100in/75out, highest kept), msg_002 (200/100), msg_005 (400/200 costUSD=0)
@@ -1091,7 +1045,7 @@ describe('usage-service', () => {
     })
 
     it('falls back to "unknown" for entries without a model field', async () => {
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
       const dec10 = result.find((d) => d.date === '2025-12-10')!
 
       const unknownBreakdown = dec10.modelBreakdowns.find((mb) => mb.modelName === 'unknown')
@@ -1103,7 +1057,7 @@ describe('usage-service', () => {
     })
 
     it('returns cost 0 for unknown models', async () => {
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
       const dec10 = result.find((d) => d.date === '2025-12-10')!
 
       const unknownModel = dec10.modelBreakdowns.find((mb) => mb.modelName === 'totally-unknown-model')
@@ -1112,23 +1066,17 @@ describe('usage-service', () => {
       expect(unknownModel!.cost).toBe(0)
     })
 
-    it('uses explicit costUSD: 0 instead of computing from pricing table', async () => {
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+    it('computes API-equivalent cost for known models even when costUSD is zero', async () => {
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
       const dec10 = result.find((d) => d.date === '2025-12-10')!
 
-      // msg_005 has costUSD: 0 on a claude-opus-4-6 entry (400 input, 200 output)
-      // Without costUSD, hardcoded pricing would give (400*5 + 200*25)/1e6 = 0.007
-      // But costUSD: 0 is explicit — should use that
+      // All three Opus requests use the shared $5 input / $25 output rate.
       const opusBreakdown = dec10.modelBreakdowns.find((mb) => mb.modelName === 'claude-opus-4-6')!
-      // Total cost for opus: msg_dup1 computed + msg_002 computed + msg_005 explicit 0
-      // msg_dup1: (100*5 + 75*25)/1e6 = 0.002375
-      // msg_002: (200*5 + 100*25)/1e6 = 0.003500
-      // msg_005: 0 (explicit costUSD)
-      expect(opusBreakdown.cost).toBeCloseTo(0.005875, 6)
+      expect(opusBreakdown.cost).toBeCloseTo((700 * 5 + 375 * 25) / 1_000_000, 6)
     })
 
-    it('uses costUSD from bedrock entry alongside computed entries', async () => {
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+    it('prices Bedrock aliases with the same shared rates', async () => {
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
       const dec10 = result.find((d) => d.date === '2025-12-10')!
 
       // msg_006 has costUSD: 0.05 for a bedrock model
@@ -1136,11 +1084,11 @@ describe('usage-service', () => {
         (mb) => mb.modelName === 'us.anthropic.claude-opus-4-6-v1'
       )
       expect(bedrockBreakdown).toBeDefined()
-      expect(bedrockBreakdown!.cost).toBeCloseTo(0.05, 6)
+      expect(bedrockBreakdown!.cost).toBeCloseTo((500 * 5 + 250 * 25) / 1_000_000, 6)
     })
 
     it('aggregates across multiple days from different files', async () => {
-      const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
+      const result = await loadDailyUsageDataLightweight({ ...dailyOptions(edgePath) })
 
       // session-b.jsonl has an entry on 2025-12-11
       const dec11 = result.find((d) => d.date === '2025-12-11')
@@ -1190,7 +1138,6 @@ describe('usage-service', () => {
     async function costOf(
       model: string,
       opts: EntryOpts = {},
-      providerId?: 'platform' | 'anthropic',
     ): Promise<number> {
       const dir = mkdtempSync(path.join(tmpdir(), 'usage-speed-'))
       try {
@@ -1200,8 +1147,7 @@ describe('usage-service', () => {
           `${JSON.stringify(makeEntry(model, opts))}\n`,
         )
         const result = await loadDailyUsageDataLightweight({
-          claudePath: dir,
-          ...(providerId ? { providerId } : {}),
+          ...dailyOptions(dir),
         })
         expect(result).toHaveLength(1)
         return result[0].totalCost
@@ -1213,17 +1159,17 @@ describe('usage-service', () => {
     // gpt-5.4 base: $2.5/Mtok input, $15/Mtok output.
     const GPT54_BASE = (100_000 * 2.5 + 1_000 * 15) / 1_000_000
 
-    it('bills a fast row at exactly 2x its no-speed twin (platform catalog)', async () => {
-      expect(await costOf('gpt-5.4', {}, 'platform')).toBeCloseTo(GPT54_BASE, 9)
-      expect(await costOf('gpt-5.4', { speed: 'fast' }, 'platform')).toBeCloseTo(GPT54_BASE * 2, 9)
+    it('bills a fast row at exactly 2x its no-speed twin (shared rate card)', async () => {
+      expect(await costOf('gpt-5.4', {})).toBeCloseTo(GPT54_BASE, 9)
+      expect(await costOf('gpt-5.4', { speed: 'fast' })).toBeCloseTo(GPT54_BASE * 2, 9)
     })
 
     it('bills a slow row at exactly 0.5x its no-speed twin', async () => {
-      expect(await costOf('gpt-5.4', { speed: 'slow' }, 'platform')).toBeCloseTo(GPT54_BASE * 0.5, 9)
+      expect(await costOf('gpt-5.4', { speed: 'slow' })).toBeCloseTo(GPT54_BASE * 0.5, 9)
     })
 
     it('bills unknown speed values at 1x (forward-compat)', async () => {
-      expect(await costOf('gpt-5.4', { speed: 'turbo' }, 'platform')).toBeCloseTo(GPT54_BASE, 9)
+      expect(await costOf('gpt-5.4', { speed: 'turbo' })).toBeCloseTo(GPT54_BASE, 9)
     })
 
     it('applies the multiplier via the static pricing table too (no provider), across all four rates', async () => {
@@ -1243,85 +1189,90 @@ describe('usage-service', () => {
       // 300K input trips the 272K cliff: gpt-5.4 reprices to $5 in / $22.5 out,
       // then the fast tier doubles the whole thing.
       const cliffed = (300_000 * 5 + 2_000 * 22.5) / 1_000_000
-      expect(await costOf('gpt-5.4', { input: 300_000, output: 2_000 }, 'platform')).toBeCloseTo(
+      expect(await costOf('gpt-5.4', { input: 300_000, output: 2_000 })).toBeCloseTo(
         cliffed,
         9,
       )
       expect(
-        await costOf('gpt-5.4', { input: 300_000, output: 2_000, speed: 'fast' }, 'platform'),
+        await costOf('gpt-5.4', { input: 300_000, output: 2_000, speed: 'fast' }),
       ).toBeCloseTo(cliffed * 2, 9)
     })
 
     it('bills gpt-5.5 fast at 2.5x and Opus 4.8 / Grok fast at 2x', async () => {
       const gpt55Base = (100_000 * 5 + 1_000 * 30) / 1_000_000
-      expect(await costOf('gpt-5.5', { speed: 'fast' }, 'platform')).toBeCloseTo(
+      expect(await costOf('gpt-5.5', { speed: 'fast' })).toBeCloseTo(
         gpt55Base * 2.5,
         9,
       )
       const opusBase = (100_000 * 5 + 1_000 * 25) / 1_000_000
-      expect(await costOf('claude-opus-4-8', { speed: 'fast' }, 'platform')).toBeCloseTo(
+      expect(await costOf('claude-opus-4-8', { speed: 'fast' })).toBeCloseTo(
         opusBase * 2,
         9,
       )
       // Anthropic serves fast mode natively, so its catalog carries the multiplier too.
-      expect(await costOf('claude-opus-4-8', { speed: 'fast' }, 'anthropic')).toBeCloseTo(
+      expect(await costOf('claude-opus-4-8', { speed: 'fast' })).toBeCloseTo(
         opusBase * 2,
         9,
       )
       const grokBase = (100_000 * 2 + 1_000 * 6) / 1_000_000
-      expect(await costOf('grok-4.5', { speed: 'fast' }, 'platform')).toBeCloseTo(grokBase * 2, 9)
-      expect(await costOf('grok-4.6', { speed: 'fast' }, 'platform')).toBeCloseTo(grokBase * 2, 9)
+      expect(await costOf('grok-4.5', { speed: 'fast' })).toBeCloseTo(grokBase * 2, 9)
+      expect(await costOf('grok-4.6', { speed: 'fast' })).toBeCloseTo(grokBase * 2, 9)
+      expect(await costOf('grok-4.7', { speed: 'fast' })).toBeCloseTo(grokBase * 2, 9)
     })
 
     it('bills kimi-k3 on the Fireworks fast router at 1.5x', async () => {
       const kimiBase = (100_000 * 3 + 1_000 * 15) / 1_000_000
-      expect(await costOf('kimi-k3', {}, 'platform')).toBeCloseTo(kimiBase, 9)
-      expect(await costOf('kimi-k3', { speed: 'fast' }, 'platform')).toBeCloseTo(kimiBase * 1.5, 9)
+      expect(await costOf('kimi-k3', {})).toBeCloseTo(kimiBase, 9)
+      expect(await costOf('kimi-k3', { speed: 'fast' })).toBeCloseTo(kimiBase * 1.5, 9)
       // No slow tier on Fireworks — an unmapped tier bills standard.
-      expect(await costOf('kimi-k3', { speed: 'slow' }, 'platform')).toBeCloseTo(kimiBase, 9)
+      expect(await costOf('kimi-k3', { speed: 'slow' })).toBeCloseTo(kimiBase, 9)
+    })
+
+    it('bills platform GLM-5.3 Flash at Cloudflare list rates with no speed tier', async () => {
+      const glmBase = (100_000 * 0.15 + 1_000 * 0.5) / 1_000_000
+      expect(await costOf('glm-5.3-flash', {})).toBeCloseTo(glmBase, 9)
+      expect(await costOf('glm-5.3-flash', { speed: 'fast' })).toBeCloseTo(glmBase, 9)
+    })
+
+    it('bills platform DeepSeek V4.1 Flash at Fireworks list rates with no speed tier', async () => {
+      const deepseekBase = (100_000 * 0.22 + 1_000 * 0.66) / 1_000_000
+      expect(await costOf('deepseek-v4.1-flash', {})).toBeCloseTo(deepseekBase, 9)
+      expect(await costOf('deepseek-v4.1-flash', { speed: 'fast' })).toBeCloseTo(
+        deepseekBase,
+        9,
+      )
     })
 
     it('prefers the local computation over tier-blind costUSD when a multiplier applies', async () => {
-      expect(await costOf('gpt-5.4', { speed: 'fast', costUSD: 9.99 }, 'platform')).toBeCloseTo(
+      expect(await costOf('gpt-5.4', { speed: 'fast', costUSD: 9.99 })).toBeCloseTo(
         GPT54_BASE * 2,
         9,
       )
     })
 
-    it('keeps costUSD precedence when speed is absent or the model has no multipliers', async () => {
-      expect(await costOf('gpt-5.4', { costUSD: 9.99 }, 'platform')).toBeCloseTo(9.99, 9)
-      // claude-sonnet-5 has no speedMultipliers → costUSD still wins even with speed set.
+    it('ignores recorded costs with or without a speed multiplier', async () => {
+      expect(await costOf('gpt-5.4', { costUSD: 9.99 })).toBeCloseTo(GPT54_BASE, 9)
+      // Sonnet has no speed multiplier; it uses the standard shared rate.
       expect(
-        await costOf('claude-sonnet-5', { speed: 'fast', costUSD: 9.99 }, 'platform'),
-      ).toBeCloseTo(9.99, 9)
+        await costOf('claude-sonnet-5', { speed: 'fast', costUSD: 9.99 }),
+      ).toBeCloseTo((100_000 * 2 + 1_000 * 10) / 1_000_000, 9)
     })
 
     it('bills a model with no speedMultipliers at 1x even for fast rows', async () => {
-      // claude-sonnet-5: $3/Mtok input, $15/Mtok output, no fast tier.
-      const sonnetBase = (100_000 * 3 + 1_000 * 15) / 1_000_000
-      expect(await costOf('claude-sonnet-5', { speed: 'fast' }, 'platform')).toBeCloseTo(
+      // Sonnet 5's launch pricing is now its permanent standard rate.
+      const sonnetBase = (100_000 * 2 + 1_000 * 10) / 1_000_000
+      expect(await costOf('claude-sonnet-5', { speed: 'fast' })).toBeCloseTo(
         sonnetBase,
         9,
       )
     })
   })
 
-  describe('loadDailyUsageData — provider catalog pricing (per-line)', () => {
-    it('prices a custom catalog model via the once-built map, and 0 without a provider', async () => {
+  describe('loadDailyUsageData — global model pricing (per-line)', () => {
+    it('recalculates existing transcripts when the global custom price changes', async () => {
       settingsMock.mockReturnValue({
         llmProvider: 'anthropic',
-        modelCatalog: {
-          anthropic: {
-            overrides: [
-              {
-                id: 'custom-priced-1',
-                label: 'Custom Priced',
-                supportedEfforts: ['low'],
-                pricing: { inputPerMtok: 1, outputPerMtok: 2 },
-              },
-            ],
-          },
-        },
+        modelPricing: { 'custom-priced-1': { inputPerMtok: 1, outputPerMtok: 2 } },
       })
 
       const dir = mkdtempSync(path.join(tmpdir(), 'usage-catalog-'))
@@ -1338,15 +1289,49 @@ describe('usage-service', () => {
         }
         writeFileSync(path.join(dir, 'projects', 'session.jsonl'), `${JSON.stringify(entry)}\n`)
 
-        // With a provider, the per-line path applies the catalog pricing.
-        const withProvider = await loadDailyUsageDataLightweight({ claudePath: dir, providerId: 'anthropic' })
-        expect(withProvider).toHaveLength(1)
-        expect(withProvider[0].totalCost).toBeCloseTo((100_000 * 1 + 1_000 * 2) / 1_000_000, 9)
-        expect(withProvider[0].modelBreakdowns[0]).toMatchObject({ modelName: 'custom-priced-1' })
+        // The per-line path applies the shared custom rate.
+        const initial = await loadDailyUsageDataLightweight({ ...dailyOptions(dir) })
+        expect(initial).toHaveLength(1)
+        expect(initial[0].totalCost).toBeCloseTo((100_000 * 1 + 1_000 * 2) / 1_000_000, 9)
+        expect(initial[0].modelBreakdowns[0]).toMatchObject({ modelName: 'custom-priced-1' })
 
-        // Without a provider the custom id isn't in the static table → 0.
-        const withoutProvider = await loadDailyUsageDataLightweight({ claudePath: dir })
-        expect(withoutProvider[0].totalCost).toBe(0)
+        // Editing the global price also updates estimates for existing transcripts.
+        settingsMock.mockReturnValue({ modelPricing: { 'custom-priced-1': { inputPerMtok: 2, outputPerMtok: 4 } } })
+        const updated = await loadDailyUsageDataLightweight({ ...dailyOptions(dir) })
+        expect(updated[0].totalCost).toBeCloseTo((100_000 * 2 + 1_000 * 4) / 1_000_000, 9)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('prices dated runtime ids from the custom model, and a foreign-prefixed deployment from its own key', async () => {
+      settingsMock.mockReturnValue({
+        modelPricing: {
+          'qwen/qwen3-max': { inputPerMtok: 1, outputPerMtok: 2 },
+          'gpt-5.5': { inputPerMtok: 50, outputPerMtok: 300 },
+          'azure/gpt-5.5': { inputPerMtok: 4, outputPerMtok: 8 },
+        },
+      })
+
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-global-keys-'))
+      try {
+        mkdirSync(path.join(dir, 'projects'), { recursive: true })
+        const models = ['qwen/qwen3-max-20260101', 'azure/gpt-5.5-20260423', 'openai/gpt-5.5']
+        const lines = models.map((model, index) =>
+          JSON.stringify({
+            timestamp: '2026-06-20T12:00:00.000Z',
+            requestId: `req-${index}`,
+            message: { id: `msg-${index}`, model, usage: { input_tokens: 100_000, output_tokens: 1_000 } },
+          }),
+        )
+        writeFileSync(path.join(dir, 'projects', 'session.jsonl'), `${lines.join('\n')}\n`)
+
+        const [day] = await loadDailyUsageDataLightweight({ ...dailyOptions(dir) })
+        const costs = new Map(day.modelBreakdowns.map((entry) => [entry.modelName, entry.cost]))
+        const cost = (input: number, output: number) => (100_000 * input + 1_000 * output) / 1_000_000
+        expect(costs.get('qwen/qwen3-max-20260101')).toBeCloseTo(cost(1, 2), 9)
+        expect(costs.get('azure/gpt-5.5-20260423')).toBeCloseTo(cost(4, 8), 9)
+        expect(costs.get('openai/gpt-5.5')).toBeCloseTo(cost(50, 300), 9)
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }

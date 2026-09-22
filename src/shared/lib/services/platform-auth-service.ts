@@ -299,8 +299,8 @@ function extractUserIdFromIdToken(idToken: string): string | null {
  * global platform user_id extracted from the stored ID token. Returns null
  * if no platform account exists or the issuer hasn't emitted the claim yet.
  */
-function getPlatformOidcUserId(betterAuthUserId: string): string | null {
-  const row = db
+async function getPlatformOidcUserId(betterAuthUserId: string): Promise<string | null> {
+  const row = await db
     .select({ idToken: authAccount.idToken })
     .from(authAccount)
     .where(
@@ -316,14 +316,14 @@ function getPlatformOidcUserId(betterAuthUserId: string): string | null {
   return extractUserIdFromIdToken(row.idToken)
 }
 
-export function getPlatformAuthStatus(userId?: string): PlatformAuthStatus {
+/**
+ * The connection status with no user in hand: an env-managed status carries
+ * the platform user id only when the token itself did. For a Better Auth
+ * user, {@link getPlatformAuthStatusForUser} fills it from their OIDC token.
+ */
+export function getPlatformAuthStatus(): PlatformAuthStatus {
   const envManaged = getEnvManagedStatus()
-  if (envManaged) {
-    if (!envManaged.userId && userId) {
-      return { ...envManaged, userId: getPlatformOidcUserId(userId) }
-    }
-    return envManaged
-  }
+  if (envManaged) return envManaged
 
   const record = readRecord()
   if (record) {
@@ -427,12 +427,24 @@ async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvA
 }
 
 /**
- * Like {@link getPlatformAuthStatus}, but for env-managed (org-JWT) connections
+ * {@link getPlatformAuthStatus} for a Better Auth user: an env-managed status
+ * without a platform user id takes it from the user's stored OIDC token.
+ */
+export async function getPlatformAuthStatusForUser(userId: string): Promise<PlatformAuthStatus> {
+  const envManaged = getEnvManagedStatus()
+  if (envManaged && !envManaged.userId) {
+    return { ...envManaged, userId: await getPlatformOidcUserId(userId) }
+  }
+  return getPlatformAuthStatus()
+}
+
+/**
+ * Like {@link getPlatformAuthStatusForUser}, but for env-managed (org-JWT) connections
  * fills email/orgName/role by introspecting the acting member's account.
  * Opaque-key (settings) and disconnected statuses are returned as-is.
  */
 export async function getEnrichedPlatformAuthStatus(userId?: string): Promise<PlatformAuthStatus> {
-  const base = getPlatformAuthStatus(userId)
+  const base = userId ? await getPlatformAuthStatusForUser(userId) : getPlatformAuthStatus()
   if (base.source !== 'env' || !base.connected || !userId) return base
 
   let entry = enrichedAccountCache.get(userId)
@@ -506,6 +518,18 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
     updatedAt: now,
   })
   writeRecord(record)
+
+  if (existing?.token !== trimmedToken) {
+    // Running containers baked the previous token into their env at start.
+    // Dynamic import breaks the module cycle (container-runtime → here).
+    // A same-token re-save (refreshStoredPlatformAccount) must not arm.
+    try {
+      const { containerHost } = await import('@shared/lib/agent-actor')
+      containerHost.markAgentsStale()
+    } catch (error) {
+      captureException(error, { tags: { area: 'platform-auth', op: 'mark-agents-stale' } })
+    }
+  }
 
   if (orgChanged) {
     // Auth state changed — sweep stale configs + installed files for the

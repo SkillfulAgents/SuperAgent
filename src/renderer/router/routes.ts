@@ -39,11 +39,14 @@ const AgentShell = lazyRouteComponent(
   'AgentShell',
 )
 const AgentHomeRoute = lazyRouteComponent(() => import('./lazy-routes/agent-home-route'), 'AgentHomeRoute')
+const InboundXAgentRoute = lazyRouteComponent(() => import('./lazy-routes/inbound-x-agent-route'), 'InboundXAgentRoute')
+const CompletedTasksRoute = lazyRouteComponent(() => import('./lazy-routes/completed-tasks-route'), 'CompletedTasksRoute')
 const XAgentPermissionsRoute = lazyRouteComponent(() => import('./lazy-routes/x-agent-permissions-route'), 'XAgentPermissionsRoute')
 const ApiLogsRoute = lazyRouteComponent(() => import('./lazy-routes/api-logs-route'), 'ApiLogsRoute')
 const ChatRoute = lazyRouteComponent(() => import('./lazy-routes/chat-route'), 'ChatRoute')
 const ConnectionsRoute = lazyRouteComponent(() => import('./lazy-routes/connections-route'), 'ConnectionsRoute')
 const DashboardRoute = lazyRouteComponent(() => import('./lazy-routes/dashboard-route'), 'DashboardRoute')
+const MemoriesRoute = lazyRouteComponent(() => import('./lazy-routes/memories-route'), 'MemoriesRoute')
 const SecretsRoute = lazyRouteComponent(() => import('./lazy-routes/secrets-route'), 'SecretsRoute')
 const SessionRoute = lazyRouteComponent(() => import('./lazy-routes/session-route'), 'SessionRoute')
 const TaskRoute = lazyRouteComponent(() => import('./lazy-routes/task-route'), 'TaskRoute')
@@ -179,6 +182,18 @@ export const webhookRoute = createRoute({
   component: WebhookRoute,
 })
 
+export const inboundXAgentRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'called-from-agents',
+  component: InboundXAgentRoute,
+})
+
+export const completedTasksRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'completed-tasks',
+  component: CompletedTasksRoute,
+})
+
 export const chatRoute = createRoute({
   getParentRoute: () => agentLayoutRoute,
   path: 'chat/$integrationId',
@@ -205,6 +220,12 @@ export const connectionsRoute = createRoute({
   path: 'connections',
   validateSearch: lenient(connectionsSearchSchema),
   component: ConnectionsRoute,
+})
+
+export const memoriesRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'memories',
+  component: MemoriesRoute,
 })
 
 export const secretsRoute = createRoute({
@@ -264,11 +285,14 @@ export const routeTree = rootRoute.addChildren([
       sessionRoute,
       taskRoute,
       webhookRoute,
+      inboundXAgentRoute,
+      completedTasksRoute,
       chatRoute,
       dashboardRoute,
       apiLogsRoute,
       connectionsRoute,
       secretsRoute,
+      memoriesRoute,
       xAgentPermissionsRoute,
     ]),
   ]),

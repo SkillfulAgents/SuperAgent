@@ -1,3 +1,4 @@
+import { MockChatClientConnector } from './mock-connector'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
@@ -24,7 +25,6 @@ let testSqlite: InstanceType<typeof Database>
 
 vi.mock('../db', () => ({
   get db() { return testDb },
-  get sqlite() { return testSqlite },
 }))
 
 const mockGetChatIntegration = vi.fn()
@@ -49,9 +49,15 @@ vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
   getLastDisplayName: vi.fn().mockReturnValue(null),
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: { ensureRunning: vi.fn() },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ ensureRunning: vi.fn() }) }
+})
+
+vi.mock('@shared/lib/agent-actor', () => {
+  const actor = { sessions: { register: vi.fn(), updateMetadata: vi.fn() } }
+  return { agentRegistry: { get: () => actor } }
+})
 
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: { submitDecision: vi.fn() },
@@ -63,6 +69,8 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 import { chatIntegrationManager } from './chat-integration-manager'
+import { agentRegistry } from '../agent-actor'
+import { createChatIntegrationSession, getLastDisplayName } from '../services/chat-integration-session-service'
 
 const INT = 'int-tg'
 
@@ -94,7 +102,7 @@ function seedAccess(chatId: string, status: 'pending' | 'allowed' | 'denied'): v
 }
 
 describe('ChatIntegrationManager.ensureSession — outbound access gate', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
@@ -111,9 +119,11 @@ describe('ChatIntegrationManager.ensureSession — outbound access gate', () => 
 
     vi.clearAllMocks()
     mockGetChatIntegration.mockReturnValue(fakeIntegration())
+    ;(chatIntegrationManager as any).connections.set(INT, { connector: new MockChatClientConnector(), integration: fakeIntegration() })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    ;(chatIntegrationManager as any).connections.clear()
     testSqlite?.close()
   })
 
@@ -138,10 +148,50 @@ describe('ChatIntegrationManager.ensureSession — outbound access gate', () => 
       expect.any(Function),
     )
   })
+
+  it('reuses an allowed session during reconnection using the current persisted timeout', async () => {
+    seedAccess('chat-allowed', 'allowed')
+    mockResolveActiveSession.mockReturnValue({ sessionId: 'existing-session-id' })
+    mockGetChatIntegration.mockReturnValue(fakeIntegration({ sessionTimeout: 6 }))
+    ;(chatIntegrationManager as any).connections.clear()
+
+    expect(await chatIntegrationManager.ensureSession(INT, 'chat-allowed')).toBe('existing-session-id')
+    expect(mockResolveActiveSession).toHaveBeenCalledWith(INT, 'chat-allowed', 6, expect.any(Function))
+  })
+
+  it('creates an allowed outbound session during reconnection with the chat name and metadata', async () => {
+    seedAccess('chat-allowed', 'allowed')
+    mockResolveActiveSession.mockReturnValue(undefined)
+    vi.mocked(getLastDisplayName).mockResolvedValueOnce('Alice')
+    mockGetChatIntegration.mockReturnValue(fakeIntegration({ createdByUserId: 'owner-1' }))
+    ;(chatIntegrationManager as any).connections.clear()
+
+    const sessionId = await chatIntegrationManager.ensureSession(INT, 'chat-allowed')
+
+    const actor = agentRegistry.get('test-agent')
+    expect(actor.sessions.register).toHaveBeenCalledWith(sessionId, expect.stringContaining('Alice'))
+    expect(actor.sessions.updateMetadata).toHaveBeenCalledWith(sessionId, {
+      isChatIntegrationSession: true, chatIntegrationId: INT, createdByUserId: 'owner-1',
+    })
+    expect(createChatIntegrationSession).toHaveBeenCalledWith({
+      integrationId: INT, externalChatId: 'chat-allowed', sessionId, displayName: 'Alice',
+    })
+  })
+
+  it.each(['pending', 'denied'] as const)('rejects %s access during reconnection before touching session mappings', async status => {
+    seedAccess('chat-blocked', status)
+    mockResolveActiveSession.mockReturnValue({ sessionId: 'existing-session-id' })
+    ;(chatIntegrationManager as any).connections.clear()
+
+    await expect(chatIntegrationManager.ensureSession(INT, 'chat-blocked')).rejects.toThrow('not allowed')
+    expect(mockResolveActiveSession).not.toHaveBeenCalled()
+    expect(createChatIntegrationSession).not.toHaveBeenCalled()
+    expect(agentRegistry.get('test-agent').sessions.register).not.toHaveBeenCalled()
+  })
 })
 
 describe('ChatIntegrationManager.handleSSEEvent — outbound access gate', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
@@ -154,9 +204,11 @@ describe('ChatIntegrationManager.handleSSEEvent — outbound access gate', () =>
       .run(INT, now, now)
     vi.clearAllMocks()
     mockGetChatIntegration.mockReturnValue(fakeIntegration())
+    ;(chatIntegrationManager as any).connections.set(INT, { connector: new MockChatClientConnector(), integration: fakeIntegration() })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    ;(chatIntegrationManager as any).connections.clear()
     testSqlite?.close()
   })
 
@@ -175,13 +227,13 @@ describe('ChatIntegrationManager.handleSSEEvent — outbound access gate', () =>
     await mgr.handleSSEEvent(INT, 'chat-denied', { type: 'assistant' }, 'sess-test')
 
     // The fail-closed guard returns before reading integration config or forwarding.
-    expect(mockGetChatIntegration).not.toHaveBeenCalled()
+    expect((chatIntegrationManager as any).connections.get(INT).connector.sentMessages).toHaveLength(0)
     mgr.chatSessions.delete(key)
   })
 })
 
 describe('ChatIntegrationManager.reconcileAccess — gate sessions after approval is enabled', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
@@ -194,9 +246,11 @@ describe('ChatIntegrationManager.reconcileAccess — gate sessions after approva
       .run(INT, now, now)
     vi.clearAllMocks()
     mockGetChatIntegration.mockReturnValue(fakeIntegration())
+    ;(chatIntegrationManager as any).connections.set(INT, { connector: new MockChatClientConnector(), integration: fakeIntegration() })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    ;(chatIntegrationManager as any).connections.clear()
     testSqlite?.close()
   })
 

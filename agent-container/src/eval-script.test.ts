@@ -125,7 +125,8 @@ describe('evalErrorHint', () => {
   it('adds the top-frame hint for null-property errors', () => {
     const hinted = evalErrorHint("✗ Evaluation error: TypeError: Cannot read properties of null (reading 'click')")
     expect(hinted).toContain('TOP frame only')
-    expect(hinted).toContain('browser_type')
+    expect(hinted).toContain('refs from browser_snapshot')
+    expect(hinted).not.toContain('coordinate')
   })
 
   it('adds the quoting hint for invalid-selector errors', () => {

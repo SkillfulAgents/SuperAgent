@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { ArrowUpRight, Check, Pencil, RefreshCw, Trash2, Wrench, X, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -34,10 +34,9 @@ import {
 } from '@renderer/hooks/use-remote-mcps'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
-import { useDelayedOAuthAbort } from '@renderer/hooks/use-delayed-oauth-abort'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { useLoginWindow } from '@renderer/hooks/use-login-window'
 import { useQueryClient } from '@tanstack/react-query'
-import { OAuthFlowCancel } from './oauth-flow-cancel'
+import { LoginButton } from './login-button'
 
 export interface IntegrationRowActionsProps {
   type: 'oauth' | 'mcp'
@@ -65,9 +64,8 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
   const [actionError, setActionError] = useState<string | null>(null)
   const [mcpStatus, setMcpStatus] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
   const [toolsError, setToolsError] = useState<string | null>(null)
-  const [oauthPending, setOauthPending] = useState(false)
-  const mcpOAuthPopupRef = useRef<ReturnType<typeof prepareOAuthPopup> | null>(null)
-  const showMcpOAuthCancel = useDelayedOAuthAbort(oauthPending)
+  const mcpLoginWindow = useLoginWindow()
+  const oauthPending = mcpLoginWindow.waiting
 
   // Rename-button ref so dialogs can restore focus to the header after closing.
   const triggerRef = useRef<HTMLButtonElement | null>(null)
@@ -94,9 +92,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
   const showOAuthReconnectCancel = oauthReconnectPending && canCancelPendingReconnect
 
   useMcpOAuthListener(oauthPending, ({ success, error }) => {
-    mcpOAuthPopupRef.current?.close()
-    mcpOAuthPopupRef.current = null
-    setOauthPending(false)
+    mcpLoginWindow.close()
     if (success) {
       setMcpStatus({ kind: 'success', message: 'Connected' })
       invalidateRemoteMcps()
@@ -105,11 +101,6 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
       setMcpStatus({ kind: 'error', message: error || 'Reconnect failed' })
     }
   })
-
-  useEffect(() => () => {
-    mcpOAuthPopupRef.current?.close()
-    mcpOAuthPopupRef.current = null
-  }, [])
 
   const restoreFocus = (e: Event) => {
     e.preventDefault()
@@ -145,31 +136,18 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
   }
 
   const runReconnect = async () => {
-    const popup = prepareOAuthPopup()
-    mcpOAuthPopupRef.current = popup
     setMcpStatus(null)
     try {
-      const result = await initiateMcpOAuth.mutateAsync({
-        mcpId: id,
-        electron: !!window.electronAPI,
+      const outcome = await mcpLoginWindow.open(async () => {
+        const result = await initiateMcpOAuth.mutateAsync({
+          mcpId: id,
+          electron: !!window.electronAPI,
+        })
+        return result.redirectUrl
       })
-      if (result.redirectUrl) {
-        setOauthPending(true)
-        try {
-          await popup.navigate(result.redirectUrl)
-        } catch (err) {
-          setOauthPending(false)
-          throw err
-        }
-      } else {
-        popup.close()
-        mcpOAuthPopupRef.current = null
-        // Non-OAuth MCP (or already authed) — re-test so the button updates.
-        await runTestConnection()
-      }
+      // Non-OAuth MCP (or already authed) — re-test so the button updates.
+      if (outcome === 'no-url') await runTestConnection()
     } catch (err) {
-      popup.close()
-      mcpOAuthPopupRef.current = null
       setMcpStatus({
         kind: 'error',
         message: err instanceof Error ? err.message : 'Reconnect failed',
@@ -178,9 +156,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
   }
 
   const cancelMcpOAuth = () => {
-    mcpOAuthPopupRef.current?.close()
-    mcpOAuthPopupRef.current = null
-    setOauthPending(false)
+    mcpLoginWindow.close()
     setMcpStatus({ kind: 'error', message: 'Reconnect canceled' })
   }
 
@@ -241,68 +217,57 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
   const mcpActionPending =
     testMcpConnection.isPending ||
     discoverMcpTools.isPending ||
-    initiateMcpOAuth.isPending ||
-    oauthPending
+    mcpLoginWindow.pending
 
   return (
     <>
       <div className="flex items-center gap-2">
         {type === 'oauth' && accountStatus && accountStatus !== 'active' && (
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-8 text-amber-700 dark:text-amber-400"
-              onClick={(e) => { e.stopPropagation(); void runOAuthReconnect() }}
-              disabled={oauthReconnectPending}
-              data-testid={`integration-row-actions-reconnect-${type}-${id}`}
-            >
-              {oauthReconnectPending ? (
-                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-              ) : (
-                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-              )}
-              Reconnect
-            </Button>
-            <OAuthFlowCancel
-              visible={showOAuthReconnectCancel}
-              onCancel={cancelReconnect}
-              testId={`integration-row-actions-cancel-reconnect-${type}-${id}`}
-            />
-          </div>
+          <LoginButton
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 text-amber-700 dark:text-amber-400"
+            onClick={(e) => { e.stopPropagation(); void runOAuthReconnect() }}
+            data-testid={`integration-row-actions-reconnect-${type}-${id}`}
+            icon={<RefreshCw className="h-3.5 w-3.5" />}
+            label="Reconnect"
+            pendingLabel="Reconnecting…"
+            pending={oauthReconnectPending}
+            canCancel={showOAuthReconnectCancel}
+            onCancel={cancelReconnect}
+            cancelSide="left"
+            cancelTestId={`integration-row-actions-cancel-reconnect-${type}-${id}`}
+          />
         )}
         {type === 'mcp' && (
-          <>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-8"
-              onClick={(e) => {
-                e.stopPropagation()
-                if (mcpStatus?.kind === 'error') void runReconnect()
-                else void runTestConnection()
-              }}
-              disabled={mcpActionPending}
-              data-testid={`integration-row-actions-test-${type}-${id}`}
-            >
-              {testMcpConnection.isPending || initiateMcpOAuth.isPending || oauthPending ? (
-                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-              ) : mcpStatus?.kind === 'success' ? (
-                <span className="mr-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-emerald-500/15">
+          <LoginButton
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8"
+            onClick={(e) => {
+              e.stopPropagation()
+              if (mcpStatus?.kind === 'error') void runReconnect()
+              else void runTestConnection()
+            }}
+            disabled={mcpActionPending}
+            data-testid={`integration-row-actions-test-${type}-${id}`}
+            icon={
+              mcpStatus?.kind === 'success' ? (
+                <span className="flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-emerald-500/15">
                   <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
                 </span>
               ) : mcpStatus?.kind === 'error' ? (
-                <span className="mr-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-destructive/15">
+                <span className="flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-destructive/15">
                   <X className="h-3 w-3 text-destructive" />
                 </span>
               ) : (
-                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-              )}
-              {oauthPending ? (
-                'Waiting for OAuth...'
-              ) : mcpStatus?.kind === 'success' ? (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )
+            }
+            label={
+              mcpStatus?.kind === 'success' ? (
                 mcpStatus.message
               ) : mcpStatus?.kind === 'error' ? (
                 <>
@@ -311,14 +276,15 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
                 </>
               ) : (
                 'Test connection'
-              )}
-            </Button>
-            <OAuthFlowCancel
-              visible={showMcpOAuthCancel}
-              onCancel={cancelMcpOAuth}
-              testId={`integration-row-actions-cancel-mcp-oauth-${id}`}
-            />
-          </>
+              )
+            }
+            pendingLabel={oauthPending ? 'Waiting for OAuth…' : undefined}
+            pending={testMcpConnection.isPending || mcpLoginWindow.pending}
+            canCancel={mcpLoginWindow.canCancel}
+            onCancel={cancelMcpOAuth}
+            cancelSide="left"
+            cancelTestId={`integration-row-actions-cancel-mcp-oauth-${id}`}
+          />
         )}
         {type === 'mcp' && (
           <Button

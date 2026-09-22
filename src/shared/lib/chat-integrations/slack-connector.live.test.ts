@@ -21,7 +21,7 @@ import type { IncomingMessage } from './base-connector'
 //   3. the recovered socket actually delivers events (raw envelope check),
 //   4. a USER-authored message (sent via the Composio connected account, i.e.
 //      "on the user's behalf") flows through the full inbound path to
-//      onMessage,
+//      onEvent,
 //   5. outbound sendMessage works on the recovered connection.
 //
 // NOTE: if another app instance holds a Socket Mode connection for the same
@@ -74,8 +74,10 @@ describe.runIf(LIVE)('SlackConnector live validation', () => {
   beforeAll(async () => {
     config = loadConfig()
     connector = new SlackConnector({ botToken: config.botToken, appToken: config.appToken })
-    connector.onMessage((msg) => {
-      console.log(`[live] onMessage: chat=${msg.chatId} user=${msg.userName ?? msg.userId} text=${JSON.stringify(msg.text.slice(0, 80))}`)
+    connector.onEvent((event) => {
+      if (event.type !== 'input') return
+      const msg = event.payload as IncomingMessage
+      console.log(`[live] input: chat=${msg.chatId} user=${msg.userName ?? msg.userId} text=${JSON.stringify(msg.text.slice(0, 80))}`)
       received.push(msg)
     })
 
@@ -216,7 +218,7 @@ describe.runIf(LIVE)('SlackConnector live validation', () => {
       await sendAsUser(marker)
       try {
         await waitFor(
-          `onMessage with marker (attempt ${attempt})`,
+          `onEvent with marker (attempt ${attempt})`,
           () => received.slice(before).some((m) => m.text.includes(marker)),
           15_000,
         )
@@ -228,7 +230,7 @@ describe.runIf(LIVE)('SlackConnector live validation', () => {
         console.log(`[live] marker not received on attempt ${attempt} — possible competing connection, retrying`)
       }
     }
-    throw new Error('User-authored message never reached onMessage in 3 attempts')
+    throw new Error('User-authored message never reached onEvent in 3 attempts')
   }, 120_000)
 
   it('sends outbound on the recovered connection', async () => {

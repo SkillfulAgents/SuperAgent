@@ -22,6 +22,17 @@ interface SessionWithWake {
   pendingWakeNote?: string
 }
 
+/**
+ * Pin the page to the session under test before asserting on its UI. Under
+ * load, the harness's click-retry can double-submit the initial message
+ * (the retry races the composer's disable re-render), creating a sibling
+ * session whose delayed create-navigation can yank the page away mid-test —
+ * the wake UI then gets asserted against the wrong session.
+ */
+async function gotoSession(page: Page, agentSlug: string, sessionId: string) {
+  await page.goto(`/agents/${agentSlug}/sessions/${sessionId}`)
+}
+
 async function waitForPendingWake(
   request: APIRequestContext,
   agentSlug: string,
@@ -46,6 +57,11 @@ test.describe('Session long sleep (schedule_resume)', () => {
   let sessionPage: SessionPage
 
   test.beforeEach(async ({ page }) => {
+    // Serial waits (create agent → turn completes → wake persists → banner →
+    // wake-now → task executes → transcript grows) routinely total 20-30s on
+    // a loaded shared server — measured flaky at baseline on main under 6
+    // parallel workers. Triple the budget so slow slots don't fail the spec.
+    test.slow()
     appPage = new AppPage(page)
     agentPage = new AgentPage(page)
     sessionPage = new SessionPage(page)
@@ -76,6 +92,8 @@ test.describe('Session long sleep (schedule_resume)', () => {
     expect(session.pendingWakeNote).toBe('Check whether the review has been approved')
     expect(new Date(session.pendingWakeAt!).getTime()).toBeGreaterThan(Date.now())
 
+    await gotoSession(page, agentSlug, sessionId)
+
     // The auto-resume banner shows above the composer with the note + actions
     const banner = page.locator('[data-testid="pending-wake-banner"]')
     await expect(banner).toBeVisible({ timeout: 15000 })
@@ -99,8 +117,20 @@ test.describe('Session long sleep (schedule_resume)', () => {
     const { agentSlug, sessionId } = await scheduleResumeInNewSession(page)
     const session = await waitForPendingWake(request, agentSlug, sessionId)
 
+    await gotoSession(page, agentSlug, sessionId)
+
     const banner = page.locator('[data-testid="pending-wake-banner"]')
     await expect(banner).toBeVisible({ timeout: 15000 })
+
+    // The pre-sleep answer is the visible final text of the one existing turn.
+    // The wake demotes it to hidden work behind the turn summary — anchor on it
+    // being visible first so the post-wake assertion can't pass against a
+    // transcript that simply hasn't loaded yet.
+    const preSleepAnswer = sessionPage
+      .getAssistantMessages()
+      .filter({ hasText: "I'll pause here and check back in 2 hours." })
+    await expect(preSleepAnswer).toBeVisible({ timeout: 15000 })
+
     await page.locator('[data-testid="pending-wake-wake-now"]').click()
 
     // The wake task is executed against the SAME session (no new session)
@@ -118,14 +148,35 @@ test.describe('Session long sleep (schedule_resume)', () => {
     // Banner clears once the wake is gone
     await expect(banner).not.toBeVisible({ timeout: 15000 })
 
-    // The wake message lands in this session as a system-prefixed turn and the
-    // mock agent responds — the transcript grows in place.
-    await expect(sessionPage.getAssistantMessages().nth(1)).toBeVisible({ timeout: 15000 })
+    // The wake message lands in this session as a system-prefixed user turn and
+    // the mock agent responds — the transcript grows in place. It does NOT grow
+    // a second *visible* turn: `[SYSTEM]` user messages are hidden from the
+    // transcript by design (user-message-kinds/system.ts), so the resumed work
+    // folds into the one existing turn. The pre-sleep answer is demoted from
+    // final text to hidden work behind the turn summary, and the post-wake
+    // answer takes its place — that swap is the observable proof the wake
+    // landed. Counting top-level assistant bubbles instead would race the fold,
+    // which only happens once the session goes idle.
+    //
+    // This is the last stop of the longest serial chain in the suite; under
+    // load the wake delivery plus the transcript refetch can exceed 15s.
+    await expect(preSleepAnswer).toBeHidden({ timeout: 25000 })
+
+    // Expanding the turn brings the pre-sleep answer back alongside the
+    // post-wake one: both turns' output is in there, in order.
+    await sessionPage.expandLatestCompletedTurn(15000)
+    await expect(preSleepAnswer).toBeVisible()
+    await expect(sessionPage.getAssistantMessages()).toHaveCount(2)
+    await expect(sessionPage.getAssistantMessages().nth(1)).toContainText(
+      'This is a mock response from the E2E test container.'
+    )
   })
 
   test('Cancel clears the pending wake without resuming', async ({ page, request }) => {
     const { agentSlug, sessionId } = await scheduleResumeInNewSession(page)
     const session = await waitForPendingWake(request, agentSlug, sessionId)
+
+    await gotoSession(page, agentSlug, sessionId)
 
     const banner = page.locator('[data-testid="pending-wake-banner"]')
     await expect(banner).toBeVisible({ timeout: 15000 })

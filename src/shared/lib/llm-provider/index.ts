@@ -2,6 +2,17 @@ export { BaseLlmProvider } from './base-llm-provider'
 export { LLM_PROVIDER_IDS } from './provider-types'
 export type { LlmProviderId } from './provider-types'
 export type { ModelPurpose, ProviderDefaultModelOption } from './base-llm-provider'
+export {
+  defaultParseErrorResponse,
+  errorPlacement,
+  extractErrorMessage,
+  inferErrorStatus,
+} from './error-presentation'
+export type {
+  ProviderErrorPlacement,
+  ProviderErrorPresentation,
+  ProviderErrorSeverity,
+} from './error-presentation'
 export { AnthropicLlmProvider } from './anthropic-provider'
 export { OpenRouterLlmProvider } from './openrouter-provider'
 export { BedrockLlmProvider } from './bedrock-provider'
@@ -27,6 +38,7 @@ export {
   getProviderCatalog,
   getModelDefinition,
   getModelContextWindow,
+  getModelContextWindowMap,
   getModelPromptHints,
   hasVersionSegment,
   resolveModelForProvider,

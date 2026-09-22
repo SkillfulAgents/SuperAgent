@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { randomUUID } from 'crypto'
 import { Authenticated, OwnsAccountByParam, OwnsMcpByParam } from '../middleware/auth'
 import { db } from '@shared/lib/db'
+import { batch } from '@shared/lib/db/batch'
 import { apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -21,7 +22,7 @@ policies.use('*', Authenticated())
 // GET /api/policies/scope/:accountId - List scope policies for an account
 policies.get('/scope/:accountId', OwnsAccountByParam('accountId'), async (c) => {
   const accountId = c.req.param('accountId')
-  const rows = db
+  const rows = await db
     .select()
     .from(apiScopePolicies)
     .where(eq(apiScopePolicies.accountId, accountId))
@@ -52,28 +53,26 @@ policies.put('/scope/:accountId', OwnsAccountByParam('accountId'), async (c) => 
   }
 
   const now = new Date()
-  db.transaction(() => {
-    db.delete(apiScopePolicies).where(eq(apiScopePolicies.accountId, accountId)).run()
-    for (const p of validated) {
-      db.insert(apiScopePolicies).values({
-        id: randomUUID(),
-        accountId,
-        scope: p.scope,
-        decision: p.decision,
-        createdAt: now,
-        updatedAt: now,
-      }).run()
-    }
-  })
+  await batch([
+    db.delete(apiScopePolicies).where(eq(apiScopePolicies.accountId, accountId)),
+    ...validated.map((p) => db.insert(apiScopePolicies).values({
+      id: randomUUID(),
+      accountId,
+      scope: p.scope,
+      decision: p.decision,
+      createdAt: now,
+      updatedAt: now,
+    })),
+  ])
 
-  logAuditEvent({ userId: getCurrentUserId(c), object: 'policy', objectId: accountId, action: 'updated', details: { type: 'scope', count: validated.length } })
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'policy', objectId: accountId, action: 'updated', details: { type: 'scope', count: validated.length } })
   return c.json({ ok: true })
 })
 
 // GET /api/policies/tool/:mcpId - List tool policies for an MCP server
 policies.get('/tool/:mcpId', OwnsMcpByParam('mcpId'), async (c) => {
   const mcpId = c.req.param('mcpId')
-  const rows = db
+  const rows = await db
     .select()
     .from(mcpToolPolicies)
     .where(eq(mcpToolPolicies.mcpId, mcpId))
@@ -104,21 +103,19 @@ policies.put('/tool/:mcpId', OwnsMcpByParam('mcpId'), async (c) => {
   }
 
   const now = new Date()
-  db.transaction(() => {
-    db.delete(mcpToolPolicies).where(eq(mcpToolPolicies.mcpId, mcpId)).run()
-    for (const p of validated) {
-      db.insert(mcpToolPolicies).values({
-        id: randomUUID(),
-        mcpId,
-        toolName: p.toolName,
-        decision: p.decision,
-        createdAt: now,
-        updatedAt: now,
-      }).run()
-    }
-  })
+  await batch([
+    db.delete(mcpToolPolicies).where(eq(mcpToolPolicies.mcpId, mcpId)),
+    ...validated.map((p) => db.insert(mcpToolPolicies).values({
+      id: randomUUID(),
+      mcpId,
+      toolName: p.toolName,
+      decision: p.decision,
+      createdAt: now,
+      updatedAt: now,
+    })),
+  ])
 
-  logAuditEvent({ userId: getCurrentUserId(c), object: 'policy', objectId: mcpId, action: 'updated', details: { type: 'tool', count: validated.length } })
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'policy', objectId: mcpId, action: 'updated', details: { type: 'tool', count: validated.length } })
   return c.json({ ok: true })
 })
 

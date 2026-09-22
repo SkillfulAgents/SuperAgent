@@ -12,7 +12,7 @@
  *    delivers (deliberate v1 scope).
  */
 
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import {
   createNotification,
   getAgentAccessUserIds,
@@ -20,10 +20,11 @@ import {
 } from '@shared/lib/services/notification-service'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { getAgent } from '@shared/lib/services/agent-service'
-import { getSessionMetadata } from '@shared/lib/services/session-service'
+import { getAgentRecord } from '@shared/lib/services/agent-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
+import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { getNotificationChannels } from './channels'
 import { isNotificationTypeEnabled } from './notification-preferences'
 import type { NotificationEvent } from './notification-event'
@@ -52,8 +53,8 @@ class NotificationManager {
    */
   private async getAgentDisplayName(agentSlug: string): Promise<string> {
     try {
-      const agent = await getAgent(agentSlug)
-      return agent?.frontmatter?.name || agentSlug
+      const agent = await getAgentRecord(agentSlug)
+      return agent?.name || agentSlug
     } catch {
       return agentSlug
     }
@@ -65,12 +66,12 @@ class NotificationManager {
    * In auth mode, always returns true — each client checks its own user's
    * settings before showing the OS notification (see GlobalNotificationHandler).
    */
-  private isNotificationTypeEnabled(type: NotificationType): boolean {
+  private async isNotificationTypeEnabled(type: NotificationType): Promise<boolean> {
     if (isAuthMode()) {
       return true
     }
 
-    return isNotificationTypeEnabled(getUserSettings('local').notifications, type)
+    return isNotificationTypeEnabled((await getUserSettings('local')).notifications, type)
   }
 
   /**
@@ -86,12 +87,10 @@ class NotificationManager {
 
     try {
       const userIds = await getAgentAccessUserIds(agentSlug)
-      return userIds.some((userId) =>
-        isNotificationTypeEnabled(
-          getUserSettings(userId).notifications,
-          type,
-        ),
-      )
+      for (const userId of userIds) {
+        if (isNotificationTypeEnabled((await getUserSettings(userId)).notifications, type)) return true
+      }
+      return false
     } catch (error) {
       // Preference lookup failure must not suppress a potentially wanted
       // summary. Fail open, but make the unexpected token-spend path visible.
@@ -129,14 +128,14 @@ class NotificationManager {
     // and before the settings check: visibility isn't a notification pref.
     if (type === 'session_waiting') {
       try {
-        await messagePersister.promoteAutomatedSession(sessionId, agentSlug)
+        await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId)
       } catch (error) {
         console.error('[NotificationManager] Failed to promote automated session:', error)
       }
     }
 
     // Skip if notification type is disabled in settings
-    if (!this.isNotificationTypeEnabled(type)) {
+    if (!(await this.isNotificationTypeEnabled(type))) {
       return
     }
 
@@ -221,7 +220,7 @@ class NotificationManager {
     agentSlug: string,
     options: SessionCompleteNotificationOptions,
   ): Promise<void> {
-    const meta = await getSessionMetadata(agentSlug, sessionId)
+    const meta = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
     if (isHiddenAutomatedSession(meta)) {
       return
     }
@@ -236,16 +235,21 @@ class NotificationManager {
       title: `${displayName} finished`,
       body: {
         fallback: fallbackBody,
+        // The summarizer is a host-direct proxy call fired from the container
+        // event stream, outside any request scope. Attribute it to the agent
+        // owner. The owner lookup is a DB read, so it stays inside the guard.
         resolve: async () => {
           try {
-            return await buildSessionCompleteBody({
-              sessionId,
-              agentSlug,
-              responseText: options.responseText,
-              responseTranscriptEndOffset:
-                await options.responseTranscriptEndOffset,
-              fallbackBody,
-            })
+            return await runWithOptionalUser(await getAgentOwnerUserId(agentSlug), async () =>
+              buildSessionCompleteBody({
+                sessionId,
+                agentSlug,
+                responseText: options.responseText,
+                responseTranscriptEndOffset:
+                  await options.responseTranscriptEndOffset,
+                fallbackBody,
+              }),
+            )
           } catch (error) {
             // Body enrichment must never turn a successful session into a lost
             // notification. The helper is defensive too; this is the last guard.

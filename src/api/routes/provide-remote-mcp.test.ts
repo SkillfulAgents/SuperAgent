@@ -1,3 +1,4 @@
+vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
@@ -16,18 +17,21 @@ vi.mock('../middleware/auth', () => ({
 
 const mockGetHostApiBaseUrl = vi.fn()
 const mockContainerFetch = vi.fn()
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: () => ({
-      fetch: (...args: unknown[]) => mockContainerFetch(...args),
-      getHostApiBaseUrl: (...args: unknown[]) => mockGetHostApiBaseUrl(...args),
-      start: vi.fn(),
-      stop: vi.fn(),
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: () => ({
+        fetch: (...args: unknown[]) => mockContainerFetch(...args),
+        getHostApiBaseUrl: (...args: unknown[]) => mockGetHostApiBaseUrl(...args),
+        start: vi.fn(),
+        stop: vi.fn(),
+      }),
+      ensureRunning: vi.fn(),
+      getCachedInfo: () => ({ status: 'running', port: 8080 }),
     }),
-    ensureRunning: vi.fn(),
-    getCachedInfo: () => ({ status: 'running', port: 8080 }),
-  },
-}))
+  }
+})
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
@@ -228,7 +232,10 @@ vi.mock('@shared/lib/services/agent-hooks-service', () => ({
   removeAgentHook: vi.fn(),
 }))
 
-vi.mock('@shared/lib/services/agent-hooks-schema', () => ({
+vi.mock('@shared/lib/services/agent-hooks-schema', async (importOriginal) => ({
+  // The actor's config table imports the real settings schema; only the
+  // remove-hook request schema is stubbed here.
+  ...(await importOriginal<typeof import('@shared/lib/services/agent-hooks-schema')>()),
   removeAgentHookSchema: {},
 }))
 
@@ -243,8 +250,8 @@ vi.mock('@shared/lib/services/chat-integration-service', () => ({
   listChatIntegrationsByAgents: vi.fn(),
 }))
 
-vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
-  chatIntegrationManager: {},
+vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
+  agentIntegrationManager: {},
 }))
 
 vi.mock('@shared/lib/services/notification-service', () => ({
@@ -268,7 +275,10 @@ vi.mock('@shared/lib/services/agent-preferences-service', () => ({
   updateAgentPreferences: vi.fn(),
 }))
 
-vi.mock('@shared/lib/types/agent-preferences', () => ({
+vi.mock('@shared/lib/types/agent-preferences', async (importOriginal) => ({
+  // The actor's config table imports the real preferences schema; only the
+  // update schema is loosened here.
+  ...(await importOriginal<typeof import('@shared/lib/types/agent-preferences')>()),
   agentPreferencesUpdateSchema: { parse: (v: unknown) => v },
 }))
 

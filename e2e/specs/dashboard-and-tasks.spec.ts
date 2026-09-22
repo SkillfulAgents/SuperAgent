@@ -193,7 +193,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     // addressed globally by id, so /agents/<wrong>/chat/<id> would render the
     // integration under the wrong agent's shell (mismatched chrome + canManage
     // gating, and SessionThread fetches messages scoped to the URL slug → empty).
-    // chat-integration-view.tsx:74-83 redirects (replace) to the integration's
+    // agent-integration-view.tsx redirects (replace) to the integration's
     // true agent, preserving the `?session=` sub-session. Unlike tasks, chat
     // integrations ARE seedable in mock mode (POST /api/chat-integrations/<slug>).
     const errors: string[] = []

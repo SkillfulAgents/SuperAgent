@@ -445,10 +445,10 @@ export class WSL2ContainerClient extends BaseContainerClient {
    * Override to write env files under %USERPROFILE%\.superagent\tmp\ and
    * translate the path for WSL2.
    */
-  protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
+  protected async buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): Promise<{ flag: string; cleanup: () => void }> {
     const home = os.homedir()
     const tmpDir = path.join(home, '.superagent', 'tmp')
-    const { filePath, cleanup } = writeEnvFile(this.buildAgentEnv(additionalEnvVars), this.config.agentId, tmpDir)
+    const { filePath, cleanup } = writeEnvFile(await this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId, tmpDir)
 
     // Translate the Windows file path to a WSL2 path for the --env-file flag
     const wslPath = windowsToWSLPath(filePath)

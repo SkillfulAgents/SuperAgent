@@ -138,38 +138,31 @@ function fakeConnector(opts?: {
     connect: vi.fn(opts?.connectImpl ?? (async () => {})),
     disconnect: vi.fn(opts?.disconnectImpl ?? (async () => {})),
     isConnected: vi.fn(() => c.connectedState),
-    onMessage: vi.fn().mockReturnValue(() => {}),
-    onInteractiveResponse: vi.fn().mockReturnValue(() => {}),
+    onEvent: vi.fn().mockReturnValue(() => {}),
     onError: vi.fn().mockReturnValue(() => {}),
-    onTypingHint: vi.fn().mockReturnValue(() => {}),
   }
   return c as unknown as FakeConnector
 }
 
 /** Seed the DB mocks so `row` is the single startup-eligible integration. */
 function seedRow(row: ChatIntegration): void {
-  listStartupMock.mockReturnValue([row])
-  getIntegrationMock.mockReturnValue(row)
+  listStartupMock.mockResolvedValue([row])
+  getIntegrationMock.mockResolvedValue(row)
 }
 
 function resetManagerState(): void {
-  mgr.connections.clear()
-  mgr.chatSessions.clear()
-  mgr.messageQueues.clear()
-  mgr.disconnectedSince.clear()
-  mgr.consecutiveFailures.clear()
-  mgr.reconcilingIds?.clear()
-  mgr.generations?.clear()
+  // Exercise the public teardown so new lifecycle state cannot leak between tests.
+  mgr.stop()
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks()
   resetManagerState()
-  listStartupMock.mockReturnValue([])
+  listStartupMock.mockResolvedValue([])
   mgr.isRunning = true
 })
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks()
   resetManagerState()
   mgr.isRunning = false
@@ -221,7 +214,7 @@ describe('reconcile: DB-driven health check', () => {
     expect(mgr.consecutiveFailures.has(INT)).toBe(false)
 
     // Once paused the service stops listing it — no further attempts.
-    listStartupMock.mockReturnValue([])
+    listStartupMock.mockResolvedValue([])
     const attemptsSoFar = vi.mocked(mgr.createConnector).mock.calls.length
     await mgr.runHealthChecks()
     expect(vi.mocked(mgr.createConnector).mock.calls.length).toBe(attemptsSoFar)
@@ -329,9 +322,9 @@ describe('reconcile: DB-driven health check', () => {
 
   it('skips an integration paused between the list snapshot and the attempt', async () => {
     const row = integrationRow()
-    listStartupMock.mockReturnValue([row])
+    listStartupMock.mockResolvedValue([row])
     // Fresh re-read says paused — user acted mid-tick.
-    getIntegrationMock.mockReturnValue({ ...row, status: 'paused' } as ChatIntegration)
+    getIntegrationMock.mockResolvedValue({ ...row, status: 'paused' } as ChatIntegration)
     const createSpy = vi.spyOn(mgr, 'createConnector').mockResolvedValue(fakeConnector())
 
     await mgr.runHealthChecks()

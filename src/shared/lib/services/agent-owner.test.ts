@@ -46,24 +46,24 @@ beforeEach(() => {
 })
 
 describe('getAgentOwnerUserId', () => {
-  it('returns the first owner by createdAt, filtered to owner role + agent', () => {
+  it('returns the first owner by createdAt, filtered to owner role + agent', async () => {
     mockIsAuthMode.mockReturnValue(true)
     mockAll.mockReturnValue([{ userId: 'user_alice' }])
-    expect(getAgentOwnerUserId('my-agent')).toBe('user_alice')
+    expect(await getAgentOwnerUserId('my-agent')).toBe('user_alice')
     expect(whereArgs.join(' ')).toContain('acl.agent_slug=my-agent')
     expect(whereArgs.join(' ')).toContain('acl.role=owner')
     expect(orderByArgs).toEqual(['asc(acl.created_at)'])
   })
 
-  it('returns null when the agent has no owner row', () => {
+  it('returns null when the agent has no owner row', async () => {
     mockIsAuthMode.mockReturnValue(true)
     mockAll.mockReturnValue([])
-    expect(getAgentOwnerUserId('orphan-agent')).toBeNull()
+    expect(await getAgentOwnerUserId('orphan-agent')).toBeNull()
   })
 
-  it('short-circuits without querying outside auth mode', () => {
+  it('short-circuits without querying outside auth mode', async () => {
     mockIsAuthMode.mockReturnValue(false)
-    expect(getAgentOwnerUserId('my-agent')).toBeNull()
+    expect(await getAgentOwnerUserId('my-agent')).toBeNull()
     expect(mockAll).not.toHaveBeenCalled()
   })
 })

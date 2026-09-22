@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { act, render, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // ---------------------------------------------------------------------------
@@ -8,17 +8,24 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 // ---------------------------------------------------------------------------
 
 // Mock EventSource
-class MockEventSource {
+class MockEventSource extends EventTarget {
   static instances: MockEventSource[] = []
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSED = 2
   onmessage: ((event: { data: string }) => void) | null = null
   onopen: (() => void) | null = null
   onerror: (() => void) | null = null
   url: string
+  readyState = MockEventSource.OPEN
   constructor(url: string) {
+    super()
     this.url = url
     MockEventSource.instances.push(this)
   }
-  close() {}
+  close() {
+    this.readyState = MockEventSource.CLOSED
+  }
 }
 
 vi.stubGlobal('EventSource', MockEventSource)
@@ -43,7 +50,6 @@ vi.mock('@renderer/router/use-route-location', () => ({
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({
     isAuthMode: false,
-    user: null,
     canAccessAgent: () => true,
   }),
 }))
@@ -72,7 +78,8 @@ vi.mock('@renderer/hooks/use-mount-warnings', () => ({
   setMountWarning: vi.fn(),
 }))
 
-import { GlobalNotificationHandler } from './global-notification-handler'
+import { STREAM_RECONNECT_MS } from '@renderer/lib/stream-liveness'
+import { GlobalNotificationHandler, isRefetchableAfterOutage } from './global-notification-handler'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -128,6 +135,32 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     // back to the prototype getter.
     vi.restoreAllMocks()
     Reflect.deleteProperty(document, 'visibilityState')
+  })
+
+  it('invalidates the current roster on changes and rejects malformed hints', () => {
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'agent_members_changed', agentSlug: 'shared-agent' })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['agent-members', 'shared-agent'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+    invalidate.mockClear()
+    simulateSSEMessage(getLatestEventSource(), { type: 'agent_members_changed', agentSlug: 42 })
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
+  it('drops revoked data, updates roles immediately, and leaves the active agent', async () => {
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({ selectedAgentSlug: 'launch-0123456789', view: { kind: 'agent' } } as unknown as ReturnType<typeof useRouteLocation>)
+    queryClient.setQueryData(['agents'], [{ slug: '0123456789', displaySlug: 'launch-0123456789' }])
+    queryClient.setQueryData(['agent-members', '0123456789'], [{ id: 'peer' }])
+    queryClient.setQueryData(['agents', 'launch-0123456789'], { name: 'Private' })
+    queryClient.setQueryData(['my-agent-roles'], { '0123456789': { role: 'viewer' }, other: { role: 'user' } })
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    await act(async () => simulateSSEMessage(getLatestEventSource(), { type: 'agent_access_revoked', agentSlug: '0123456789' }))
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/' })
+    expect(queryClient.getQueryData(['my-agent-roles'])).toEqual({ other: { role: 'user' } })
+    expect(queryClient.getQueryData(['agent-members', '0123456789'])).toBeUndefined()
+    expect(queryClient.getQueryData(['agents', 'launch-0123456789'])).toBeUndefined()
   })
 
   it('user_request_created/resolved invalidate the unified store', () => {
@@ -405,6 +438,258 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect((sessionCalls[0][0] as { queryKey: unknown[] }).queryKey).toEqual(['sessions', 'my-agent'])
   })
 
+  it('session_input_provided optimistically clears the awaiting flag in every cached projection', () => {
+    const sessionBase = {
+      agentSlug: 'my-agent',
+      name: 'S',
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      messageCount: 1,
+      isActive: true,
+    }
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      { ...sessionBase, id: 'sess-1', isAwaitingInput: true },
+      { ...sessionBase, id: 'sess-2' },
+    ])
+    queryClient.setQueryData(['session', 'sess-1', 'my-agent'], {
+      ...sessionBase, id: 'sess-1', isAwaitingInput: true,
+    })
+    const agentBase = { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running' }
+    queryClient.setQueryData(['agents'], [{ ...agentBase, hasSessionsAwaitingInput: true }])
+    queryClient.setQueryData(['agents', 'my-agent'], { ...agentBase, hasSessionsAwaitingInput: true })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_input_provided',
+      agentSlug: 'my-agent',
+      sessionId: 'sess-1',
+    })
+
+    // Patched synchronously — no refetch round-trip involved.
+    const sessions = queryClient.getQueryData<{ id: string; isAwaitingInput?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0].isAwaitingInput).toBe(false)
+    const detail = queryClient.getQueryData<{ isAwaitingInput?: boolean }>(['session', 'sess-1', 'my-agent'])
+    expect(detail?.isAwaitingInput).toBe(false)
+    const agents = queryClient.getQueryData<{ hasSessionsAwaitingInput?: boolean }[]>(['agents'])
+    expect(agents?.[0].hasSessionsAwaitingInput).toBe(false)
+    const agentDetail = queryClient.getQueryData<{ hasSessionsAwaitingInput?: boolean }>(['agents', 'my-agent'])
+    expect(agentDetail?.hasSessionsAwaitingInput).toBe(false)
+  })
+
+  it('session_awaiting_input optimistically raises the awaiting flag on session and rollup', () => {
+    const sessionBase = {
+      agentSlug: 'my-agent',
+      name: 'S',
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      messageCount: 1,
+      isActive: true,
+    }
+    queryClient.setQueryData(['sessions', 'my-agent'], [{ ...sessionBase, id: 'sess-1' }])
+    queryClient.setQueryData(['agents'], [
+      { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running' },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_awaiting_input',
+      agentSlug: 'my-agent',
+      sessionId: 'sess-1',
+    })
+
+    const sessions = queryClient.getQueryData<{ isAwaitingInput?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0].isAwaitingInput).toBe(true)
+    const agents = queryClient.getQueryData<{ hasSessionsAwaitingInput?: boolean }[]>(['agents'])
+    expect(agents?.[0].hasSessionsAwaitingInput).toBe(true)
+  })
+
+  it('session_idle optimistically clears working AND awaiting flags (teardown broadcasts no input_provided)', () => {
+    const sessionBase = {
+      agentSlug: 'my-agent',
+      name: 'S',
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      messageCount: 1,
+    }
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      { ...sessionBase, id: 'sess-1', isActive: true, isAwaitingInput: true },
+    ])
+    queryClient.setQueryData(['agents'], [
+      {
+        slug: 'my-agent',
+        displaySlug: 'my-agent',
+        name: 'My Agent',
+        status: 'running',
+        hasActiveSessions: true,
+        hasSessionsAwaitingInput: true,
+      },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_idle',
+      agentSlug: 'my-agent',
+      sessionId: 'sess-1',
+      isActive: false,
+    })
+
+    const sessions = queryClient.getQueryData<{ isActive?: boolean; isAwaitingInput?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0]).toMatchObject({ isActive: false, isAwaitingInput: false })
+    const agents = queryClient.getQueryData<{ hasActiveSessions?: boolean; hasSessionsAwaitingInput?: boolean }[]>(['agents'])
+    expect(agents?.[0]).toMatchObject({ hasActiveSessions: false, hasSessionsAwaitingInput: false })
+  })
+
+  it('actionable os_notification optimistically raises the unread dot on session and agent', () => {
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      {
+        id: 'sess-1',
+        agentSlug: 'my-agent',
+        name: 'S',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 1,
+        isActive: false,
+      },
+    ])
+    queryClient.setQueryData(['agents'], [
+      { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running' },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    const sessions = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0].hasUnreadNotifications).toBe(true)
+    const agents = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['agents'])
+    expect(agents?.[0].hasUnreadNotifications).toBe(true)
+  })
+
+  it('does not raise the unread dot when the popup is suppressed by the active session view', async () => {
+    // Viewing sess-1 with the tab visible — the handler marks the record read
+    // instead of popping, so the dot must not be raised either.
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useRouteLocation>)
+
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      {
+        id: 'sess-1',
+        agentSlug: 'my-agent',
+        name: 'S',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 1,
+        isActive: false,
+      },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      notificationId: 'notif-1',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    const sessions = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0].hasUnreadNotifications).toBeUndefined()
+  })
+
+  it('suppressed notification clears an already-cached unread dot once the record is marked read', async () => {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useRouteLocation>)
+
+    // Simulates the top-of-case ['sessions'] refetch having landed with the
+    // server's committed unread row while the user is watching the session.
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      {
+        id: 'sess-1',
+        agentSlug: 'my-agent',
+        name: 'S',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 1,
+        isActive: false,
+        hasUnreadNotifications: true,
+      },
+    ])
+    queryClient.setQueryData(['agents'], [
+      { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running', hasUnreadNotifications: true },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      notificationId: 'notif-1',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    // The mark-read POST is async — the dot comes off once it resolves.
+    await waitFor(() => {
+      const sessions = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['sessions', 'my-agent'])
+      expect(sessions?.[0].hasUnreadNotifications).toBe(false)
+    })
+    const agents = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['agents'])
+    expect(agents?.[0].hasUnreadNotifications).toBe(false)
+  })
+
   it('platform_notifications_changed refreshes the proxy-live inbox queries', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
@@ -562,6 +847,40 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).not.toHaveBeenCalled()
   })
 
+  it('applies a pushed dashboard status to cached artifacts and refetches the list', () => {
+    queryClient.setQueryData(['agents'], [{
+      slug: 'agent-a',
+      displaySlug: 'agent-a-display',
+      name: 'Agent A',
+      status: 'running',
+      containerPort: 3456,
+    }])
+    queryClient.setQueryData(['artifacts', 'agent-a'], [
+      { slug: 'sales', name: 'Sales', description: '', status: 'starting', port: 5000 },
+      { slug: 'support', name: 'Support', description: '', status: 'stopped', port: 0 },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'dashboard_status_changed',
+      agentSlug: 'agent-a',
+      dashboardSlug: 'sales',
+      status: 'running',
+    })
+
+    expect(queryClient.getQueryData<Array<{ slug: string; status: string }>>(['artifacts', 'agent-a']))
+      .toEqual([
+        expect.objectContaining({ slug: 'sales', status: 'running' }),
+        expect.objectContaining({ slug: 'support', status: 'stopped' }),
+      ])
+    expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
+  })
+
   it('agent_created invalidates visible agents and personal roles together', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
@@ -581,7 +900,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
   })
 
-  it('SSE open invalidates agents and roles, including the first connect', () => {
+  it('only refreshes collaboration queries on reconnect, not first open', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     render(
@@ -594,11 +913,115 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     es.onopen?.()
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-members'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
 
     invalidateSpy.mockClear()
     es.onerror?.()
     es.onopen?.()
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-members'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
+    // Mount and a browser-handled reconnect are not outages.
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+  })
+})
+
+describe('stream healing', () => {
+  let queryClient: QueryClient
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    MockEventSource.instances = []
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  function renderHandler() {
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+  }
+
+  async function killLatest() {
+    const es = getLatestEventSource()
+    es.readyState = MockEventSource.CLOSED
+    await act(async () => {
+      es.dispatchEvent(new Event('error'))
+    })
+  }
+
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms)
+    })
+  }
+
+  it('error at readyState 2 reopens and the reopen refetches everything mounted except LLM-backed queries', async () => {
+    renderHandler()
+    expect(MockEventSource.instances).toHaveLength(1)
+
+    await killLatest()
+    await advance(STREAM_RECONNECT_MS)
+
+    expect(MockEventSource.instances).toHaveLength(2)
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    getLatestEventSource().onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+    expect(isRefetchableAfterOutage({ queryKey: ['sessions', 'a1'] })).toBe(true)
+    for (const key of ['agent-template-publish-info', 'agent-template-pr-info', 'skill-publish-info', 'skill-pr-info']) {
+      expect(isRefetchableAfterOutage({ queryKey: [key, 'a1'] })).toBe(false)
+    }
+
+    // A later transient reconnect on the same stream is not an outage.
+    invalidateSpy.mockClear()
+    getLatestEventSource().onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+  })
+
+  it('reopen delay doubles per consecutive fatal close and resets on open', async () => {
+    renderHandler()
+
+    await killLatest()
+    await advance(STREAM_RECONNECT_MS)
+    expect(MockEventSource.instances).toHaveLength(2)
+
+    // Second consecutive fatal close: 2s, not 1s.
+    await killLatest()
+    await advance(STREAM_RECONNECT_MS)
+    expect(MockEventSource.instances).toHaveLength(2)
+    await advance(STREAM_RECONNECT_MS)
+    expect(MockEventSource.instances).toHaveLength(3)
+
+    // A successful open resets the ladder to 1s.
+    getLatestEventSource().onopen?.()
+    await killLatest()
+    await advance(STREAM_RECONNECT_MS)
+    expect(MockEventSource.instances).toHaveLength(4)
+  })
+
+  it('unmount does not reopen after a fatal close', async () => {
+    const { unmount } = renderHandler()
+    expect(MockEventSource.instances).toHaveLength(1)
+
+    const first = getLatestEventSource()
+    first.readyState = MockEventSource.CLOSED
+    unmount()
+    await act(async () => {
+      first.dispatchEvent(new Event('error'))
+      await vi.advanceTimersByTimeAsync(STREAM_RECONNECT_MS)
+    })
+
+    expect(MockEventSource.instances).toHaveLength(1)
   })
 })

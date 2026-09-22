@@ -10,6 +10,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 type FakeWebContents = {
   setWindowOpenHandler: ReturnType<typeof vi.fn>
   downloadURL: ReturnType<typeof vi.fn>
+  on: ReturnType<typeof vi.fn>
+  executeJavaScript: ReturnType<typeof vi.fn>
 }
 type FakeWindow = {
   webContents: FakeWebContents
@@ -19,6 +21,7 @@ type FakeWindow = {
   focus: ReturnType<typeof vi.fn>
   close: ReturnType<typeof vi.fn>
   isDestroyed: ReturnType<typeof vi.fn>
+  removeMenu: ReturnType<typeof vi.fn>
 }
 
 // --- electron mock ----------------------------------------------------------
@@ -37,6 +40,8 @@ vi.mock('electron', () => {
       webContents: {
         setWindowOpenHandler: vi.fn(),
         downloadURL: vi.fn(),
+        on: vi.fn(),
+        executeJavaScript: vi.fn(() => Promise.resolve()),
       },
       loadURL: vi.fn(),
       on: vi.fn(),
@@ -44,6 +49,7 @@ vi.mock('electron', () => {
       focus: vi.fn(),
       close: vi.fn(),
       isDestroyed: vi.fn(() => false),
+      removeMenu: vi.fn(),
     }
     createdWindows.push(win)
     return win

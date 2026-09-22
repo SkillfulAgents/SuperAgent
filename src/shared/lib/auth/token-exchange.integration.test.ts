@@ -10,6 +10,7 @@
  * bearer plugin.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
+import Database from 'better-sqlite3'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -34,6 +35,7 @@ let privateKey: CryptoKey
 let audience: string
 // Deferred imports (must happen after env setup)
 let dbModule: typeof import('@shared/lib/db')
+let sqlite: Database.Database
 let app: Hono
 
 function b64url(obj: unknown): string {
@@ -94,13 +96,13 @@ function exchangeRequest(assertion: string, overrides: {
 }
 
 function countRows(table: string): number {
-  const row = dbModule.sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }
+  const row = sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }
   return row.n
 }
 
 function wipeAuthTables(): void {
   for (const table of ['session', 'account', 'user', 'token_exchange_jti']) {
-    dbModule.sqlite.prepare(`DELETE FROM ${table}`).run()
+    sqlite.prepare(`DELETE FROM ${table}`).run()
   }
 }
 
@@ -138,6 +140,9 @@ beforeAll(async () => {
   audience = getAppBaseUrl()
 
   dbModule = await import('@shared/lib/db')
+  await dbModule.openDatabase()
+  // A second connection to the same file for raw seeding and assertions.
+  sqlite = new Database(path.join(tmpDir, 'superagent.db'))
 
   const tokenExchangeRoute = (await import('../../../api/routes/token-exchange')).default
   const { Authenticated } = await import('../../../api/middleware/auth')
@@ -149,6 +154,8 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  sqlite.close()
+  await dbModule.closeDatabase()
   const { _setOidcJwksResolverForTest } = await import('./oidc-jwt')
   _setOidcJwksResolverForTest(null)
   delete process.env.SUPERAGENT_DATA_DIR
@@ -229,7 +236,7 @@ describe('grant verification', () => {
     expect(typeof who.userId).toBe('string')
 
     // Session hygiene: userAgent recorded for the sessions list.
-    const session = dbModule.sqlite
+    const session = sqlite
       .prepare(`SELECT user_agent FROM session WHERE token = ?`)
       .get(body.access_token) as { user_agent: string }
     expect(session.user_agent).toBe('SuperagentDesktop/1.0')
@@ -448,7 +455,7 @@ describe('provisioning and identity mapping', () => {
   it('promotes the first exchanged user to admin', async () => {
     const res = await exchangeRequest(await signGrant())
     expect(res.status).toBe(200)
-    const user = dbModule.sqlite
+    const user = sqlite
       .prepare(`SELECT role, email, email_verified FROM user`)
       .get() as { role: string; email: string; email_verified: number }
     expect(user.role).toBe('admin')
@@ -459,14 +466,14 @@ describe('provisioning and identity mapping', () => {
   it('keeps the (providerId, sub) mapping stable across email changes', async () => {
     const first = await exchangeRequest(await signGrant())
     expect(first.status).toBe(200)
-    const originalUserId = (dbModule.sqlite.prepare(`SELECT id FROM user`).get() as { id: string }).id
+    const originalUserId = (sqlite.prepare(`SELECT id FROM user`).get() as { id: string }).id
 
     const second = await exchangeRequest(
       await signGrant({ payload: { email: 'renamed@example.com' } }),
     )
     expect(second.status).toBe(200)
     expect(countRows('user')).toBe(1)
-    const sessions = dbModule.sqlite
+    const sessions = sqlite
       .prepare(`SELECT DISTINCT user_id FROM session`)
       .all() as { user_id: string }[]
     expect(sessions).toEqual([{ user_id: originalUserId }])
@@ -486,7 +493,7 @@ describe('provisioning and identity mapping', () => {
     const res = await exchangeRequest(await signGrant())
     expect(res.status).toBe(200)
     expect(countRows('user')).toBe(1)
-    const accounts = dbModule.sqlite
+    const accounts = sqlite
       .prepare(`SELECT provider_id FROM account ORDER BY provider_id`)
       .all() as { provider_id: string }[]
     expect(accounts.map((a) => a.provider_id)).toEqual(['credential', 'platform'])
@@ -500,7 +507,7 @@ describe('provisioning and identity mapping', () => {
     expect(a.status).toBe(200)
     expect(b.status).toBe(200)
     expect(countRows('user')).toBe(1)
-    const mappings = dbModule.sqlite
+    const mappings = sqlite
       .prepare(`SELECT count(*) AS n FROM account WHERE provider_id = 'platform'`)
       .get() as { n: number }
     expect(mappings.n).toBe(1)
@@ -522,7 +529,7 @@ describe('approval and ban enforcement', () => {
     )
     expect(res.status).toBe(200)
 
-    const second = dbModule.sqlite
+    const second = sqlite
       .prepare(`SELECT banned, ban_reason FROM user WHERE email = 'second@example.com'`)
       .get() as { banned: number; ban_reason: string | null }
     expect(second.banned).toBe(0)
@@ -560,7 +567,7 @@ describe('approval and ban enforcement', () => {
         },
       })
 
-      const pending = dbModule.sqlite
+      const pending = sqlite
         .prepare(`SELECT banned, ban_reason FROM user WHERE email = 'pending@example.com'`)
         .get() as { banned: number; ban_reason: string | null }
       expect(pending.banned).toBe(1)
@@ -582,7 +589,7 @@ describe('approval and ban enforcement', () => {
   it('refuses a session for a banned user', async () => {
     const first = await exchangeRequest(await signGrant())
     expect(first.status).toBe(200)
-    dbModule.sqlite.prepare(`UPDATE user SET banned = 1, ban_reason = 'nope'`).run()
+    sqlite.prepare(`UPDATE user SET banned = 1, ban_reason = 'nope'`).run()
 
     const res = await exchangeRequest(await signGrant())
     expect(res.status).toBe(400)
@@ -592,13 +599,13 @@ describe('approval and ban enforcement', () => {
   it('auto-unbans when the ban has expired', async () => {
     const first = await exchangeRequest(await signGrant())
     expect(first.status).toBe(200)
-    dbModule.sqlite
+    sqlite
       .prepare(`UPDATE user SET banned = 1, ban_expires = ?`)
       .run(Date.now() - 60_000)
 
     const res = await exchangeRequest(await signGrant())
     expect(res.status).toBe(200)
-    const user = dbModule.sqlite.prepare(`SELECT banned FROM user`).get() as { banned: number }
+    const user = sqlite.prepare(`SELECT banned FROM user`).get() as { banned: number }
     expect(user.banned).toBe(0)
   })
 })
@@ -616,7 +623,7 @@ describe('observability', () => {
   it('reports an unexpected replay-table failure while still denying the client', async () => {
     // Drop the replay table so jti consumption hits a real DB error (not a
     // normal replay conflict). The client still sees a generic denial.
-    dbModule.sqlite.prepare(`DROP TABLE token_exchange_jti`).run()
+    sqlite.prepare(`DROP TABLE token_exchange_jti`).run()
     try {
       const res = await exchangeRequest(await signGrant())
       expect(res.status).toBe(400)
@@ -628,12 +635,39 @@ describe('observability', () => {
         }),
       )
     } finally {
-      dbModule.sqlite
+      sqlite
         .prepare('CREATE TABLE `token_exchange_jti` (`jti` text PRIMARY KEY NOT NULL, `expires_at` integer NOT NULL)')
         .run()
-      dbModule.sqlite
+      sqlite
         .prepare('CREATE INDEX `token_exchange_jti_expires_at_idx` ON `token_exchange_jti` (`expires_at`)')
         .run()
     }
+  })
+})
+
+
+describe('profile image propagation', () => {
+  it('populates and refreshes the provider photo without overwriting the workspace photo', async () => {
+    expect((await exchangeRequest(await signGrant({ payload: { picture: 'https://example.com/first.png' } }))).status).toBe(200)
+    const first = sqlite.prepare('SELECT id, image FROM user').get() as { id: string; image: string }
+    expect(first.image).toBe('https://example.com/first.png')
+    sqlite.prepare('UPDATE user SET avatar_override = ?').run('/api/profile/images/00000000-0000-4000-8000-000000000001.png')
+    expect((await exchangeRequest(await signGrant({ payload: { picture: 'https://example.com/new.png' } }))).status).toBe(200)
+    expect(sqlite.prepare('SELECT id, image, avatar_override FROM user').get()).toEqual({
+      id: first.id, image: 'https://example.com/new.png', avatar_override: '/api/profile/images/00000000-0000-4000-8000-000000000001.png',
+    })
+  })
+
+  it.each([undefined, null, 123, 'javascript:alert(1)', 'https://example.com/' + 'x'.repeat(4096)])('ignores missing/invalid optional image metadata (case %#)', async (picture) => {
+    expect((await exchangeRequest(await signGrant({ payload: { picture: 'https://example.com/photo.png' } }))).status).toBe(200)
+    expect((await exchangeRequest(await signGrant({ payload: { picture } }))).status).toBe(200)
+    expect(sqlite.prepare('SELECT image FROM user').get()).toEqual({ image: 'https://example.com/photo.png' })
+  })
+
+  it('sets the photo when linking an existing local user', async () => {
+    const { getAuth } = await import('./index')
+    const local = await getAuth().api.signUpEmail({ body: { name: 'Local User', email: 'member@example.com', password: 'TestPassword123!' } })
+    expect((await exchangeRequest(await signGrant({ payload: { picture: 'https://example.com/linked.png' } }))).status).toBe(200)
+    expect(sqlite.prepare('SELECT id, image FROM user').get()).toEqual({ id: local.user.id, image: 'https://example.com/linked.png' })
   })
 })

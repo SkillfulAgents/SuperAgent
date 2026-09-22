@@ -61,6 +61,27 @@ const authProjects = [
     dataDir: path.join(e2eDataDir, 'mobile-pairing'),
     viteCacheDir: path.join(e2eDataDir, '.vite', 'mobile-pairing'),
   },
+  {
+    name: 'auth-template-handoff',
+    testMatch: '**/template-handoff.spec.ts',
+    port: e2ePort + 7,
+    dataDir: path.join(e2eDataDir, 'template-handoff'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'template-handoff'),
+  },
+  {
+    name: 'auth-shared-connections',
+    testMatch: '**/shared-connections.spec.ts',
+    port: e2ePort + 8,
+    dataDir: path.join(e2eDataDir, 'shared-connections'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'shared-connections'),
+  },
+  {
+    name: 'auth-collaboration',
+    testMatch: '**/collaboration-*.spec.ts',
+    port: e2ePort + 9,
+    dataDir: path.join(e2eDataDir, 'collaboration'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'collaboration'),
+  },
 ].map((project, index) => ({
   ...project,
   baseURL: index === 0 && process.env.E2E_BASE_URL
@@ -71,6 +92,24 @@ const authProjects = [
 function buildAuthServerCommand(dataDir: string, port: number, viteCacheDir: string) {
   return `SUPERAGENT_DATA_DIR="${dataDir}" AUTH_MODE=true node e2e/setup-e2e-data.js && SUPERAGENT_DATA_DIR="${dataDir}" VITE_CACHE_DIR="${viteCacheDir}" E2E_MOCK=true AUTH_MODE=true ANTHROPIC_API_KEY=sk-ant-e2e-mock PORT=${port} npm run dev:web`
 }
+
+// Each project gets its own dedicated server, and Playwright starts every
+// webServer entry no matter which projects a run selects — nine dev servers
+// for a one-project run, which a laptop cannot bring up inside the 120s
+// budget. Start only the servers the selected projects will actually hit.
+// (CLI-only filter: `--project` never reaches config evaluation any other
+// way; with no flag, all servers start, exactly as before.)
+const selectedProjects = process.argv.flatMap((arg, i) => {
+  if (arg === '--project') return process.argv[i + 1] ? [process.argv[i + 1]] : []
+  if (arg.startsWith('--project=')) return [arg.slice('--project='.length)]
+  return []
+})
+const matchedProjects = authProjects.filter((project) => selectedProjects.includes(project.name))
+// Fall back to all servers when nothing matched exactly — `--project` also
+// accepts glob patterns, and starting every server beats starting none.
+const activeProjects = selectedProjects.length > 0 && matchedProjects.length > 0
+  ? matchedProjects
+  : authProjects
 
 export default defineConfig({
   testDir: './e2e/auth/specs',
@@ -92,7 +131,7 @@ export default defineConfig({
     use: { ...devices['Desktop Chrome'], baseURL: project.baseURL },
   })),
 
-  webServer: authProjects.map((project) => ({
+  webServer: activeProjects.map((project) => ({
     command: buildAuthServerCommand(project.dataDir, project.port, project.viteCacheDir),
     url: `${project.baseURL}/api/settings`,
     reuseExistingServer: false,

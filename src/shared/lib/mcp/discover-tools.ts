@@ -2,6 +2,10 @@ import type { McpToolInfo } from './types'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { captureMessage } from '@shared/lib/error-reporting'
 
+export class McpDiscoveryError extends Error {
+  constructor(message: string, readonly status: number) { super(message); this.name = 'McpDiscoveryError' }
+}
+
 /**
  * Parse an MCP response that may be JSON or SSE (text/event-stream).
  * SSE responses contain lines like "event: message\ndata: {...}\n\n".
@@ -35,7 +39,7 @@ export async function parseMcpResponse(res: Response): Promise<unknown> {
  * /api/remote-mcps connect route and by tooling that needs to verify a server
  * speaks MCP. Kept in @shared so the two cannot drift.
  */
-export async function discoverTools(url: string, accessToken?: string | null): Promise<McpToolInfo[]> {
+export async function discoverTools(url: string, accessToken?: string | null, signal?: AbortSignal): Promise<McpToolInfo[]> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Accept': 'application/json, text/event-stream',
@@ -46,6 +50,7 @@ export async function discoverTools(url: string, accessToken?: string | null): P
 
   const initRes = await mcpSafeFetch(url, {
     method: 'POST',
+    signal,
     headers,
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -98,7 +103,7 @@ export async function discoverTools(url: string, accessToken?: string | null): P
       // server/status, so it's easy to find while debugging.
       fingerprint: ['mcp-discover-initialize-failed'],
     })
-    throw new Error(`Initialize failed: ${initRes.status}`)
+    throw new McpDiscoveryError(`Initialize failed: ${initRes.status}`, initRes.status)
   }
 
   await parseMcpResponse(initRes)
@@ -111,6 +116,7 @@ export async function discoverTools(url: string, accessToken?: string | null): P
 
   await mcpSafeFetch(url, {
     method: 'POST',
+    signal,
     headers: toolHeaders,
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -120,6 +126,7 @@ export async function discoverTools(url: string, accessToken?: string | null): P
 
   const toolsRes = await mcpSafeFetch(url, {
     method: 'POST',
+    signal,
     headers: toolHeaders,
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -129,7 +136,7 @@ export async function discoverTools(url: string, accessToken?: string | null): P
   })
 
   if (!toolsRes.ok) {
-    throw new Error(`Tools list failed: ${toolsRes.status}`)
+    throw new McpDiscoveryError(`Tools list failed: ${toolsRes.status}`, toolsRes.status)
   }
 
   const toolsBody = await parseMcpResponse(toolsRes) as {

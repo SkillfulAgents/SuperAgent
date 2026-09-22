@@ -75,12 +75,12 @@ export class WebPushChannel implements NotificationChannel {
       return
     }
 
-    const subscriptions = listPushSubscriptions()
+    const subscriptions = await listPushSubscriptions()
     if (subscriptions.length === 0) {
       return
     }
 
-    const vapidKeys = getVapidKeys()
+    const vapidKeys = await getVapidKeys()
     if (!vapidKeys) {
       // Rows exist but the keypair they were minted against is gone — every
       // send would 403. getOrCreateVapidKeys clears them on next subscribe.
@@ -132,7 +132,7 @@ export class WebPushChannel implements NotificationChannel {
     // including rows that retain a userId from a previous auth-mode life of
     // this database (that user's old per-user settings row is stale there).
     const ownerId = isAuthMode() ? (subscription.userId as string) : 'local'
-    const settings = getUserSettings(ownerId)
+    const settings = await getUserSettings(ownerId)
     if (!isNotificationTypeEnabled(settings.notifications, event.type)) {
       return
     }
@@ -167,7 +167,7 @@ export class WebPushChannel implements NotificationChannel {
       // Pruning here is the whole expiry story: no service worker means no
       // pushsubscriptionchange event to tell us otherwise.
       if (statusCode === 401 || statusCode === 403 || statusCode === 404 || statusCode === 410) {
-        deletePushSubscriptionById(subscription.id)
+        await deletePushSubscriptionById(subscription.id)
         return
       }
       console.error(

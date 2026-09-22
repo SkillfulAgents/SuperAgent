@@ -26,21 +26,34 @@ vi.mock('./auth/mode', () => ({
 vi.mock('./auth/clear-pending-approval-bans', () => ({
   clearPendingApprovalBans: () => clearPendingApprovalBans(),
 }))
+// Which agents exist is settled when the database is opened (the data
+// migration imports the directories); startup itself never touches the
+// catalog. Any use of it here is a regression.
+vi.mock('./agent-actor/agent-catalog', () => ({
+  agentCatalog: new Proxy({}, {
+    get(_target, property) {
+      throw new Error(`startup used agentCatalog.${String(property)}`)
+    },
+  }),
+}))
 vi.mock('./services/agent-service', () => ({
   listAgents: () => listAgents(),
 }))
-vi.mock('./container/container-manager', () => ({
-  containerManager: {
-    initializeAgents: (...args: unknown[]) => initializeAgents(...args),
-    ensureImageReady: () => ensureImageReady(),
-    startStatusSync: vi.fn(),
-    startHealthMonitor: vi.fn(),
-    onBeforeContainerStop: null,
-    stopStatusSync: vi.fn(),
-    stopHealthMonitor: vi.fn(),
-    stopAll: () => Promise.resolve(),
-  },
-}))
+vi.mock('./container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      initializeAgents: (...args: unknown[]) => initializeAgents(...args),
+      ensureImageReady: () => ensureImageReady(),
+      startStatusSync: vi.fn(),
+      startHealthMonitor: vi.fn(),
+      onBeforeContainerStop: null,
+      stopStatusSync: vi.fn(),
+      stopHealthMonitor: vi.fn(),
+      stopAll: () => Promise.resolve(),
+    }),
+  }
+})
 vi.mock('./config/settings', () => ({
   getSettings: () => getSettings(),
 }))
@@ -91,14 +104,14 @@ vi.mock('./scheduler/trigger-manager', () => ({
 vi.mock('./scheduler/platform-notifications-manager', () => ({
   platformNotificationsManager: { start: () => platformNotificationsStart(), stop: vi.fn() },
 }))
-vi.mock('./chat-integrations/chat-integration-manager', () => ({
-  chatIntegrationManager: { start: () => chatIntegrationStart(), stop: vi.fn() },
-}))
-vi.mock('./scheduler/auto-sleep-monitor', () => ({
-  autoSleepMonitor: { start: () => Promise.resolve(), stop: vi.fn() },
+vi.mock('./agent-integrations/agent-integration-manager', () => ({
+  agentIntegrationManager: { start: () => chatIntegrationStart(), stop: vi.fn() },
 }))
 vi.mock('./scheduler/session-auto-delete-monitor', () => ({
   sessionAutoDeleteMonitor: { start: () => Promise.resolve(), stop: vi.fn() },
+}))
+vi.mock('./scheduler/api-log-auto-delete-monitor', () => ({
+  apiLogAutoDeleteMonitor: { start: () => Promise.resolve(), stop: vi.fn() },
 }))
 vi.mock('./scheduler/account-sync-service', () => ({
   accountSyncService: { start: () => Promise.resolve(), stop: vi.fn() },
@@ -183,6 +196,7 @@ describe('initializeServices post-bind critical path', () => {
     expect(initializeAgents).toHaveBeenCalledWith([])
     expect(clearPendingApprovalBans).toHaveBeenCalledTimes(1)
   })
+
 
   it('bounds heavy startup I/O to three concurrent tasks', async () => {
     getPlatformAccessToken.mockReturnValue('profile-token')

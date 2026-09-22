@@ -89,6 +89,9 @@ function iconForModelId(modelId: string): string | undefined {
     case 'moonshotai':
     case 'moonshot':
       return 'kimi'
+    case 'deepseek':
+    case 'deepseek-ai':
+      return 'deepseek'
     default:
       return undefined
   }
@@ -161,7 +164,7 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
     return OPENROUTER_CATALOG
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: OPENROUTER_BASE_URL,

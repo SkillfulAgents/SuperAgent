@@ -38,9 +38,17 @@ const SDK_BINARY_FRAGMENT = path.resolve(
   '@anthropic-ai'
 );
 
+// `pgrep -f` matches the pattern against every process's full command line —
+// including the `sh -c "pgrep -fl <fragment>"` execSync spawns to run it. On
+// Linux /bin/sh (dash) stays alive as pgrep's parent, so the literal fragment
+// matches the shell itself and the count is never 0. Bracketing the first
+// character makes the regex still match the CLI's path while the shell's
+// command line (which holds the bracketed text) no longer matches its own regex.
+const SDK_BINARY_PATTERN = SDK_BINARY_FRAGMENT.replace(/^(.)/, '[$1]');
+
 function countClaudeSubprocesses(): number {
   try {
-    const out = execSync(`pgrep -fl "${SDK_BINARY_FRAGMENT}"`, { encoding: 'utf-8' });
+    const out = execSync(`pgrep -fl "${SDK_BINARY_PATTERN}"`, { encoding: 'utf-8' });
     return out.trim().split('\n').filter(Boolean).length;
   } catch {
     return 0; // pgrep exits 1 on no match

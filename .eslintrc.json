@@ -29,6 +29,10 @@
     "react/jsx-no-target-blank": "error",
     "local-rules/no-unhandled-throwing-builtins": "warn",
     "local-rules/no-path-containment-startswith": "warn",
+    "local-rules/no-agent-internals-outside-actor": "error",
+    "local-rules/agent-actor-escape-hatch-tally": "warn",
+    "local-rules/no-db-transaction": "error",
+    "local-rules/no-sync-drizzle-terminator": "error",
     "react-hooks/rules-of-hooks": "error",
     "react-hooks/exhaustive-deps": "warn",
     "no-extra-semi": "off",
@@ -42,13 +46,29 @@
       "files": ["**/*.test.ts", "**/*.test.tsx"],
       "rules": {
         "local-rules/no-unhandled-throwing-builtins": "off",
-        "local-rules/no-path-containment-startswith": "off"
+        "local-rules/no-path-containment-startswith": "off",
+        "local-rules/no-agent-internals-outside-actor": "off",
+        "local-rules/agent-actor-escape-hatch-tally": "off",
+        "local-rules/no-db-transaction": "off",
+        "local-rules/no-sync-drizzle-terminator": "off"
       }
     },
     {
       "files": ["e2e/**/*.ts"],
       "rules": {
-        "local-rules/no-brittle-playwright-selectors": "error"
+        "local-rules/no-brittle-playwright-selectors": "error",
+        "local-rules/no-agent-internals-outside-actor": "off",
+        "local-rules/agent-actor-escape-hatch-tally": "off",
+        "local-rules/no-db-transaction": "off",
+        "local-rules/no-sync-drizzle-terminator": "off"
+      }
+    },
+    {
+      "files": ["src/shared/lib/**/*.ts", "src/api/**/*.ts"],
+      "excludedFiles": ["**/*.test.ts"],
+      "parserOptions": { "project": true },
+      "rules": {
+        "@typescript-eslint/no-floating-promises": "error"
       }
     }
   ],

@@ -1,3 +1,5 @@
+import { inputEvent, mockChatIntegration } from './test-helpers'
+import type { IntegrationInputEvent } from '../agent-integrations/types'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { chatIntegrationManager } from './chat-integration-manager'
 
@@ -28,8 +30,9 @@ import { chatIntegrationManager } from './chat-integration-manager'
 // ---------------------------------------------------------------------------
 
 interface ManagerInternals {
+  connections: Map<string, unknown>
   messageQueues: Map<string, unknown>
-  enqueueMessage: (integrationId: string, message: { chatId: string; text?: string }) => void
+  enqueueMessage: (integrationId: string, message: IntegrationInputEvent) => void
   enqueueSSEEvent: (integrationId: string, chatId: string, event: unknown, sessionId: string) => void
   handleIncomingMessage: (integrationId: string, message: unknown) => Promise<void>
   handleSSEEvent: (integrationId: string, chatId: string, event: unknown, sessionId: string) => Promise<void>
@@ -37,6 +40,11 @@ interface ManagerInternals {
 }
 
 const mgr = chatIntegrationManager as unknown as ManagerInternals
+
+function enqueue(id: string, message: { chatId: string; text?: string }): void {
+  if (!mgr.connections.has(id)) mgr.connections.set(id, { connector: mockChatIntegration({}), integration: { id } })
+  mgr.enqueueMessage(id, inputEvent(message))
+}
 
 /** Let queued `.then`/`.finally` microtasks drain. */
 async function flushMicrotasks(times = 10): Promise<void> {
@@ -51,17 +59,19 @@ function pendingForever(): Promise<void> {
 describe('SUP-234: chat integration message queue cleanup', () => {
   beforeEach(() => {
     mgr.messageQueues.clear()
+    mgr.connections.clear()
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
     mgr.messageQueues.clear()
+    mgr.connections.clear()
   })
 
   it('self-evicts a settled chat message queue entry', async () => {
     vi.spyOn(mgr, 'handleIncomingMessage').mockResolvedValue(undefined)
 
-    mgr.enqueueMessage('intg-1', { chatId: 'chat-1', text: 'hi' })
+    enqueue('intg-1', { chatId: 'chat-1', text: 'hi' })
     expect(mgr.messageQueues.has('intg-1:chat-1')).toBe(true)
 
     await flushMicrotasks()
@@ -96,7 +106,7 @@ describe('SUP-234: chat integration message queue cleanup', () => {
   it('keeps in-flight (unsettled) queue entries', async () => {
     vi.spyOn(mgr, 'handleIncomingMessage').mockReturnValue(pendingForever())
 
-    mgr.enqueueMessage('intg-3', { chatId: 'chat-3', text: 'hi' })
+    enqueue('intg-3', { chatId: 'chat-3', text: 'hi' })
     await flushMicrotasks()
 
     // The handler never resolved — the queue must not be evicted mid-flight.
@@ -110,8 +120,8 @@ describe('SUP-234: chat integration message queue cleanup', () => {
 
     // Enqueue BOTH before flushing: the second chains off the first and replaces
     // the map slot, so when the first settles its eviction must be a no-op.
-    mgr.enqueueMessage('intg-4', { chatId: 'chat-4', text: 'first' })
-    mgr.enqueueMessage('intg-4', { chatId: 'chat-4', text: 'second' })
+    enqueue('intg-4', { chatId: 'chat-4', text: 'first' })
+    enqueue('intg-4', { chatId: 'chat-4', text: 'second' })
 
     await flushMicrotasks()
 
@@ -128,7 +138,7 @@ describe('SUP-234: chat integration message queue cleanup', () => {
     const PER_CHAT = 4
     for (let c = 0; c < CHATS; c++) {
       for (let i = 0; i < PER_CHAT; i++) {
-        mgr.enqueueMessage('vol', { chatId: `chat-${c}`, text: `m${i}` })
+        enqueue('vol', { chatId: `chat-${c}`, text: `m${i}` })
         mgr.enqueueSSEEvent('vol', `chat-${c}`, { type: 'evt' }, 'sess-test')
       }
     }
@@ -148,9 +158,9 @@ describe('SUP-234: chat integration message queue cleanup', () => {
     // this test fails if the `:`-delimited match is ever weakened to a bare
     // startsWith(id): 'intg2:c1'.startsWith('intg') is true, but
     // 'intg2:c1'.startsWith('intg:') is false — only the delimiter keeps intg2 safe.
-    mgr.enqueueMessage('intg', { chatId: 'c1', text: 'hi' })
+    enqueue('intg', { chatId: 'c1', text: 'hi' })
     mgr.enqueueSSEEvent('intg', 'c2', { type: 'evt' }, 'sess-test')
-    mgr.enqueueMessage('intg2', { chatId: 'c1', text: 'hi' })
+    enqueue('intg2', { chatId: 'c1', text: 'hi' })
     mgr.enqueueSSEEvent('intg2', 'c2', { type: 'evt' }, 'sess-test')
     await flushMicrotasks()
 
@@ -177,7 +187,7 @@ describe('SUP-234: chat integration message queue cleanup', () => {
     vi.spyOn(mgr, 'handleIncomingMessage').mockRejectedValue(new Error('boom'))
     vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    mgr.enqueueMessage('intg-rej', { chatId: 'chat-r', text: 'hi' })
+    enqueue('intg-rej', { chatId: 'chat-r', text: 'hi' })
     expect(mgr.messageQueues.has('intg-rej:chat-r')).toBe(true)
 
     await flushMicrotasks()

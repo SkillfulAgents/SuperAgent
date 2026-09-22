@@ -1,8 +1,6 @@
 import { Hono } from 'hono'
-import { listAgents, getAgent } from '@shared/lib/services/agent-service'
-import { getAgentClaudeConfigDir } from '@shared/lib/utils/file-storage'
-import { loadDailyUsageData } from '@shared/lib/services/usage-service'
-import { getSettings } from '@shared/lib/config/settings'
+import { listAgents } from '@shared/lib/services/agent-service'
+import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 import { subDays, format, addDays } from 'date-fns'
 import type { DailyUsageEntry, UsageResponse } from '@shared/lib/types/usage'
 import { Authenticated } from '../middleware/auth'
@@ -11,7 +9,6 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import { db } from '@shared/lib/db'
 import { agentAcl } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
-import pLimit from 'p-limit'
 
 /**
  * Normalize non-standard model names to canonical Anthropic names so that
@@ -66,13 +63,10 @@ usage.get('/', async (c) => {
       .select({ agentSlug: agentAcl.agentSlug })
       .from(agentAcl)
       .where(eq(agentAcl.userId, userId))
-    const agentLimit = pLimit(10)
-    const results = await Promise.all(rows.map((r) => agentLimit(() => getAgent(r.agentSlug))))
-    agents = results.filter(Boolean) as Awaited<ReturnType<typeof listAgents>>
+    agents = await agentCatalog.getMany(rows.map((r) => r.agentSlug))
   } else {
     agents = await listAgents()
   }
-  const providerId = getSettings().llmProvider ?? 'anthropic'
 
   // Aggregate: date -> { totalCost, totalTokens, byAgent, byModel }
   const dateMap = new Map<string, {
@@ -90,8 +84,7 @@ usage.get('/', async (c) => {
     const results = await Promise.all(
       batch.map(async (agent) => {
         try {
-          const claudePath = getAgentClaudeConfigDir(agent.slug)
-          const dailyData = await loadDailyUsageData({ claudePath, since, providerId })
+          const dailyData = await agentRegistry.get(agent.slug).usage.daily({ since })
           return { agent, dailyData }
         } catch {
           return null
@@ -121,7 +114,7 @@ usage.get('/', async (c) => {
         } else {
           entry.byAgent.set(agent.slug, {
             agentSlug: agent.slug,
-            agentName: agent.frontmatter.name,
+            agentName: agent.name,
             cost: day.totalCost,
             totalTokens: dayTokens,
           })

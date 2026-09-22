@@ -21,7 +21,7 @@ import {
   findAgentsAssignedConnectedAccount,
   syncAgentsAssignedConnectedAccount,
   syncConnectedAccountAgents,
-} from '@shared/lib/container/connection-runtime-sync'
+} from '@shared/lib/services/connection-sync-service'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 
 const connectedAccountsRouter = new Hono()
@@ -92,7 +92,7 @@ connectedAccountsRouter.post('/', async (c) => {
       .where(eq(connectedAccounts.id, id))
       .limit(1)
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug, displayName } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug, displayName } })
 
     return c.json({
       account: { ...created, provider: getProvider(toolkitSlug) },
@@ -286,7 +286,7 @@ connectedAccountsRouter.post('/complete', async (c) => {
       }
 
       trackServerEvent('account_oauth_reconnected', { toolkitSlug })
-      logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+      await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
     } else {
       id = crypto.randomUUID()
 
@@ -303,7 +303,7 @@ connectedAccountsRouter.post('/complete', async (c) => {
       })
 
       trackServerEvent('account_oauth_succeeded', { toolkitSlug })
-      logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+      await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
     }
 
     const liveRefresh = await syncAgentsAssignedConnectedAccount(id)
@@ -416,7 +416,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
       }
 
       trackServerEvent('account_oauth_reconnected', { toolkitSlug })
-      logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+      await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
     } else {
       id = crypto.randomUUID()
 
@@ -433,7 +433,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
       })
 
       trackServerEvent('account_oauth_succeeded', { toolkitSlug })
-      logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+      await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
     }
 
     // This HTML callback has no renderer response channel for a refresh
@@ -591,7 +591,7 @@ connectedAccountsRouter.delete('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =
       ? await syncConnectedAccountAgents(assignedAgentSlugs)
       : false
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'disconnected', details: { toolkitSlug: existing.toolkitSlug } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'disconnected', details: { toolkitSlug: existing.toolkitSlug } })
 
     return c.json({ success: true, liveRefresh })
   } catch (error) {

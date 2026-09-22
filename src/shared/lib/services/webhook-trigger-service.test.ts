@@ -17,9 +17,6 @@ vi.mock('../db', async () => {
     get db() {
       return testDb
     },
-    get sqlite() {
-      return testSqlite
-    },
   }
 })
 
@@ -38,6 +35,7 @@ import {
   markTriggerFired,
   markTriggerFailed,
   updateComposioTriggerId,
+  updateWebhookTriggerPrompt,
 } from './webhook-trigger-service'
 
 describe('webhook-trigger-service', () => {
@@ -103,6 +101,26 @@ describe('webhook-trigger-service', () => {
       expect(trigger!.composioTriggerId).toBeNull()
       expect(trigger!.triggerConfig).toBeNull()
       expect(trigger!.name).toBeNull()
+    })
+  })
+
+  describe('updateWebhookTriggerPrompt', () => {
+    it('preserves trigger identity and firing history', async () => {
+      const id = await createWebhookTrigger({
+        agentSlug: 'test-agent',
+        connectedAccountId: 'ca_1',
+        triggerType: 'GMAIL_NEW_EMAIL',
+        prompt: 'Old prompt',
+      })
+      await markTriggerFired(id, 'previous-session')
+
+      expect(await updateWebhookTriggerPrompt(id, 'New prompt')).toBe(true)
+
+      const trigger = await getWebhookTrigger(id)
+      expect(trigger!.id).toBe(id)
+      expect(trigger!.prompt).toBe('New prompt')
+      expect(trigger!.fireCount).toBe(1)
+      expect(trigger!.lastSessionId).toBe('previous-session')
     })
   })
 
@@ -317,7 +335,7 @@ describe('webhook-trigger-service', () => {
         prompt: 'No composio id yet',
       })
 
-      const ids = getActiveComposioTriggerIds()
+      const ids = (await getActiveComposioTriggerIds())
       expect(ids.sort()).toEqual(['ti_active_a', 'ti_active_b'])
     })
   })

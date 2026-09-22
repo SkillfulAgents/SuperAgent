@@ -256,6 +256,7 @@ export function ToolPolicyEditorBody({
                   </div>
                   <PolicyDecisionToggle
                     value={p.decision}
+                    inheritedValue={mcpDefault === 'default' ? undefined : mcpDefault}
                     onChange={(v) => updateToolPolicy(p.toolName, v)}
                   />
                 </div>

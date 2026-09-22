@@ -113,13 +113,19 @@ export class AgentPage {
    * expansion — so callers that need to reach session sub-items must
    * expand explicitly.
    *
-   * No-op if the agent is already expanded.
+   * The chevron renders once the agent has something to expand. A session
+   * created through the API a moment ago is listed by the sessions endpoint
+   * as soon as its metadata is written but counted by the agents endpoint
+   * only once its transcript lands, so the chevron can appear a beat after
+   * the row does: wait for it rather than probe once. No-op if the agent is
+   * already expanded.
    */
   async expandAgent(name: string) {
     const li = this.getAgentLi(name)
-    const expandChevron = li.locator('button[aria-label="Expand"]').first()
-    if (await expandChevron.isVisible({ timeout: 500 }).catch(() => false)) {
-      await expandChevron.click()
+    const chevron = li.locator('button[aria-label="Expand"], button[aria-label="Collapse"]').first()
+    await chevron.waitFor({ state: 'visible', timeout: 15000 })
+    if ((await chevron.getAttribute('aria-label')) === 'Expand') {
+      await chevron.click()
     }
   }
 
@@ -140,27 +146,28 @@ export class AgentPage {
   }
 
   /**
-   * Open the agent settings dialog
+   * Open the agent menu (the three-dot on the agent header). It is the same
+   * menu a right-click on the sidebar row opens.
    */
-  async openSettings() {
+  async openAgentMenu() {
     await this.page.locator('[data-testid="agent-settings-button"]').click()
-    await expect(this.page.locator('[data-testid="agent-settings-dialog"]')).toBeVisible()
+    await expect(this.page.locator('[data-testid="agent-context-menu"]')).toBeVisible()
   }
 
   /**
-   * Delete the current agent via settings
+   * Delete the current agent via the agent menu
    */
   async deleteAgent() {
-    await this.openSettings()
+    await this.openAgentMenu()
 
-    // Click delete button
-    await this.page.locator('[data-testid="delete-agent-button"]').click()
+    // Click delete item
+    await this.page.locator('[data-testid="delete-agent-item"]').click()
 
     // Confirm deletion - use a longer timeout since deletion may take time
-    await this.page.locator('[data-testid="confirm-button"]').click()
+    await this.page.locator('[data-testid="confirm-delete-agent-button"]').click()
 
-    // Wait for settings dialog to close (with longer timeout for deletion to complete)
-    await expect(this.page.locator('[data-testid="agent-settings-dialog"]')).not.toBeVisible({ timeout: 10000 })
+    // Wait for the confirm dialog to close (with longer timeout for deletion to complete)
+    await expect(this.page.locator('[data-testid="confirm-delete-agent-button"]')).not.toBeVisible({ timeout: 10000 })
   }
 
   /**

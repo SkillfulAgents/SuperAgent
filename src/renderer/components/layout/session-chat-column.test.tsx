@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
+import { useEffect } from 'react'
 import { SessionChatColumn } from './session-chat-column'
 import { renderWithProviders } from '@renderer/test/test-utils'
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { PendingRequestDescriptor } from '@renderer/components/messages/use-pending-requests'
+import type { ProviderErrorComponentProps } from '@renderer/components/provider-error/provider-error-registry'
 
 // Mock children so we don't pull in the world; just mark them with testids.
 vi.mock('@renderer/components/messages/message-list', () => ({
@@ -12,7 +15,7 @@ vi.mock('@renderer/components/messages/message-list', () => ({
   ),
 }))
 vi.mock('@renderer/components/messages/message-input', () => ({
-  MessageInput: () => <div data-testid="message-input-mock" />,
+  MessageInput: ({ suspended }: { suspended?: boolean }) => <div data-testid="message-input-mock" data-suspended={String(!!suspended)} />,
 }))
 vi.mock('@renderer/components/messages/agent-activity-indicator', () => ({
   AgentActivityIndicator: () => null,
@@ -41,9 +44,26 @@ vi.mock('@renderer/components/messages/use-pending-requests', () => ({
   usePendingRequests: () => mockPendingResult,
 }))
 
-// useMessageStream — SessionChatColumn reads `isActive` and `browserActive`.
+// useMessageStream — SessionChatColumn reads `isActive` and `browserActive`;
+// ProviderErrorPlacement reads the live error fields.
+const mockStream = {
+  isActive: false,
+  browserActive: false,
+  error: null as string | null,
+  apiErrorCode: null as string | null,
+  errorPresentation: null as ProviderErrorPresentation | null,
+}
 vi.mock('@renderer/hooks/use-message-stream', () => ({
-  useMessageStream: () => ({ isActive: false, browserActive: false }),
+  useMessageStream: () => mockStream,
+}))
+
+// A composer-placed error component that withholds the composer, like the paywall while blocked.
+const DisplacingCard = ({ onDisplaceChildren }: ProviderErrorComponentProps) => {
+  useEffect(() => { onDisplaceChildren?.(true) }, [onDisplaceChildren])
+  return <div data-testid="displacing-card" />
+}
+vi.mock('@renderer/components/provider-error/provider-error-registry', () => ({
+  resolveProviderError: () => ({ Component: DisplacingCard, placement: 'composer' }),
 }))
 
 const baseProps = {
@@ -79,22 +99,40 @@ describe('SessionChatColumn composer swap', () => {
   beforeEach(() => {
     mockPendingResult.items = []
     mockPendingResult.count = 0
+    mockStream.error = null
+    mockStream.apiErrorCode = null
+    mockStream.errorPresentation = null
+  })
+
+  it('pauses MessageInput while a composer-placed error withholds it, keeping it mounted', () => {
+    mockStream.error = 'API Error: 402'
+    mockStream.apiErrorCode = 'billing_error'
+    mockStream.errorPresentation = { severity: 'warning', message: 'paywall', icon: 'info', placement: 'composer' }
+
+    renderWithProviders(<SessionChatColumn {...baseProps} />)
+
+    expect(screen.getByTestId('displacing-card')).toBeInTheDocument()
+    expect(screen.getByTestId('message-input-mock')).not.toBeVisible()
+    expect(screen.getByTestId('message-input-mock')).toHaveAttribute('data-suspended', 'true')
   })
 
   it('renders MessageInput when there are no pending requests', () => {
     renderWithProviders(<SessionChatColumn {...baseProps} />)
-    expect(screen.getByTestId('message-input-mock')).toBeInTheDocument()
+    expect(screen.getByTestId('message-input-mock')).toBeVisible()
+    expect(screen.getByTestId('message-input-mock')).toHaveAttribute('data-suspended', 'false')
     expect(screen.queryByTestId('pending-request-stack')).not.toBeInTheDocument()
     expect(screen.queryByTestId('pending-request-slot')).not.toBeInTheDocument()
   })
 
-  it('replaces MessageInput with PendingRequestStack when a request is pending', () => {
+  it('hides MessageInput behind the PendingRequestStack while a request is pending, keeping it mounted and paused', () => {
     mockPendingResult.items = [secretDescriptor]
     mockPendingResult.count = 1
 
     renderWithProviders(<SessionChatColumn {...baseProps} />)
 
-    expect(screen.queryByTestId('message-input-mock')).not.toBeInTheDocument()
+    // Mounted, so a draft or voice mode survives the request; paused and out of sight meanwhile.
+    expect(screen.getByTestId('message-input-mock')).not.toBeVisible()
+    expect(screen.getByTestId('message-input-mock')).toHaveAttribute('data-suspended', 'true')
     expect(screen.getByTestId('pending-request-slot')).toBeInTheDocument()
     expect(screen.getByTestId('pending-request-stack')).toBeInTheDocument()
     expect(screen.getByTestId('pending-secret')).toBeInTheDocument()
@@ -135,8 +173,9 @@ describe('SessionChatColumn composer swap', () => {
 
     renderWithProviders(<SessionChatColumn {...baseProps} />)
 
-    expect(screen.queryByText('Send')).not.toBeInTheDocument()
-    expect(screen.queryByText('New line')).not.toBeInTheDocument()
+    // Mounted behind the card with the composer, but out of sight.
+    expect(screen.getByText('Send')).not.toBeVisible()
+    expect(screen.getByText('New line')).not.toBeVisible()
   })
 
   it('shows the new-conversation notice for an old session with a large context', () => {

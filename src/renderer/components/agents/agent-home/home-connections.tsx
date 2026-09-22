@@ -1,8 +1,8 @@
 import { useMemo } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { Button } from '@renderer/components/ui/button'
-import { ChevronRight, Plus, Settings2 } from 'lucide-react'
-import { IntegrationRow } from '@renderer/components/connections/integration-row'
+import { Plus, Settings2 } from 'lucide-react'
+import { IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
 import { McpStatusPill } from '@renderer/components/connections/mcp-status-pill'
 import { AccountStatusBadge } from '@renderer/components/connections/account-status-badge'
 import { useAgentConnectedAccounts, type ConnectedAccount } from '@renderer/hooks/use-connected-accounts'
@@ -178,12 +178,7 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
                   ) : activityPending ? (
                     <ActivitySparkChartSkeleton />
                   ) : null}
-                  <span
-                    aria-hidden="true"
-                    className="flex justify-center overflow-hidden w-0 opacity-0 transition-all duration-200 ease-out group-hover:w-4 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:opacity-100"
-                  >
-                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  </span>
+                  <RowHoverChevron />
                 </>
               }
             />

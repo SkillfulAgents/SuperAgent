@@ -5,13 +5,22 @@
  * grants against.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { getAppBaseUrl, getTrustedOrigins } from './config'
+import { getAppBaseUrl, getCurrentUserId, getTrustedOrigins } from './config'
+import type { Context } from 'hono'
 
 const mockSettings = vi.hoisted(() => ({ auth: {} as Record<string, unknown> }))
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => mockSettings,
 }))
+
+const mockIsAuthMode = vi.hoisted(() => vi.fn(() => false))
+vi.mock('./mode', () => ({ isAuthMode: mockIsAuthMode }))
+
+/** Minimal Context stand-in: getCurrentUserId only reads `c.get('user')`. */
+function ctx(user?: { id: string }): Context {
+  return { get: (key: string) => (key === 'user' ? user : undefined) } as unknown as Context
+}
 
 const savedEnv: Record<string, string | undefined> = {}
 
@@ -21,6 +30,7 @@ beforeEach(() => {
     delete process.env[key]
   }
   mockSettings.auth = {}
+  mockIsAuthMode.mockReturnValue(false)
 })
 
 afterEach(() => {
@@ -60,5 +70,29 @@ describe('getAppBaseUrl', () => {
 
   it('defaults to localhost when nothing is configured', () => {
     expect(getAppBaseUrl()).toBe('http://localhost:47891')
+  })
+})
+
+/**
+ * Per-user features key their rows on this. Outside auth mode there are no
+ * user rows at all, so it must still yield a stable id rather than nothing —
+ * a caller that treated "no user" as "skip" would silently withdraw the
+ * feature from every local install.
+ */
+describe('getCurrentUserId', () => {
+  it('returns the local sentinel outside auth mode, not undefined', () => {
+    expect(getCurrentUserId(ctx())).toBe('local')
+  })
+
+  it('returns the authenticated user in auth mode', () => {
+    mockIsAuthMode.mockReturnValue(true)
+
+    expect(getCurrentUserId(ctx({ id: 'user-42' }))).toBe('user-42')
+  })
+
+  it('throws rather than guessing when auth mode has no user in context', () => {
+    mockIsAuthMode.mockReturnValue(true)
+
+    expect(() => getCurrentUserId(ctx())).toThrow(/User not found in context/)
   })
 })

@@ -1,3 +1,9 @@
+import { eq } from 'drizzle-orm'
+import { db } from '../db'
+import { agentRemoteMcps, remoteMcpServers } from '../db/schema'
+import { integrationMcpProjection } from '../agent-integrations/mcp'
+import { parseCachedMcpTools } from '../mcp/connection-schema'
+
 export interface ConnectedAccountProjectionSource {
   id: string
   toolkitSlug: string
@@ -25,28 +31,8 @@ export interface RemoteMcpRuntimeConfig {
   name: string
   status: 'active' | 'auth_required'
   proxyUrl: string
+  integration?: { id: string; provider: string; name: string; workspace: string }
   tools: Array<{ name: string }>
-}
-
-function parseToolNames(toolsJson: string | null): Array<{ name: string }> {
-  if (!toolsJson) return []
-  try {
-    const tools = JSON.parse(toolsJson) as unknown
-    if (!Array.isArray(tools)) return []
-    return tools.flatMap((tool) => {
-      if (
-        typeof tool === 'object' &&
-        tool !== null &&
-        'name' in tool &&
-        typeof tool.name === 'string'
-      ) {
-        return [{ name: tool.name }]
-      }
-      return []
-    })
-  } catch {
-    return []
-  }
 }
 
 export function buildConnectedAccountsProjection(
@@ -96,6 +82,17 @@ export function buildRemoteMcpProjection(
       name: mcp.name,
       status: mcp.status as 'active' | 'auth_required',
       proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${agentSlug}/${mcp.id}`,
-      tools: parseToolNames(mcp.toolsJson),
+      tools: parseCachedMcpTools(mcp.toolsJson).map(({ name }) => ({ name })),
     }))
+}
+
+/** Shared by container boot and hot updates. Credentials never enter this projection. */
+export async function listAgentMcpConnections(agentSlug: string, hostApiBaseUrl: string): Promise<RemoteMcpRuntimeConfig[]> {
+  const mappings = await db.select({ mcp: remoteMcpServers }).from(agentRemoteMcps)
+    .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
+    .where(eq(agentRemoteMcps.agentSlug, agentSlug))
+  return [
+    ...buildRemoteMcpProjection(mappings.map(({ mcp }) => mcp), agentSlug, hostApiBaseUrl),
+    ...await integrationMcpProjection(agentSlug, hostApiBaseUrl),
+  ]
 }

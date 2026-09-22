@@ -11,6 +11,7 @@
 import { ERROR_REPORTING_INGEST_URL } from '@shared/lib/error-reporting/config'
 import type { ErrorReportingUser } from '@shared/lib/error-reporting/types'
 import { isElectron } from './env'
+import { isWorkspaceUnavailableError } from './workspace-unavailable'
 
 let errorReportingEnabled = true // null/undefined means true — default on for existing users
 let errorReportingUser: ErrorReportingUser | null = null
@@ -36,8 +37,12 @@ function loadSentry(): Promise<typeof import('./sentry-browser-provider') | null
         environment: isElectron() ? 'electron-renderer' : 'web',
         release: __APP_VERSION__,
         tracesSampleRate: 0,
-        beforeSend(event) {
+        beforeSend(event, hint) {
           if (!errorReportingEnabled) return null
+          // Expected while a cloud workspace sleeps or wakes; the breadcrumb
+          // from apiFetch is the record. Filtered here so unhandled rejections
+          // and cache-level reports are covered alike.
+          if (isWorkspaceUnavailableError(hint?.originalException)) return null
           return event
         },
       })
@@ -89,4 +94,51 @@ export function captureRendererException(
     // loadSentry already degrades provider failures; this is defense-in-depth
     // against a future implementation changing that contract.
   })
+}
+
+/**
+ * Report a condition that is not an exception but still needs a record — a
+ * session that ended without producing what it should have. Same safety
+ * contract as captureRendererException: never throws, no-op in dev.
+ */
+export function captureRendererMessage(
+  message: string,
+  context?: {
+    level?: 'info' | 'warning' | 'error'
+    tags?: Record<string, string>
+    extra?: Record<string, unknown>
+    /**
+     * Groups every report under one issue regardless of message text. Sentry
+     * drops an event identical to the one before it (same message, fingerprint,
+     * and stack), so a caller that expects repeats varies the message and pins
+     * the fingerprint to keep each repeat and still get one issue.
+     */
+    fingerprint?: string[]
+  }
+): void {
+  void loadSentry().then((provider) => {
+    if (!provider) return
+    try {
+      provider.captureMessage(message, {
+        level: context?.level ?? 'warning',
+        tags: context?.tags,
+        extra: context?.extra,
+        fingerprint: context?.fingerprint,
+      })
+    } catch { /* never crash */ }
+  }).catch(() => {})
+}
+
+/**
+ * Leave a breadcrumb on the trail that travels with the next captured event,
+ * so a lifecycle step (a socket opened, a capture started) explains an error
+ * reported seconds later. Never throws, no-op in dev.
+ */
+export function addRendererBreadcrumb(category: string, message: string, data?: Record<string, unknown>): void {
+  void loadSentry().then((provider) => {
+    if (!provider) return
+    try {
+      provider.addBreadcrumb({ category, message, data, level: 'info' })
+    } catch { /* never crash */ }
+  }).catch(() => {})
 }

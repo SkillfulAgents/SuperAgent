@@ -31,7 +31,6 @@ let mockContainerClient: InstanceType<typeof MockContainerClient>
 
 vi.mock('../db', () => ({
   get db() { return testDb },
-  get sqlite() { return testSqlite },
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -43,11 +42,18 @@ vi.mock('@shared/lib/platform-attribution', () => ({
   runWithOptionalUser: (_userId: string | undefined, fn: () => unknown) => fn(),
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: vi.fn(),
-  },
+// Manager-shaped mock behind the container host: the actor reaches an agent's
+// runtime through containerHost.runtime(slug), and the adapter forwards each
+// runtime method here with the slug prepended.
+const containerManager = vi.hoisted(() => ({
+  ensureRunning: vi.fn(),
+  // The actor reaches the client through getClient after start().
+  getClient: () => mockContainerClient,
 }))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock(containerManager) }
+})
 
 vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: vi.fn().mockResolvedValue(true),
@@ -99,7 +105,6 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 
 import { chatIntegrationManager } from './chat-integration-manager'
 import { createChatIntegration } from '@shared/lib/services/chat-integration-service'
-import { containerManager } from '@shared/lib/container/container-manager'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -162,13 +167,13 @@ describe('chat integration model and effort resolution', () => {
 
   // Preference order: integration override > agent default > global default.
   async function startSession(integrationOverrides: Record<string, unknown> = {}) {
-    const integrationId = createChatIntegration({
+    const integrationId = (await createChatIntegration({
       agentSlug: 'test-agent',
       provider: 'telegram',
       config: { botToken: 'test-token-123' },
       name: 'Test Bot',
       ...integrationOverrides,
-    })
+    }))
     // These tests exercise session-spawn defaults, not access control, so
     // disable the owner-approval gate telegram integrations get by default.
     testSqlite.prepare('UPDATE chat_integrations SET require_approval = 0 WHERE id = ?').run(integrationId)

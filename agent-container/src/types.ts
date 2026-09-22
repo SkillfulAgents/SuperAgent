@@ -82,6 +82,7 @@ export interface CreateSessionRequest {
   browserModel?: string; // Model for browser subagent
   dashboardBuilderModel?: string; // Model for the dashboard-builder subagent
   subagentModels?: SubagentModelDefinition[]; // Provider catalog exposed as model-backed subagent types
+  modelContextWindows?: Record<string, number>; // Model id → catalog context window (feeds CLAUDE_CODE_MAX_CONTEXT_TOKENS)
   webSearchProvider?: string; // Active host-side web search vendor id (non-secret); activates mcp__web__search + disables native WebSearch
   webFetchProvider?: string; // Active host-side web fetch vendor id (non-secret); activates mcp__web__web_fetch + disables native WebFetch
   maxOutputTokens?: number; // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
@@ -113,5 +114,6 @@ export interface SendMessageRequest {
   speed?: SpeedLevel; // If set and different from current session speed, triggers interrupt+restart with new speed
   model?: string; // If set and different from current session model, triggers interrupt+restart with new model
   shouldQuery?: boolean; // When false, appends to transcript without triggering an assistant turn
+  isAutomated?: boolean; // Agent-originated follow-up: preserve the session's automated runtime class
   capabilityPolicies?: AgentCapabilityPolicies; // Current launch policies; a block-boundary change triggers interrupt+restart
 }

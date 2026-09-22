@@ -1,9 +1,12 @@
 import { spawn, ChildProcess } from 'child_process'
+import { readFileTail } from './file-tail'
 import * as fs from 'fs'
 import * as path from 'path'
 import { captureDashboardScreenshot, type ScreenshotResult } from './dashboard-screenshot'
-import { notifyDashboardScreenshotReady } from './host-events'
+import { notifyDashboardScreenshotReady, notifyDashboardStatusChanged } from './host-events'
 import { DashboardPackageSchema } from './dashboard-package-schema'
+import { readArtifactShapeSync } from './artifact-kind'
+import { gamutSkillPath } from './gamut-plugin'
 
 const SCREENSHOT_FILENAME = 'screenshot.png'
 
@@ -41,15 +44,8 @@ export async function truncateOversizedLog(
     const stat = await fs.promises.stat(logPath)
     if (stat.size <= maxBytes) return false
 
-    const fd = await fs.promises.open(logPath, 'r')
-    let tail: Buffer
-    try {
-      const buf = Buffer.alloc(Math.min(keepBytes, stat.size))
-      const { bytesRead } = await fd.read(buf, 0, buf.length, stat.size - buf.length)
-      tail = buf.subarray(0, bytesRead)
-    } finally {
-      await fd.close()
-    }
+    const tail = await readFileTail(logPath, keepBytes)
+    if (!tail) return false
 
     await fs.promises.writeFile(
       logPath,
@@ -63,6 +59,65 @@ export async function truncateOversizedLog(
     // ENOENT (no log yet) or a read/write failure — leave the file alone
     return false
   }
+}
+
+// Start scripts the react-vite template has shipped with (current and legacy).
+// Both reduce to "ensure dist is built, then run serve.js", so the boot path
+// may substitute `bun run serve.js` directly when the build output is fresh
+// (see canSkipTemplateBuild) — that also skips the wrapper-script spawn chain.
+// Matched by exact equality — any customized start script (extra steps,
+// different server) always runs as written.
+export const TEMPLATE_BUILD_AND_SERVE_STARTS: ReadonlySet<string> = new Set([
+  'bun run build-if-needed.js && bun run serve.js',
+  'bun run build && bun run serve.js',
+])
+
+// Safety bound for the freshness walk; a dashboard tree bigger than this
+// rebuilds rather than risk an incomplete scan.
+const FRESHNESS_WALK_MAX_ENTRIES = 2000
+
+// Build inputs/outputs the freshness walk must not treat as sources.
+const FRESHNESS_WALK_EXCLUDES = new Set([
+  'node_modules',
+  'dist',
+  'dashboard.log',
+  SCREENSHOT_FILENAME,
+  'bun.lock',
+  'bun.lockb',
+])
+
+/**
+ * Newest mtime (ms) of any file under `dir`, skipping `excludes` at every
+ * level. Returns null when the walk exceeds `maxEntries` (caller must treat
+ * that as "unknown → stale") or the directory is unreadable.
+ */
+export function newestMtimeMs(
+  dir: string,
+  excludes: ReadonlySet<string> = FRESHNESS_WALK_EXCLUDES,
+  maxEntries: number = FRESHNESS_WALK_MAX_ENTRIES,
+): number | null {
+  let newest = 0
+  let seen = 0
+  const stack = [dir]
+  try {
+    while (stack.length > 0) {
+      const current = stack.pop()!
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        if (excludes.has(entry.name)) continue
+        if (++seen > maxEntries) return null
+        const full = path.join(current, entry.name)
+        if (entry.isDirectory()) {
+          stack.push(full)
+        } else if (entry.isFile()) {
+          const mtime = fs.statSync(full).mtimeMs
+          if (mtime > newest) newest = mtime
+        }
+      }
+    }
+  } catch {
+    return null
+  }
+  return newest
 }
 
 export function validateSlug(slug: string): void {
@@ -140,6 +195,16 @@ class DashboardManager {
     stream?.end()
   }
 
+  /**
+   * Push a terminal startup transition to the host (best-effort — the
+   * renderer's artifacts poll remains the fallback for a missed event).
+   */
+  private publishStatus(slug: string, status: 'running' | 'crashed'): void {
+    void notifyDashboardStatusChanged(slug, status).catch((error) => {
+      console.warn(`[DashboardManager] Failed to publish ${status} event for ${slug}:`, error)
+    })
+  }
+
   async scanAndStartAll(): Promise<void> {
     try {
       await fs.promises.mkdir(ARTIFACTS_DIR, { recursive: true })
@@ -152,6 +217,8 @@ class DashboardManager {
         const pkgPath = path.join(ARTIFACTS_DIR, entry.name, 'package.json')
         try {
           await fs.promises.access(pkgPath)
+          // Widgets share the artifacts dir but have no server to start.
+          if (readArtifactShapeSync(path.join(ARTIFACTS_DIR, entry.name))?.isDashboard === false) continue
           // Boot scan trusts the node_modules freshness heuristic — deps only
           // change through agent-initiated starts, which force an install.
           const info = await this.startDashboard(entry.name, { forceInstall: false })
@@ -238,6 +305,11 @@ class DashboardManager {
   ): Promise<DashboardInfo> {
     const forceInstall = opts?.forceInstall ?? true
     validateSlug(slug)
+    if (readArtifactShapeSync(path.join(ARTIFACTS_DIR, slug))?.isDashboard === false) {
+      throw new Error(
+        `"${slug}" only exposes a widget (no start script) — there is no server to start. Use refresh_widget instead.`,
+      )
+    }
     const existing = this.dashboards.get(slug)
 
     // If already running, kill and restart
@@ -301,7 +373,15 @@ class DashboardManager {
       // Start the dashboard server
       info.startupPhase = 'starting-server'
       const dashboardBasePath = getDashboardBasePath(slug)
-      const proc = spawn('bun', ['run', 'start'], {
+      // Boot/crash-restart path: sources only change through agent-initiated
+      // starts (which pass forceInstall and always run the full start script),
+      // so a fresh dist/ can serve directly and skip the template's
+      // unconditional Vite rebuild.
+      const skipBuild = !forceInstall && this.canSkipTemplateBuild(dashboardDir)
+      if (skipBuild) {
+        info.logStream?.write('[DashboardManager] dist up-to-date, skipping build (bun run serve.js)\n')
+      }
+      const proc = spawn('bun', skipBuild ? ['run', 'serve.js'] : ['run', 'start'], {
         cwd: dashboardDir,
         env: {
           ...process.env,
@@ -342,6 +422,7 @@ class DashboardManager {
         info.logStream?.write(`[process error] ${error.message}\n`)
         info.status = 'crashed'
         info.process = null
+        this.publishStatus(slug, 'crashed')
         // On spawn failure 'close' isn't guaranteed — close here too (no-op if
         // the 'close' handler already ran).
         this.closeLogStream(info)
@@ -354,6 +435,7 @@ class DashboardManager {
       if (ready && info.status === 'starting') {
         info.status = 'running'
         console.log(`[DashboardManager] Dashboard ${slug} is now running on port ${port}`)
+        this.publishStatus(slug, 'running')
       } else if (info.status === 'starting') {
         // Timed out waiting for port — process may be slow or broken
         console.error(`[DashboardManager] Dashboard ${slug} did not become ready in time`)
@@ -363,12 +445,14 @@ class DashboardManager {
           info.process.kill('SIGTERM')
           info.process = null
         }
+        this.publishStatus(slug, 'crashed')
       }
     } catch (error: any) {
       console.error(`[DashboardManager] Failed to start dashboard ${slug}:`, error)
       info.logStream?.write(`[DashboardManager] Failed to start: ${error?.message || error}\n`)
       this.closeLogStream(info)
       info.status = 'crashed'
+      this.publishStatus(slug, 'crashed')
     }
 
     return info
@@ -410,6 +494,29 @@ class DashboardManager {
     // Forced (agent-initiated) or no/stale lockfile: plain install, which
     // resolves and updates the lockfile as needed.
     return this.runBunInstall(dir, logStream)
+  }
+
+  /**
+   * True when this dashboard uses the stock template start script
+   * (`build && serve`) verbatim AND its build output is at least as new as
+   * every source file — in which case `bun run serve.js` is equivalent to
+   * `bun run start` minus the rebuild. Any doubt (custom start script, missing
+   * dist, unreadable tree, oversized tree) returns false and the full start
+   * script runs.
+   */
+  private canSkipTemplateBuild(dir: string): boolean {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8'))
+      if (!TEMPLATE_BUILD_AND_SERVE_STARTS.has(pkg?.scripts?.start)) return false
+      if (!fs.existsSync(path.join(dir, 'serve.js'))) return false
+      const distStamp = newestMtimeMs(path.join(dir, 'dist'), new Set())
+      if (distStamp === null || distStamp === 0) return false
+      const sourceStamp = newestMtimeMs(dir)
+      if (sourceStamp === null) return false
+      return sourceStamp <= distStamp
+    } catch {
+      return false
+    }
   }
 
   private hasLockfile(dir: string): boolean {
@@ -490,6 +597,7 @@ class DashboardManager {
     if (info.restartTimestamps.length >= MAX_RESTARTS) {
       console.log(`[DashboardManager] Dashboard ${slug} exhausted restart attempts`)
       info.status = 'crashed'
+      this.publishStatus(slug, 'crashed')
       return
     }
 
@@ -549,6 +657,7 @@ class DashboardManager {
         const pkgPath = path.join(ARTIFACTS_DIR, entry.name, 'package.json')
         try {
           fs.accessSync(pkgPath)
+          if (readArtifactShapeSync(path.join(ARTIFACTS_DIR, entry.name))?.isDashboard === false) continue
           const { name, description } = this.readPackageJson(entry.name)
           result.push({
             slug: entry.name,
@@ -595,6 +704,23 @@ class DashboardManager {
     return info.port
   }
 
+  getDashboardStatus(slug: string): DashboardStatus | null {
+    return this.dashboards.get(slug)?.status ?? null
+  }
+
+  /**
+   * Resolve once a 'starting' dashboard reaches a terminal outcome (or the
+   * bound elapses). Lets the proxy hold an early document request instead of
+   * answering 503 — an optimistically-mounted iframe then paints the moment
+   * the server binds. Returns immediately for any non-'starting' status.
+   */
+  async waitForStartupOutcome(slug: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline && this.dashboards.get(slug)?.status === 'starting') {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+  }
+
   getDashboardUpstreamPathMode(slug: string): DashboardUpstreamPathMode {
     return this.dashboards.get(slug)?.upstreamPathMode ?? 'stripped'
   }
@@ -628,10 +754,10 @@ class DashboardManager {
     validateSlug(slug)
     const dir = path.join(ARTIFACTS_DIR, slug)
 
-    // Check if dashboard already exists
+    // Check if an artifact (dashboard or widget) already owns the slug
     try {
       await fs.promises.access(path.join(dir, 'package.json'))
-      throw new Error(`Dashboard "${slug}" already exists. Use a different slug or delete the existing dashboard first.`)
+      throw new Error(`An artifact named "${slug}" already exists. Use a different slug or delete the existing one first.`)
     } catch (error: any) {
       if (error.code !== 'ENOENT') throw error
     }
@@ -709,10 +835,7 @@ console.log(\`Dashboard server running on http://localhost:\${port}\`);
     name: string,
     description: string
   ): Promise<void> {
-    const templateDir = path.join(
-      process.env.HOME || '/home/claude',
-      '.claude/skills/dashboards/templates/react-vite'
-    )
+    const templateDir = gamutSkillPath('dashboards', 'templates', 'react-vite')
 
     // Copy template directory recursively
     await fs.promises.cp(templateDir, dir, { recursive: true })

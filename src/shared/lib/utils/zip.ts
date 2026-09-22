@@ -1,5 +1,5 @@
 import fs from 'fs'
-import { PassThrough, type Readable } from 'stream'
+import { PassThrough, Transform, pipeline, type Readable } from 'stream'
 import yauzl from 'yauzl'
 import yazl from 'yazl'
 
@@ -12,11 +12,19 @@ export interface ZipEntryMeta {
   uncompressedSize: number
   compressedSize: number
   isDirectory: boolean
+  /** The entry's permission bits, when the zip was made on a system that records them. */
+  mode?: number
 }
 
 export interface ZipReader {
   readonly entries: ZipEntryMeta[]
   readEntry(fileName: string, maxBytes?: number): Promise<Buffer>
+  /**
+   * An entry's bytes as a stream, so a large entry is never held whole in
+   * memory. With `maxBytes`, the stream fails with a ZipExtractionSizeError
+   * once more than that has come through.
+   */
+  openEntryStream(fileName: string, maxBytes?: number): Promise<Readable>
   extractEntry(fileName: string, destPath: string, maxBytes?: number): Promise<number>
   close(): void
 }
@@ -39,8 +47,27 @@ export class ZipExtractionSizeError extends Error {
 // Reading (yauzl)
 // ============================================================================
 
+const ZIP_OPEN_OPTIONS = { lazyEntries: true, decodeStrings: true, validateEntrySizes: true } as const
+
+type ZipOpenCallback = (err: Error | null, zipFile?: yauzl.ZipFile) => void
+
 export async function openZipFromBuffer(buffer: Buffer): Promise<ZipReader> {
-  const { zipFile, entries: entryMetas, rawEntries } = await openAndCollectEntries(buffer)
+  return openZipReader((callback) => yauzl.fromBuffer(buffer, ZIP_OPEN_OPTIONS, callback))
+}
+
+/**
+ * Open a ZIP directly from disk. Unlike openZipFromBuffer, the file's bytes
+ * are read on demand instead of being pinned in memory for the lifetime of
+ * the reader — prefer this whenever the ZIP already exists as a file.
+ * autoClose is disabled so the fd lives until close() is called, matching
+ * the reader's explicit-close contract.
+ */
+export async function openZipFromFile(filePath: string): Promise<ZipReader> {
+  return openZipReader((callback) => yauzl.open(filePath, { ...ZIP_OPEN_OPTIONS, autoClose: false }, callback))
+}
+
+async function openZipReader(open: (callback: ZipOpenCallback) => void): Promise<ZipReader> {
+  const { zipFile, entries: entryMetas, rawEntries } = await openAndCollectEntries(open)
   let closed = false
 
   return {
@@ -72,6 +99,33 @@ export async function openZipFromBuffer(buffer: Buffer): Promise<ZipReader> {
         readStream.on('end', () => { if (!settled) resolve(Buffer.concat(chunks)) })
         readStream.on('error', (err) => { if (!settled) { settled = true; reject(err) } })
       })
+    },
+
+    async openEntryStream(fileName: string, maxBytes?: number): Promise<Readable> {
+      if (closed) throw new Error('ZipReader has been closed')
+      const rawEntry = rawEntries.get(fileName)
+      if (!rawEntry) {
+        throw new Error(`Entry not found in ZIP: ${fileName}`)
+      }
+
+      const readStream = await openReadStream(zipFile, rawEntry)
+      if (maxBytes === undefined) return readStream
+
+      let totalBytes = 0
+      const limited = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          totalBytes += chunk.length
+          if (totalBytes > maxBytes) {
+            callback(new ZipExtractionSizeError(maxBytes, totalBytes))
+            return
+          }
+          callback(null, chunk)
+        },
+      })
+      // pipeline ends the entry's stream when the limit fails it or the
+      // consumer stops early, and fails `limited` when the entry fails.
+      pipeline(readStream, limited, () => {})
+      return limited
     },
 
     async extractEntry(fileName: string, destPath: string, maxBytes?: number): Promise<number> {
@@ -127,13 +181,13 @@ export async function openZipFromBuffer(buffer: Buffer): Promise<ZipReader> {
   }
 }
 
-function openAndCollectEntries(buffer: Buffer): Promise<{
+function openAndCollectEntries(open: (callback: ZipOpenCallback) => void): Promise<{
   zipFile: yauzl.ZipFile
   entries: ZipEntryMeta[]
   rawEntries: Map<string, yauzl.Entry>
 }> {
   return new Promise((resolve, reject) => {
-    yauzl.fromBuffer(buffer, { lazyEntries: true, decodeStrings: true, validateEntrySizes: true }, (err, zipFile) => {
+    open((err, zipFile) => {
       if (err || !zipFile) {
         reject(err || new Error('Failed to open ZIP'))
         return
@@ -144,11 +198,15 @@ function openAndCollectEntries(buffer: Buffer): Promise<{
 
       zipFile.on('entry', (entry: yauzl.Entry) => {
         const isDirectory = entry.fileName.endsWith('/')
+        // The high byte of versionMadeBy is the host system; 3 is Unix, the
+        // one that keeps a mode in the high half of the external attributes.
+        const unixMode = entry.versionMadeBy >> 8 === 3 ? (entry.externalFileAttributes >>> 16) & 0o777 : undefined
         entries.push({
           fileName: entry.fileName,
           uncompressedSize: entry.uncompressedSize,
           compressedSize: entry.compressedSize,
           isDirectory,
+          ...(unixMode !== undefined ? { mode: unixMode } : {}),
         })
         if (!isDirectory) {
           rawEntries.set(entry.fileName, entry)
@@ -157,7 +215,18 @@ function openAndCollectEntries(buffer: Buffer): Promise<{
       })
 
       zipFile.on('end', () => resolve({ zipFile, entries, rawEntries }))
-      zipFile.on('error', reject)
+      zipFile.on('error', (walkErr: Error) => {
+        // The zip opened but the entry walk failed (e.g. a damaged central
+        // directory). No ZipReader is ever constructed on this path, so no
+        // caller can close the file — release it here before rejecting.
+        // Harmless for buffer-backed zips, which hold no file descriptor.
+        try {
+          zipFile.close()
+        } catch {
+          // already closed
+        }
+        reject(walkErr)
+      })
 
       zipFile.readEntry()
     })

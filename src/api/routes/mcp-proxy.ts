@@ -1,18 +1,13 @@
 import { Hono } from 'hono'
 import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
-import { resolveMcpPolicy } from '@shared/lib/proxy/policy-resolver'
-import { reviewManager } from '@shared/lib/proxy/review-manager'
-import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
+import { withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
 import { db } from '@shared/lib/db'
-import {
-  remoteMcpServers,
-  agentRemoteMcps,
-  mcpAuditLog,
-} from '@shared/lib/db/schema'
-import { eq, and } from 'drizzle-orm'
+import { mcpAuditLog } from '@shared/lib/db/schema'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { parseMcpResponse } from '@shared/lib/mcp/discover-tools'
+import { resolveMcpConnection } from '@shared/lib/mcp/connections'
+import type { McpAuthorization, McpRecoveryResult } from '@shared/lib/mcp/connection-types'
 
 const SYNTHETIC_MCP_SESSION_TTL_MS = 24 * 60 * 60 * 1000
 
@@ -79,6 +74,7 @@ async function initializeUpstreamSession(options: {
   targetUrl: string
   accessToken: string | null
   headers: Headers
+  signal?: AbortSignal
 }): Promise<string | null> {
   const { session, targetUrl, accessToken } = options
   if (session.upstreamSessionId !== undefined) return session.upstreamSessionId
@@ -92,6 +88,7 @@ async function initializeUpstreamSession(options: {
     if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
 
     const initializeResponse = await mcpSafeFetch(targetUrl, {
+      signal: options.signal,
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -128,6 +125,7 @@ async function initializeUpstreamSession(options: {
       initializedHeaders.set('Mcp-Session-Id', upstreamSessionId)
     }
     const initializedResponse = await mcpSafeFetch(targetUrl, {
+      signal: options.signal,
       method: 'POST',
       headers: initializedHeaders,
       body: JSON.stringify({
@@ -193,77 +191,41 @@ function shouldRewriteNonSseGet(method: string, response: Response): boolean {
   return method === 'GET' && response.status === 200 && !isSseContentType(response.headers.get('content-type'))
 }
 
-/**
- * Attempt to refresh an expired OAuth token.
- * Returns the new access token on success, null on failure.
- */
-async function tryRefreshToken(mcp: {
-  id: string
-  refreshToken: string | null
-  oauthTokenEndpoint: string | null
-  oauthClientId: string | null
-  oauthClientSecret: string | null
-  oauthResource: string | null
-}): Promise<string | null> {
-  if (!mcp.refreshToken || !mcp.oauthTokenEndpoint || !mcp.oauthClientId) {
-    return null
-  }
-
-  try {
-    const body = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: mcp.refreshToken,
-      client_id: mcp.oauthClientId,
-    })
-    if (mcp.oauthClientSecret) {
-      body.set('client_secret', mcp.oauthClientSecret)
-    }
-    if (mcp.oauthResource) {
-      body.set('resource', mcp.oauthResource)
-    }
-
-    const res = await mcpSafeFetch(mcp.oauthTokenEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body,
-    })
-
-    if (!res.ok) return null
-
-    const data = (await res.json()) as {
-      access_token: string
-      refresh_token?: string
-      expires_in?: number
-    }
-
-    const now = new Date()
-    const expiresAt = data.expires_in
-      ? new Date(now.getTime() + data.expires_in * 1000)
-      : null
-
-    await db
-      .update(remoteMcpServers)
-      .set({
-        accessToken: data.access_token,
-        refreshToken: data.refresh_token || mcp.refreshToken,
-        tokenExpiresAt: expiresAt,
-        status: 'active',
-        errorMessage: null,
-        updatedAt: now,
-      })
-      .where(eq(remoteMcpServers.id, mcp.id))
-
-    mcpReauthManager.completeMcp(mcp.id)
-
-    return data.access_token
-  } catch {
-    return null
-  }
-}
-
 const mcpProxy = new Hono()
 
 // Catch-all route: /api/mcp-proxy/:agentSlug/:mcpId and optional trailing path
+/**
+ * How each way of failing a parked re-auth is reported to the agent. Split out
+ * of the response builder because three parallel ternaries over the same four
+ * cases is a place for them to drift apart.
+ *
+ * `dismissed` is deliberately a 403, not the 408 the timeout returns: a person
+ * decided this, and a timeout reads to an agent as an invitation to retry.
+ */
+const MCP_REAUTH_FAILURES = {
+  timeout: {
+    statusCode: 408,
+    error: 'mcp_reauth_timeout',
+    message: 'The request timed out while waiting for the MCP server to be reconnected.',
+  },
+  dismissed: {
+    statusCode: 403,
+    error: 'mcp_reauth_dismissed',
+    message: 'A user dismissed the reconnection request, so this call was not made. '
+      + 'Do not retry it until the MCP server is reconnected.',
+  },
+  missing: {
+    statusCode: 404,
+    error: 'mcp_reauth_failed',
+    message: 'The MCP server disappeared while re-authenticating.',
+  },
+  inactive: {
+    statusCode: 502,
+    error: 'mcp_reauth_failed',
+    message: 'The MCP server did not become active after re-authentication.',
+  },
+} as const
+
 mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   const agentSlug = c.req.param('agentSlug')
   const mcpId = c.req.param('mcpId')
@@ -286,29 +248,13 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     return c.json({ error: 'Token does not match agent' }, 403)
   }
 
-  // 2. Verify agent-MCP mapping exists
-  const loadMappedMcp = async () => {
-    const [mapping] = await db
-      .select({ mcp: remoteMcpServers })
-      .from(agentRemoteMcps)
-      .innerJoin(
-        remoteMcpServers,
-        eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id)
-      )
-      .where(
-        and(
-          eq(agentRemoteMcps.agentSlug, agentSlug),
-          eq(agentRemoteMcps.remoteMcpId, mcpId)
-        )
-      )
-      .limit(1)
-    return mapping?.mcp ?? null
+  const resolved = await resolveMcpConnection(agentSlug, mcpId)
+  if (!resolved.ok) {
+    return resolved.reason === 'unavailable'
+      ? c.json({ error: 'MCP connection unavailable' }, 403)
+      : c.json({ error: 'MCP server not found or not assigned to this agent' }, 404)
   }
-
-  let mcp = await loadMappedMcp()
-  if (!mcp) {
-    return c.json({ error: 'MCP server not found or not assigned to this agent' }, 404)
-  }
+  const mcp = resolved.connection
 
   const method = c.req.method
   const clientMcpSessionId = c.req.header('Mcp-Session-Id')
@@ -350,47 +296,32 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     }
   }
 
-  type ReauthResult =
-    | { ok: true }
-    | { ok: false; reason: 'timeout' | 'missing' | 'inactive' }
-
-  const holdForReauth = async (): Promise<ReauthResult> => {
-    try {
-      await mcpReauthManager.requestReauth({
-        agentSlug,
-        mcpId,
-        mcpName: mcp!.name,
-        authType: mcp!.authType,
-      }, c.req.raw.signal)
-    } catch {
-      return { ok: false, reason: 'timeout' }
-    }
-
-    const refreshed = await loadMappedMcp()
-    if (!refreshed) return { ok: false, reason: 'missing' }
-    if (refreshed.status !== 'active') return { ok: false, reason: 'inactive' }
-    mcp = refreshed
-    return { ok: true }
-  }
-
   const reauthFailureResponse = async (
-    result: Exclude<ReauthResult, { ok: true }>,
+    result: Exclude<McpRecoveryResult, { ok: true }>,
   ) => {
-    const statusCode = result.reason === 'timeout'
-      ? 408
-      : result.reason === 'missing'
-        ? 404
-        : 502
-    const message = result.reason === 'timeout'
-      ? 'The request timed out while waiting for the MCP server to be reconnected.'
-      : result.reason === 'missing'
-        ? 'The MCP server disappeared while re-authenticating.'
-        : 'The MCP server did not become active after re-authentication.'
+    if (result.reason === 'reconnect_required') {
+      await logMcpAuditEntry({ agentSlug, remoteMcpId: mcpId, remoteMcpName: mcp.descriptor.name,
+        method, requestPath: mcpMethodInfo, statusCode: 409, errorMessage: result.message,
+        durationMs: Date.now() - startTime, matchedTool: toolName ?? undefined })
+      return c.json({ error: result.error, message: result.message, ...result.context }, 409)
+    }
+    if (result.reason === 'replaced') {
+      const message = `This MCP connection was replaced. Use the tools for MCP ID ${result.replacementMcpId} instead of ${mcpId}.`
+      await logMcpAuditEntry({
+        agentSlug, remoteMcpId: mcpId, remoteMcpName: mcp.descriptor.name,
+        method, requestPath: mcpMethodInfo, statusCode: 409, errorMessage: message,
+        durationMs: Date.now() - startTime, matchedTool: toolName ?? undefined,
+      })
+      return c.json({ error: 'mcp_replaced', message, replacementMcpId: result.replacementMcpId }, 409)
+    }
+    const failure = MCP_REAUTH_FAILURES[result.reason]
+    const { statusCode, error } = failure
+    const message = withDismissalReason(failure.message, result.dismissReason)
 
     await logMcpAuditEntry({
       agentSlug,
       remoteMcpId: mcpId,
-      remoteMcpName: mcp?.name ?? mcpId,
+      remoteMcpName: mcp.descriptor.name,
       method,
       requestPath: mcpMethodInfo,
       statusCode,
@@ -399,51 +330,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       matchedTool: toolName ?? undefined,
     })
 
-    return c.json({
-      error: result.reason === 'timeout' ? 'mcp_reauth_timeout' : 'mcp_reauth_failed',
-      message,
-      mcpStatus: 'auth_required',
-    }, statusCode)
-  }
-
-  const markAuthRequired = async (errorMessage: string) => {
-    await db
-      .update(remoteMcpServers)
-      .set({
-        status: 'auth_required',
-        errorMessage,
-        updatedAt: new Date(),
-      })
-      .where(eq(remoteMcpServers.id, mcpId))
-  }
-
-  const cachedTools = () => {
-    if (!mcp?.toolsJson) return []
-    try {
-      const parsed = JSON.parse(mcp.toolsJson) as unknown
-      if (!Array.isArray(parsed)) return []
-      return parsed.flatMap((tool) => {
-        if (
-          typeof tool !== 'object' ||
-          tool === null ||
-          !('name' in tool) ||
-          typeof tool.name !== 'string'
-        ) {
-          return []
-        }
-        const description = 'description' in tool && typeof tool.description === 'string'
-          ? tool.description
-          : undefined
-        const inputSchema = 'inputSchema' in tool &&
-          typeof tool.inputSchema === 'object' &&
-          tool.inputSchema !== null
-          ? tool.inputSchema
-          : { type: 'object', additionalProperties: true }
-        return [{ name: tool.name, description, inputSchema }]
-      })
-    } catch {
-      return []
-    }
+    return c.json({ error, message, mcpStatus: 'auth_required' }, statusCode)
   }
 
   // Let the SDK complete its eager MCP handshake without contacting an
@@ -469,7 +356,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         result: {
           protocolVersion: requestedProtocolVersion,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: mcp!.name, version: '1.0.0' },
+          serverInfo: { name: mcp.descriptor.name, version: '1.0.0' },
         },
       })
       response.headers.set('Mcp-Session-Id', syntheticSessionId)
@@ -479,7 +366,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       return c.json({
         jsonrpc: '2.0',
         id: jsonRpcId,
-        result: { tools: cachedTools() },
+        result: { tools: mcp.descriptor.tools },
       })
     }
     if (mcpMethodInfo === 'ping') {
@@ -491,7 +378,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   // A previously failed request may already have marked this server. Complete
   // eager protocol discovery locally without entering the authorization path.
   // Non-protocol calls are parked only after their policy gate below.
-  if (mcp.status === 'auth_required') {
+  if (mcp.descriptor.status === 'auth_required') {
     const protocolResponse = authRequiredProtocolResponse()
     if (protocolResponse) return protocolResponse
   }
@@ -518,123 +405,49 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     MCP_PROTOCOL_METHODS.has(mcpMethodInfo) ||
     mcpMethodInfo.startsWith('notifications/')
 
-  const userId = mcp.userId ?? 'local'
-  let resolvedPolicyDecision: string = 'allow'
-
-  if (!isProtocolMethod) {
-    let policyResult
-    try {
-      policyResult = await resolveMcpPolicy(mcpId, toolName, userId)
-    } catch (policyError) {
-      console.error('[mcp-proxy] Policy enforcement failed, defaulting to review:', policyError)
-      policyResult = { decision: 'review' as const, matchedScopes: [] as string[], scopeDescriptions: {} as Record<string, string>, resolvedFrom: 'global_default' as const }
-    }
-
-    if (policyResult.decision === 'block') {
-      await logMcpAuditEntry({
-        agentSlug,
-        remoteMcpId: mcp.id,
-        remoteMcpName: mcp.name,
-        method,
-        requestPath: mcpMethodInfo,
-        policyDecision: 'block',
-        matchedTool: toolName ?? undefined,
-      })
-      return c.json({
-        error: 'blocked_by_policy',
-        message: 'This request was blocked by your MCP access policy.',
-        tool: toolName,
-        settingsHint: 'You can adjust policies in Settings > MCP Servers > Policies',
-      }, 403)
-    }
-
-    resolvedPolicyDecision = policyResult.decision
-
-    if (policyResult.decision === 'review') {
-      try {
-        const decision = await reviewManager.requestReview({
-          agentSlug,
-          accountId: mcpId,
-          toolkit: mcp.name,
-          method,
-          targetPath: mcpMethodInfo,
-          matchedScopes: policyResult.matchedScopes,
-          scopeDescriptions: policyResult.scopeDescriptions,
-        }, c.req.raw.signal)
-        if (decision === 'deny') {
-          await logMcpAuditEntry({
-            agentSlug,
-            remoteMcpId: mcp.id,
-            remoteMcpName: mcp.name,
-            method,
-            requestPath: mcpMethodInfo,
-            policyDecision: 'denied_by_user',
-            matchedTool: toolName ?? undefined,
-          })
-          return c.json({ error: 'denied_by_user', message: 'Request denied by user.' }, 403)
-        }
-        resolvedPolicyDecision = 'approved_by_user'
-      } catch {
-        await logMcpAuditEntry({
-          agentSlug,
-          remoteMcpId: mcp.id,
-          remoteMcpName: mcp.name,
-          method,
-          requestPath: mcpMethodInfo,
-          policyDecision: 'review_timeout',
-          matchedTool: toolName ?? undefined,
-        })
-        return c.json({ error: 'review_timeout', message: 'Request required user approval but timed out.' }, 408)
-      }
-    }
+  const access = await mcp.authorizeInvocation({
+    method, requestPath: mcpMethodInfo, toolName, isProtocolMethod, signal: c.req.raw.signal,
+  })
+  if (!access.ok) {
+    const failures = {
+      blocked: { status: 403, policyDecision: 'block', body: {
+        error: 'blocked_by_policy', message: 'This request was blocked by your MCP access policy.',
+        tool: toolName, settingsHint: 'You can adjust policies in Settings > MCP Servers > Policies',
+      } },
+      denied: { status: 403, policyDecision: 'denied_by_user', body: { error: 'denied_by_user', message: 'Request denied by user.' } },
+      review_timeout: { status: 408, policyDecision: 'review_timeout', body: { error: 'review_timeout', message: 'Request required user approval but timed out.' } },
+    } as const
+    const failure = failures[access.reason]
+    await logMcpAuditEntry({ agentSlug, remoteMcpId: mcp.descriptor.id, remoteMcpName: mcp.descriptor.name,
+      method, requestPath: mcpMethodInfo, policyDecision: failure.policyDecision, matchedTool: toolName ?? undefined })
+    return c.json(failure.body, failure.status)
   }
+  const resolvedPolicyDecision = access.policyDecision
 
   // Re-authentication cannot make a policy-blocked tool call permissible.
   // Wait only after policy enforcement so blocked calls remain immediate 403s
   // and cannot raise reconnect prompts.
-  if (mcp.status === 'auth_required') {
-    const reauthResult = await holdForReauth()
+  if (mcp.descriptor.status === 'auth_required') {
+    const reauthResult = await mcp.recoverAuthorization(c.req.raw.signal)
     if (!reauthResult.ok) return reauthFailureResponse(reauthResult)
   }
 
-  // 3. Get access token, refreshing if expired
-  let accessToken = mcp.accessToken
-  if (mcp.authType !== 'none') {
-    if (
-      mcp.tokenExpiresAt &&
-      mcp.tokenExpiresAt.getTime() < Date.now() &&
-      mcp.refreshToken
-    ) {
-      accessToken = await tryRefreshToken(mcp)
-      if (!accessToken) {
-        await markAuthRequired('Token refresh failed')
-        const protocolResponse = authRequiredProtocolResponse()
-        if (protocolResponse) return protocolResponse
-        const reauthResult = await holdForReauth()
-        if (!reauthResult.ok) return reauthFailureResponse(reauthResult)
-        accessToken = mcp.accessToken
-        if (!accessToken) return reauthFailureResponse({ ok: false, reason: 'inactive' })
-      }
-    }
-
-    if (!accessToken) {
-      await markAuthRequired('MCP server has no access token configured')
-      const protocolResponse = authRequiredProtocolResponse()
-      if (protocolResponse) return protocolResponse
-      const reauthResult = await holdForReauth()
-      if (!reauthResult.ok) return reauthFailureResponse(reauthResult)
-      accessToken = mcp.accessToken
-      if (!accessToken) return reauthFailureResponse({ ok: false, reason: 'inactive' })
-    }
+  // Resolve credentials through the source, preserving cached protocol replies
+  // and one bounded recovery when refresh discovers that reconnect is needed.
+  const prepareAuthorization = async (): Promise<Extract<McpAuthorization, { ok: true }> | Response> => {
+    const authorization = await mcp.authorization()
+    if (authorization.ok) return authorization
+    const protocolResponse = authRequiredProtocolResponse()
+    if (protocolResponse) return protocolResponse
+    const recovered = await mcp.recoverAuthorization(c.req.raw.signal)
+    if (!recovered.ok) return reauthFailureResponse(recovered)
+    const refreshed = await mcp.authorization()
+    return refreshed.ok ? refreshed : reauthFailureResponse({ ok: false, reason: 'inactive' })
   }
 
-  // 4. Build target URL
-  // The MCP server URL is the base; append the rest path if any
-  const baseUrl = mcp.url.replace(/\/$/, '')
   const targetPath = rest ? `/${rest}` : ''
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const queryString = new URL(c.req.url).search
-  const targetUrl = `${baseUrl}${targetPath}${queryString}`
 
   // 5. Forward request
   const forwardHeaders = new Headers()
@@ -655,26 +468,55 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
 
   const syntheticSession = getSyntheticMcpSession(mcpId, clientMcpSessionId)
 
-  const forwardRequest = async () => {
+  // Only failures while talking to the upstream affect its health. Parent
+  // authorization, local lifecycle changes and cancelled callers do not.
+  const requestUpstream = async <T>(request: () => Promise<T>): Promise<T> => {
+    try { return await request() }
+    catch (error) {
+      const cancelled = c.req.raw.signal.aborted || (error instanceof Error && error.name === 'AbortError')
+      const rejected = error instanceof McpSessionInitializationError && error.status !== undefined && error.status < 500
+      if (!cancelled && !rejected) await mcp.reportHealth(false).catch(() => {})
+      throw error
+    }
+  }
+
+  const forwardRequest = async (authorization: Extract<McpAuthorization, { ok: true }>) => {
+    let accessToken = authorization.accessToken
+    const targetUrl = `${mcp.descriptor.url.replace(/\/$/, '')}${targetPath}${queryString}`
+
     const headers = new Headers(forwardHeaders)
     if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
     if (syntheticSession) {
-      const upstreamSessionId = await initializeUpstreamSession({
+      const needsHandshake = syntheticSession.upstreamSessionId === undefined
+      const upstreamSessionId = await requestUpstream(() => initializeUpstreamSession({
         session: syntheticSession,
         targetUrl,
         accessToken,
         headers,
-      })
+        signal: c.req.raw.signal,
+      }))
       headers.delete('Mcp-Session-Id')
       if (upstreamSessionId) headers.set('Mcp-Session-Id', upstreamSessionId)
+      // A real handshake yielded to the network: revalidate before sending the
+      // queued tool call. Established/stateless requests authorize only once.
+      if (needsHandshake) {
+        const refreshed = await mcp.authorization()
+        if (!refreshed.ok) throw new Error('MCP authorization unavailable after handshake')
+        accessToken = refreshed.accessToken
+        headers.delete('Authorization')
+        if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+      }
     }
-    const init: RequestInit = { method, headers }
+    const init: RequestInit = { method, headers, signal: c.req.raw.signal }
     if (bodyBuffer) init.body = bodyBuffer
-    return mcpSafeFetch(targetUrl, init)
+    c.req.raw.signal.throwIfAborted()
+    return requestUpstream(() => mcpSafeFetch(targetUrl, init))
   }
 
   try {
-    let response = await forwardRequest()
+    const authorization = await prepareAuthorization()
+    if (authorization instanceof Response) return authorization
+    let response = await forwardRequest(authorization)
 
     // A live server can discover token revocation only when it handles the
     // request. Hold the original call, reconnect, then retry it exactly once.
@@ -684,16 +526,18 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       } catch (err) {
         console.warn('[mcp-proxy] Failed to cancel unauthorized response body:', err)
       }
-      await markAuthRequired('Remote server returned 401')
+      await mcp.markAuthRequired('Remote server returned 401')
       if (syntheticSession) syntheticSession.upstreamSessionId = undefined
       const protocolResponse = authRequiredProtocolResponse()
       if (protocolResponse) return protocolResponse
-      const reauthResult = await holdForReauth()
+      const reauthResult = await mcp.recoverAuthorization(c.req.raw.signal)
       if (!reauthResult.ok) return reauthFailureResponse(reauthResult)
-      accessToken = mcp.accessToken
-      response = await forwardRequest()
+      const refreshed = await mcp.authorization()
+      if (!refreshed.ok) return reauthFailureResponse({ ok: false, reason: 'inactive' })
+      response = await forwardRequest(refreshed)
     }
 
+    if (method === 'POST' && !c.req.raw.signal.aborted) await mcp.reportHealth(response.status < 500).catch(() => {})
     const durationMs = Date.now() - startTime
 
     if (shouldRewriteNonSseGet(method, response)) {
@@ -703,10 +547,10 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       } catch (err) {
         console.warn('[mcp-proxy] Failed to cancel non-SSE GET body:', err)
       }
-      logMcpAuditEntry({
+      await logMcpAuditEntry({
         agentSlug,
-        remoteMcpId: mcp.id,
-        remoteMcpName: mcp.name,
+        remoteMcpId: mcp.descriptor.id,
+        remoteMcpName: mcp.descriptor.name,
         method,
         requestPath: mcpMethodInfo,
         statusCode: 405,
@@ -721,11 +565,11 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       })
     }
 
-    // Fire-and-forget audit log
-    logMcpAuditEntry({
+    // Audit before returning the upstream response.
+    await logMcpAuditEntry({
       agentSlug,
-      remoteMcpId: mcp.id,
-      remoteMcpName: mcp.name,
+      remoteMcpId: mcp.descriptor.id,
+      remoteMcpName: mcp.descriptor.name,
       method,
       requestPath: mcpMethodInfo,
       statusCode: response.status,
@@ -737,7 +581,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     // A failed retry stays marked, but is returned rather than opening an
     // unbounded second reconnect loop for the same proxy request.
     if (response.status === 401) {
-      markAuthRequired('Remote server returned 401').catch(() => {})
+      void mcp.markAuthRequired('Remote server returned 401').catch(() => {})
     }
 
     if (method === 'DELETE' && clientMcpSessionId && syntheticSession) {
@@ -765,12 +609,12 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     const durationMs = Date.now() - startTime
     const sessionInitializationFailed = error instanceof McpSessionInitializationError
     if (sessionInitializationFailed && error.status === 401) {
-      await markAuthRequired('MCP session re-initialization returned 401')
+      await mcp.markAuthRequired('MCP session re-initialization returned 401')
     }
     await logMcpAuditEntry({
       agentSlug,
-      remoteMcpId: mcp.id,
-      remoteMcpName: mcp.name,
+      remoteMcpId: mcp.descriptor.id,
+      remoteMcpName: mcp.descriptor.name,
       method,
       requestPath: mcpMethodInfo,
       errorMessage: `Proxy request failed: ${error}`,

@@ -1,4 +1,5 @@
-import { sqlite } from '@shared/lib/db'
+import { sql } from 'drizzle-orm'
+import { db } from '@shared/lib/db'
 import { getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { listDirectories } from '@shared/lib/utils/file-storage'
 import { initEnvManagedPlatformStatus } from '@shared/lib/services/platform-auth-service'
@@ -16,10 +17,10 @@ import { getPublicAuthProviders } from './provider-config'
  * Throws an error if validation fails (case 2).
  */
 export async function validateAuthModeStartup(): Promise<void> {
-  const userTableExists = hasUserTable()
+  const userTableExists = await hasUserTable()
 
   if (userTableExists) {
-    const userCount = getUserCount()
+    const userCount = await getUserCount()
     if (userCount > 0) {
       // Case 1: Normal start — user table has entries
       validateAuthProviders()
@@ -64,20 +65,20 @@ function validateAuthProviders(): void {
   )
 }
 
-function hasUserTable(): boolean {
+async function hasUserTable(): Promise<boolean> {
   try {
-    const result = sqlite.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='user'"
-    ).get() as { name: string } | undefined
+    const result = await db.get<{ name: string } | undefined>(
+      sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'user'`,
+    )
     return !!result
   } catch {
     return false
   }
 }
 
-function getUserCount(): number {
+async function getUserCount(): Promise<number> {
   try {
-    const result = sqlite.prepare('SELECT COUNT(*) as count FROM user').get() as { count: number }
+    const result = await db.get<{ count: number }>(sql`SELECT COUNT(*) as count FROM user`)
     return result.count
   } catch {
     return 0

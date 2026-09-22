@@ -15,11 +15,17 @@ describe('isHiddenAutomatedSession', () => {
     expect(isHiddenAutomatedSession({ isScheduledExecution: true })).toBe(true)
     expect(isHiddenAutomatedSession({ isWebhookExecution: true })).toBe(true)
     expect(isHiddenAutomatedSession({ isChatIntegrationSession: true })).toBe(true)
+    expect(isHiddenAutomatedSession({ invokedByAgentSlug: 'caller-agent' })).toBe(true)
   })
 
   it('is false once the session is promoted to interactive', () => {
     expect(isHiddenAutomatedSession({ isScheduledExecution: true, promotedToInteractive: true })).toBe(false)
     expect(isHiddenAutomatedSession({ isChatIntegrationSession: true, promotedToInteractive: true })).toBe(false)
+    expect(isHiddenAutomatedSession({ invokedByAgentSlug: 'caller-agent', promotedToInteractive: true })).toBe(false)
+  })
+
+  it('does not hide a forked session (forks are user sessions, not automation)', () => {
+    expect(isHiddenAutomatedSession({ name: 'Pricing (fork)', forkedFromSessionId: 'src-1' })).toBe(false)
   })
 
   it('is false when automation flags are explicitly false', () => {

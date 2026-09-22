@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import { useMcpOAuthListener } from './use-mcp-oauth-listener'
 
 // Ensure no electronAPI so we test the postMessage path
@@ -68,6 +68,18 @@ describe('useMcpOAuthListener', () => {
     expect(onComplete).toHaveBeenCalledWith({ success: true, error: undefined })
   })
 
+  it('preserves the completed connection ID for replacement selection', () => {
+    const onComplete = vi.fn()
+    renderHook(() => useMcpOAuthListener(true, onComplete))
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        origin: window.location.origin,
+        data: { type: 'mcp-oauth-callback', success: true, mcpId: 'new-mcp' },
+      }))
+    })
+    expect(onComplete).toHaveBeenCalledWith({ success: true, error: undefined, mcpId: 'new-mcp' })
+  })
+
   it('calls onComplete for BroadcastChannel mcp-oauth-callback messages', () => {
     const onComplete = vi.fn()
     renderHook(() => useMcpOAuthListener(true, onComplete))
@@ -101,6 +113,45 @@ describe('useMcpOAuthListener', () => {
     fireStorageMessage(payload)
 
     expect(onComplete).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['postMessage', 'broadcast', 'storage', 'electron'] as const)('correlates %s callbacks before consuming the listener', (transport) => {
+    let electronCallback: ((params: Record<string, unknown>) => void) | undefined
+    const unsubscribe = vi.fn()
+    if (transport === 'electron') {
+      Object.defineProperty(window, 'electronAPI', { configurable: true, value: {
+        onMcpOAuthCallback: (callback: typeof electronCallback) => { electronCallback = callback; return unsubscribe },
+      } })
+    }
+    try {
+      const onComplete = vi.fn()
+      const { unmount } = renderHook(() => useMcpOAuthListener(true, onComplete, 'own-flow'))
+      const dispatch = (data: Record<string, unknown>) => {
+        const payload = { type: 'mcp-oauth-callback', ...data }
+        if (transport === 'postMessage') firePostMessage(payload, window.location.origin)
+        if (transport === 'broadcast') broadcastChannels[0].dispatch(payload)
+        if (transport === 'storage') fireStorageMessage(payload)
+        if (transport === 'electron') electronCallback?.(payload)
+      }
+      dispatch({ success: true, state: 'other-flow', mcpId: 'wrong-mcp' })
+      dispatch({ success: false, state: 'other-flow', error: 'Other flow failed' })
+      dispatch({ success: true, mcpId: 'missing-state' })
+      expect(onComplete).not.toHaveBeenCalled()
+      dispatch({ success: true, state: 'own-flow', mcpId: 'correct-mcp' })
+      dispatch({ success: true, state: 'own-flow', mcpId: 'correct-mcp' })
+      expect(onComplete).toHaveBeenCalledExactlyOnceWith({ success: true, error: undefined, state: 'own-flow', mcpId: 'correct-mcp' })
+      unmount()
+      if (transport === 'electron') expect(unsubscribe).toHaveBeenCalledOnce()
+    } finally {
+      Object.defineProperty(window, 'electronAPI', { configurable: true, value: undefined, writable: true })
+    }
+  })
+
+  it('delivers a failure for its own OAuth state', () => {
+    const onComplete = vi.fn()
+    renderHook(() => useMcpOAuthListener(true, onComplete, 'own-flow'))
+    fireStorageMessage({ type: 'mcp-oauth-callback', success: false, state: 'own-flow', error: 'Access denied' })
+    expect(onComplete).toHaveBeenCalledWith({ success: false, state: 'own-flow', error: 'Access denied' })
   })
 
   it('ignores mcp-oauth-callback messages from a different origin', () => {

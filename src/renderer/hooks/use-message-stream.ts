@@ -7,7 +7,12 @@ import type { SlashCommandInfo } from '@shared/lib/container/types'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { applySessionActivityStatus } from '@renderer/lib/agent-cache'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
+import {
+  providerErrorPresentationSchema,
+  type ProviderErrorPresentation,
+} from '@shared/lib/llm-provider/error-presentation'
 
 export interface SubagentInfo {
   parentToolId: string | null
@@ -20,6 +25,7 @@ export interface SubagentInfo {
   usage: { total_tokens: number; tool_uses: number; duration_ms: number } | null
   lastToolName: string | null
   resultText?: string | null
+  status?: 'running' | 'completed'
 }
 
 interface ApiRetryInfo {
@@ -36,7 +42,7 @@ interface ApiRetryInfo {
 export interface PeerUserMessage {
   uuid: string
   content: string
-  sender: { id: string; name?: string; email?: string }
+  sender: { id: string; name?: string; email?: string; image?: string | null }
   /** Sent while the agent was mid-turn — rendered as a queued ghost. */
   queued?: boolean
   /** Local arrival time — bounds the text-fallback match so an old identical-text message can't claim this ghost. */
@@ -51,6 +57,8 @@ interface StreamState {
   error: string | null // Error message if session encountered an error
   /** SDK error code from the LLM provider (e.g., 'authentication_failed', 'rate_limit', 'server_error') */
   apiErrorCode: string | null
+  /** Provider-authored copy for the error, computed server-side by the active provider. */
+  errorPresentation: ProviderErrorPresentation | null
   browserActive: boolean // Whether browser is running for this session
   computerUseApp: string | null // Name of the app currently grabbed for computer use
   computerUseAppIcon: string | null // Base64 PNG icon of the grabbed app
@@ -59,7 +67,7 @@ interface StreamState {
   contextUsage: SessionUsage | null // Latest context window usage data
   activeSubagents: SubagentInfo[] // Currently running subagent(s) info
   completedSubagents: Set<string> | null // parentToolIds of completed subagents (for status logic)
-  typingUser: { id: string; name?: string } | null // User currently typing (auth mode shared agents)
+  typingUser: { id: string; name?: string; image?: string | null } | null // User currently typing (auth mode shared agents)
   peerUserMessages: PeerUserMessage[] // Messages from other users not yet seen in fetched messages
   apiRetry: ApiRetryInfo | null // Non-null while API is retrying a transient error
   backgroundTasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> // Active background Bash commands, dynamic workflows + background subagents
@@ -90,6 +98,7 @@ const EMPTY_STREAM_STATE: StreamState = {
   streamingToolUses: [],
   error: null,
   apiErrorCode: null,
+  errorPresentation: null,
   browserActive: false,
   computerUseApp: null,
   computerUseAppIcon: null,
@@ -206,6 +215,7 @@ const sessionAutoApprovedComputerUseIds = new Map<string, Set<string>>()
 
 // Singleton EventSource connections per session (prevents duplicates from StrictMode/re-renders)
 const eventSources = new Map<string, EventSource>()
+const typingTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const refCounts = new Map<string, number>()
 
 // Owner token of the in-flight post-idle reconcile loop per session. A newer
@@ -423,6 +433,16 @@ function getOrCreateEventSource(
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)
         }
+        const connectedSubagents = Array.isArray(data.activeSubagents)
+          ? data.activeSubagents as SubagentInfo[]
+          : null
+        const connectedCompletedSubagents = connectedSubagents
+          ? new Set(
+              connectedSubagents
+                .filter((subagent) => subagent.status === 'completed' && subagent.parentToolId)
+                .map((subagent) => subagent.parentToolId!),
+            )
+          : (current?.completedSubagents ?? null)
         // Initial connection - get isActive from server
         streamStates.set(sessionId, {
           isActive: data.isActive ?? false,
@@ -431,19 +451,23 @@ function getOrCreateEventSource(
           streamingToolUses: [],
           error: null,
           apiErrorCode: null,
+          errorPresentation: null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
-          activeSubagents: current?.activeSubagents ?? [],
-          completedSubagents: current?.completedSubagents ?? null,
+          activeSubagents: connectedSubagents ?? (current?.activeSubagents ?? []),
+          completedSubagents: connectedCompletedSubagents,
           typingUser: current?.typingUser ?? null,
           peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: Array.isArray(data.backgroundTasks) ? data.backgroundTasks : (current?.backgroundTasks ?? []),
-          isWaitingBackground: Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0,
+          // The snapshot says whether the turn's output has ended; a task in
+          // the list can still belong to a turn that is streaming.
+          isWaitingBackground:
+            data.isWaitingBackground === true && Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0,
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         // Reconcile against the persisted transcript on every (re)connect. A client
@@ -476,29 +500,50 @@ function getOrCreateEventSource(
       else if (data.type === 'session_active') {
         // Session became active - user sent a message
         if (data.sessionId && data.sessionId !== sessionId) return
-        // Reset thinking stream for the new turn
-        sessionThinking.delete(sessionId)
+        // Echo the flip into the session/agent caches from THIS stream too.
+        // The global notifications stream normally carries it, but that
+        // stream can be silently stale while this one (opened with the view)
+        // is live — and then the sidebar/header would show a sleeping agent
+        // streaming tokens until the next refetch. Idempotent with the global
+        // handler's echo: identical patches leave the caches untouched.
+        applySessionActivityStatus(queryClient, agentSlug, sessionId, { isActive: true })
+        // This frame carries TWO meanings: a genuinely new turn, and a
+        // queued/steering message accepted into a turn that is already running
+        // (`queuedMidTurn`). Deciding reset-vs-preserve field by field produced a
+        // long tail of bugs — queueing a follow-up blanked the running turn's
+        // whole status surface (SUP-736) — so the rule is encoded once, as two
+        // named groups, instead:
+        //
+        //   message-scoped — invalidated by ANY accepted message.
+        //   turn-scoped    — only a real turn boundary ends these. Mid-turn the
+        //                    compaction, thinking blocks, subagents, retry and
+        //                    elapsed clock all belong to the turn still running.
+        //
+        // Everything else carries over from the state we already hold, so state
+        // added to StreamState later survives a mid-turn pickup by default —
+        // opting it out is an explicit line in the turn-scoped group.
+        const queuedMidTurn = data.queuedMidTurn === true
+        // The thinking stream lives outside StreamState but is turn-scoped too.
+        if (!queuedMidTurn) sessionThinking.delete(sessionId)
         streamStates.set(sessionId, {
+          ...(current ?? EMPTY_STREAM_STATE),
           isActive: true,
-          isStreaming: current?.isStreaming ?? false,
-          streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUses: current?.streamingToolUses ?? [],
-          error: null, // Clear any previous error when starting new request
+          // Message-scoped: a new message clears the last error, ends whatever
+          // typing indicator it belongs to, and resumes work that was parked on
+          // background tasks.
+          error: null,
           apiErrorCode: null,
-          browserActive: current?.browserActive ?? false,
-          computerUseApp: current?.computerUseApp ?? null,
-          computerUseAppIcon: current?.computerUseAppIcon ?? null,
-          activeStartTime: Date.now(),
-          isCompacting: false,
-          contextUsage: current?.contextUsage ?? null,
-          activeSubagents: [],
-          completedSubagents: null,
+          errorPresentation: null,
           typingUser: null,
-          peerUserMessages: current?.peerUserMessages ?? [],
-          apiRetry: null,
-          backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: false,
-          discardedCommandUuids: current?.discardedCommandUuids ?? [],
+          // Turn-scoped: a new turn only.
+          ...(queuedMidTurn ? {} : {
+            activeStartTime: Date.now(),
+            isCompacting: false,
+            activeSubagents: [],
+            completedSubagents: null,
+            apiRetry: null,
+          }),
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
@@ -525,6 +570,7 @@ function getOrCreateEventSource(
           // Preserve apiErrorCode — it was set from the assistant message's error field
           // and is still valid context for the last turn. Cleared on next session_active.
           apiErrorCode: current?.apiErrorCode ?? null,
+          errorPresentation: current?.errorPresentation ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -554,7 +600,34 @@ function getOrCreateEventSource(
       // Agent turn ended but background tasks are still running — allow sending messages
       else if (data.type === 'session_waiting_background') {
         if (current) {
-          streamStates.set(sessionId, { ...current, isWaitingBackground: true })
+          if (data.interrupted === true) {
+            // The user stopped the turn and the runtime spared its background
+            // tasks. Settle the streaming state as session_idle does (the
+            // partial text stays until persisted data replaces it) but keep
+            // the session active on its task list — the server's copy is
+            // authoritative, a task may have settled while the stop landed.
+            // Foreground subagents died with the turn and will never report
+            // completion; only the ones that are background tasks remain.
+            const backgroundTasks: StreamState['backgroundTasks'] = Array.isArray(data.backgroundTasks)
+              ? data.backgroundTasks
+              : current.backgroundTasks
+            const backgroundAgentIds = new Set(backgroundTasks.filter(t => t.isSubagent).map(t => t.taskId))
+            streamStates.set(sessionId, {
+              ...current,
+              isStreaming: false,
+              streamingToolUses: [],
+              activeStartTime: null,
+              isCompacting: false,
+              typingUser: null,
+              apiRetry: null,
+              activeSubagents: current.activeSubagents.filter(s => !!s.agentId && backgroundAgentIds.has(s.agentId)),
+              backgroundTasks,
+              isWaitingBackground: true,
+            })
+            invalidateMessagesThrottled(queryClient, sessionId)
+          } else {
+            streamStates.set(sessionId, { ...current, isWaitingBackground: true })
+          }
         }
       }
       else if (data.type === 'session_error') {
@@ -568,6 +641,7 @@ function getOrCreateEventSource(
           streamingToolUses: [],
           error: data.error || 'An unknown error occurred',
           apiErrorCode: data.apiErrorCode || null,
+          errorPresentation: providerErrorPresentationSchema.nullish().catch(null).parse(data.errorPresentation) ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -731,6 +805,7 @@ function getOrCreateEventSource(
           streamingToolUses: [],
           error: null,
           apiErrorCode: null,
+          errorPresentation: null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -755,6 +830,7 @@ function getOrCreateEventSource(
           streamingToolUses: current?.streamingToolUses ?? [],
           error: current?.error ?? null,
           apiErrorCode: data.apiErrorCode || current?.apiErrorCode || null,
+          errorPresentation: current?.errorPresentation ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -795,6 +871,7 @@ function getOrCreateEventSource(
           streamingToolUses: updatedTools,
           error: current?.error ?? null,
           apiErrorCode: current?.apiErrorCode ?? null,
+          errorPresentation: current?.errorPresentation ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -835,6 +912,7 @@ function getOrCreateEventSource(
           streamingToolUses: current?.streamingToolUses ?? [],
           error: current?.error ?? null,
           apiErrorCode: current?.apiErrorCode ?? null,
+          errorPresentation: current?.errorPresentation ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -873,13 +951,15 @@ function getOrCreateEventSource(
         if (current) {
           streamStates.set(sessionId, { ...current, typingUser: data.sender })
           // Auto-clear after 5s if no follow-up
-          setTimeout(() => {
+          clearTimeout(typingTimers.get(sessionId))
+          typingTimers.set(sessionId, setTimeout(() => {
+            typingTimers.delete(sessionId)
             const latest = streamStates.get(sessionId)
             if (latest && latest.typingUser?.id === data.sender.id) {
               streamStates.set(sessionId, { ...latest, typingUser: null })
               streamListeners.get(sessionId)?.forEach((l) => l())
             }
-          }, 5000)
+          }, 5000))
         }
       }
       else if (data.type === 'messages_updated') {
@@ -1081,7 +1161,7 @@ function getOrCreateEventSource(
           queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', taskAgentSlug] })
         }
       }
-      else if (data.type === 'webhook_trigger_created' || data.type === 'webhook_trigger_cancelled') {
+      else if (data.type === 'webhook_trigger_created' || data.type === 'webhook_trigger_updated' || data.type === 'webhook_trigger_cancelled') {
         const triggerAgentSlug = (data as { agentSlug?: string }).agentSlug
         if (triggerAgentSlug) {
           queryClient.invalidateQueries({ queryKey: ['webhook-triggers', triggerAgentSlug] })
@@ -1265,6 +1345,7 @@ function getOrCreateEventSource(
             streamingToolUses: [],
             error: null,
             apiErrorCode: null,
+            errorPresentation: null,
             activeStartTime: null,
           })
           invalidateMessagesThrottled(queryClient, sessionId)
@@ -1314,6 +1395,10 @@ function releaseEventSource(sessionId: string): void {
       eventSources.delete(key)
     }
     refCounts.delete(key)
+    clearTimeout(typingTimers.get(key))
+    typingTimers.delete(key)
+    const state = streamStates.get(key)
+    if (state) streamStates.set(key, { ...state, typingUser: null })
     // Symmetric cleanup for the refetch throttle: cancel a pending trailing
     // timer (nothing is mounted to refetch), settle its waiters so nothing can
     // ever hang on the joined promise, and drop the entry so the map stays

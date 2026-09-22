@@ -18,9 +18,10 @@ vi.mock('@renderer/context/dialog-context', () => ({ useDialogs: () => ({ openSe
 let skillsets: { id: string; name: string }[] | undefined = []
 let discoverable: ApiDiscoverableAgent[] | undefined
 let isLoading = false
+let isError = false
 vi.mock('@renderer/hooks/use-skillsets', () => ({ useSkillsets: () => ({ data: skillsets }) }))
 vi.mock('@renderer/hooks/use-agent-templates', () => ({
-  useDiscoverableAgents: () => ({ data: discoverable, isLoading }),
+  useDiscoverableAgents: () => ({ data: discoverable, isLoading, isError }),
   slugFromAgentPath: (path: string) => path.replace(/^agents\//, '').replace(/\/$/, ''),
 }))
 
@@ -52,6 +53,7 @@ beforeEach(() => {
   skillsets = [{ id: 'skillset-1', name: 'Public' }]
   discoverable = roster(9)
   isLoading = false
+  isError = false
 })
 
 function getScrollContainer(): HTMLDivElement {
@@ -167,5 +169,15 @@ describe('ExploreView with no skillsets', () => {
     const { container } = render(<ExploreView />)
     expect(screen.queryByTestId('explore-empty')).toBeNull()
     expect(container.querySelector('.animate-pulse')).toBeTruthy()
+  })
+
+  it('settles to the empty state when the template fetch fails', () => {
+    // After react-query gives up, data stays undefined with isLoading false —
+    // without the hook's isError term this page would skeleton forever.
+    discoverable = undefined
+    isError = true
+    const { container } = render(<ExploreView />)
+    expect(container.querySelector('.animate-pulse')).toBeNull()
+    expect(screen.getByTestId('explore-empty')).toBeTruthy()
   })
 })

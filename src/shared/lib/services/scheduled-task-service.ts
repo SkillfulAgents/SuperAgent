@@ -6,10 +6,12 @@
  */
 
 import { db } from '@shared/lib/db'
+import { batch, changesOf } from '@shared/lib/db/batch'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
-import { eq, and, lte, inArray, isNotNull } from 'drizzle-orm'
+import { eq, and, lte, inArray, isNotNull, isNull, desc } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
 import { trackServerEvent } from '../analytics/server-analytics'
+import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 
 // Re-export the ScheduledTask type for external use
 export type { ScheduledTask, NewScheduledTask }
@@ -53,6 +55,11 @@ export interface UpdateNextExecutionParams {
   taskId: string
   nextTime: Date
   sessionId: string
+}
+
+export interface ScheduledTaskPatch {
+  scheduleExpression?: string
+  prompt?: string
 }
 
 // ============================================================================
@@ -117,10 +124,31 @@ export async function createScheduledTask(
  *
  * The schedule expression is validated BEFORE any mutation (a bad wakeTime
  * must never cancel the session's valid wake), and the cancel+insert pair runs
- * in a transaction so concurrent calls can't interleave into duplicate pending
+ * as one batch so concurrent calls can't interleave into duplicate pending
  * wakes. A partial unique index on pending wakes backstops both.
  */
-export async function createSessionWake(
+const MAX_WAKE_REPLACE_ATTEMPTS = 5
+
+/** The partial unique index on pending wakes rejected an insert (SQLite names the column, not the index). */
+function isPendingWakeConflict(error: unknown): boolean {
+  return error instanceof Error
+    && error.message.includes('UNIQUE constraint failed')
+    && error.message.includes('resume_session_id')
+}
+
+export function createSessionWake(
+  params: CreateSessionWakeParams
+): Promise<{ taskId: string; replaced: ScheduledTask | null }> {
+  // Wakes for one session are serialized within this process, so a burst of
+  // replacements lands in arrival order with every call succeeding, each
+  // reporting the wake it displaced. The batch below still guards against
+  // another process through the partial unique index.
+  return serializeByKey(`session-wake:${params.agentSlug}\u0000${params.sessionId}`, () =>
+    replaceSessionWake(params),
+  )
+}
+
+async function replaceSessionWake(
   params: CreateSessionWakeParams
 ): Promise<{ taskId: string; replaced: ScheduledTask | null }> {
   // Throws on unparseable/past expressions — before existing state is touched.
@@ -146,33 +174,34 @@ export async function createSessionWake(
     resumeSessionId: params.sessionId,
   }
 
-  // Synchronous better-sqlite3 transaction: read-existing → cancel → insert is
-  // one atomic unit, so no other caller can observe (or create) an
-  // intermediate state.
-  const replaced = db.transaction((tx) => {
-    const existing = tx
-      .select()
-      .from(scheduledTasks)
-      .where(
-        and(
-          eq(scheduledTasks.agentSlug, params.agentSlug),
-          eq(scheduledTasks.resumeSessionId, params.sessionId),
-          eq(scheduledTasks.status, 'pending')
-        )
-      )
-      .all()
-
-    for (const wake of existing) {
-      tx.update(scheduledTasks)
-        .set({ status: 'cancelled', cancelledAt: now })
-        .where(eq(scheduledTasks.id, wake.id))
-        .run()
+  const pendingWake = and(
+    eq(scheduledTasks.agentSlug, params.agentSlug),
+    eq(scheduledTasks.resumeSessionId, params.sessionId),
+    eq(scheduledTasks.status, 'pending')
+  )
+  // `replaced` is the wake this call cancels, so cancel it by id and let the
+  // change count say whether it was still pending: a concurrent cancel that
+  // got there first means nothing was replaced. A concurrent create that got
+  // there first leaves its own pending wake, which the partial unique index
+  // rejects the insert against; read again and replace that one instead.
+  let replaced: ScheduledTask | null = null
+  for (let attempt = 1; ; attempt++) {
+    const existing = (await db.select().from(scheduledTasks).where(pendingWake).get()) ?? null
+    const cancelExisting = existing
+      ? [
+          db.update(scheduledTasks)
+            .set({ status: 'cancelled', cancelledAt: now })
+            .where(and(eq(scheduledTasks.id, existing.id), eq(scheduledTasks.status, 'pending'))),
+        ]
+      : []
+    try {
+      const results = await batch([...cancelExisting, db.insert(scheduledTasks).values(newTask)])
+      replaced = existing && changesOf(results[0]) > 0 ? existing : null
+      break
+    } catch (error) {
+      if (attempt >= MAX_WAKE_REPLACE_ATTEMPTS || !isPendingWakeConflict(error)) throw error
     }
-
-    tx.insert(scheduledTasks).values(newTask).run()
-
-    return existing[0] ?? null
-  })
+  }
 
   trackServerEvent('task_scheduled', {
     scheduleType: 'at',
@@ -315,6 +344,27 @@ export async function listCancelledScheduledTasks(agentSlug: string): Promise<Sc
 }
 
 /**
+ * List one-time scheduled tasks that have fired and created a standalone
+ * session. Session wakes are excluded: they resume an existing interactive
+ * session and are surfaced on that session instead of in automation history.
+ */
+export async function listCompletedOneTimeTasks(agentSlug: string): Promise<ScheduledTask[]> {
+  return db
+    .select()
+    .from(scheduledTasks)
+    .where(
+      and(
+        eq(scheduledTasks.agentSlug, agentSlug),
+        eq(scheduledTasks.scheduleType, 'at'),
+        eq(scheduledTasks.status, 'executed'),
+        isNull(scheduledTasks.resumeSessionId),
+        isNotNull(scheduledTasks.lastSessionId)
+      )
+    )
+    .orderBy(desc(scheduledTasks.lastExecutedAt))
+}
+
+/**
  * Get all tasks that are due for execution
  * (nextExecutionAt <= now and status = 'pending')
  */
@@ -351,7 +401,7 @@ export async function cancelScheduledTask(taskId: string): Promise<boolean> {
       )
     )
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -386,7 +436,7 @@ export async function pauseScheduledTask(taskId: string): Promise<boolean> {
       )
     )
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -408,7 +458,7 @@ export async function resumeScheduledTask(taskId: string): Promise<boolean> {
     })
     .where(eq(scheduledTasks.id, taskId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -489,7 +539,7 @@ export async function resetScheduledTask(taskId: string): Promise<boolean> {
     })
     .where(eq(scheduledTasks.id, taskId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -512,12 +562,42 @@ export async function updateTaskTimezone(taskId: string, timezone: string): Prom
     .set({ timezone, nextExecutionAt })
     .where(eq(scheduledTasks.id, taskId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 // ============================================================================
 // Delete Operations
 // ============================================================================
+
+/** Update a pending/paused task in place, preserving its execution history. */
+export async function patchScheduledTask(
+  taskId: string,
+  patch: ScheduledTaskPatch,
+): Promise<boolean> {
+  const task = await getScheduledTask(taskId)
+  if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
+
+  const updates: { scheduleExpression?: string; nextExecutionAt?: Date; prompt?: string } = {}
+  if (patch.prompt !== undefined) updates.prompt = patch.prompt
+  if (patch.scheduleExpression !== undefined) {
+    updates.scheduleExpression = patch.scheduleExpression
+    const timezone = task.timezone || undefined
+    updates.nextExecutionAt = task.scheduleType === 'at'
+      ? parseAtSyntax(patch.scheduleExpression, timezone)
+      : getNextCronTime(patch.scheduleExpression, timezone)
+  }
+  if (Object.keys(updates).length === 0) return false
+
+  const result = await db
+    .update(scheduledTasks)
+    .set(updates)
+    .where(and(
+      eq(scheduledTasks.id, taskId),
+      inArray(scheduledTasks.status, ['pending', 'paused']),
+    ))
+
+  return changesOf(result) > 0
+}
 
 /**
  * Update a scheduled task's prompt (the instructions executed when the task runs).
@@ -527,15 +607,7 @@ export async function updateTaskPrompt(
   taskId: string,
   prompt: string,
 ): Promise<boolean> {
-  const task = await getScheduledTask(taskId)
-  if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
-
-  const result = await db
-    .update(scheduledTasks)
-    .set({ prompt })
-    .where(eq(scheduledTasks.id, taskId))
-
-  return (result.changes ?? 0) > 0
+  return patchScheduledTask(taskId, { prompt })
 }
 
 /**
@@ -554,7 +626,7 @@ export async function updateTaskName(
     .set({ name })
     .where(eq(scheduledTasks.id, taskId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -572,15 +644,7 @@ export async function updateScheduleExpression(
   )
     return false
 
-  const tz = task.timezone || undefined
-  const nextExecutionAt = getNextCronTime(scheduleExpression, tz)
-
-  const result = await db
-    .update(scheduledTasks)
-    .set({ scheduleExpression, nextExecutionAt })
-    .where(eq(scheduledTasks.id, taskId))
-
-  return (result.changes ?? 0) > 0
+  return patchScheduledTask(taskId, { scheduleExpression })
 }
 
 /**
@@ -624,7 +688,7 @@ export async function updateTaskRuntimeOptions(
     .set(updates)
     .where(eq(scheduledTasks.id, taskId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -635,5 +699,5 @@ export async function deleteScheduledTask(taskId: string): Promise<boolean> {
     .delete(scheduledTasks)
     .where(eq(scheduledTasks.id, taskId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }

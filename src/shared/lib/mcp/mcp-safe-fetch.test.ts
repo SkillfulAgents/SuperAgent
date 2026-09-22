@@ -51,6 +51,25 @@ describe('mcpSafeFetch', () => {
     expect(secondHeaders.get('authorization')).toBeNull()
   })
 
+  it('returns the first response when followRedirects is false', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        headers: { Location: 'https://cdn.example/mcp' },
+      }),
+    )
+
+    const res = await mcpSafeFetch(
+      'https://public.example/authorize',
+      { method: 'GET' },
+      undefined,
+      { followRedirects: false },
+    )
+    expect(res.status).toBe(302)
+    expect(res.headers.get('location')).toBe('https://cdn.example/mcp')
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+
   it('refuses a redirect Location that resolves to a private IP', async () => {
     mockFetch.mockResolvedValue(
       new Response(null, {
@@ -91,7 +110,7 @@ describe('mcpSafeFetch pin (live connect)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     originalE2EMock = process.env.E2E_MOCK
-    process.env.E2E_MOCK = '1'
+    process.env.E2E_MOCK = 'true'
     lookupMock.mockResolvedValue({ address: '127.0.0.1', family: 4 })
   })
 

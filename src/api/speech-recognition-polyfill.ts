@@ -11,7 +11,7 @@ export function getPolyfillJs(): string {
 // ---------------------------------------------------------------------------
 // Self-contained vanilla JS polyfill for the W3C SpeechRecognition API.
 // Runs inside dashboard iframes. Routes audio through the app's configured
-// STT provider (Deepgram / OpenAI / Platform) via /api/stt/token.
+// STT provider (Deepgram / OpenAI / Platform) via /api/voice/token.
 // ---------------------------------------------------------------------------
 
 const POLYFILL_SOURCE = /* js */ `(function () {
@@ -197,8 +197,8 @@ ${API_PREFIX_SNIPPET}
     };
   }
 
-  function createAdapter(provider) {
-    if (provider === "openai") return createOpenaiAdapter();
+  function createAdapter(protocol) {
+    if (protocol === "openai-realtime") return createOpenaiAdapter();
     return createDeepgramAdapter();
   }
 
@@ -298,7 +298,7 @@ ${API_PREFIX_SNIPPET}
 
       // Absolute intentionally — reaches the Superagent API that served this
       // document, not the dashboard's own server
-      fetch(apiPrefix + "/api/stt/token")
+      fetch(apiPrefix + "/api/voice/token")
         .then(function (res) {
           if (!res.ok) {
             return res.json().catch(function () { return {}; }).then(function (body) {
@@ -311,7 +311,7 @@ ${API_PREFIX_SNIPPET}
         })
         .then(function (data) {
           if (self._state === "inactive") return;
-          self._adapter = createAdapter(data.provider);
+          self._adapter = createAdapter(data.protocol);
           self._adapter.onTranscript(function (ev) { self._handleTranscript(ev); });
           self._adapter.onError(function (err) {
             self._fireError("network", err.message);

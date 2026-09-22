@@ -48,6 +48,7 @@ import {
   invokeAgentRenderer,
   getAgentSessionsRenderer,
   getAgentSessionTranscriptRenderer,
+  downloadAgentFileRenderer,
 } from './x-agent-tools'
 import {
   listChatProvidersRenderer,
@@ -137,6 +138,7 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__agents__invoke_agent': invokeAgentRenderer,
   'mcp__agents__get_agent_sessions': getAgentSessionsRenderer,
   'mcp__agents__get_agent_session_transcript': getAgentSessionTranscriptRenderer,
+  'mcp__agents__download_agent_file': downloadAgentFileRenderer,
 
   // MCP tools - chat integrations
   'mcp__chat__list_available_chat_providers': listChatProvidersRenderer,

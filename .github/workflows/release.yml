@@ -194,10 +194,47 @@ jobs:
           node -e "const fs=require('fs'),p=require('./package.json');p.build.publish.channel=process.env.UPDATE_CHANNEL;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
           echo "build.publish.channel set to $UPDATE_CHANNEL"
 
-      - name: Build and sign macOS app
+      # electron-builder's temporary-keychain path passes the .p12 import password
+      # to `security set-key-partition-list -k`, which needs the *keychain* password.
+      # Older macOS builds tolerated the mismatch; the macOS 26.6 runner image
+      # (20260831+) rejects it and the build dies before signing. Upstream fix
+      # (electron-userland/electron-builder#10066, PR #10101) is not released on
+      # 26.x yet, so build the keychain here and hand it over via CSC_KEYCHAIN.
+      # electron-builder only honours CSC_KEYCHAIN when CSC_LINK is unset, so
+      # CSC_LINK/CSC_KEY_PASSWORD must NOT be passed to the build step.
+      - name: Set up signing keychain
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          CERT="$RUNNER_TEMP/signing.p12"
+          case "$CSC_LINK" in
+            https://*) curl -fsSL "$CSC_LINK" -o "$CERT" ;;
+            *) printf '%s' "$CSC_LINK" | sed -E 's/^data:[^,]*;base64,//' | base64 --decode > "$CERT" ;;
+          esac
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # No auto-lock timeout: notarization can run for a long time.
+          security set-keychain-settings "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -k "$KEYCHAIN" -P "$CSC_KEY_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/productbuild
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          rm -f "$CERT"
+          # Put the new keychain (plus electron-builder's bundled Apple root/
+          # intermediate certs, which its own keychain path also adds) on the
+          # search list so codesign can build the certificate chain.
+          security list-keychains -d user -s "$KEYCHAIN" \
+            "$PWD/node_modules/app-builder-lib/certs/root_certs.keychain" \
+            $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Build and sign macOS app
+        env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -206,6 +243,25 @@ jobs:
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
           PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
         run: npm run dist:mac
+
+      - name: Enforce release artifact size limit
+        shell: bash
+        run: |
+          # Wrangler (Cloudflare R2 feed upload) rejects single objects over
+          # 300 MiB. Fail here, in the build job, rather than discovering it
+          # after the GitHub release is already published.
+          limit=$((280 * 1024 * 1024))
+          bad=0
+          for f in release/*.exe release/*.dmg release/*.zip; do
+            [ -e "$f" ] || continue
+            size=$(wc -c < "$f")
+            printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
+            if [ "$size" -gt "$limit" ]; then
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 280 MiB release-artifact limit (R2 upload cap is 300 MiB)"
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] || exit 1
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -218,6 +274,12 @@ jobs:
             release/*.yaml
             release/*.blockmap
           retention-days: 5
+
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          # create-keychain writes <name>-db on modern macOS, so don't test the path.
+          [ -z "${CSC_KEYCHAIN:-}" ] || security delete-keychain "$CSC_KEYCHAIN" || true
 
   # Build Windows Electron app
   build-win:
@@ -265,6 +327,25 @@ jobs:
           AZURE_CODE_SIGNING_PROFILE: ${{ secrets.AZURE_CODE_SIGNING_PROFILE }}
           AZURE_CODE_SIGNING_PUBLISHER: ${{ secrets.AZURE_CODE_SIGNING_PUBLISHER }}
         run: npm run dist:win
+
+      - name: Enforce release artifact size limit
+        shell: bash
+        run: |
+          # Wrangler (Cloudflare R2 feed upload) rejects single objects over
+          # 300 MiB. Fail here, in the build job, rather than discovering it
+          # after the GitHub release is already published.
+          limit=$((280 * 1024 * 1024))
+          bad=0
+          for f in release/*.exe release/*.dmg release/*.zip; do
+            [ -e "$f" ] || continue
+            size=$(wc -c < "$f")
+            printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
+            if [ "$size" -gt "$limit" ]; then
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 280 MiB release-artifact limit (R2 upload cap is 300 MiB)"
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] || exit 1
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -321,26 +402,56 @@ jobs:
         run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
 
       # Dual-publish bridge (SUP-286): populate the owned R2 feed
-      # (updates.gamutagents.com) AFTER the GitHub release is published, so a
-      # transient R2 hiccup can never block the primary (GitHub) feed during the
-      # bridge. continue-on-error keeps a failed upload from failing the release —
-      # generic-feed builds update from R2; pre-generic clients keep updating from
-      # GitHub until the cutover subtask (SUP-287) retires the GitHub feed. Skipped
-      # if the Cloudflare credentials aren't configured. Uses the same
-      # CLOUDFLARE_API_TOKEN as the gamut-releases Worker deploy — no separate R2
-      # S3 keys to manage.
+      # (updates.gamutagents.com) AFTER the GitHub release is published, so an
+      # R2 failure can never block the primary (GitHub) feed during the bridge.
+      # It DOES fail this job: from 0.5.21 to 0.5.22 the Windows installer was
+      # over wrangler's 300 MiB cap, the loop died on its first file, nothing
+      # (not even latest.yml) reached R2, and continue-on-error hid it — the
+      # generic feed silently stopped updating. Binaries go first and the feed
+      # metadata (latest*.yml) last, so R2 never advertises a version whose
+      # binaries are missing. Skipped if the Cloudflare credentials aren't
+      # configured. Uses the same CLOUDFLARE_API_TOKEN as the gamut-releases
+      # Worker deploy — no separate R2 S3 keys to manage.
       - name: Upload release feed to Cloudflare R2
         if: ${{ env.CLOUDFLARE_ACCOUNT_ID != '' }}
-        continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           shopt -s nullglob
+          failed=()
+          binaries=()
+          feeds=()
           for f in ./release-artifacts/*; do
             name="$(basename "$f")"
             # builder-debug.yml is electron-builder's debug dump, not a feed file.
             [ "$name" = "builder-debug.yml" ] && continue
-            echo "→ R2: $name"
-            npx --yes wrangler@4 r2 object put "gamut-releases/$name" --file "$f" --remote
+            case "$name" in
+              *.yml|*.yaml) feeds+=("$f") ;;
+              *)            binaries+=("$f") ;;
+            esac
           done
+
+          upload() {
+            local f="$1" name
+            name="$(basename "$f")"
+            echo "→ R2: $name ($(( $(wc -c < "$f") / 1048576 )) MiB)"
+            if ! npx --yes wrangler@4 r2 object put "gamut-releases/$name" --file "$f" --remote; then
+              echo "::error::R2 upload failed for $name"
+              failed+=("$name")
+            fi
+          }
+
+          for f in "${binaries[@]}"; do upload "$f"; done
+
+          if [ "${#failed[@]}" -ne 0 ]; then
+            echo "::error::Not uploading feed metadata: ${#failed[@]} binary upload(s) failed (${failed[*]}). The R2 feed still points at the previous version."
+            exit 1
+          fi
+
+          for f in "${feeds[@]}"; do upload "$f"; done
+
+          if [ "${#failed[@]}" -ne 0 ]; then
+            echo "::error::Feed metadata upload failed (${failed[*]}); clients on the R2 feed will not see this release."
+            exit 1
+          fi

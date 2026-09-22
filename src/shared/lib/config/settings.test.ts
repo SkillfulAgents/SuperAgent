@@ -31,6 +31,7 @@ import {
   getCustomEnvVars,
   DEFAULT_SETTINGS,
   DEFAULT_AUTH_SETTINGS,
+  isAutoResumeOnUnexpectedDeathEnabled,
 } from './settings'
 import type { AppSettings } from './settings'
 
@@ -379,6 +380,30 @@ describe('loadSettings', () => {
       expect(result.app?.autoDeleteInactiveDays).toBeUndefined()
     })
 
+    it('defaults app.apiLogAutoDeleteDays to 30 when not set', () => {
+      mockSettingsFile(JSON.stringify({}))
+
+      const result = loadSettings()
+
+      expect(result.app?.apiLogAutoDeleteDays).toBe(30)
+    })
+
+    it('preserves app.apiLogAutoDeleteDays = 0 (Never)', () => {
+      mockSettingsFile(JSON.stringify({ app: { apiLogAutoDeleteDays: 0 } }))
+
+      const result = loadSettings()
+
+      expect(result.app?.apiLogAutoDeleteDays).toBe(0)
+    })
+
+    it('preserves app.apiLogAutoDeleteDays = 90', () => {
+      mockSettingsFile(JSON.stringify({ app: { apiLogAutoDeleteDays: 90 } }))
+
+      const result = loadSettings()
+
+      expect(result.app?.apiLogAutoDeleteDays).toBe(90)
+    })
+
     it('preserves customEnvVars as-is', () => {
       const envVars = { MY_VAR: 'hello', ANOTHER: 'world' }
       mockSettingsFile(JSON.stringify({ customEnvVars: envVars }))
@@ -399,6 +424,33 @@ describe('loadSettings', () => {
       const result = loadSettings()
 
       expect(result.modelCatalog).toEqual(modelCatalog)
+    })
+
+    it('drops one unreadable global price without failing the load or losing the others', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      const good = { inputPerMtok: 1, outputPerMtok: 2 }
+      mockSettingsFile(
+        JSON.stringify({
+          apiKeys: { anthropicApiKey: 'sk-kept' },
+          modelPricing: { good, bad: { inputPerMtok: -1, outputPerMtok: 2 }, worse: 'free' },
+        }),
+      )
+
+      const result = loadSettings()
+
+      expect(result.modelPricing).toEqual({ good })
+      expect(result.apiKeys?.anthropicApiKey).toBe('sk-kept')
+      expect(warn).toHaveBeenCalledTimes(2)
+      warn.mockRestore()
+    })
+
+    it('ignores a modelPricing value that is not a map', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      mockSettingsFile(JSON.stringify({ modelPricing: [1, 2] }))
+
+      expect(loadSettings().modelPricing).toEqual({})
+      expect(warn).toHaveBeenCalledOnce()
+      warn.mockRestore()
     })
 
     it('ignores a malformed modelCatalog instead of failing settings load', () => {
@@ -1366,6 +1418,11 @@ describe('DEFAULT_SETTINGS', () => {
     expect(DEFAULT_SETTINGS.app?.showMenuBarIcon).toBe(true)
     expect(DEFAULT_SETTINGS.app?.autoSleepTimeoutMinutes).toBe(30)
     expect(DEFAULT_SETTINGS.app?.warmStartOnType).toBe(true)
+    expect(DEFAULT_SETTINGS.app?.autoResumeOnUnexpectedDeath).toBe(true)
+    expect(DEFAULT_SETTINGS.app?.apiLogAutoDeleteDays).toBe(30)
+    expect(isAutoResumeOnUnexpectedDeathEnabled(undefined)).toBe(true)
+    expect(isAutoResumeOnUnexpectedDeathEnabled({ app: {} })).toBe(true)
+    expect(isAutoResumeOnUnexpectedDeathEnabled({ app: { autoResumeOnUnexpectedDeath: false } })).toBe(false)
   })
 
   it('has expected notification defaults', () => {

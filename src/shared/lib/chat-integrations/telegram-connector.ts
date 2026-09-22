@@ -13,15 +13,16 @@ import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import {
-  ChatClientConnector,
+  ChatAgentIntegration,
   isMultiPartyChatType,
   type ChatClassifyContext,
   type ChatConversationType,
   type OutgoingMessage,
   type SystemPromptContext,
-} from './base-connector'
+} from './chat-agent-integration'
 import { buildSessionContextPrompt } from './chat-session-context'
-import { describeUnsupportedRequest, isUnsupportedInChat, withSessionUrl, type AppLinkContext } from './utils'
+import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
+import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { captureException } from '@shared/lib/error-reporting'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
 import type { InputRichMessage } from 'grammy/types'
@@ -145,7 +146,7 @@ export function buildTelegramSystemPrompt(message: SystemPromptContext): string 
 
 // ── Connector ───────────────────────────────────────────────────────────
 
-export class TelegramConnector extends ChatClientConnector {
+export class TelegramConnector extends ChatAgentIntegration {
   readonly provider = 'telegram' as const
 
   static generateSystemPrompt = buildTelegramSystemPrompt

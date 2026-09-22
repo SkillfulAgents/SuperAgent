@@ -13,7 +13,7 @@ const mockDeleteSessionsBatch = vi.fn()
 const mockReadAgentPreferences = vi.fn()
 const mockGetSettings = vi.fn()
 const mockIsAuthMode = vi.fn(() => false)
-const mockIsSessionActive = vi.fn((_id: string) => false)
+const mockIsSessionActive = vi.fn((_agentSlug: string, _id: string) => false)
 const mockUnsubscribeFromSession = vi.fn()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockDbDelete = vi.fn((..._args: any[]) => ({ where: vi.fn(() => ({ changes: 0 })) }))
@@ -42,8 +42,8 @@ vi.mock('@shared/lib/auth/mode', () => ({
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
-    isSessionActive: (id: string) => mockIsSessionActive(id),
-    unsubscribeFromSession: (id: string) => mockUnsubscribeFromSession(id),
+    isSessionActive: (agentSlug: string, id: string) => mockIsSessionActive(agentSlug, id),
+    unsubscribeFromSession: (agentSlug: string, id: string) => mockUnsubscribeFromSession(agentSlug, id),
   },
 }))
 
@@ -186,7 +186,7 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('test-agent', ['old'])
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), ['old'])
   })
 
   it('uses per-agent override over global default', async () => {
@@ -202,7 +202,18 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('test-agent', ['s100'])
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), ['s100'])
+  })
+
+  it('a per-agent override of 0 ("Never") disables cleanup even with a global default', async () => {
+    mockGetSettings.mockReturnValue({ app: { autoDeleteInactiveDays: 30 } })
+    mockListAgents.mockResolvedValue([makeAgent('test-agent')])
+    mockReadAgentPreferences.mockResolvedValue({ autoDeleteInactiveDays: 0 })
+
+    await startAndTrigger()
+
+    expect(mockListSessions).not.toHaveBeenCalled()
+    expect(mockDeleteSessionsBatch).not.toHaveBeenCalled()
   })
 
   // --------------------------------------------------------------------------
@@ -225,7 +236,7 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('test-agent', [
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), [
       'normal',
     ])
   })
@@ -241,12 +252,12 @@ describe('SessionAutoDeleteMonitor', () => {
     mockListSessions.mockResolvedValue([oldActive, oldInactive])
     mockReadSessionMetadata.mockResolvedValue({})
     mockIsSessionActive.mockImplementation(
-      (id: string) => id === 'active'
+      (_agentSlug: string, id: string) => id === 'active'
     )
 
     await startAndTrigger()
 
-    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('test-agent', [
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), [
       'inactive',
     ])
   })
@@ -266,7 +277,7 @@ describe('SessionAutoDeleteMonitor', () => {
     await startAndTrigger()
 
     expect(mockListSessionIdsWithPendingWakes).toHaveBeenCalledWith('test-agent')
-    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('test-agent', ['normal'])
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), ['normal'])
   })
 
   it('does not delete when no sessions exceed threshold', async () => {
@@ -312,8 +323,8 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('old1')
-    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('old2')
+    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('test-agent', 'old1')
+    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('test-agent', 'old2')
   })
 
   it('only cleans up DB records for actually-deleted sessions', async () => {
@@ -332,8 +343,8 @@ describe('SessionAutoDeleteMonitor', () => {
     await startAndTrigger()
 
     expect(mockDbDelete).toHaveBeenCalled()
-    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('ok')
-    expect(mockUnsubscribeFromSession).not.toHaveBeenCalledWith('failed')
+    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('test-agent', 'ok')
+    expect(mockUnsubscribeFromSession).not.toHaveBeenCalledWith('test-agent', 'failed')
   })
 
   it('cleans notifications but not messageAuthor when not in auth mode', async () => {
@@ -378,6 +389,6 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('ok-agent', ['old'])
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith(expect.objectContaining({ slug: 'ok-agent' }), ['old'])
   })
 })

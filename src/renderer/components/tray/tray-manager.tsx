@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Globe, FileText, PanelRightOpen, Workflow } from 'lucide-react'
-import { DrawerShell, type DrawerShellHandle } from './drawer-shell'
+import { DrawerShell } from './drawer-shell'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { TrayTabStrip, type TrayDef } from './tray-tab-strip'
 import { BrowserTrayContent } from '@renderer/components/browser/browser-tray-content'
@@ -32,32 +32,54 @@ export function TrayManager({
   const [selectedTrayId, setSelectedTrayId] = useState<string>('browser')
   const [isOpen, setIsOpen] = useState(false)
   const [userClosed, setUserClosed] = useState(false)
-  const drawerRef = useRef<DrawerShellHandle>(null)
+  // Full screen: the drawer covers the tray host and the sidebar folds away,
+  // so the browser gets the whole window. Both come back on exit.
   const [isExpanded, setIsExpanded] = useState(false)
-  const preExpandWidthRef = useRef<number | null>(null)
   const sidebarWasOpenRef = useRef(false)
   const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar()
 
+  // Leaving full screen restores the sidebar. It runs from the button, from
+  // Escape, and from every path that takes the drawer away underneath it —
+  // hiding the panel, the browser going idle, switching to another tray —
+  // otherwise the sidebar stays folded with nothing on screen to unfold it.
+  // Tracked in a ref as well as state so exit can read it without going
+  // through an updater: a sibling's setState must not run inside one.
+  const isExpandedRef = useRef(false)
+  const exitFullScreen = useCallback(() => {
+    if (!isExpandedRef.current) return
+    isExpandedRef.current = false
+    setIsExpanded(false)
+    if (sidebarWasOpenRef.current) setSidebarOpen(true)
+  }, [setSidebarOpen])
+
   const handleCloseTray = useCallback(() => {
+    exitFullScreen()
     setUserClosed(true)
     setIsOpen(false)
-  }, [])
+  }, [exitFullScreen])
 
   const handleToggleExpand = useCallback(() => {
     if (isExpanded) {
-      if (preExpandWidthRef.current != null && drawerRef.current) {
-        drawerRef.current.setWidth(preExpandWidthRef.current)
-      }
-      if (sidebarWasOpenRef.current) setSidebarOpen(true)
-      setIsExpanded(false)
+      exitFullScreen()
     } else {
-      preExpandWidthRef.current = drawerRef.current?.getWidth() ?? null
       sidebarWasOpenRef.current = sidebarOpen
-      drawerRef.current?.setWidth(800)
+      isExpandedRef.current = true
       setSidebarOpen(false)
       setIsExpanded(true)
     }
-  }, [isExpanded, sidebarOpen, setSidebarOpen])
+  }, [isExpanded, sidebarOpen, setSidebarOpen, exitFullScreen])
+
+  // Canvas input and local dialogs own their handled keys; only an unhandled Escape exits.
+  useEffect(() => {
+    if (!isExpanded) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      e.preventDefault()
+      exitFullScreen()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [isExpanded, exitFullScreen])
 
   const browserTrayContent = useMemo(() => (
     <BrowserTrayContent
@@ -155,10 +177,18 @@ export function TrayManager({
   // Close when no trays are available
   useEffect(() => {
     if (!anyAvailable) {
+      exitFullScreen()
       setIsOpen(false)
       setUserClosed(false)
     }
-  }, [anyAvailable])
+  }, [anyAvailable, exitFullScreen])
+
+  // Full screen belongs to the browser tray alone: losing it (the browser went
+  // idle) or leaving it (the user picked Files or Workflow) ends full screen.
+  const activeTrayId = trays.find(t => t.id === selectedTrayId && t.available)?.id ?? availableTrays[0]?.id
+  useEffect(() => {
+    if (activeTrayId !== 'browser') exitFullScreen()
+  }, [activeTrayId, exitFullScreen])
 
   // Switch away from unavailable tray
   useEffect(() => {
@@ -191,11 +221,11 @@ export function TrayManager({
 
   return (
     <DrawerShell
-      ref={drawerRef}
       isOpen={isOpen}
       storageKey={DRAWER_STORAGE_KEY}
       responsiveFullWidth={activeTray?.id === 'files'}
       wideOverlay={activeTray?.id === 'files' && filePreviewWideLayout === 'overlay'}
+      fullScreen={isExpanded && activeTray?.id === 'browser'}
     >
       <div className="flex flex-1 min-h-0">
         <div className="flex-1 flex flex-col min-w-0 min-h-0">

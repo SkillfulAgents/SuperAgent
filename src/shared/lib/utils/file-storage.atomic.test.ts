@@ -102,6 +102,17 @@ describe('writeFileAtomic / writeFileAtomicSync', () => {
     expect(leftoverTmpFiles(tmpDir)).toEqual([])
   })
 
+  it('writes a file whose name is as long as the filesystem allows', async () => {
+    // The temp name carries the target's name plus a suffix; a 240-byte name
+    // the filesystem accepts must not fail on a temp name it rejects.
+    const long = `${'n'.repeat(236)}.txt`
+    await writeFileAtomic(path.join(tmpDir, long), 'async')
+    writeFileAtomicSync(path.join(tmpDir, `s${long.slice(1)}`), 'sync')
+    expect(fs.readFileSync(path.join(tmpDir, long), 'utf-8')).toBe('async')
+    expect(fs.readFileSync(path.join(tmpDir, `s${long.slice(1)}`), 'utf-8')).toBe('sync')
+    expect(leftoverTmpFiles(tmpDir)).toEqual([])
+  })
+
   it('throws (and cleans up) when the parent directory does not exist', async () => {
     const p = path.join(tmpDir, 'missing-dir', 'x.txt')
     await expect(writeFileAtomic(p, 'data')).rejects.toThrow()

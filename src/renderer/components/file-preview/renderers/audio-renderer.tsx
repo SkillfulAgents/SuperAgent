@@ -4,10 +4,12 @@ import { useFilePreview, type FileComment } from '@renderer/context/file-preview
 import { CommentOverlay } from '../comments/comment-overlay'
 import { formatMediaTime } from '../comments/format-media-time'
 import { createFallbackWaveform, createWaveformPeaks } from './audio-waveform'
+import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface AudioRendererProps {
   url: string
   filePath: string
+  agentSlug: string
   commentsEnabled?: boolean
 }
 
@@ -30,11 +32,7 @@ function validDuration(value: number): number {
   return Number.isFinite(value) && value > 0 ? value : 0
 }
 
-function getFilename(filePath: string): string {
-  return filePath.split('/').pop() || filePath
-}
-
-export function AudioRenderer({ url, filePath, commentsEnabled = true }: AudioRendererProps) {
+export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true }: AudioRendererProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -46,10 +44,10 @@ export function AudioRenderer({ url, filePath, commentsEnabled = true }: AudioRe
   const [pending, setPending] = useState<PendingComment | null>(null)
   const [waveform, setWaveform] = useState(() => createFallbackWaveform(WAVEFORM_BAR_COUNT))
 
-  const { comments } = useFilePreview()
+  const { commentsFor } = useFilePreview()
   const maxSeek = validDuration(duration)
   const playedRatio = maxSeek > 0 ? clamp(currentTime / maxSeek, 0, 1) : 0
-  const filename = getFilename(filePath)
+  const filename = getPathName(filePath)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -181,14 +179,14 @@ export function AudioRenderer({ url, filePath, commentsEnabled = true }: AudioRe
   const hoverRatio = hoverTime != null && maxSeek > 0 ? clamp(hoverTime / maxSeek, 0, 1) : 0.5
 
   const commentMarkers = useMemo(() => {
-    const fileComments = comments.get(filePath) || []
+    const fileComments = commentsFor(filePath, agentSlug)
     return fileComments
       .filter((comment): comment is AudioComment => comment.timestamp != null)
       .map(comment => ({
         ...comment,
         ratio: maxSeek > 0 ? clamp(comment.timestamp / maxSeek, 0, 1) : 0,
       }))
-  }, [comments, filePath, maxSeek])
+  }, [commentsFor, filePath, agentSlug, maxSeek])
 
   return (
     <div className="flex min-h-full items-start justify-center p-5" data-testid="audio-renderer">
@@ -341,6 +339,7 @@ export function AudioRenderer({ url, filePath, commentsEnabled = true }: AudioRe
               <CommentOverlay
                 selection={{ text: '', rect: pending.rect, timestamp: pending.timestamp }}
                 filePath={filePath}
+                agentSlug={agentSlug}
                 autoEdit
                 onClose={() => setPending(null)}
               />

@@ -31,11 +31,49 @@ describe('requestRemoteMcpTool', () => {
     }
   })
 
-  async function invokeTool() {
+  async function invokeTool(extra: Record<string, unknown> = {}) {
     const { createRequestRemoteMcpTool } = await import('./request-remote-mcp')
     const handler = (createRequestRemoteMcpTool(() => owningProcess) as any).handler
-    return handler({ url: 'https://mcp.granola.ai/mcp', name: 'Granola', authHint: 'oauth' })
+    return handler({ url: 'https://mcp.granola.ai/mcp', name: 'Granola', authHint: 'oauth', ...extra })
   }
+
+  it('forwards an agent-supplied client_id to the approval prompt', async () => {
+    process.env.REMOTE_MCPS = JSON.stringify([GRANOLA_MCP])
+    const toolUseId = `mcp-test-client-id`
+    inputManager.setCurrentToolUseId(toolUseId)
+    const createSpy = vi.spyOn(inputManager, 'createPendingWithType')
+    inputManager.resolve(toolUseId, GRANOLA_MCP.id)
+
+    await invokeTool({ clientId: '2476112079565355', clientName: 'Gamut MCP Connection' })
+
+    // Servers that reject dynamic registration need a client the user registered
+    // themselves; the prompt prefills it so they can check it before connecting.
+    expect(createSpy).toHaveBeenCalledWith(
+      toolUseId,
+      'remote_mcp',
+      expect.objectContaining({
+        clientId: '2476112079565355',
+        clientName: 'Gamut MCP Connection',
+      }),
+    )
+    createSpy.mockRestore()
+  })
+
+  it('never carries a client secret in the prompt payload', async () => {
+    process.env.REMOTE_MCPS = JSON.stringify([GRANOLA_MCP])
+    const toolUseId = `mcp-test-no-secret`
+    inputManager.setCurrentToolUseId(toolUseId)
+    const createSpy = vi.spyOn(inputManager, 'createPendingWithType')
+    inputManager.resolve(toolUseId, GRANOLA_MCP.id)
+
+    // A secret passed anyway must not reach a payload that gets persisted to the
+    // session transcript — it stays user-entered in the form only.
+    await invokeTool({ clientSecret: 'super-secret' })
+
+    const payload = createSpy.mock.calls[0][2] as Record<string, unknown>
+    expect(payload).not.toHaveProperty('clientSecret')
+    createSpy.mockRestore()
+  })
 
   it('reports registered tools when the resolved server is in REMOTE_MCPS', async () => {
     process.env.REMOTE_MCPS = JSON.stringify([GRANOLA_MCP])
@@ -133,5 +171,43 @@ describe('requestRemoteMcpTool', () => {
     await tool.handler({ url: 'https://mcp.granola.ai/mcp', name: 'Granola' })
 
     expect(injections).toEqual([GRANOLA_MCP.name])
+  })
+
+  // The hot-add is awaited: the result that names the tools is only returned
+  // once they can be called, and a server that registered but never connected
+  // is reported as such instead of the model being sent after phantom tools.
+  it('waits for the hot-add and names the live tools in the result', async () => {
+    process.env.REMOTE_MCPS = JSON.stringify([GRANOLA_MCP])
+    let settled = false
+    mockAddRemoteMcpServer.mockImplementation(
+      () => new Promise<void>((resolve) => setTimeout(() => { settled = true; resolve() }, 20)),
+    )
+    const toolUseId = `mcp-test-${Date.now()}-7`
+    inputManager.setCurrentToolUseId(toolUseId)
+    inputManager.resolve(toolUseId, GRANOLA_MCP.id)
+
+    const result = await invokeTool()
+
+    expect(settled).toBe(true)
+    expect(result.isError).toBeUndefined()
+    expect(result.content[0].text).toContain('mcp__granola__list_meetings')
+    expect(result.content[0].text).toContain('live in this session now')
+  })
+
+  it('reports a server that was granted but could not connect, as an error', async () => {
+    process.env.REMOTE_MCPS = JSON.stringify([GRANOLA_MCP])
+    mockAddRemoteMcpServer.mockRejectedValueOnce(
+      new Error('MCP server "granola" was registered but failed to connect: ECONNREFUSED'),
+    )
+    const toolUseId = `mcp-test-${Date.now()}-8`
+    inputManager.setCurrentToolUseId(toolUseId)
+    inputManager.resolve(toolUseId, GRANOLA_MCP.id)
+
+    const result = await invokeTool()
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('could not be connected')
+    expect(result.content[0].text).toContain('ECONNREFUSED')
+    expect(result.content[0].text).not.toContain('Use these tools')
   })
 })

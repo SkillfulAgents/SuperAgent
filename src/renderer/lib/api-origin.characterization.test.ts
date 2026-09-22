@@ -76,7 +76,7 @@ const PRIMITIVE_CONSTRUCTORS = new Set(['EventSource', 'WebSocket'])
  * Keyed `file::scope::primitive(argument)`. Every part is load-bearing:
  * per-module keys would bless the *next* call added to the module, and the
  * enclosing scope is what separates the two `createSocket` methods in
- * `lib/stt.ts`, which are otherwise identical calls. The argument text is
+ * the transcription adapters, which are otherwise identical calls. The argument text is
  * included so changing what a pinned call passes re-opens it for review rather
  * than riding on the old exemption.
  *
@@ -85,9 +85,16 @@ const PRIMITIVE_CONSTRUCTORS = new Set(['EventSource', 'WebSocket'])
  */
 const PINNED_CALL_SITES: Record<string, string> = {
   'components/file-preview/renderers/use-file-content.ts::useFileContent::fetch(url)':
-    'prebuilt `url` prop; composed by file-preview-tray-content.tsx from getApiBaseUrl()',
+    'prebuilt `url` prop; composed by lib/workspace-file-url.ts from getApiBaseUrl()',
   'components/file-preview/renderers/audio-renderer.tsx::AudioRenderer.decodeWaveform::fetch(url)':
     'prebuilt `url` prop; same origin as use-file-content.ts above',
+  'components/file-preview/copy-file-button.tsx::fetchText::fetch(url)':
+    'the same prebuilt `fileUrl` the renderer loads, refetched only when the ' +
+    'file-content cache is cold; same origin as use-file-content.ts above',
+  'components/messages/tool-call-item.tsx::ToolResultDocument::fetch(document.src)':
+    'prebuilt `src` on a parsed tool-result document: a data: URL for an inline ' +
+    'PDF, or the session media URL that parse-tool-result.ts composes from ' +
+    'getApiBaseUrl() (the same address the <img> refs load from)',
   // Not third-party — this one IS our API, reached over ws:// instead of http://.
   'hooks/use-browser-stream.ts::useBrowserStream::WebSocket(wsUrl)':
     'the only site that does scheme surgery: it splits getApiBaseUrl() into a ' +
@@ -95,14 +102,16 @@ const PINNED_CALL_SITES: Record<string, string> = {
     'derives the origin even though the host does. The `window.location.host` ' +
     'fallback is correct — getApiBaseUrl() is empty in web mode, where ' +
     'same-origin is the right answer. Re-read this if the API origin ever moves.',
-  'lib/stt.ts::DeepgramAdapter.createSocket::WebSocket(url)':
+  'lib/voice/providers/deepgram/transcription.ts::DeepgramSttAdapter.createSocket::WebSocket(url)':
     'third-party Deepgram STT endpoint, not this API — must NOT follow the API origin',
-  'lib/stt.ts::OpenaiAdapter.createSocket::WebSocket(url)':
+  'lib/voice/providers/openai/transcription.ts::OpenAISttAdapter.createSocket::WebSocket(url)':
     'third-party OpenAI STT endpoint, not this API — must NOT follow the API origin',
-  'lib/voice-agent-deepgram.ts::DeepgramVoiceAgentAdapter.connect::WebSocket(url)':
+  'lib/voice/providers/deepgram/voice-agent.ts::DeepgramVoiceAgentAdapter.connect::WebSocket(url)':
     'third-party Deepgram voice-agent socket — must NOT follow the API origin',
-  'lib/voice-agent-openai.ts::OpenAIVoiceAgentAdapter.connect::WebSocket(url)':
+  'lib/voice/providers/openai/voice-agent.ts::OpenAIVoiceAgentAdapter.connect::WebSocket(url)':
     'third-party OpenAI realtime socket — must NOT follow the API origin',
+  'lib/voice/providers/deepgram/tts.ts::DeepgramTtsAdapter.connect::WebSocket(url)':
+    'third-party Deepgram text-to-speech socket — must NOT follow the API origin',
 }
 
 /**
@@ -111,9 +120,11 @@ const PINNED_CALL_SITES: Record<string, string> = {
  * mints. They are not this app's API and must not follow its origin.
  */
 const EXTERNAL_ENDPOINT_MODULES = [
-  'lib/stt.ts',
-  'lib/voice-agent-deepgram.ts',
-  'lib/voice-agent-openai.ts',
+  'lib/voice/providers/deepgram/transcription.ts',
+  'lib/voice/providers/openai/transcription.ts',
+  'lib/voice/providers/deepgram/tts.ts',
+  'lib/voice/providers/deepgram/voice-agent.ts',
+  'lib/voice/providers/openai/voice-agent.ts',
 ]
 
 /**
@@ -131,11 +142,14 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'lib/env.ts': 'defines it; openDashboardExternal() builds a window.open() URL',
   'lib/parse-tool-result.ts':
     '<img src> — media-ref images in tool results, resolved to a URL here so every result renderer gets one without threading the session identity down to it',
+  'lib/upload.ts':
+    'XHR upload transport — fetch cannot report request-body progress, so sendUploadRequest prefixes getApiBaseUrl() the way apiFetch does',
   'components/ui/model-icon.tsx': '<img src> — model icon asset',
+  'components/ui/user-avatar.tsx': '<img src> — authenticated workspace photo, including the desktop cloud prefix',
   'components/home/dashboard-card.tsx': '<img src> — dashboard screenshot',
   'components/dashboards/dashboard-view.tsx': '<iframe src> — embedded dashboard',
-  'components/file-preview/file-preview-tray-content.tsx': 'file URL passed to previewers/<img>',
-  'components/file-preview/renderers/unsupported-renderer.tsx': 'download link href',
+  'lib/workspace-file-url.ts':
+    'getAgentFileUrl() — the one place a workspace-file URL is composed. Every file surface reaches it through describeWorkspaceFile() in lib/workspace-file.ts rather than directly: the preview tray\'s previewers, the unsupported renderer\'s and delivered-file row\'s download links, a sent message\'s image chip, and file:///workspace Markdown images resolved to the authenticated route. None of those can carry a request header, and building the URL once here is what keeps their encoding and cache-busting from drifting apart',
   'components/messages/message-input.tsx': 'fire-and-forget typing ping (deliberately not awaited)',
   'components/notifications/global-notification-handler.tsx':
     'EventSource — global notification stream',
@@ -651,8 +665,7 @@ describe('scanner', () => {
   })
 
   it('gives two identical calls in one file distinct identities', () => {
-    // lib/stt.ts really does have two `new WebSocket(url, …)` calls, one per
-    // adapter class. A key without the enclosing scope would cover both, so
+    // Two adapter classes can both contain `new WebSocket(url, …)`. A key without the enclosing scope would cover both, so
     // one pin would exempt the other for free.
     const sites = scan(`
       class A { createSocket() { const url = 'wss://a'; return new WebSocket(url) } }

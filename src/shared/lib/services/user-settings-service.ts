@@ -1,8 +1,11 @@
 import { z } from 'zod'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
+import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 import { userSettings } from '@shared/lib/db/schema'
 import { getSettings } from '@shared/lib/config/settings'
+import { ttsSpeedSchema } from '@shared/lib/voice/tts-preferences'
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
@@ -25,6 +28,88 @@ const homeGridLayoutSchema = z.record(
   })
 )
 
+const agentFolderSchema = z.object({
+  id: z.string().min(1),
+  name: z.string(),
+})
+
+/**
+ * Read-tolerant list: a malformed element is dropped alone. Zod's array
+ * validation is all-or-nothing, so a plain `.catch(undefined)` would let one
+ * bad element discard every good sibling — and because writes re-serialize the
+ * whole document, the next unrelated write would persist that as real data
+ * loss.
+ */
+const lenientArray = <T extends z.ZodType>(element: T) =>
+  z
+    .array(z.unknown())
+    .transform((items) =>
+      items.flatMap((item) => {
+        const parsed = element.safeParse(item)
+        return parsed.success ? [parsed.data] : []
+      })
+    )
+    .optional()
+    .catch(undefined)
+
+/** Read-tolerant string map: a non-string value is dropped alone, same
+ * reasoning as `lenientArray`. */
+const lenientStringRecord = z
+  .record(z.string(), z.unknown())
+  .transform((record) => {
+    const out: Record<string, string> = {}
+    for (const [key, value] of Object.entries(record)) {
+      if (typeof value === 'string') out[key] = value
+    }
+    return out
+  })
+  .optional()
+  .catch(undefined)
+
+/**
+ * Strict shapes for the folder fields on the write path. The stored schema is
+ * deliberately lenient — reads must survive a corrupt blob — which means it
+ * can only drop bad input, never reject it. The API route validates incoming
+ * writes against this instead, so a malformed PUT is refused rather than
+ * silently erasing the user's folders.
+ */
+export const agentFolderSettingsWriteSchema = z.object({
+  agentFolders: z.array(agentFolderSchema).optional(),
+  agentFolderAssignments: z.record(z.string(), z.string()).optional(),
+  agentListOrder: z.array(z.string()).optional(),
+  collapsedAgentFolders: z.array(z.string()).optional(),
+})
+
+/**
+ * Read-aloud preferences. Each field falls back alone: a malformed value
+ * must not take the user's other settings with it. The voice is a provider
+ * voice id, kept as stored: which ids are valid is the configured provider's
+ * business, so the token endpoint asks it and falls back from there. The
+ * API validates writes strictly instead. The hold sound is the loop voice
+ * mode plays while the agent works; unset means on.
+ */
+const userVoiceSettingsSchema = z
+  .object({
+    ttsVoice: z.string().min(1).optional().catch(undefined),
+    ttsSpeed: ttsSpeedSchema.optional().catch(undefined),
+    holdSound: z.boolean().optional().catch(undefined),
+  })
+  .optional()
+  .catch(undefined)
+
+/** A write: `ttsVoice: null` goes back to following the deployment default. */
+export const userVoiceSettingsWriteSchema = z.object({
+  voice: z
+    .object({
+      ttsVoice: z.string().min(1).nullable().optional(),
+      ttsSpeed: ttsSpeedSchema.optional(),
+      holdSound: z.boolean().optional(),
+    })
+    .strict()
+    .optional(),
+})
+export type UserVoiceSettingsWrite = NonNullable<z.infer<typeof userVoiceSettingsWriteSchema>['voice']>
+
 export const userSettingsSchema = z.object({
   theme: z.enum(['system', 'light', 'dark']).default('system'),
   notifications: notificationSettingsSchema.default({
@@ -41,6 +126,26 @@ export const userSettingsSchema = z.object({
   autoCheckUpdates: z.boolean().default(true),
   timezone: z.string().optional(),
   agentOrder: z.array(z.string()).optional(),
+  // Left-nav folders. A per-user projection over the shared agent list, like
+  // agentOrder — filing a shared agent never moves it for anyone else. Array
+  // order is the order folders render in. One level only, no nesting.
+  agentFolders: lenientArray(agentFolderSchema),
+  // agent slug → folder id. Both sides of this map are allowed to dangle: an
+  // id pointing at a deleted folder, or a slug for an agent the user can no
+  // longer see, resolves to the ungrouped root. That is what keeps folders
+  // free of referential cleanup on agent/folder deletion.
+  agentFolderAssignments: lenientStringRecord,
+  // Top level of the left nav, in order: `agent-folder::<id>` markers for
+  // every folder, the synthesized root included. Written wholesale from the
+  // rendered sections on every change; it cannot be derived from agentOrder
+  // because an empty folder has no member to sit behind. An earlier version of
+  // this model interleaved unfiled agent slugs here — those entries still
+  // parse and are ignored on read, which is the whole upgrade path. Entries
+  // naming something that no longer exists are ignored, and anything missing
+  // falls back to a sensible end of the list, so it never needs repairing.
+  agentListOrder: lenientArray(z.string()),
+  // Folder ids the user has collapsed. Absent id = expanded.
+  collapsedAgentFolders: lenientArray(z.string()),
   // Home graph view: user-dragged node positions, keyed by stable node id
   // (e.g. 'agent:{slug}', 'account:{id}'). Absent entries fall back to auto-layout.
   graphNodePositions: z.record(z.string(), z.object({ x: z.number(), y: z.number() })).optional(),
@@ -76,6 +181,7 @@ export const userSettingsSchema = z.object({
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   defaultMcpPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   keepAwakeEnabled: z.boolean().default(false),
+  voice: userVoiceSettingsSchema,
   onboardingProgress: z.object({
     path: z.enum(['manual', 'platform']),
     stepId: z.string(),
@@ -83,6 +189,8 @@ export const userSettingsSchema = z.object({
 })
 
 export type UserSettingsData = z.infer<typeof userSettingsSchema>
+/** What a write may carry: the stored shape, except the voice may be unset with null. */
+export type UserSettingsWrite = Omit<Partial<UserSettingsData>, 'voice'> & { voice?: Partial<UserVoiceSettingsWrite> }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -131,8 +239,8 @@ function seedFromAppSettings(): UserSettingsData {
  * Get user settings for a given user ID.
  * Returns defaults if no row exists. For the 'local' sentinel, seeds from settings.json on first access.
  */
-export function getUserSettings(userId: string): UserSettingsData {
-  const rows = db
+export async function getUserSettings(userId: string): Promise<UserSettingsData> {
+  const rows = await db
     .select({ settings: userSettings.settings })
     .from(userSettings)
     .where(eq(userSettings.userId, userId))
@@ -140,18 +248,15 @@ export function getUserSettings(userId: string): UserSettingsData {
     .all()
 
   if (rows.length > 0) {
-    try {
-      return userSettingsSchema.parse(JSON.parse(rows[0].settings))
-    } catch {
-      // Corrupted JSON — fall through to defaults
-    }
+    const stored = parseStoredSettings(rows[0].settings)
+    if (stored) return stored
   }
 
   // No row found — seed from app settings for 'local' user, otherwise use defaults
-  const initial = userId === 'local' ? seedFromAppSettings() : getDefaultUserSettings()
+  const initial = initialUserSettings(userId)
 
   // Persist the initial settings so future reads come from DB
-  db.insert(userSettings)
+  await db.insert(userSettings)
     .values({
       userId,
       settings: JSON.stringify(initial),
@@ -163,49 +268,98 @@ export function getUserSettings(userId: string): UserSettingsData {
   return initial
 }
 
-/**
- * Update user settings with a partial update. Merges with existing, validates, and upserts.
- */
-export function updateUserSettings(
-  userId: string,
-  partial: Partial<UserSettingsData>
-): UserSettingsData {
-  const current = getUserSettings(userId)
+/** The stored document, or null when it is not valid (corrupted JSON falls back to defaults). */
+function parseStoredSettings(stored: string): UserSettingsData | null {
+  try {
+    return userSettingsSchema.parse(JSON.parse(stored))
+  } catch {
+    return null
+  }
+}
 
-  // Deep merge notifications if provided
-  const merged = {
+/** What a user starts from: the 'local' sentinel seeds from settings.json, everyone else from the defaults. */
+function initialUserSettings(userId: string): UserSettingsData {
+  return userId === 'local' ? seedFromAppSettings() : getDefaultUserSettings()
+}
+
+/** Merge a voice write; a null voice means "unset", not "store null". */
+function mergeVoice(
+  current: UserSettingsData['voice'],
+  patch: Partial<UserVoiceSettingsWrite>,
+): UserSettingsData['voice'] {
+  const { ttsVoice, ...rest } = patch
+  const merged = { ...current, ...rest }
+  if (ttsVoice === null) delete merged.ttsVoice
+  else if (ttsVoice !== undefined) merged.ttsVoice = ttsVoice
+  return merged
+}
+
+/** Deep merge the nested groups if provided. */
+function mergeSettings(current: UserSettingsData, partial: UserSettingsWrite): UserSettingsData {
+  return userSettingsSchema.parse({
     ...current,
     ...partial,
     notifications: partial.notifications
       ? { ...current.notifications, ...partial.notifications }
       : current.notifications,
+    voice: partial.voice ? mergeVoice(current.voice, partial.voice) : current.voice,
+  })
+}
+
+const MAX_UPDATE_ATTEMPTS = 5
+
+/**
+ * Update user settings with a partial update: merge into the stored document,
+ * validate, and write it back. One writer per user at a time in this process;
+ * the compare-and-swap in {@link compareAndSetUserSettings} covers writers in
+ * other processes.
+ */
+export function updateUserSettings(
+  userId: string,
+  partial: UserSettingsWrite
+): Promise<UserSettingsData> {
+  return serializeByKey(`user-settings:${userId}`, () => compareAndSetUserSettings(userId, partial))
+}
+
+/**
+ * The read and the write are separate statements, so a second writer could
+ * read the same document and overwrite the first writer's merge. The write
+ * therefore replaces the document only if it is still the one that was read
+ * (or inserts only if there is still no row); zero changes means read again
+ * and merge onto what the other writer left.
+ */
+async function compareAndSetUserSettings(
+  userId: string,
+  partial: UserSettingsWrite
+): Promise<UserSettingsData> {
+  for (let attempt = 0; attempt < MAX_UPDATE_ATTEMPTS; attempt++) {
+    const row = await db
+      .select({ settings: userSettings.settings })
+      .from(userSettings)
+      .where(eq(userSettings.userId, userId))
+      .get()
+    const current = (row && parseStoredSettings(row.settings)) ?? initialUserSettings(userId)
+    const validated = mergeSettings(current, partial)
+    const json = JSON.stringify(validated)
+    const now = new Date()
+    const result = row
+      ? await db.update(userSettings)
+          .set({ settings: json, updatedAt: now })
+          .where(and(eq(userSettings.userId, userId), eq(userSettings.settings, row.settings)))
+          .run()
+      : await db.insert(userSettings)
+          .values({ userId, settings: json, updatedAt: now })
+          .onConflictDoNothing()
+          .run()
+    if (changesOf(result) > 0) return validated
   }
-
-  const validated = userSettingsSchema.parse(merged)
-  const json = JSON.stringify(validated)
-
-  db.insert(userSettings)
-    .values({
-      userId,
-      settings: json,
-      updatedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: userSettings.userId,
-      set: {
-        settings: json,
-        updatedAt: new Date(),
-      },
-    })
-    .run()
-
-  return validated
+  throw new Error('User settings changed concurrently; try again')
 }
 
 /**
  * Get a user's timezone, falling back to the system timezone or UTC.
  */
-export function getUserTimezone(userId: string): string {
-  const settings = getUserSettings(userId)
+export async function getUserTimezone(userId: string): Promise<string> {
+  const settings = await getUserSettings(userId)
   return settings.timezone || detectSystemTimezone()
 }

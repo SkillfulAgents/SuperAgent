@@ -1,4 +1,6 @@
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown'
+import { isPreviewableImage } from './file-types'
+import { getAgentFileUrl, isSafeWorkspaceFilePath } from './workspace-file-url'
 
 // react-markdown's defaultUrlTransform passes only URLs whose scheme matches
 // ^(https?|ircs?|mailto|xmpp)$ and rewrites everything else to '' (an empty
@@ -41,4 +43,54 @@ export const markdownUrlTransform: UrlTransform = (url, key) => {
     return safeHref(url)
   }
   return defaultUrlTransform(url)
+}
+
+export interface MarkdownImageContext {
+  /** Exact container paths proven to belong to image blocks in tool results. */
+  aliases?: ReadonlyMap<string, string>
+  /** Enables file:///workspace images through the authenticated workspace route. */
+  agentSlug?: string
+}
+
+/** Resolve an agent-workspace file without ever handing `file:` to Chromium. */
+function workspaceImageUrl(url: string, agentSlug: string): string | null {
+  let pathname: string
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'file:' || parsed.hostname !== '') return null
+    pathname = decodeURIComponent(parsed.pathname)
+  } catch {
+    return null
+  }
+
+  // Both questions are answered where they are answered for every other
+  // surface: whether the path is inside the workspace and free of traversal,
+  // and whether the file is one a renderer here can draw. This used to carry
+  // its own copy of each, and the copies had drifted — an `.svg` the drawer
+  // previews was refused inline, and an `.avif` it did not was allowed.
+  if (!isSafeWorkspaceFilePath(pathname) || !isPreviewableImage(pathname)) return null
+
+  return getAgentFileUrl(agentSlug, pathname, { inline: true })
+}
+
+/**
+ * Per-message Markdown policy for embedded images. Links and ordinary images
+ * retain the shared default policy. A blocked `file:` image is widened only
+ * when it resolves to a verified tool-result alias or an authenticated file in
+ * that agent's `/workspace`; arbitrary host/container paths stay blocked.
+ */
+export function createMarkdownUrlTransform(context: MarkdownImageContext = {}): UrlTransform {
+  return (url, key, node) => {
+    if (key === 'src' && typeof url === 'string') {
+      const alias = context.aliases?.get(url)
+      if (alias) return alias
+
+      if (context.agentSlug) {
+        const workspaceUrl = workspaceImageUrl(url, context.agentSlug)
+        if (workspaceUrl) return workspaceUrl
+      }
+    }
+
+    return markdownUrlTransform(url, key, node)
+  }
 }

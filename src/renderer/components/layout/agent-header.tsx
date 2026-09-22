@@ -19,10 +19,13 @@ import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import { useDashboardHeader } from '@renderer/context/dashboard-header-context'
 import { DashboardHeaderActions } from '@renderer/components/dashboards/dashboard-header-actions'
 import type { ContainerStatus } from '@shared/lib/container/types'
+import { ScrollAwareNavTitle } from './scroll-aware-title'
+import { ForkedFromIndicator } from './forked-from-indicator'
 
 interface AgentHeaderProps {
   slug: string
   isViewOnly: boolean
+  isStreaming?: boolean
   startAgent: ReturnType<typeof useStartAgent>
   stopAgent: ReturnType<typeof useStopAgent>
 }
@@ -43,12 +46,15 @@ function BreadcrumbSeparator() {
  * active styling is route-derived (`data-status`) and survives a cold reload
  * with no hand-computed leaf flag.
  */
-export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHeaderProps) {
+export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent, stopAgent }: AgentHeaderProps) {
   const { view } = useRouteLocation()
   const sessionId = view.kind === 'session' ? view.id : null
   const scheduledTaskId = view.kind === 'task' ? view.id : null
   const webhookTriggerId = view.kind === 'webhook' ? view.id : null
+  const inboundXAgentOpen = view.kind === 'inboundXAgent'
+  const completedTasksOpen = view.kind === 'completedTasks'
   const apiLogsOpen = view.kind === 'apiLogs'
+  const memoriesOpen = view.kind === 'memories'
   const secretsOpen = view.kind === 'secrets'
   const xAgentPermissionsOpen = view.kind === 'xAgentPermissions'
   const connectionsOpen = view.kind === 'connections'
@@ -67,6 +73,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
   const isRuntimeReady = isRuntimePending || readiness?.status === 'READY'
   const isPulling = readiness?.status === 'PULLING_IMAGE'
   const apiKeyConfigured = runtimeStatus?.apiKeyConfigured !== false
+  const isAgentStarting = startAgent.isPending || dashboardHeader?.isAgentStarting === true
 
   return (
     <>
@@ -75,33 +82,35 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
           className="w-fit max-w-full app-no-drag"
           data-testid="breadcrumb-trail"
         >
-        {agent ? (
-          <AgentContextMenu agent={agent}>
+        <ScrollAwareNavTitle>
+          {agent ? (
+            <AgentContextMenu agent={agent}>
+              <AppLink
+                to="/agents/$slug"
+                params={{ slug }}
+                activeOptions={{ exact: true }}
+                noDrag
+                // Route-derived leaf styling: foreground only when this link is the
+                // exact active route (`data-status=active`), muted/clickable otherwise.
+                className="text-sm font-light transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground cursor-context-menu"
+                data-testid="agent-breadcrumb"
+              >
+                {agent.name}
+              </AppLink>
+            </AgentContextMenu>
+          ) : (
             <AppLink
               to="/agents/$slug"
               params={{ slug }}
               activeOptions={{ exact: true }}
               noDrag
-              // Route-derived leaf styling: foreground only when this link is the
-              // exact active route (`data-status=active`), muted/clickable otherwise.
-              className="text-sm font-light transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground cursor-context-menu"
+              className="text-sm font-light transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground"
               data-testid="agent-breadcrumb"
             >
-              {agent.name}
+              Loading...
             </AppLink>
-          </AgentContextMenu>
-        ) : (
-          <AppLink
-            to="/agents/$slug"
-            params={{ slug }}
-            activeOptions={{ exact: true }}
-            noDrag
-            className="text-sm font-light transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground"
-            data-testid="agent-breadcrumb"
-          >
-            Loading...
-          </AppLink>
-        )}
+          )}
+        </ScrollAwareNavTitle>
         {(() => {
           const taskCrumbId = scheduledTaskId ?? (sessionId ? session?.scheduledTaskId ?? null : null)
           const taskCrumbName = scheduledTask?.name ?? (sessionId ? session?.scheduledTaskName : null)
@@ -164,6 +173,20 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
             </>
           )
         })()}
+        {sessionId && (session?.invokedByAgentSlug || session?.isWidgetRepair) && (
+          <>
+            <BreadcrumbSeparator />
+            <AppLink
+              to="/agents/$slug/called-from-agents"
+              params={{ slug }}
+              noDrag
+              className="text-sm font-light text-muted-foreground hover:text-foreground transition-colors"
+              data-testid="inbound-x-agent-breadcrumb"
+            >
+              Called from Other Agents
+            </AppLink>
+          </>
+        )}
         {sessionId && session?.agentSlug === agent?.slug && (
           <>
             <BreadcrumbSeparator />
@@ -171,6 +194,11 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
               sessionId={sessionId}
               sessionName={session?.name || 'Session'}
               agentSlug={slug}
+              activity={{
+                isActive: !!session?.isActive,
+                isAwaitingInput: !!session?.isAwaitingInput,
+                isStreaming,
+              }}
             >
               <span
                 className="text-sm font-light text-foreground cursor-context-menu app-no-drag"
@@ -179,6 +207,13 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
                 {session?.name || 'Loading...'}
               </span>
             </SessionContextMenu>
+            {session?.forkedFromSessionId && (
+              <ForkedFromIndicator
+                agentSlug={slug}
+                sourceSessionId={session.forkedFromSessionId}
+                sourceSessionName={session.forkedFromSessionName}
+              />
+            )}
           </>
         )}
         {dashboardSlug && (
@@ -198,6 +233,12 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
             <span className="text-sm font-light text-foreground">API Logs</span>
           </>
         )}
+        {memoriesOpen && (
+          <>
+            <BreadcrumbSeparator />
+            <span className="text-sm font-light text-foreground">Memories</span>
+          </>
+        )}
         {secretsOpen && (
           <>
             <BreadcrumbSeparator />
@@ -208,6 +249,18 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
           <>
             <BreadcrumbSeparator />
             <span className="text-sm font-light text-foreground">Agent-to-agent Connections</span>
+          </>
+        )}
+        {inboundXAgentOpen && (
+          <>
+            <BreadcrumbSeparator />
+            <span className="text-sm font-light text-foreground">Called from Other Agents</span>
+          </>
+        )}
+        {completedTasksOpen && (
+          <>
+            <BreadcrumbSeparator />
+            <span className="text-sm font-light text-foreground">Completed One-time Tasks</span>
           </>
         )}
         {connectionsOpen && (
@@ -265,10 +318,10 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
                           variant="ghost"
                           size="icon"
                           onClick={() => startAgent.mutate(slug)}
-                          disabled={startAgent.isPending || !isRuntimeReady}
+                          disabled={isAgentStarting || !isRuntimeReady}
                           aria-label="Start Agent"
                         >
-                          {isPulling || startAgent.isPending ? (
+                          {isPulling || isAgentStarting ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
                             <Power className="h-4 w-4" />
@@ -306,8 +359,8 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
                 hasSessionsAwaitingInput={hasSessionsAwaitingInput}
                 startAgent={startAgent}
                 stopAgent={stopAgent}
-                startDisabled={startAgent.isPending || !isRuntimeReady}
-                isStarting={isPulling || startAgent.isPending}
+                startDisabled={isAgentStarting || !isRuntimeReady}
+                isStarting={isPulling || isAgentStarting}
                 wakeDisabledReason={
                   !apiKeyConfigured
                     ? 'No API key configured. An administrator needs to set up the LLM API key.'

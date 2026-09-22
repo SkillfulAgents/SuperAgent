@@ -269,6 +269,15 @@ export const PlatformBillingInfoSchema = z.object({
   orgPool: z.object({
     poolBalanceCents: z.number(),
   }),
+  // Newer proxies include this so the 402 paywall can choose add-card vs top-up.
+  hasPaymentMethod: z.boolean().optional(),
+  // Proxy gate verdict. `reason` stays free-form so a new proxy reason can't fail the parse.
+  access: z
+    .object({
+      allowed: z.boolean(),
+      reason: z.string(),
+    })
+    .optional(),
 })
 export type ParsedPlatformBillingInfo = z.infer<typeof PlatformBillingInfoSchema>
 

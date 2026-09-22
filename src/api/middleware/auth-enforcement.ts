@@ -47,7 +47,7 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
     // (needed to bootstrap the system — first user becomes admin)
     let isFirstUser = false
     try {
-      const result = db.select({ count: sql<number>`count(*)` }).from(user).get()
+      const result = await db.select({ count: sql<number>`count(*)` }).from(user).get()
       isFirstUser = !result || result.count === 0
     } catch {
       // DB not ready — allow signup (Better Auth will handle it)
@@ -117,7 +117,7 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
       // Pre-check ban status so we return a meaningful message
       // instead of Better Auth's generic "No reason"
       try {
-        const bannedUser = db
+        const bannedUser = await db
           .select({ banned: user.banned, banReason: user.banReason })
           .from(user)
           .where(sql`lower(${user.email}) = ${email}`)

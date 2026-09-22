@@ -1,5 +1,6 @@
 import { and, eq, gte, inArray, sql, type SQL } from 'drizzle-orm'
 import type { SQLiteColumn } from 'drizzle-orm/sqlite-core'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { db } from '@shared/lib/db'
 import {
   agentConnectedAccounts,
@@ -28,7 +29,6 @@ import {
   normalizeAutomationStatus,
   type DailyActivityEvent,
 } from './activity-aggregation'
-import { readSessionMetadata } from './session-service'
 
 export interface ActivityStatsOptions {
   days: number
@@ -45,7 +45,7 @@ export interface ActivityStatsOptions {
    * app quit mid-run) — it is reported as failed instead of pulsing forever.
    * Defaults to trusting the persisted status when no probe is supplied.
    */
-  isSessionLive?: (sessionId: string) => boolean
+  isSessionLive?: (agentSlug: string, sessionId: string) => boolean
 }
 
 export type ConnectionStatsOptions = ActivityStatsOptions
@@ -91,6 +91,7 @@ function pushEvent(
 }
 
 function webhookEvents(
+  agentSlug: string,
   metadata: SessionMetadataMap,
   options: ActivityStatsOptions,
 ): Map<string, DailyActivityEvent[]> {
@@ -105,7 +106,7 @@ function webhookEvents(
     // tracking and count as succeeded.
     let status = normalizeAutomationStatus(meta.automationStatus)
     if (status === 'running') {
-      if (!options.isSessionLive || options.isSessionLive(sessionId)) continue
+      if (!options.isSessionLive || options.isSessionLive(agentSlug, sessionId)) continue
       status = 'failed'
     }
     const createdAt = new Date(meta.createdAt)
@@ -128,6 +129,7 @@ function webhookEvents(
  * charts cannot drift while avoiding connection/audit queries entirely.
  */
 export function buildAutomationActivityStats(
+  agentSlug: string,
   tasks: AutomationTaskInput[],
   triggers: AutomationTriggerInput[],
   metadata: SessionMetadataMap,
@@ -145,7 +147,7 @@ export function buildAutomationActivityStats(
   for (const [sessionId, meta] of Object.entries(metadata)) {
     if (!meta.scheduledTaskId) continue
     let status = normalizeAutomationStatus(meta.automationStatus)
-    if (status === 'running' && options.isSessionLive && !options.isSessionLive(sessionId)) {
+    if (status === 'running' && options.isSessionLive && !options.isSessionLive(agentSlug, sessionId)) {
       status = 'failed'
     }
     const sessions = sessionsByTaskId.get(meta.scheduledTaskId) ?? []
@@ -167,17 +169,15 @@ export function buildAutomationActivityStats(
   const webhookIds = triggers.map((trigger) => trigger.id)
   const webhookByTriggerId = dailyEventsById(
     webhookIds,
-    webhookEvents(metadata, { ...options, tzOffsetMinutes }),
+    webhookEvents(agentSlug, metadata, { ...options, tzOffsetMinutes }),
     { ...options, now, tzOffsetMinutes },
   )
 
   return { cronByTaskId, webhookByTriggerId }
 }
 
-// Audit tables grow with every proxied call and have no time-based retention,
-// so the per-day/outcome rollup happens in SQL — the app only ever
-// materializes at most (connections × days × 2) aggregate rows, never the raw
-// request log.
+// Audit tables are pruned by auto-delete, but the per-day/outcome rollup still
+// happens in SQL so the app never materializes the raw request log.
 function auditDayExpr(createdAt: SQLiteColumn, tzOffsetMinutes: number): SQL<string> {
   return sql<string>`date((${createdAt} / 1000) - ${tzOffsetMinutes * 60}, 'unixepoch')`
 }
@@ -267,7 +267,7 @@ export async function getAgentActivityStats(
   ] = await Promise.all([
     db.select().from(scheduledTasks).where(eq(scheduledTasks.agentSlug, agentSlug)),
     db.select().from(webhookTriggers).where(eq(webhookTriggers.agentSlug, agentSlug)),
-    readSessionMetadata(agentSlug),
+    agentRegistry.get(agentSlug).sessions.readMetadata(),
     db.select({ id: agentConnectedAccounts.connectedAccountId })
       .from(agentConnectedAccounts)
       .innerJoin(
@@ -299,6 +299,7 @@ export async function getAgentActivityStats(
   ])
 
   const { cronByTaskId, webhookByTriggerId } = buildAutomationActivityStats(
+    agentSlug,
     tasks,
     triggers,
     metadata,
@@ -317,11 +318,36 @@ export async function getAgentActivityStats(
   )
   const connectionById = dailyEventsById(connectionIds, requestEvents, { ...options, now, tzOffsetMinutes })
 
+  const inboundEvents: DailyActivityEvent[] = []
+  let inboundTotal = 0
+  let lastInvokedAt: string | null = null
+  let lastInvokedAtMs = Number.NEGATIVE_INFINITY
+  for (const meta of Object.values(metadata)) {
+    // Widget repairs share the inbound history, including its home entry.
+    if ((!meta.invokedByAgentSlug && !meta.isWidgetRepair) || !meta.createdAt) continue
+    const createdAt = new Date(meta.createdAt)
+    if (!Number.isFinite(createdAt.getTime())) continue
+    inboundTotal += 1
+    inboundEvents.push({
+      day: activityDayKey(createdAt, tzOffsetMinutes),
+      outcome: 'succeeded',
+    })
+    if (createdAt.getTime() > lastInvokedAtMs) {
+      lastInvokedAtMs = createdAt.getTime()
+      lastInvokedAt = createdAt.toISOString()
+    }
+  }
+
   return {
     days: options.days,
     generatedAt: now.toISOString(),
     cronByTaskId,
     webhookByTriggerId,
+    inboundXAgent: {
+      total: inboundTotal,
+      lastInvokedAt,
+      activity: buildDailyActivitySeries(inboundEvents, { ...options, now, tzOffsetMinutes }),
+    },
     connectionById,
   }
 }

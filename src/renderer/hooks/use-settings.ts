@@ -39,6 +39,13 @@ export function isWarmStartOnTypeEnabled(
   return settings?.app?.warmStartOnType !== false
 }
 
+/** Default-on MicroVM preference; treat missing as enabled. */
+export function isAutoResumeOnUnexpectedDeathEnabled(
+  settings?: Pick<GlobalSettingsResponse, 'app'> | null,
+): boolean {
+  return settings?.app?.autoResumeOnUnexpectedDeath !== false
+}
+
 /**
  * Whether warm-start-on-type should fire. Returns false until settings have
  * loaded so a disabled preference cannot race a speculative start.
@@ -117,6 +124,9 @@ export function useUpdateSettings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      // Voice provider / key / default voice live in these settings, and the
+      // speaker buttons and Voice tab gate on the derived status.
+      queryClient.invalidateQueries({ queryKey: ['voice-configured'] })
     },
   })
 }

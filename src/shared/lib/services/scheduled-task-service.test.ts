@@ -18,9 +18,6 @@ vi.mock('../db', async () => {
     get db() {
       return testDb
     },
-    get sqlite() {
-      return testSqlite
-    },
   }
 })
 
@@ -31,12 +28,14 @@ import {
   listScheduledTasks,
   listPendingScheduledTasks,
   listCancelledScheduledTasks,
+  listCompletedOneTimeTasks,
   getDueTasks,
   cancelScheduledTask,
   markTaskExecuted,
   updateNextExecution,
   markTaskFailed,
   resetScheduledTask,
+  patchScheduledTask,
   updateTaskName,
   deleteScheduledTask,
 } from './scheduled-task-service'
@@ -291,6 +290,62 @@ describe('scheduled-task-service', () => {
   })
 
   // ============================================================================
+  // listCompletedOneTimeTasks Tests
+  // ============================================================================
+
+  describe('listCompletedOneTimeTasks', () => {
+    it('returns only executed standalone one-time tasks with sessions for the agent', async () => {
+      const completedAtId = await createScheduledTask({
+        agentSlug: 'agent-a',
+        scheduleType: 'at',
+        scheduleExpression: 'at now + 1 hour',
+        prompt: 'Completed standalone task',
+      })
+      await createScheduledTask({
+        agentSlug: 'agent-a',
+        scheduleType: 'at',
+        scheduleExpression: 'at now + 2 hours',
+        prompt: 'Still pending',
+      })
+      const wakeId = await createScheduledTask({
+        agentSlug: 'agent-a',
+        scheduleType: 'at',
+        scheduleExpression: 'at now + 3 hours',
+        prompt: 'Resume later',
+        resumeSessionId: 'existing-session',
+      })
+      const cronId = await createScheduledTask({
+        agentSlug: 'agent-a',
+        scheduleType: 'cron',
+        scheduleExpression: '0 * * * *',
+        prompt: 'Recurring task',
+      })
+      const otherAgentId = await createScheduledTask({
+        agentSlug: 'agent-b',
+        scheduleType: 'at',
+        scheduleExpression: 'at now + 1 hour',
+        prompt: 'Other agent task',
+      })
+
+      await markTaskExecuted(completedAtId, 'completed-session')
+      await markTaskExecuted(wakeId, 'existing-session')
+      await markTaskExecuted(cronId, 'cron-session')
+      await markTaskExecuted(otherAgentId, 'other-session')
+
+      const completed = await listCompletedOneTimeTasks('agent-a')
+
+      expect(completed).toHaveLength(1)
+      expect(completed[0]).toMatchObject({
+        id: completedAtId,
+        scheduleType: 'at',
+        status: 'executed',
+        lastSessionId: 'completed-session',
+        resumeSessionId: null,
+      })
+    })
+  })
+
+  // ============================================================================
   // getDueTasks Tests
   // ============================================================================
 
@@ -442,6 +497,53 @@ describe('scheduled-task-service', () => {
       expect(updatedTask!.lastSessionId).toBe('session-xyz')
       expect(updatedTask!.executionCount).toBe(initialCount + 1)
       expect(updatedTask!.status).toBe('pending') // Should stay pending for recurring
+    })
+  })
+
+  describe('patchScheduledTask', () => {
+    it('updates schedule and prompt without replacing execution history', async () => {
+      const taskId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'cron',
+        scheduleExpression: '0 9 * * *',
+        prompt: 'Old prompt',
+      })
+      await updateNextExecution(
+        taskId,
+        new Date('2024-06-16T09:00:00.000Z'),
+        'previous-session',
+      )
+
+      const result = await patchScheduledTask(taskId, {
+        scheduleExpression: '0 18 * * *',
+        prompt: 'New prompt',
+      })
+
+      expect(result).toBe(true)
+      const task = await getScheduledTask(taskId)
+      expect(task!.id).toBe(taskId)
+      expect(task!.scheduleExpression).toBe('0 18 * * *')
+      expect(task!.prompt).toBe('New prompt')
+      expect(task!.nextExecutionAt.toISOString()).toBe('2024-06-15T18:00:00.000Z')
+      expect(task!.executionCount).toBe(1)
+      expect(task!.lastSessionId).toBe('previous-session')
+    })
+
+    it('reschedules a pending one-time task in place', async () => {
+      const taskId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'at',
+        scheduleExpression: 'at now + 1 hour',
+        prompt: 'Reminder',
+      })
+
+      expect(await patchScheduledTask(taskId, {
+        scheduleExpression: 'at now + 3 hours',
+      })).toBe(true)
+
+      const task = await getScheduledTask(taskId)
+      expect(task!.id).toBe(taskId)
+      expect(task!.nextExecutionAt.toISOString()).toBe('2024-06-15T15:00:00.000Z')
     })
   })
 

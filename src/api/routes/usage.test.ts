@@ -6,11 +6,16 @@ import { Hono } from 'hono'
 // ---------------------------------------------------------------------------
 
 const mockListAgents = vi.fn()
-const mockGetAgent = vi.fn()
+const mockGetManyAgents = vi.fn()
 
 vi.mock('@shared/lib/services/agent-service', () => ({
   listAgents: (...args: unknown[]) => mockListAgents(...args),
-  getAgent: (...args: unknown[]) => mockGetAgent(...args),
+}))
+
+// The ACL-scoped branch reads the admitted agents from the catalog in one query.
+vi.mock('@shared/lib/agent-actor/agent-catalog', () => ({
+  agentCatalog: { getMany: (...args: unknown[]) => mockGetManyAgents(...args) },
+  identityFromInstructions: () => ({}),
 }))
 
 const mockGetAgentClaudeConfigDir = vi.fn()
@@ -74,7 +79,7 @@ function createApp() {
 
 interface MockAgent {
   slug: string
-  frontmatter: { name: string }
+  name: string
 }
 
 interface MockModelBreakdown {
@@ -97,7 +102,7 @@ interface MockDayUsage {
 }
 
 function makeAgent(slug: string, name: string): MockAgent {
-  return { slug, frontmatter: { name } }
+  return { slug, name }
 }
 
 function makeDay(date: string, totalCost: number, models: MockModelBreakdown[] = []): MockDayUsage {
@@ -415,7 +420,7 @@ describe('usage route', () => {
       mockGetCurrentUserId.mockReturnValue('user-123')
       mockDbFrom.mockReturnValue({ where: mockDbWhere })
       mockDbWhere.mockResolvedValue([{ agentSlug: 'my-agent' }])
-      mockGetAgent.mockResolvedValue(makeAgent('my-agent', 'My Agent'))
+      mockGetManyAgents.mockResolvedValue([makeAgent('my-agent', 'My Agent')])
       mockLoadDailyUsageData.mockResolvedValue([])
 
       // We need to mock the middleware to set the user on context
@@ -431,6 +436,7 @@ describe('usage route', () => {
       await customApp.request('http://localhost/api/usage')
 
       expect(mockListAgents).not.toHaveBeenCalled()
+      expect(mockGetManyAgents).toHaveBeenCalledWith(['my-agent'])
       expect(mockGetCurrentUserId).toHaveBeenCalled()
     })
 

@@ -6,7 +6,7 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 
-const AUTO_DELETE_OPTIONS = [
+export const AUTO_DELETE_OPTIONS = [
   { value: '30', label: '30 days' },
   { value: '90', label: '90 days' },
   { value: '365', label: '1 year' },
@@ -37,41 +37,6 @@ export function AutoDeleteSelect({ value, onChange, disabled }: AutoDeleteSelect
       </SelectTrigger>
       <SelectContent>
         <SelectItem value="0">Never</SelectItem>
-        {AUTO_DELETE_OPTIONS.map((opt) => (
-          <SelectItem key={opt.value} value={opt.value}>
-            {opt.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  )
-}
-
-interface AgentAutoDeleteSelectProps {
-  value: number | undefined
-  appDefault: number | undefined
-  onChange: (days: number | null) => void
-}
-
-export function AgentAutoDeleteSelect({
-  value,
-  appDefault,
-  onChange,
-}: AgentAutoDeleteSelectProps) {
-  return (
-    <Select
-      value={value?.toString() ?? 'default'}
-      onValueChange={(val) => {
-        onChange(val === 'default' ? null : parseInt(val, 10))
-      }}
-    >
-      <SelectTrigger className="w-48" aria-label="Session auto-delete">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="default">
-          App default ({formatAutoDeleteLabel(appDefault)})
-        </SelectItem>
         {AUTO_DELETE_OPTIONS.map((opt) => (
           <SelectItem key={opt.value} value={opt.value}>
             {opt.label}

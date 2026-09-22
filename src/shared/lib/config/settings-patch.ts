@@ -1,3 +1,6 @@
+import { globalModelPricingPatchSchema } from '../llm-provider/global-pricing-schema'
+import { extractCatalogPricing, patchGlobalModelPricing } from '../llm-provider/global-pricing'
+import { VOICE_PROVIDERS } from '../voice/provider-types'
 import { z } from 'zod'
 import type {
   ApiKeySettings,
@@ -75,7 +78,9 @@ export const appSettingsPatchSchema = z.object({
   notifications: notificationSettingsSchema,
   autoSleepTimeoutMinutes: z.number(),
   warmStartOnType: z.boolean(),
+  autoResumeOnUnexpectedDeath: z.boolean(),
   autoDeleteInactiveDays: z.number(),
+  apiLogAutoDeleteDays: z.number().int().nonnegative(),
   setupCompleted: z.boolean(),
   accountProvider: z.enum(['composio', 'nango']),
   hostBrowserProvider: z.enum(['chrome', 'browserbase', 'platform']).nullable(),
@@ -139,6 +144,7 @@ export const providerSettingsPatchSchema = z.object({
   webBlockedSites: z.array(z.string()),
   models: modelSettingsPatchSchema,
   modelCatalog: modelCatalogSettingsSchema,
+  modelPricing: globalModelPricingPatchSchema,
 }).partial().strict()
 
 const agentLimitsPatchSchema = z.object({
@@ -167,7 +173,9 @@ const authSettingsPatchSchema = z.object({
 }).partial().strict()
 
 const voiceSettingsPatchSchema = z.object({
-  sttProvider: z.enum(['deepgram', 'openai', 'platform']),
+  sttProvider: z.enum(VOICE_PROVIDERS),
+  // An id from the provider's catalogue; the route checks it against the provider.
+  ttsVoice: z.string().min(1),
 }).partial().strict()
 
 const computerUseGrantSchema = z.object({
@@ -402,6 +410,14 @@ export const providerSettingsComponent = {
       if (defaults) models = { ...before.models, ...defaults }
     }
 
+    // Older clients still put prices in the catalog they send; move them to the
+    // global map so none is stored per provider. This is best effort by nature:
+    // such a client cannot express a reset (the catalog it gets back carries no
+    // price to remove), and a price it resends is indistinguishable from a new
+    // edit. An explicit `modelPricing` patch always wins over an imported price.
+    const imported = patch.modelCatalog
+      ? extractCatalogPricing(patch.modelCatalog, patch.llmProvider ?? before.llmProvider)
+      : undefined
     return {
       ...before,
       llmProvider: patch.llmProvider ?? before.llmProvider,
@@ -416,8 +432,11 @@ export const providerSettingsComponent = {
       webBlockedSites:
         patch.webBlockedSites !== undefined ? patch.webBlockedSites : before.webBlockedSites,
       models,
-      modelCatalog:
-        patch.modelCatalog !== undefined ? patch.modelCatalog : before.modelCatalog,
+      modelCatalog: imported?.catalog ?? before.modelCatalog,
+      modelPricing: patchGlobalModelPricing(before.modelPricing, {
+        ...imported?.pricing,
+        ...patch.modelPricing,
+      }),
     }
   },
 
@@ -482,6 +501,7 @@ function pickProviderPatch(patch: SettingsPatch): ProviderSettingsPatch {
     webBlockedSites: patch.webBlockedSites,
     models: patch.models,
     modelCatalog: patch.modelCatalog,
+    modelPricing: patch.modelPricing,
   }
 }
 

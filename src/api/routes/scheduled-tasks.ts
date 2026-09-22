@@ -23,13 +23,8 @@ import {
   resumeScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
 import { promptUpdateSchema } from './trigger-prompt-schema'
-import {
-  getSessionsByScheduledTask,
-  registerSession,
-  updateSessionMetadata,
-} from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
@@ -66,10 +61,11 @@ scheduledTasksRouter.get('/:taskId', TaskAgentRole('viewer'), async (c) => {
 scheduledTasksRouter.get('/:taskId/sessions', TaskAgentRole('viewer'), async (c) => {
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
-    const sessions = await getSessionsByScheduledTask(task!.agentSlug, task!.id)
+    const actor = agentRegistry.get(task!.agentSlug)
+    const sessions = await actor.sessions.byScheduledTask(task!.id)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
-      isActive: messagePersister.isSessionActive(session.id),
+      isActive: actor.sessions.isActive(session.id),
     }))
     return c.json(sessionsWithStatus)
   } catch (error) {
@@ -88,7 +84,7 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
       return c.json({ error: 'Scheduled task not found or already cancelled' }, 404)
     }
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'deleted' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'deleted' })
 
     // Cancelling a session wake changes that session's list/badge state.
     if (task!.resumeSessionId) {
@@ -97,7 +93,7 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
         sessionId: task!.resumeSessionId,
         agentSlug: task!.agentSlug,
       })
-      messagePersister.broadcastSessionUpdate(task!.resumeSessionId)
+      agentRegistry.get(task!.agentSlug).sessions.broadcastUpdate(task!.resumeSessionId)
     }
 
     return c.body(null, 204)
@@ -119,7 +115,7 @@ scheduledTasksRouter.post('/:taskId/pause', TaskAgentRole('user'), async (c) => 
       return c.json({ error: 'Task is not pending' }, 400)
     }
     const updated = await getScheduledTask(task.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'paused' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'paused' })
     return c.json(updated)
   } catch (error) {
     console.error('Failed to pause scheduled task:', error)
@@ -139,7 +135,7 @@ scheduledTasksRouter.post('/:taskId/resume', TaskAgentRole('user'), async (c) =>
       return c.json({ error: 'Task is not paused' }, 400)
     }
     const updated = await getScheduledTask(task.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'resumed' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'resumed' })
     return c.json(updated)
   } catch (error) {
     console.error('Failed to resume scheduled task:', error)
@@ -181,7 +177,7 @@ scheduledTasksRouter.patch('/:taskId/prompt', TaskAgentRole('user'), async (c) =
     }
 
     const refreshed = await getScheduledTask(task!.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'prompt' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'prompt' } })
     return c.json(refreshed)
   } catch (error) {
     console.error('Failed to update scheduled task prompt:', error)
@@ -206,7 +202,7 @@ scheduledTasksRouter.patch('/:taskId/name', TaskAgentRole('user'), async (c) => 
     }
 
     const refreshed = await getScheduledTask(task!.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'name' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'name' } })
     return c.json(refreshed)
   } catch (error) {
     console.error('Failed to update scheduled task name:', error)
@@ -265,7 +261,7 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
     }
 
     const refreshed = await getScheduledTask(task!.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'runtime-options' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'runtime-options' } })
     return c.json(refreshed)
   } catch (error) {
     console.error('Failed to update scheduled task runtime options:', error)
@@ -304,7 +300,8 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       return c.json({ error: 'Task is not pending' }, 400)
     }
 
-    const client = await containerManager.ensureRunning(task.agentSlug)
+    const actor = agentRegistry.get(task.agentSlug)
+    await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
     // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
@@ -315,7 +312,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       models,
     )
 
-    const containerSession = await client.createSession({
+    const containerSession = await actor.sessions.create({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
       model: resolved.model,
@@ -328,15 +325,16 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     const sessionId = containerSession.id
     const sessionName = task.name || 'Scheduled Task (Run Now)'
 
-    await registerSession(task.agentSlug, sessionId, sessionName)
-    await updateSessionMetadata(task.agentSlug, sessionId, {
+    await actor.sessions.register(sessionId, sessionName)
+    await actor.sessions.updateMetadata(sessionId, {
       isScheduledExecution: true,
       scheduledTaskId: task.id,
       scheduledTaskName: task.name || undefined,
     })
 
-    await messagePersister.subscribeToSession(sessionId, client, sessionId, task.agentSlug)
-    messagePersister.markSessionActive(sessionId, task.agentSlug)
+    // createSession already started the turn; replay may finish it during attachment.
+    actor.sessions.markActive(sessionId)
+    await actor.sessions.subscribeStream(sessionId, sessionId)
 
     if (task.isRecurring) {
       // Recurring: keep schedule, just record the manual execution
@@ -475,7 +473,7 @@ scheduledTasksRouter.patch('/:taskId/schedule', TaskAgentRole('user'), async (c)
     }
 
     const refreshed = await getScheduledTask(task.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'schedule' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'schedule' } })
 
     // Surface the same too-frequent-interval warning as the agent path. The edit
     // still succeeds — the warning is advisory.

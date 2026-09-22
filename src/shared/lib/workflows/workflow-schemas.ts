@@ -56,6 +56,22 @@ export const JournalLineSchema = z.discriminatedUnion('type', [
 ])
 export type JournalLine = z.infer<typeof JournalLineSchema>
 
+// --- agent-<id>.meta.json: written at spawn, before the first model turn -----
+
+export const AgentMetaSchema = z.object({
+  /** The agent definition the workflow spawned with. A model-only agent is
+   *  `model-<model slug>-<7-char hash>` (e.g. `model-haiku-4-5-1cbdtsn`). */
+  agentType: z.string().optional(),
+})
+export type AgentMeta = z.infer<typeof AgentMetaSchema>
+
+/** The model slug baked into a `model-<slug>-<hash>` agentType, or null. */
+export function modelSlugFromAgentType(agentType: string | undefined): string | null {
+  if (!agentType) return null
+  const m = /^model-(.+)-[a-z0-9]{7}$/.exec(agentType)
+  return m ? m[1] : null
+}
+
 // --- parsed workflow script (output of workflow-script-parser) -------------
 
 export const WorkflowPhaseSchema = z.object({
@@ -116,6 +132,10 @@ export const WorkflowAgentNodeSchema = z.object({
   tokens: z.number().int().nonnegative(),
   /** Wall-clock span of the agent's transcript so far, or null if not derivable. */
   durationMs: z.number().int().nonnegative().nullable(),
+  /** The model the agent runs on: the transcript's first assistant turn (a full
+   *  id like `claude-haiku-4-5-20251001`), falling back to the slug in the
+   *  meta.json agentType (`haiku-4-5`) before that turn lands; null if unknown. */
+  model: z.string().nullable(),
 })
 export type WorkflowAgentNode = z.infer<typeof WorkflowAgentNodeSchema>
 

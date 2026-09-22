@@ -1,6 +1,7 @@
 import { lt } from 'drizzle-orm'
 import { captureException } from '@shared/lib/error-reporting'
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
 import { tokenExchangeJti } from '@shared/lib/db/schema'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 import { PLATFORM_AUTH_PROVIDER_ID } from '@shared/lib/services/platform-auth-service'
@@ -167,16 +168,16 @@ async function verifyGrant(assertion: string): Promise<DeploymentGrantClaims> {
  * Atomically consume the grant's jti. The INSERT's primary-key constraint is
  * the replay gate: only the request whose insert lands may continue.
  */
-function consumeJti(jti: string, expSec: number): void {
+async function consumeJti(jti: string, expSec: number): Promise<void> {
   try {
     // Opportunistic TTL cleanup keeps the table bounded.
-    db.delete(tokenExchangeJti).where(lt(tokenExchangeJti.expiresAt, new Date())).run()
-    const result = db
+    await db.delete(tokenExchangeJti).where(lt(tokenExchangeJti.expiresAt, new Date())).run()
+    const result = await db
       .insert(tokenExchangeJti)
       .values({ jti, expiresAt: new Date(expSec * 1000) })
       .onConflictDoNothing()
       .run()
-    if (result.changes === 0) {
+    if (changesOf(result) === 0) {
       throw new TokenExchangeError('invalid_grant')
     }
   } catch (error) {
@@ -236,10 +237,17 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
     })
   }
 
+  const refreshImage = async (user: FoundUser) => {
+    if (claims.picture && claims.picture !== user.image) {
+      return ctx.internalAdapter.updateUser(user.id, { image: claims.picture })
+    }
+    return user
+  }
+
   const attempt = async () => {
     const found = await ctx.internalAdapter.findOAuthUser(email, claims.sub, providerId)
     if (found?.linkedAccount) {
-      return found.user
+      return refreshImage(found.user)
     }
 
     if (found) {
@@ -248,7 +256,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
       if (!found.user.emailVerified && found.user.email === email) {
         await ctx.internalAdapter.updateUser(found.user.id, { emailVerified: true })
       }
-      return found.user
+      return refreshImage(found.user)
     }
 
     const created = await ctx.internalAdapter.createOAuthUser(
@@ -256,6 +264,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
         email,
         name: claims.name?.trim() || email,
         emailVerified: true,
+        image: claims.picture,
       },
       {
         providerId,
@@ -283,7 +292,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
       throw new TokenExchangeError('invalid_grant')
     }
     if (winner.linkedAccount) {
-      return winner.user
+      return refreshImage(winner.user)
     }
     try {
       await linkPlatformMapping(winner.user)
@@ -296,7 +305,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
     if (!final?.linkedAccount) {
       throw new TokenExchangeError('invalid_grant')
     }
-    return final.user
+    return refreshImage(final.user)
   }
 }
 
@@ -312,7 +321,7 @@ export async function exchangeDeploymentGrant(
   const claims = await verifyGrant(assertion)
 
   // Only after full cryptographic + claim validation: burn the jti.
-  consumeJti(claims.jti, claims.exp)
+  await consumeJti(claims.jti, claims.exp)
 
   const auth = getAuth()
   const ctx = await auth.$context

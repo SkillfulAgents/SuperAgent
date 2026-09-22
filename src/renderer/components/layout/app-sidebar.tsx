@@ -1,12 +1,16 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass, MoonStar } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, Compass, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
+import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { openExternalUrl } from '@renderer/lib/open-external'
+import { targetIsRemote } from '@renderer/lib/api-target'
+import { resolveSidebarVersionState } from '@renderer/components/layout/sidebar-version-state'
 import { TargetSwitcher } from '@renderer/components/layout/target-switcher'
 import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
 import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
@@ -22,7 +26,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
@@ -52,8 +55,10 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
@@ -71,6 +76,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { useUser } from '@renderer/context/user-context'
+import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
@@ -78,29 +84,75 @@ import { useIsOnline } from '@renderer/context/connectivity-context'
 import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import {
   DndContext,
-  closestCenter,
+  DragOverlay,
   PointerSensor,
   KeyboardSensor,
+  closestCenter,
+  pointerWithin,
+  rectIntersection,
   useSensor,
   useSensors,
+  type UniqueIdentifier,
+  type CollisionDetection,
   type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
 } from '@dnd-kit/core'
 import {
   SortableContext,
   verticalListSortingStrategy,
-  arrayMove,
   sortableKeyboardCoordinates,
+  type SortingStrategy,
 } from '@dnd-kit/sortable'
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
+import { SidebarDragProvider, useSidebarDragActive } from './sidebar-drag-context'
+import { AgentDragOverlayRow, AgentFolderBlock, agentDropAnimation } from './agent-folder-block'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
+import {
+  containerIdForFolder,
+  buildFolderSections,
+  dissolveFolder,
+  ROOT_FOLDER_ID,
+  locateAgent,
+  moveAgent,
+  moveFolder,
+  newFolderId,
+  resolveAgentDrop,
+  resolveFolderDrop,
+  sanitizeFolders,
+  sectionsToSettings,
+  sortableIdForFolder,
+  uniqueFolderName,
+  applyTreeOperation,
+  type TreeOperation,
+} from '@renderer/lib/agent-folders'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
+import { useSidebarFileDrop } from './use-sidebar-file-drop'
 
 /** Set once Explore has been opened, which retires its "New" badge. */
 const EXPLORE_SEEN_KEY = 'explore.seen'
+
+function VersionBehindDot({
+  wayBehind,
+  label,
+}: {
+  wayBehind: boolean
+  label: string
+}) {
+  return (
+    <span
+      className={cn(
+        'ml-0.5 h-1.5 w-1.5 rounded-full',
+        wayBehind ? 'bg-orange-500' : 'bg-blue-500',
+      )}
+      aria-label={label}
+    />
+  )
+}
 
 // 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
 // agents-list group; pull out as a constant so the call site stays readable.
@@ -108,6 +160,26 @@ const THIN_SCROLLBAR =
   '[scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground)/0.2)_transparent] ' +
   '[&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent ' +
   '[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20'
+
+// Sensor options MUST be referentially stable. `useSensor` memoizes on the
+// options object, so an inline literal here mints new sensor descriptors on
+// every AppSidebar render — which makes DndContext rebuild its activators,
+// which hands every `useSortable` row a brand-new `listeners` object, which
+// breaks AgentMenuItem's memo for the entire list on every unrelated sidebar
+// render. Measured: 80 filed agents cost 2 full row re-renders per row per
+// toggle with inline options, ~0 with these hoisted.
+const POINTER_SENSOR_OPTIONS = { activationConstraint: { distance: 5 } }
+const KEYBOARD_SENSOR_OPTIONS = { coordinateGetter: sortableKeyboardCoordinates }
+const SIDEBAR_FILE_DROP_CUE =
+  'data-[file-drop-active]:bg-sidebar-accent data-[file-drop-active]:ring-1 data-[file-drop-active]:ring-sidebar-ring'
+
+/** The user-settings fields that together describe the left-nav tree. */
+type AgentTreeSettings = ReturnType<typeof sectionsToSettings>
+
+type ActiveDrag = { type: 'agent' | 'folder'; label: string; folderId?: string }
+
+/** Where a dragged folder is currently set to land. */
+type FolderDropCue = { folderId: string; edge: 'above' | 'below' }
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
@@ -133,13 +205,29 @@ function SessionSubItem({
   // redundant — the session clearly isn't asleep).
   const showPendingWake = !!session.pendingWakeAt && !isWorking && !isAwaitingInput
   const { ref: hintRef, hint } = useCmdHintTarget()
+  const dragHandlers = useSidebarFileDrop({
+    kind: 'session',
+    agentSlug,
+    sessionId: session.id,
+    // No composer is mounted behind a pending request, so a drop would be
+    // swallowed and then resurface once the request is answered.
+    disabled: isAwaitingInput,
+  })
 
   return (
-    <SidebarMenuSubItem>
+    <SidebarMenuSubItem
+      {...dragHandlers}
+      className={cn('rounded-md', SIDEBAR_FILE_DROP_CUE)}
+    >
       <SessionContextMenu
         sessionId={session.id}
         sessionName={session.name}
         agentSlug={agentSlug}
+        activity={{
+          isActive: !!session.isActive,
+          isAwaitingInput: !!session.isAwaitingInput,
+          isStreaming,
+        }}
       >
         <SidebarMenuSubButton
           asChild
@@ -367,13 +455,13 @@ function AgentRowIndicator({
 }
 
 // Agent menu item with expandable sessions
-export const AgentMenuItem = React.forwardRef<
+const AgentMenuItemInner = React.forwardRef<
   HTMLLIElement,
   { agent: ApiAgent } & React.HTMLAttributes<HTMLLIElement>
 >(({ agent, style, ...rest }, ref) => {
   useRenderTracker('AgentMenuItem')
   const { view } = useRouteLocation()
-  const { agentMemberCount } = useUser()
+  const { isAuthMode, agentMemberCount } = useUser()
   const queryClient = useQueryClient()
   // Route-derived selection (URL is authoritative — correct on a cold reload,
   // and inherently false on the global notifications/home views since they carry
@@ -387,6 +475,10 @@ export const AgentMenuItem = React.forwardRef<
     (agent.sessionCount ?? 0) > 0 ||
     (agent.dashboards?.length ?? 0) > 0
   const [isOpen, setIsOpen] = useState(isSelected && hasInitialContent)
+  // Collapse visually for the duration of a drag so drop targets stay still.
+  // `isOpen` itself is untouched, so nothing refetches and the row reopens on
+  // drop; only the rendered height changes.
+  const isDragActive = useSidebarDragActive()
 
   // Once the user navigates into a sub-item (session / task / webhook / chat /
   // dashboard) we want the agent's submenu open so the active row is visible.
@@ -399,13 +491,15 @@ export const AgentMenuItem = React.forwardRef<
       view.kind === 'task' ||
       view.kind === 'webhook' ||
       view.kind === 'chat' ||
-      view.kind === 'dashboard')
+      view.kind === 'dashboard' ||
+      view.kind === 'completedTasks')
   useEffect(() => {
     if (isViewingSubItem) setIsOpen(true)
   }, [isViewingSubItem])
   const [showAll, setShowAll] = useState(false)
   const [showSkeleton, setShowSkeleton] = useState(false)
-  const isShared = agentMemberCount(agent.slug) > 1
+  const memberCount = agentMemberCount(agent.slug)
+  const isShared = isAuthMode && memberCount > 1
 
   // Lazy-load detail data only when expanded
   const { data: sessions, isLoading: sessionsLoading } = useSessions(isOpen ? agent.slug : null)
@@ -454,59 +548,81 @@ export const AgentMenuItem = React.forwardRef<
   }
 
   const { ref: hintRef, hint } = useCmdHintTarget()
+  const dragHandlers = useSidebarFileDrop({
+    kind: 'agent',
+    agentSlug: agent.slug,
+    displaySlug: agent.displaySlug,
+  })
 
   return (
-    <Collapsible asChild open={isOpen} onOpenChange={setIsOpen}>
-      <SidebarMenuItem ref={ref} style={style} {...rest} onMouseEnter={handleMouseEnter}>
-        {/*
-          Wrap the row + chevron in a relative box so the absolutely-positioned
-          chevron tracks the row height, not the (potentially expanded) menu
-          item that also contains CollapsibleContent below.
-        */}
-        <div className="relative">
-          <AgentContextMenu agent={agent}>
-            <SidebarMenuButton
-              asChild
-              isActive={isSelected}
-              className="justify-between pl-7"
-              data-testid={`agent-item-${agent.slug}`}
-            >
-              <AppLink ref={hintRef} to="/agents/$slug" params={{ slug: agent.displaySlug }}>
-                <span className="flex items-center gap-1.5 min-w-0">
-                  <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-                  {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
-                </span>
+    <Collapsible asChild open={isOpen && !isDragActive} onOpenChange={setIsOpen}>
+      <SidebarMenuItem
+        ref={ref}
+        style={style}
+        {...rest}
+        onMouseEnter={handleMouseEnter}
+        // Portaled menus bubble through React, but are outside the draggable row.
+        onPointerDown={event => {
+          if (event.currentTarget.contains(event.target as Node)) rest.onPointerDown?.(event)
+        }}
+        onKeyDown={event => {
+          if (event.currentTarget.contains(event.target as Node)) rest.onKeyDown?.(event)
+        }}
+      >
+        <AgentContextMenu agent={agent}>
+          <SidebarMenuButton
+            asChild
+            isActive={isSelected}
+            className={cn('relative gap-1.5 overflow-visible pl-7', SIDEBAR_FILE_DROP_CUE)}
+          >
+            <div {...dragHandlers}>
+              {/* Stretch the native link across the row; the roster and
+                  chevron sit above it as separate interactive controls. */}
+              <AppLink
+                ref={hintRef}
+                to="/agents/$slug"
+                params={{ slug: agent.displaySlug }}
+                data-testid={`agent-item-${agent.slug}`}
+                data-active={isSelected}
+                className="min-w-0 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
+              >
+                <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
+              </AppLink>
+              {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
+              {/* Expose the status title above the stretched link while keeping
+                  clicks (including modifier clicks) native agent navigation. */}
+              <AppLink
+                to="/agents/$slug"
+                params={{ slug: agent.displaySlug }}
+                tabIndex={-1}
+                aria-label={`Open ${agent.name}`}
+                className="relative z-10 ml-auto flex shrink-0 items-center"
+              >
                 {hint !== null ? (
                   <CmdHintBadge hint={hint} />
                 ) : (
                   <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
                 )}
               </AppLink>
-            </SidebarMenuButton>
-          </AgentContextMenu>
-          {/*
-            Sibling chevron button overlays its slot in the row so the row stays a
-            single <button> (no nested interactive controls). Only rendered when
-            there is expandable content so agents with no sessions or dashboards
-            do not show an empty chevron.
-          */}
-          {hasExpandableContent && (
-            <button
-              type="button"
-              onClick={handleChevronClick}
-              aria-label={isOpen ? 'Collapse' : 'Expand'}
-              aria-expanded={isOpen}
-              className="absolute left-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
-            >
-              <ChevronRight
-                className={cn(
-                  'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
-                  isOpen && 'rotate-90'
-                )}
-              />
-            </button>
-          )}
-        </div>
+              {hasExpandableContent && (
+                <button
+                  type="button"
+                  onClick={handleChevronClick}
+                  aria-label={isOpen ? 'Collapse' : 'Expand'}
+                  aria-expanded={isOpen}
+                  className="absolute left-1.5 top-1/2 z-10 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
+                >
+                  <ChevronRight
+                    className={cn(
+                      'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
+                      isOpen && !isDragActive && 'rotate-90'
+                    )}
+                  />
+                </button>
+              )}
+            </div>
+          </SidebarMenuButton>
+        </AgentContextMenu>
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
@@ -558,7 +674,22 @@ export const AgentMenuItem = React.forwardRef<
     </Collapsible>
   )
 })
-AgentMenuItem.displayName = 'AgentMenuItem'
+AgentMenuItemInner.displayName = 'AgentMenuItem'
+
+/**
+ * Memoized so that dnd-kit's per-tick context churn stops at the sortable
+ * wrapper. During a drag, dnd-kit publishes a new internal context value on
+ * essentially every pointer tick, which re-renders every `useSortable`
+ * consumer — that is every row wrapper in the list. This row's subtree is the
+ * expensive part (a Radix context menu, a mounted-but-closed settings dialog,
+ * three alert dialogs, session queries), so the wrapper must be able to bail
+ * before reaching it. All of the wrapper's props are referentially stable
+ * across those ticks — dnd-kit memoizes `attributes` and `listeners`, and the
+ * wrapper memoizes `style` — so a plain identity memo holds. Profiled: without
+ * this, a 40-agent list spends whole frames (60–90ms) re-rendering rows whose
+ * output cannot change.
+ */
+export const AgentMenuItem = React.memo(AgentMenuItemInner)
 
 if (__RENDER_TRACKING__) {
   (SessionSubItem as any).whyDidYouRender = true;
@@ -600,7 +731,7 @@ function UserMenu() {
       <Popover>
         <PopoverTrigger asChild>
           <button className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="user-menu-trigger">
-            <User className="h-3 w-3" />
+            <UserAvatar user={user} size={22} />
             <span className="truncate max-w-[140px]">{user.name}</span>
           </button>
         </PopoverTrigger>
@@ -755,6 +886,14 @@ export function AppSidebar() {
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
+  const { data: platformAuth } = usePlatformAuthStatus()
+  const isCloud = targetIsRemote()
+  const desktopVersion = __APP_VERSION__
+  const versionState = resolveSidebarVersionState({
+    desktopVersion,
+    cloudVersion: isCloud ? runtimeStatus?.appVersion : undefined,
+    feedVersion: updateAvailable ? updateStatus.version : undefined,
+  })
   const isFullScreen = useFullScreen()
 
   // macOS fires `enter-full-screen` only after its ~700ms zoom animation completes;
@@ -769,35 +908,488 @@ export function AppSidebar() {
 
   // Drag-and-drop sensors: distance threshold prevents click conflicts
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    useSensor(PointerSensor, POINTER_SENSOR_OPTIONS),
+    useSensor(KeyboardSensor, KEYBOARD_SENSOR_OPTIONS)
   )
 
-  // Optimistic local order during mutation
-  const [localOrder, setLocalOrder] = useState<string[] | null>(null)
-  const effectiveOrder = localOrder ?? userSettings?.agentOrder
+  // ─── Agent list tree (order + folders) ────────────────────────────────────
+  //
+  // The left nav is one ordered list in which unfiled agents and folders sit
+  // side by side, so a folder can be placed anywhere among them. That order
+  // cannot be derived from agentOrder — an empty folder has no member to sit
+  // behind — so it has a field of its own. agentOrder is still written on every
+  // change as the flat reading order, which is what the home grid, the graph
+  // and the tray read without knowing folders exist.
+
+  // Optimistic copy of the fields the tree is built from. Held from the first
+  // drag movement until the settings write settles, so the list never flashes
+  // back to its pre-drag shape.
+  const [localTree, setLocalTree] = useState<AgentTreeSettings | null>(null)
+  const [localCollapsed, setLocalCollapsed] = useState<string[] | null>(null)
+  // Last-write token for localCollapsed, same job as pendingTreeRef below.
+  const pendingCollapsedRef = React.useRef<string[] | null>(null)
+  // The folder a just-created row should open in rename mode.
+  const [pendingRenameFolderId, setPendingRenameFolderId] = useState<string | null>(null)
+  const [activeDrag, setActiveDrag] = useState<ActiveDrag | null>(null)
+  // The insertion point for a live folder drag. Computed by collision
+  // detection (which alone knows the pointer's half of the target block) and
+  // read both by the blocks (to place the insert line) and by the drop handler
+  // — one source of truth is what keeps the line honest about the landing
+  // spot. Collision detection runs in DndContext's RENDER (it may only write
+  // the ref — a setState there is a render-phase update of this component),
+  // so the state the insert line renders from is committed one step later by
+  // onDragMove, which fires from an effect after every render whose drag
+  // translate changed — i.e. after every render that recomputed the cue.
+  const [folderDropCue, setFolderDropCue] = useState<FolderDropCue | null>(null)
+  const folderDropCueRef = React.useRef<FolderDropCue | null>(null)
+  const commitFolderDropCue = useCallback(() => {
+    setFolderDropCue((prev) => {
+      const next = folderDropCueRef.current
+      if (prev?.folderId === next?.folderId && prev?.edge === next?.edge) return prev
+      return next
+    })
+  }, [])
+  const clearFolderDropCue = useCallback(() => {
+    folderDropCueRef.current = null
+    setFolderDropCue(null)
+  }, [])
+
+  const effectiveOrder = localTree?.agentOrder ?? userSettings?.agentOrder
+  const effectiveFolders = localTree?.agentFolders ?? userSettings?.agentFolders
+  const effectiveAssignments =
+    localTree?.agentFolderAssignments ?? userSettings?.agentFolderAssignments
+  const effectiveListOrder = localTree?.agentListOrder ?? userSettings?.agentListOrder
+  const collapsedFolders = localCollapsed ?? userSettings?.collapsedAgentFolders
+
   const orderedAgents = useMemo(
     () => applyAgentOrder(agents ?? [], effectiveOrder),
     [agents, effectiveOrder]
   )
+  const sections = useMemo(
+    () => buildFolderSections(orderedAgents, effectiveFolders, effectiveAssignments, effectiveListOrder),
+    [orderedAgents, effectiveFolders, effectiveAssignments, effectiveListOrder]
+  )
+  const hasFolders = (effectiveFolders?.length ?? 0) > 0
+
+  // Drag handlers fire between renders, so they read the sections through a
+  // ref rather than a closed-over render value — two pointer moves can land
+  // before React has re-derived `sections` from the state the first one set.
+  const sectionsRef = React.useRef(sections)
+  sectionsRef.current = sections
+  // The raw agent list for the write-time rebase in writeTree below, which
+  // rebuilds sections from the settings as of when the mutation runs.
+  const agentsRef = React.useRef<ApiAgent[]>([])
+  agentsRef.current = agents ?? []
+  // Whether this drag has actually changed anything, so a drag that ends where
+  // it started does not write settings.
+  const dragDirtyRef = React.useRef(false)
+  // Whether a drag is in progress right now. Mirrors `activeDrag` for the
+  // settle callbacks below, which fire between renders.
+  const activeDragRef = React.useRef(false)
+  // Guards against an earlier write settling while a later one is still in
+  // flight and clearing its optimistic view.
+  const pendingTreeRef = React.useRef<AgentTreeSettings | null>(null)
+
+  const writeTree = useCallback((
+    optimistic: AgentTreeSettings & { collapsedAgentFolders?: string[] },
+    operation: TreeOperation
+  ) => {
+    pendingTreeRef.current = optimistic
+    setLocalTree(optimistic)
+    updateSettings.mutate(
+      (current) => {
+        // Re-derive the change against the settings as of when this
+        // (scope-serialized) mutation actually runs. The drop's sections
+        // snapshot goes stale the moment a concurrent write — a folder
+        // create, a rename, a context-menu filing — lands first, and writing
+        // the snapshot back would replace agentFolders, assignments and
+        // order wholesale, silently undoing that work. The snapshot stays
+        // exactly right for the optimistic paint above, and with nothing in
+        // flight the rebase reproduces it byte for byte (the operation
+        // records the moved thing's FINAL position).
+        const sections = buildFolderSections(
+          applyAgentOrder(agentsRef.current, current?.agentOrder),
+          current?.agentFolders,
+          current?.agentFolderAssignments,
+          current?.agentListOrder
+        )
+        const rebased = sectionsToSettings(applyTreeOperation(sections, operation))
+        if (operation.kind !== 'dissolveFolder') return rebased
+        return {
+          ...rebased,
+          collapsedAgentFolders: (current?.collapsedAgentFolders ?? []).filter(
+            (id) => id !== operation.folderId
+          ),
+        }
+      },
+      {
+        onError: () => {
+          // Settings writes deliberately skip the global error toast, but a
+          // drag is a big gesture to lose without a word — the tree is about
+          // to snap back to its server shape.
+          toast.error("Couldn't save the new layout")
+        },
+        onSettled: () => {
+          if (pendingTreeRef.current !== optimistic) return
+          pendingTreeRef.current = null
+          // A newer drag may be holding its own mid-drag re-parent in
+          // localTree; clearing it now would snap the dragged row back to its
+          // source folder for the rest of that drag (over-change events only
+          // fire when `over` CHANGES, so nothing would restore it). The
+          // drag's own end/cancel paths reset localTree instead.
+          if (!activeDragRef.current) setLocalTree(null)
+        },
+      }
+    )
+  }, [updateSettings])
+
+
+  // Prefer whatever the pointer is directly inside, falling back to rect
+  // overlap when a fast drag has outrun every droppable. Then bias toward the
+  // kind of thing being dragged: an agent aims at rows (which carry a real
+  // insertion index), a folder aims at other folders' slots.
+  //
+  // Two rules on top of that:
+  //
+  // The dragged agent's CURRENT folder is sticky. Live re-parenting reshapes
+  // the list — pulling the row out shrinks the folder, which moves the very
+  // boundary the pointer just crossed, which re-parents it straight back — so
+  // a within-folder sort near the folder's edge used to flicker in and out of
+  // it. While the pointer remains inside the folder block's rect, only targets
+  // inside that folder are eligible; leaving the rect really does mean leaving
+  // the folder, and by then the shrink moves the boundary AWAY from the
+  // pointer, so it cannot oscillate. In sticky mode the gap between two member
+  // rows (where nothing row-like is under the pointer) snaps to the nearest
+  // member row, so the sort preview never resets mid-gap and the folder never
+  // lights up as a drop target for a row it already holds.
+  //
+  // A dragged FOLDER over an agent row is promoted to that row's section
+  // header: the drop takes the whole section's slot, so the header — where the
+  // insert line renders — is what `over` should report, not the row.
+  const collisionDetection = useCallback<CollisionDetection>((args) => {
+    const activeType = args.active.data.current?.type
+    const pointerHits = pointerWithin(args)
+    let collisions = pointerHits.length > 0 ? pointerHits : rectIntersection(args)
+    const wantedType = activeType === 'folder' ? 'folder' : 'agent'
+    const typeOf = (id: UniqueIdentifier) =>
+      args.droppableContainers.find((d) => d.id === id)?.data.current?.type
+
+    if (activeType === 'agent' && args.pointerCoordinates) {
+      const location = locateAgent(sectionsRef.current, String(args.active.id))
+      const section = location ? sectionsRef.current[location.sectionIndex] : null
+      if (section) {
+        const blockRect = args.droppableContainers.find(
+          (d) => d.id === sortableIdForFolder(section.folder.id)
+        )?.rect.current
+        const { x, y } = args.pointerCoordinates
+        // The vertical grace band absorbs boundary jitter that is not the
+        // user's doing: while dnd-kit auto-scrolls, the block slides under a
+        // stationary pointer a few px per tick, and without the band each
+        // tick at the edge re-parents the row out and back in.
+        const grace = 8
+        if (
+          blockRect &&
+          x >= blockRect.left && x <= blockRect.right &&
+          y >= blockRect.top - grace && y <= blockRect.bottom + grace
+        ) {
+          const inside = new Set<string>([
+            sortableIdForFolder(section.folder.id),
+            containerIdForFolder(section.folder.id),
+            ...section.agents.map((a) => a.slug),
+          ])
+          const filtered = collisions.filter((c) => inside.has(String(c.id)))
+          if (filtered.length > 0) collisions = filtered
+          if (!collisions.some((c) => typeOf(c.id) === 'agent')) {
+            const memberRows = args.droppableContainers.filter((d) => {
+              if (!section.agents.some((a) => a.slug === String(d.id))) return false
+              // A collapsed folder's member rows stay mounted but hidden, and
+              // a hidden row measures 0×0 — inert for the containment and
+              // overlap detectors above, but a perfectly good candidate for a
+              // DISTANCE snap, which would steal `over` from the header and
+              // land the drop at the hidden row's index instead of appending.
+              const rect = d.rect.current
+              return !!rect && rect.width > 0 && rect.height > 0
+            })
+            const closest = closestCenter({ ...args, droppableContainers: memberRows })
+            if (closest.length > 0) return [closest[0]]
+          }
+        }
+      }
+    }
+
+    if (wantedType === 'folder') {
+      // Resolve the drag to a target BLOCK: a direct hit, an agent row
+      // promoted to its section, or — in the empty sidebar area above the
+      // first block or below the last — the nearest outermost block. Then the
+      // pointer's half of that block decides which edge the folder lands on;
+      // the cue drives both the insert line and the drop itself.
+      const blockOf = (id: UniqueIdentifier) =>
+        args.droppableContainers.find((d) => d.id === id)
+
+      let target = collisions.find((c) => typeOf(c.id) === 'folder')
+      if (!target) {
+        const rowHit = collisions.find((c) => typeOf(c.id) === 'agent')
+        const location = rowHit ? locateAgent(sectionsRef.current, String(rowHit.id)) : null
+        if (location) {
+          target = {
+            id: sortableIdForFolder(sectionsRef.current[location.sectionIndex].folder.id),
+          }
+        }
+      }
+      if (!target && args.pointerCoordinates) {
+        const blocks = args.droppableContainers
+          .filter((d) => d.data.current?.type === 'folder' && d.rect.current)
+          .sort((a, b) => a.rect.current!.top - b.rect.current!.top)
+        if (blocks.length > 0) {
+          const y = args.pointerCoordinates.y
+          const first = blocks[0]
+          const last = blocks[blocks.length - 1]
+          if (y <= first.rect.current!.top) target = { id: first.id }
+          else if (y >= last.rect.current!.bottom) target = { id: last.id }
+        }
+      }
+
+      if (target) {
+        const rect = blockOf(target.id)?.rect.current
+        const y = args.pointerCoordinates?.y
+        const folderId = String(target.id).replace('agent-folder::', '')
+        if (rect && y !== undefined) {
+          // Ref only — this runs during render; onDragMove commits it.
+          folderDropCueRef.current = {
+            folderId,
+            edge: y < rect.top + rect.height / 2 ? 'above' : 'below',
+          }
+        }
+        return [target]
+      }
+      folderDropCueRef.current = null
+      return collisions
+    }
+
+    if (collisions.length === 0) return collisions
+    const preferred = collisions.find((c) => typeOf(c.id) === wantedType)
+    return preferred ? [preferred] : collisions
+  }, [])
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    dragDirtyRef.current = false
+    activeDragRef.current = true
+    const data = event.active.data.current
+    clearFolderDropCue()
+    if (data?.type === 'folder') {
+      const section = sectionsRef.current.find((s) => s.folder.id === data.folderId)
+      setActiveDrag({
+        type: 'folder',
+        label: section?.folder.name ?? 'Folder',
+        folderId: String(data.folderId),
+      })
+      return
+    }
+    const slug = String(event.active.id)
+    const agent = sectionsRef.current
+      .flatMap((s) => s.agents)
+      .find((a) => a.slug === slug)
+    setActiveDrag({ type: 'agent', label: agent?.name ?? slug })
+  }, [clearFolderDropCue])
+
+  // Move an agent between containers live, so the row is already sitting in its
+  // new folder before the pointer is released. Reordering inside one container
+  // is left to the sortable preview and settled on drop.
+  const handleDragOver = useCallback((event: DragOverEvent) => {
+    const { active, over } = event
+    if (!over || active.data.current?.type !== 'agent') return
+
+    const current = sectionsRef.current
+    const slug = String(active.id)
+    const target = resolveAgentDrop(current, String(over.id))
+    const from = locateAgent(current, slug)
+    if (!target || !from) return
+
+    if (current[from.sectionIndex].folder.id === target.folderId) return
+
+    const next = moveAgent(current, slug, target)
+    if (next === current) return
+
+    sectionsRef.current = next
+    dragDirtyRef.current = true
+    setLocalTree(sectionsToSettings(next))
+  }, [])
 
   const handleDragEnd = useCallback((event: DragEndEvent) => {
     const { active, over } = event
-    if (!over || active.id === over.id) return
-    if (typeof active.id !== 'string' || typeof over.id !== 'string') return
+    setActiveDrag(null)
+    activeDragRef.current = false
+    // Read BEFORE clearing — the cue is what decides where a folder drop
+    // lands. Clearing first would silently fall every pointer drop through to
+    // the keyboard branch's "take the target's slot" semantics, which only
+    // coincides with the cue's promise in two of the four direction/edge
+    // quadrants — the insert line would lie in the other two.
+    const cue = folderDropCueRef.current
+    clearFolderDropCue()
 
-    const currentSlugs = orderedAgents.map(a => a.slug)
-    const oldIndex = currentSlugs.indexOf(active.id)
-    const newIndex = currentSlugs.indexOf(over.id)
-    if (oldIndex === -1 || newIndex === -1) return
+    // Released outside every droppable — treat it as an escape hatch and put
+    // the list back the way it was, including any mid-drag move.
+    if (!over) {
+      setLocalTree(pendingTreeRef.current)
+      return
+    }
 
-    const newOrder = arrayMove(currentSlugs, oldIndex, newIndex)
-    setLocalOrder(newOrder)
-    updateSettings.mutate(
-      { agentOrder: newOrder },
-      { onSettled: () => setLocalOrder(null) }
+    const current = sectionsRef.current
+    const overId = String(over.id)
+    let next = current
+
+    if (active.data.current?.type === 'folder') {
+      const folderId = String(active.data.current.folderId)
+      if (cue) {
+        // Insertion-point semantics: land on the cued edge of the cued block.
+        // "Take the target's slot" (below) is kept only for keyboard drags,
+        // which never produce a pointer-derived cue.
+        const from = current.findIndex((s) => s.folder.id === folderId)
+        const targetIndex = current.findIndex((s) => s.folder.id === cue.folderId)
+        if (from !== -1 && targetIndex !== -1) {
+          let insertAt = targetIndex + (cue.edge === 'below' ? 1 : 0)
+          if (from < insertAt) insertAt -= 1
+          next = moveFolder(current, folderId, insertAt)
+        }
+      } else {
+        const index = resolveFolderDrop(current, overId)
+        if (index !== null) next = moveFolder(current, folderId, index)
+      }
+    } else {
+      const target = resolveAgentDrop(current, overId)
+      if (target) next = moveAgent(current, String(active.id), target)
+    }
+
+    if (next === current && !dragDirtyRef.current) {
+      // A drag that ended where it started writes nothing.
+      setLocalTree(pendingTreeRef.current)
+      return
+    }
+
+    // Record the drop as the moved thing's FINAL position in `next`, so the
+    // write can re-apply it to whatever the settings say by the time it runs
+    // (see writeTree). Deriving from `next` makes the serial case exact.
+    let operation: TreeOperation | null = null
+    if (active.data.current?.type === 'folder') {
+      const folderId = String(active.data.current.folderId)
+      const index = next.findIndex((s) => s.folder.id === folderId)
+      if (index !== -1) operation = { kind: 'placeFolder', folderId, index }
+    } else {
+      const slug = String(active.id)
+      const location = locateAgent(next, slug)
+      if (location) {
+        operation = {
+          kind: 'placeAgent',
+          slug,
+          folderId: next[location.sectionIndex].folder.id,
+          index: location.memberIndex,
+        }
+      }
+    }
+    if (!operation) {
+      setLocalTree(pendingTreeRef.current)
+      return
+    }
+    writeTree(sectionsToSettings(next), operation)
+  }, [writeTree, clearFolderDropCue])
+
+  /**
+   * The shift preview opens a gap by displacing the rows between the dragged
+   * item and the one under the pointer, by the dragged item's own height. For
+   * an agent row that is a few dozen pixels and reads well. For a folder it is
+   * the height of the whole block, which throws the hovered row clear of the
+   * pointer, flips the drop target, and lands the folder a slot away from where
+   * it was aimed. Folders therefore move without displacing anything, and say
+   * where they will land with an insert line instead.
+   */
+  const topLevelStrategy = useCallback<SortingStrategy>(
+    (args) => (activeDrag?.type === 'folder' ? null : verticalListSortingStrategy(args)),
+    [activeDrag?.type]
+  )
+
+  const handleDragCancel = useCallback(() => {
+    setActiveDrag(null)
+    activeDragRef.current = false
+    clearFolderDropCue()
+    setLocalTree(pendingTreeRef.current)
+  }, [clearFolderDropCue])
+
+  // ─── Folder CRUD ──────────────────────────────────────────────────────────
+
+  // Create and rename replace `agentFolders` wholesale, so they use the
+  // updater form: the folder list is read when the (scope-serialized)
+  // mutation runs, not when the click happened — a payload snapshotted at
+  // click time would revert whatever folder write was still in flight.
+  const handleCreateFolder = useCallback(() => {
+    const id = newFolderId()
+    // The + lives on the default folder's header, so the new folder goes
+    // directly ABOVE that folder — in view next to the button that made it,
+    // where the row's rename input mounts. Ranking it last put it below the
+    // scroll fold on a long list, which read as the button doing nothing.
+    setPendingRenameFolderId(id)
+    updateSettings.mutate((current) => {
+      const folders = sanitizeFolders(current?.agentFolders)
+      const marker = sortableIdForFolder(id)
+      const rootMarker = sortableIdForFolder(ROOT_FOLDER_ID)
+      const order = (current?.agentListOrder ?? []).filter((key) => key !== marker)
+      const rootIndex = order.indexOf(rootMarker)
+      return {
+        agentFolders: [...folders, { id, name: uniqueFolderName(folders) }],
+        // Splice in just above the default folder wherever the user keeps it;
+        // an untouched install has no stored places yet, so root's marker is
+        // written too — without one it would default ahead (place -1).
+        agentListOrder:
+          rootIndex >= 0
+            ? [...order.slice(0, rootIndex), marker, ...order.slice(rootIndex)]
+            : [marker, rootMarker, ...order],
+      }
+    })
+  }, [updateSettings])
+
+  const handleRenameFolder = useCallback((folderId: string, name: string) => {
+    updateSettings.mutate((current) => ({
+      agentFolders: sanitizeFolders(current?.agentFolders).map((f) =>
+        f.id === folderId ? { ...f, name } : f
+      ),
+    }))
+  }, [updateSettings])
+
+  const handleDeleteFolder = useCallback((folderId: string) => {
+    const current = sectionsRef.current
+    const next = dissolveFolder(current, folderId)
+    if (next === current) return
+    writeTree(
+      {
+        ...sectionsToSettings(next),
+        collapsedAgentFolders: (collapsedFolders ?? []).filter((id) => id !== folderId),
+      },
+      { kind: 'dissolveFolder', folderId }
     )
-  }, [orderedAgents, updateSettings])
+  }, [collapsedFolders, writeTree])
+
+  const handleToggleFolder = useCallback((folderId: string) => {
+    const current = collapsedFolders ?? []
+    const next = current.includes(folderId)
+      ? current.filter((id) => id !== folderId)
+      : [...current, folderId]
+    // Collapsing has to feel instant even against a cloud workspace, so paint
+    // it locally and let the write catch up. Only the LATEST toggle may clear
+    // the optimistic view — with two toggles in flight, the first settling
+    // would otherwise drop the second's fold back to the cached state until
+    // its own write lands (a visible flap on a slow connection).
+    pendingCollapsedRef.current = next
+    setLocalCollapsed(next)
+    updateSettings.mutate(
+      { collapsedAgentFolders: next },
+      {
+        onSettled: () => {
+          if (pendingCollapsedRef.current !== next) return
+          pendingCollapsedRef.current = null
+          setLocalCollapsed(null)
+        },
+      }
+    )
+  }, [collapsedFolders, updateSettings])
 
   const isOnline = useIsOnline()
 
@@ -841,13 +1433,10 @@ export function AppSidebar() {
         animates shut.
       */}
       <SidebarHeader
-        className="app-drag-region h-12 shrink-0 p-0 overflow-hidden transition-[padding-left] duration-200 ease-out"
+        className="app-drag-region h-12 shrink-0 p-0 transition-[padding-left] duration-200 ease-out"
         style={{ paddingLeft: needsTrafficLightPadding ? '80px' : undefined }}
       >
-        {/* `overflow-hidden` is load-bearing: hovering the target switcher
-            expands it in place, which pushes the buttons after it past the right
-            edge rather than squeezing them. */}
-        <div className="flex items-center h-12 px-2 gap-1 overflow-hidden">
+        <div className="flex items-center h-12 px-2 gap-1">
           {__WEB__ && (
             <span className="shrink-0 select-none text-base font-medium">Gamut</span>
           )}
@@ -988,8 +1577,10 @@ export function AppSidebar() {
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
-          <SidebarGroup className={cn('flex-1 min-h-0 overflow-y-auto p-0', THIN_SCROLLBAR)}>
-            <SidebarGroupLabel className="mt-0.5 font-normal text-sidebar-foreground/50">Your Agents</SidebarGroupLabel>
+          <SidebarGroup
+            className={cn('group/agents-group flex-1 min-h-0 overflow-y-auto p-0', THIN_SCROLLBAR)}
+            data-testid="agent-list-scroll"
+          >
             <SidebarGroupContent>
               <SidebarMenu className="gap-1">
                 {isLoading ? (
@@ -1004,26 +1595,75 @@ export function AppSidebar() {
                   <div className="px-2 py-4 text-sm text-destructive select-text">
                     Failed to load agents
                   </div>
-                ) : !agents?.length ? (
+                ) : !agents?.length && !hasFolders ? (
                   <div className="px-2 py-4 text-sm text-muted-foreground">
                     No agents yet. Create one to get started.
                   </div>
                 ) : (
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
-                    modifiers={[restrictToVerticalAxis]}
-                  >
-                    <SortableContext
-                      items={orderedAgents.map(a => a.slug)}
-                      strategy={verticalListSortingStrategy}
+                  <SidebarDragProvider value={activeDrag?.type ?? null}>
+                    <DndContext
+                      sensors={sensors}
+                      collisionDetection={collisionDetection}
+                      onDragStart={handleDragStart}
+                      onDragMove={commitFolderDropCue}
+                      onDragOver={handleDragOver}
+                      onDragEnd={handleDragEnd}
+                      onDragCancel={handleDragCancel}
+                      modifiers={[restrictToVerticalAxis]}
                     >
-                      {orderedAgents.map((agent) => (
-                        <SortableAgentMenuItem key={agent.slug} agent={agent} />
-                      ))}
-                    </SortableContext>
-                  </DndContext>
+                      {/*
+                        The top level is folders and nothing else — "Your
+                        Agents" is the always-present default one, so every
+                        agent sits under some header and the headers read as
+                        peers. Each folder's members are a nested sortable
+                        list of their own.
+                      */}
+                      <SortableContext
+                        items={sections.map((s) => sortableIdForFolder(s.folder.id))}
+                        strategy={topLevelStrategy}
+                      >
+                        {sections.map((section) => (
+                          <AgentFolderBlock
+                            key={section.folder.id}
+                            folder={section.folder}
+                            isRoot={section.isRoot}
+                            agentCount={section.agents.length}
+                            isCollapsed={(collapsedFolders ?? []).includes(section.folder.id)}
+                            activeDragType={activeDrag?.type ?? null}
+                            insertEdge={
+                              folderDropCue?.folderId === section.folder.id &&
+                              activeDrag?.folderId !== section.folder.id
+                                ? folderDropCue.edge
+                                : null
+                            }
+                            initialRenaming={section.folder.id === pendingRenameFolderId}
+                            onToggle={() => handleToggleFolder(section.folder.id)}
+                            onRename={(name) => handleRenameFolder(section.folder.id, name)}
+                            onRenameEnd={() => setPendingRenameFolderId(null)}
+                            onDelete={() => handleDeleteFolder(section.folder.id)}
+                            onCreateFolder={section.isRoot ? handleCreateFolder : undefined}
+                          >
+                            <SortableContext
+                              items={section.agents.map((a) => a.slug)}
+                              strategy={verticalListSortingStrategy}
+                            >
+                              {section.agents.map((agent) => (
+                                <SortableAgentMenuItem key={agent.slug} agent={agent} />
+                              ))}
+                            </SortableContext>
+                          </AgentFolderBlock>
+                        ))}
+                      </SortableContext>
+                      <DragOverlay dropAnimation={agentDropAnimation}>
+                        {activeDrag ? (
+                          <AgentDragOverlayRow
+                            label={activeDrag.label}
+                            isFolder={activeDrag.type === 'folder'}
+                          />
+                        ) : null}
+                      </DragOverlay>
+                    </DndContext>
+                  </SidebarDragProvider>
                 )}
               </SidebarMenu>
             </SidebarGroupContent>
@@ -1042,18 +1682,69 @@ export function AppSidebar() {
             <Settings className="h-4 w-4" />
             <span>Settings</span>
           </SidebarMenuButton>
-          <button
-            type="button"
-            onClick={() => openSettings('general')}
-            className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
-            title={updateAvailable ? `Update available: v${updateStatus.version}` : undefined}
-            data-testid="sidebar-version"
-          >
-            {updateAvailable && (
-              <span className="h-2 w-2 rounded-full bg-blue-500" aria-label="Update available" />
-            )}
-            <span>v{__APP_VERSION__}</span>
-          </button>
+          {isCloud && versionState.showPair && versionState.cloudVersion ? (
+            <div
+              className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0"
+              data-testid="sidebar-version"
+            >
+              <button
+                type="button"
+                onClick={() => openSettings('general')}
+                className="inline-flex items-center gap-0.5 hover:text-foreground"
+                title={`Desktop v${versionState.desktopVersion}`}
+                data-testid="sidebar-version-desktop"
+              >
+                <Laptop className="mr-0.5 size-3" aria-hidden="true" />
+                {versionState.desktopVersion}
+                {versionState.desktopBehind && (
+                  <VersionBehindDot
+                    wayBehind={versionState.desktopWayBehind}
+                    label="Desktop update available"
+                  />
+                )}
+              </button>
+              <span className="h-2.5 w-px bg-current opacity-60" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={() => {
+                  const base = platformAuth?.platformBaseUrl
+                  const orgId = platformAuth?.orgId
+                  if (!base || !orgId) return
+                  void openExternalUrl(
+                    `${base}/dashboard/organizations/${orgId}?tab=cloud`,
+                  )
+                }}
+                className="inline-flex items-center gap-0.5 hover:text-foreground"
+                title={`Cloud v${versionState.cloudVersion}`}
+                data-testid="sidebar-version-cloud"
+              >
+                <Cloud className="mr-0.5 size-3" aria-hidden="true" />
+                {versionState.cloudVersion}
+                {versionState.cloudBehind && (
+                  <VersionBehindDot
+                    wayBehind={versionState.cloudWayBehind}
+                    label="Cloud update available"
+                  />
+                )}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => openSettings('general')}
+              className="inline-flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
+              title={updateAvailable ? `${isCloud ? 'Desktop update available' : 'Update available'}: v${updateStatus.version}` : undefined}
+              data-testid="sidebar-version"
+            >
+              <span>{versionState.cloudVersion ?? desktopVersion}</span>
+              {updateAvailable && (
+                <span
+                  className="h-1.5 w-1.5 rounded-full bg-blue-500"
+                  aria-label={isCloud ? 'Desktop update available' : 'Update available'}
+                />
+              )}
+            </button>
+          )}
         </div>
       </SidebarFooter>
 
