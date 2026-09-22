@@ -354,13 +354,14 @@ describe('AgentIntegration host contract', () => {
     expect(state.interrupt).toHaveBeenCalledWith('session-1')
     expect(acknowledged).toHaveBeenCalledOnce()
   })
-  it('routes matched review creation and resolution without guessing a task session', async () => {
+  it('routes matched review creation and resolution without guessing a session', async () => {
     await manager.start()
     await adapter.input('comment')
     await vi.waitFor(() => expect(state.mappings.size).toBe(1))
     adapter.outputs = []
     const request = { id: 'review', kind: 'proxy_review', blocking: true, autoApproved: false,
       scope: { agentSlug: 'installation-a', sessionId: 'another-session' }, payload: {} }
+    state.global?.({ type: 'user_request_resolved', kind: 'proxy_review', requestId: 'unrelated', scope: { agentSlug: 'installation-a' } })
     state.global?.({ type: 'user_request_created', request })
     state.global?.({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a' } } })
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -678,4 +679,29 @@ it('auto-pause refreshes the MCP environment after the paused status is persiste
     status.mockReset()
     state.syncMcp.mockReset().mockResolvedValue(true)
   }
+})
+
+it('rejects cancellation when the external target loses access', async () => {
+  await manager.start()
+  await adapter.input('comment')
+  await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+  adapter.allowed = false
+  const acknowledged = vi.fn()
+  state.interrupt.mockResolvedValue({ interrupted: true, processKept: false })
+  await adapter.cancel(acknowledged)
+  expect(state.interrupt).not.toHaveBeenCalled()
+  expect(acknowledged).not.toHaveBeenCalled()
+})
+
+it('contains a failed review-resolution delivery without poisoning later deliveries', async () => {
+  await manager.start()
+  await adapter.input('comment')
+  await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+  adapter.outputs = []
+  vi.spyOn(adapter, 'deliver').mockRejectedValueOnce(new Error('Delivery unavailable'))
+  const resolution = { type: 'user_request_resolved', kind: 'proxy_review', requestId: 'review', scope: { agentSlug: 'installation-a', sessionId: 'session-1' } }
+  state.global?.(resolution)
+  await vi.waitFor(() => expect(captureException).toHaveBeenCalled())
+  state.global?.(resolution)
+  await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
 })

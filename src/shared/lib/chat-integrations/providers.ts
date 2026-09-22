@@ -27,6 +27,8 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
     record: AgentIntegrationRecord,
   ) => ChatAgentIntegration | Promise<ChatAgentIntegration>,
 ): IntegrationProvider {
+  const identityField = provider === 'imessage' ? 'phoneNumber' : 'botToken'
+  const identitySchema = z.object({ [identityField]: z.string().min(1) })
   return {
     definition: chatDefinitions[provider],
     policy: chatIntegrationPolicy,
@@ -34,11 +36,10 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
     serialize: record => toPublicChatIntegration(record as ChatIntegration),
     configuration: {
       identityLabel: provider === 'imessage' ? 'Phone number' : 'Bot token',
-      identityPaths: [provider === 'imessage' ? '$.phoneNumber' : '$.botToken'],
+      identityPaths: [`$.${identityField}`],
       uniqueKey(input) {
-        const field = provider === 'imessage' ? 'phoneNumber' : 'botToken'
-        const parsed = z.object({ [field]: z.string().min(1) }).safeParse(input)
-        return parsed.success ? parsed.data[field] : null
+        const parsed = identitySchema.safeParse(input)
+        return parsed.success ? parsed.data[identityField] : null
       },
       merge: (stored, patch) => mergeChatIntegrationConfig(provider, stored, patch),
     },

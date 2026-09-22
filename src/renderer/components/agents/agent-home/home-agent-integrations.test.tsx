@@ -19,6 +19,7 @@ vi.mock('@renderer/hooks/use-agent-integrations', () => ({
   useAgentIntegrationAccess: (...args: unknown[]) => mockUseChatIntegrationAccess(...args),
 }))
 
+const mockCanManage = vi.fn(() => true)
 const mockNavigate = vi.fn()
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
@@ -27,8 +28,8 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({
-    canAdminAgent: () => true,
-    canUseAgent: () => true,
+    canAdminAgent: () => mockCanManage(),
+    canUseAgent: () => mockCanManage(),
   }),
   UserProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
@@ -66,6 +67,7 @@ const INTEGRATION: ListItem = {
 describe('HomeAgentIntegrations', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockCanManage.mockReturnValue(true)
     mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION] })
     mockUseChatIntegrationAccess.mockReturnValue({ data: [] })
   })
@@ -133,4 +135,13 @@ describe('HomeAgentIntegrations', () => {
     renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
     expect(screen.getByText(label)).toBeInTheDocument()
   })
+})
+
+it('does not invite viewers to configure providers or render an empty setup grid', () => {
+  mockCanManage.mockReturnValue(false)
+  mockUseChatIntegrations.mockReturnValue({ data: [] })
+  const { container } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.getByText('No external integrations have been configured for this agent.')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /connect via/i })).not.toBeInTheDocument()
+  expect(container.querySelector('.grid')).toBeNull()
 })

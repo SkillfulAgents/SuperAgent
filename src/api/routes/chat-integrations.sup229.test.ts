@@ -30,6 +30,8 @@ const mockAuthUser = { id: 'attacker-user', name: 'Attacker', email: 'attacker@e
 // integration only (attacker has 'user' on agent-a), exactly mirroring how the
 // real middleware scopes auth to :integrationId and never sees the session.
 vi.mock('../middleware/auth', () => ({
+  getAuthorizedAgentRole: () => 'user',
+  hasMinRole: (role: string, minimum: string) => ({ viewer: 0, user: 1, owner: 2 }[role]! >= { viewer: 0, user: 1, owner: 2 }[minimum]!),
   Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentRead: () => async (_c: unknown, next: () => Promise<void>) => next(),
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
@@ -59,6 +61,7 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
   updateAgentIntegrationStatus: vi.fn(),
   deleteAgentIntegration: vi.fn(),
   DuplicateIntegrationIdentityError: class DuplicateIntegrationIdentityError extends Error {},
+  IntegrationConfigurationUnsupportedError: class IntegrationConfigurationUnsupportedError extends Error {},
 }))
 
 const mockGetChatIntegrationSessionById = vi.fn()

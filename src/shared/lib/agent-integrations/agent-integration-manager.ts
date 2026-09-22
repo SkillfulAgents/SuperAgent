@@ -518,6 +518,7 @@ export class AgentIntegrationManager {
       try {
         if (event.type === 'input') this.enqueueMessage(integration.id, event)
         else if (event.type === 'cancel') {
+          if (!(await this.isAllowed(integration.id, event.externalId))) return
           const session = await getIntegrationSession(integration.id, event.externalId)
           if (session && (await agentRegistry.get(integration.agentSlug).messages.interrupt(session.sessionId)).interrupted) event.onInterrupted?.()
         }
@@ -1238,13 +1239,15 @@ export class AgentIntegrationManager {
     // wire the session cards come from, filtered to the review kinds.
     if (data.type === 'user_request_resolved') {
       const scope = data.scope as PendingUserInputRequest['scope'] | undefined
-      if (!scope?.agentSlug || typeof data.requestId !== 'string') return
+      if (!scope?.agentSlug || !scope.sessionId || typeof data.requestId !== 'string') return
       if (data.kind !== 'proxy_review' && data.kind !== 'x_agent_review') return
-      for (const session of this.chatSessions.values()) {
-        if (session.integration.agentSlug !== scope.agentSlug || !session.sessionId) continue
-        if (scope.sessionId && scope.sessionId !== session.sessionId) continue
-        // The task family resumes only the persisted matching request ID.
-        await this.deliver(session.integration.id, session.chatId, { type: 'runtime', event: data }, session.sessionId)
+      // Only an explicit session scope can identify the waiting recipient.
+      // Agent-wide resolutions must not fan out to unrelated work.
+      try {
+        const mapping = await getIntegrationSessionBySessionId(scope.agentSlug, scope.sessionId)
+        if (mapping) await this.deliver(mapping.integrationId, mapping.externalId, { type: 'runtime', event: data }, scope.sessionId)
+      } catch (error) {
+        reportError(error, 'route-review-resolution', { agentSlug: scope.agentSlug, sessionId: scope.sessionId })
       }
       return
     }

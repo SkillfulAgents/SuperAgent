@@ -4,8 +4,6 @@
 
 ```mermaid
 classDiagram
-    AgentIntegration <|-- TaskManagerAgentIntegration
-    TaskManagerAgentIntegration <|-- LinearAgentIntegration
     AgentIntegration <|-- ChatAgentIntegration
     ChatAgentIntegration <|-- TelegramConnector
     ChatAgentIntegration <|-- SlackConnector
@@ -29,7 +27,7 @@ classDiagram
 | `getTools` | Family exposes optional tools through named, schema-described operations. Existing chat send/directory endpoints invoke these without accessing transport methods. |
 | `onCreated` | Optional setup-only hook. iMessage uses it for the contact card; boot and reconnect never invoke it. |
 
-The registry exposes serializable definitions (family, capabilities, setup fields, settings) before an installation is connected. Target classification can also be requested through the registry without constructing a connector. Each provider registers connection-independent `isAllowed` and `sessionPolicy` hooks; outbound session recording uses these against the current persisted installation even during a reconnect. Chat adapters and their registry entries share the same policy implementation.
+The registry exposes serializable definitions (family, agent capabilities, management capabilities, setup fields, settings) before an installation is connected. Target classification can also be requested through the registry without constructing a connector. Each provider registers connection-independent `isAllowed` and `sessionPolicy` hooks; outbound session recording uses these against the current persisted installation even during a reconnect. Chat adapters and their registry entries share the same policy implementation.
 
 ## Chat behavior
 
@@ -43,7 +41,7 @@ The normalized response event carries a request ID, request kind, and value. Cha
 
 The Slack provider factory supplies an installation-scoped store for joined-thread participation. `SlackConnector` saves its bounded thread list in `slack_thread_state` and restores it before accepting events, including when multiple threads share one agent session. The automatic migration preserves existing session rows; no integration reinstall is required.
 
-Application startup, desktop resume, and API lifecycle calls use the same `agentIntegrationManager` singleton. The old manager and `ChatClientConnector` import paths re-export compatibility aliases; they do not create another runtime. Existing chat HTTP paths, tool names, and UI setup flows remain compatible.
+Application startup, desktop resume, and API lifecycle calls use the same `agentIntegrationManager` singleton. The old manager and `ChatClientConnector` import paths re-export compatibility aliases; they do not create another runtime. Existing chat HTTP paths and UI setup flows remain compatible. Discovery uses `list_agent_integrations`; historical tool calls retain their renderers.
 
 ## Integration-owned MCP
 

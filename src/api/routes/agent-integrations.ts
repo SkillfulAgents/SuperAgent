@@ -8,13 +8,13 @@
 import { Hono, type MiddlewareHandler } from 'hono'
 import { z } from 'zod'
 import {
-  listAgentIntegrations,
   getAgentIntegration,
   createAgentIntegration,
   updateAgentIntegration,
   updateAgentIntegrationStatus,
   deleteAgentIntegration,
   DuplicateIntegrationIdentityError,
+  IntegrationConfigurationUnsupportedError,
 } from '@shared/lib/services/agent-integration-service'
 import {
   getChatAccessById,
@@ -27,12 +27,13 @@ import type { ChatAccessStatus } from '@shared/lib/services/chat-integration-acc
 import { listChatIntegrationSessions, archiveChatIntegrationSession, getChatIntegrationSessionById, deleteChatIntegrationSessionsByIntegration } from '@shared/lib/services/chat-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema } from '@shared/lib/chat-integrations/config-schema'
-import { integrationSupports } from '@shared/lib/agent-integrations/public'
+import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/cleanup'
+import { listAgentIntegrationsHandler } from './agent-integration-list'
 import { toPublicAgentIntegration } from '@shared/lib/agent-integrations/serialization'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { Authenticated, AgentRead, AgentUser, EntityAgentRole, ResolveAgent, getAgentId } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, EntityAgentRole, ResolveAgent, getAgentId, getAuthorizedAgentRole, hasMinRole } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
 import { SPEED_LEVELS } from '@shared/lib/container/types'
 
@@ -44,9 +45,7 @@ const speedOverrideSchema = z.enum(SPEED_LEVELS).nullable().optional()
 const agentIntegrationsRouter = new Hono()
 
 agentIntegrationsRouter.use('*', Authenticated())
-agentIntegrationsRouter.get('/agents/:id', ResolveAgent(), AgentRead(), async c => c.json((await listAgentIntegrations(getAgentId(c), c.req.query('status'))).map(row => ({
-  ...toPublicAgentIntegration(row), connected: agentIntegrationManager.isIntegrationConnected(row.id),
-}))))
+agentIntegrationsRouter.get('/agents/:id', ResolveAgent(), AgentRead(), listAgentIntegrationsHandler)
 
 const IntegrationAgentRole = EntityAgentRole({
   paramName: 'integrationId',
@@ -60,7 +59,9 @@ const IntegrationAgentRole = EntityAgentRole({
 const RequireProviderManagement: MiddlewareHandler = async (c, next) => {
   const row = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
   const role = agentIntegrationRegistry.getDefinition(row.provider)?.managementAccess ?? 'owner'
-  return role === 'owner' ? IntegrationAgentRole('owner')(c, next) : next()
+  const authorizedRole = getAuthorizedAgentRole(c)
+  if (!authorizedRole || !hasMinRole(authorizedRole, role)) return c.json({ error: 'Forbidden' }, 403)
+  return next()
 }
 
 // GET /api/agent-integrations/:integrationId - Get a single integration
@@ -326,6 +327,7 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
         409,
       )
     }
+    if (error instanceof IntegrationConfigurationUnsupportedError) return c.json({ error: error.message }, 400)
     if (error instanceof z.ZodError) {
       const message = error.issues[0]?.message ?? 'Invalid config'
       return c.json({ error: `Invalid config: ${message}` }, 400)
@@ -369,11 +371,8 @@ agentIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), 
   try {
     const id = c.req.param('integrationId')
 
-    // Pause removes the runtime identity and keeps failed cleanup disconnected.
-    await agentIntegrationManager.pauseIntegration(id)
-
-    const integration = await getAgentIntegration(id)
-    if (integration) await agentIntegrationRegistry.cleanup(integration)
+    const integration = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
+    await cleanupIntegrationResource(integration)
 
     // Clean up session mappings
     await deleteChatIntegrationSessionsByIntegration(id)
@@ -460,7 +459,8 @@ agentIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', Integratio
     if (!session || session.integrationId !== integrationId) {
       return c.json({ error: 'Session not found' }, 404)
     }
-    if (!integrationSupports(toPublicAgentIntegration(c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>), 'reset_conversation')) {
+    const integration = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
+    if (!agentIntegrationRegistry.getDefinition(integration.provider)?.managementCapabilities?.includes('reset_conversation')) {
       return c.json({ error: 'This integration keeps one session per work item' }, 400)
     }
     // Notify the manager to clean up SSE subscriptions

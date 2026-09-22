@@ -5392,7 +5392,7 @@ describe('MessagePersister', () => {
       mockClient._sendMessage({ type: 'system', subtype: 'process_evicted', process_instance: processInstance })
     }
 
-    it.each([{ isChatIntegrationSession: true }, { isAgentIntegrationSession: true }, { isTaskIntegrationSession: true }])('releases only an integration transport when its turn settles (%j)', async metadata => {
+    it.each([{ isChatIntegrationSession: true }, { isAgentIntegrationSession: true }])('releases only an integration transport when its turn settles (%j)', async metadata => {
       await resubscribeWithMetadata(metadata)
       announceProcess()
       const teardown = vi.spyOn(messagePersister, 'unsubscribeFromSession')

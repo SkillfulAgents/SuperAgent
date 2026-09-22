@@ -105,9 +105,7 @@ export interface SessionMetadata {
   webhookInvocationCount?: number
   // Common provenance for every external integration; set by the integration manager.
   isAgentIntegrationSession?: boolean
-  isTaskIntegrationSession?: boolean
   agentIntegrationId?: string
-  externalTaskId?: string
   // Chat integration fields - present when session was created from an external chat
   isChatIntegrationSession?: boolean
   chatIntegrationId?: string

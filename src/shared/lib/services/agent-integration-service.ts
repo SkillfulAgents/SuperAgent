@@ -8,8 +8,15 @@ import { changesOf, insertWhere } from '@shared/lib/db/batch'
 import { chatIntegrations, chatIntegrationSessions } from '@shared/lib/db/schema'
 import type { ChatIntegration, NewChatIntegration } from '@shared/lib/db/schema'
 import { agentIntegrationRegistry } from '../agent-integrations/registry'
-import { z } from 'zod'
+import { integrationConfigSchema } from '../agent-integrations/config-schema'
 import { captureException } from '@shared/lib/error-reporting'
+
+export class IntegrationConfigurationUnsupportedError extends Error {
+  constructor() {
+    super('This provider does not support configuration edits')
+    this.name = 'IntegrationConfigurationUnsupportedError'
+  }
+}
 
 export type { ChatIntegration, NewChatIntegration }
 
@@ -56,7 +63,8 @@ export interface UpdateAgentIntegrationParams {
 const MAX_UNIQUE_KEY_ATTEMPTS = 3
 
 export async function createAgentIntegration(params: CreateAgentIntegrationParams): Promise<string> {
-  const newToken = extractUniqueKey(params.provider, params.config)
+  const config = integrationConfigSchema.parse(params.config)
+  const newToken = extractUniqueKey(params.provider, config)
   const id = crypto.randomUUID()
   const now = new Date()
 
@@ -65,7 +73,7 @@ export async function createAgentIntegration(params: CreateAgentIntegrationParam
     agentSlug: params.agentSlug,
     provider: params.provider as NewChatIntegration['provider'],
     name: params.name ?? null,
-    config: JSON.stringify(params.config),
+    config: JSON.stringify(config),
     showToolCalls: params.showToolCalls ?? false,
     // Always private at create; making a bot public is owner-only via the
     // dedicated PATCH /:integrationId/require-approval endpoint.
@@ -142,7 +150,7 @@ async function findIntegrationByUniqueKey(
 
 function safeParseConfig(row: ChatIntegration): Record<string, unknown> | null {
   try {
-    return z.record(z.string(), z.unknown()).parse(JSON.parse(row.config))
+    return integrationConfigSchema.parse(JSON.parse(row.config))
   } catch (err) {
     captureException(err, {
       tags: { component: 'chat-integration', operation: 'parse-config' },
@@ -187,6 +195,8 @@ export async function listStartupAgentIntegrations(): Promise<ChatIntegration[]>
   const keyless: ChatIntegration[] = []
 
   for (const row of rows) {
+    // Installations from a newer build remain manageable but cannot start here.
+    if (!agentIntegrationRegistry.getDefinition(row.provider)) continue
     const cfg = safeParseConfig(row)
     const uniqueKey = cfg ? extractUniqueKey(row.provider, cfg) : null
     if (!uniqueKey) {
@@ -287,8 +297,8 @@ export async function updateAgentIntegration(id: string, params: UpdateAgentInte
     if (!current) return false
 
     const configuration = agentIntegrationRegistry.getProvider(current.provider).configuration
-    if (!configuration) throw new Error('Provider settings cannot be edited')
-    const nextConfig = configuration.merge(current.config, params.config)
+    if (!configuration) throw new IntegrationConfigurationUnsupportedError()
+    const nextConfig = integrationConfigSchema.parse(configuration.merge(current.config, integrationConfigSchema.parse(params.config)))
     const currentConfig = safeParseConfig(current)
     const currentToken = currentConfig
       ? extractUniqueKey(current.provider, currentConfig)

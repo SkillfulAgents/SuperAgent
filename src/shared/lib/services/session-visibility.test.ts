@@ -4,7 +4,7 @@ import { isHiddenAutomatedSession } from './session-visibility'
 describe('isHiddenAutomatedSession', () => {
   it.each([
     { isAgentIntegrationSession: true }, { agentIntegrationId: 'integration' },
-    { isTaskIntegrationSession: true }, { isChatIntegrationSession: true }, { chatIntegrationId: 'legacy' },
+    { isChatIntegrationSession: true }, { chatIntegrationId: 'legacy' },
   ])('hides all integration sessions, including legacy metadata, until explicitly promoted (%j)', metadata => {
     expect(isHiddenAutomatedSession(metadata)).toBe(true)
     expect(isHiddenAutomatedSession({ ...metadata, promotedToInteractive: true })).toBe(false)

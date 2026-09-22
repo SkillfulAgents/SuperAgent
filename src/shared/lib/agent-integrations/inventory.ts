@@ -7,17 +7,17 @@ import { integrationMcpName } from './mcp'
  * Explicit projection keeps credentials and provider setup secrets off the wire. */
 export async function listAgentIntegrationInventory(agentSlug: string) {
   return Promise.all((await listAgentIntegrations(agentSlug)).map(async row => {
-    const provider = agentIntegrationRegistry.getProvider(row.provider)
+    const definition = agentIntegrationRegistry.getDefinition(row.provider)
     const sessions = await Promise.all((await listChatIntegrationSessions(row.id)).filter(session => !session.archivedAt).map(async session => ({
       externalId: session.externalChatId, displayName: session.displayName,
       ...await agentIntegrationRegistry.describeTarget(row.provider, session.externalChatId),
     })))
     let mcp = null
     try {
-      const connection = await agentIntegrationRegistry.getMcpConnection(row)
+      const connection = row.status === 'paused' ? null : await agentIntegrationRegistry.getMcpConnection(row)
       if (connection) mcp = { name: integrationMcpName(row.id), status: connection.status, identity: connection.identity, tools: connection.tools.map(tool => tool.name) }
     } catch { /* A damaged connection remains listed and cannot hide healthy accounts. */ }
-    return { id: row.id, provider: row.provider, family: provider.definition.family, name: row.name, status: row.status,
-      capabilities: [...provider.definition.capabilities], sessions, mcp }
+    return { id: row.id, provider: row.provider, family: definition?.family ?? 'unknown', name: row.name, status: row.status,
+      capabilities: [...(definition?.capabilities ?? [])], sessions, mcp }
   }))
 }

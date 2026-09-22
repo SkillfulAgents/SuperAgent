@@ -22,5 +22,5 @@ export function isHiddenAutomatedSession(meta: SessionMetadata | null | undefine
 
 /** Legacy family flags remain readable so existing sessions need no migration. */
 export function isAgentIntegrationSession(meta: SessionMetadata | null | undefined): boolean {
-  return !!(meta?.isAgentIntegrationSession || meta?.agentIntegrationId || meta?.isChatIntegrationSession || meta?.chatIntegrationId || meta?.isTaskIntegrationSession)
+  return !!(meta?.isAgentIntegrationSession || meta?.agentIntegrationId || meta?.isChatIntegrationSession || meta?.chatIntegrationId)
 }

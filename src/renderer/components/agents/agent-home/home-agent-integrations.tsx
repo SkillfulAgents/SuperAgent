@@ -88,9 +88,9 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">Not configured yet</p>
           <p className="text-xs mt-1">
-            Bring this agent into the places you work.
+            {providers.length > 0 ? 'Bring this agent into the places you work.' : 'No external integrations have been configured for this agent.'}
           </p>
-          <div className="mt-3 grid grid-cols-2 gap-1.5">
+          {providers.length > 0 && <div className={`mt-3 grid ${providers.length === 3 ? 'grid-cols-3' : 'grid-cols-2'} gap-1.5`}>
             {providers.map((tile) => (
               <button
                 key={tile.slug}
@@ -107,7 +107,7 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
                 </div>
               </button>
             ))}
-          </div>
+          </div>}
         </div>
       )}
       {rows.length > 0 && providers.length > 0 && (

@@ -1,3 +1,4 @@
+import type { IntegrationCapability } from './public'
 import type { AgentActor } from '../agent-actor'
 import type { SessionMetadata } from '../types/agent'
 import type { PendingUserInputRequest } from '../user-input/request-schema'
@@ -109,7 +110,9 @@ export interface AgentIntegrationDefinition {
   family: string
   /** Server-side management policy. Unknown providers default to owner-only. */
   managementAccess?: 'user' | 'owner'
+  /** Operations available to the agent. UI controls are separate. */
   capabilities: readonly string[]
+  managementCapabilities?: readonly IntegrationCapability[]
   settings: readonly { key: string; label: string; type: 'boolean' }[]
   setup: { kind: string; credentialFields: readonly string[] }
 }

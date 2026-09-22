@@ -60,8 +60,6 @@ export const sessionMetadataSchema = z
     webhookInvocationCount: z.number().optional(),
     isAgentIntegrationSession: z.boolean().optional(),
     agentIntegrationId: z.string().optional(),
-    isTaskIntegrationSession: z.boolean().optional(),
-    externalTaskId: z.string().optional(),
     isChatIntegrationSession: z.boolean().optional(),
     chatIntegrationId: z.string().optional(),
     promotedToInteractive: z.boolean().optional(),
