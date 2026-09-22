@@ -39,7 +39,7 @@ vi.mock('@shared/lib/agent-integrations/registry', async importOriginal => {
 })
 import router from './agent-integrations'
 import { createAgentIntegration, getAgentIntegration } from '@shared/lib/services/agent-integration-service'
-import { createChatIntegrationSession, listChatIntegrationSessions } from '@shared/lib/services/chat-integration-session-service'
+import { createAgentIntegrationSession, listAgentIntegrationSessions } from '@shared/lib/services/agent-integration-session-service'
 import { getLinearConfig } from '@shared/lib/task-manager-integrations/linear/store'
 
 const app = new Hono().route('/api/agent-integrations', router)
@@ -101,11 +101,11 @@ describe('shared integration API', () => {
     expect(await getAgentIntegration(id)).not.toBeNull()
   })
   it('preserves the issue session when a client tries to reset it', async () => {
-    const sessionId = await createChatIntegrationSession({ integrationId: id, externalChatId: 'issue', sessionId: 'sdk-session' })
+    const sessionId = await createAgentIntegrationSession({ integrationId: id, externalChatId: 'issue', sessionId: 'sdk-session' })
     const response = await app.request(`/api/agent-integrations/${id}/sessions/${sessionId}`, { method: 'DELETE' })
     expect(response.status).toBe(400)
     expect(manager.clearSessionById).not.toHaveBeenCalled()
-    expect((await listChatIntegrationSessions(id))[0].archivedAt).toBeNull()
+    expect((await listAgentIntegrationSessions(id))[0].archivedAt).toBeNull()
   })
   it('cleans up provider authorization before deleting the installation', async () => {
     expect((await app.request(`/api/agent-integrations/${id}`, { method: 'DELETE' })).status).toBe(204)
