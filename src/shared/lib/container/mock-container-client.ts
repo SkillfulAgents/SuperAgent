@@ -3090,6 +3090,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   // Session management
 
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
+    // Match POST /sessions and SessionManager: the first message creates the
+    // runtime's canonical session ID. An empty idle session is not supported.
+    if (!options.initialMessage) throw new Error('initialMessage is required')
     // Resolve the selection exactly as the real container client does, so E2E
     // assertions see the concrete wire id the SDK would receive.
     const model = resolveContainerModel(options.model, 'agent')

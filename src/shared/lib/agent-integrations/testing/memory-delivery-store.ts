@@ -14,8 +14,8 @@ export function memoryDeliveryStore(): typeof deliveryStore {
       return true
     },
     due: async () => structuredClone([...rows.values()].filter(row => row.state === 'pending' || (row.state === 'sending' && !row.owner) || row.noticeState === 'pending')),
-    nextDue: async () => {
-      const row = [...rows.values()].find(row => row.state === 'pending' || (row.state === 'sending' && !row.owner) || row.noticeState === 'pending')
+    nextDue: async available => {
+      const row = [...rows.values()].filter(row => !available || available.includes(row.integrationId)).find(row => row.state === 'pending' || (row.state === 'sending' && !row.owner) || row.noticeState === 'pending')
       return row ? { at: row.nextAttemptAt } : undefined
     },
     ownsNotice: async (id, owner) => rows.get(id)?.owner === owner && rows.get(id)?.noticeState === 'sending',

@@ -1,7 +1,7 @@
 import { MessageNotAcceptedError } from '../container/message-dispatch-error'
 import { z } from 'zod'
 import { captureException } from '../error-reporting'
-import { InvalidDeliveryEnvelope } from './delivery-schema'
+import { InvalidDeliveryEnvelope, parseDeliveryEnvelope } from './delivery-schema'
 import { deliveryStore, type DeliveryRecord } from './delivery-store'
 import type { IntegrationInputEvent, IntegrationRoute } from './types'
 
@@ -11,12 +11,13 @@ export class DeliveryCancelled extends Error {}
 export class PermanentDeliveryError extends Error {}
 export interface DeliveryAttempt {
   readonly id: string
-  readonly sessionId: string | null
   /** Persist intent BEFORE invoking anything that can accept agent work. */
-  handoff<T>(sessionId: string | undefined, send: () => Promise<T>): Promise<T>
+  handoff<T>(sessionId: string | undefined, send: () => Promise<T>, beforeSend?: () => void): Promise<T>
   /** A family may consume an input as an answer instead of starting a turn. */
-  consume(sessionId: string, consume: () => Promise<boolean>): Promise<boolean>
-  bind(sessionId: string): Promise<void>
+  consume(sessionId: string, consume: () => Promise<boolean>, beforeSend?: () => void): Promise<boolean>
+  bind(sessionId: string | null): Promise<void>
+  /** Persist successful route notices independently of later dispatch retries. */
+  notifyRoute(send: () => Promise<void>): Promise<void>
   assertCurrent(): void
 }
 interface DeliveryHost {
@@ -82,11 +83,13 @@ export class IntegrationDeliveryQueue {
         })
         this.active.set(key, work)
       }
-      // Check local pending records even when their connector is currently
-      // offline. Connect/input/completion wakes immediately; the timer only
-      // retries accepted local work and never fetches provider history.
-      const next = await this.store.nextDue()
-      if (next) this.wake(next.at.getTime() > Date.now() ? next.at.getTime() - Date.now() : 30_000)
+      // Offline rows must not mask a connected installation's earlier retry.
+      // Connect/input/completion wakes immediately; this only schedules local work.
+      const next = await this.store.nextDue(this.host.connectedIds())
+      if (next) this.wake(next.at.getTime() > Date.now() ? Math.min(next.at.getTime() - Date.now(), 30_000) : 30_000)
+      // Providers can reconnect internally without a manager connect callback.
+      // Keep checking local offline work, but never let it postpone a live retry.
+      else if (await this.store.nextDue()) this.wake(30_000)
     } finally {
       this.pumping = false
       if (this.repump) { this.repump = false; this.wake() }
@@ -133,13 +136,21 @@ export class IntegrationDeliveryQueue {
       return
     }
     let handedOff = false
-    const handoff = async <T>(sessionId: string | undefined, send: () => Promise<T>): Promise<T> => {
+    let acknowledged = false
+    const handoff = async <T>(sessionId: string | undefined, send: () => Promise<T>, beforeSend?: () => void): Promise<T> => {
       current()
       if (!(await this.store.handoff(row.id, owner, sessionId))) throw new DeliveryCancelled()
       current()
+      // Checks after the write are still preparation: no runtime call has begun.
+      // Keep a cancellation here retryable instead of treating it as an unknown send.
+      beforeSend?.()
       handedOff = true
       row.sessionId = sessionId ?? null
-      try { return await send() }
+      try {
+        const result = await send()
+        acknowledged = true
+        return result
+      }
       catch (error) {
         if (error instanceof MessageNotAcceptedError) {
           handedOff = false
@@ -150,17 +161,28 @@ export class IntegrationDeliveryQueue {
     }
     try {
       current()
-      await this.host.dispatch(row, { id: row.id, sessionId: row.sessionId, assertCurrent: current,
+      await this.host.dispatch(row, { id: row.id, assertCurrent: current,
         handoff,
         bind: async sessionId => {
           current()
           if (!(await this.store.change(row.id, owner, { sessionId }))) throw new DeliveryCancelled()
           row.sessionId = sessionId
         },
-        consume: async (sessionId, consume) => {
-          const consumed = await handoff(sessionId, consume)
+        notifyRoute: async send => {
+          const envelope = parseDeliveryEnvelope(row.envelope)
+          if (!envelope.route.notice) return
+          current()
+          await send()
+          delete envelope.route.notice
+          const saved = JSON.stringify(envelope)
+          if (!(await this.store.change(row.id, owner, { envelope: saved }))) throw new DeliveryCancelled()
+          row.envelope = saved
+        },
+        consume: async (sessionId, consume, beforeSend) => {
+          const consumed = await handoff(sessionId, consume, beforeSend)
           if (!consumed) {
             handedOff = false
+            acknowledged = false
             if (!(await this.store.change(row.id, owner, { state: 'preparing' }))) throw new DeliveryCancelled()
           }
           return consumed
@@ -168,6 +190,13 @@ export class IntegrationDeliveryQueue {
       })
       await this.store.change(row.id, owner, { state: 'delivered', envelope: null })
     } catch (error) {
+      if (acknowledged) {
+        // New-session registration/stream attachment happens after creation
+        // accepted the first input. Its failure cannot undo that evidence.
+        const changed = await this.store.change(row.id, owner, { state: 'delivered', envelope: null })
+        if (changed && !(error instanceof DeliveryCancelled)) this.report(error, 'after-handoff', row)
+        return
+      }
       if (error instanceof DeliveryCancelled) {
         // Pause/cancel writes fence the owner. A host shutdown leaves recovery
         // to the next start; a transport rebuild may safely retry preparation.

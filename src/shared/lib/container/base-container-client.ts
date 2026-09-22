@@ -1239,7 +1239,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
-    const port = await this.getPortOrThrow()
+    const port = await this.getPortOrThrow().catch(error => {
+      throw new MessageNotAcceptedError('unavailable', error instanceof Error ? error.message : 'Container unavailable', { cause: error })
+    })
     const timeoutMs = 60000 // 60 second timeout
 
     // Resolve stored selections (bare aliases or concrete ids) to the active

@@ -23,13 +23,15 @@ provider transport's own network ACK/replay guarantees or fetch missed remote ev
 
 The store uses a conditional insert and compare-and-set transitions. Each attempt
 gets an owner token; lifecycle cancellation clears that token, preventing late
-completion from reviving a cancelled record. Before retrying a mapped input, the
-manager checks the same session is still mapped. Normal access, attribution,
+completion from reviving a cancelled record. An unaccepted input may follow a new
+session mapping after timeout or self-heal. Normal access, attribution,
 configuration, and provider policy checks still run at dispatch.
 
-A new session is created idle, registered, mapped, and attached before its first
-input is sent. Immediately before runtime handoff the row becomes `sending` and
-records the session ID. The delivery's UUID is passed as the runtime message UUID.
+Creating a session sends its first input: the runtime requires that input to
+obtain its canonical session ID. The row becomes `sending` before creation, with
+the delivery UUID passed as `initialMessageUuid`. The returned session ID is saved
+before registration, mapping, and stream attachment. Follow-ups checkpoint the
+existing session ID before sending with the same stable message UUID convention.
 Successful acceptance becomes `delivered`; agent turn completion is not involved.
 Free-text answers consumed by a family's existing question handler use the same
 write-ahead handoff boundary.
@@ -40,7 +42,10 @@ Preparation/dispatch failures retry up to **five attempts**, with delays of
 **1 second, 5 seconds, 30 seconds, and 2 minutes**. Invalid input and explicit
 permanent errors stop immediately. A definite pre-acceptance runtime refusal
 (container not running or session not found) can retry; a missing session retains
-the existing self-heal behavior. A session-creation failure has not sent any input.
+the existing self-heal behavior. Creation is a runtime handoff too: failures before
+HTTP dispatch can retry, but an unknown creation response may already have started
+work and cannot safely be replayed. If the session ID was never returned, transcript
+reconciliation cannot confirm acceptance.
 
 On startup, interrupted preparation returns to the pending queue. A row left in
 `sending` is reconciled by searching the host transcript for its runtime UUID.
@@ -53,7 +58,6 @@ handoff is not replayed after a host restart.
 
 This provides durable local acceptance and bounded handoff retries, not exactly-once
 agent/tool execution or a durable replacement for the runtime's own message queue.
-A cold empty session left by a failed setup can be replaced without duplicating work.
 
 ## Failure notices and lifecycle
 
@@ -62,9 +66,10 @@ notice in the same record. The notice uses the original stored reply destination
 including the original Linear comment thread after reconnect. Notice attempts have
 an independent five-attempt budget and the same backoff. Exhaustion is a terminal
 `failed` notice state and is reported once; it does not block later input. Providers
-must propagate delivery failures to the manager. A provider that accepted a notice
-but lost its response may receive a duplicate notice on retry; this never reruns
-agent work.
+must propagate delivery failures to the manager. Successful route notices are
+checkpointed in the envelope, so a later preparation/send failure or restart does
+not repeat them. A provider that accepted a notice but lost its response may receive
+a duplicate notice on retry; this never reruns agent work.
 
 Explicit pause (including auto-pause), authorization loss, installation removal or
 replacement, external cancellation, access revocation, and session reset cancel

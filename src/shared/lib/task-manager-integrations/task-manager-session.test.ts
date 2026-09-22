@@ -56,7 +56,7 @@ describe('task inputs through the shared integration manager', () => {
     // arrives, so any task-family turn lock would prevent the following send.
     await tasks.input('second-thread')
     await vi.waitFor(() => expect(runtime.send).toHaveBeenCalledWith('session', expect.stringContaining('comment thread second-thread'), expect.any(String)))
-    expect(runtime.create).toHaveBeenCalledOnce()
-    expect(runtime.send).toHaveBeenCalledTimes(2)
+    expect(runtime.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ initialMessage: expect.stringContaining('comment thread first-thread'), initialMessageUuid: expect.any(String) }))
+    expect(runtime.send).toHaveBeenCalledOnce()
   })
 })

@@ -29,8 +29,9 @@ export const deliveryStore = {
     return db.select().from(rows).where(and(runnable(), inArray(rows.integrationId, [...availableIds]), waiting()))
       .orderBy(asc(rows.nextAttemptAt), asc(rows.createdAt), asc(rows.id)).limit(100).all()
   },
-  async nextDue() {
-    return db.select({ at: rows.nextAttemptAt }).from(rows).where(and(runnable(), waiting()))
+  async nextDue(availableIds?: readonly string[]) {
+    if (availableIds && !availableIds.length) return undefined
+    return db.select({ at: rows.nextAttemptAt }).from(rows).where(and(runnable(), availableIds ? inArray(rows.integrationId, [...availableIds]) : undefined, waiting()))
       .orderBy(asc(rows.nextAttemptAt)).limit(1).get()
   },
   async ownsNotice(id: string, owner: string) {

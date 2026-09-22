@@ -5,7 +5,7 @@ import { createTestDatabase, type TestDatabase } from '../db/testing/create-test
 import type { AppDatabase } from '../db/drivers/types'
 import { chatIntegrations, integrationDeliveries } from '../db/schema'
 import { deliveryStore, DELIVERY_RETENTION_MS, type DeliveryRecord } from './delivery-store'
-import { IntegrationDeliveryQueue, PermanentDeliveryError, type DeliveryAttempt } from './delivery-queue'
+import { IntegrationDeliveryQueue, DeliveryCancelled, PermanentDeliveryError, type DeliveryAttempt } from './delivery-queue'
 import { deliveryEnvelopeSchema } from './delivery-schema'
 import type { IntegrationInputEvent } from './types'
 let database: AppDatabase
@@ -159,6 +159,41 @@ describe('durable integration delivery (common SQL path)', () => {
     const q = queue(); await q.start(); await q.accept('integration', event(), route)
     await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce())
     expect(dispatch.mock.calls[0][0].integrationId).toBe('integration')
+  })
+  it('a failed final preflight after the sending checkpoint is retryable, not an uncertain send', async () => {
+    const send = vi.fn(async () => {})
+    dispatch.mockImplementationOnce(async (_row, attempt) => {
+      await attempt.handoff('runtime-session', send, () => { throw new DeliveryCancelled() })
+    })
+    const q = queue(); await q.start(); await q.accept('integration', event(), route)
+    await settled({ state: 'pending', attempts: 1 })
+    expect(send).not.toHaveBeenCalled(); expect(reconcile).not.toHaveBeenCalled(); expect(notice).not.toHaveBeenCalled()
+    await expireBackoff(); await settled({ state: 'delivered', attempts: 2 })
+  })
+  it('offline overdue work does not delay a connected installation’s one-second retry', async () => {
+    await database.insert(chatIntegrations).values({ id: 'offline', provider: 'slack', agentSlug: 'agent', config: '{}', createdAt: new Date(), updatedAt: new Date() }).run()
+    await deliveryStore.accept('offline', event('offline'), route)
+    dispatch.mockRejectedValueOnce(new Error('temporary startup failure'))
+    const q = queue(); await q.start(); await q.accept('integration', event(), route)
+    await vi.waitFor(async () => expect((await rows()).find(row => row.integrationId === 'integration')).toMatchObject({ state: 'pending', attempts: 1 }))
+    // No manual wake or backoff edit: exercise the actual next-due timer.
+    await vi.waitFor(async () => expect((await rows()).find(row => row.integrationId === 'integration')).toMatchObject({ state: 'delivered', attempts: 2 }), { timeout: 4000 })
+    expect(dispatch).toHaveBeenCalledTimes(2)
+    expect((await rows()).find(row => row.integrationId === 'offline')?.attempts).toBe(0)
+  })
+  it('resumes accepted work when an offline connector reconnects internally without a wake event', async () => {
+    available = false
+    vi.useFakeTimers()
+    const nextDue = vi.spyOn(deliveryStore, 'nextDue')
+    try {
+      const q = queue(); await q.start(); await q.accept('integration', event(), route)
+      await vi.waitFor(() => expect(nextDue).toHaveBeenCalledWith())
+      expect(dispatch).not.toHaveBeenCalled()
+      available = true
+      await vi.advanceTimersByTimeAsync(30_000)
+      await settled({ state: 'delivered' })
+      expect(dispatch).toHaveBeenCalledOnce()
+    } finally { nextDue.mockRestore(); vi.useRealTimers() }
   })
   it('a slow host notice does not delay a new input to the same conversation', async () => {
     let release!: () => void

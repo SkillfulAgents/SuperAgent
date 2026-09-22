@@ -144,12 +144,9 @@ import { createAgentIntegration } from '@shared/lib/services/agent-integration-s
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 
 class PromptTestContainerClient extends MockContainerClient {
-  override sendMessage(...args: Parameters<MockContainerClient['sendMessage']>) {
-    return super.sendMessage(args[0], args[1], args[2], { ...args[3], shouldQuery: false })
-  }
-  override createSession(options: Parameters<MockContainerClient['createSession']>[0]) {
-    // The spy sees production args; the empty message suppresses mock scenario timers.
-    return super.createSession({ ...options, initialMessage: '' })
+  override async createSession(options: Parameters<MockContainerClient['createSession']>[0]) {
+    if (!options.initialMessage) throw new Error('initialMessage is required')
+    return { id: crypto.randomUUID(), createdAt: new Date().toISOString(), lastActivity: new Date().toISOString(), workingDirectory: '/workspace', slashCommands: [] }
   }
 }
 
@@ -337,7 +334,6 @@ describe('chat session system prompt wiring', () => {
     messageOpts: { chatId: string; userName?: string; chatName?: string; text?: string },
   ) {
     const callIndex = createSessionSpy.mock.calls.length
-    const sendIndex = MockContainerClient.sendMessageCalls.length
     const integrationId = (await createAgentIntegration({
       agentSlug: 'test-agent',
       provider,
@@ -353,8 +349,9 @@ describe('chat session system prompt wiring', () => {
       userName: messageOpts.userName,
       chatName: messageOpts.chatName,
     })
-    await waitForCondition(() => MockContainerClient.sendMessageCalls.length > sendIndex)
-    return { ...(createSessionSpy.mock.calls[callIndex][0] as Record<string, unknown>), message: MockContainerClient.sendMessageCalls[sendIndex].content } as Record<string, unknown>
+    await waitForCondition(() => createSessionSpy.mock.calls.length > callIndex)
+    const args = createSessionSpy.mock.calls[callIndex][0]
+    return { ...args, message: args.initialMessage } as Record<string, unknown>
   }
 
   it('uses one multi-party decision for an unnamed Slack channel and falls back to user id', async () => {

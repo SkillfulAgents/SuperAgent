@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
-import { chatIntegrations, integrationDeliveries } from '../db/schema'
+import { chatIntegrations, chatIntegrationSessions, integrationDeliveries } from '../db/schema'
 import { AgentIntegrationManager } from './agent-integration-manager'
 import { AgentIntegrationRegistry } from './registry'
 import { MockChatAgentIntegration } from '../chat-integrations/mock-connector'
@@ -12,14 +12,17 @@ import type { AgentIntegrationRecord } from './types'
 import { getAgentIntegration } from '../services/agent-integration-service'
 import { getAgentIntegrationSession, archiveAgentIntegrationSession } from '../services/agent-integration-session-service'
 import { requireIntegrationReconnect } from './lifecycle'
+import { deliveryStore } from './delivery-store'
+import { MessageNotAcceptedError } from '../container/message-dispatch-error'
+import type { CreateSessionOptions } from '../container/types'
 let handle: TestDatabase
 let database: AppDatabase
 vi.mock('../db', () => ({ get db() { return database } }))
-const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), interrupt: vi.fn() }))
+const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), interrupt: vi.fn(), attach: vi.fn(), subscribed: vi.fn() }))
 vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
   container: { start: runtime.start }, inputs: { open: () => [], cancelAwaiting: async () => {} },
   sessions: { create: runtime.create, register: runtime.register, updateMetadata: async () => {}, markActive: () => {},
-    subscribeStream: async () => {}, isStreamSubscribed: () => true, activity: () => 'working', isAwaitingInput: () => false },
+    subscribeStream: runtime.attach, isStreamSubscribed: runtime.subscribed, activity: () => 'working', isAwaitingInput: () => false },
   messages: { send: runtime.send, interrupt: runtime.interrupt, findLastEntry: runtime.receipt,
     subscribe: () => () => {}, withSend: (_id: string, send: () => Promise<void>) => send() },
 }) } }))
@@ -33,8 +36,8 @@ vi.mock('../error-reporting', () => ({ captureException: vi.fn(), addErrorBreadc
 vi.mock('../services/connection-sync-service', () => ({ syncRemoteMcpAgents: async () => {} }))
 class Chat extends MockChatAgentIntegration {
   acknowledgeInput = vi.fn(async () => {})
-  input(id = 'input') { return this.emitEvent({ type: 'input', id, externalId: 'conversation', timestamp: new Date(), payload: {
-    externalMessageId: id, chatId: 'conversation', text: id, userId: 'human', timestamp: new Date(),
+  input(id = 'input', chatId = 'conversation') { return this.emitEvent({ type: 'input', id, externalId: chatId, timestamp: new Date(), payload: {
+    externalMessageId: id, chatId, text: id, userId: 'human', timestamp: new Date(),
   } }) }
   cancel() { return this.emitEvent({ type: 'cancel', externalId: 'conversation' }) }
 }
@@ -63,11 +66,18 @@ async function start(provider: 'slack' | 'telegram' | 'imessage' | 'linear' = 's
 async function rows() { return database.select().from(integrationDeliveries).all() }
 beforeEach(async () => {
   handle = await createTestDatabase(); database = handle.db; vi.clearAllMocks()
-  runtime.create.mockImplementation(async () => ({ id: `session-${runtime.create.mock.calls.length}` }))
+  runtime.create.mockImplementation(async (options: CreateSessionOptions) => {
+    // POST /sessions and SessionManager both reject a missing/empty first input.
+    if (!options.initialMessage) throw Object.assign(new Error('initialMessage is required'), { status: 400 })
+    expect(options.initialMessageUuid).toBeTruthy()
+    expect((await rows()).find(row => row.id === options.initialMessageUuid)?.state).toBe('sending')
+    return { id: `session-${runtime.create.mock.calls.length}` }
+  })
+  runtime.attach.mockResolvedValue(undefined); runtime.subscribed.mockReturnValue(true)
   runtime.send.mockResolvedValue(undefined); runtime.start.mockResolvedValue(undefined); runtime.receipt.mockResolvedValue(null)
   runtime.interrupt.mockResolvedValue({ interrupted: true })
 })
-afterEach(async () => { manager?.stop(); await new Promise(resolve => setTimeout(resolve, 20)); await handle.close() })
+afterEach(async () => { vi.restoreAllMocks(); manager?.stop(); await new Promise(resolve => setTimeout(resolve, 20)); await handle.close() })
 
 describe('shared manager durability with real integration storage', () => {
   it.each(['slack', 'telegram', 'imessage', 'linear'] as const)('uses one durable path and immediate running-session delivery for %s', async provider => {
@@ -77,12 +87,12 @@ describe('shared manager durability with real integration storage', () => {
       expect((await rows()).find(row => row.id === uuid)?.state).toBe('sending')
     })
     await adapter.input('first')
-    await vi.waitFor(() => expect(runtime.send).toHaveBeenCalledTimes(1))
+    await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))
     await adapter.input('second'); await adapter.input('first')
     await vi.waitFor(async () => expect((await rows()).filter(row => row.state === 'delivered')).toHaveLength(2))
-    expect(runtime.send).toHaveBeenCalledTimes(2)
-    expect(runtime.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ initialMessage: '' }))
-    expect(runtime.send.mock.calls[0][0]).toBe(runtime.send.mock.calls[1][0])
+    expect(runtime.send).toHaveBeenCalledOnce()
+    expect(runtime.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ initialMessage: expect.stringContaining('first') }))
+    expect(runtime.send.mock.calls[0][0]).toBe('session-1')
     if (adapter instanceof Chat) expect(adapter.acknowledgeInput).toHaveBeenCalledTimes(2)
   })
   it('recovers locally accepted input after a manager restart', async () => {
@@ -91,7 +101,8 @@ describe('shared manager durability with real integration storage', () => {
     expect((await rows())[0].state).toBe('pending')
     manager.stop(); await start()
     await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))
-    expect(runtime.send).toHaveBeenCalledOnce()
+    expect(runtime.create).toHaveBeenCalledOnce()
+    expect(runtime.send).not.toHaveBeenCalled()
   })
   it.each(['pause', 'authorization', 'reset', 'cancel'] as const)('%s during preparation prevents spending and does not resume the old input', async action => {
     await start()
@@ -113,6 +124,92 @@ describe('shared manager durability with real integration storage', () => {
     expect(runtime.send).not.toHaveBeenCalled()
     expect(runtime.create).not.toHaveBeenCalled()
   })
+  it.each(['reset', 'timeout', 'missing session'] as const)('sends one nonempty first input after %s', async reason => {
+    await start()
+    await adapter.input('first')
+    await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))
+    if (reason === 'reset') {
+      await adapter.input('/clear')
+      await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === '/clear')?.state).toBe('delivered'))
+    } else if (reason === 'timeout') {
+      vi.spyOn(adapter, 'sessionPolicy').mockReturnValue({ name: 'Chat', metadata: {}, timeoutHours: 1 })
+      await database.update(chatIntegrationSessions).set({ updatedAt: new Date(0) }).run()
+    } else {
+      runtime.send.mockRejectedValueOnce(new MessageNotAcceptedError('session-gone', 'Session not found'))
+    }
+    await adapter.input('after')
+    await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === 'after')?.state).toBe('delivered'))
+    expect(runtime.create).toHaveBeenCalledTimes(2)
+    expect(runtime.create.mock.calls[1][0]).toMatchObject({ initialMessage: expect.stringContaining('after') })
+    // A missing-session refusal may call send; the new session's input never does.
+    expect(runtime.send).toHaveBeenCalledTimes(reason === 'missing session' ? 1 : 0)
+  })
+  it.each(['attach', 'send'] as const)('retains the input and follow-ups after %s self-heal fails before acceptance', async path => {
+    await start(); await adapter.input('first')
+    await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))
+    if (path === 'attach') {
+      runtime.subscribed.mockReturnValue(false)
+      runtime.attach.mockRejectedValueOnce(new Error('Session not found'))
+    } else runtime.send.mockRejectedValueOnce(new MessageNotAcceptedError('session-gone', 'Session not found'))
+    runtime.create.mockRejectedValueOnce(new MessageNotAcceptedError('unavailable', 'Container stopped'))
+    await adapter.input('retry-me')
+    await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === 'retry-me')).toMatchObject({ state: 'pending', sessionId: null }))
+    // A newer input creates a replacement mapping during the first input's backoff.
+    await adapter.input('follow-up')
+    await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === 'follow-up')?.state).toBe('delivered'))
+    await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === 'retry-me')?.state).toBe('delivered'), { timeout: 4000 })
+    expect((await rows()).every(row => row.state === 'delivered')).toBe(true)
+    expect(runtime.send).toHaveBeenLastCalledWith('session-3', expect.stringContaining('retry-me'), expect.any(String))
+  })
+  it('another chat reset during the sending checkpoint does not cancel this input', async () => {
+    await start(); await adapter.input('first')
+    await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))
+    await database.insert(chatIntegrationSessions).values({ id: 'other', integrationId: 'integration', externalChatId: 'other', sessionId: 'other-session', createdAt: new Date(), updatedAt: new Date() }).run()
+    const handoff = deliveryStore.handoff.bind(deliveryStore)
+    let reset = false
+    vi.spyOn(deliveryStore, 'handoff').mockImplementation(async (...args) => {
+      const accepted = await handoff(...args)
+      if (!reset) { reset = true; await manager.clearSessionById('other'); await archiveAgentIntegrationSession('other') }
+      return accepted
+    })
+    await adapter.input('unaffected')
+    await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === 'unaffected')?.state).toBe('delivered'))
+    expect(runtime.send).toHaveBeenCalledOnce()
+    expect((await rows()).every(row => row.noticeState === 'none')).toBe(true)
+  })
+  it('does not replay a creation whose response was lost after the first input may have run', async () => {
+    await start()
+    runtime.create.mockRejectedValueOnce(new Error('connection reset after POST /sessions'))
+    await adapter.input('first')
+    await vi.waitFor(async () => expect((await rows())[0]).toMatchObject({ state: 'uncertain', noticeState: 'sent' }))
+    manager.stop(); await start()
+    expect(runtime.create).toHaveBeenCalledOnce()
+    expect(runtime.send).not.toHaveBeenCalled()
+  })
+  it('retains known acceptance when new-session registration fails after creation', async () => {
+    await start()
+    runtime.register.mockRejectedValueOnce(new Error('temporary metadata failure'))
+    await adapter.input('first')
+    await vi.waitFor(async () => expect((await rows())[0]).toMatchObject({ state: 'delivered', sessionId: 'session-1', noticeState: 'none' }))
+    manager.stop(); await start()
+    expect(runtime.create).toHaveBeenCalledOnce()
+    expect(runtime.receipt).not.toHaveBeenCalled()
+    expect(runtime.send).not.toHaveBeenCalled()
+  })
+  it('does not repeat a successful route notice after a later preparation failure and restart', async () => {
+    await start()
+    const resolve = adapter.resolveRoute.bind(adapter)
+    vi.spyOn(adapter, 'resolveRoute').mockImplementation(event => ({ ...resolve(event), notice: 'Starting work' }))
+    const deliver = vi.spyOn(adapter, 'deliver')
+    runtime.start.mockRejectedValueOnce(new Error('temporarily unavailable'))
+    await adapter.input('first')
+    await vi.waitFor(async () => expect((await rows())[0]).toMatchObject({ state: 'pending', attempts: 1 }))
+    expect(deliver.mock.calls.filter(([, output]) => output.type === 'message' && output.text === 'Starting work')).toHaveLength(1)
+    manager.stop(); await start()
+    const afterRestart = vi.spyOn(adapter, 'deliver')
+    await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'), { timeout: 4000 })
+    expect(afterRestart.mock.calls.filter(([, output]) => output.type === 'message' && output.text === 'Starting work')).toHaveLength(0)
+  })
   it('reconciles a known runtime UUID on startup without another send', async () => {
     await start(); await adapter.input()
     await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))
@@ -127,6 +224,7 @@ describe('shared manager durability with real integration storage', () => {
     })
     await start()
     await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))
-    expect(runtime.send).toHaveBeenCalledOnce()
+    expect(runtime.create).toHaveBeenCalledOnce()
+    expect(runtime.send).not.toHaveBeenCalled()
   })
 })
