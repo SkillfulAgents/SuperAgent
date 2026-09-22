@@ -1,17 +1,17 @@
 {
   "storyId": "browser-test",
   "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ates: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\" The screenshot captures the complete chat history showing the successful browser navigation, page title retrieval, and agent completion status.\n\n**All test steps completed successfully with no bugs found.**\n",
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: equired.\n\n**[STEP]** Step 7 - Captured final screenshot showing complete conversation — Successfully captured the full chat view displaying the user message and agent response with \"Example Domain\" text visible.\n\n**Result:** All verification criteria met. No bugs found. Test completed successfully.\n",
   "steps": [],
   "bugs": [],
-  "durationMs": 87773,
-  "sessionId": "0ff7a9d7-6e9e-4009-93f5-db75f5831a95",
+  "durationMs": 101060,
+  "sessionId": "9bf1f737-efd6-4fad-82a4-6e91fbb8fb23",
   "cost": {
-    "inputTokens": 310,
-    "outputTokens": 10934,
-    "cacheCreationTokens": 69258,
-    "cacheReadTokens": 871550,
+    "inputTokens": 50,
+    "outputTokens": 3274,
+    "cacheCreationTokens": 20886,
+    "cacheReadTokens": 86452,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.228708
+    "totalCostUsd": 0.051173
   }
 }
