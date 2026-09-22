@@ -33,6 +33,8 @@ vi.mock('../middleware/auth', () => ({
     c.req.header('Test-User') === 'admin' ? next() : c.json({ error: 'Forbidden' }, 403),
 }))
 import routes from './llm-connections'
+import { getConnection, saveConnection, resolveConnectionSelection } from '@shared/lib/llm-provider/connections'
+import { connectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 
 let database: TestDatabase
 const app = new Hono().route('/connections', routes)
@@ -71,6 +73,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await database.close()
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
 })
 
 describe('connection API ownership and root protection', () => {
@@ -119,4 +122,100 @@ it('accepts connection env without exposing values, and rejects reserved runtime
     expect(rejected.status).toBe(400)
     expect((await rejected.json()).error).toBe('Invalid connection configuration')
   }
+})
+
+
+describe('connection environment permissions', () => {
+  const adminOnlyEnv = {
+    HTTPS_PROXY: 'http://proxy.example',
+    NODE_TLS_REJECT_UNAUTHORIZED: '0',
+    NODE_OPTIONS: '--require=/workspace/injected.js',
+    CLAUDE_CONFIG_DIR: '/workspace/alternate-config',
+    PATH: '/workspace/bin',
+    LD_PRELOAD: '/workspace/injected.so',
+    AWS_SHARED_CREDENTIALS_FILE: '/workspace/credentials',
+    CLAUDE_CODE_SHELL: '/workspace/shell',
+    ANTHROPIC_FUTURE_SETTING: 'unreviewed',
+    CUSTOM_PROVIDER_SECRET: 'admin-secret',
+  }
+
+  it.each(Object.entries(adminOnlyEnv))('rejects member injection of %s on create, edit and validation', async (key, value) => {
+    const input = draft('alice')
+    const { id } = await (await request('', 'POST', input, 'alice')).json()
+    const before = await getConnection(id)
+    const malicious = { ...input, config: { ...input.config, runtimeEnv: { [key]: value } } }
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    for (const [path, method, body] of [
+      ['', 'POST', malicious],
+      [`/${id}`, 'PUT', malicious],
+      ['/validate', 'POST', { connection: malicious }],
+      ['/validate', 'POST', { id, connection: malicious }],
+    ] as const) {
+      const response = await request(path, method, body, 'alice')
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({ error: `Only administrators can set these environment variables: ${key}` })
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await getConnection(id)).toEqual(before)
+    expect((await (await request('', 'GET', undefined, 'alice')).json()).connections).toHaveLength(1)
+  })
+
+  it('preserves member provider, AWS credentials and CLI tuning overrides through runtime resolution', async () => {
+    const input = draft('alice')
+    const runtimeEnv = {
+      ANTHROPIC_BASE_URL: 'https://personal-proxy.example',
+      ANTHROPIC_AUTH_TOKEN: 'personal-bearer',
+      ANTHROPIC_CUSTOM_HEADERS: 'X-Provider-Project: personal',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'fast-model',
+      AWS_ACCESS_KEY_ID: 'personal-access-key',
+      AWS_SECRET_ACCESS_KEY: 'personal-secret',
+      AWS_SESSION_TOKEN: 'personal-session-token',
+      AWS_REGION: 'eu-west-1',
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: '64000',
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8000',
+      ENABLE_TOOL_SEARCH: 'false',
+    }
+    const created = await request('', 'POST', { ...input, config: { ...input.config, runtimeEnv } }, 'alice')
+    expect(created.status).toBe(201)
+    const { id } = await created.json()
+    const updated = await request(`/${id}`, 'PUT', {
+      ...input, config: { runtimeEnv: { ANTHROPIC_AUTH_TOKEN: 'updated-bearer', ANTHROPIC_DEFAULT_HAIKU_MODEL: null } },
+    }, 'alice')
+    expect(updated.status).toBe(200)
+    const selection = await resolveConnectionSelection({ llmProviderId: id, model: 'model' })
+    const runtime = await connectionRuntime(selection!, 'restricted-agent')
+    const expectedEnv: Record<string, string> = { ...runtimeEnv, ANTHROPIC_AUTH_TOKEN: 'updated-bearer' }
+    delete expectedEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL
+    expect(runtime.env).toMatchObject(expectedEnv)
+    expect(runtime.env).not.toHaveProperty('ANTHROPIC_DEFAULT_HAIKU_MODEL')
+    const listed = await (await request('', 'GET', undefined, 'alice')).json()
+    expect(JSON.stringify(listed)).not.toContain('updated-bearer')
+    expect(JSON.stringify(listed)).not.toContain('personal-secret')
+  })
+
+  it('retains arbitrary custom environment variables for administrators', async () => {
+    const input = draft()
+    const created = await request('', 'POST', { ...input, config: { ...input.config, runtimeEnv: adminOnlyEnv } })
+    expect(created.status).toBe(201)
+    const { id } = await created.json()
+    const selection = await resolveConnectionSelection({ llmProviderId: id, model: 'model' })
+    expect((await connectionRuntime(selection!, 'agent')).env).toMatchObject(adminOnlyEnv)
+    expect((await request(`/${id}`, 'PUT', { ...input, config: { runtimeEnv: { HTTPS_PROXY: 'http://updated-proxy.example' } } })).status).toBe(200)
+    expect(JSON.parse((await getConnection(id))!.config).runtimeEnv.HTTPS_PROXY).toBe('http://updated-proxy.example')
+  })
+
+  it('checks retained values after role changes and lets members explicitly remove them', async () => {
+    const input = draft('alice')
+    const id = await saveConnection({ ...input, config: {
+      ...input.config, runtimeEnv: { NODE_OPTIONS: '--require=/workspace/injected.js', ANTHROPIC_BASE_URL: 'https://personal-proxy.example' },
+    } }, { userId: 'alice', admin: true })
+    const before = await getConnection(id)
+    const renamed = { ...input, name: 'Renamed', config: {} }
+    expect((await request(`/${id}`, 'PUT', renamed, 'alice')).status).toBe(400)
+    expect((await request('/validate', 'POST', { id, connection: renamed }, 'alice')).status).toBe(400)
+    expect(await getConnection(id)).toEqual(before)
+    expect((await request(`/${id}`, 'PUT', { ...renamed, config: { runtimeEnv: { NODE_OPTIONS: null } } }, 'alice')).status).toBe(200)
+    expect(JSON.parse((await getConnection(id))!.config).runtimeEnv).toEqual({ ANTHROPIC_BASE_URL: 'https://personal-proxy.example' })
+  })
 })

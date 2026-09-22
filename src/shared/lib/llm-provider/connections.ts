@@ -1,4 +1,5 @@
 import { withGlobalModelPricing } from './global-pricing'
+import { findAdminOnlyProviderEnvVars } from './provider-env'
 import { connectionModelOverridesSchema, normalizeConnectionModelOverrides } from './connection-schema'
 import { mergeCatalog } from './catalog-merge'
 import { parseConnectionJson } from './connection-schema'
@@ -146,6 +147,12 @@ export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, 
     throw new Error('Connection type and owner cannot change')
   const oldConfig = previous ? parseConnectionJson(connectionConfigSchema, previous.config) : null
   const config = mergeConnectionConfig(oldConfig, input.config)
+  if (!viewer.admin) {
+    // Check the merged config for saves and validation alike. Omitted saved
+    // values cannot bypass the policy; explicit nulls can remove them.
+    const restricted = findAdminOnlyProviderEnvVars(config.runtimeEnv)
+    if (restricted.length) throw new Error(`Only administrators can set these environment variables: ${restricted.join(', ')}`)
+  }
   const builtins = getLlmProvider(input.provider).getBuiltinCatalog()
   const modelOverrides = normalizeConnectionModelOverrides(
     builtins,
