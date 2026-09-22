@@ -1,7 +1,7 @@
 /**
  * Chat integration E2E tests.
  *
- * Wires MockChatClientConnector → ChatIntegrationManager → MockContainerClient
+ * Wires MockChatAgentIntegration → AgentIntegrationManager → MockContainerClient
  * to test the full message flow without real chat platforms or containers.
  */
 
@@ -14,14 +14,14 @@ import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '../db/schema'
-import { MockChatClientConnector } from './mock-connector'
+import { MockChatAgentIntegration } from './mock-connector'
 
 // ── Test state ─────────────────────────────────────────────────────────
 
 let testDir: string
 let testDb: ReturnType<typeof drizzle>
 let testSqlite: InstanceType<typeof Database>
-let mockConnector: MockChatClientConnector
+let mockConnector: MockChatAgentIntegration
 let mockContainerClient: any
 
 // ── Mocks ──────────────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
 
 // Use the real messagePersister — it handles the complex stream→SSE transformation
 
-// Mock telegram connector to return our MockChatClientConnector. Keep the REAL
+// Mock telegram connector to return our MockChatAgentIntegration. Keep the REAL
 // statics: the manager resolves the connector CLASS through this module, so
 // stripping either would silently disable prompt or attribution wiring.
 vi.mock('./telegram-connector', async (importOriginal) => {
@@ -118,9 +118,9 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
 import { createAgentIntegration, getAgentIntegration } from '@shared/lib/services/agent-integration-service'
-import { listChatIntegrationSessions } from '@shared/lib/services/chat-integration-session-service'
+import { listAgentIntegrationSessions } from '@shared/lib/services/agent-integration-session-service'
 import { approveChatAccess, revokeChatAccess } from '@shared/lib/services/chat-integration-access-service'
 import { MockContainerClient, UserInputRequestScenario } from '@shared/lib/container/mock-container-client'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
@@ -172,7 +172,7 @@ describe('Chat integration E2E', () => {
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
 
     // Fresh mock connector
-    mockConnector = new MockChatClientConnector()
+    mockConnector = new MockChatAgentIntegration()
 
     // Fresh mock container client
     mockContainerClient = new MockContainerClient({
@@ -188,11 +188,11 @@ describe('Chat integration E2E', () => {
 
     // connectIntegration cancels itself on a stopped manager; this harness
     // drives addIntegration directly (no start()), so mark the manager running.
-    ;(chatIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
+    ;(agentIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
   })
 
   afterEach(async () => {
-    chatIntegrationManager.stop()
+    agentIntegrationManager.stop()
     // Let pending async handlers drain before closing the DB
     await new Promise(r => setTimeout(r, 50))
     testSqlite?.close()
@@ -204,7 +204,7 @@ describe('Chat integration E2E', () => {
   describe('incoming message flow', () => {
     it('creates a session and gets a response for a new chat', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
       // A valid positive Telegram id exercises the DM branch.
       mockConnector.simulateIncomingMessage('Hello agent!', '123456789', 'user-1')
@@ -223,7 +223,7 @@ describe('Chat integration E2E', () => {
 
     it('reuses existing session for follow-up messages', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
       // First message — creates session
       mockConnector.simulateIncomingMessage('First message', 'chat-1', 'user-1')
@@ -245,7 +245,7 @@ describe('Chat integration E2E', () => {
 
     it('creates separate sessions for different chats', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
       // Message from chat-1
       mockConnector.simulateIncomingMessage('Hello from chat 1', 'chat-1', 'user-1')
@@ -265,7 +265,7 @@ describe('Chat integration E2E', () => {
 
     it('escapes [userName] prefix so markdown does not swallow single-word messages', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
       // Group/supergroup: Telegram encodes that in a negative chat id. Prefix
       // is added from the provider rule, not from chatName presence.
@@ -288,7 +288,7 @@ describe('Chat integration E2E', () => {
   describe('/clear command', () => {
     it('resets the session so next message creates a new one', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
       // First message — creates session
       mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
@@ -314,7 +314,7 @@ describe('Chat integration E2E', () => {
   describe('session self-heal (container lost the session)', () => {
     it('archives the dead session and starts a fresh one instead of failing forever', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
       // First message establishes a real session: DB row + live container session.
       mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
@@ -340,7 +340,7 @@ describe('Chat integration E2E', () => {
       expect(MockContainerClient.createSessionCalls[1].initialMessage).toBe('Still there?')
 
       // The dead row is archived; a fresh non-archived row now serves this chat.
-      const rows = (await listChatIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
+      const rows = (await listAgentIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
       const dead = rows.find((r) => r.sessionId === deadSessionId)
       const fresh = rows.find((r) => r.sessionId !== deadSessionId && !r.archivedAt)
       expect(dead?.archivedAt).toBeTruthy()
@@ -349,10 +349,10 @@ describe('Chat integration E2E', () => {
 
     it('answers a reply to an agent-initiated message whose session the container never had', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
       // An outbound send maps the chat to a host-only session.
-      const phantomSessionId = await chatIntegrationManager.ensureSession(integrationId, 'chat-1')
+      const phantomSessionId = await agentIntegrationManager.ensureSession(integrationId, 'chat-1')
 
       mockConnector.simulateIncomingMessage('Yes, go ahead', 'chat-1', 'user-1')
       const replies = () => [
@@ -362,14 +362,14 @@ describe('Chat integration E2E', () => {
       await waitForCondition(() => replies().some((t) => t.includes('This is a mock response')), 3000)
 
       expect(MockContainerClient.createSessionCalls.map((c) => c.initialMessage)).toEqual(['Yes, go ahead'])
-      const rows = (await listChatIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
+      const rows = (await listAgentIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
       expect(rows.find((r) => r.sessionId === phantomSessionId)?.archivedAt).toBeTruthy()
       expect(rows.find((r) => r.sessionId !== phantomSessionId && !r.archivedAt)).toBeDefined()
     })
 
     it('does NOT rotate the session on a transient (non-session-gone) error', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
       mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
       await waitForCondition(() => MockContainerClient.createSessionCalls.length === 1)
@@ -396,7 +396,7 @@ describe('Chat integration E2E', () => {
       )
       expect(MockContainerClient.createSessionCalls.length).toBe(createBefore)
 
-      const rows = (await listChatIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
+      const rows = (await listAgentIntegrationSessions(integrationId)).filter((r) => r.externalChatId === 'chat-1')
       expect(rows.find((r) => r.sessionId === liveSessionId)?.archivedAt).toBeFalsy()
 
       sendSpy.mockRestore()
@@ -418,7 +418,7 @@ describe('Chat integration E2E', () => {
         .run(accessId, integrationId, now, now, now)
       await approveChatAccess(accessId, 'owner')
 
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
       // Establish a real session for the approved chat.
       mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
@@ -443,7 +443,7 @@ describe('Chat integration E2E', () => {
       // The self-heal archives the dead row before the access re-check; wait for
       // that so we know the self-heal path actually executed.
       await waitForCondition(async () =>
-        (await listChatIntegrationSessions(integrationId)).some(
+        (await listAgentIntegrationSessions(integrationId)).some(
           (r) => r.sessionId === deadSessionId && !!r.archivedAt,
         ),
       )
@@ -452,7 +452,7 @@ describe('Chat integration E2E', () => {
       // so the now-revoked chat is left with no live session row.
       expect(sendSpy).toHaveBeenCalledTimes(1)
       expect(MockContainerClient.createSessionCalls.length).toBe(1)
-      const liveRow = (await listChatIntegrationSessions(integrationId))
+      const liveRow = (await listAgentIntegrationSessions(integrationId))
         .filter((r) => r.externalChatId === 'chat-1')
         .find((r) => !r.archivedAt)
       expect(liveRow).toBeUndefined()
@@ -464,7 +464,7 @@ describe('Chat integration E2E', () => {
   describe('outbound MCP send (shouldQuery: false)', () => {
     it('injects a notification into the live session without triggering a response', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
       // Establish a session first
       mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
@@ -511,34 +511,34 @@ describe('Chat integration E2E', () => {
   describe('connection lifecycle', () => {
     it('connector is connected after addIntegration', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
-      expect(chatIntegrationManager.isIntegrationConnected(integrationId)).toBe(true)
-      expect(chatIntegrationManager.getActiveIntegrationIds()).toContain(integrationId)
+      expect(agentIntegrationManager.isIntegrationConnected(integrationId)).toBe(true)
+      expect(agentIntegrationManager.getActiveIntegrationIds()).toContain(integrationId)
     })
 
     it('connector is disconnected after removeIntegration', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
-      await chatIntegrationManager.removeIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.removeIntegration(integrationId)
 
-      expect(chatIntegrationManager.isIntegrationConnected(integrationId)).toBe(false)
-      expect(chatIntegrationManager.getActiveIntegrationIds()).not.toContain(integrationId)
+      expect(agentIntegrationManager.isIntegrationConnected(integrationId)).toBe(false)
+      expect(agentIntegrationManager.getActiveIntegrationIds()).not.toContain(integrationId)
     })
 
     it('pause and resume work correctly', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
-      await chatIntegrationManager.pauseIntegration(integrationId)
-      expect(chatIntegrationManager.isIntegrationConnected(integrationId)).toBe(false)
+      await agentIntegrationManager.pauseIntegration(integrationId)
+      expect(agentIntegrationManager.isIntegrationConnected(integrationId)).toBe(false)
       const paused = (await getAgentIntegration(integrationId))
       expect(paused?.status).toBe('paused')
 
       // Create a new mock connector for resume (old one is disconnected)
-      mockConnector = new MockChatClientConnector()
-      await chatIntegrationManager.resumeIntegration(integrationId)
-      expect(chatIntegrationManager.isIntegrationConnected(integrationId)).toBe(true)
+      mockConnector = new MockChatAgentIntegration()
+      await agentIntegrationManager.resumeIntegration(integrationId)
+      expect(agentIntegrationManager.isIntegrationConnected(integrationId)).toBe(true)
     })
   })
 
@@ -594,7 +594,7 @@ describe('Chat integration E2E', () => {
 
       // start() arms this in production; this harness drives addIntegration
       // directly, and without it the review card has no wire to arrive on.
-      ;(chatIntegrationManager as unknown as { subscribeGlobalNotifications(): void })
+      ;(agentIntegrationManager as unknown as { subscribeGlobalNotifications(): void })
         .subscribeGlobalNotifications()
 
       // Two kinds the shared scenario table has no trigger for.
@@ -614,7 +614,7 @@ describe('Chat integration E2E', () => {
     /** Drive one turn and return the first card the connector was handed. */
     async function cardFor(trigger: string) {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
       mockConnector.simulateIncomingMessage(trigger, 'chat-1', 'user-1')
       await waitForCondition(() => mockConnector.sentCards.length > 0, 8000)
       return mockConnector.sentCards[0]
@@ -788,7 +788,7 @@ describe('Chat integration E2E', () => {
   describe('typing indicator', () => {
     it('shows typing indicator when message is being processed', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
       mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
       await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
@@ -806,7 +806,7 @@ describe('Chat integration E2E', () => {
 
     it('reconciles the indicator from the snapshot on subscribe (cold-start)', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
       mockConnector.simulateIncomingMessage('hi', 'chat-1', 'user-1')
       await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
       await waitForCondition(() => mockConnector.typingIndicators.includes('chat-1'), 2000)
@@ -815,7 +815,7 @@ describe('Chat integration E2E', () => {
 
     it('stops the working indicator when the integration is torn down', async () => {
       const integrationId = await createTestIntegration()
-      await chatIntegrationManager.addIntegration(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
 
       // Establish a live managed session for chat-1.
       mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
@@ -830,7 +830,7 @@ describe('Chat integration E2E', () => {
       // where clearing a session dropped it without stopping the keep-alive timer.
       mockConnector.stoppedWorking = []
 
-      await chatIntegrationManager.removeIntegration(integrationId)
+      await agentIntegrationManager.removeIntegration(integrationId)
 
       expect(mockConnector.stoppedWorking).toContain('chat-1')
     })

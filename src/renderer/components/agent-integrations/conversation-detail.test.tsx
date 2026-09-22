@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { ConversationDetail } from './conversation-detail'
 import { makeSession } from './test-factories'
 import type { ChatRow } from './chat-inbox-model'
-import type { ChatIntegrationSession } from '@shared/lib/db/schema'
+import type { AgentIntegrationSession } from '@shared/lib/db/schema'
 
 // Shims for Radix Select in jsdom (mirrors runtime-tab.test).
 Element.prototype.scrollIntoView = vi.fn()
@@ -47,14 +47,14 @@ vi.mock('@renderer/hooks/use-agent-integrations', () => ({
   useRevokeChatAccess: () => ({ mutate: revokeMutate, isPending: false }),
 }))
 
-function win(sessionId: string, iso: string, cleared = false): ChatIntegrationSession {
+function win(sessionId: string, iso: string, cleared = false): AgentIntegrationSession {
   return makeSession({
     externalChatId: 'chat-1', sessionId,
     updatedAt: new Date(iso), archivedAt: cleared ? new Date(iso) : null,
   })
 }
 
-function makeRow(windows: ChatIntegrationSession[]): ChatRow {
+function makeRow(windows: AgentIntegrationSession[]): ChatRow {
   return {
     externalChatId: 'chat-1', title: 'Dana', status: 'allowed',
     windows, latestSessionId: windows[0]?.sessionId ?? null, lastActivityAt: 0,

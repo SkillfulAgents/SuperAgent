@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { ConversationHistorySection } from './conversation-history-section'
 import { makeChatIntegration, makeSession, makeAccess } from './test-factories'
-import type { ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
+import type { AgentIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 
 vi.mock('@renderer/components/messages/session-thread', () => ({
   SessionThread: (p: any) => <div data-testid="session-thread">{p.sessionId}</div>,
@@ -29,7 +29,7 @@ vi.mock('@renderer/hooks/use-agent-integrations', () => ({
   useRevokeChatAccess: () => ({ mutate: h.revoke, isPending: false }),
 }))
 
-function s(id: string, ms: number, archived = false, name?: string): ChatIntegrationSession {
+function s(id: string, ms: number, archived = false, name?: string): AgentIntegrationSession {
   return makeSession({
     id, externalChatId: `chat-${id}`, sessionId: `sess-${id}`,
     displayName: name ?? null, archivedAt: archived ? new Date(ms) : null,

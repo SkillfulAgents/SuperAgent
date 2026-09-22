@@ -3,8 +3,8 @@
  *
  * Preference order when a chat message spawns a new agent session:
  * integration override > agent default (agent preferences) > global default.
- * Reuses the e2e harness wiring (MockChatClientConnector →
- * ChatIntegrationManager → MockContainerClient); createSession options are
+ * Reuses the e2e harness wiring (MockChatAgentIntegration →
+ * AgentIntegrationManager → MockContainerClient); createSession options are
  * captured via an instance spy because the mock client normalizes the model
  * before recording it in its static call log.
  */
@@ -17,14 +17,14 @@ import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '../db/schema'
-import { MockChatClientConnector } from './mock-connector'
+import { MockChatAgentIntegration } from '../chat-integrations/mock-connector'
 
 // ── Test state ─────────────────────────────────────────────────────────
 
 let testDir: string
 let testDb: ReturnType<typeof drizzle>
 let testSqlite: InstanceType<typeof Database>
-let mockConnector: MockChatClientConnector
+let mockConnector: MockChatAgentIntegration
 let mockContainerClient: InstanceType<typeof MockContainerClient>
 
 // ── Mocks ──────────────────────────────────────────────────────────────
@@ -86,10 +86,10 @@ vi.mock('@shared/lib/services/agent-preferences-service', () => ({
   readAgentPreferences: (...args: unknown[]) => mockReadAgentPreferences(...args),
 }))
 
-// Mock telegram connector to return our MockChatClientConnector. Keep the REAL
+// Mock telegram connector to return our MockChatAgentIntegration. Keep the REAL
 // classifyChatId static so classification lookups still exercise production.
-vi.mock('./telegram-connector', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./telegram-connector')>()
+vi.mock('../chat-integrations/telegram-connector', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../chat-integrations/telegram-connector')>()
   return {
     ...actual,
     TelegramConnector: class {
@@ -103,7 +103,7 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from './agent-integration-manager'
 import { createAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 
@@ -138,7 +138,7 @@ describe('chat integration model and effort resolution', () => {
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
 
-    mockConnector = new MockChatClientConnector()
+    mockConnector = new MockChatAgentIntegration()
 
     mockContainerClient = new MockContainerClient({ agentId: 'test-agent' })
     await mockContainerClient.start()
@@ -154,11 +154,11 @@ describe('chat integration model and effort resolution', () => {
 
     // connectIntegration cancels itself on a stopped manager; this harness
     // drives addIntegration directly (no start()), so mark the manager running.
-    ;(chatIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
+    ;(agentIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
   })
 
   afterEach(async () => {
-    chatIntegrationManager.stop()
+    agentIntegrationManager.stop()
     // Let pending async handlers drain before closing the DB
     await new Promise(r => setTimeout(r, 50))
     testSqlite?.close()
@@ -177,7 +177,7 @@ describe('chat integration model and effort resolution', () => {
     // These tests exercise session-spawn defaults, not access control, so
     // disable the owner-approval gate telegram integrations get by default.
     testSqlite.prepare('UPDATE chat_integrations SET require_approval = 0 WHERE id = ?').run(integrationId)
-    await chatIntegrationManager.addIntegration(integrationId)
+    await agentIntegrationManager.addIntegration(integrationId)
 
     mockConnector.simulateIncomingMessage('Hello agent!', 'chat-1', 'user-1')
     await waitForCondition(() => createSessionSpy.mock.calls.length > 0)

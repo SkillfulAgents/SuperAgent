@@ -2,7 +2,7 @@
  * Tool definition registry.
  *
  * Maps tool names to their definitions. Usable from both backend
- * (MessagePersister, ChatIntegrationManager) and renderer.
+ * (MessagePersister, AgentIntegrationManager) and renderer.
  */
 
 import type { ToolDefinition } from './types'

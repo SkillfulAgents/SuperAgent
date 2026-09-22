@@ -1,5 +1,5 @@
 import { listAgentIntegrations } from '../services/agent-integration-service'
-import { listChatIntegrationSessions } from '../services/chat-integration-session-service'
+import { listAgentIntegrationSessions } from '../services/agent-integration-session-service'
 import { agentIntegrationRegistry } from './registry'
 import { integrationMcpName } from './mcp'
 import { publicIntegrationStatus } from './serialization'
@@ -9,7 +9,7 @@ import { publicIntegrationStatus } from './serialization'
 export async function listAgentIntegrationInventory(agentSlug: string) {
   return Promise.all((await listAgentIntegrations(agentSlug)).map(async row => {
     const definition = agentIntegrationRegistry.getDefinition(row.provider)
-    const sessions = await Promise.all((await listChatIntegrationSessions(row.id)).filter(session => !session.archivedAt).map(async session => ({
+    const sessions = await Promise.all((await listAgentIntegrationSessions(row.id)).filter(session => !session.archivedAt).map(async session => ({
       externalId: session.externalChatId, displayName: session.displayName,
       ...await agentIntegrationRegistry.describeTarget(row.provider, session.externalChatId),
     })))

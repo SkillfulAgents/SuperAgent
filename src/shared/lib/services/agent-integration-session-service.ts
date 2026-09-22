@@ -1,24 +1,25 @@
 /**
- * Chat Integration Session Service — maps external chat IDs to agent sessions.
+ * Agent Integration Session Service — maps external targets to agent sessions.
  *
- * Each integration can have multiple chat sessions (e.g. multiple users DMing the same Slack bot).
+ * Each integration can have multiple external sessions. The legacy table and
+ * externalChatId field names are retained for storage and API compatibility.
  */
 
 import { eq, and, isNull, desc } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { chatIntegrationSessions, chatIntegrations } from '@shared/lib/db/schema'
-import type { ChatIntegrationSession, NewChatIntegrationSession } from '@shared/lib/db/schema'
+import type { AgentIntegrationSession, NewAgentIntegrationSession } from '@shared/lib/db/schema'
 
-export type { ChatIntegrationSession, NewChatIntegrationSession }
+export type { AgentIntegrationSession, NewAgentIntegrationSession }
 
 // ── Read ────────────────────────────────────────────────────────────────
 
-/** Get the most recently active (non-archived) session for a chat. Used for message routing. */
-export async function getChatIntegrationSession(
+/** Get the most recently active (non-archived) session for an external target. Used for message routing. */
+export async function getAgentIntegrationSession(
   integrationId: string,
   externalChatId: string,
-): Promise<ChatIntegrationSession | null> {
+): Promise<AgentIntegrationSession | null> {
   const results = await db.select().from(chatIntegrationSessions)
     .where(and(
       eq(chatIntegrationSessions.integrationId, integrationId),
@@ -31,7 +32,7 @@ export async function getChatIntegrationSession(
   return results[0] || null
 }
 
-export async function getChatIntegrationSessionById(id: string): Promise<ChatIntegrationSession | null> {
+export async function getAgentIntegrationSessionById(id: string): Promise<AgentIntegrationSession | null> {
   const results = await db.select().from(chatIntegrationSessions)
     .where(eq(chatIntegrationSessions.id, id))
     .all()
@@ -39,18 +40,18 @@ export async function getChatIntegrationSessionById(id: string): Promise<ChatInt
 }
 
 /**
- * The chat session for `sessionId` that belongs to `agentSlug`.
+ * The integration session for `sessionId` that belongs to `agentSlug`.
  *
  * A session id is unique only within an agent — import/clone gives two agents
- * the same id — so a bare-id lookup could return another agent's chat session,
- * routing one agent's approval card into a different agent's channel. Joining
+ * the same id — so a bare-id lookup could return another agent's integration session,
+ * routing one agent's approval card into a different agent's external target. Joining
  * to the owning integration and filtering on its agent keeps the answer inside
  * the asking agent.
  */
-export async function getChatIntegrationSessionBySessionId(
+export async function getAgentIntegrationSessionBySessionId(
   agentSlug: string,
   sessionId: string,
-): Promise<ChatIntegrationSession | null> {
+): Promise<AgentIntegrationSession | null> {
   const results = await db.select().from(chatIntegrationSessions)
     .innerJoin(chatIntegrations, eq(chatIntegrationSessions.integrationId, chatIntegrations.id))
     .where(and(
@@ -61,7 +62,7 @@ export async function getChatIntegrationSessionBySessionId(
   return results[0]?.chat_integration_sessions ?? null
 }
 
-export async function listChatIntegrationSessions(integrationId: string): Promise<ChatIntegrationSession[]> {
+export async function listAgentIntegrationSessions(integrationId: string): Promise<AgentIntegrationSession[]> {
   return db.select().from(chatIntegrationSessions)
     .where(eq(chatIntegrationSessions.integrationId, integrationId))
     .all()
@@ -71,11 +72,11 @@ export async function listChatIntegrationSessions(integrationId: string): Promis
  * List only the ACTIVE (non-archived) sessions for an integration.
  *
  * Used by the reconnect/restore path so archived/cleared/timed-out sessions are
- * not re-subscribed for SSE forwarding (SUP-233). `listChatIntegrationSessions`
+ * not re-subscribed for SSE forwarding (SUP-233). `listAgentIntegrationSessions`
  * intentionally returns archived rows too — the UI/x-agent surfaces filter at
  * the call site — so it is left unchanged.
  */
-export async function listActiveChatIntegrationSessions(integrationId: string): Promise<ChatIntegrationSession[]> {
+export async function listActiveAgentIntegrationSessions(integrationId: string): Promise<AgentIntegrationSession[]> {
   return db.select().from(chatIntegrationSessions)
     .where(and(
       eq(chatIntegrationSessions.integrationId, integrationId),
@@ -86,7 +87,7 @@ export async function listActiveChatIntegrationSessions(integrationId: string): 
 
 // ── Create ──────────────────────────────────────────────────────────────
 
-export async function createChatIntegrationSession(params: {
+export async function createAgentIntegrationSession(params: {
   integrationId: string
   externalChatId: string
   sessionId: string
@@ -95,7 +96,7 @@ export async function createChatIntegrationSession(params: {
   const id = crypto.randomUUID()
   const now = new Date()
 
-  const record: NewChatIntegrationSession = {
+  const record: NewAgentIntegrationSession = {
     id,
     integrationId: params.integrationId,
     externalChatId: params.externalChatId,
@@ -111,7 +112,7 @@ export async function createChatIntegrationSession(params: {
 
 // ── Update ──────────────────────────────────────────────────────────────
 
-export async function updateChatIntegrationSessionName(id: string, displayName: string): Promise<boolean> {
+export async function updateAgentIntegrationSessionName(id: string, displayName: string): Promise<boolean> {
   const result = await db.update(chatIntegrationSessions)
     .set({ displayName, updatedAt: new Date() })
     .where(eq(chatIntegrationSessions.id, id))
@@ -120,7 +121,7 @@ export async function updateChatIntegrationSessionName(id: string, displayName: 
 }
 
 /** Bump updatedAt to record last activity (used by session timeout). */
-export async function touchChatIntegrationSession(id: string): Promise<boolean> {
+export async function touchAgentIntegrationSession(id: string): Promise<boolean> {
   const result = await db.update(chatIntegrationSessions)
     .set({ updatedAt: new Date() })
     .where(eq(chatIntegrationSessions.id, id))
@@ -131,7 +132,7 @@ export async function touchChatIntegrationSession(id: string): Promise<boolean> 
 // ── Session Resolution ────────────────────────────────────────────────
 
 /**
- * Look up the active session for a chat and rotate if it exceeded the timeout.
+ * Look up the active session for an external target and rotate if it exceeded the timeout.
  * Returns the active session, or null if there is none (or it was rotated).
  *
  * When a session is rotated, it is archived and the returned null signals
@@ -140,16 +141,16 @@ export async function touchChatIntegrationSession(id: string): Promise<boolean> 
  */
 export async function resolveActiveSession(
   integrationId: string,
-  chatId: string,
+  externalId: string,
   timeoutHours: number | null | undefined,
   onArchive?: (archivedSessionId: string) => void,
-): Promise<ChatIntegrationSession | null> {
-  const session = await getChatIntegrationSession(integrationId, chatId)
+): Promise<AgentIntegrationSession | null> {
+  const session = await getAgentIntegrationSession(integrationId, externalId)
   if (!session) return null
 
   if (isSessionTimedOut(session, timeoutHours)) {
     onArchive?.(session.id)
-    await archiveChatIntegrationSession(session.id)
+    await archiveAgentIntegrationSession(session.id)
     return null
   }
 
@@ -167,20 +168,20 @@ function isSessionTimedOut(
 }
 
 /**
- * Derive display name for a new session from the most recent session for this chat.
+ * Derive display name for a new session from the most recent session for this external target.
  * Falls back to undefined if no prior sessions exist.
  */
-export async function getLastDisplayName(integrationId: string, chatId: string): Promise<string | undefined> {
-  const allSessions = await listChatIntegrationSessions(integrationId)
+export async function getLastDisplayName(integrationId: string, externalId: string): Promise<string | undefined> {
+  const allSessions = await listAgentIntegrationSessions(integrationId)
   return allSessions
-    .filter((s) => s.externalChatId === chatId && s.displayName)
+    .filter((s) => s.externalChatId === externalId && s.displayName)
     .sort((a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0))[0]
     ?.displayName ?? undefined
 }
 
 // ── Archive ────────────────────────────────────────────────────────────
 
-export async function archiveChatIntegrationSession(id: string): Promise<boolean> {
+export async function archiveAgentIntegrationSession(id: string): Promise<boolean> {
   const result = await db.update(chatIntegrationSessions)
     .set({ archivedAt: new Date(), updatedAt: new Date() })
     .where(eq(chatIntegrationSessions.id, id))
@@ -190,14 +191,14 @@ export async function archiveChatIntegrationSession(id: string): Promise<boolean
 
 // ── Delete ──────────────────────────────────────────────────────────────
 
-export async function deleteChatIntegrationSession(id: string): Promise<boolean> {
+export async function deleteAgentIntegrationSession(id: string): Promise<boolean> {
   const result = await db.delete(chatIntegrationSessions)
     .where(eq(chatIntegrationSessions.id, id))
     .run()
   return changesOf(result) > 0
 }
 
-export async function deleteChatIntegrationSessionsByIntegration(integrationId: string): Promise<number> {
+export async function deleteAgentIntegrationSessionsByIntegration(integrationId: string): Promise<number> {
   const result = await db.delete(chatIntegrationSessions)
     .where(eq(chatIntegrationSessions.integrationId, integrationId))
     .run()

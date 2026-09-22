@@ -1,5 +1,5 @@
 /**
- * MockChatClientConnector — test double for chat integration testing.
+ * MockChatAgentIntegration — test double for chat integration testing.
  *
  * Records all sent messages and events for assertion,
  * and provides simulation methods for incoming messages and interactive responses.
@@ -9,7 +9,7 @@ import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatAgentIntegration, type OutgoingMessage } from './chat-agent-integration'
 
-export class MockChatClientConnector extends ChatAgentIntegration {
+export class MockChatAgentIntegration extends ChatAgentIntegration {
   readonly provider = 'telegram' as const // Arbitrary, just needs a valid value
 
   private connected = false

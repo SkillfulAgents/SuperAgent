@@ -23,16 +23,16 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
   getAgentIntegration: (id: string) => state.rows.find(row => row.id === id),
   updateAgentIntegrationStatus: vi.fn(),
 }))
-vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
+vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
   resolveActiveSession: (id: string, externalId: string) => state.mappings.get(`${id}:${externalId}`),
-  createChatIntegrationSession: (mapping: { integrationId: string; externalChatId: string; sessionId: string }) => {
+  createAgentIntegrationSession: (mapping: { integrationId: string; externalChatId: string; sessionId: string }) => {
     state.mappings.set(`${mapping.integrationId}:${mapping.externalChatId}`, { id: `mapping-${mapping.sessionId}`, ...mapping })
   },
-  listActiveChatIntegrationSessions: (id: string) => [...state.mappings.values()].filter(mapping => mapping.integrationId === id),
-  getChatIntegrationSession: (id: string, externalId: string) => state.mappings.get(`${id}:${externalId}`),
-  getChatIntegrationSessionBySessionId: (_agent: string, id: string) => [...state.mappings.values()].find(mapping => mapping.sessionId === id),
-  listChatIntegrationSessions: vi.fn(() => []),
-  archiveChatIntegrationSession: vi.fn(), updateChatIntegrationSessionName: vi.fn(), touchChatIntegrationSession: vi.fn(), getLastDisplayName: vi.fn(),
+  listActiveAgentIntegrationSessions: (id: string) => [...state.mappings.values()].filter(mapping => mapping.integrationId === id),
+  getAgentIntegrationSession: (id: string, externalId: string) => state.mappings.get(`${id}:${externalId}`),
+  getAgentIntegrationSessionBySessionId: (_agent: string, id: string) => [...state.mappings.values()].find(mapping => mapping.sessionId === id),
+  listAgentIntegrationSessions: vi.fn(() => []),
+  archiveAgentIntegrationSession: vi.fn(), updateAgentIntegrationSessionName: vi.fn(), touchAgentIntegrationSession: vi.fn(), getLastDisplayName: vi.fn(),
 }))
 vi.mock('@shared/lib/agent-actor', () => ({
   agentCatalog: { exists: async () => true },

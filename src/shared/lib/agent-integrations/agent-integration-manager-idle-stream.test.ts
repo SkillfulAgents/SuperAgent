@@ -1,8 +1,8 @@
-import { inputEvent, mockChatIntegration } from './test-helpers'
-import type { IntegrationInputEvent } from '../agent-integrations/types'
+import { inputEvent, mockChatIntegration } from '../chat-integrations/test-helpers'
+import type { IntegrationInputEvent } from './types'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatIntegration } from '@shared/lib/db/schema'
-import type { IncomingMessage } from './base-connector'
+import type { IncomingMessage } from '../chat-integrations/chat-agent-integration'
 
 const mocks = vi.hoisted(() => ({
   send: vi.fn(),
@@ -32,16 +32,16 @@ vi.mock('@shared/lib/services/chat-integration-access-service', () => ({
   decideInboundAccess: () => ({ action: 'allowed' }),
   isChatAllowed: () => true,
 }))
-vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
+vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
   resolveActiveSession: () => ({ id: 'mapping', sessionId: 'existing-session', displayName: 'Chat' }),
-  touchChatIntegrationSession: vi.fn(),
+  touchAgentIntegrationSession: vi.fn(),
 }))
-vi.mock('./resolve-awaiting-input', () => ({ consumeOrCancelAwaitingInput: async () => false }))
+vi.mock('../chat-integrations/resolve-awaiting-input', () => ({ consumeOrCancelAwaitingInput: async () => false }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from './agent-integration-manager'
 
-const manager = chatIntegrationManager as unknown as {
+const manager = agentIntegrationManager as unknown as {
   connections: Map<string, unknown>
   lastSessionTouch: Map<string, number>
   handleIncomingMessageInner(id: string, message: IntegrationInputEvent, integration: ChatIntegration): Promise<void>

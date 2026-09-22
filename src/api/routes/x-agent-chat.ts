@@ -10,9 +10,9 @@ import {
   DuplicateIntegrationIdentityError,
 } from '@shared/lib/services/agent-integration-service'
 import {
-  listChatIntegrationSessions,
-  getChatIntegrationSessionBySessionId,
-} from '@shared/lib/services/chat-integration-session-service'
+  listAgentIntegrationSessions,
+  getAgentIntegrationSessionBySessionId,
+} from '@shared/lib/services/agent-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import type { AgentIntegration } from '@shared/lib/agent-integrations/agent-integration'
 import type { IntegrationTool } from '@shared/lib/agent-integrations/types'
@@ -61,7 +61,7 @@ xAgentChat.post('/list', async (c) => {
       // type where the provider's ids encode one, and advertise discovery
       // capabilities so agents know which discovery tools apply here.
       const connectorClass = await agentIntegrationManager.getDefinition(i.provider)
-      const sessions = await listChatIntegrationSessions(i.id)
+      const sessions = await listAgentIntegrationSessions(i.id)
       const activeChats = await Promise.all(sessions
         .filter((s) => !s.archivedAt)
         .map(async (s) => {
@@ -252,7 +252,7 @@ xAgentChat.post('/send', async (c) => {
     // session is rotated out, its SSE forwarding is torn down, so an outbound
     // send is the only remaining delivery path.
     if (session_id) {
-      const callerChatSession = await getChatIntegrationSessionBySessionId(callerSlug, session_id)
+      const callerChatSession = await getAgentIntegrationSessionBySessionId(callerSlug, session_id)
       if (
         callerChatSession
         && !callerChatSession.archivedAt
@@ -268,7 +268,7 @@ xAgentChat.post('/send', async (c) => {
 
     // No explicit target: fall back to the integration's single active chat
     if (!resolvedChatId) {
-      const sessions = await listChatIntegrationSessions(integration_id)
+      const sessions = await listAgentIntegrationSessions(integration_id)
       const activeChats = sessions.filter((s) => !s.archivedAt)
       if (activeChats.length === 0) {
         return c.json({

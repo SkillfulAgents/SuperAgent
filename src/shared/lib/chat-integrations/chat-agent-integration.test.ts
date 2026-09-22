@@ -1,15 +1,15 @@
 import { describe, it, expect, vi } from 'vitest'
-import { MockChatClientConnector } from './mock-connector'
+import { MockChatAgentIntegration } from './mock-connector'
 
-// We test the base class behavior through MockChatClientConnector,
-// which extends ChatClientConnector and exposes the emit* methods.
+// We test the base class behavior through MockChatAgentIntegration,
+// which extends ChatAgentIntegration and exposes the emit* methods.
 
 describe('ChatAgentIntegration event system', () => {
   // ── onEvent ──────────────────────────────────────────────────────
 
   describe('onEvent', () => {
     it('calls registered handler when message is emitted', async () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const handler = vi.fn()
 
       connector.onEvent(handler)
@@ -21,7 +21,7 @@ describe('ChatAgentIntegration event system', () => {
     })
 
     it('calls multiple handlers', async () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const handler1 = vi.fn()
       const handler2 = vi.fn()
 
@@ -35,7 +35,7 @@ describe('ChatAgentIntegration event system', () => {
     })
 
     it('returns unsubscribe function that removes handler', async () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const handler = vi.fn()
 
       const unsubscribe = connector.onEvent(handler)
@@ -47,7 +47,7 @@ describe('ChatAgentIntegration event system', () => {
     })
 
     it('unsubscribing one handler does not affect others', async () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const handler1 = vi.fn()
       const handler2 = vi.fn()
 
@@ -63,7 +63,7 @@ describe('ChatAgentIntegration event system', () => {
     })
 
     it('error in one handler does not prevent others from being called', async () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const errorHandler = vi.fn(() => { throw new Error('handler error') })
       const goodHandler = vi.fn()
 
@@ -83,7 +83,7 @@ describe('ChatAgentIntegration event system', () => {
 
   describe('response events', () => {
     it('calls registered handler with the normalized response', async () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const handler = vi.fn()
 
       connector.onEvent(handler)
@@ -94,7 +94,7 @@ describe('ChatAgentIntegration event system', () => {
     })
 
     it('returns unsubscribe function', async () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const handler = vi.fn()
 
       const unsub = connector.onEvent(handler)
@@ -106,7 +106,7 @@ describe('ChatAgentIntegration event system', () => {
     })
 
     it('calls multiple handlers', async () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const h1 = vi.fn()
       const h2 = vi.fn()
 
@@ -120,7 +120,7 @@ describe('ChatAgentIntegration event system', () => {
     })
 
     it('error in one handler does not prevent others', async () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const bad = vi.fn(() => { throw new Error('oops') })
       const good = vi.fn()
 
@@ -137,7 +137,7 @@ describe('ChatAgentIntegration event system', () => {
 
   describe('onError', () => {
     it('calls registered handler with error', () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const handler = vi.fn()
       const error = new Error('connection lost')
 
@@ -148,7 +148,7 @@ describe('ChatAgentIntegration event system', () => {
     })
 
     it('returns unsubscribe function', () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const handler = vi.fn()
 
       const unsub = connector.onError(handler)
@@ -159,7 +159,7 @@ describe('ChatAgentIntegration event system', () => {
     })
 
     it('error in one error handler does not prevent others', () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const bad = vi.fn(() => { throw new Error('handler error') })
       const good = vi.fn()
 
@@ -175,7 +175,7 @@ describe('ChatAgentIntegration event system', () => {
 
   describe('incoming message shape', () => {
     it('includes all expected fields', async () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const handler = vi.fn()
 
       connector.onEvent(handler)
@@ -193,11 +193,11 @@ describe('ChatAgentIntegration event system', () => {
   })
 })
 
-// ── MockChatClientConnector recording ────────────────────────────────────
+// ── MockChatAgentIntegration recording ────────────────────────────────────
 
-describe('MockChatClientConnector', () => {
+describe('MockChatAgentIntegration', () => {
   it('records sent messages', async () => {
-    const mock = new MockChatClientConnector()
+    const mock = new MockChatAgentIntegration()
     await mock.connect()
 
     await mock.sendMessage('chat-1', { text: 'hello' })
@@ -209,7 +209,7 @@ describe('MockChatClientConnector', () => {
   })
 
   it('records streaming updates', async () => {
-    const mock = new MockChatClientConnector()
+    const mock = new MockChatAgentIntegration()
 
     const id = await mock.sendStreamingUpdate('chat-1', 'partial text')
     expect(id).toBeDefined()
@@ -218,7 +218,7 @@ describe('MockChatClientConnector', () => {
   })
 
   it('records finalized messages', async () => {
-    const mock = new MockChatClientConnector()
+    const mock = new MockChatAgentIntegration()
 
     await mock.finalizeStreamingMessage('chat-1', 'msg-1', 'final text')
 
@@ -228,7 +228,7 @@ describe('MockChatClientConnector', () => {
   })
 
   it('records working indicators', async () => {
-    const mock = new MockChatClientConnector()
+    const mock = new MockChatAgentIntegration()
 
     await mock.startWorking('chat-1', 'working')
     await mock.startWorking('chat-2', 'working')
@@ -237,7 +237,7 @@ describe('MockChatClientConnector', () => {
   })
 
   it('records sent cards', async () => {
-    const mock = new MockChatClientConnector()
+    const mock = new MockChatAgentIntegration()
     const event = {
       type: 'question_request' as const,
       toolUseId: 'tu-1',
@@ -252,7 +252,7 @@ describe('MockChatClientConnector', () => {
   })
 
   it('tracks connection state', async () => {
-    const mock = new MockChatClientConnector()
+    const mock = new MockChatAgentIntegration()
 
     expect(mock.isConnected()).toBe(false)
     await mock.connect()
@@ -262,7 +262,7 @@ describe('MockChatClientConnector', () => {
   })
 
   it('reset clears all recorded state', async () => {
-    const mock = new MockChatClientConnector()
+    const mock = new MockChatAgentIntegration()
 
     await mock.sendMessage('chat-1', { text: 'hello' })
     await mock.sendStreamingUpdate('chat-1', 'partial')
@@ -280,7 +280,7 @@ describe('MockChatClientConnector', () => {
   })
 
   it('returns unique message IDs', async () => {
-    const mock = new MockChatClientConnector()
+    const mock = new MockChatAgentIntegration()
 
     const id1 = await mock.sendMessage('chat-1', { text: 'a' })
     const id2 = await mock.sendMessage('chat-1', { text: 'b' })

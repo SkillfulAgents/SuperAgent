@@ -4,7 +4,7 @@
  *
  * Uses the real access service against an in-memory test DB.
  * Mocks: auth middleware, agent-integration-service, session-service,
- * chat-integration-manager, config-schema, auth/config, audit-log-service,
+ * agent-integration-manager, config-schema, auth/config, audit-log-service,
  * error-reporting. Does NOT mock the access service.
  */
 
@@ -81,11 +81,11 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
 }))
 
 // ── Session service: mocked ─────────────────────────────────────────────
-vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
-  getChatIntegrationSessionById: vi.fn(),
-  archiveChatIntegrationSession: vi.fn(),
-  listChatIntegrationSessions: vi.fn(() => []),
-  deleteChatIntegrationSessionsByIntegration: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
+  getAgentIntegrationSessionById: vi.fn(),
+  archiveAgentIntegrationSession: vi.fn(),
+  listAgentIntegrationSessions: vi.fn(() => []),
+  deleteAgentIntegrationSessionsByIntegration: vi.fn(),
 }))
 
 // ── Manager: mocked with spies on the new helpers ───────────────────────

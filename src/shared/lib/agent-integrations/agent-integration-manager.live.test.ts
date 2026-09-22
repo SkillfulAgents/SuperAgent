@@ -26,15 +26,15 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
   updateAgentIntegrationStatus: vi.fn(),
 }))
 
-vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
-  getChatIntegrationSession: vi.fn(),
-  getChatIntegrationSessionBySessionId: vi.fn(),
-  createChatIntegrationSession: vi.fn(),
-  updateChatIntegrationSessionName: vi.fn(),
-  archiveChatIntegrationSession: vi.fn(),
-  touchChatIntegrationSession: vi.fn(),
-  listChatIntegrationSessions: vi.fn().mockReturnValue([]),
-  listActiveChatIntegrationSessions: vi.fn().mockReturnValue([]),
+vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
+  getAgentIntegrationSession: vi.fn(),
+  getAgentIntegrationSessionBySessionId: vi.fn(),
+  createAgentIntegrationSession: vi.fn(),
+  updateAgentIntegrationSessionName: vi.fn(),
+  archiveAgentIntegrationSession: vi.fn(),
+  touchAgentIntegrationSession: vi.fn(),
+  listAgentIntegrationSessions: vi.fn().mockReturnValue([]),
+  listActiveAgentIntegrationSessions: vi.fn().mockReturnValue([]),
   resolveActiveSession: vi.fn(),
   getLastDisplayName: vi.fn(),
 }))
@@ -59,13 +59,13 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
   },
 }))
 
-import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
+import { agentIntegrationManager } from './agent-integration-manager'
 import {
   listStartupAgentIntegrations,
   getAgentIntegration,
   updateAgentIntegrationStatus,
 } from '@shared/lib/services/agent-integration-service'
-import type { ChatClientConnector, IncomingMessage } from './base-connector'
+import type { ChatAgentIntegration, IncomingMessage } from '../chat-integrations/chat-agent-integration'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
 const LIVE = process.env.SLACK_LIVE === '1'
@@ -76,7 +76,7 @@ const getIntegrationMock = vi.mocked(getAgentIntegration)
 const updateStatusMock = vi.mocked(updateAgentIntegrationStatus)
 
 interface ManagerTestSurface {
-  connections: Map<string, { connector: ChatClientConnector }>
+  connections: Map<string, { connector: ChatAgentIntegration }>
   disconnectedSince: Map<string, number>
   consecutiveFailures: Map<string, number>
   reconcilingIds: Set<string>
@@ -105,11 +105,11 @@ function liveRow(status: 'active' | 'error'): ChatIntegration {
   } as unknown as ChatIntegration
 }
 
-function connectorOf(id: string): ChatClientConnector | undefined {
+function connectorOf(id: string): ChatAgentIntegration | undefined {
   return mgr.connections.get(id)?.connector
 }
 
-function killRawSocket(connector: ChatClientConnector): void {
+function killRawSocket(connector: ChatAgentIntegration): void {
   const receiver = (connector as unknown as { receiver: { client: { websocket?: { websocket?: { terminate(): void } } } } }).receiver
   const raw = receiver?.client?.websocket?.websocket
   if (!raw) throw new Error('no raw websocket to terminate')
@@ -125,7 +125,7 @@ async function waitFor(label: string, cond: () => boolean, timeoutMs: number, in
   console.log(`[live-mgr] ${label} after ${Date.now() - start}ms`)
 }
 
-describe.runIf(LIVE)('ChatIntegrationManager live reconcile against real Slack', () => {
+describe.runIf(LIVE)('AgentIntegrationManager live reconcile against real Slack', () => {
   beforeAll(async () => {
     mgr.isRunning = true
   })

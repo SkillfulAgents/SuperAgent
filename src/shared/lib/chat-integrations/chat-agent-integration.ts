@@ -23,8 +23,6 @@ import { captureException } from '@shared/lib/error-reporting'
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-export type ChatIntegrationStatus = 'active' | 'paused' | 'error' | 'disconnected'
-
 export interface IncomingMessage {
   externalMessageId: string    // Platform-specific ID (Telegram update_id, Slack message ts)
   text: string
@@ -118,7 +116,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
 
   /**
    * Discovery features this provider supports, advertised to agents via
-   * list_chat_integrations so tools that need a capability are only ever
+   * list_agent_integrations so tools that need a capability are only ever
    * suggested where it exists. Static (a property of the provider, not a
    * connection) so listings can label integrations without a live connector.
    * Undefined/empty means no discovery support — the graceful default.

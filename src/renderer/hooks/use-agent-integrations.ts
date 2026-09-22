@@ -4,14 +4,14 @@
  * React Query hooks for managing external agent integrations.
  */
 
-import type { ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
+import type { AgentIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 import { isSettling } from '@shared/lib/agent-integrations/presentation'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
-export type { ChatIntegrationSession, ChatIntegrationAccess }
+export type { AgentIntegrationSession, ChatIntegrationAccess }
 export type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 
 /** A list row plus the live transport state the list route computes, so the
@@ -118,7 +118,7 @@ export function useAgentIntegrationStatus(id: string | null) {
 // ── Sessions hook ──────────────────────────────────────────────────────
 
 export function useAgentIntegrationSessions(integrationId: string | null) {
-  return useQuery<ChatIntegrationSession[]>({
+  return useQuery<AgentIntegrationSession[]>({
     queryKey: agentIntegrationKeys.sessions(integrationId),
     queryFn: async () => {
       const res = await apiFetch(`/api/agent-integrations/${integrationId}/sessions`)

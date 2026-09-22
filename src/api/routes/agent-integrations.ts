@@ -24,7 +24,7 @@ import {
   revokeChatAccess,
 } from '@shared/lib/services/chat-integration-access-service'
 import type { ChatAccessStatus } from '@shared/lib/services/chat-integration-access-service'
-import { listChatIntegrationSessions, archiveChatIntegrationSession, getChatIntegrationSessionById, deleteChatIntegrationSessionsByIntegration } from '@shared/lib/services/chat-integration-session-service'
+import { listAgentIntegrationSessions, archiveAgentIntegrationSession, getAgentIntegrationSessionById, deleteAgentIntegrationSessionsByIntegration } from '@shared/lib/services/agent-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema } from '@shared/lib/chat-integrations/config-schema'
 import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/cleanup'
@@ -375,7 +375,7 @@ agentIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), 
     await cleanupIntegrationResource(integration)
 
     // Clean up session mappings
-    await deleteChatIntegrationSessionsByIntegration(id)
+    await deleteAgentIntegrationSessionsByIntegration(id)
 
     const deleted = await deleteAgentIntegration(id)
     if (!deleted) {
@@ -435,7 +435,7 @@ agentIntegrationsRouter.get('/:integrationId/status', IntegrationAgentRole('view
 agentIntegrationsRouter.get('/:integrationId/sessions', IntegrationAgentRole('viewer'), async (c) => {
   try {
     const id = c.req.param('integrationId')
-    const sessions = await listChatIntegrationSessions(id)
+    const sessions = await listAgentIntegrationSessions(id)
     return c.json(sessions)
   } catch (error) {
     console.error('Failed to list agent integration sessions:', error)
@@ -449,7 +449,7 @@ agentIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', Integratio
   try {
     const integrationId = c.req.param('integrationId')
     const sessionId = c.req.param('sessionId')
-    const session = await getChatIntegrationSessionById(sessionId)
+    const session = await getAgentIntegrationSessionById(sessionId)
     // Scope the session to the authorized integration. `IntegrationAgentRole`
     // only authorizes :integrationId; the session is loaded by primary key, so
     // we must verify it belongs to that integration before mutating it.
@@ -467,7 +467,7 @@ agentIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', Integratio
     await agentIntegrationManager.clearSessionById(sessionId)
 
     // Archive the session mapping (keeps it visible in sidebar as archived)
-    await archiveChatIntegrationSession(sessionId)
+    await archiveAgentIntegrationSession(sessionId)
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to clear chat session:', error)

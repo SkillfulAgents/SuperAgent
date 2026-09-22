@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-integration-manager'
-import { MockChatClientConnector } from './mock-connector'
+import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-delivery'
+import { MockChatAgentIntegration } from './mock-connector'
 import { createdEvent } from './user-request-fixtures'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
 // ── Test helpers ────────────────────────────────────────────────────────
 
 function createManagedConnector(overrides?: Partial<ManagedConnector>): ManagedConnector {
-  const connector = new MockChatClientConnector()
+  const connector = new MockChatAgentIntegration()
   return {
     connector,
     integration: {
@@ -35,8 +35,8 @@ function createManagedConnector(overrides?: Partial<ManagedConnector>): ManagedC
   }
 }
 
-function getMock(managed: ManagedConnector): MockChatClientConnector {
-  return managed.connector as MockChatClientConnector
+function getMock(managed: ManagedConnector): MockChatAgentIntegration {
+  return managed.connector as MockChatAgentIntegration
 }
 
 /** Simulate a sequence of SSE events */
@@ -775,7 +775,7 @@ describe('edge cases', () => {
 
 describe('multi-session isolation', () => {
   it('two sessions sharing a connector have independent streaming state', async () => {
-    const sharedConnector = new MockChatClientConnector()
+    const sharedConnector = new MockChatAgentIntegration()
 
     const session1 = createManagedConnector({
       connector: sharedConnector,
@@ -796,7 +796,7 @@ describe('multi-session isolation', () => {
   })
 
   it('finalizing one session does not affect the other', async () => {
-    const sharedConnector = new MockChatClientConnector()
+    const sharedConnector = new MockChatAgentIntegration()
 
     const session1 = createManagedConnector({
       connector: sharedConnector,
@@ -826,7 +826,7 @@ describe('multi-session isolation', () => {
   })
 
   it('pending tool messages are independent per session', async () => {
-    const sharedConnector = new MockChatClientConnector()
+    const sharedConnector = new MockChatAgentIntegration()
 
     const session1 = createManagedConnector({
       connector: sharedConnector,
@@ -854,7 +854,7 @@ describe('multi-session isolation', () => {
   })
 
   it('messages are sent to the correct chatId', async () => {
-    const sharedConnector = new MockChatClientConnector()
+    const sharedConnector = new MockChatAgentIntegration()
 
     const session1 = createManagedConnector({
       connector: sharedConnector,
@@ -880,7 +880,7 @@ describe('multi-session isolation', () => {
   })
 
   it('tool input accumulation is independent per session', async () => {
-    const sharedConnector = new MockChatClientConnector()
+    const sharedConnector = new MockChatAgentIntegration()
 
     const session1 = createManagedConnector({
       connector: sharedConnector,
@@ -909,7 +909,7 @@ describe('multi-session isolation', () => {
   })
 
   it('interleaved streaming across sessions produces correct output', async () => {
-    const sharedConnector = new MockChatClientConnector()
+    const sharedConnector = new MockChatAgentIntegration()
 
     const session1 = createManagedConnector({
       connector: sharedConnector,
@@ -962,7 +962,7 @@ describe('multi-session isolation', () => {
 
 describe('no-streaming connector (iMessage-style)', () => {
   function createNoStreamManaged(): ManagedConnector {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     // Override to mimic iMessage no-streaming behavior
     connector.sendStreamingUpdate = async (_chatId, _text, existingId) => {
       return existingId || `noop-${Date.now()}`
@@ -1007,7 +1007,7 @@ describe('no-streaming connector (iMessage-style)', () => {
       { type: 'session_idle' },
     ])
 
-    const mock = managed.connector as MockChatClientConnector
+    const mock = managed.connector as MockChatAgentIntegration
     // No intermediate stream updates recorded (sendStreamingUpdate is no-op)
     expect(mock.streamUpdates.length).toBe(0)
     // Final text delivered via sendMessage (from finalizeStreamingMessage)
@@ -1022,7 +1022,7 @@ describe('no-streaming connector (iMessage-style)', () => {
 
     await processSSEEvent(managed, { type: 'session_idle' })
 
-    const mock = managed.connector as MockChatClientConnector
+    const mock = managed.connector as MockChatAgentIntegration
     expect(mock.sentMessages.length).toBe(1)
     expect(mock.sentMessages[0].message.text).toBe('Quick reply')
   })
@@ -1030,7 +1030,7 @@ describe('no-streaming connector (iMessage-style)', () => {
   it('handles text → tool → text cycle correctly', async () => {
     const managed = createNoStreamManaged()
     const outputLog: string[] = []
-    const mock = managed.connector as MockChatClientConnector
+    const mock = managed.connector as MockChatAgentIntegration
     const origSend = mock.sendMessage.bind(mock)
     mock.sendMessage = async (chatId: string, message: { text: string }) => {
       outputLog.push(message.text)

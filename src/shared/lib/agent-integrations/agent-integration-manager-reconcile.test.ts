@@ -33,15 +33,15 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
   updateAgentIntegrationStatus: vi.fn(),
 }))
 
-vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
-  getChatIntegrationSession: vi.fn(),
-  getChatIntegrationSessionBySessionId: vi.fn(),
-  createChatIntegrationSession: vi.fn(),
-  updateChatIntegrationSessionName: vi.fn(),
-  archiveChatIntegrationSession: vi.fn(),
-  touchChatIntegrationSession: vi.fn(),
-  listChatIntegrationSessions: vi.fn().mockReturnValue([]),
-  listActiveChatIntegrationSessions: vi.fn().mockReturnValue([]),
+vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
+  getAgentIntegrationSession: vi.fn(),
+  getAgentIntegrationSessionBySessionId: vi.fn(),
+  createAgentIntegrationSession: vi.fn(),
+  updateAgentIntegrationSessionName: vi.fn(),
+  archiveAgentIntegrationSession: vi.fn(),
+  touchAgentIntegrationSession: vi.fn(),
+  listAgentIntegrationSessions: vi.fn().mockReturnValue([]),
+  listActiveAgentIntegrationSessions: vi.fn().mockReturnValue([]),
   resolveActiveSession: vi.fn(),
   getLastDisplayName: vi.fn(),
 }))
@@ -71,14 +71,14 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
   },
 }))
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from './agent-integration-manager'
 import {
   listStartupAgentIntegrations,
   getAgentIntegration,
   updateAgentIntegrationStatus,
 } from '@shared/lib/services/agent-integration-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
-import type { ChatClientConnector } from './base-connector'
+import type { ChatAgentIntegration } from '../chat-integrations/chat-agent-integration'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
 const listStartupMock = vi.mocked(listStartupAgentIntegrations)
@@ -86,7 +86,7 @@ const getIntegrationMock = vi.mocked(getAgentIntegration)
 const updateStatusMock = vi.mocked(updateAgentIntegrationStatus)
 
 interface ManagerTestSurface {
-  connections: Map<string, { connector: ChatClientConnector }>
+  connections: Map<string, { connector: ChatAgentIntegration }>
   chatSessions: Map<string, unknown>
   messageQueues: Map<string, unknown>
   disconnectedSince: Map<string, number>
@@ -95,14 +95,14 @@ interface ManagerTestSurface {
   generations?: Map<string, number>
   isRunning: boolean
   runHealthChecks(): Promise<void>
-  createConnector(integration: unknown): Promise<ChatClientConnector>
+  createConnector(integration: unknown): Promise<ChatAgentIntegration>
   pauseIntegration(id: string): Promise<void>
   removeIntegration(id: string): Promise<void>
   addIntegration(id: string): Promise<void>
   stop(): void
 }
 
-const mgr = chatIntegrationManager as unknown as ManagerTestSurface
+const mgr = agentIntegrationManager as unknown as ManagerTestSurface
 
 const INT = 'int-reconcile-test'
 
@@ -124,7 +124,7 @@ function integrationRow(overrides?: Partial<ChatIntegration>): ChatIntegration {
   } as unknown as ChatIntegration
 }
 
-interface FakeConnector extends ChatClientConnector {
+interface FakeConnector extends ChatAgentIntegration {
   connectedState: boolean
 }
 

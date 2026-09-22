@@ -42,7 +42,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 const mockGetChatIntegration = vi.fn()
 const mockCreateChatIntegration = vi.fn()
 const mockListChatIntegrations = vi.fn()
-const mockUpdateChatIntegrationStatus = vi.fn()
+const mockUpdateAgentIntegrationStatus = vi.fn()
 
 const MockDuplicateIntegrationIdentityError = vi.hoisted(() => class DuplicateIntegrationIdentityError extends Error {})
 
@@ -50,16 +50,16 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
   getAgentIntegration: (...args: unknown[]) => mockGetChatIntegration(...args),
   createAgentIntegration: (...args: unknown[]) => mockCreateChatIntegration(...args),
   listAgentIntegrations: (...args: unknown[]) => mockListChatIntegrations(...args),
-  updateAgentIntegrationStatus: (...args: unknown[]) => mockUpdateChatIntegrationStatus(...args),
+  updateAgentIntegrationStatus: (...args: unknown[]) => mockUpdateAgentIntegrationStatus(...args),
   DuplicateIntegrationIdentityError: MockDuplicateIntegrationIdentityError,
 }))
 
-const mockListChatIntegrationSessions = vi.fn()
-const mockGetChatIntegrationSessionBySessionId = vi.fn()
+const mockListAgentIntegrationSessions = vi.fn()
+const mockGetAgentIntegrationSessionBySessionId = vi.fn()
 
-vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
-  listChatIntegrationSessions: (...args: unknown[]) => mockListChatIntegrationSessions(...args),
-  getChatIntegrationSessionBySessionId: (...args: unknown[]) => mockGetChatIntegrationSessionBySessionId(...args),
+vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
+  listAgentIntegrationSessions: (...args: unknown[]) => mockListAgentIntegrationSessions(...args),
+  getAgentIntegrationSessionBySessionId: (...args: unknown[]) => mockGetAgentIntegrationSessionBySessionId(...args),
 }))
 
 const mockAddIntegration = vi.fn()
@@ -180,10 +180,10 @@ describe('x-agent chat route', () => {
     mockValidateProxyToken.mockResolvedValue('agent-one')
     mockGetChatIntegration.mockReturnValue(createIntegration())
     mockListChatIntegrations.mockReturnValue([createIntegration()])
-    mockListChatIntegrationSessions.mockReturnValue([
+    mockListAgentIntegrationSessions.mockReturnValue([
       { externalChatId: 'chat-1', displayName: 'General', archivedAt: null },
     ])
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue(null)
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue(null)
     mockGetConnector.mockReturnValue(connector)
     mockGetConnectorClass.mockResolvedValue(undefined)
     mockGetActiveIntegrationIds.mockReturnValue(['integration-1'])
@@ -212,7 +212,7 @@ describe('x-agent chat route', () => {
   })
 
   it('lists integrations with only active chat sessions', async () => {
-    mockListChatIntegrationSessions.mockReturnValue([
+    mockListAgentIntegrationSessions.mockReturnValue([
       { externalChatId: 'chat-1', displayName: 'General', archivedAt: null },
       { externalChatId: 'chat-archived', displayName: 'Old thread', archivedAt: '2026-01-01T00:00:00.000Z' },
     ])
@@ -241,7 +241,7 @@ describe('x-agent chat route', () => {
       capabilities: ['list_users', 'list_channels', 'dm_by_user_id'],
       classifyChatId: (chat: { chatId: string }) => (chat.chatId.startsWith('D') ? 'dm' : chat.chatId.includes('|') ? 'thread' : 'channel'),
     })
-    mockListChatIntegrationSessions.mockReturnValue([
+    mockListAgentIntegrationSessions.mockReturnValue([
       { externalChatId: 'D0AAA111', displayName: 'Iddo Gino', archivedAt: null },
       { externalChatId: 'C0BBB222|123.456', displayName: '#office', archivedAt: null },
     ])
@@ -366,7 +366,7 @@ describe('x-agent chat route', () => {
   // to its chat, so sends into that same chat are rejected as double-posts.
 
   it('rejects a send from a chat session that omits chat_id (own chat implied)', async () => {
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
       integrationId: 'integration-1', externalChatId: 'chat-1', displayName: 'General', archivedAt: null,
     })
 
@@ -384,12 +384,12 @@ describe('x-agent chat route', () => {
     const { error } = await res.json() as { error: string }
     expect(error).toContain('chat chat-1 (General)')
     expect(error).toContain('delivered to that chat automatically')
-    expect(mockGetChatIntegrationSessionBySessionId).toHaveBeenCalledWith('agent-one', 'caller-session')
+    expect(mockGetAgentIntegrationSessionBySessionId).toHaveBeenCalledWith('agent-one', 'caller-session')
     expect(connector.sendMessage).not.toHaveBeenCalled()
   })
 
   it('rejects a send from a chat session that explicitly targets its own chat', async () => {
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
       integrationId: 'integration-1', externalChatId: 'chat-1', displayName: null, archivedAt: null,
     })
 
@@ -411,7 +411,7 @@ describe('x-agent chat route', () => {
 
   it('allows a chat session to message a different chat on the same integration', async () => {
     immediateTimeout()
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
       integrationId: 'integration-1', externalChatId: 'chat-1', displayName: 'General', archivedAt: null,
     })
 
@@ -432,7 +432,7 @@ describe('x-agent chat route', () => {
 
   it('does not guard sends from an archived chat session (streaming is torn down)', async () => {
     immediateTimeout()
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
       integrationId: 'integration-1', externalChatId: 'chat-1', displayName: 'General', archivedAt: new Date(),
     })
 
@@ -453,7 +453,7 @@ describe('x-agent chat route', () => {
 
   it('does not guard sends whose calling session serves a different integration', async () => {
     immediateTimeout()
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
       integrationId: 'integration-2', externalChatId: 'chat-1', displayName: null, archivedAt: null,
     })
 
@@ -555,7 +555,7 @@ describe('x-agent chat route', () => {
     mockGetConnectorClass.mockResolvedValue({ capabilities: ['dm_by_user_id'] })
     const resolveDirectChat = vi.fn().mockResolvedValue('D0AAA111')
     mockGetConnector.mockReturnValue({ ...connector, resolveDirectChat })
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
       integrationId: 'integration-1', externalChatId: 'D0AAA111', displayName: 'Iddo Gino', archivedAt: null,
     })
 
