@@ -57,7 +57,7 @@ describe('Linear shared setup modal', () => {
     const view = setupForm()
     expect(await screen.findByRole('link', { name: 'Create app in Linear' })).toHaveAttribute('href', current.linear.setup.creationUrl)
     expect(screen.getByTestId('integration-setup-layout')).toBeInTheDocument()
-    expect(screen.getByLabelText('Agent name')).toHaveValue('Release Assistant')
+    expect(screen.getByLabelText('Integration name')).toHaveValue('Release Assistant')
     expect(screen.getByRole('button', { name: /^Connect$/ })).toBeDisabled()
     view.unmount()
     expect(creates()).toHaveLength(0)
