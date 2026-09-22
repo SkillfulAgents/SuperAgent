@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import type { AppDatabase } from '@shared/lib/db/drivers/types'
 import { agentRemoteMcps, mcpAuditLog, remoteMcpServers } from '@shared/lib/db/schema'
-import { createChatIntegration, deleteChatIntegration, getChatIntegration, updateChatIntegrationStatus } from '@shared/lib/services/chat-integration-service'
+import { createAgentIntegration, deleteAgentIntegration, getAgentIntegration, updateAgentIntegrationStatus } from '@shared/lib/services/agent-integration-service'
 import { agentIntegrationRegistry, AgentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { integrationMcpName, integrationMcpProjection, resolveIntegrationMcp } from '@shared/lib/agent-integrations/mcp'
 import { listAgentMcpConnections } from '@shared/lib/container/connection-runtime-projections'
@@ -44,7 +44,7 @@ beforeEach(async () => {
         tools: [{ name: 'send_message', inputSchema: { type: 'object' } }],
         async authorization() {
           await beforeAuthorization()
-          const current = await getChatIntegration(record.id)
+          const current = await getAgentIntegration(record.id)
           if (!current || current.agentSlug !== record.agentSlug || current.status === 'paused') throw new Error('Parent unavailable')
           return 'agent-secret'
         },
@@ -53,7 +53,7 @@ beforeEach(async () => {
     },
   }])
   vi.spyOn(agentIntegrationRegistry, 'getMcpConnection').mockImplementation(record => registry.getMcpConnection(record))
-  id = await createChatIntegration({ agentSlug: 'agent', provider: 'telegram', config: { botToken: 'test-token' } })
+  id = await createAgentIntegration({ agentSlug: 'agent', provider: 'telegram', config: { botToken: 'test-token' } })
   app = new Hono().route('/api/mcp-proxy', mcpProxy)
 })
 afterEach(async () => { await handle.close(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -83,9 +83,9 @@ describe('integration-owned MCP through the shared proxy', () => {
   })
   it.each(['paused', 'deleted', 'foreign'] as const)('rejects a %s integration even from an existing session', async state => {
     const connection = await resolveIntegrationMcp('agent', `integration:${id}`)
-    if (state === 'paused') await updateChatIntegrationStatus(id, 'paused')
-    if (state === 'deleted') await deleteChatIntegration(id)
-    if (state === 'foreign') id = await createChatIntegration({ agentSlug: 'other-agent', provider: 'telegram', config: { botToken: 'other-token' } })
+    if (state === 'paused') await updateAgentIntegrationStatus(id, 'paused')
+    if (state === 'deleted') await deleteAgentIntegration(id)
+    if (state === 'foreign') id = await createAgentIntegration({ agentSlug: 'other-agent', provider: 'telegram', config: { botToken: 'other-token' } })
     expect((await call()).status).toBe(403)
     expect(fetchMock).not.toHaveBeenCalled()
     if (state !== 'foreign') await expect(connection!.authorization()).rejects.toThrow()
@@ -107,14 +107,14 @@ describe('integration-owned MCP through the shared proxy', () => {
     expect(authRequired).not.toHaveBeenCalled()
   })
   it('does not forward if parent authorization rejects after an asynchronous pause', async () => {
-    beforeAuthorization.mockImplementation(async () => { await updateChatIntegrationStatus(id, 'paused') })
+    beforeAuthorization.mockImplementation(async () => { await updateAgentIntegrationStatus(id, 'paused') })
     expect((await call()).status).toBe(502)
     expect(fetchMock).not.toHaveBeenCalled()
     expect(reportHealth).not.toHaveBeenCalled()
   })
   it('isolates damaged and unsupported providers while projecting healthy connections', async () => {
-    await createChatIntegration({ agentSlug: 'agent', provider: 'telegram', name: 'Broken', config: { botToken: 'broken-token' } })
-    const unsupported = await createChatIntegration({ agentSlug: 'agent', provider: 'slack', config: { botToken: 'slack-token', appToken: 'app-token' } })
+    await createAgentIntegration({ agentSlug: 'agent', provider: 'telegram', name: 'Broken', config: { botToken: 'broken-token' } })
+    const unsupported = await createAgentIntegration({ agentSlug: 'agent', provider: 'slack', config: { botToken: 'slack-token', appToken: 'app-token' } })
     expect(await integrationMcpProjection('agent', 'http://host')).toHaveLength(1)
     expect(await resolveIntegrationMcp('agent', `integration:${unsupported}`)).toBeNull()
   })
@@ -122,7 +122,7 @@ describe('integration-owned MCP through the shared proxy', () => {
 
 
 it('assigns distinct stable namespaces to two installations with the same provider name', async () => {
-  const second = await createChatIntegration({ agentSlug: 'agent', provider: 'telegram', config: { botToken: 'second-token' } })
+  const second = await createAgentIntegration({ agentSlug: 'agent', provider: 'telegram', config: { botToken: 'second-token' } })
   const projected = await integrationMcpProjection('agent', 'http://host')
   expect(new Set(projected.map(connection => connection.name))).toEqual(new Set([integrationMcpName(id), integrationMcpName(second)]))
   expect(projected.map(connection => connection.name)).not.toContain('test_identity')
@@ -169,7 +169,7 @@ it('does not forward or report an outage when paused during an upstream handshak
   const sessionId = await syntheticSession()
   fetchMock.mockResolvedValueOnce(Response.json({ result: {} }, { headers: { 'Mcp-Session-Id': 'upstream' } }))
     .mockImplementationOnce(async () => {
-      await updateChatIntegrationStatus(id, 'paused')
+      await updateAgentIntegrationStatus(id, 'paused')
       return new Response(null, { status: 202 })
     })
   expect((await call(undefined, undefined, sessionId)).status).toBe(502)
@@ -218,6 +218,6 @@ it('discovers both ownership types together and keeps their credentials and perm
     { remoteMcpId: 'account', policyDecision: 'allow' },
   ])
 
-  await updateChatIntegrationStatus(id, 'paused')
+  await updateAgentIntegrationStatus(id, 'paused')
   expect((await listAgentMcpConnections('agent', 'http://host')).map(connection => connection.id)).toEqual(['account'])
 })

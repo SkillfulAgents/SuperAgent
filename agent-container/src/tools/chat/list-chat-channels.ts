@@ -21,7 +21,7 @@ export const listChatChannelsTool = tool(
 
 Use this to find where to post BEFORE sending a proactive message: pass the chat_id to send_chat_message. The bot may be unable to post in channels it is not a member of — the listing marks membership.
 
-Only integrations whose capabilities include list_channels support this (see list_chat_integrations). Large workspaces are capped; a truncated listing says so.`,
+Only integrations whose capabilities include list_channels support this (see list_agent_integrations). Large workspaces are capped; a truncated listing says so.`,
   {
     integration_id: z.string().describe('ID of the chat integration whose channels to list'),
   },

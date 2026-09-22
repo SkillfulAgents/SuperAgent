@@ -20,18 +20,18 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 import {
-  createChatIntegrationSession,
-  getChatIntegrationSession,
-  getChatIntegrationSessionById,
-  getChatIntegrationSessionBySessionId,
-  touchChatIntegrationSession,
-  archiveChatIntegrationSession,
+  createAgentIntegrationSession,
+  getAgentIntegrationSession,
+  getAgentIntegrationSessionById,
+  getAgentIntegrationSessionBySessionId,
+  touchAgentIntegrationSession,
+  archiveAgentIntegrationSession,
   resolveActiveSession,
   getLastDisplayName,
-} from './chat-integration-session-service'
-import { createChatIntegration } from './chat-integration-service'
+} from './agent-integration-session-service'
+import { createAgentIntegration } from './agent-integration-service'
 
-describe('chat-integration-session-service', () => {
+describe('agent-integration-session-service', () => {
   let integrationId: string
 
   beforeEach(async () => {
@@ -39,7 +39,7 @@ describe('chat-integration-session-service', () => {
     handle = await createTestDatabase()
     testDb = handle.db
 
-    integrationId = (await createChatIntegration({
+    integrationId = (await createAgentIntegration({
       agentSlug: 'test-agent',
       provider: 'telegram',
       config: { botToken: 'test-token' },
@@ -51,74 +51,74 @@ describe('chat-integration-session-service', () => {
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
 
-  describe('getChatIntegrationSessionBySessionId', () => {
+  describe('getAgentIntegrationSessionBySessionId', () => {
     // A session id is unique only within an agent. If two agents' integrations
     // each have a chat session with the same id, the lookup must return the
     // one owned by the asking agent — otherwise an approval card for one agent
     // is routed into a different agent's channel.
     it('returns the asking agent’s session, not another agent’s same-id session', async () => {
-      const otherIntegrationId = (await createChatIntegration({
+      const otherIntegrationId = (await createAgentIntegration({
         agentSlug: 'other-agent',
         provider: 'telegram',
         config: { botToken: 'other-token' },
       }))
-      await createChatIntegrationSession({ integrationId, externalChatId: 'chat-mine', sessionId: 'shared-session' })
-      await createChatIntegrationSession({ integrationId: otherIntegrationId, externalChatId: 'chat-theirs', sessionId: 'shared-session' })
+      await createAgentIntegrationSession({ integrationId, externalChatId: 'chat-mine', sessionId: 'shared-session' })
+      await createAgentIntegrationSession({ integrationId: otherIntegrationId, externalChatId: 'chat-theirs', sessionId: 'shared-session' })
 
-      const mine = (await getChatIntegrationSessionBySessionId('test-agent', 'shared-session'))
+      const mine = (await getAgentIntegrationSessionBySessionId('test-agent', 'shared-session'))
       expect(mine?.externalChatId).toBe('chat-mine')
       expect(mine?.integrationId).toBe(integrationId)
 
-      const theirs = (await getChatIntegrationSessionBySessionId('other-agent', 'shared-session'))
+      const theirs = (await getAgentIntegrationSessionBySessionId('other-agent', 'shared-session'))
       expect(theirs?.externalChatId).toBe('chat-theirs')
       expect(theirs?.integrationId).toBe(otherIntegrationId)
     })
 
     it('returns null when the id belongs to a different agent', async () => {
-      await createChatIntegrationSession({ integrationId, externalChatId: 'chat-1', sessionId: 'sess-1' })
-      expect((await getChatIntegrationSessionBySessionId('some-stranger', 'sess-1'))).toBeNull()
+      await createAgentIntegrationSession({ integrationId, externalChatId: 'chat-1', sessionId: 'sess-1' })
+      expect((await getAgentIntegrationSessionBySessionId('some-stranger', 'sess-1'))).toBeNull()
     })
   })
 
-  describe('touchChatIntegrationSession', () => {
+  describe('touchAgentIntegrationSession', () => {
     it('updates the updatedAt timestamp', async () => {
-      const sessionId = (await createChatIntegrationSession({
+      const sessionId = (await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
         displayName: 'Test Chat',
       }))
 
-      const before = (await getChatIntegrationSessionById(sessionId))
+      const before = (await getAgentIntegrationSessionById(sessionId))
       expect(before).not.toBeNull()
       const beforeTime = before!.updatedAt.getTime()
 
       // Small delay to ensure timestamp differs
       await new Promise(r => setTimeout(r, 20))
 
-      await touchChatIntegrationSession(sessionId)
+      await touchAgentIntegrationSession(sessionId)
 
-      const after = (await getChatIntegrationSessionById(sessionId))
+      const after = (await getAgentIntegrationSessionById(sessionId))
       expect(after!.updatedAt.getTime()).toBeGreaterThan(beforeTime)
     })
 
     it('returns true when session exists', async () => {
-      const sessionId = (await createChatIntegrationSession({
+      const sessionId = (await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-2',
         sessionId: 'session-2',
       }))
-      expect((await touchChatIntegrationSession(sessionId))).toBe(true)
+      expect((await touchAgentIntegrationSession(sessionId))).toBe(true)
     })
 
     it('returns false for non-existent session', async () => {
-      expect((await touchChatIntegrationSession('nonexistent'))).toBe(false)
+      expect((await touchAgentIntegrationSession('nonexistent'))).toBe(false)
     })
   })
 
   describe('session rotation scenario', () => {
-    it('archived session is not returned by getChatIntegrationSession', async () => {
-      const sessionId = (await createChatIntegrationSession({
+    it('archived session is not returned by getAgentIntegrationSession', async () => {
+      const sessionId = (await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-rotate',
         sessionId: 'old-session',
@@ -126,16 +126,16 @@ describe('chat-integration-session-service', () => {
       }))
 
       // Session is active
-      expect((await getChatIntegrationSession(integrationId, 'chat-rotate'))).not.toBeNull()
+      expect((await getAgentIntegrationSession(integrationId, 'chat-rotate'))).not.toBeNull()
 
       // Archive it (simulates timeout rotation)
-      await archiveChatIntegrationSession(sessionId)
+      await archiveAgentIntegrationSession(sessionId)
 
       // Should no longer be found as active
-      expect((await getChatIntegrationSession(integrationId, 'chat-rotate'))).toBeNull()
+      expect((await getAgentIntegrationSession(integrationId, 'chat-rotate'))).toBeNull()
 
       // Create a new session for the same chat
-      await createChatIntegrationSession({
+      await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-rotate',
         sessionId: 'new-session',
@@ -143,7 +143,7 @@ describe('chat-integration-session-service', () => {
       })
 
       // New session is returned
-      const newSession = (await getChatIntegrationSession(integrationId, 'chat-rotate'))
+      const newSession = (await getAgentIntegrationSession(integrationId, 'chat-rotate'))
       expect(newSession).not.toBeNull()
       expect(newSession!.sessionId).toBe('new-session')
     })
@@ -151,7 +151,7 @@ describe('chat-integration-session-service', () => {
 
   describe('resolveActiveSession', () => {
     it('returns active session when no timeout configured', async () => {
-      await createChatIntegrationSession({
+      await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
@@ -169,7 +169,7 @@ describe('chat-integration-session-service', () => {
     })
 
     it('returns session when within timeout window', async () => {
-      await createChatIntegrationSession({
+      await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
@@ -182,7 +182,7 @@ describe('chat-integration-session-service', () => {
     })
 
     it('archives and returns null when session exceeds timeout', async () => {
-      const sessionId = (await createChatIntegrationSession({
+      const sessionId = (await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
@@ -199,12 +199,12 @@ describe('chat-integration-session-service', () => {
       expect(result).toBeNull()
 
       // Verify the old session was archived
-      const archived = (await getChatIntegrationSessionById(sessionId))
+      const archived = (await getAgentIntegrationSessionById(sessionId))
       expect(archived!.archivedAt).not.toBeNull()
     })
 
     it('calls onArchive callback when rotating', async () => {
-      const sessionId = (await createChatIntegrationSession({
+      const sessionId = (await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
@@ -223,7 +223,7 @@ describe('chat-integration-session-service', () => {
     })
 
     it('does not call onArchive when session is valid', async () => {
-      await createChatIntegrationSession({
+      await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
@@ -241,7 +241,7 @@ describe('chat-integration-session-service', () => {
       // Simulate the bug: earlier code created a session but never archived it.
       // Then the manager created a new session for the same chat.
       // Now there are TWO non-archived sessions for the same (integrationId, chatId).
-      const orphanId = (await createChatIntegrationSession({
+      const orphanId = (await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'orphan-session',
@@ -256,7 +256,7 @@ describe('chat-integration-session-service', () => {
         .run()
 
       // Create the "real" current session (as the manager would)
-      await createChatIntegrationSession({
+      await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'current-session',
@@ -272,7 +272,7 @@ describe('chat-integration-session-service', () => {
 
     it('returns the most recent session when no timeout is configured', async () => {
       // Two non-archived sessions, no timeout
-      const oldId = (await createChatIntegrationSession({
+      const oldId = (await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'old-session',
@@ -285,7 +285,7 @@ describe('chat-integration-session-service', () => {
         .where(eq(schema.chatIntegrationSessions.id, oldId))
         .run()
 
-      await createChatIntegrationSession({
+      await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'new-session',
@@ -297,9 +297,9 @@ describe('chat-integration-session-service', () => {
     })
   })
 
-  describe('getChatIntegrationSession ordering', () => {
+  describe('getAgentIntegrationSession ordering', () => {
     it('returns the most recently updated session when duplicates exist', async () => {
-      const oldId = (await createChatIntegrationSession({
+      const oldId = (await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'old-session',
@@ -312,33 +312,33 @@ describe('chat-integration-session-service', () => {
         .where(eq(schema.chatIntegrationSessions.id, oldId))
         .run()
 
-      await createChatIntegrationSession({
+      await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'new-session',
       })
 
       // Should return the newer one, not the older insertion-order one
-      const result = (await getChatIntegrationSession(integrationId, 'chat-1'))
+      const result = (await getAgentIntegrationSession(integrationId, 'chat-1'))
       expect(result).not.toBeNull()
       expect(result!.sessionId).toBe('new-session')
     })
 
     it('ignores archived sessions', async () => {
-      const archivedId = (await createChatIntegrationSession({
+      const archivedId = (await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'archived-session',
       }))
-      await archiveChatIntegrationSession(archivedId)
+      await archiveAgentIntegrationSession(archivedId)
 
-      await createChatIntegrationSession({
+      await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'active-session',
       })
 
-      const result = (await getChatIntegrationSession(integrationId, 'chat-1'))
+      const result = (await getAgentIntegrationSession(integrationId, 'chat-1'))
       expect(result).not.toBeNull()
       expect(result!.sessionId).toBe('active-session')
     })
@@ -350,7 +350,7 @@ describe('chat-integration-session-service', () => {
     })
 
     it('returns display name from the most recent session', async () => {
-      const id1 = (await createChatIntegrationSession({
+      const id1 = (await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
@@ -364,7 +364,7 @@ describe('chat-integration-session-service', () => {
         .where(eq(schema.chatIntegrationSessions.id, id1))
         .run()
 
-      await createChatIntegrationSession({
+      await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-2',
@@ -375,14 +375,14 @@ describe('chat-integration-session-service', () => {
     })
 
     it('skips sessions without display names', async () => {
-      await createChatIntegrationSession({
+      await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-1',
         // no displayName
       })
 
-      await createChatIntegrationSession({
+      await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
         sessionId: 'session-2',
@@ -393,7 +393,7 @@ describe('chat-integration-session-service', () => {
     })
 
     it('does not return display names from other chats', async () => {
-      await createChatIntegrationSession({
+      await createAgentIntegrationSession({
         integrationId,
         externalChatId: 'other-chat',
         sessionId: 'session-1',

@@ -5,12 +5,12 @@ import { useAgentIntegrationAccess } from '@renderer/hooks/use-agent-integration
 import { buildChatRows, activeWindow, type ChatRow } from './chat-inbox-model'
 import { ChatListRow } from './chat-list-row'
 import { ConversationDetail } from './conversation-detail'
-import type { ChatIntegrationSession } from '@shared/lib/db/schema'
+import type { AgentIntegrationSession } from '@shared/lib/db/schema'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 
 interface ConversationHistorySectionProps {
   integration: PublicAgentIntegration
-  sessions: ChatIntegrationSession[] | undefined
+  sessions: AgentIntegrationSession[] | undefined
   /** The route's `?session=` value (the open window), or null. */
   routeSessionId: string | null
   /** The route's `?newchat=` value (a chat opened to a fresh conversation), or null. */

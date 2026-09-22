@@ -1,4 +1,4 @@
-import { mockChatIntegration } from './test-helpers'
+import { mockChatIntegration } from '../chat-integrations/test-helpers'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
@@ -15,7 +15,7 @@ import crypto from 'node:crypto'
 // service. Archived sessions and sessions with no allowed access row must be
 // skipped.
 //
-// isChatAllowed and listChatIntegrationSessions run against a REAL in-memory
+// isChatAllowed and listAgentIntegrationSessions run against a REAL in-memory
 // DB so the filter is exercised via actual SQL, not mocked return values.
 // The connector is stubbed so connector.connect() succeeds without network I/O.
 // ---------------------------------------------------------------------------
@@ -27,10 +27,10 @@ vi.mock('../db', () => ({
   get db() { return testDb },
 }))
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  getChatIntegration: vi.fn(() => fakeIntegration()),
-  listStartupChatIntegrations: vi.fn().mockReturnValue([]),
-  updateChatIntegrationStatus: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  getAgentIntegration: vi.fn(() => fakeIntegration()),
+  listStartupAgentIntegrations: vi.fn().mockReturnValue([]),
+  updateAgentIntegrationStatus: vi.fn(),
 }))
 
 vi.mock('@shared/lib/container/container-host', async () => {
@@ -47,20 +47,20 @@ vi.mock('@shared/lib/error-reporting', () => ({
   addErrorBreadcrumb: vi.fn(),
 }))
 
-import { chatIntegrationManager } from './chat-integration-manager'
-import type { ChatClientConnector } from './base-connector'
+import { agentIntegrationManager } from './agent-integration-manager'
+import type { ChatAgentIntegration } from '../chat-integrations/chat-agent-integration'
 
 const INT = 'int-restore-test'
 
 interface ManagerTestSurface {
   connectIntegration(integration: unknown): Promise<boolean>
   subscribeChatSession(integrationId: string, chatId: string, sessionId: string): void
-  createConnector(integration: unknown): Promise<ChatClientConnector>
+  createConnector(integration: unknown): Promise<ChatAgentIntegration>
   connections: Map<string, unknown>
   isRunning: boolean
 }
 
-const mgr = chatIntegrationManager as unknown as ManagerTestSurface
+const mgr = agentIntegrationManager as unknown as ManagerTestSurface
 
 function fakeIntegration() {
   return {
@@ -76,13 +76,13 @@ function fakeIntegration() {
   }
 }
 
-function fakeConnector(): ChatClientConnector {
+function fakeConnector(): ChatAgentIntegration {
   return mockChatIntegration({
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn(),
     onError: vi.fn().mockReturnValue(() => {}),
-  }) as unknown as ChatClientConnector
+  }) as unknown as ChatAgentIntegration
 }
 
 function seedIntegration(): void {
@@ -119,7 +119,7 @@ function seedAccess(chatId: string, status: 'pending' | 'allowed' | 'denied'): v
     .run(id, INT, chatId, status, now, now, now)
 }
 
-describe('ChatIntegrationManager — reconnect restoration filter', () => {
+describe('AgentIntegrationManager — reconnect restoration filter', () => {
   beforeEach(() => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })

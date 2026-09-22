@@ -1,5 +1,5 @@
 export type ListAvailableChatProvidersInput = Record<string, never>
-export type ListChatIntegrationsInput = Record<string, never>
+export type ListAgentIntegrationsInput = Record<string, never>
 
 export interface AddChatIntegrationInput {
   provider?: string
@@ -29,10 +29,10 @@ export const listAvailableChatProvidersDef = {
   getSummary: () => 'List supported chat providers',
 } as const
 
-export const listChatIntegrationsDef = {
-  displayName: 'List Chat Integrations',
-  parseInput: (i: unknown) => asObj<ListChatIntegrationsInput>(i),
-  getSummary: () => 'List configured chat integrations',
+export const listAgentIntegrationsDef = {
+  displayName: 'List Agent Integrations',
+  parseInput: (i: unknown) => asObj<ListAgentIntegrationsInput>(i),
+  getSummary: () => 'List configured agent integrations',
 } as const
 
 export const addChatIntegrationDef = {

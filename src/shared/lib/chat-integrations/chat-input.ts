@@ -1,4 +1,4 @@
-import type { AgentIntegrationRecord as ChatIntegration } from '../agent-integrations/types'
+import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import { isMultiPartyChatType, type ChatConnectorClass, type IncomingMessage } from './chat-agent-integration'
 import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
 import { sanitizeUploadFilename, withUploadTimestamp } from '../utils/path-safety'
@@ -15,7 +15,7 @@ function isTrustedSlackDownloadHost(u: URL): boolean {
 export class ChatInputBuilder {
   constructor(private readonly getConnectorClass: (provider: string) => Promise<ChatConnectorClass | undefined>) {}
   async buildMessageContent(
-    integration: ChatIntegration,
+    integration: AgentIntegrationRecord,
     message: IncomingMessage,
   ): Promise<{ text: string; failedFiles: string[] }> {
     // Attribution is best-effort metadata, so lookup failure falls back to no prefix.
@@ -73,7 +73,7 @@ export class ChatInputBuilder {
   }
 
   /** Download a file from the chat platform, returning a Buffer. */
-  private async downloadFileBuffer(integration: ChatIntegration, fileUrl: string): Promise<Buffer | null> {
+  private async downloadFileBuffer(integration: AgentIntegrationRecord, fileUrl: string): Promise<Buffer | null> {
     try {
       const config = parseChatIntegrationConfig(
         integration.provider as ChatProvider,

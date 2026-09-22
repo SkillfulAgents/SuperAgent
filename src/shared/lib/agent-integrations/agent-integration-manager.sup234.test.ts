@@ -1,7 +1,7 @@
-import { inputEvent, mockChatIntegration } from './test-helpers'
-import type { IntegrationInputEvent } from '../agent-integrations/types'
+import { inputEvent, mockChatIntegration } from '../chat-integrations/test-helpers'
+import type { IntegrationInputEvent } from './types'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from './agent-integration-manager'
 
 // ---------------------------------------------------------------------------
 // SUP-234 — message queue entries were never reclaimed.
@@ -39,7 +39,7 @@ interface ManagerInternals {
   removeIntegration: (id: string) => Promise<void>
 }
 
-const mgr = chatIntegrationManager as unknown as ManagerInternals
+const mgr = agentIntegrationManager as unknown as ManagerInternals
 
 function enqueue(id: string, message: { chatId: string; text?: string }): void {
   if (!mgr.connections.has(id)) mgr.connections.set(id, { connector: mockChatIntegration({}), integration: { id } })

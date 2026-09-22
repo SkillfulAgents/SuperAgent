@@ -3,7 +3,7 @@ import type { ToolRenderer, ToolRendererProps } from './types'
 import { ResultBlock } from './shared'
 import {
   listAvailableChatProvidersDef,
-  listChatIntegrationsDef,
+  listAgentIntegrationsDef,
   addChatIntegrationDef,
   sendChatMessageDef,
   type AddChatIntegrationInput,
@@ -37,22 +37,22 @@ export const listChatProvidersRenderer: ToolRenderer = {
   ExpandedView: ListChatProvidersExpandedView,
 }
 
-// ── list_chat_integrations ──────────────────────────────────
+// ── list_agent_integrations ──────────────────────────────────
 
-function ListChatIntegrationsExpandedView({ result, isError }: ToolRendererProps) {
+function ListAgentIntegrationsExpandedView({ result, isError }: ToolRendererProps) {
   return (
     <div className="space-y-2">
-      <p className="text-xs text-muted-foreground">Listing configured chat integrations.</p>
+      <p className="text-xs text-muted-foreground">Listing configured agent integrations.</p>
       <ResultBlock result={result} isError={isError} />
     </div>
   )
 }
 
-export const listChatIntegrationsRenderer: ToolRenderer = {
-  displayName: listChatIntegrationsDef.displayName,
+export const listAgentIntegrationsRenderer: ToolRenderer = {
+  displayName: listAgentIntegrationsDef.displayName,
   icon: MessageCircle,
-  getSummary: listChatIntegrationsDef.getSummary,
-  ExpandedView: ListChatIntegrationsExpandedView,
+  getSummary: listAgentIntegrationsDef.getSummary,
+  ExpandedView: ListAgentIntegrationsExpandedView,
 }
 
 // ── add_chat_integration ────────────────────────────────────

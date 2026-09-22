@@ -1,28 +1,23 @@
+import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { Hono } from 'hono'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import {
-  getChatIntegration,
-  createChatIntegration,
-  listChatIntegrations,
-  updateChatIntegrationStatus,
-  DuplicateBotTokenError,
-} from '@shared/lib/services/chat-integration-service'
+  getAgentIntegration,
+  createAgentIntegration,
+  listAgentIntegrations,
+  updateAgentIntegrationStatus,
+  DuplicateIntegrationIdentityError,
+} from '@shared/lib/services/agent-integration-service'
 import {
-  listChatIntegrationSessions,
-  getChatIntegrationSessionBySessionId,
-} from '@shared/lib/services/chat-integration-session-service'
+  listAgentIntegrationSessions,
+  getAgentIntegrationSessionBySessionId,
+} from '@shared/lib/services/agent-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import type { AgentIntegration } from '@shared/lib/agent-integrations/agent-integration'
 import type { IntegrationTool } from '@shared/lib/agent-integrations/types'
 import { z } from 'zod'
-import {
-  validateChatIntegrationConfig,
-  CHAT_PROVIDERS,
-  IMESSAGE_GATEWAY_URL,
-  imessageSetupSchema,
-  type ChatProvider,
-} from '@shared/lib/chat-integrations/config-schema'
+import { integrationSetupContext, prepareIntegrationSetup, setupError } from '@shared/lib/agent-integrations/setup'
 import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
 import { captureException } from '@shared/lib/error-reporting'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
@@ -48,18 +43,19 @@ function getCallerSlug(c: { get: (k: 'callerSlug') => string }): string {
   return c.get('callerSlug')
 }
 
+// TODO(2026-12-01): Delete this legacy chat-only list route; use /api/x-agent/integrations/list.
 // POST /list — list integrations with active chat sessions
 xAgentChat.post('/list', async (c) => {
   try {
     const callerSlug = getCallerSlug(c)
-    const integrations = await listChatIntegrations(callerSlug)
+    const integrations = (await listAgentIntegrations(callerSlug)).filter(row => agentIntegrationRegistry.getDefinition(row.provider)?.family === 'chat')
 
     const result = await Promise.all(integrations.map(async (i) => {
       // Static (per-provider) lookups: label each chat with its conversation
       // type where the provider's ids encode one, and advertise discovery
       // capabilities so agents know which discovery tools apply here.
       const connectorClass = await agentIntegrationManager.getDefinition(i.provider)
-      const sessions = await listChatIntegrationSessions(i.id)
+      const sessions = await listAgentIntegrationSessions(i.id)
       const activeChats = await Promise.all(sessions
         .filter((s) => !s.archivedAt)
         .map(async (s) => {
@@ -98,73 +94,36 @@ xAgentChat.post('/add', async (c) => {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
-    if (!CHAT_PROVIDERS.includes(provider)) {
-      return c.json({ error: `Invalid provider. Must be one of: ${CHAT_PROVIDERS.join(', ')}` }, 400)
-    }
-
-    // iMessage code exchange
-    if (provider === 'imessage' && config.code && !config.token) {
-      const parsed = imessageSetupSchema.safeParse({ phoneNumber: config.phoneNumber, code: config.code })
-      if (!parsed.success) {
-        return c.json({ error: parsed.error.issues[0]?.message || 'Invalid phone number or code' }, 400)
-      }
-      const exchangeRes = await fetch(`${IMESSAGE_GATEWAY_URL}/auth/exchange`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: config.phoneNumber, code: config.code }),
-      })
-      if (exchangeRes.status === 401) {
-        return c.json({ error: 'Invalid or expired verification code' }, 400)
-      }
-      if (exchangeRes.status === 429) {
-        return c.json({ error: 'Too many attempts, try again later' }, 400)
-      }
-      if (!exchangeRes.ok) {
-        return c.json({ error: `Code exchange failed (${exchangeRes.status})` }, 400)
-      }
-      const { token } = await exchangeRes.json() as { token: string }
-      if (!token) {
-        return c.json({ error: 'No token returned from gateway' }, 400)
-      }
-      config.token = token
-      config.gatewayUrl = IMESSAGE_GATEWAY_URL
-      delete config.code
-    }
-
-    try {
-      validateChatIntegrationConfig(provider as ChatProvider, config)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Invalid config'
-      return c.json({ error: `Invalid config: ${message}` }, 400)
-    }
+    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, callerSlug), true)
 
     let id: string
     try {
-      id = await createChatIntegration({
+      id = await createAgentIntegration({
         agentSlug: callerSlug,
-        provider: provider as ChatProvider,
+        provider,
         name,
-        config,
+        config: prepared.config,
+        status: prepared.status,
       })
     } catch (err) {
-      if (err instanceof DuplicateBotTokenError) {
+      if (err instanceof DuplicateIntegrationIdentityError) {
         return c.json({ error: err.message, code: 'duplicate_bot_token' }, 409)
       }
       throw err
     }
 
     try {
-      await agentIntegrationManager.addIntegration(id)
+      if (!prepared.status || prepared.status === 'active') await agentIntegrationManager.addIntegration(id)
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err)
-      await updateChatIntegrationStatus(id, 'error', errMsg)
+      await updateAgentIntegrationStatus(id, 'error', errMsg)
     }
 
     // Outside the connect try/catch: a contact-card failure is cosmetic and must
     // never surface as a connect error.
     void agentIntegrationManager.integrationCreated(id)
 
-    const created = await getChatIntegration(id)
+    const created = await getAgentIntegration(id)
     if (!created) {
       return c.json({ error: 'Integration created but could not be retrieved' }, 500)
     }
@@ -175,6 +134,8 @@ xAgentChat.post('/add', async (c) => {
       name: created.name,
     }, 201)
   } catch (error) {
+    const failure = setupError(error)
+    if (failure) return c.json({ error: failure.error }, failure.status)
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'add' } })
     return c.json({ error: 'Failed to add chat integration' }, 500)
   }
@@ -194,7 +155,7 @@ xAgentChat.post('/send', async (c) => {
       return c.json({ error: 'Pass either chat_id or user_id, not both.' }, 400)
     }
 
-    const integration = await getChatIntegration(integration_id)
+    const integration = await getAgentIntegration(integration_id)
     if (!integration) {
       return c.json({ error: 'Chat integration not found' }, 404)
     }
@@ -209,7 +170,7 @@ xAgentChat.post('/send', async (c) => {
       const connectorClass = await agentIntegrationManager.getDefinition(integration.provider)
       if (!connectorClass?.capabilities?.includes('dm_by_user_id')) {
         return c.json({
-          error: `The ${integration.provider} provider does not support messaging by user_id. Pass a chat_id instead (see list_chat_integrations).`,
+          error: `The ${integration.provider} provider does not support messaging by user_id. Pass a chat_id instead (see list_agent_integrations).`,
         }, 400)
       }
     }
@@ -227,7 +188,7 @@ xAgentChat.post('/send', async (c) => {
       const directChat = connector.getTools({ integration, externalId: '' }).find(tool => tool.name === 'dm_by_user_id')
       if (!directChat) {
         return c.json({
-          error: `The ${integration.provider} provider does not support messaging by user_id. Pass a chat_id instead (see list_chat_integrations).`,
+          error: `The ${integration.provider} provider does not support messaging by user_id. Pass a chat_id instead (see list_agent_integrations).`,
         }, 400)
       }
       try {
@@ -250,7 +211,7 @@ xAgentChat.post('/send', async (c) => {
     // session is rotated out, its SSE forwarding is torn down, so an outbound
     // send is the only remaining delivery path.
     if (session_id) {
-      const callerChatSession = await getChatIntegrationSessionBySessionId(callerSlug, session_id)
+      const callerChatSession = await getAgentIntegrationSessionBySessionId(callerSlug, session_id)
       if (
         callerChatSession
         && !callerChatSession.archivedAt
@@ -259,14 +220,14 @@ xAgentChat.post('/send', async (c) => {
       ) {
         const label = callerChatSession.displayName ? ` (${callerChatSession.displayName})` : ''
         return c.json({
-          error: `Not sent: this session IS the live conversation for chat ${callerChatSession.externalChatId}${label}. Everything you write in your response is delivered to that chat automatically — sending it here too would post it twice. To message a different chat, pass its chat_id (see list_chat_integrations).`,
+          error: `Not sent: this session IS the live conversation for chat ${callerChatSession.externalChatId}${label}. Everything you write in your response is delivered to that chat automatically — sending it here too would post it twice. To message a different chat, pass its chat_id (see list_agent_integrations).`,
         }, 400)
       }
     }
 
     // No explicit target: fall back to the integration's single active chat
     if (!resolvedChatId) {
-      const sessions = await listChatIntegrationSessions(integration_id)
+      const sessions = await listAgentIntegrationSessions(integration_id)
       const activeChats = sessions.filter((s) => !s.archivedAt)
       if (activeChats.length === 0) {
         return c.json({
@@ -386,7 +347,7 @@ async function resolveDirectoryConnector(
     return { response: c.json({ error: 'Missing required field: integration_id' }, 400) }
   }
 
-  const integration = await getChatIntegration(integrationId)
+  const integration = await getAgentIntegration(integrationId)
   if (!integration) {
     return { response: c.json({ error: 'Chat integration not found' }, 404) }
   }

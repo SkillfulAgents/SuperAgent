@@ -58,6 +58,8 @@ export const sessionMetadataSchema = z
     // of use (see normalizeAutomationStatus in activity-aggregation).
     automationStatus: z.string().optional(),
     webhookInvocationCount: z.number().optional(),
+    isAgentIntegrationSession: z.boolean().optional(),
+    agentIntegrationId: z.string().optional(),
     isChatIntegrationSession: z.boolean().optional(),
     chatIntegrationId: z.string().optional(),
     promotedToInteractive: z.boolean().optional(),

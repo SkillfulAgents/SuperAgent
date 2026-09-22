@@ -1,14 +1,29 @@
+import type { IntegrationProviderSetup } from './setup-types'
+import type { SQLiteTable } from 'drizzle-orm/sqlite-core'
+import type { PublicAgentIntegration } from './public'
 import type { IntegrationMcpConnection } from './mcp-types'
 import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy } from './types'
 import { chatProviders } from '../chat-integrations/providers'
 
 export interface IntegrationProvider {
+  setup?: IntegrationProviderSetup
   definition: AgentIntegrationDefinition
+  /** Child tables, in deletion order, owned by this provider/family. */
+  storage?(): readonly SQLiteTable[]
+  serialize?(record: AgentIntegrationRecord): PublicAgentIntegration
+  updateSettings?(record: AgentIntegrationRecord, input: Record<string, unknown>): Promise<void>
+  configuration?: {
+    identityLabel?: string
+    identityPaths: readonly string[]
+    uniqueKey(input: unknown): string | null
+    merge(stored: string, patch: Record<string, unknown>): Record<string, unknown>
+  }
   /** Access and session policy must be available independently of a live connection. */
   policy: Pick<AgentIntegration, 'isAllowed' | 'sessionPolicy'>
   create(record: AgentIntegrationRecord): Promise<AgentIntegration>
   mcp?(record: AgentIntegrationRecord): Promise<IntegrationMcpConnection | null>
+  cleanup?(record: AgentIntegrationRecord): Promise<void>
   describeTarget?(externalId: string): Promise<{ type?: string }>
 }
 
@@ -23,6 +38,14 @@ export class AgentIntegrationRegistry {
   register(provider: IntegrationProvider): void {
     if (this.providers.has(provider.definition.provider)) throw new Error(`Duplicate integration provider: ${provider.definition.provider}`)
     this.providers.set(provider.definition.provider, provider)
+  }
+
+  storageTables(): SQLiteTable[] { return [...new Set([...this.providers.values()].flatMap(provider => provider.storage?.() ?? []))] }
+
+  getProvider(provider: string): IntegrationProvider {
+    const implementation = this.providers.get(provider)
+    if (!implementation) throw new Error(`Unknown integration provider: ${provider}`)
+    return implementation
   }
 
   getDefinition(provider: string): AgentIntegrationDefinition | undefined {
@@ -45,6 +68,10 @@ export class AgentIntegrationRegistry {
 
   async describeTarget(provider: string, externalId: string): Promise<{ type?: string }> {
     return this.providers.get(provider)?.describeTarget?.(externalId) ?? {}
+  }
+
+  async cleanup(record: AgentIntegrationRecord): Promise<void> {
+    await this.providers.get(record.provider)?.cleanup?.(record)
   }
 
   async getMcpConnection(record: AgentIntegrationRecord): Promise<IntegrationMcpConnection | null> {

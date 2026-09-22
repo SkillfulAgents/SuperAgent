@@ -27,9 +27,9 @@ import {
   stopIndicatorTick,
   INDICATOR_TICK_MS,
   type ManagedConnector,
-} from './chat-integration-manager'
+} from './chat-delivery'
 import { TelegramConnector } from './telegram-connector'
-import { MockChatClientConnector } from './mock-connector'
+import { MockChatAgentIntegration } from './mock-connector'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
 
@@ -84,7 +84,7 @@ afterEach(() => {
 
 describe('reconcileIndicator (idempotent paint/clear)', () => {
   it('busy paints the label and marks the indicator shown', () => {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     const managed = makeManaged(connector, 'chat-w')
     reconcileIndicator(managed, 'working')
     expect(connector.workingActivities).toEqual(['working'])
@@ -92,7 +92,7 @@ describe('reconcileIndicator (idempotent paint/clear)', () => {
   })
 
   it('busy re-paints on every call (keep-alive — Telegram re-renders the draft)', () => {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     const managed = makeManaged(connector, 'chat-w')
     reconcileIndicator(managed, 'working')
     reconcileIndicator(managed, 'thinking')
@@ -100,7 +100,7 @@ describe('reconcileIndicator (idempotent paint/clear)', () => {
   })
 
   it('non-busy clears once, then is a no-op (zero extra connector calls)', () => {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     const managed = makeManaged(connector, 'chat-w')
     reconcileIndicator(managed, 'working')
     reconcileIndicator(managed, 'idle')
@@ -111,7 +111,7 @@ describe('reconcileIndicator (idempotent paint/clear)', () => {
   })
 
   it('clearIndicator on a never-shown indicator makes zero connector calls', () => {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     const managed = makeManaged(connector, 'chat-w')
     clearIndicator(managed)
     expect(connector.stoppedWorking).toEqual([])
@@ -126,7 +126,7 @@ describe('per-session indicator tick (pull)', () => {
   it('paints the busy label each tick (keep-alive)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
       vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
       startIndicatorTick(managed, 'sess-t')
@@ -141,7 +141,7 @@ describe('per-session indicator tick (pull)', () => {
   it('idle ticks make zero connector calls', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
       vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
       startIndicatorTick(managed, 'sess-t')
@@ -157,7 +157,7 @@ describe('per-session indicator tick (pull)', () => {
   it('clears within one tick when activity goes non-busy', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
       const spy = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
       startIndicatorTick(managed, 'sess-t')
@@ -175,7 +175,7 @@ describe('per-session indicator tick (pull)', () => {
   it('self-heals a forced-stuck indicator within one tick', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
       managed.indicatorShown = true // forced stuck (a leaked label)
       vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
@@ -192,7 +192,7 @@ describe('per-session indicator tick (pull)', () => {
   it('streaming is non-busy: never paints (the stream owns the surface)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
       vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('streaming')
       startIndicatorTick(managed, 'sess-t')
@@ -207,7 +207,7 @@ describe('per-session indicator tick (pull)', () => {
   it('stopIndicatorTick halts further paints', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
       vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
       startIndicatorTick(managed, 'sess-t')
@@ -237,7 +237,7 @@ describe('13-transition acceptance', () => {
   it('streaming→stop→idle (idle within a tick): no end-of-turn flash', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-h')
       managed.indicatorShown = true
       await processSSEEvent(managed, { type: 'stream_delta', text: 'answer' }) // first token clears
@@ -257,7 +257,7 @@ describe('13-transition acceptance', () => {
   it('streaming→stop→idle (idle lags a tick): exactly one self-healing "Working…"', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-h')
       managed.indicatorShown = true
       await processSSEEvent(managed, { type: 'stream_delta', text: 'answer' }) // first token clears
@@ -281,7 +281,7 @@ describe('13-transition acceptance', () => {
   it('streaming→stop→tool: the tick paints "Working…" after a tick (honest work)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-h')
       vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working') // tool work continues
       startIndicatorTick(managed, 'sess-h')
@@ -297,7 +297,7 @@ describe('13-transition acceptance', () => {
   it('projects thinking / compacting / retrying labels', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-h')
       const spy = vi.spyOn(messagePersister, 'getSessionActivity')
       spy.mockReturnValue('thinking')
@@ -318,7 +318,7 @@ describe('13-transition acceptance', () => {
   it('session_error stays cleared across subsequent ticks (no perpetual leak)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-h')
       managed.indicatorShown = true
       vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
@@ -337,7 +337,7 @@ describe('13-transition acceptance', () => {
   it('re-arms working via the tick after awaiting resolves (no immediate paint on resolve)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-h')
       const spy = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('awaiting')
       startIndicatorTick(managed, 'sess-h')
@@ -359,7 +359,7 @@ describe('13-transition acceptance', () => {
 
 describe('finalizeStreaming: concurrent calls send the final text exactly once', () => {
   it('claims the buffer synchronously, so a racing finalize is a no-op', async () => {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     const managed = makeManaged(connector, 'chat-fin')
     managed.streamingState = { currentMessageId: null, accumulatedText: 'final answer', lastUpdateTime: 0 }
 
@@ -371,7 +371,7 @@ describe('finalizeStreaming: concurrent calls send the final text exactly once',
   })
 
   it('restores the buffer if delivery fails, so a later finalize can retry (does not silently drop)', async () => {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     connector.sendMessage = async () => {
       throw new Error('chat unreachable')
     }
@@ -388,7 +388,7 @@ describe('finalizeStreaming: concurrent calls send the final text exactly once',
 
 describe('session_idle finalizes the streamed reply', () => {
   it('commits the accumulated text on idle', async () => {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     const managed = makeManaged(connector, 'chat-i')
     await processSSEEvent(managed, { type: 'stream_delta', text: 'Answer.' })
     await processSSEEvent(managed, { type: 'session_idle' })
@@ -414,7 +414,7 @@ describe('session_error: curated message by apiErrorCode, raw error never leaked
 
   for (const c of cases) {
     it(`apiErrorCode=${c.code ?? 'null'} → curated message, no raw error, indicator cleared`, async () => {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-err')
       managed.indicatorShown = true // the turn was showing the indicator
 

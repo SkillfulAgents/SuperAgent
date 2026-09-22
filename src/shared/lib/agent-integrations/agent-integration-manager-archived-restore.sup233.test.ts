@@ -2,7 +2,7 @@
  * SUP-233 — Chat integration reconnect restores archived session SSE forwarding.
  *
  * On connect/reconnect the manager restored SSE subscriptions for EVERY session
- * row of an integration (`listChatIntegrationSessions`), with no `archivedAt`
+ * row of an integration (`listAgentIntegrationSessions`), with no `archivedAt`
  * filter. Archived/cleared/timed-out sessions got re-subscribed and could forward
  * stale agent output back to the external chat.
  *
@@ -61,15 +61,15 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 // Telegram connector → a real mock connector that connects without network.
 // Keep the REAL classifyChatId static so classification still exercises
 // production rather than silently bypassing it.
-vi.mock('./telegram-connector', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./telegram-connector')>()
-  const { MockChatClientConnector } = await import('./mock-connector')
+vi.mock('../chat-integrations/telegram-connector', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../chat-integrations/telegram-connector')>()
+  const { MockChatAgentIntegration } = await import('../chat-integrations/mock-connector')
   return {
     ...actual,
     TelegramConnector: class {
       static classifyChatId = actual.TelegramConnector.classifyChatId
       constructor() {
-        return new MockChatClientConnector()
+        return new MockChatAgentIntegration()
       }
     },
   }
@@ -77,14 +77,14 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
-import { chatIntegrationManager } from './chat-integration-manager'
-import { createChatIntegration } from '@shared/lib/services/chat-integration-service'
+import { agentIntegrationManager } from './agent-integration-manager'
+import { createAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import {
-  createChatIntegrationSession,
-  archiveChatIntegrationSession,
-  listChatIntegrationSessions,
-  listActiveChatIntegrationSessions,
-} from '@shared/lib/services/chat-integration-session-service'
+  createAgentIntegrationSession,
+  archiveAgentIntegrationSession,
+  listAgentIntegrationSessions,
+  listActiveAgentIntegrationSessions,
+} from '@shared/lib/services/agent-integration-session-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
@@ -100,11 +100,11 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
     // connectIntegration cancels itself on a stopped manager; this harness
     // drives it directly (no start()), so mark the manager running.
-    ;(chatIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
+    ;(agentIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
   })
 
   afterEach(async () => {
-    chatIntegrationManager.stop()
+    agentIntegrationManager.stop()
     await new Promise((r) => setTimeout(r, 20))
     testSqlite?.close()
     await fs.promises.rm(testDir, { recursive: true, force: true }).catch(() => {})
@@ -115,7 +115,7 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
     // Public bot so the access gate is a no-op and this test isolates SUP-233's
     // concern (active sessions restore, archived don't). requireApproval is
     // owner-only post-create, so flip it directly on the row.
-    const integrationId = (await createChatIntegration({
+    const integrationId = (await createAgentIntegration({
       agentSlug: 'test-agent',
       provider: 'telegram',
       config: { botToken: 'test-token-123' },
@@ -124,43 +124,43 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
     testSqlite.prepare('UPDATE chat_integrations SET require_approval = 0 WHERE id = ?').run(integrationId)
 
     // One active session, one archived session for the same integration.
-    await createChatIntegrationSession({
+    await createAgentIntegrationSession({
       integrationId,
       externalChatId: 'chat-active',
       sessionId: 'active-agent-session',
     })
-    const archivedRowId = (await createChatIntegrationSession({
+    const archivedRowId = (await createAgentIntegrationSession({
       integrationId,
       externalChatId: 'chat-archived',
       sessionId: 'archived-agent-session',
     }))
-    await archiveChatIntegrationSession(archivedRowId)
+    await archiveAgentIntegrationSession(archivedRowId)
 
     const addSSEClient = vi
       .spyOn(messagePersister, 'addSSEClient')
       .mockReturnValue(() => {})
 
     // Drives connectIntegration -> restore loop.
-    await chatIntegrationManager.addIntegration(integrationId)
+    await agentIntegrationManager.addIntegration(integrationId)
 
     const subscribedSessionIds = addSSEClient.mock.calls.map((c) => c[1])
     expect(subscribedSessionIds).toContain('active-agent-session')
     expect(subscribedSessionIds).not.toContain('archived-agent-session')
   })
 
-  it('listActiveChatIntegrationSessions excludes archived rows; listChatIntegrationSessions keeps them', async () => {
-    const integrationId = (await createChatIntegration({
+  it('listActiveAgentIntegrationSessions excludes archived rows; listAgentIntegrationSessions keeps them', async () => {
+    const integrationId = (await createAgentIntegration({
       agentSlug: 'test-agent-2',
       provider: 'telegram',
       config: { botToken: 'test-token-456' },
       name: 'Test Bot 2',
     }))
-    await createChatIntegrationSession({ integrationId, externalChatId: 'c-a', sessionId: 's-active' })
-    const archivedId = (await createChatIntegrationSession({ integrationId, externalChatId: 'c-b', sessionId: 's-archived' }))
-    await archiveChatIntegrationSession(archivedId)
+    await createAgentIntegrationSession({ integrationId, externalChatId: 'c-a', sessionId: 's-active' })
+    const archivedId = (await createAgentIntegrationSession({ integrationId, externalChatId: 'c-b', sessionId: 's-archived' }))
+    await archiveAgentIntegrationSession(archivedId)
 
-    const active = (await listActiveChatIntegrationSessions(integrationId)).map((s) => s.sessionId)
-    const all = (await listChatIntegrationSessions(integrationId)).map((s) => s.sessionId)
+    const active = (await listActiveAgentIntegrationSessions(integrationId)).map((s) => s.sessionId)
+    const all = (await listAgentIntegrationSessions(integrationId)).map((s) => s.sessionId)
 
     expect(active).toContain('s-active')
     expect(active).not.toContain('s-archived')

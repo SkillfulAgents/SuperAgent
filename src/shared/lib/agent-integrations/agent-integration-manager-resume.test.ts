@@ -22,21 +22,21 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 //      for the 5-minute tick.
 // ---------------------------------------------------------------------------
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  listStartupChatIntegrations: vi.fn().mockReturnValue([]),
-  getChatIntegration: vi.fn(),
-  updateChatIntegrationStatus: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  listStartupAgentIntegrations: vi.fn().mockReturnValue([]),
+  getAgentIntegration: vi.fn(),
+  updateAgentIntegrationStatus: vi.fn(),
 }))
 
-vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
-  getChatIntegrationSession: vi.fn(),
-  getChatIntegrationSessionBySessionId: vi.fn(),
-  createChatIntegrationSession: vi.fn(),
-  updateChatIntegrationSessionName: vi.fn(),
-  archiveChatIntegrationSession: vi.fn(),
-  touchChatIntegrationSession: vi.fn(),
-  listChatIntegrationSessions: vi.fn().mockReturnValue([]),
-  listActiveChatIntegrationSessions: vi.fn().mockReturnValue([]),
+vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
+  getAgentIntegrationSession: vi.fn(),
+  getAgentIntegrationSessionBySessionId: vi.fn(),
+  createAgentIntegrationSession: vi.fn(),
+  updateAgentIntegrationSessionName: vi.fn(),
+  archiveAgentIntegrationSession: vi.fn(),
+  touchAgentIntegrationSession: vi.fn(),
+  listAgentIntegrationSessions: vi.fn().mockReturnValue([]),
+  listActiveAgentIntegrationSessions: vi.fn().mockReturnValue([]),
   resolveActiveSession: vi.fn(),
   getLastDisplayName: vi.fn(),
 }))
@@ -66,19 +66,19 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
   },
 }))
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from './agent-integration-manager'
 import {
-  listStartupChatIntegrations,
-  getChatIntegration,
-} from '@shared/lib/services/chat-integration-service'
-import type { ChatClientConnector } from './base-connector'
+  listStartupAgentIntegrations,
+  getAgentIntegration,
+} from '@shared/lib/services/agent-integration-service'
+import type { ChatAgentIntegration } from '../chat-integrations/chat-agent-integration'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
-const listStartupMock = vi.mocked(listStartupChatIntegrations)
-const getIntegrationMock = vi.mocked(getChatIntegration)
+const listStartupMock = vi.mocked(listStartupAgentIntegrations)
+const getIntegrationMock = vi.mocked(getAgentIntegration)
 
 interface ManagerTestSurface {
-  connections: Map<string, { connector: ChatClientConnector }>
+  connections: Map<string, { connector: ChatAgentIntegration }>
   chatSessions: Map<string, unknown>
   messageQueues: Map<string, unknown>
   disconnectedSince: Map<string, number>
@@ -89,10 +89,10 @@ interface ManagerTestSurface {
   runHealthChecks(): Promise<void>
   connectIntegration(integration: ChatIntegration): Promise<void>
   removeIntegration(id: string): Promise<void>
-  createConnector(integration: unknown): Promise<ChatClientConnector>
+  createConnector(integration: unknown): Promise<ChatAgentIntegration>
 }
 
-const mgr = chatIntegrationManager as unknown as ManagerTestSurface
+const mgr = agentIntegrationManager as unknown as ManagerTestSurface
 
 const INT = 'int-resume-test'
 
@@ -114,7 +114,7 @@ function integrationRow(overrides?: Partial<ChatIntegration>): ChatIntegration {
   } as unknown as ChatIntegration
 }
 
-interface FakeConnector extends ChatClientConnector {
+interface FakeConnector extends ChatAgentIntegration {
   connectedState: boolean
 }
 

@@ -407,6 +407,8 @@ export class AgentIntegrationManager {
     await actor.sessions.register(sessionId, policy.name)
     await actor.sessions.updateMetadata(sessionId, {
       ...policy.metadata,
+      isAgentIntegrationSession: true,
+      agentIntegrationId: integration.id,
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
     })
 
@@ -515,6 +517,11 @@ export class AgentIntegrationManager {
     conn.eventUnsubscribe = connector.onEvent(async event => {
       try {
         if (event.type === 'input') this.enqueueMessage(integration.id, event)
+        else if (event.type === 'cancel') {
+          if (!(await this.isAllowed(integration.id, event.externalId))) return
+          const session = await getIntegrationSession(integration.id, event.externalId)
+          if (session && (await agentRegistry.get(integration.agentSlug).messages.interrupt(session.sessionId)).interrupted) event.onInterrupted?.()
+        }
         else if (event.type === 'response') await this.handleInteractiveResponse(integration.id, event)
         else if ((await this.isAllowed(integration.id, event.externalId))) this.preWarmContainer(integration.agentSlug)
       } catch (error) {
@@ -907,7 +914,7 @@ export class AgentIntegrationManager {
     } catch (err) {
       console.error(`[AgentIntegrationManager] Container startup failed for ${integration.agentSlug}:`, err)
       reportError(err, 'container-startup', { integrationId, agentSlug: integration.agentSlug, provider: integration.provider })
-      await this.deliver(integrationId, chatId, { type: 'message', text: 'Error: Failed to start the agent container. Please try again.' }).catch(() => {})
+      await this.deliver(integrationId, chatId, { type: 'message', inputId: message.id, retryable: true, text: 'Error: Failed to start the agent container. Please try again.' }).catch(() => {})
       return
     }
 
@@ -938,7 +945,7 @@ export class AgentIntegrationManager {
         // ("Container is not running") is expected and self-healing here, so
         // report it as a warning rather than an error to cut Sentry noise.
         reportError(err, 'create-session', { integrationId, agentSlug: integration.agentSlug, provider: integration.provider, chatId }, isContainerNotRunning(err) ? 'warning' : 'error')
-        await this.deliver(integrationId, chatId, { type: 'message', text: 'Error: Failed to start a new session. Please try again.' }).catch(() => {})
+        await this.deliver(integrationId, chatId, { type: 'message', inputId: message.id, text: 'Error: Failed to start a new session. Please try again.' }).catch(() => {})
         return
       }
     }
@@ -1007,7 +1014,7 @@ export class AgentIntegrationManager {
         } catch (healErr) {
           console.error(`[AgentIntegrationManager] Self-heal failed for ${integrationId}/${chatId}:`, healErr)
           reportError(healErr, 'send-message-selfheal', { integrationId, chatId, provider: integration.provider }, isContainerNotRunning(healErr) ? 'warning' : 'error')
-          await this.deliver(integrationId, chatId, { type: 'message', text: 'Error: Failed to send your message to the agent. Please try again.' }).catch(() => {})
+          await this.deliver(integrationId, chatId, { type: 'message', inputId: message.id, text: 'Error: Failed to send your message to the agent. Please try again.' }).catch(() => {})
           return
         }
       }
@@ -1016,7 +1023,7 @@ export class AgentIntegrationManager {
       // Recovered path (user is told to retry); a dead container is expected and
       // self-healing, so downgrade it to a warning to cut Sentry noise.
       reportError(err, 'send-message', { integrationId, sessionId, provider: integration.provider, chatId }, isContainerNotRunning(err) ? 'warning' : 'error')
-      await this.deliver(integrationId, chatId, { type: 'message', text: 'Error: Failed to send your message to the agent. Please try again.' }).catch(() => {})
+      await this.deliver(integrationId, chatId, { type: 'message', inputId: message.id, text: 'Error: Failed to send your message to the agent. Please try again.' }).catch(() => {})
       return
     }
 
@@ -1074,6 +1081,8 @@ export class AgentIntegrationManager {
     await actor.sessions.register(sessionId, policy.name)
     await actor.sessions.updateMetadata(sessionId, {
       ...policy.metadata,
+      isAgentIntegrationSession: true,
+      agentIntegrationId: integration.id,
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
     })
 
@@ -1208,8 +1217,8 @@ export class AgentIntegrationManager {
   // ── Global notification handling (proxy review requests) ─────────
 
   /**
-   * Reviews are agent-scoped, so they reach no session SSE stream — this
-   * subscription is the ONLY way an Allow/Deny card ever gets to chat.
+   * Review requests may be agent-scoped without a session SSE stream. This
+   * subscription routes their Allow/Deny cards; resolutions use the session stream.
    * Idempotent so a harness that drives integrations without start() can arm
    * it without risking a double-send.
    */
@@ -1225,9 +1234,9 @@ export class AgentIntegrationManager {
 
   private async handleGlobalNotification(event: unknown): Promise<void> {
     const data = event as Record<string, unknown>
-    // Reviews are agent-scoped, so they never reach a session SSE stream —
-    // the global registry event is the only place chat can see them. Same
-    // wire the session cards come from, filtered to the review kinds.
+    // Review cards use this global wire because their scope may omit a session.
+    // Resolutions with a session scope already arrive on that session's stream;
+    // forwarding them here as well would deliver each resolution twice.
     if (data.type !== 'user_request_created') return
     const request = data.request as PendingUserInputRequest | undefined
     if (!request) return
@@ -1252,7 +1261,7 @@ export class AgentIntegrationManager {
         if (chatSession) {
           const key = `${chatSession.integrationId}:${chatSession.externalId}`
           const managed = this.chatSessions.get(key)
-          if (managed) {
+          if (managed && (managed.connector.definition.family === 'chat' || request.scope.sessionId === managed.sessionId)) {
             await this.deliver(managed.integration.id, managed.chatId, { type: 'request', request }, sessionId)
             return
           }
@@ -1265,7 +1274,7 @@ export class AgentIntegrationManager {
 
     // Fallback: no sessionId match — send to first active session for this agent
     for (const [, conn] of this.connections) {
-      if (conn.integration.agentSlug !== agentSlug) continue
+      if (conn.integration.agentSlug !== agentSlug || conn.connector.definition.family !== 'chat') continue
       for (const [key, session] of this.chatSessions) {
         if (!key.startsWith(`${conn.integration.id}:`)) continue
         try {
@@ -1385,6 +1394,7 @@ export class AgentIntegrationManager {
         reportError(new Error(`Resolve input failed: ${resolveResponse.status}`), 'resolve-input', { integrationId, toolUseId, status: resolveResponse.status })
       } else {
         actor.inputs.complete(undefined, toolUseId, 'answered')
+        event.onAnswered?.()
       }
     } catch (err) {
       console.error(`[AgentIntegrationManager] Failed to handle interactive response:`, err)

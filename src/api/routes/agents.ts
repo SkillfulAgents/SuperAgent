@@ -56,8 +56,6 @@ import {
 import { getDashboardViewDispatchHostJs } from '../dashboard-view-dispatch-host'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
-import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
-import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
@@ -203,7 +201,7 @@ import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { JsonlEntry, JsonlMessageEntry, SessionInfo, SessionMetadata, SessionMetadataMap } from '@shared/lib/types/agent'
-import { toPublicAgentIntegration } from '@shared/lib/agent-integrations/serialization'
+import { listAgentIntegrationsHandler } from './agent-integration-list'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
 import {
   toAgentConnectedAccountDto,
@@ -4593,27 +4591,8 @@ agents.get('/:id/webhook-triggers', AgentRead(), async (c) => {
   }
 })
 
-// GET /api/agents/:id/chat-integrations - List chat integrations for an agent
-agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
-  try {
-    const slug = getAgentId(c)
-    const status = c.req.query('status')
-
-    const integrations = await listChatIntegrations(slug, status || undefined)
-    // Enrich each row with the live transport state (the same isIntegrationConnected
-    // the /status route reads) so the agent-home list derives "Listening" vs
-    // "Connecting…" from the same source of truth as the connector page, instead
-    // of guessing from persisted status alone.
-    const withConnection = integrations.map((integration) => ({
-      ...toPublicAgentIntegration(integration),
-      connected: agentIntegrationManager.isIntegrationConnected(integration.id),
-    }))
-    return c.json(withConnection)
-  } catch (error) {
-    console.error('Failed to fetch chat integrations:', error)
-    return c.json({ error: 'Failed to fetch chat integrations' }, 500)
-  }
-})
+// TODO(2026-12-01): Delete this legacy list route; use /api/agent-integrations/agents/:id.
+agents.get('/:id/chat-integrations', AgentRead(), listAgentIntegrationsHandler)
 
 function secretsErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof WorkspaceFileError && error.code === 'not-a-file') {

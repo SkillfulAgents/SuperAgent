@@ -9,7 +9,7 @@ delivery.
 
 ## Discover and Configure
 
-1. Call `mcp__chat__list_chat_integrations` to inspect configured integrations,
+1. Call `mcp__chat__list_agent_integrations` to inspect configured integrations,
    status, capabilities, and active chats.
 2. If a provider is not configured, call
    `mcp__chat__list_available_chat_providers` to learn its required fields.

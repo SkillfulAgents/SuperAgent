@@ -1,4 +1,4 @@
-import { MockChatClientConnector } from './mock-connector'
+import { MockChatAgentIntegration } from './mock-connector'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
@@ -16,7 +16,7 @@ import crypto from 'node:crypto'
 //
 // isChatAllowed is exercised through the REAL access service reading REAL
 // in-memory DB rows — the same pattern used by chat-integration-access-gate
-// and chat-integration-access-service tests. The service layer (getChatIntegration,
+// and chat-integration-access-service tests. The service layer (getAgentIntegration,
 // resolveActiveSession) is still mocked since it is not under test here.
 // ---------------------------------------------------------------------------
 
@@ -29,22 +29,22 @@ vi.mock('../db', () => ({
 
 const mockGetChatIntegration = vi.fn()
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  getChatIntegration: (...args: unknown[]) => mockGetChatIntegration(...args),
-  listStartupChatIntegrations: vi.fn().mockReturnValue([]),
-  updateChatIntegrationStatus: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  getAgentIntegration: (...args: unknown[]) => mockGetChatIntegration(...args),
+  listStartupAgentIntegrations: vi.fn().mockReturnValue([]),
+  updateAgentIntegrationStatus: vi.fn(),
 }))
 
 const mockResolveActiveSession = vi.fn()
 
-vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
-  getChatIntegrationSession: vi.fn(),
-  getChatIntegrationSessionBySessionId: vi.fn(),
-  createChatIntegrationSession: vi.fn(),
-  updateChatIntegrationSessionName: vi.fn(),
-  archiveChatIntegrationSession: vi.fn(),
-  touchChatIntegrationSession: vi.fn(),
-  listChatIntegrationSessions: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
+  getAgentIntegrationSession: vi.fn(),
+  getAgentIntegrationSessionBySessionId: vi.fn(),
+  createAgentIntegrationSession: vi.fn(),
+  updateAgentIntegrationSessionName: vi.fn(),
+  archiveAgentIntegrationSession: vi.fn(),
+  touchAgentIntegrationSession: vi.fn(),
+  listAgentIntegrationSessions: vi.fn(),
   resolveActiveSession: (...args: unknown[]) => mockResolveActiveSession(...args),
   getLastDisplayName: vi.fn().mockReturnValue(null),
 }))
@@ -68,9 +68,9 @@ vi.mock('@shared/lib/error-reporting', () => ({
   addErrorBreadcrumb: vi.fn(),
 }))
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
 import { agentRegistry } from '../agent-actor'
-import { createChatIntegrationSession, getLastDisplayName } from '../services/chat-integration-session-service'
+import { createAgentIntegrationSession, getLastDisplayName } from '../services/agent-integration-session-service'
 
 const INT = 'int-tg'
 
@@ -101,7 +101,7 @@ function seedAccess(chatId: string, status: 'pending' | 'allowed' | 'denied'): v
     .run(id, INT, chatId, status, now, now, now)
 }
 
-describe('ChatIntegrationManager.ensureSession — outbound access gate', () => {
+describe('AgentIntegrationManager.ensureSession — outbound access gate', () => {
   beforeEach(async () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
@@ -119,18 +119,18 @@ describe('ChatIntegrationManager.ensureSession — outbound access gate', () => 
 
     vi.clearAllMocks()
     mockGetChatIntegration.mockReturnValue(fakeIntegration())
-    ;(chatIntegrationManager as any).connections.set(INT, { connector: new MockChatClientConnector(), integration: fakeIntegration() })
+    ;(agentIntegrationManager as any).connections.set(INT, { connector: new MockChatAgentIntegration(), integration: fakeIntegration() })
   })
 
   afterEach(async () => {
-    ;(chatIntegrationManager as any).connections.clear()
+    ;(agentIntegrationManager as any).connections.clear()
     testSqlite?.close()
   })
 
   it('throws when the chat has no allowed access row (denied by real DB)', async () => {
     // No access row seeded → isChatAllowed('int-tg', 'chat-blocked') returns false
     await expect(
-      chatIntegrationManager.ensureSession(INT, 'chat-blocked'),
+      agentIntegrationManager.ensureSession(INT, 'chat-blocked'),
     ).rejects.toThrow('Chat chat-blocked is not allowed for integration int-tg')
   })
 
@@ -138,7 +138,7 @@ describe('ChatIntegrationManager.ensureSession — outbound access gate', () => 
     seedAccess('chat-allowed', 'allowed')
     mockResolveActiveSession.mockReturnValue({ sessionId: 'existing-session-id' })
 
-    const result = await chatIntegrationManager.ensureSession(INT, 'chat-allowed')
+    const result = await agentIntegrationManager.ensureSession(INT, 'chat-allowed')
 
     expect(result).toBe('existing-session-id')
     expect(mockResolveActiveSession).toHaveBeenCalledWith(
@@ -153,9 +153,9 @@ describe('ChatIntegrationManager.ensureSession — outbound access gate', () => 
     seedAccess('chat-allowed', 'allowed')
     mockResolveActiveSession.mockReturnValue({ sessionId: 'existing-session-id' })
     mockGetChatIntegration.mockReturnValue(fakeIntegration({ sessionTimeout: 6 }))
-    ;(chatIntegrationManager as any).connections.clear()
+    ;(agentIntegrationManager as any).connections.clear()
 
-    expect(await chatIntegrationManager.ensureSession(INT, 'chat-allowed')).toBe('existing-session-id')
+    expect(await agentIntegrationManager.ensureSession(INT, 'chat-allowed')).toBe('existing-session-id')
     expect(mockResolveActiveSession).toHaveBeenCalledWith(INT, 'chat-allowed', 6, expect.any(Function))
   })
 
@@ -164,16 +164,17 @@ describe('ChatIntegrationManager.ensureSession — outbound access gate', () => 
     mockResolveActiveSession.mockReturnValue(undefined)
     vi.mocked(getLastDisplayName).mockResolvedValueOnce('Alice')
     mockGetChatIntegration.mockReturnValue(fakeIntegration({ createdByUserId: 'owner-1' }))
-    ;(chatIntegrationManager as any).connections.clear()
+    ;(agentIntegrationManager as any).connections.clear()
 
-    const sessionId = await chatIntegrationManager.ensureSession(INT, 'chat-allowed')
+    const sessionId = await agentIntegrationManager.ensureSession(INT, 'chat-allowed')
 
     const actor = agentRegistry.get('test-agent')
     expect(actor.sessions.register).toHaveBeenCalledWith(sessionId, expect.stringContaining('Alice'))
     expect(actor.sessions.updateMetadata).toHaveBeenCalledWith(sessionId, {
+      isAgentIntegrationSession: true, agentIntegrationId: INT,
       isChatIntegrationSession: true, chatIntegrationId: INT, createdByUserId: 'owner-1',
     })
-    expect(createChatIntegrationSession).toHaveBeenCalledWith({
+    expect(createAgentIntegrationSession).toHaveBeenCalledWith({
       integrationId: INT, externalChatId: 'chat-allowed', sessionId, displayName: 'Alice',
     })
   })
@@ -181,16 +182,16 @@ describe('ChatIntegrationManager.ensureSession — outbound access gate', () => 
   it.each(['pending', 'denied'] as const)('rejects %s access during reconnection before touching session mappings', async status => {
     seedAccess('chat-blocked', status)
     mockResolveActiveSession.mockReturnValue({ sessionId: 'existing-session-id' })
-    ;(chatIntegrationManager as any).connections.clear()
+    ;(agentIntegrationManager as any).connections.clear()
 
-    await expect(chatIntegrationManager.ensureSession(INT, 'chat-blocked')).rejects.toThrow('not allowed')
+    await expect(agentIntegrationManager.ensureSession(INT, 'chat-blocked')).rejects.toThrow('not allowed')
     expect(mockResolveActiveSession).not.toHaveBeenCalled()
-    expect(createChatIntegrationSession).not.toHaveBeenCalled()
+    expect(createAgentIntegrationSession).not.toHaveBeenCalled()
     expect(agentRegistry.get('test-agent').sessions.register).not.toHaveBeenCalled()
   })
 })
 
-describe('ChatIntegrationManager.handleSSEEvent — outbound access gate', () => {
+describe('AgentIntegrationManager.handleSSEEvent — outbound access gate', () => {
   beforeEach(async () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
@@ -204,11 +205,11 @@ describe('ChatIntegrationManager.handleSSEEvent — outbound access gate', () =>
       .run(INT, now, now)
     vi.clearAllMocks()
     mockGetChatIntegration.mockReturnValue(fakeIntegration())
-    ;(chatIntegrationManager as any).connections.set(INT, { connector: new MockChatClientConnector(), integration: fakeIntegration() })
+    ;(agentIntegrationManager as any).connections.set(INT, { connector: new MockChatAgentIntegration(), integration: fakeIntegration() })
   })
 
   afterEach(async () => {
-    ;(chatIntegrationManager as any).connections.clear()
+    ;(agentIntegrationManager as any).connections.clear()
     testSqlite?.close()
   })
 
@@ -216,7 +217,7 @@ describe('ChatIntegrationManager.handleSSEEvent — outbound access gate', () =>
     // Simulate the revoke race: the chat has been denied but a managed session
     // is still mapped (teardown has not yet removed it).
     seedAccess('chat-denied', 'denied')
-    const mgr = chatIntegrationManager as unknown as {
+    const mgr = agentIntegrationManager as unknown as {
       getChatSessionKey: (i: string, c: string) => string
       chatSessions: Map<string, unknown>
       handleSSEEvent: (i: string, c: string, e: unknown, sessionId: string) => Promise<void>
@@ -227,12 +228,12 @@ describe('ChatIntegrationManager.handleSSEEvent — outbound access gate', () =>
     await mgr.handleSSEEvent(INT, 'chat-denied', { type: 'assistant' }, 'sess-test')
 
     // The fail-closed guard returns before reading integration config or forwarding.
-    expect((chatIntegrationManager as any).connections.get(INT).connector.sentMessages).toHaveLength(0)
+    expect((agentIntegrationManager as any).connections.get(INT).connector.sentMessages).toHaveLength(0)
     mgr.chatSessions.delete(key)
   })
 })
 
-describe('ChatIntegrationManager.reconcileAccess — gate sessions after approval is enabled', () => {
+describe('AgentIntegrationManager.reconcileAccess — gate sessions after approval is enabled', () => {
   beforeEach(async () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
@@ -246,30 +247,30 @@ describe('ChatIntegrationManager.reconcileAccess — gate sessions after approva
       .run(INT, now, now)
     vi.clearAllMocks()
     mockGetChatIntegration.mockReturnValue(fakeIntegration())
-    ;(chatIntegrationManager as any).connections.set(INT, { connector: new MockChatClientConnector(), integration: fakeIntegration() })
+    ;(agentIntegrationManager as any).connections.set(INT, { connector: new MockChatAgentIntegration(), integration: fakeIntegration() })
   })
 
   afterEach(async () => {
-    ;(chatIntegrationManager as any).connections.clear()
+    ;(agentIntegrationManager as any).connections.clear()
     testSqlite?.close()
   })
 
   it('tears down active sessions whose chat is no longer allowed, keeps allowed ones', async () => {
     seedAccess('allowed-chat', 'allowed')
-    const sessionSvc = await import('@shared/lib/services/chat-integration-session-service')
-    vi.mocked(sessionSvc.listChatIntegrationSessions).mockReturnValue([
+    const sessionSvc = await import('@shared/lib/services/agent-integration-session-service')
+    vi.mocked(sessionSvc.listAgentIntegrationSessions).mockReturnValue([
       { id: 'sess-allowed', integrationId: INT, externalChatId: 'allowed-chat', sessionId: 'a', archivedAt: null },
       { id: 'sess-blocked', integrationId: INT, externalChatId: 'blocked-chat', sessionId: 'b', archivedAt: null },
     ] as never)
-    vi.mocked(sessionSvc.getChatIntegrationSession).mockImplementation(
+    vi.mocked(sessionSvc.getAgentIntegrationSession).mockImplementation(
       ((_i: string, chatId: string) =>
         chatId === 'blocked-chat' ? { id: 'sess-blocked' } : { id: 'sess-allowed' }) as never,
     )
 
-    await chatIntegrationManager.reconcileAccess(INT)
+    await agentIntegrationManager.reconcileAccess(INT)
 
     // 'blocked-chat' has no allowed row → torn down; 'allowed-chat' is kept.
-    expect(sessionSvc.archiveChatIntegrationSession).toHaveBeenCalledWith('sess-blocked')
-    expect(sessionSvc.archiveChatIntegrationSession).not.toHaveBeenCalledWith('sess-allowed')
+    expect(sessionSvc.archiveAgentIntegrationSession).toHaveBeenCalledWith('sess-blocked')
+    expect(sessionSvc.archiveAgentIntegrationSession).not.toHaveBeenCalledWith('sess-allowed')
   })
 })

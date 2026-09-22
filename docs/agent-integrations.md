@@ -27,7 +27,7 @@ classDiagram
 | `getTools` | Family exposes optional tools through named, schema-described operations. Existing chat send/directory endpoints invoke these without accessing transport methods. |
 | `onCreated` | Optional setup-only hook. iMessage uses it for the contact card; boot and reconnect never invoke it. |
 
-The registry exposes serializable definitions (family, capabilities, setup fields, settings) before an installation is connected. Target classification can also be requested through the registry without constructing a connector. Each provider registers connection-independent `isAllowed` and `sessionPolicy` hooks; outbound session recording uses these against the current persisted installation even during a reconnect. Chat adapters and their registry entries share the same policy implementation.
+The registry exposes serializable definitions (family, agent capabilities, management capabilities, setup fields, settings) before an installation is connected. Target classification can also be requested through the registry without constructing a connector. Each provider registers connection-independent `isAllowed` and `sessionPolicy` hooks; outbound session recording uses these against the current persisted installation even during a reconnect. Chat adapters and their registry entries share the same policy implementation.
 
 ## Chat behavior
 
@@ -37,11 +37,11 @@ The normalized response event carries a request ID, request kind, and value. Cha
 
 ## Persistence and compatibility
 
-`store.ts` adapts the existing `chat_integrations` and `chat_integration_sessions` services to neutral installation/session records. Existing IDs, credentials, approvals, timeout/model overrides, mappings, and transcripts stay in place. Chat reads its existing settings columns and keeps its existing session metadata flags.
+`agent-integration-service.ts` and `agent-integration-session-service.ts` own persistence. `store.ts` adapts their storage-facing records to neutral installation/session records; the physical `chat_integrations` and `chat_integration_sessions` tables and the `externalChatId` API field remain compatible. Existing IDs, credentials, approvals, timeout/model overrides, mappings, and transcripts stay in place. Chat reads its existing settings columns and keeps its existing session metadata flags.
 
 The Slack provider factory supplies an installation-scoped store for joined-thread participation. `SlackConnector` saves its bounded thread list in `slack_thread_state` and restores it before accepting events, including when multiple threads share one agent session. The automatic migration preserves existing session rows; no integration reinstall is required.
 
-Application startup, desktop resume, and API lifecycle calls use the same `agentIntegrationManager` singleton. The old manager and `ChatClientConnector` import paths re-export compatibility aliases; they do not create another runtime. Existing chat HTTP paths, tool names, and UI setup flows remain compatible.
+Application startup, desktop resume, and API lifecycle calls use the same `agentIntegrationManager` singleton. Callers import the manager directly from `agent-integrations`; chat transports and fixtures use `ChatAgentIntegration` from the chat family. Existing chat HTTP paths and UI setup flows remain compatible. Discovery uses `list_agent_integrations`; historical tool calls retain their renderers.
 
 ## Integration-owned MCP
 
@@ -67,8 +67,38 @@ rejections. Ordinary requests authorize once; a real upstream handshake is follo
 by a second check before forwarding the waiting tool call. Existing chat
 providers do not opt in and retain their current outbound behavior.
 
-## Next phase
+## Management and discovery
 
-SUP-832 adds the task-manager family and Linear as the first provider of an
-integration-owned MCP. Those implementations and their setup UI are separate from
-this foundation.
+`/api/agent-integrations` owns management for every provider; `/api/chat-integrations`
+remains a compatibility URL. Persistence lives in `agent-integration-service.ts`
+while the existing physical table names preserve installed accounts and sessions.
+Provider definitions control safe serialization, management permission, settings,
+cleanup, and reset-table ownership. Renderer providers register setup and optional
+connection/settings panels; shared pages do not import concrete provider panels.
+
+`list_agent_integrations` calls the agent-authenticated `/api/x-agent/integrations/list`.
+It lists every account owned by the caller, its capabilities, active external session
+IDs, and any integration-owned MCP identity/server/tools. Chat operations consume
+chat capabilities; MCP providers use their named server. Credentials are excluded.
+
+## Provider setup
+
+Provider-level setup hooks run before a connector exists: `prepare`, optional
+`testCredentials`, `authorize`, and `callback`. Generic HTTP routes authorize the
+caller using the provider definition and delegate credential exchange/validation.
+Create uses `POST /api/agent-integrations/agents/:id` with `{ provider, name, config }`;
+authorization uses `POST /api/agent-integrations/:integrationId/authorize`. Provider
+callbacks use `/api/agent-integrations/providers/:provider/callback`; the shorter
+`/:provider/callback` path remains valid for previously registered callback URLs.
+Callbacks require provider-validated, expiring one-use state instead of user cookies.
+
+Telegram token validation, Slack bot/app-token checks, and iMessage code exchange
+implement this same contract. Agent-side creation uses the same preparation hooks
+and requires explicit provider opt-in, preserving owner-only interactive setup.
+Initial authorization-required rows are inserted disconnected atomically.
+
+Provider setup uses `IntegrationSetupLayout` for the shared header, instructions,
+credential panel, fields, feedback and actions. Providers supply their content and
+connection flow. An optional read-only `setup.describe` hook supplies app-creation
+and callback URLs through the agent-scoped setup endpoint without creating an
+installation. The endpoint enforces the same provider management role as creation.

@@ -1,3 +1,4 @@
+import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 import type { ComponentType } from 'react'
 
 export interface IntegrationSetupProps {
@@ -9,5 +10,9 @@ export interface IntegrationSetupProps {
 export interface IntegrationSetupProvider {
   slug: string
   label: string
+  managementAccess?: 'user' | 'owner'
   Setup: ComponentType<IntegrationSetupProps>
+  Settings?: ComponentType<{ integration: PublicAgentIntegration; canManageAccess?: boolean }>
+  ConnectionSettings?: ComponentType<{ integration: PublicAgentIntegration }>
+  iconClassName?: string
 }

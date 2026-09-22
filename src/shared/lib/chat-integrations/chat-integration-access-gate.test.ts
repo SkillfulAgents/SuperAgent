@@ -47,7 +47,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: vi.fn(),
 }))
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import {
@@ -56,7 +56,7 @@ import {
   denyChatAccess,
   revokeChatAccess,
 } from '@shared/lib/services/chat-integration-access-service'
-import type { IncomingMessage } from './base-connector'
+import type { IncomingMessage } from './chat-agent-integration'
 
 const INT = 'int-tg'
 
@@ -75,7 +75,7 @@ interface ManagerInternals {
   ) => Promise<void>
 }
 
-const mgr = chatIntegrationManager as unknown as ManagerInternals
+const mgr = agentIntegrationManager as unknown as ManagerInternals
 
 const integration = {
   id: INT,

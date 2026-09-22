@@ -16,15 +16,15 @@ import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '../db/schema'
-import { MockChatClientConnector } from './mock-connector'
-import { isMultiPartyChatType } from './base-connector'
+import { MockChatAgentIntegration } from './mock-connector'
+import { isMultiPartyChatType } from './chat-agent-integration'
 
 // ── Test state ─────────────────────────────────────────────────────────
 
 let testDir: string
 let testDb: ReturnType<typeof drizzle>
 let testSqlite: InstanceType<typeof Database>
-let mockConnector: MockChatClientConnector
+let mockConnector: MockChatAgentIntegration
 let mockContainerClient: InstanceType<typeof MockContainerClient>
 
 // ── Mocks ──────────────────────────────────────────────────────────────
@@ -132,7 +132,7 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
 import { buildSlackSystemPrompt } from './slack-connector'
 import {
   buildTelegramSystemPrompt,
@@ -140,7 +140,7 @@ import {
   TelegramConnector,
 } from './telegram-connector'
 import { buildIMessageSystemPrompt, classifyIMessageChat } from './imessage-connector'
-import { createChatIntegration } from '@shared/lib/services/chat-integration-service'
+import { createAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 
 class PromptTestContainerClient extends MockContainerClient {
@@ -305,7 +305,7 @@ describe('chat session system prompt wiring', () => {
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
 
-    mockConnector = new MockChatClientConnector()
+    mockConnector = new MockChatAgentIntegration()
 
     mockContainerClient = new PromptTestContainerClient({ agentId: 'test-agent' })
     await mockContainerClient.start()
@@ -313,11 +313,11 @@ describe('chat session system prompt wiring', () => {
     createSessionSpy = vi.spyOn(mockContainerClient, 'createSession') as ReturnType<typeof vi.spyOn>
 
     (containerManager.ensureRunning as ReturnType<typeof vi.fn>).mockResolvedValue(mockContainerClient)
-    ;(chatIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
+    ;(agentIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
   })
 
   afterEach(async () => {
-    chatIntegrationManager.stop()
+    agentIntegrationManager.stop()
     testSqlite?.close()
     await fs.promises.rm(testDir, { recursive: true, force: true }).catch(() => {})
   })
@@ -333,7 +333,7 @@ describe('chat session system prompt wiring', () => {
     messageOpts: { chatId: string; userName?: string; chatName?: string; text?: string },
   ) {
     const callIndex = createSessionSpy.mock.calls.length
-    const integrationId = (await createChatIntegration({
+    const integrationId = (await createAgentIntegration({
       agentSlug: 'test-agent',
       provider,
       config: provider === 'telegram'
@@ -342,7 +342,7 @@ describe('chat session system prompt wiring', () => {
       name: 'Test Bot',
     }))
     testSqlite.prepare('UPDATE chat_integrations SET require_approval = 0 WHERE id = ?').run(integrationId)
-    await chatIntegrationManager.addIntegration(integrationId)
+    await agentIntegrationManager.addIntegration(integrationId)
 
     mockConnector.simulateIncomingMessage(messageOpts.text ?? 'Hello agent!', messageOpts.chatId, 'user-1', {
       userName: messageOpts.userName,

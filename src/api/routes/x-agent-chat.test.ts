@@ -42,24 +42,24 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 const mockGetChatIntegration = vi.fn()
 const mockCreateChatIntegration = vi.fn()
 const mockListChatIntegrations = vi.fn()
-const mockUpdateChatIntegrationStatus = vi.fn()
+const mockUpdateAgentIntegrationStatus = vi.fn()
 
-const MockDuplicateBotTokenError = vi.hoisted(() => class DuplicateBotTokenError extends Error {})
+const MockDuplicateIntegrationIdentityError = vi.hoisted(() => class DuplicateIntegrationIdentityError extends Error {})
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  getChatIntegration: (...args: unknown[]) => mockGetChatIntegration(...args),
-  createChatIntegration: (...args: unknown[]) => mockCreateChatIntegration(...args),
-  listChatIntegrations: (...args: unknown[]) => mockListChatIntegrations(...args),
-  updateChatIntegrationStatus: (...args: unknown[]) => mockUpdateChatIntegrationStatus(...args),
-  DuplicateBotTokenError: MockDuplicateBotTokenError,
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  getAgentIntegration: (...args: unknown[]) => mockGetChatIntegration(...args),
+  createAgentIntegration: (...args: unknown[]) => mockCreateChatIntegration(...args),
+  listAgentIntegrations: (...args: unknown[]) => mockListChatIntegrations(...args),
+  updateAgentIntegrationStatus: (...args: unknown[]) => mockUpdateAgentIntegrationStatus(...args),
+  DuplicateIntegrationIdentityError: MockDuplicateIntegrationIdentityError,
 }))
 
-const mockListChatIntegrationSessions = vi.fn()
-const mockGetChatIntegrationSessionBySessionId = vi.fn()
+const mockListAgentIntegrationSessions = vi.fn()
+const mockGetAgentIntegrationSessionBySessionId = vi.fn()
 
-vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
-  listChatIntegrationSessions: (...args: unknown[]) => mockListChatIntegrationSessions(...args),
-  getChatIntegrationSessionBySessionId: (...args: unknown[]) => mockGetChatIntegrationSessionBySessionId(...args),
+vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
+  listAgentIntegrationSessions: (...args: unknown[]) => mockListAgentIntegrationSessions(...args),
+  getAgentIntegrationSessionBySessionId: (...args: unknown[]) => mockGetAgentIntegrationSessionBySessionId(...args),
 }))
 
 const mockAddIntegration = vi.fn()
@@ -85,13 +85,11 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
 
 const mockValidateChatIntegrationConfig = vi.fn()
 
-vi.mock('@shared/lib/chat-integrations/config-schema', () => ({
+vi.mock('@shared/lib/chat-integrations/config-schema', async importOriginal => ({
+  ...await importOriginal<typeof import('@shared/lib/chat-integrations/config-schema')>(),
   validateChatIntegrationConfig: (...args: unknown[]) => mockValidateChatIntegrationConfig(...args),
   CHAT_PROVIDERS: ['slack', 'telegram', 'imessage'],
   IMESSAGE_GATEWAY_URL: 'https://imessage-gateway.example.com',
-  imessageSetupSchema: {
-    safeParse: () => ({ success: true, data: { phoneNumber: '+15555550100', code: '123456' } }),
-  },
 }))
 
 // The agent's workspace on this machine; the transcript append lands below it.
@@ -118,6 +116,7 @@ vi.mock('fs', () => ({
 }))
 
 import xAgentChat from './x-agent-chat'
+import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 
 function createApp() {
   const app = new Hono()
@@ -179,10 +178,10 @@ describe('x-agent chat route', () => {
     mockValidateProxyToken.mockResolvedValue('agent-one')
     mockGetChatIntegration.mockReturnValue(createIntegration())
     mockListChatIntegrations.mockReturnValue([createIntegration()])
-    mockListChatIntegrationSessions.mockReturnValue([
+    mockListAgentIntegrationSessions.mockReturnValue([
       { externalChatId: 'chat-1', displayName: 'General', archivedAt: null },
     ])
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue(null)
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue(null)
     mockGetConnector.mockReturnValue(connector)
     mockGetConnectorClass.mockResolvedValue(undefined)
     mockGetActiveIntegrationIds.mockReturnValue(['integration-1'])
@@ -196,6 +195,7 @@ describe('x-agent chat route', () => {
   afterEach(() => {
     testSqlite?.close()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('rejects requests without a valid proxy token', async () => {
@@ -210,8 +210,45 @@ describe('x-agent chat route', () => {
     expect(await res.json()).toEqual({ error: 'Unauthorized' })
   })
 
+  it('stores the exchanged iMessage token rather than the single-use setup code', async () => {
+    const fetch = vi.fn(async () => Response.json({ token: 'issued-token' }))
+    vi.stubGlobal('fetch', fetch)
+    mockCreateChatIntegration.mockResolvedValue('created-imessage')
+    mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'created-imessage', provider: 'imessage', status: 'active' }))
+    const response = await app.request('/api/x-agent/chat/add', {
+      method: 'POST', headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'imessage', name: 'Agent phone', config: { phoneNumber: '+15555550100', code: '123456' } }),
+    })
+    expect(response.status).toBe(201)
+    expect(mockCreateChatIntegration).toHaveBeenCalledExactlyOnceWith({
+      agentSlug: 'agent-one', provider: 'imessage', name: 'Agent phone', status: undefined,
+      config: { phoneNumber: '+15555550100', token: 'issued-token', gatewayUrl: 'https://imessage-gateway.example.com' },
+    })
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(mockAddIntegration).toHaveBeenCalledExactlyOnceWith('created-imessage')
+  })
+
+  it('persists a provider-prepared disconnected status without starting the runtime', async () => {
+    agentIntegrationRegistry.register({
+      definition: { provider: 'test-agent-setup', name: 'Test', family: 'chat', managementAccess: 'user', capabilities: [], settings: [], setup: { kind: 'credentials', credentialFields: [] } },
+      policy: { isAllowed: async () => true, sessionPolicy: () => ({ name: 'Test', metadata: {} }) },
+      create: async () => { throw new Error('not needed') },
+      setup: { allowAgentCreation: true, prepare: async () => ({ config: { prepared: true }, status: 'disconnected' }) },
+    })
+    mockCreateChatIntegration.mockResolvedValue('created-pending')
+    mockGetChatIntegration.mockResolvedValue(createIntegration({ id: 'created-pending', provider: 'test-agent-setup', status: 'disconnected' }))
+    const response = await app.request('/api/x-agent/chat/add', {
+      method: 'POST', headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'test-agent-setup', config: { raw: true } }),
+    })
+    expect(response.status).toBe(201)
+    expect(mockCreateChatIntegration).toHaveBeenCalledExactlyOnceWith({ agentSlug: 'agent-one', provider: 'test-agent-setup', name: undefined, config: { prepared: true }, status: 'disconnected' })
+    expect(mockAddIntegration).not.toHaveBeenCalled()
+    expect(await response.json()).toMatchObject({ status: 'disconnected' })
+  })
+
   it('lists integrations with only active chat sessions', async () => {
-    mockListChatIntegrationSessions.mockReturnValue([
+    mockListAgentIntegrationSessions.mockReturnValue([
       { externalChatId: 'chat-1', displayName: 'General', archivedAt: null },
       { externalChatId: 'chat-archived', displayName: 'Old thread', archivedAt: '2026-01-01T00:00:00.000Z' },
     ])
@@ -240,7 +277,7 @@ describe('x-agent chat route', () => {
       capabilities: ['list_users', 'list_channels', 'dm_by_user_id'],
       classifyChatId: (chat: { chatId: string }) => (chat.chatId.startsWith('D') ? 'dm' : chat.chatId.includes('|') ? 'thread' : 'channel'),
     })
-    mockListChatIntegrationSessions.mockReturnValue([
+    mockListAgentIntegrationSessions.mockReturnValue([
       { externalChatId: 'D0AAA111', displayName: 'Iddo Gino', archivedAt: null },
       { externalChatId: 'C0BBB222|123.456', displayName: '#office', archivedAt: null },
     ])
@@ -365,7 +402,7 @@ describe('x-agent chat route', () => {
   // to its chat, so sends into that same chat are rejected as double-posts.
 
   it('rejects a send from a chat session that omits chat_id (own chat implied)', async () => {
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
       integrationId: 'integration-1', externalChatId: 'chat-1', displayName: 'General', archivedAt: null,
     })
 
@@ -383,12 +420,12 @@ describe('x-agent chat route', () => {
     const { error } = await res.json() as { error: string }
     expect(error).toContain('chat chat-1 (General)')
     expect(error).toContain('delivered to that chat automatically')
-    expect(mockGetChatIntegrationSessionBySessionId).toHaveBeenCalledWith('agent-one', 'caller-session')
+    expect(mockGetAgentIntegrationSessionBySessionId).toHaveBeenCalledWith('agent-one', 'caller-session')
     expect(connector.sendMessage).not.toHaveBeenCalled()
   })
 
   it('rejects a send from a chat session that explicitly targets its own chat', async () => {
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
       integrationId: 'integration-1', externalChatId: 'chat-1', displayName: null, archivedAt: null,
     })
 
@@ -410,7 +447,7 @@ describe('x-agent chat route', () => {
 
   it('allows a chat session to message a different chat on the same integration', async () => {
     immediateTimeout()
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
       integrationId: 'integration-1', externalChatId: 'chat-1', displayName: 'General', archivedAt: null,
     })
 
@@ -431,7 +468,7 @@ describe('x-agent chat route', () => {
 
   it('does not guard sends from an archived chat session (streaming is torn down)', async () => {
     immediateTimeout()
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
       integrationId: 'integration-1', externalChatId: 'chat-1', displayName: 'General', archivedAt: new Date(),
     })
 
@@ -452,7 +489,7 @@ describe('x-agent chat route', () => {
 
   it('does not guard sends whose calling session serves a different integration', async () => {
     immediateTimeout()
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
       integrationId: 'integration-2', externalChatId: 'chat-1', displayName: null, archivedAt: null,
     })
 
@@ -554,7 +591,7 @@ describe('x-agent chat route', () => {
     mockGetConnectorClass.mockResolvedValue({ capabilities: ['dm_by_user_id'] })
     const resolveDirectChat = vi.fn().mockResolvedValue('D0AAA111')
     mockGetConnector.mockReturnValue({ ...connector, resolveDirectChat })
-    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
       integrationId: 'integration-1', externalChatId: 'D0AAA111', displayName: 'Iddo Gino', archivedAt: null,
     })
 
