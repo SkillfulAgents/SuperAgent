@@ -97,6 +97,17 @@ describe('pricingFor', () => {
     })
   })
 
+  it('prices Opus 5.5 on its own 4/20 card with the 5% cache read', () => {
+    expect(pricingFor('claude-opus-5-5')).toEqual({
+      inputPerMtok: 4,
+      outputPerMtok: 20,
+      cacheCreationPerMtok: 5,
+      cacheCreation1hPerMtok: 8,
+      cacheReadPerMtok: 0.2,
+      speedMultipliers: { fast: 2 },
+    })
+  })
+
   it.each(['claude-opus-4-6', 'claude-opus-4-6-20260205', 'claude-opus-4-7'])(
     'retains the historical 6x fast multiplier for %s',
     (id) => {

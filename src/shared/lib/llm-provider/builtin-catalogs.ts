@@ -53,8 +53,8 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 const FLEX_AND_PRIORITY_SPEEDS: SpeedLevel[] = ['slow', 'normal', 'fast']
 const PRIORITY_ONLY_SPEEDS: SpeedLevel[] = ['normal', 'fast']
 
-// Anthropic fast mode covers Opus 5 and 4.8 (4.7's was removed 2026-07-24).
-const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-4-8', 'claude-opus-5'])
+// Anthropic fast mode covers Opus 5.5, 5 and 4.8 (4.7's was removed 2026-07-24).
+const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5'])
 
 /** Claude entries with the speed tiers the Platform proxy can request. */
 function withPlatformClaudeSpeeds(catalog: ModelDefinition[]): ModelDefinition[] {
@@ -182,13 +182,22 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
   {
     id: 'claude-opus-5',
     label: 'Opus 5',
+    family: 'opus',
+    icon: ICON,
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-opus-5'),
+  },
+  {
+    id: 'claude-opus-5-5',
+    label: 'Opus 5.5',
     blurb: 'Most capable',
     family: 'opus',
     isLatest: true,
     isDefault: true,
     icon: ICON,
+    // All five tiers per Anthropic's effort docs (fetched 2026-09-22).
     supportedEfforts: ALL_EFFORTS,
-    pricing: pricingFor('claude-opus-5'),
+    pricing: pricingFor('claude-opus-5-5'),
   },
   {
     id: 'claude-fable-5',
