@@ -8,6 +8,7 @@ export interface IntegrationSetupProps {
 
 /** Renderer-only provider definition; independent of host implementations. */
 export interface IntegrationSetupProvider {
+  platformOnly?: boolean
   slug: string
   label: string
   managementAccess?: 'user' | 'owner'

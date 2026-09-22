@@ -77,5 +77,5 @@ export function formatSessionTimestamp(date: Date): string {
 
 /** Format a provider slug for display (e.g. "telegram" → "Telegram", "imessage" → "iMessage"). */
 export function formatProviderName(provider: string): string {
-  return PROVIDER_DISPLAY_NAMES[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1)
+  return (provider === 'platform-email' ? 'Email' : undefined) ?? PROVIDER_DISPLAY_NAMES[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1)
 }

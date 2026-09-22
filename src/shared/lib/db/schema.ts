@@ -827,3 +827,10 @@ export type ChatIntegrationAccess = typeof chatIntegrationAccess.$inferSelect
 export type NewChatIntegrationAccess = typeof chatIntegrationAccess.$inferInsert
 export type AuditLogEntry = typeof auditLog.$inferSelect
 export type NewAuditLogEntry = typeof auditLog.$inferInsert
+
+// Durable email cursor, policy, review and send state owned by the email provider.
+export const emailIntegrationState = sqliteTable('email_integration_state', {
+  integrationId: text('integration_id').notNull().references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  key: text('key').notNull(),
+  value: text('value').notNull(),
+}, table => ({ pk: primaryKey({ columns: [table.integrationId, table.key] }) }))
