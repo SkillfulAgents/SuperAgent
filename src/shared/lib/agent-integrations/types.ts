@@ -1,7 +1,7 @@
 import type { IntegrationCapability } from './public'
 import type { AgentActor } from '../agent-actor'
-import type { SessionMetadata } from '../types/agent'
-import type { PendingUserInputRequest } from '../user-input/request-schema'
+import type { SessionActivity, SessionMetadata } from '../types/agent'
+import type { PendingUserInputRequest, UserInputRequestKind, UserInputRequestOutcome, UserInputRequestScope } from '../user-input/request-schema'
 
 export type IntegrationStatus = 'active' | 'paused' | 'error' | 'disconnected'
 
@@ -59,9 +59,25 @@ export interface IntegrationRoute {
   notice?: string
 }
 
+/** Runtime observation is reconciled by the manager, never by a provider. */
+export interface IntegrationHost {
+  /** Attach/recover the mapped runtime stream before returning live session activity. */
+  session(externalId: string): Promise<IntegrationSessionContext | undefined>
+}
+
+export interface IntegrationSessionRecovery {
+  externalId: string
+  /** When present, do not attach a replacement session for an older work item. */
+  sessionId?: string
+}
+
 export interface IntegrationSessionContext {
   integration: AgentIntegrationRecord
   externalId: string
+  /** Live read-only observation. Unknown means recovery has not established state. */
+  readonly activity?: SessionActivity | 'unknown'
+  /** Current host requests, including decisions recovered during stream attachment. */
+  readonly pendingRequests?: readonly PendingUserInputRequest[]
   sessionId?: string
   interactionId?: string
   replyTarget?: Readonly<Record<string, string>>
@@ -83,7 +99,8 @@ export type IntegrationOutput =
   | { type: 'turn-completed'; event: unknown }
   | { type: 'turn-failed'; event: unknown }
   | { type: 'message'; text: string; inputId?: string; retryable?: boolean }
-  | { type: 'request'; request: PendingUserInputRequest }
+  | { type: 'request-opened'; request: PendingUserInputRequest }
+  | { type: 'request-resolved'; requestId: string; kind: UserInputRequestKind; outcome: UserInputRequestOutcome; scope: UserInputRequestScope }
   | { type: 'turn-started' }
   | { type: 'session-reset' }
   | { type: 'access-approved' }

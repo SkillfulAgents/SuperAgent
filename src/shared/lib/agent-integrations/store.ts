@@ -17,7 +17,7 @@ function sessionRecord(row: StoredSession): IntegrationSessionRecord {
 
 export function listStartupIntegrations(): Promise<AgentIntegrationRecord[]> { return installations.listStartupAgentIntegrations() }
 export function getIntegration(id: string): Promise<AgentIntegrationRecord | null> { return installations.getAgentIntegration(id) }
-export function updateIntegrationStatus(...args: [id: string, status: IntegrationStatus, error?: string | null]) {
+export function updateIntegrationStatus(...args: [id: string, status: IntegrationStatus, error?: string | null, allowReconnect?: boolean]) {
   return installations.updateAgentIntegrationStatus(...args)
 }
 export async function getIntegrationSession(id: string, externalId: string) {

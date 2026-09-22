@@ -20,3 +20,4 @@ src/api/routes/mcp-proxy.integration-identity.test.ts
 src/api/routes/agent-integrations.boundary.test.ts
 src/api/routes/agent-integration-setup.test.ts
 src/shared/lib/services/scheduled-task-service.overlap-guard.test.ts
+src/shared/lib/agent-integrations/lifecycle.test.ts

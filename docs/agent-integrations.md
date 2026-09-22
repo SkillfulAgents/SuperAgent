@@ -22,8 +22,8 @@ classDiagram
 | `authorize`, `isAllowed` | Family supplies access policy. The manager enforces it before preparation/runtime work and rechecks it before sends and output delivery. |
 | `sessionPolicy` | Family supplies timeout, session name, and metadata. The manager resolves the persisted mapping and operates through `AgentActor`. |
 | `prepareInput`, `consumeInput` | Family builds context/attachments and can consume an interaction, such as a typed answer to an open question, without starting another turn. |
-| `deliver` | Host emits runtime events, messages, requests, and lifecycle notifications. `turn-completed` and `turn-failed` are terminal signals; a runtime `stream_end` remains a segment boundary. |
-| `observeSession`, `releaseSession` | Family can observe actor activity and clean up its delivery state. The manager owns the actor subscription; chat owns its indicator timers. |
+| `deliver` | Host emits runtime events, messages, typed `request-opened` / `request-resolved` outputs, and lifecycle notifications. `turn-completed` and `turn-failed` are terminal signals; a runtime `stream_end` remains a segment boundary. |
+| `observeSession`, `releaseSession` | Passive family observation of manager-supplied activity and cleanup of delivery state. The manager owns the actor subscription; chat owns its indicator timers. |
 | `getTools` | Family exposes optional tools through named, schema-described operations. Existing chat send/directory endpoints invoke these without accessing transport methods. |
 | `onCreated` | Optional setup-only hook. iMessage uses it for the contact card; boot and reconnect never invoke it. |
 
@@ -34,6 +34,14 @@ The registry exposes serializable definitions (family, agent capabilities, manag
 `ChatAgentIntegration` owns `/clear`, Telegram's `/start`, sender attribution, input preparation, session naming, streaming delivery, working indicators, user-request cards, and chat tools. `chat-input.ts` contains the attachment download/upload and transcription path; `chat-delivery.ts` contains response formatting and streaming state. The concrete providers retain their protocol, threading, formatting, reaction, directory, and native-card implementations.
 
 The normalized response event carries a request ID, request kind, and value. Chat-specific callback strings and question-answer envelopes are decoded in the chat family. The host retains actor-bound review submission, input claims, and stale-response checks. `emitEvent` awaits its subscribers: the host queues inputs and processes responses inline. The host logs and reports event-processing failures without changing connection status; connector errors still update status and notify the user. All chat events use `onEvent`.
+
+## Runtime recovery and authorization loss
+
+Families declare unfinished local work with `sessionsToRecover()`. The manager attaches host delivery before reconnecting the container stream, so terminal replay reaches the family even when no new external event arrives. Restoring unfinished sessions happens outside the integration-connect critical path; completed historical mappings do not start containers. Retries belong to those recovery demands and are cancelled when the integration or session is released.
+
+The manager binds `IntegrationHost` before connection. Its `session(externalId)` reconciles a mapped stream and returns a session context with live read-only `activity` and `pendingRequests`. Unknown activity is not idle. Families use this narrow interface during dispatch/recovery; `observeSession` does not start containers or subscribe to runtime streams. The manager normalizes request notifications and uses the session wire for session-scoped requests, retaining the global wire only for agent-scoped review cards.
+
+Inbound transports and outbound MCP credentials use `requireIntegrationReconnect` when authorization is definitively lost. The provider supplies its validated replacement config and the exact stored revision it invalidated. The shared transition clears credentials and saves disconnected status atomically, preserves pause, and ignores stale failures. The manager tears down its live connector and refreshes the agent's integration MCP projection. Transient transport errors remain recoverable; they cannot overwrite this terminal status.
 
 ## Persistence and compatibility
 

@@ -124,6 +124,8 @@ function fakeConnector(opts?: {
 }): FakeConnector {
   const c = {
     provider: 'telegram',
+    bindHost: vi.fn(),
+    sessionsToRecover: async () => [],
     connectedState: true,
     connect: vi.fn(opts?.connectImpl ?? (async () => {})),
     disconnect: vi.fn(opts?.disconnectImpl ?? (async () => {})),

@@ -6,11 +6,12 @@ import { syncRemoteMcpAgents } from '../services/connection-sync-service'
  * Each (installation ID, family-resolved external ID) owns one active session.
  */
 
+import { onIntegrationAuthorizationLost, type IntegrationAuthorizationLost } from './lifecycle'
+import { integrationRequestEventSchema } from './runtime-schema'
 import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
 import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './registry'
 import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
-import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import {
   listStartupIntegrations,
   getIntegration,
@@ -84,6 +85,10 @@ interface ManagedSession {
   sessionId?: string
   context: IntegrationSessionContext
   sseUnsubscribe: (() => void) | null
+  recovery?: Promise<void>
+  recovered?: boolean
+  recoveryReported?: boolean
+  recoveryTimer?: ReturnType<typeof setTimeout>
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────
@@ -96,6 +101,7 @@ export class AgentIntegrationManager {
   // Per-chat session: one streaming context per (integrationId, externalId)
   private chatSessions: Map<string, ManagedSession> = new Map() // key: `${integrationId}:${chatId}`
   private isRunning = false
+  private authorizationUnsubscribe?: () => void
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null
   private globalNotificationUnsubscribe: (() => void) | null = null
   private disconnectedSince: Map<string, number> = new Map()
@@ -153,7 +159,7 @@ export class AgentIntegrationManager {
     if (!connector || !context || !(await connector.isAllowed(context))) return
     const managed = this.chatSessions.get(this.getChatSessionKey(integrationId, externalId))
     const routed = managed && (!sessionId || managed.sessionId === sessionId) ? managed.context : context
-    await connector.deliver({ ...routed, integration: context.integration, sessionId: sessionId ?? routed.sessionId }, output)
+    await connector.deliver(this.withActivity({ ...routed, integration: context.integration, sessionId: sessionId ?? routed.sessionId }, managed), output)
   }
 
   describeTarget(provider: string, externalId: string) { return this.registry.describeTarget(provider, externalId) }
@@ -165,6 +171,9 @@ export class AgentIntegrationManager {
   async start(): Promise<void> {
     if (this.isRunning) return
     this.isRunning = true
+    this.authorizationUnsubscribe = onIntegrationAuthorizationLost(change => {
+      void this.authorizationLost(change).catch(error => reportError(error, 'authorization-lost', { integrationId: change.integrationId }))
+    })
 
     const integrations = await listStartupIntegrations()
 
@@ -198,6 +207,8 @@ export class AgentIntegrationManager {
   }
 
   stop(): void {
+    this.authorizationUnsubscribe?.()
+    this.authorizationUnsubscribe = undefined
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval)
       this.healthCheckInterval = null
@@ -227,6 +238,17 @@ export class AgentIntegrationManager {
     this.isRunning = false
   }
 
+  private async authorizationLost(change: IntegrationAuthorizationLost): Promise<void> {
+    const generation = this.generationOf(change.integrationId)
+    const row = await getIntegration(change.integrationId)
+    if (!this.isRunning || !row || row.config !== change.config || !['disconnected', 'paused'].includes(row.status) || this.generationOf(row.id) !== generation) return
+    this.bumpGeneration(row.id)
+    this.disconnectedSince.delete(row.id)
+    this.consecutiveFailures.delete(row.id)
+    await this.teardownConnection(row.id)
+    await this.syncMcpEnvironment(row)
+  }
+
   // ── Lifecycle generations ───────────────────────────────────────────
 
   private bumpGeneration(id: string): number {
@@ -239,10 +261,12 @@ export class AgentIntegrationManager {
     return this.generations.get(id) ?? 0
   }
 
-  private async writeStatus(id: string, generation: number, ...update: [status: IntegrationStatus, error?: string | null]): Promise<void> {
+  private async writeStatus(id: string, generation: number, ...update: [status: IntegrationStatus, error?: string | null, allowReconnect?: boolean]): Promise<void> {
     const previous = this.statusWrites.get(id) ?? Promise.resolve()
     const write = previous.catch(() => {}).then(async () => {
       if (this.generationOf(id) !== generation || (this.pausedIds.has(id) && update[0] !== 'paused')) return
+      // A credential invalidation can originate outside this connector (MCP).
+      // It must not be overwritten by an in-flight transport error/recovery.
       await updateIntegrationStatus(id, ...update)
     })
     this.statusWrites.set(id, write)
@@ -440,7 +464,7 @@ export class AgentIntegrationManager {
     const integration = await getIntegration(id)
     if (!integration) throw new Error(`Chat integration ${id} not found`)
     if (this.generationOf(id) !== generation) return
-    await this.writeStatus(id, generation, 'active')
+    await this.writeStatus(id, generation, 'active', null, true)
     if (this.generationOf(id) !== generation) return
     await this.connectIntegration({ ...integration, status: 'active' }, generation)
   }
@@ -506,6 +530,9 @@ export class AgentIntegrationManager {
     const connector = await this.createConnector(integration)
     // Another window: creating the connector can await.
     if (this.generationOf(id) !== generation) return false
+
+    connector.bindHost({ session: async externalId => this.connections.get(id)?.connector === connector
+      ? this.recoverSessionContext(id, externalId, generation) : undefined })
 
     const conn: IntegrationConnection = {
       connector,
@@ -593,6 +620,14 @@ export class AgentIntegrationManager {
       if (this.generationOf(id) !== generation) return false
       this.subscribeChatSession(integration.id, session.externalId, session.sessionId)
     }
+    // Recovery is bounded to work the family declares unfinished, and runs off
+    // the boot/connect critical path so one slow container cannot block others.
+    void connector.sessionsToRecover().then(async sessions => {
+      for (const session of sessions) {
+        if (this.connections.get(id) !== conn || this.generationOf(id) !== generation) return
+        await this.recoverSessionContext(id, session.externalId, generation, session.sessionId)
+      }
+    }).catch(error => reportError(error, 'restore-sessions', { integrationId: id }))
     await this.syncMcpEnvironment(integration)
     return this.generationOf(id) === generation
   }
@@ -644,14 +679,95 @@ export class AgentIntegrationManager {
     const agentSlug = session.integration.agentSlug
 
     session.sseUnsubscribe?.()
-    if (session.sessionId && session.sessionId !== sessionId) session.connector.releaseSession(session.context)
+    if (session.sessionId && session.sessionId !== sessionId) {
+      session.connector.releaseSession(session.context)
+      clearTimeout(session.recoveryTimer)
+      session.recoveryTimer = undefined
+      session.recovery = undefined
+      session.recovered = false
+      session.recoveryReported = false
+    }
     session.sessionId = sessionId
-    session.context = { ...session.context, sessionId }
+    session.context = this.withActivity({ ...session.context, sessionId }, session)
     const actor = agentRegistry.get(agentSlug)
     session.sseUnsubscribe = actor.messages.subscribe(sessionId, (event: unknown) => {
       this.enqueueSSEEvent(integrationId, chatId, event, sessionId, session)
     })
     session.connector.observeSession(session.context)
+  }
+
+  private withActivity(context: IntegrationSessionContext, managed?: ManagedSession): IntegrationSessionContext {
+    return { ...context, get activity() {
+      if (!context.sessionId || !managed || managed.sessionId !== context.sessionId) return 'unknown'
+      const activity = agentRegistry.get(context.integration.agentSlug).sessions.activity(context.sessionId)
+      // Busy is already proven by the host; default idle is not proof after restart.
+      return managed.recovered || activity !== 'idle' ? activity : 'unknown'
+    }, get pendingRequests() {
+      return context.sessionId ? agentRegistry.get(context.integration.agentSlug).inputs.open(context.sessionId).filter(request => request.scope.sessionId === context.sessionId) : []
+    } }
+  }
+
+  /** One owner for runtime recovery, including pause/clear races and retry. */
+  private async recoverSessionContext(integrationId: string, externalId: string, generation: number, expectedSessionId?: string): Promise<IntegrationSessionContext | undefined> {
+    const conn = this.connections.get(integrationId)
+    if (!conn || !this.isRunning || this.generationOf(integrationId) !== generation) return
+    const clears = this.sessionClears
+    const row = await getIntegrationSession(integrationId, externalId)
+    if (!row || (expectedSessionId && row.sessionId !== expectedSessionId) || this.clearedSessionRows.has(row.id) || clears !== this.sessionClears) return
+    if (!(await this.isAllowed(integrationId, externalId)) || this.connections.get(integrationId) !== conn || this.generationOf(integrationId) !== generation || clears !== this.sessionClears) return
+    let managed = this.chatSessions.get(this.getChatSessionKey(integrationId, externalId))
+    if (!managed || managed.sessionId !== row.sessionId) {
+      this.subscribeChatSession(integrationId, externalId, row.sessionId)
+      managed = this.chatSessions.get(this.getChatSessionKey(integrationId, externalId))
+    }
+    if (!managed) return
+    const session = managed
+    const current = () => this.isRunning && this.connections.get(integrationId) === conn && this.generationOf(integrationId) === generation && this.isCurrentSession(integrationId, externalId, session, row.sessionId)
+    const actor = agentRegistry.get(conn.integration.agentSlug)
+    const lostActiveStream = !actor.sessions.isStreamSubscribed(row.sessionId) && actor.sessions.activity(row.sessionId) !== 'idle'
+    if ((!session.recovered || lostActiveStream) && !session.recovery) {
+      session.recovery = (async () => {
+        if (!actor.sessions.isStreamSubscribed(row.sessionId) || actor.sessions.activity(row.sessionId) === 'idle') {
+          if (!actor.sessions.isStreamSubscribed(row.sessionId)) await actor.container.start()
+          if (!current() || !(await this.isAllowed(integrationId, externalId)) || !current()) return
+          // Cold hosts otherwise discard terminal replay as already settled.
+          // Only an explicit recovery demand reaches here; idle historical
+          // mappings are never marked active or attached on their own.
+          if (actor.sessions.activity(row.sessionId) === 'idle') actor.sessions.markActive(row.sessionId)
+          // Host delivery is already listening; the handshake can replay idle/error.
+          await actor.sessions.subscribeStream(row.sessionId, row.sessionId)
+        }
+        if (!current()) return
+        session.recovered = true
+        session.recoveryReported = false
+        clearTimeout(session.recoveryTimer)
+        session.recoveryTimer = undefined
+        session.connector.observeSession(session.context)
+      })().catch(error => {
+        if (!current()) return
+        if (this.isSessionGoneError(error)) {
+          session.recovered = true
+          // Clear the provisional activity without delivering a false successful
+          // completion for the missing session. The next input owns reattachment.
+          session.sseUnsubscribe?.()
+          session.sseUnsubscribe = null
+          actor.sessions.markIdle(row.sessionId)
+          this.enqueueSSEEvent(integrationId, externalId, { type: 'session_error', error: 'The runtime session is no longer available.' }, row.sessionId)
+          return
+        }
+        if (!session.recoveryReported) reportError(error, 'restore-stream', { integrationId, sessionId: row.sessionId })
+        session.recoveryReported = true
+        clearTimeout(session.recoveryTimer)
+        session.recoveryTimer = setTimeout(() => {
+          session.recoveryTimer = undefined
+          void this.recoverSessionContext(integrationId, externalId, generation, row.sessionId)
+            .catch(error => reportError(error, 'restore-stream', { integrationId }))
+        }, 30_000)
+        session.recoveryTimer.unref()
+      }).finally(() => { if (session.sessionId === row.sessionId) session.recovery = undefined })
+    }
+    await session.recovery
+    return current() ? session.context : undefined
   }
 
   // `observe` is the chat session to mark live before the event is handled.
@@ -696,6 +812,13 @@ export class AgentIntegrationManager {
       // The access check is a window in which the chat can be cleared.
       if (!this.isCurrentSession(session.integration.id, session.chatId, session, session.sessionId)) continue
       session.connector.observeSession(session.context)
+      if (session.sessionId) {
+        const actor = agentRegistry.get(session.integration.agentSlug)
+        if (actor.sessions.activity(session.sessionId) !== 'idle' && !actor.sessions.isStreamSubscribed(session.sessionId)) {
+          void this.recoverSessionContext(session.integration.id, session.chatId, this.generationOf(session.integration.id), session.sessionId)
+            .catch(error => reportError(error, 'restore-stream', { integrationId: session.integration.id }))
+        }
+      }
     }
 
     await this.reconcileIntegrations({ force: false })
@@ -968,6 +1091,8 @@ export class AgentIntegrationManager {
         await actor.sessions.subscribeStream(sessionId, sessionId)
       }
 
+      const observed = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
+      if (observed?.sessionId === sessionId) observed.recovered = true
       input = await conn.connector.prepareInput(message, { ...context, actor, sessionId })
       if (input.skip) return
 
@@ -982,7 +1107,7 @@ export class AgentIntegrationManager {
       if (consumed) return
 
       const managed = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
-      if (managed) managed.context = { ...context, sessionId }
+      if (managed) managed.context = this.withActivity({ ...context, sessionId }, managed)
       await this.deliver(integrationId, chatId, { type: 'turn-started' }, sessionId)
       await actor.messages.withSend(sessionId, () => actor.messages.send(sessionId, input!.text))
       const now = Date.now()
@@ -1096,11 +1221,12 @@ export class AgentIntegrationManager {
     // createSession already started this turn. Observe it and wire chat delivery
     // before attaching, so even a fast turn's replay is consumed and forwarded.
     const managed = this.getOrCreateChatSession(integration.id, chatId)
-    if (managed) managed.context = { integration, externalId: chatId, sessionId, interactionId: route.interactionId, replyTarget: route.replyTarget }
+    if (managed) managed.context = this.withActivity({ integration, externalId: chatId, sessionId, interactionId: route.interactionId, replyTarget: route.replyTarget }, managed)
     await this.deliver(integration.id, chatId, { type: 'turn-started' }, sessionId)
     actor.sessions.markActive(sessionId)
     this.subscribeChatSession(integration.id, chatId, sessionId)
     await actor.sessions.subscribeStream(sessionId, sessionId)
+    if (managed) managed.recovered = true
   }
 
   /**
@@ -1119,6 +1245,7 @@ export class AgentIntegrationManager {
 
   /** Stop a chat session's live streaming: drop the SSE subscription, the tick, and the indicator. */
   private stopSession(session: ManagedSession): void {
+    clearTimeout(session.recoveryTimer)
     session.sseUnsubscribe?.()
     session.connector.releaseSession(session.context)
   }
@@ -1238,8 +1365,10 @@ export class AgentIntegrationManager {
     // Resolutions with a session scope already arrive on that session's stream;
     // forwarding them here as well would deliver each resolution twice.
     if (data.type !== 'user_request_created') return
-    const request = data.request as PendingUserInputRequest | undefined
-    if (!request) return
+    const parsed = integrationRequestEventSchema.safeParse(event)
+    if (!parsed.success || parsed.data.type !== 'user_request_created') return
+    const request = parsed.data.request
+    if (request.scope.sessionId) return
 
     // Non-review kinds return null here and are left to the session stream —
     // they arrive on BOTH wires, so rendering them here too would double-send.
@@ -1262,7 +1391,7 @@ export class AgentIntegrationManager {
           const key = `${chatSession.integrationId}:${chatSession.externalId}`
           const managed = this.chatSessions.get(key)
           if (managed && (managed.connector.definition.family === 'chat' || request.scope.sessionId === managed.sessionId)) {
-            await this.deliver(managed.integration.id, managed.chatId, { type: 'request', request }, sessionId)
+            await this.deliver(managed.integration.id, managed.chatId, { type: 'request-opened', request }, sessionId)
             return
           }
         }
@@ -1278,7 +1407,7 @@ export class AgentIntegrationManager {
       for (const [key, session] of this.chatSessions) {
         if (!key.startsWith(`${conn.integration.id}:`)) continue
         try {
-          await this.deliver(session.integration.id, session.chatId, { type: 'request', request })
+          await this.deliver(session.integration.id, session.chatId, { type: 'request-opened', request })
         } catch (err) {
           console.error('[AgentIntegrationManager] Failed to send approval card:', err)
         }
@@ -1306,8 +1435,21 @@ export class AgentIntegrationManager {
     // session captured before them must still be the live one.
     if (!this.isCurrentSession(integrationId, chatId, session, sessionId)) return
     const eventType = (event as { type?: string } | null)?.type
+    if (eventType === 'session_active' || eventType === 'session_idle' || eventType === 'session_error') session.recovered = true
+    const context = this.withActivity({ ...session.context, integration }, session)
+    if (eventType === 'user_request_created' || eventType === 'user_request_resolved') {
+      const parsed = integrationRequestEventSchema.safeParse(event)
+      if (!parsed.success) return
+      const data = parsed.data
+      const scope = data.type === 'user_request_created' ? data.request.scope : data.scope
+      if (scope.agentSlug !== integration.agentSlug || scope.sessionId !== sessionId) return
+      await session.connector.deliver(context, data.type === 'user_request_created'
+        ? { type: 'request-opened', request: data.request }
+        : { ...data, type: 'request-resolved' })
+      return
+    }
     const type = eventType === 'session_idle' ? 'turn-completed' : eventType === 'session_error' ? 'turn-failed' : 'runtime'
-    await session.connector.deliver({ ...session.context, integration }, { type, event })
+    await session.connector.deliver(context, { type, event })
   }
 
   // ── Interactive response handling ─────────────────────────────────
