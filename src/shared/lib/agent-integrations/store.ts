@@ -17,8 +17,11 @@ function sessionRecord(row: StoredSession): IntegrationSessionRecord {
 
 export function listStartupIntegrations(): Promise<AgentIntegrationRecord[]> { return installations.listStartupAgentIntegrations() }
 export function getIntegration(id: string): Promise<AgentIntegrationRecord | null> { return installations.getAgentIntegration(id) }
-export function updateIntegrationStatus(...args: [id: string, status: IntegrationStatus, error?: string | null]) {
-  return installations.updateAgentIntegrationStatus(...args)
+export function updateIntegrationStatus(...args: [id: string, status: IntegrationStatus, error?: string | null, expectedConfig?: string]) {
+  const [id, status, error, expectedConfig] = args
+  if (status !== 'active') return installations.updateAgentIntegrationStatus(id, status, error)
+  return installations.updateAgentIntegrationStatus(id, status, error,
+    expectedConfig === undefined ? { unlessDisconnected: true } : { config: expectedConfig })
 }
 export async function getIntegrationSession(id: string, externalId: string) {
   const row = await sessions.getAgentIntegrationSession(id, externalId)

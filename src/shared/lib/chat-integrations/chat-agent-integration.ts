@@ -9,7 +9,6 @@ import { AgentIntegration } from '../agent-integrations/agent-integration'
 import type { AgentIntegrationRecord, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
 import { ChatInputBuilder } from './chat-input'
 import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, type ManagedConnector } from './chat-delivery'
-import { agentRegistry } from '../agent-actor'
 import { decideInboundAccess, getChatAccess, markNoticeSent } from '../services/chat-integration-access-service'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
 import { reviewCardFromRegistry } from './request-card'
@@ -324,7 +323,10 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     if (output.type === 'session-reset') { await this.sendMessage(context.externalId, { text: '🗑️ Session cleared. Your next message will start a fresh conversation.' }); return }
     if (output.type === 'access-approved') { await this.sendMessage(context.externalId, { text: "You're approved. Send a message to start." }); return }
     if (output.type === 'request-settled') { await this.sendMessage(context.externalId, { text: 'That request was already handled — this card is no longer waiting on you.' }); return }
-    if (output.type === 'request') {
+    if (output.type === 'request-opened') {
+      if (output.request.scope.sessionId) {
+        await processSSEEvent(this.deliveryState(context), { type: 'user_request_created', request: output.request }, chatSettings(context.integration).showToolCalls, context.sessionId)
+      }
       const card = reviewCardFromRegistry(output.request)
       if (card) await this.sendUserRequestCard(context.externalId, card, context.sessionId)
       return
@@ -338,7 +340,8 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   observeSession(context: IntegrationSessionContext): void {
     if (!context.sessionId) return
     const state = this.deliveryState(context)
-    const activity = agentRegistry.get(context.integration.agentSlug).sessions.activity(context.sessionId)
+    const activity = context.activity
+    if (!activity || activity === 'unknown') return
     armIndicatorIfBusy(state, context.sessionId, activity)
     if (!BUSY_ACTIVITIES.has(activity)) clearIndicator(state)
   }

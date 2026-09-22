@@ -3185,6 +3185,47 @@ describe('MessagePersister', () => {
     })
   })
 
+  describe('provisional recovery activity', () => {
+    it('reverts a silent cold attachment even when subscribing recreates the streaming state', async () => {
+      messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
+      const revert = messagePersister.markSessionProvisionallyActive(AGENT_SLUG, SESSION_ID)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+      await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'cold-process' })
+      revert()
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it('preserves a real running turn even if the pending-inclusive generation is unchanged', () => {
+      const revert = messagePersister.markSessionProvisionallyActive(AGENT_SLUG, SESSION_ID)
+      const before = messagePersister.getTurnGeneration(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      expect(messagePersister.getTurnGeneration(AGENT_SLUG, SESSION_ID)).toBe(before)
+      revert()
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it.each(['send', 'output', 'result'] as const)('preserves a new %s during attachment', kind => {
+      const revert = messagePersister.markSessionProvisionallyActive(AGENT_SLUG, SESSION_ID)
+      if (kind === 'send') messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      else if (kind === 'output') mockClient._sendMessage({ type: 'assistant', message: { role: 'assistant', content: 'still running' } })
+      else {
+        mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+        mockClient._sendMessage({ type: 'result', subtype: 'success', replayed: true, num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } })
+      }
+      revert()
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('does not emit a second completion after terminal replay', () => {
+      const revert = messagePersister.markSessionProvisionallyActive(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({ type: 'result', subtype: 'success', num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } })
+      revert()
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(sseEvents.filter(event => event.type === 'session_idle')).toHaveLength(1)
+    })
+  })
+
   describe('markSessionIdle', () => {
     it('flips an active session back to idle and broadcasts session_idle', () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)

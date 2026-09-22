@@ -342,6 +342,8 @@ export interface SessionOps {
   isAwaitingInput(sessionId: string): boolean
   /** `messagePersister.markSessionActive` */
   markActive(sessionId: string): void
+  /** Mark active for stream recovery; undo only if no new send, turn, or output took ownership. */
+  markProvisionalActive(sessionId: string): () => void
   /** `messagePersister.markSessionIdle` */
   markIdle(sessionId: string): void
   /** `messagePersister.markSessionInterrupted` */

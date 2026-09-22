@@ -134,6 +134,8 @@ function fakeConnector(opts?: {
 }): FakeConnector {
   const c = {
     provider: 'telegram',
+    bindHost: vi.fn(),
+    sessionsToRecover: async () => [],
     connectedState: true,
     connect: vi.fn(opts?.connectImpl ?? (async () => {})),
     disconnect: vi.fn(opts?.disconnectImpl ?? (async () => {})),
@@ -245,7 +247,7 @@ describe('reconcile: DB-driven health check', () => {
 
     await mgr.runHealthChecks()
 
-    expect(updateStatusMock).toHaveBeenCalledWith(INT, 'active', null)
+    expect(updateStatusMock).toHaveBeenCalledWith(INT, 'active', null, { unlessDisconnected: true })
   })
 
   it('clears a stale error badge when the connector self-recovered', async () => {
@@ -258,7 +260,7 @@ describe('reconcile: DB-driven health check', () => {
 
     // No rebuild — just the badge fix.
     expect(createSpy).not.toHaveBeenCalled()
-    expect(updateStatusMock).toHaveBeenCalledWith(INT, 'active', null)
+    expect(updateStatusMock).toHaveBeenCalledWith(INT, 'active', null, { unlessDisconnected: true })
   })
 
   it('does nothing for a healthy active integration', async () => {
@@ -374,7 +376,7 @@ describe('reconcile: lifecycle operations racing a rebuild', () => {
     // over the pause, nothing left in the map.
     expect(createSpy).not.toHaveBeenCalled()
     expect(mgr.connections.has(INT)).toBe(false)
-    expect(updateStatusMock).toHaveBeenCalledWith(INT, 'paused')
+    expect(updateStatusMock).toHaveBeenCalledWith(INT, 'paused', undefined)
     expect(updateStatusMock).not.toHaveBeenCalledWith(INT, 'error', expect.anything())
   })
 
@@ -396,7 +398,7 @@ describe('reconcile: lifecycle operations racing a rebuild', () => {
     expect(mgr.connections.has(INT)).toBe(false)
     expect(connector.disconnect).toHaveBeenCalled()
     // The error-row success path must NOT write 'active' over the fresh 'paused'.
-    expect(updateStatusMock).not.toHaveBeenCalledWith(INT, 'active', null)
+    expect(updateStatusMock).not.toHaveBeenCalledWith(INT, 'active', null, { unlessDisconnected: true })
   })
 
   it('a connect FAILURE after a pause writes no error status and counts no failure', async () => {

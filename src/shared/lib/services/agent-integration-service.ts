@@ -349,8 +349,12 @@ export async function updateAgentIntegrationStatus(
   id: string,
   status: ChatIntegration['status'],
   errorMessage?: string | null,
+  condition?: { config?: string; unlessDisconnected?: boolean },
 ): Promise<boolean> {
-  return updateAgentIntegration(id, { status, errorMessage: errorMessage ?? null })
+  const result = await db.update(chatIntegrations).set({ status, errorMessage: errorMessage ?? null, updatedAt: new Date() })
+    .where(and(eq(chatIntegrations.id, id), status === 'error' || condition?.unlessDisconnected ? ne(chatIntegrations.status, 'disconnected') : undefined,
+      condition?.config === undefined ? undefined : eq(chatIntegrations.config, condition.config))).run()
+  return changesOf(result) > 0
 }
 
 // ── Delete ──────────────────────────────────────────────────────────────

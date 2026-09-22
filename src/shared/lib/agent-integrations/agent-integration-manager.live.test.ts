@@ -148,7 +148,7 @@ describe.runIf(LIVE)('AgentIntegrationManager live reconcile against real Slack'
     const connector = connectorOf(INT)
     expect(connector).toBeTruthy()
     expect(connector!.isConnected()).toBe(true)
-    expect(updateStatusMock).toHaveBeenCalledWith(INT, 'active', null)
+    expect(updateStatusMock).toHaveBeenCalledWith(INT, 'active', null, { unlessDisconnected: true })
     console.log('[live-mgr] orphan rebuilt into a live connected Slack integration')
   }, 60_000)
 
