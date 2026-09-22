@@ -1,17 +1,25 @@
 {
   "storyId": "browser-test",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: equired.\n\n**[STEP]** Step 7 - Captured final screenshot showing complete conversation — Successfully captured the full chat view displaying the user message and agent response with \"Example Domain\" text visible.\n\n**Result:** All verification criteria met. No bugs found. Test completed successfully.\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Verified browser automation feature works correctly - agent can open browser, navigate to URLs, extract page titles, and report results",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page showing agent sidebar",
+    "Found and clicked \"QA-20260922-230331-vbfl\" agent in sidebar — Successfully opened the agent page with chat interface ready",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into chat input field — Message successfully entered and displayed in input field",
+    "Clicked Send message button — Message was successfully sent and a new session \"Browser Navigation and Page Title Check\" was created with agent status showing \"working\"",
+    "Waited up to 3 minutes for agent response — Agent completed processing in approximately 11 seconds",
+    "Verified response contains \"Example Domain\" — Agent response clearly states: \"The page title is \\\"Example Domain\\\". The page at https://example.com loaded normally, and I've closed the browser.\"",
+    "Took final screenshot showing complete response — Screenshot captured showing the full chat conversation with agent's successful response mentioning \"Example Domain\""
+  ],
   "bugs": [],
-  "durationMs": 101060,
-  "sessionId": "9bf1f737-efd6-4fad-82a4-6e91fbb8fb23",
+  "durationMs": 59463,
+  "sessionId": "4955fbd2-3064-49fc-b701-a1e18839f222",
   "cost": {
-    "inputTokens": 50,
-    "outputTokens": 3274,
-    "cacheCreationTokens": 20886,
-    "cacheReadTokens": 86452,
+    "inputTokens": 334,
+    "outputTokens": 8743,
+    "cacheCreationTokens": 71056,
+    "cacheReadTokens": 976878,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.051173
+    "totalCostUsd": 0.230557
   }
 }
