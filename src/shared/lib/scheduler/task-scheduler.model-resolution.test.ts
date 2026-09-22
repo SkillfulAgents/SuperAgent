@@ -120,6 +120,8 @@ function createTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     lastExecutedAt: null,
     isRecurring: false,
     executionCount: 0,
+    consecutiveSkips: 0,
+    lastSkippedAt: null,
     lastSessionId: null,
     createdBySessionId: null,
     createdByUserId: 'user-1',

@@ -82,6 +82,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
 const mockMessagePersister = vi.hoisted(() => ({
   withSessionSend: vi.fn(async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => send()),
   isSessionActive: vi.fn(),
+  isSessionAwaitingInput: vi.fn(),
   subscribeToSession: vi.fn(),
   markSessionActive: vi.fn(),
   markSessionIdle: vi.fn(),
@@ -188,6 +189,7 @@ function createTask(overrides: Record<string, unknown> = {}) {
     scheduleExpression: '0 9 * * 1-5',
     status: 'pending',
     isRecurring: true,
+    lastSessionId: null,
     model: null,
     effort: null,
     speed: null,
@@ -210,6 +212,7 @@ describe('scheduled-tasks route', () => {
       { id: 'session-idle', name: 'Idle session' },
     ])
     mockMessagePersister.isSessionActive.mockImplementation((_agentSlug: string, sessionId: string) => sessionId === 'session-active')
+    mockMessagePersister.isSessionAwaitingInput.mockReturnValue(false)
     mockCreateSession.mockResolvedValue({ id: 'container-session-1' })
     mockEnsureRunning.mockResolvedValue({ createSession: mockCreateSession })
     mockGetSecretEnvVars.mockResolvedValue(['GITHUB_TOKEN'])
@@ -276,6 +279,35 @@ describe('scheduled-tasks route', () => {
     expect(mockMessagePersister.markSessionActive).toHaveBeenCalledWith('agent-one', 'container-session-1')
     expect(mockRecordManualExecution).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockMarkTaskExecuted).not.toHaveBeenCalled()
+  })
+
+  it('refuses run-now with 409 while the previous run of a recurring task is still busy', async () => {
+    // Same guard as the scheduler: a held task shows a past "next run", and
+    // Run now must not start the concurrent run the scheduler is holding back.
+    task = createTask({ lastSessionId: 'session-active' })
+
+    const res = await app.request('http://localhost/api/scheduled-tasks/task-1/run-now', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(409)
+    expect(mockMessagePersister.isSessionActive).toHaveBeenCalledWith('agent-one', 'session-active')
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
+    expect(mockCreateSession).not.toHaveBeenCalled()
+    expect(mockRecordManualExecution).not.toHaveBeenCalled()
+  })
+
+  it('allows run-now when the previous run is parked on user input', async () => {
+    task = createTask({ lastSessionId: 'session-active' })
+    mockMessagePersister.isSessionAwaitingInput.mockReturnValue(true)
+
+    const res = await app.request('http://localhost/api/scheduled-tasks/task-1/run-now', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(201)
+    expect(mockCreateSession).toHaveBeenCalledTimes(1)
+    expect(mockRecordManualExecution).toHaveBeenCalledWith('task-1', 'container-session-1')
   })
 
   it('marks a one-time task executed when run-now succeeds', async () => {

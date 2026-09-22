@@ -14,6 +14,8 @@ import {
   getDueTasks,
   markTaskExecuted,
   markTaskFailed,
+  recordTaskSkip,
+  rescheduleAfterFailure,
   updateNextExecution,
 } from '@shared/lib/services/scheduled-task-service'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
@@ -23,6 +25,7 @@ import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { captureException } from '@shared/lib/error-reporting'
 import { deliverSessionWake } from './wake-delivery'
+import { isRunBusy } from './run-busy'
 
 /**
  * How long an overdue session wake keeps retrying (via the normal poll loop)
@@ -133,8 +136,9 @@ class TaskScheduler {
             tags: { component: 'task-scheduler', phase: 'execute-task' },
             extra: { taskId: task.id, agentSlug: task.agentSlug, isRecurring: task.isRecurring },
           })
-          // For recurring tasks, schedule next execution even on failure
-          // For one-time tasks, mark as failed
+          // For recurring tasks, schedule the next attempt without recording an
+          // execution: lastSessionId keeps pointing at the previous run so the
+          // overlap guard stays armed. For one-time tasks, mark as failed.
           if (!task.isRecurring && task.resumeSessionId &&
               Date.now() - task.nextExecutionAt.getTime() < WAKE_RETRY_WINDOW_MS) {
             // Session wakes stay pending on transient failure so the poll loop
@@ -145,7 +149,7 @@ class TaskScheduler {
           } else if (task.isRecurring) {
             try {
               const nextTime = getNextCronTime(task.scheduleExpression, task.timezone || undefined)
-              await updateNextExecution(task.id, nextTime, '')
+              await rescheduleAfterFailure(task.id, nextTime)
               console.log(
                 `[TaskScheduler] Recurring task ${task.id} failed but scheduled next: ${nextTime.toISOString()}`
               )
@@ -193,6 +197,27 @@ class TaskScheduler {
         `[TaskScheduler] Task ${task.id} already has session ${existingSession.id}; reconciling task status`
       )
       await this.recordTaskExecution(task, existingSession.id)
+      return
+    }
+
+    // Overlap guard: while the previous run of this recurring task is still
+    // busy, hold this fire rather than start a second concurrent session.
+    // Holding leaves nextExecutionAt alone: the task stays due, each poll
+    // re-checks, and the first free poll fires once and re-anchors to the next
+    // cron boundary. One scalar means at most one pending fire per task.
+    if (task.isRecurring && task.lastSessionId && isRunBusy(actor, task.lastSessionId)) {
+      console.log(
+        `[TaskScheduler] Task ${task.id} held: previous run ${task.lastSessionId} is still busy`
+      )
+      // A hold is not a failure: a failed skip write must not reach the failure
+      // path, which would advance the schedule and drop the held fire.
+      await recordTaskSkip(task.id).catch((error) => {
+        console.error(`[TaskScheduler] Failed to record skip for task ${task.id}:`, error)
+        captureException(error, {
+          tags: { component: 'task-scheduler', phase: 'record-skip' },
+          extra: { taskId: task.id, agentSlug: task.agentSlug },
+        })
+      })
       return
     }
 

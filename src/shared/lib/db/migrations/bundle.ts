@@ -492,5 +492,14 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1789574400000,
     "hash": "0d2efc5a8980924af6cee3527d6a3271144086f77256dff2907f499b7e61e02c"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `scheduled_tasks` ADD `consecutive_skips` integer DEFAULT 0 NOT NULL;",
+      "\nALTER TABLE `scheduled_tasks` ADD `last_skipped_at` integer;"
+    ],
+    "bps": true,
+    "folderMillis": 1790040447107,
+    "hash": "841f5d556872c1e923410a1264069897e55c42f194983f8fee8531fe566b267c"
   }
 ]
