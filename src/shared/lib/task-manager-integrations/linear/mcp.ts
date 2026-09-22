@@ -48,7 +48,6 @@ export async function linearMcpConnection(record: AgentIntegrationRecord): Promi
     },
     async authRequired() {
       if (usedToken) await revokeLinearAuthorization(record.id, { accessToken: usedToken, authorizationVersion: version })
-      await sync(record.id)
     },
     reportHealth: available => health(record.id, version, available),
   }

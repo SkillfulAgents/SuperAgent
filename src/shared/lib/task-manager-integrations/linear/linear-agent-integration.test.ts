@@ -10,11 +10,6 @@ vi.mock('../../db', () => ({ get db() { return testDb } }))
 vi.mock('../../error-reporting', () => ({ captureException: vi.fn() }))
 const outbound = vi.hoisted(() => ({ check: vi.fn(async () => true) }))
 vi.mock('./mcp', () => ({ checkLinearMcp: outbound.check }))
-const restored = vi.hoisted(() => ({ start: vi.fn(async () => {}), subscribe: vi.fn(async () => {}) }))
-vi.mock('../../agent-actor', () => ({ agentRegistry: { get: () => ({
-  container: { start: restored.start },
-  sessions: { activity: () => 'idle', isStreamSubscribed: () => false, subscribeStream: restored.subscribe },
-}) } }))
 const transport = vi.hoisted(() => ({ start: vi.fn(), stop: vi.fn(), ready: false,
   event: async (_event: DirectSubscriptionEvent) => {}, connected: async () => {}, error: (_error: Error) => {} }))
 vi.mock('./subscriptions', () => ({ LinearSubscriptions: class {
@@ -58,7 +53,7 @@ beforeEach(async () => {
   vi.stubGlobal('fetch', fetchMock)
 })
 afterEach(async () => { await integration.disconnect(); await handle.close(); vi.useRealTimers(); vi.unstubAllGlobals() })
-async function connect() { await integration.connect(); transport.ready = true; await transport.connected() }
+async function connect() { integration.bindHost({ session: async () => undefined }); await integration.connect(); transport.ready = true; await transport.connected() }
 describe('Linear live event lifecycle', () => {
   it('does not catch up or run periodic requests on boot, while idle, or on socket reconnect', async () => {
     await connect()
@@ -76,7 +71,7 @@ describe('Linear live event lifecycle', () => {
   })
   it('uses subscription readiness for health and reports an outage once', async () => {
     const errors = vi.fn(); integration.onError(errors)
-    await integration.connect()
+    integration.bindHost({ session: async () => undefined }); await integration.connect()
     expect(integration.isConnected()).toBe(false)
     transport.ready = true; await transport.connected()
     expect(integration.isConnected()).toBe(true)
@@ -184,15 +179,13 @@ describe('Linear live event lifecycle', () => {
     expect(events).toEqual([])
     expect(await pendingTaskEvents(id)).toEqual([])
   })
-  it('restores an accepted session on connection without any remote catch-up', async () => {
+  it('declares accepted sessions for manager recovery without any remote catch-up', async () => {
     await enqueueTaskEvent(id, { id: 'accepted', taskId: 'issue', interactionId: 'issue', kind: 'invocation', timestamp: at, text: 'Already received', replyTarget: {}, payload: {} })
     const row = (await pendingTaskEvents(id))[0]
     await updateTaskEvent(row.id, { status: 'running', sessionId: 'existing' })
-    await integration.connect()
-    integration.observeSession({ integration: (await getAgentIntegration(id))!, externalId: 'issue', sessionId: 'existing' })
+    integration.bindHost({ session: async () => undefined }); await integration.connect()
+    expect(await integration.sessionsToRecover()).toEqual([{ externalId: 'issue', sessionId: 'existing' }])
     transport.ready = true; await transport.connected()
-    expect(restored.start).toHaveBeenCalledOnce()
-    expect(restored.subscribe).toHaveBeenCalledWith('existing', 'existing')
     expect(fetchMock).toHaveBeenCalledOnce()
   })
 })

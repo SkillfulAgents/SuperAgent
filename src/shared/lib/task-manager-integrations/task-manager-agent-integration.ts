@@ -2,13 +2,12 @@ import { z } from 'zod'
 import { AgentIntegration } from '../agent-integrations/agent-integration'
 import type { AgentIntegrationRecord, IntegrationInputContext, IntegrationInputEvent, IntegrationOutput,
   IntegrationRoute, IntegrationSessionContext } from '../agent-integrations/types'
-import { agentRegistry } from '../agent-actor'
-import { getIntegration, getIntegrationSession } from '../agent-integrations/store'
+import { getIntegration } from '../agent-integrations/store'
 import { pendingUserInputRequestSchema } from '../user-input/request-schema'
 import { captureException } from '../error-reporting'
 import { activeTaskEvent, claimTaskEvent, enqueueTaskEvent, getTaskEvent, pendingTaskEvents,
   failTaskDispatch, finishTaskEvent, claimTaskFailureNotice, MAX_FAILURE_NOTICE_ATTEMPTS, resumeTaskInput, readTaskEvent, taskContextUpdates, updateTaskEvent, updateActiveTaskEvent, type StoredTaskEvent } from './store'
-import { parseTaskJson, taskEventSchema, taskRuntimeEventSchema, taskFailureNoticeSchema } from './schemas'
+import { parseTaskJson, taskEventSchema, taskFailureNoticeSchema } from './schemas'
 import type { TaskEvent, TaskSnapshot } from './types'
 import { taskManagerPolicy } from './policy'
 
@@ -22,9 +21,15 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
   private retryAt = Infinity
   private deliveries = new Map<string, Promise<void>>()
   private publishingFailures = new Set<string>()
-  private restoringSessions = new Set<string>()
-  private deferredObservations = new Map<string, IntegrationSessionContext>()
   protected constructor(protected readonly installation: AgentIntegrationRecord) { super() }
+  async sessionsToRecover() {
+    const pending = await pendingTaskEvents(this.installation.id)
+    const tasks = new Map<string, { externalId: string; sessionId?: string }>()
+    for (const row of pending) {
+      if (row.status !== 'responding' && !tasks.has(row.taskId)) tasks.set(row.taskId, { externalId: row.taskId, sessionId: row.sessionId ?? undefined })
+    }
+    return [...tasks.values()]
+  }
   protected async readyToDispatch(): Promise<boolean> { return true }
   protected canDispatchTask(_taskId: string): boolean { return true }
   protected abstract publishFailure(event: TaskEvent, notice: z.infer<typeof taskFailureNoticeSchema>): Promise<void>
@@ -65,8 +70,12 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
         if (pending.status !== 'queued' || !this.canDispatchTask(pending.taskId)) continue
         const cooldown = pending.updatedAt.getTime() + 30000 * pending.dispatchAttempts - Date.now()
         if (pending.dispatchAttempts > 0 && cooldown > 0) { this.requestTaskRetry(cooldown); continue }
-        const session = await getIntegrationSession(this.installation.id, pending.taskId)
-        if (session && agentRegistry.get(this.installation.agentSlug).sessions.activity(session.sessionId) !== 'idle') continue
+        const session = await this.host.session(pending.taskId)
+        if (!this.connected || this.dispatchSuspended) return
+        if (session && session.activity !== 'idle') {
+          if (session.activity === 'unknown') this.requestTaskRetry()
+          continue
+        }
         const row = await claimTaskEvent(pending.id)
         if (!row || !this.connected || (await getTaskEvent(row.id))?.status !== 'running') continue
         const task = readTaskEvent(row)
@@ -93,13 +102,14 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
   }
   private async deliverInOrder(context: IntegrationSessionContext, output: IntegrationOutput): Promise<void> {
     // Streaming text and tool traces already belong to the normal session log.
-    if (output.type === 'runtime') {
-      const event = taskRuntimeEventSchema.safeParse(output.event)
-      if (!event.success || !['user_request_created', 'user_request_resolved'].includes(event.data.type)) return
-    }
+    if (output.type === 'runtime') return
     const eventId = output.type === 'message' && output.inputId ? output.inputId : context.replyTarget?.eventId
     const row = eventId ? await getTaskEvent(eventId) : await activeTaskEvent(this.installation.id, context.externalId)
-    if (!row || row.integrationId !== this.installation.id || row.taskId !== context.externalId || !['running', 'awaiting_input'].includes(row.status)) return
+    if (!row || row.integrationId !== this.installation.id || row.taskId !== context.externalId || !['running', 'awaiting_input'].includes(row.status)) {
+      // A turn started from Gamut may have been keeping queued issue work busy.
+      if (output.type === 'turn-completed' || output.type === 'turn-failed') await this.drainTasks()
+      return
+    }
     if (output.type === 'turn-started') { await updateActiveTaskEvent(row.id, { sessionId: context.sessionId }); return }
     if (output.type === 'message') {
       const failed = await failTaskDispatch(row.id, output.text, output.retryable ?? false)
@@ -108,16 +118,11 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
       return
     }
     if (!row.sessionId || row.sessionId !== context.sessionId) return
-    if (output.type === 'runtime') {
-      const event = taskRuntimeEventSchema.parse(output.event)
-      if (event.type === 'user_request_created') {
-        const data = z.object({ request: pendingUserInputRequestSchema }).safeParse(output.event)
-        if (data.success) await this.requestInput(row, data.data.request)
-      }
-      if (event.type === 'user_request_resolved' && event.requestId) await resumeTaskInput(row.id, event.requestId)
-    } else if (output.type === 'request') await this.requestInput(row, output.request)
+    if (output.type === 'request-resolved') await resumeTaskInput(row.id, output.requestId)
+    else if (output.type === 'request-opened') await this.requestInput(row, output.request)
     else if (output.type === 'turn-completed' || output.type === 'turn-failed') {
-      if (output.type === 'turn-completed' && row.status === 'awaiting_input') return
+      if (output.type === 'turn-completed' && row.status === 'awaiting_input' &&
+        (context.pendingRequests === undefined || context.pendingRequests.some(request => request.blocking && !request.autoApproved))) return
       await finishTaskEvent(row.id, output.type === 'turn-completed' ? 'complete' : 'failed')
       await this.drainTasks()
     }
@@ -138,18 +143,16 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
   protected async recoverTasks(): Promise<void> {
     if (!this.isConnected() || this.dispatchSuspended) return
     // Restore only locally accepted work; providers do not need to replay remote history.
-    const observations = [...this.deferredObservations.values()]
-    this.deferredObservations.clear()
-    for (const context of observations) await this.restoreSession(context).catch(error => {
-      this.deferredObservations.set(context.externalId, context)
-      this.requestTaskRetry()
-      this.report(error, 'restore-stream')
-    })
     for (const row of await pendingTaskEvents(this.installation.id)) {
       if (row.status === 'queued') continue
       if (row.status === 'responding') { await this.deliverFailure(row); continue }
-      const sessionId = row.sessionId ?? (await getIntegrationSession(this.installation.id, row.taskId))?.sessionId
-      if (sessionId && agentRegistry.get(this.installation.agentSlug).sessions.activity(sessionId) !== 'idle') continue
+      const session = await this.host.session(row.taskId)
+      if (!this.isConnected() || this.dispatchSuspended) return
+      const sessionId = row.sessionId ?? session?.sessionId
+      if (session && session.sessionId === sessionId && session.activity !== 'idle') {
+        if (session.activity === 'unknown') this.requestTaskRetry()
+        continue
+      }
       const remaining = (sessionId ? 120000 : 600000) - (Date.now() - row.updatedAt.getTime())
       if (remaining > 0) { this.requestTaskRetry(remaining); continue }
       await finishTaskEvent(row.id, 'failed')
@@ -199,26 +202,6 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
     clearTimeout(this.retryTimer)
     this.retryTimer = undefined
     this.retryAt = Infinity
-  }
-  releaseSession(context: IntegrationSessionContext): void {
-    this.deferredObservations.delete(context.externalId)
-  }
-  observeSession(context: IntegrationSessionContext): void {
-    if (!this.isConnected() || this.dispatchSuspended) {
-      this.deferredObservations.set(context.externalId, context)
-      return
-    }
-    void this.restoreSession(context).catch(error => this.report(error, 'restore-stream'))
-  }
-  private async restoreSession(context: IntegrationSessionContext): Promise<void> {
-    const row = await activeTaskEvent(this.installation.id, context.externalId)
-    const sessionId = context.sessionId
-    if (!this.isConnected() || !row || !sessionId || row.sessionId !== sessionId || this.restoringSessions.has(sessionId)) return
-    const actor = agentRegistry.get(this.installation.agentSlug)
-    if (actor.sessions.isStreamSubscribed(sessionId)) return
-    this.restoringSessions.add(sessionId)
-    try { await actor.container.start(); if (this.connected) await actor.sessions.subscribeStream(sessionId, sessionId) }
-    finally { this.restoringSessions.delete(sessionId) }
   }
   protected report(error: unknown, operation: string): void {
     captureException(error, { tags: { component: 'task-integration', provider: this.provider, operation }, extra: { integrationId: this.installation.id } })

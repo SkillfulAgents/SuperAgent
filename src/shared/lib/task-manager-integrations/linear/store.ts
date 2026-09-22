@@ -1,3 +1,4 @@
+import { requireIntegrationReconnect } from '../../agent-integrations/lifecycle'
 import { parseTaskJson } from '../schemas'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '../../db'
@@ -25,14 +26,11 @@ export async function updateLinearConfig(id: string, update: (config: LinearConf
       and json_extract(case when json_valid(other.config) then other.config else '{}' end, '$.identity.workspaceId') = ${next.identity.workspaceId}
       and json_extract(case when json_valid(other.config) then other.config else '{}' end, '$.identity.appUserId') = ${next.identity.appUserId}
     )` : undefined
-    const changed = await db.update(chatIntegrations).set({ config: JSON.stringify(next), updatedAt: new Date(),
-      ...(revokeMessage ? {
-        status: sql`case when ${chatIntegrations.status} = 'paused' then 'paused' else 'disconnected' end`,
-        errorMessage: revokeMessage,
-      } : {}),
-    })
-      .where(and(eq(chatIntegrations.id, id), eq(chatIntegrations.config, row.config), identityAvailable))
-      .returning({ id: chatIntegrations.id }).get()
+    const changed = revokeMessage
+      ? await requireIntegrationReconnect({ integrationId: id, expectedConfig: row.config, config: next, message: revokeMessage })
+      : await db.update(chatIntegrations).set({ config: JSON.stringify(next), updatedAt: new Date() })
+        .where(and(eq(chatIntegrations.id, id), eq(chatIntegrations.config, row.config), identityAvailable))
+        .returning({ id: chatIntegrations.id }).get()
     if (changed) return next
     if (next.identity) {
       const others = await db.select().from(chatIntegrations).where(eq(chatIntegrations.provider, 'linear')).all()

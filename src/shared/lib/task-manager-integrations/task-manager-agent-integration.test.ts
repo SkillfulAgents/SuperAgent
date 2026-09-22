@@ -10,8 +10,8 @@ let handle: TestDatabase
 let testDb: AppDatabase
 vi.mock('../db', () => ({ get db() { return testDb } }))
 vi.mock('../error-reporting', () => ({ captureException: vi.fn() }))
-vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({ sessions: { activity: () => 'idle' } }) } }))
 import { TaskManagerAgentIntegration } from './task-manager-agent-integration'
+import { getIntegrationSession } from '../agent-integrations/store'
 import { createAgentIntegration, getAgentIntegration } from '../services/agent-integration-service'
 import { getTaskEvent, pendingTaskEvents, updateTaskEvent, updateActiveTaskEvent, enqueueTaskEvent, wasStopped, claimTaskFailureNotice } from './store'
 const snapshot: TaskSnapshot = { id: 'issue', identifier: 'SUP-1', title: 'Work', description: 'Description', url: 'https://linear.app/issue', updatedAt: 'now', properties: {}, comments: [], attachments: [], truncated: false }
@@ -31,6 +31,12 @@ class FakeTasks extends TaskManagerAgentIntegration {
   stop(taskId: string, timestamp?: string) { return this.stopTask(taskId, undefined, timestamp) }
   recover() { return this.recoverTasks() }
 }
+function bindHost(tasks: FakeTasks) {
+  tasks.bindHost({ session: async externalId => {
+    const session = await getIntegrationSession(integration.id, externalId)
+    return session ? { integration, externalId, sessionId: session.sessionId, activity: 'idle' } : undefined
+  } })
+}
 let integration: AgentIntegrationRecord
 let tasks: FakeTasks
 let events: IntegrationEvent[]
@@ -47,6 +53,7 @@ beforeEach(async () => {
   integration = (await getAgentIntegration(id))!
   tasks = new FakeTasks(integration); events = []
   tasks.onEvent(event => { events.push(event) })
+  bindHost(tasks)
   await tasks.connect()
 })
 afterEach(async () => { await tasks.disconnect(); await handle.close(); vi.restoreAllMocks(); vi.useRealTimers() })
@@ -84,12 +91,12 @@ describe('TaskManagerAgentIntegration with MCP outbound', () => {
     await tasks.accept(event('one')); const ctx = context()
     await tasks.deliver(ctx, { type: 'turn-started' })
     const request = pendingUserInputRequestSchema.parse({ id: 'review', kind: 'proxy_review', scope: { agentSlug: 'agent', sessionId: 'other' }, blocking: true, payload: {} })
-    await tasks.deliver(ctx, { type: 'request', request })
+    await tasks.deliver(ctx, { type: 'request-opened', request })
     expect((await getTaskEvent(ctx.replyTarget!.eventId))?.status).toBe('running')
-    await tasks.deliver(ctx, { type: 'request', request: { ...request, scope: { agentSlug: 'agent', sessionId: ctx.sessionId } } })
-    await tasks.deliver(ctx, { type: 'runtime', event: { type: 'user_request_resolved', requestId: 'other' } })
+    await tasks.deliver(ctx, { type: 'request-opened', request: { ...request, scope: { agentSlug: 'agent', sessionId: ctx.sessionId } } })
+    await tasks.deliver(ctx, { type: 'request-resolved', requestId: 'other', kind: 'question', outcome: 'answered', scope: { agentSlug: 'agent', sessionId: ctx.sessionId } })
     expect((await getTaskEvent(ctx.replyTarget!.eventId))?.status).toBe('awaiting_input')
-    await tasks.deliver(ctx, { type: 'runtime', event: { type: 'user_request_resolved', requestId: 'review' } })
+    await tasks.deliver(ctx, { type: 'request-resolved', requestId: 'review', kind: 'question', outcome: 'answered', scope: { agentSlug: 'agent', sessionId: ctx.sessionId } })
     expect((await getTaskEvent(ctx.replyTarget!.eventId))?.status).toBe('running')
   })
   it('fences late completion after cancellation and never acknowledges an unconfirmed interrupt', async () => {
@@ -116,11 +123,11 @@ it('keeps unrelated issue comments queued while a native question awaits its ans
   await tasks.deliver(ctx, { type: 'turn-started' })
   const request = pendingUserInputRequestSchema.parse({ id: 'question', kind: 'question', scope: { agentSlug: 'agent', sessionId: ctx.sessionId },
     blocking: true, payload: { questions: [{ question: 'Which release?', multiSelect: false }] } })
-  await tasks.deliver(ctx, { type: 'request', request })
+  await tasks.deliver(ctx, { type: 'request-opened', request })
   await tasks.accept({ ...event('unrelated'), text: 'Different topic', replyTarget: { commentId: 'other-thread' } })
   expect(events.filter(event => event.type === 'response')).toEqual([])
   expect((await pendingTaskEvents(integration.id)).map(row => row.status)).toEqual(['awaiting_input', 'queued'])
-  await tasks.deliver(ctx, { type: 'runtime', event: { type: 'user_request_resolved', requestId: 'question' } })
+  await tasks.deliver(ctx, { type: 'request-resolved', requestId: 'question', kind: 'question', outcome: 'answered', scope: { agentSlug: 'agent', sessionId: ctx.sessionId } })
   await tasks.deliver(ctx, { type: 'turn-completed', event: {} })
   expect(events.filter(event => event.type === 'input')).toHaveLength(2)
 })
@@ -151,7 +158,7 @@ it('preserves retry attempts across connector replacement and fences retries aft
   await tasks.accept(event('one')); const ctx = context()
   await tasks.deliver(ctx, { type: 'message', retryable: true, text: 'Container failed' })
   await tasks.disconnect()
-  tasks = new FakeTasks(integration); tasks.onEvent(event => { events.push(event) }); await tasks.connect()
+  tasks = new FakeTasks(integration); bindHost(tasks); tasks.onEvent(event => { events.push(event) }); await tasks.connect()
   await tasks.recover()
   expect(events.filter(event => event.type === 'input')).toHaveLength(1)
   await vi.advanceTimersByTimeAsync(30000); await tasks.recover()
@@ -191,7 +198,7 @@ it('caps failure notices across restarts and releases the issue for later reques
   expect(events.filter(event => event.type === 'input')).toHaveLength(1)
   for (let attempt = 2; attempt <= 3; attempt++) {
     await tasks.disconnect()
-    tasks = new FakeTasks(integration); tasks.publishFailure = publish
+    tasks = new FakeTasks(integration); bindHost(tasks); tasks.publishFailure = publish
     tasks.onEvent(event => { events.push(event) }); await tasks.connect()
     await vi.advanceTimersByTimeAsync(30000)
     await tasks.recover()
@@ -272,4 +279,35 @@ it('cancels retries for accepted work when the connector is paused', async () =>
   await vi.advanceTimersByTimeAsync(300000)
   expect(events.filter(event => event.type === 'input')).toHaveLength(1)
   expect(vi.getTimerCount()).toBe(0)
+})
+
+
+it('holds accepted work while the manager reports recovery as unknown, then resumes when idle', async () => {
+  tasks.bindHost({ session: async externalId => ({ integration, externalId, sessionId: 'restoring', activity: 'unknown' }) })
+  await tasks.accept(event('one'))
+  await vi.advanceTimersByTimeAsync(600000)
+  expect((await pendingTaskEvents(integration.id))[0].status).toBe('queued')
+  expect(events.filter(event => event.type === 'input')).toHaveLength(0)
+  tasks.bindHost({ session: async externalId => ({ integration, externalId, sessionId: 'restoring', activity: 'idle' }) })
+  await tasks.recover()
+  expect(events.filter(event => event.type === 'input')).toHaveLength(1)
+})
+it('settles a recovered waiting turn when the manager confirms there are no remaining requests', async () => {
+  await tasks.accept(event('one')); const ctx = context()
+  await tasks.deliver(ctx, { type: 'turn-started' })
+  const request = pendingUserInputRequestSchema.parse({ id: 'question', kind: 'question', scope: { agentSlug: 'agent', sessionId: ctx.sessionId }, blocking: true, payload: {} })
+  await tasks.deliver(ctx, { type: 'request-opened', request })
+  await tasks.accept(event('two'))
+  await tasks.deliver({ ...ctx, pendingRequests: [request] }, { type: 'turn-completed', event: {} })
+  expect((await getTaskEvent(ctx.replyTarget!.eventId))?.status).toBe('awaiting_input')
+  await tasks.deliver({ ...ctx, pendingRequests: [] }, { type: 'turn-completed', event: {} })
+  expect((await getTaskEvent(ctx.replyTarget!.eventId))?.status).toBe('complete')
+  expect(events.filter(event => event.type === 'input')).toHaveLength(2)
+})
+it('declares unfinished sessions for recovery and excludes completed issue history', async () => {
+  await tasks.accept(event('one')); const first = context()
+  await tasks.deliver(first, { type: 'turn-started' }); await tasks.deliver(first, { type: 'turn-completed', event: {} })
+  await tasks.accept(event('two', 'another')); const second = context(1)
+  await tasks.deliver(second, { type: 'turn-started' })
+  expect(await tasks.sessionsToRecover()).toEqual([{ externalId: 'another', sessionId: second.sessionId }])
 })
