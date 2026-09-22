@@ -6,6 +6,7 @@
  */
 
 import { agentRegistry } from '@shared/lib/agent-actor'
+import type { AgentActor } from '@shared/lib/agent-actor'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
@@ -25,7 +26,6 @@ import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { captureException } from '@shared/lib/error-reporting'
 import { deliverSessionWake } from './wake-delivery'
-import { isRunBusy } from './run-busy'
 
 /**
  * How long an overdue session wake keeps retrying (via the normal poll loop)
@@ -34,6 +34,16 @@ import { isRunBusy } from './run-busy'
  * machine waking from sleep) must not permanently kill it.
  */
 const WAKE_RETRY_WINDOW_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Whether a recurring task's previous run still occupies its slot: busy and not
+ * parked on user input. A parked run has nobody to answer it, so it frees the
+ * slot; a run whose turn ended with background work still going stays active
+ * and keeps it.
+ */
+function isRunBusy(actor: AgentActor, sessionId: string): boolean {
+  return actor.sessions.isActive(sessionId) && !actor.sessions.isAwaitingInput(sessionId)
+}
 
 class TaskScheduler {
   private intervalId: NodeJS.Timeout | null = null

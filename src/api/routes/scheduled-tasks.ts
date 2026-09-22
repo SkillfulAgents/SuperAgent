@@ -33,7 +33,6 @@ import { RuntimeOptionsPatchSchema, resolveRuntimeInherit } from '@shared/lib/co
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { deliverSessionWake } from '@shared/lib/scheduler/wake-delivery'
-import { isRunBusy } from '@shared/lib/scheduler/run-busy'
 import { Authenticated, EntityAgentRole } from '../middleware/auth'
 
 const scheduledTasksRouter = new Hono()
@@ -302,13 +301,6 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     }
 
     const actor = agentRegistry.get(task.agentSlug)
-    // Same overlap guard as the scheduler. A held task shows a past "next run",
-    // which makes Run now the obvious thing to click; it must not start the
-    // concurrent run the scheduler is holding back.
-    if (task.isRecurring && task.lastSessionId && isRunBusy(actor, task.lastSessionId)) {
-      return c.json({ error: 'The previous run of this task is still in progress' }, 409)
-    }
-
     await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
     // Model/effort/speed preference order: task override > agent default > global default.

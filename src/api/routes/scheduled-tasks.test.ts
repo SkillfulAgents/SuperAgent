@@ -82,7 +82,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
 const mockMessagePersister = vi.hoisted(() => ({
   withSessionSend: vi.fn(async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => send()),
   isSessionActive: vi.fn(),
-  isSessionAwaitingInput: vi.fn(),
   subscribeToSession: vi.fn(),
   markSessionActive: vi.fn(),
   markSessionIdle: vi.fn(),
@@ -212,7 +211,6 @@ describe('scheduled-tasks route', () => {
       { id: 'session-idle', name: 'Idle session' },
     ])
     mockMessagePersister.isSessionActive.mockImplementation((_agentSlug: string, sessionId: string) => sessionId === 'session-active')
-    mockMessagePersister.isSessionAwaitingInput.mockReturnValue(false)
     mockCreateSession.mockResolvedValue({ id: 'container-session-1' })
     mockEnsureRunning.mockResolvedValue({ createSession: mockCreateSession })
     mockGetSecretEnvVars.mockResolvedValue(['GITHUB_TOKEN'])
@@ -281,25 +279,10 @@ describe('scheduled-tasks route', () => {
     expect(mockMarkTaskExecuted).not.toHaveBeenCalled()
   })
 
-  it('refuses run-now with 409 while the previous run of a recurring task is still busy', async () => {
-    // Same guard as the scheduler: a held task shows a past "next run", and
-    // Run now must not start the concurrent run the scheduler is holding back.
+  it('runs a recurring task now even while its previous run is still busy', async () => {
+    // The scheduler's overlap guard holds only scheduled fires; Run now is the
+    // user asking for a run, so it goes ahead.
     task = createTask({ lastSessionId: 'session-active' })
-
-    const res = await app.request('http://localhost/api/scheduled-tasks/task-1/run-now', {
-      method: 'POST',
-    })
-
-    expect(res.status).toBe(409)
-    expect(mockMessagePersister.isSessionActive).toHaveBeenCalledWith('agent-one', 'session-active')
-    expect(mockEnsureRunning).not.toHaveBeenCalled()
-    expect(mockCreateSession).not.toHaveBeenCalled()
-    expect(mockRecordManualExecution).not.toHaveBeenCalled()
-  })
-
-  it('allows run-now when the previous run is parked on user input', async () => {
-    task = createTask({ lastSessionId: 'session-active' })
-    mockMessagePersister.isSessionAwaitingInput.mockReturnValue(true)
 
     const res = await app.request('http://localhost/api/scheduled-tasks/task-1/run-now', {
       method: 'POST',
