@@ -1126,7 +1126,8 @@ export class ClaudeCodeProcess extends EventEmitter {
         // var for non-claude-* models, so it never affects Claude sessions. A
         // user-set custom env var (spread above) deliberately wins.
         ...(this.contextWindowForModel(this.model) &&
-          !this.customEnvVars?.CLAUDE_CODE_MAX_CONTEXT_TOKENS && {
+          !this.customEnvVars?.CLAUDE_CODE_MAX_CONTEXT_TOKENS &&
+          !this.llmRuntime?.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS && {
             CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(this.contextWindowForModel(this.model)),
           }),
       }), this.speed),
