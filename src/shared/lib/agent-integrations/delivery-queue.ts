@@ -18,6 +18,8 @@ export interface DeliveryAttempt {
   bind(sessionId: string | null): Promise<void>
   /** Persist successful route notices independently of later dispatch retries. */
   notifyRoute(send: () => Promise<void>): Promise<void>
+  /** Setup after acceptance survives transport replacement, but not cancellation. */
+  assertOwned(): Promise<void>
   assertCurrent(): void
 }
 interface DeliveryHost {
@@ -99,8 +101,12 @@ export class IntegrationDeliveryQueue {
     if (row.nextAttemptAt.getTime() > Date.now()) return
     const owner = crypto.randomUUID()
     const epoch = this.epoch
+    const alive = () => {
+      if (!this.running || this.epoch !== epoch) throw new DeliveryCancelled()
+    }
     const current = () => {
-      if (!this.running || this.epoch !== epoch || !this.host.connectedIds().includes(row.integrationId)) throw new DeliveryCancelled()
+      alive()
+      if (!this.host.connectedIds().includes(row.integrationId)) throw new DeliveryCancelled()
     }
     if (row.state === 'sending') {
       if (await this.store.adopt(row, owner)) await this.reconcile({ ...row, owner }, owner)
@@ -163,8 +169,15 @@ export class IntegrationDeliveryQueue {
       current()
       await this.host.dispatch(row, { id: row.id, assertCurrent: current,
         handoff,
+        assertOwned: async () => {
+          alive()
+          if (!await this.store.ownsInput(row.id, owner)) throw new DeliveryCancelled()
+          alive()
+        },
         bind: async sessionId => {
-          current()
+          // Recording accepted work must survive a connector rebuild/offline gap.
+          // The owner and persisted installation status still fence pause/cancel.
+          alive()
           if (!(await this.store.change(row.id, owner, { sessionId }))) throw new DeliveryCancelled()
           row.sessionId = sessionId
         },

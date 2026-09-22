@@ -4,6 +4,7 @@ import { serve } from '@hono/node-server';
 // so no later module can snapshot an environment that still contains it.
 import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
 import { SessionManager, SessionBusyError, isSdkSessionNotFound } from './session-manager';
+import { sessionCreationFailure } from './session-creation-error';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import type { UUID } from 'crypto';
@@ -100,7 +101,7 @@ app.post('/sessions', async (c) => {
     const body = await c.req.json<CreateSessionRequest>();
 
     if (!body.initialMessage) {
-      return c.json({ error: 'initialMessage is required' }, 400);
+      return c.json({ error: 'initialMessage is required', inputAccepted: false }, 400);
     }
 
     if (body.maxBrowserTabs) {
@@ -114,11 +115,7 @@ app.post('/sessions', async (c) => {
     // (`errorClass`, e.g. 'executable_launch_failed') to CLI launch errors.
     // Forward both: the message alone hides the errno behind the SDK's canned
     // libc-mismatch guess, and the host keys auto-recovery off errorClass.
-    return c.json({
-      error: error.message || 'Failed to create session',
-      ...(typeof error.code === 'string' && { code: error.code }),
-      ...(typeof error.errorClass === 'string' && { errorClass: error.errorClass }),
-    }, 500);
+    return c.json(sessionCreationFailure(error), 500);
   }
 });
 

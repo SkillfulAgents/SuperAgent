@@ -672,6 +672,13 @@ export class AgentIntegrationManager {
       if (live?.sessionId !== session.sessionId || this.clearedSessionRows.has(live.id)) continue
       if (this.generationOf(id) !== generation) return false
       this.subscribeChatSession(integration.id, session.externalId, session.sessionId)
+      const actor = agentRegistry.get(integration.agentSlug)
+      // A creation accepted during teardown can acquire its mapping after the
+      // old connector vanished. Reattach that known running turn on reconnect.
+      if (actor.sessions.activity(session.sessionId) === 'working' && !actor.sessions.isStreamSubscribed(session.sessionId)) {
+        void this.recoverSessionContext(id, session.externalId, generation, session.sessionId)
+          .catch(error => reportError(error, 'restore-stream', { integrationId: id, sessionId: session.sessionId }))
+      }
     }
     // Recovery is bounded to work the family declares unfinished, and runs off
     // the boot/connect critical path so one slow container cannot block others.
@@ -1211,7 +1218,13 @@ export class AgentIntegrationManager {
     // reconciliation can find the initial message's UUID without replaying it.
     const sessionId = containerSession.id
     await attempt.bind(sessionId)
-    check()
+    // Runtime acceptance outlives a socket. Finish routing under the delivery's
+    // durable ownership rather than the connector/generation captured at send.
+    const checkSetup = async () => {
+      await attempt.assertOwned()
+      if (this.pausedIds.has(integration.id)) throw new DeliveryCancelled()
+    }
+    await checkSetup()
     breadcrumb('New chat session created', { integrationId: integration.id, sessionId, provider: integration.provider })
 
     const displayName = route.displayName
@@ -1224,23 +1237,32 @@ export class AgentIntegrationManager {
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
     })
 
-    check()
-    await createIntegrationSession({
+    await checkSetup()
+    const mappingId = await createIntegrationSession({
       integrationId: integration.id,
       externalId: chatId,
       sessionId,
       displayName,
     })
 
-    // Creation already started the turn. Attach delivery before the runtime
-    // stream so even a fast turn's replay is consumed and forwarded.
-    const managed = this.getOrCreateChatSession(integration.id, chatId)
-    if (managed) managed.context = this.withActivity({ integration, externalId: chatId, sessionId, interactionId: route.interactionId, replyTarget: route.replyTarget }, managed)
-    await this.deliver(integration.id, chatId, { type: 'turn-started' }, sessionId)
+    try { await checkSetup() }
+    catch (error) {
+      // A reset/cancel may have landed while the INSERT was in flight.
+      await archiveIntegrationSession(mappingId)
+      throw error
+    }
+
+    // Creation already started the turn. If rebuilding has temporarily removed
+    // the connector, the mapping and active mark let connect restore its stream.
     actor.sessions.markActive(sessionId)
+    await this.deliver(integration.id, chatId, { type: 'turn-started' }, sessionId)
+    await checkSetup()
+    const managed = this.getOrCreateChatSession(integration.id, chatId)
+    if (!managed) return
+    managed.context = this.withActivity({ integration, externalId: chatId, sessionId, interactionId: route.interactionId, replyTarget: route.replyTarget }, managed)
     this.subscribeChatSession(integration.id, chatId, sessionId)
     await actor.sessions.subscribeStream(sessionId, sessionId)
-    if (managed) managed.recovered = true
+    if (this.isCurrentSession(integration.id, chatId, managed, sessionId)) managed.recovered = true
   }
 
   /**

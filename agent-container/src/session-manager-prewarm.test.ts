@@ -103,6 +103,7 @@ vi.mock('./claude-code', () => ({
   },
 }))
 
+import { SessionInputNotAcceptedError, sessionCreationFailure } from './session-creation-error'
 import { SessionManager } from './session-manager'
 import { nextWarmProfileFromRequest } from './warm-profile'
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies'
@@ -138,8 +139,44 @@ describe('SessionManager pre-warm pool', () => {
   })
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     await manager.stopAll()
     fs.rmSync(workDir, { recursive: true, force: true })
+  })
+
+  it('reports validation and process-start failures as rejected before any input submission', async () => {
+    const invalid = await manager.createSession({ initialMessage: '' }).catch(error => error)
+    expect(invalid).toBeInstanceOf(SessionInputNotAcceptedError)
+    expect(sessionCreationFailure(invalid)).toMatchObject({ inputAccepted: false })
+    expect(MockClaudeProcess.spawned).toHaveLength(0)
+
+    const failure = Object.assign(new Error('spawn failed'), { code: 'EAGAIN', errorClass: 'executable_launch_failed' })
+    vi.spyOn(MockClaudeProcess.prototype, 'start').mockRejectedValueOnce(failure)
+    const send = vi.spyOn(MockClaudeProcess.prototype, 'sendMessage')
+    const error = await manager.createSession(baseRequest).catch(error => error)
+    expect(error).toBeInstanceOf(SessionInputNotAcceptedError)
+    expect(sessionCreationFailure(error)).toEqual({ error: 'spawn failed', inputAccepted: false, code: 'EAGAIN', errorClass: 'executable_launch_failed' })
+    expect(send).not.toHaveBeenCalled()
+    expect(MockClaudeProcess.spawned[0].disposeCalls).toBe(1)
+  })
+
+  it('recognizes a deferred SDK spawn failure even after stdin was queued', async () => {
+    vi.spyOn(MockClaudeProcess.prototype, 'sendMessage').mockImplementationOnce(async function (this: MockClaudeProcess) {
+      this.emit('error', Object.assign(new Error('spawn failed asynchronously'), { errorClass: 'executable_launch_failed', code: 'ENOENT' }))
+    })
+    const error = await manager.createSession(baseRequest).catch(error => error)
+    expect(sessionCreationFailure(error)).toMatchObject({ inputAccepted: false, errorClass: 'executable_launch_failed', code: 'ENOENT' })
+  })
+
+  it('does not claim rejection when init fails after the initial input was submitted', async () => {
+    vi.spyOn(MockClaudeProcess.prototype, 'sendMessage').mockImplementationOnce(async function (this: MockClaudeProcess) {
+      this.emit('error', new Error('init response lost'))
+    })
+    const error = await manager.createSession(baseRequest).catch(error => error)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(SessionInputNotAcceptedError)
+    expect(sessionCreationFailure(error)).toEqual({ error: 'init response lost' })
+    expect(MockClaudeProcess.spawned[0].disposeCalls).toBe(1)
   })
 
   // The whole point: the second session skips the boot the first one paid for.

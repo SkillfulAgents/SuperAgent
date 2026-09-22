@@ -153,6 +153,20 @@ describe('durable integration delivery (common SQL path)', () => {
     expect(reconcile).not.toHaveBeenCalled()
     await expireBackoff(); await settled({ state: 'delivered', attempts: 2 })
   })
+  it.each([400, 503])('settles a confirmed creation rejection as failed/retryable, never uncertain (HTTP %s)', async status => {
+    dispatch.mockImplementationOnce(async (_row, attempt) => {
+      await attempt.handoff(undefined, async () => {
+        throw Object.assign(new MessageNotAcceptedError('rejected', 'Runtime rejected before submission'), { status })
+      })
+    })
+    const q = queue(); await q.start(); await q.accept('integration', event(), route)
+    if (status === 400) await settled({ state: 'failed', noticeState: 'sent' })
+    else {
+      await settled({ state: 'pending', attempts: 1 })
+      await expireBackoff(); await settled({ state: 'delivered', attempts: 2 })
+    }
+    expect(reconcile).not.toHaveBeenCalled()
+  })
   it('an offline installation with more than a page of pending messages cannot starve a healthy one', async () => {
     await database.insert(chatIntegrations).values({ id: 'offline', provider: 'slack', agentSlug: 'agent', config: '{}', createdAt: new Date(), updatedAt: new Date() }).run()
     for (let i = 0; i < 101; i++) await deliveryStore.accept('offline', event(`offline-${i}`), route)

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BaseContainerClient } from './base-container-client'
 import { MessageNotAcceptedError } from './message-dispatch-error'
+import * as settings from '../config/settings'
 import type { ContainerInfo } from './types'
 vi.mock('./host-token-store', () => ({ getOrCreateHostToken: () => 'test-host-token' }))
 vi.mock('../config/settings', () => ({ getSettings: () => ({}), getModelCatalogSettings: () => ({}), getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'allow' }) }))
@@ -9,7 +10,7 @@ class Client extends BaseContainerClient {
   protected getRunnerCommand() { return 'unused' }
   override async getInfo() { return this.info }
 }
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 describe('runtime handoff rejection evidence', () => {
   it('forwards the nonempty initial input and stable UUID to POST /sessions', async () => {
     const fetch = vi.fn(async (_url: string, request: RequestInit) => {
@@ -35,6 +36,36 @@ describe('runtime handoff rejection evidence', () => {
     expect(fetch).toHaveBeenCalledOnce()
     expect(failure).toBeInstanceOf(Error)
     expect(failure).not.toBeInstanceOf(MessageNotAcceptedError)
+  })
+  it.each([400, 500, 503])('preserves explicit runtime rejection evidence on HTTP %s', async status => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'startup failed', inputAccepted: false, code: 'EAGAIN', errorClass: 'executable_launch_failed' }, { status })))
+    await expect(new Client().createSession({ initialMessage: 'first input' })).rejects.toMatchObject({ reason: 'rejected', status, containerErrorCode: 'EAGAIN', containerErrorClass: 'executable_launch_failed' })
+  })
+  it('recognizes an older container’s explicit SDK launch failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'spawn failed', errorClass: 'executable_launch_failed', code: 'EAGAIN' }, { status: 500 })))
+    await expect(new Client().createSession({ initialMessage: 'first input' })).rejects.toMatchObject({ reason: 'rejected', status: 500, containerErrorClass: 'executable_launch_failed' })
+  })
+  it('retries local request preparation failures without issuing HTTP', async () => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
+    vi.spyOn(settings, 'getAgentCapabilitySettings').mockImplementationOnce(() => { throw new Error('settings temporarily unavailable') })
+    await expect(new Client().createSession({ initialMessage: 'first input' })).rejects.toMatchObject({ reason: 'unavailable' })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+  it.each(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'])('recognizes %s as proof the creation request was not delivered', async code => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect'), { code }) }) }))
+    await expect(new Client().createSession({ initialMessage: 'first input' })).rejects.toMatchObject({ reason: 'unavailable' })
+  })
+  it.each(['ECONNRESET', 'ETIMEDOUT'])('keeps %s after dispatch ambiguous', async code => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('read'), { code }) }) }))
+    const error = await new Client().createSession({ initialMessage: 'first input' }).catch(error => error)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(MessageNotAcceptedError)
+  })
+  it('does not infer non-acceptance from an unmarked creation error message', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'No message was sent' }, { status: 500 })))
+    const error = await new Client().createSession({ initialMessage: 'first input' }).catch(error => error)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(MessageNotAcceptedError)
   })
   it('marks a stopped-container preflight as safe to retry, without sending HTTP', async () => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)

@@ -30,7 +30,11 @@ configuration, and provider policy checks still run at dispatch.
 Creating a session sends its first input: the runtime requires that input to
 obtain its canonical session ID. The row becomes `sending` before creation, with
 the delivery UUID passed as `initialMessageUuid`. The returned session ID is saved
-before registration, mapping, and stream attachment. Follow-ups checkpoint the
+before registration, mapping, and stream attachment. This setup checks durable
+ownership, independent of transport identity: a reconnect cannot orphan the accepted
+session, while pause/cancel still fence setup. A creation finishing during teardown
+keeps its mapping and resumes stream delivery when the connector returns.
+Follow-ups checkpoint the
 existing session ID before sending with the same stable message UUID convention.
 Successful acceptance becomes `delivered`; agent turn completion is not involved.
 Free-text answers consumed by a family's existing question handler use the same
@@ -42,10 +46,16 @@ Preparation/dispatch failures retry up to **five attempts**, with delays of
 **1 second, 5 seconds, 30 seconds, and 2 minutes**. Invalid input and explicit
 permanent errors stop immediately. A definite pre-acceptance runtime refusal
 (container not running or session not found) can retry; a missing session retains
-the existing self-heal behavior. Creation is a runtime handoff too: failures before
-HTTP dispatch can retry, but an unknown creation response may already have started
-work and cannot safely be replayed. If the session ID was never returned, transcript
-reconciliation cannot confirm acceptance.
+the existing self-heal behavior. Creation is a runtime handoff too. Local request
+preparation, connection refusal/DNS failure, and explicit runtime rejection before
+input submission can retry. The container reports `inputAccepted: false` for these
+runtime rejections; the SDK's explicit executable-launch failure is also recognized
+(including older containers). A confirmed rejection with a permanent HTTP status
+fails without retry and never becomes `uncertain`.
+
+A reset connection, read timeout, or unmarked server failure after submission may
+already have started work and cannot safely be replayed. If the session ID was
+never returned, transcript reconciliation cannot confirm acceptance.
 
 On startup, interrupted preparation returns to the pending queue. A row left in
 `sending` is reconciled by searching the host transcript for its runtime UUID.

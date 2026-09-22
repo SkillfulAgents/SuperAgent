@@ -18,6 +18,7 @@ export function memoryDeliveryStore(): typeof deliveryStore {
       const row = [...rows.values()].filter(row => !available || available.includes(row.integrationId)).find(row => row.state === 'pending' || (row.state === 'sending' && !row.owner) || row.noticeState === 'pending')
       return row ? { at: row.nextAttemptAt } : undefined
     },
+    ownsInput: async (id, owner) => rows.get(id)?.owner === owner && ['preparing', 'sending'].includes(rows.get(id)?.state ?? ''),
     ownsNotice: async (id, owner) => rows.get(id)?.owner === owner && rows.get(id)?.noticeState === 'sending',
     claim: async (row, owner, notice) => {
       const live = rows.get(row.id)

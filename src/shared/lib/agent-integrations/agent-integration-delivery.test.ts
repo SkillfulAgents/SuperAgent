@@ -18,13 +18,13 @@ import type { CreateSessionOptions } from '../container/types'
 let handle: TestDatabase
 let database: AppDatabase
 vi.mock('../db', () => ({ get db() { return database } }))
-const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), interrupt: vi.fn(), attach: vi.fn(), subscribed: vi.fn() }))
+const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), interrupt: vi.fn(), attach: vi.fn(), subscribed: vi.fn(), subscribe: vi.fn() }))
 vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
   container: { start: runtime.start }, inputs: { open: () => [], cancelAwaiting: async () => {} },
   sessions: { create: runtime.create, register: runtime.register, updateMetadata: async () => {}, markActive: () => {},
     subscribeStream: runtime.attach, isStreamSubscribed: runtime.subscribed, activity: () => 'working', isAwaitingInput: () => false },
   messages: { send: runtime.send, interrupt: runtime.interrupt, findLastEntry: runtime.receipt,
-    subscribe: () => () => {}, withSend: (_id: string, send: () => Promise<void>) => send() },
+    subscribe: runtime.subscribe, withSend: (_id: string, send: () => Promise<void>) => send() },
 }) } }))
 vi.mock('../services/agent-service', () => ({ agentExists: async () => true }))
 vi.mock('../config/settings', () => ({ getEffectiveModels: () => ({ agentModel: 'test' }) }))
@@ -74,6 +74,7 @@ beforeEach(async () => {
     return { id: `session-${runtime.create.mock.calls.length}` }
   })
   runtime.attach.mockResolvedValue(undefined); runtime.subscribed.mockReturnValue(true)
+  runtime.subscribe.mockImplementation(() => () => {})
   runtime.send.mockResolvedValue(undefined); runtime.start.mockResolvedValue(undefined); runtime.receipt.mockResolvedValue(null)
   runtime.interrupt.mockResolvedValue({ interrupted: true })
 })
@@ -176,6 +177,72 @@ describe('shared manager durability with real integration storage', () => {
     await vi.waitFor(async () => expect((await rows()).find(row => row.eventId === 'unaffected')?.state).toBe('delivered'))
     expect(runtime.send).toHaveBeenCalledOnce()
     expect((await rows()).every(row => row.noticeState === 'none')).toBe(true)
+  })
+  it.each(['slack', 'telegram', 'imessage', 'linear'] as const)('finishes accepted creation through a connector replacement for %s', async provider => {
+    await start(provider)
+    let finishCreate!: () => void
+    const gate = new Promise<void>(resolve => { finishCreate = resolve })
+    const create = runtime.create.getMockImplementation()!
+    runtime.create.mockImplementationOnce(async options => { await gate; return create(options) })
+    const previous = adapter
+    await previous.input('first')
+    await vi.waitFor(() => expect(runtime.create).toHaveBeenCalledOnce())
+    adapter = provider === 'linear' ? new Tasks((await getAgentIntegration('integration'))!) : Object.assign(new Chat(), { provider })
+    const deliver = vi.spyOn(adapter, 'deliver')
+    await manager.reconnectAll()
+    finishCreate()
+    await vi.waitFor(async () => expect((await rows())[0]).toMatchObject({ state: 'delivered', sessionId: 'session-1' }))
+    expect((await getAgentIntegrationSession('integration', 'conversation'))?.sessionId).toBe('session-1')
+    runtime.subscribe.mock.calls.at(-1)![1]({ type: 'session_idle' })
+    await vi.waitFor(() => expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' }), expect.objectContaining({ type: 'turn-completed' })))
+    await adapter.input('follow-up')
+    await vi.waitFor(() => expect(runtime.send).toHaveBeenCalledWith('session-1', expect.stringContaining('follow-up'), expect.any(String)))
+    expect(runtime.create).toHaveBeenCalledOnce()
+  })
+  it('saves routing while teardown has removed the connector, then restores delivery on connect', async () => {
+    await start()
+    let finishCreate!: () => void
+    const createGate = new Promise<void>(resolve => { finishCreate = resolve })
+    const create = runtime.create.getMockImplementation()!
+    runtime.create.mockImplementationOnce(async options => { await createGate; return create(options) })
+    await adapter.input('first')
+    await vi.waitFor(() => expect(runtime.create).toHaveBeenCalledOnce())
+    let finishDisconnect!: () => void
+    const disconnectGate = new Promise<void>(resolve => { finishDisconnect = resolve })
+    const old = adapter
+    const disconnect = vi.spyOn(old, 'disconnect').mockImplementation(async () => { await disconnectGate })
+    adapter = Object.assign(new Chat(), { provider: 'slack' })
+    runtime.subscribed.mockReturnValue(false)
+    const reconnect = manager.reconnectAll()
+    await vi.waitFor(() => expect(disconnect).toHaveBeenCalledOnce())
+    try {
+      finishCreate()
+      await vi.waitFor(async () => expect((await rows())[0]).toMatchObject({ state: 'delivered', sessionId: 'session-1' }))
+      expect((await getAgentIntegrationSession('integration', 'conversation'))?.sessionId).toBe('session-1')
+      expect(runtime.attach).not.toHaveBeenCalled()
+    } finally { finishDisconnect(); await reconnect }
+    await vi.waitFor(() => expect(runtime.attach).toHaveBeenCalledWith('session-1', 'session-1'))
+    const deliver = vi.spyOn(adapter, 'deliver')
+    runtime.subscribe.mock.calls.at(-1)![1]({ type: 'session_idle' })
+    await vi.waitFor(() => expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' }), expect.objectContaining({ type: 'turn-completed' })))
+  })
+  it.each(['pause', 'cancel', 'authorization'] as const)('%s while creation is in flight prevents a late mapping', async action => {
+    await start()
+    let finishCreate!: () => void
+    const gate = new Promise<void>(resolve => { finishCreate = resolve })
+    const create = runtime.create.getMockImplementation()!
+    runtime.create.mockImplementationOnce(async options => { const result = await create(options); await gate; return result })
+    await adapter.input('first')
+    await vi.waitFor(() => expect(runtime.create).toHaveBeenCalledOnce())
+    if (action === 'pause') await manager.pauseIntegration('integration')
+    if (action === 'cancel') await (adapter as Chat).cancel()
+    if (action === 'authorization') await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: {}, message: 'Reconnect' })
+    await vi.waitFor(async () => expect((await rows())[0].state).toBe('cancelled'))
+    finishCreate()
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(await getAgentIntegrationSession('integration', 'conversation')).toBeNull()
+    expect(runtime.register).not.toHaveBeenCalled()
+    expect(runtime.attach).not.toHaveBeenCalled()
   })
   it('does not replay a creation whose response was lost after the first input may have run', async () => {
     await start()

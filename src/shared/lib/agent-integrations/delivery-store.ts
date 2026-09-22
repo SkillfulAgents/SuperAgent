@@ -34,6 +34,10 @@ export const deliveryStore = {
     return db.select({ at: rows.nextAttemptAt }).from(rows).where(and(runnable(), availableIds ? inArray(rows.integrationId, [...availableIds]) : undefined, waiting()))
       .orderBy(asc(rows.nextAttemptAt)).limit(1).get()
   },
+  async ownsInput(id: string, owner: string) {
+    return !!await db.select({ id: rows.id }).from(rows).where(and(eq(rows.id, id), eq(rows.owner, owner),
+      inArray(rows.state, ['preparing', 'sending']), runnable())).get()
+  },
   async ownsNotice(id: string, owner: string) {
     return !!await db.select({ id: rows.id }).from(rows).where(and(eq(rows.id, id), eq(rows.owner, owner),
       eq(rows.noticeState, 'sending'), sql`${rows.state} != 'cancelled'`, runnable())).get()
@@ -47,7 +51,7 @@ export const deliveryStore = {
   },
   async change(id: string, owner: string, patch: Partial<typeof rows.$inferInsert>) {
     const result = await db.update(rows).set({ ...patch, updatedAt: new Date() })
-      .where(and(eq(rows.id, id), eq(rows.owner, owner), sql`${rows.state} != 'cancelled'`)).run()
+      .where(and(eq(rows.id, id), eq(rows.owner, owner), sql`${rows.state} != 'cancelled'`, runnable())).run()
     return changesOf(result) > 0
   },
   async handoff(id: string, owner: string, sessionId?: string) {
