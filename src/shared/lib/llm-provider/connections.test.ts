@@ -9,7 +9,7 @@ import {
   webhookTriggers,
   chatIntegrations,
 } from '../db/schema'
-import type { AppSettings } from '../config/settings'
+import { getEffectiveModels, type AppSettings } from '../config/settings'
 import { resolveSelection } from './connection-schema'
 import { getLlmProvider } from './index'
 
@@ -577,7 +577,7 @@ describe('review regressions', () => {
     state.settings.apiKeys = { anthropicApiKey: 'key' }
     await importLlmConnections.run(handle.db)
     const before = await getConnection('legacy-anthropic')
-    state.settings.models = { agentEffort: 'high' }
+    state.settings.models = { ...getEffectiveModels(), agentEffort: 'high' }
     await syncProviderSettings({ providers: ['anthropic'], models: [] })
     await syncProviderSettings({ providers: ['anthropic'], models: ['agentModel', 'browserModel'] })
     expect(await getConnection('legacy-anthropic')).toEqual(before)
