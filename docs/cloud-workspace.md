@@ -526,6 +526,7 @@ it.
 | `auth-mode.ts` | `isAuthMode()` is `__AUTH_MODE__ \|\| targetIsRemote()` — a cloud workspace *is* an auth-mode deployment |
 | `main/dashboard-window.ts` | Proxy confinement, base-URL-scoped identity, and the "Cloud workspace — " title prefix |
 | `main/api-target.ts` | Tears down the launcher and all popouts on a switch |
+| `mobile-tab.tsx` | Pairing links out to `{deploymentUrl}/settings/mobile` instead of minting. The proxy's session is a `token-exchange` one, and `POST /api/auth/mobile/pairing-token` admits only `password`/`oidc` sessions, so a minted credential can't fan out into device credentials. The URL is `ResolvedApiTarget.deploymentUrl` (`getRemoteDeploymentUrl()`) |
 
 **Not gated at all, deliberately.** Where the answer comes from the *server* it
 already comes from the machine that owns it: the host-browser providers and their

@@ -17,6 +17,12 @@ export interface ResolvedApiTarget {
   target: ApiTarget
   /** Base URL every call site prefixes — loopback in both cases (see cloud-proxy.ts). */
   baseUrl: string
+  /**
+   * The cloud workspace's own public origin, for sending the user there in a
+   * browser. Null unless the target is cloud. Never a request base: calls go
+   * through `baseUrl`, which is what carries the credential.
+   */
+  deploymentUrl: string | null
   fallback: TargetFallbackReason
 }
 

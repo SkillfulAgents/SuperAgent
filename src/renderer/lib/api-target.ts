@@ -22,6 +22,7 @@ export type { ApiTarget, TargetFallbackReason }
 
 let activeTarget: ApiTarget | null = null
 let fallbackReason: TargetFallbackReason = null
+let remoteDeploymentUrl: string | null = null
 
 /**
  * Called once by `initApiBaseUrl()`, before the first render.
@@ -32,12 +33,17 @@ let fallbackReason: TargetFallbackReason = null
  * Enforcing single-assignment here makes that structurally impossible rather
  * than a rule someone has to remember; switching targets goes through a reload.
  */
-export function setActiveTarget(target: ApiTarget, fallback: TargetFallbackReason): void {
+export function setActiveTarget(
+  target: ApiTarget,
+  fallback: TargetFallbackReason,
+  deploymentUrl: string | null = null,
+): void {
   if (activeTarget !== null) {
     throw new Error('API target is already settled and cannot change without a reload')
   }
   activeTarget = target
   fallbackReason = fallback
+  remoteDeploymentUrl = target === 'cloud' ? deploymentUrl : null
   // Publish it on the document root as well.
   //
   // Nothing in the app reads this — it exists so an out-of-process observer
@@ -68,6 +74,15 @@ export function getActiveTarget(): ApiTarget {
 /** Whether the UI is driving a remote deployment rather than this machine. */
 export function targetIsRemote(): boolean {
   return getActiveTarget() === 'cloud'
+}
+
+/**
+ * The cloud workspace's public origin, for handing the user to it in a browser
+ * — null unless the target is cloud. Not a request base: calls go through the
+ * proxy prefix, which is what carries the credential.
+ */
+export function getRemoteDeploymentUrl(): string | null {
+  return remoteDeploymentUrl
 }
 
 /**
@@ -133,4 +148,5 @@ export function switchToLocalTarget(): Promise<void> {
 export function _resetApiTargetForTest(): void {
   activeTarget = null
   fallbackReason = null
+  remoteDeploymentUrl = null
 }
