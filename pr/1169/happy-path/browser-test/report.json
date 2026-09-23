@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully tested browser capability: agent opened browser, navigated to example.com, retrieved page title \"Example Domain\", and reported results.",
+  "reason": "Successfully verified that the agent can execute browser commands to navigate to https://example.com, retrieve the page title \"Example Domain\", and report the results back in the chat interface.",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully showing Gamut homepage with sidebar containing available agents.",
-    "Clicked on \"QA-20260923-180326-sgej\" agent in sidebar - Agent page opened successfully with chat interface ready for input.",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in message input box - Message visible in textbox and ready to send.",
-    "Clicked Send message button - Message sent successfully, session created with URL showing new session ID (8251cfb6-32a4-46c4-9bde-0a528566fb6f), agent status changed to \"working\".",
-    "Waited for agent response - Agent completed task in 11 seconds using 3 tool calls and 147,953 tokens.",
-    "Verified response mentions \"Example Domain\" - Response received stating: \"The page title of https://example.com is \"Example Domain\". The page loaded normally, and I've closed the browser.\" Verification successful."
+    "Navigated to http://localhost:47891 — Page loaded successfully with home view showing agent list.",
+    "Found and clicked the \"QA-20260923-182753-ixj7\" agent in the sidebar — Successfully opened the agent's chat interface.",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the textbox — Message displayed in the input field with send button enabled.",
+    "Clicked the \"Send message\" button — Message sent successfully, agent transitioned to \"working\" state, and a new session was created titled \"Browser Page Title Lookup\".",
+    "Waited for agent response (up to 3 minutes) — Agent completed processing in approximately 10 seconds with 3 tool calls and 147,944 tokens.",
+    "Verified response mentions \"Example Domain\" — Agent response clearly states: \"The page title of https://example.com is \"Example Domain\". I've closed the browser.\" confirming successful browser navigation and page title retrieval."
   ],
   "bugs": [],
-  "durationMs": 86245,
-  "sessionId": "6b6e33e4-8ddc-4b64-91da-ac419ac65b23",
+  "durationMs": 76728,
+  "sessionId": "062cbac5-4b4e-4c1f-a478-0f2d6669ebac",
   "cost": {
-    "inputTokens": 404,
-    "outputTokens": 11665,
-    "cacheCreationTokens": 81944,
-    "cacheReadTokens": 1229522,
+    "inputTokens": 426,
+    "outputTokens": 9793,
+    "cacheCreationTokens": 86069,
+    "cacheReadTokens": 1326048,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.284111
+    "totalCostUsd": 0.289582
   }
 }
