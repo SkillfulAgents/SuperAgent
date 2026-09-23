@@ -58,7 +58,11 @@ export interface RelayConsumer {
 
 export interface RelayConsumerHandle {
   update(changes: { scope?: RelayScope; endpointIds?: readonly string[] }): void
-  /** Stops delivery; events still waiting for this consumer are dropped unacknowledged. */
+  /**
+   * Lets go of the endpoints: nothing more is claimed for this consumer.
+   * Events already claimed for it are still delivered to `accept`, then the
+   * registration ends, so replacing a registration never loses them.
+   */
   dispose(): void
 }
 

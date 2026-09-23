@@ -133,6 +133,8 @@ interface ConsumerState {
   retryAttempt: number
   /** A claim skipped this consumer's endpoints because its queue was full. */
   heldBack: boolean
+  /** Disposed, but still delivering events claimed before that. */
+  draining: boolean
   disposed: boolean
 }
 
@@ -165,6 +167,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   private readonly limit: ReturnType<typeof pLimit>
 
   private readonly consumers = new Map<string, ConsumerState>()
+  private readonly drainingConsumers = new Set<ConsumerState>()
   private readonly owners = new Map<string, ConsumerState>()
   private readonly listeners = new Set<(snapshot: WebhookRelaySnapshot) => void>()
   private readonly failingScopes = new Set<RelayScope>()
@@ -328,6 +331,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       retryTimer: null,
       retryAttempt: 0,
       heldBack: false,
+      draining: false,
       disposed: false,
     }
     this.takeOwnership(state)
@@ -337,7 +341,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
 
     return {
       update: (changes) => {
-        if (state.disposed) return
+        if (state.disposed || state.draining) return
         const previous = { scope: state.scope, endpointIds: state.endpointIds }
         this.releaseOwnership(state)
         state.scope = changes.scope ?? state.scope
@@ -353,18 +357,35 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
         this.emit()
       },
       dispose: () => {
-        if (state.disposed) return
-        state.disposed = true
+        if (state.disposed || state.draining) return
         this.releaseOwnership(state)
         this.consumers.delete(state.id)
-        if (state.retryTimer) clearTimeout(state.retryTimer)
-        state.retryTimer = null
-        state.queue = []
-        state.queuedIds.clear()
+        // Nothing more is claimed for it, but what was already claimed is
+        // delivered first: those events exist nowhere else (SUP-931).
+        if (state.queue.length === 0) this.finish(state)
+        else {
+          state.draining = true
+          this.drainingConsumers.add(state)
+        }
         if (!this.hasEndpoints()) this.dropRealtime()
         this.emit()
       },
     }
+  }
+
+  private finish(state: ConsumerState): void {
+    state.disposed = true
+    state.draining = false
+    this.drainingConsumers.delete(state)
+    if (state.retryTimer) clearTimeout(state.retryTimer)
+    state.retryTimer = null
+    state.queue = []
+    state.queuedIds.clear()
+  }
+
+  /** Registered consumers and disposed ones still delivering. */
+  private deliveringConsumers(): ConsumerState[] {
+    return [...this.consumers.values(), ...this.drainingConsumers]
   }
 
   private validEndpointIds(consumerId: string, endpointIds: readonly string[]): Set<string> {
@@ -436,14 +457,14 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     this.lifecycle = new AbortController()
     this.applyAuth()
     // Resume delivery that stop() suspended.
-    for (const state of this.consumers.values()) this.pump(state)
+    for (const state of this.deliveringConsumers()) this.pump(state)
   }
 
   stop(): void {
     if (!this.started) return
     this.started = false
     this.lifecycle.abort(new Error('Webhook relay stopped'))
-    for (const state of this.consumers.values()) {
+    for (const state of this.deliveringConsumers()) {
       if (state.retryTimer) clearTimeout(state.retryTimer)
       state.retryTimer = null
     }
@@ -747,6 +768,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (retrying) this.scheduleRetry(state)
     else state.retryAttempt = 0
 
+    if (state.draining) {
+      if (state.queue.length === 0) this.finish(state)
+      return
+    }
     // A round skipped this consumer's endpoints while it was full.
     if (state.heldBack && state.queue.length < this.maxConsumerBacklog) {
       state.heldBack = false

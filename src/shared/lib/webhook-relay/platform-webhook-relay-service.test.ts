@@ -322,6 +322,35 @@ describe('PlatformWebhookRelayService', () => {
       expect(platform.acknowledge).not.toHaveBeenCalled()
     })
 
+    it('still delivers everything already claimed for a consumer it replaces', async () => {
+      startRelay()
+      platform.realtimeEnabled = false
+      await settle()
+      platform.add('local', 'whep_one', 120)
+      const gate = deferred()
+      let calls = 0
+      const old = consumer(['whep_one'], async () => {
+        if (++calls === 1) await gate.promise
+        return 'accepted'
+      }, 'local', 'webhook-triggers:local')
+      const handle = relay.register(old)
+      await settle()
+      // All 120 are claimed and queued; the first batch of 50 is being accepted.
+      expect(platform.pending.get('local')).toEqual([])
+
+      // Auth resolves the scope to a member: the registration is replaced.
+      handle.dispose()
+      const replacement = consumer(['whep_one'], undefined, 'sub_member', 'webhook-triggers:sub_member')
+      relay.register(replacement)
+      gate.resolve()
+      await settle()
+
+      expect(old.accept).toHaveBeenCalledTimes(3)
+      expect(platform.ackedIds()).toHaveLength(120)
+      expect(new Set(platform.ackedIds()).size).toBe(120)
+      expect(replacement.accept).not.toHaveBeenCalled()
+    })
+
     it('acks what a consumer settled even if it let go during accept', async () => {
       startRelay()
       const [event] = platform.add('sub_a', 'whep_one')
