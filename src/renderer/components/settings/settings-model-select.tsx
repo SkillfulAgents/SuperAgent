@@ -89,7 +89,7 @@ function SettingsModelSelectImpl({
   const selected = resolveSelection(model && llmProviderId ? { model, llmProviderId } : null, choices)
     ?? resolveSelection(connections?.defaultSelection, choices)
   const selectedConnection = choices.find(c => c.id === selected?.llmProviderId)
-    ?? (directApiOnly ? choices[0] : undefined)
+    ?? (directApiOnly || (!connections?.defaultSelection && choices.length === 1) ? choices[0] : undefined)
   const selectedModel = onSelectionChange && choices.length > 0 ? selected?.model : model
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const catalog = useMemo(
