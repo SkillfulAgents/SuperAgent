@@ -1,25 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified browser automation feature works correctly - agent can open browser, navigate to URLs, extract page titles, and report results",
+  "reason": "Browser use feature allows agents to open browsers, navigate to URLs, extract page information, and close browsers successfully",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page showing agent sidebar",
-    "Found and clicked \"QA-20260922-230331-vbfl\" agent in sidebar — Successfully opened the agent page with chat interface ready",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into chat input field — Message successfully entered and displayed in input field",
-    "Clicked Send message button — Message was successfully sent and a new session \"Browser Navigation and Page Title Check\" was created with agent status showing \"working\"",
-    "Waited up to 3 minutes for agent response — Agent completed processing in approximately 11 seconds",
-    "Verified response contains \"Example Domain\" — Agent response clearly states: \"The page title is \\\"Example Domain\\\". The page at https://example.com loaded normally, and I've closed the browser.\"",
-    "Took final screenshot showing complete response — Screenshot captured showing the full chat conversation with agent's successful response mentioning \"Example Domain\""
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut dashboard with agents listed in the sidebar",
+    "Found and clicked on \"QA-20260923-002503-ler5\" agent in the sidebar — Successfully opened the agent chat page",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field and clicked Send button — Message successfully submitted and agent began processing",
+    "Waited up to 3 minutes for agent response — Response received in approximately 10 seconds showing \"Worked for 10s · 3 tool calls · 147,953 tokens\"",
+    "Verified response mentions \"Example Domain\" and took screenshot — Response clearly states: \"The page title is 'Example Domain'. The page loaded normally at https://example.com, and I've closed the browser.\""
   ],
   "bugs": [],
-  "durationMs": 59463,
-  "sessionId": "4955fbd2-3064-49fc-b701-a1e18839f222",
+  "durationMs": 115199,
+  "sessionId": "5a2b4863-0cd3-4bed-9044-5173ec90ed66",
   "cost": {
-    "inputTokens": 334,
-    "outputTokens": 8743,
-    "cacheCreationTokens": 71056,
-    "cacheReadTokens": 976878,
+    "inputTokens": 518,
+    "outputTokens": 13965,
+    "cacheCreationTokens": 89234,
+    "cacheReadTokens": 1706806,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.230557
+    "totalCostUsd": 0.352566
   }
 }
