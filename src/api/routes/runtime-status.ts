@@ -1,5 +1,4 @@
-import { getSettings } from '@shared/lib/config/settings'
-import { resolveConnectionSelection } from '@shared/lib/llm-provider/connections'
+import { resolveGlobalSelection } from '@shared/lib/llm-provider/connections'
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { containerHost } from '@shared/lib/agent-actor'
@@ -13,8 +12,7 @@ runtimeStatus.use('*', Authenticated())
 
 // GET /api/runtime-status - lightweight status check for all authenticated users
 runtimeStatus.get('/', async (c) => {
-  const settings = getSettings()
-  const root = settings.llmDefault ? await resolveConnectionSelection(settings.llmDefault) : null
+  const root = await resolveGlobalSelection()
   return c.json({
     runtimeReadiness: containerHost.getReadiness(),
     hasRunningAgents: containerHost.hasRunningAgents(),

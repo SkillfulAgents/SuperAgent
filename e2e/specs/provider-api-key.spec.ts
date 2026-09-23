@@ -3,7 +3,8 @@ import { test, expect, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { SessionPage } from '../pages/session.page'
 
-test.describe.configure({ mode: 'serial' })
+// Keep running later cases after a failure; the wizard config uses one worker.
+test.describe.configure({ mode: 'default' })
 
 async function mockValidation(page: Page, result: { valid: boolean; error?: string }) {
   await page.route('**/api/llm-connections/validate', (route) =>
@@ -21,11 +22,27 @@ async function addForm(page: Page) {
 }
 
 test.describe('Provider connection lifecycle', () => {
+  let existingIds: Set<string>
   test.beforeEach(async ({ request }) => {
     await request.put('/api/user-settings', { data: { setupCompleted: true } })
+    await request.put('/api/settings', { data: { apiKeys: { anthropicApiKey: 'sk-ant-e2e-placeholder' } } })
     await request.put('/api/settings', {
-      data: { app: { setupCompleted: true }, apiKeys: { anthropicApiKey: '' } },
+      data: { llmProvider: 'anthropic', app: { setupCompleted: true }, apiKeys: { anthropicApiKey: '' } },
     })
+    const baseline = await (await request.get('/api/llm-connections')).json()
+    existingIds = new Set(baseline.connections.map((connection: { id: string }) => connection.id))
+  })
+
+  test.afterEach(async ({ request }) => {
+    // Restore the legacy defaults before deleting this case's accounts. This
+    // also runs on failure, so retries cannot inherit duplicate names/defaults.
+    await request.put('/api/settings', { data: { llmProvider: 'anthropic' } })
+    const saved = await (await request.get('/api/llm-connections')).json()
+    for (const connection of saved.connections) {
+      if (!existingIds.has(connection.id)) {
+        expect((await request.delete(`/api/llm-connections/${connection.id}`)).ok()).toBe(true)
+      }
+    }
   })
 
   test('keyless sidebar warning still deep-links to model settings', async ({ page }) => {
@@ -57,7 +74,7 @@ test.describe('Provider connection lifecycle', () => {
     page,
     request,
   }, testInfo) => {
-    // Failed attempts leave their accounts in the shared wizard server.
+    // Distinguish accounts across retries even if a failed teardown leaves one behind.
     const suffix = `${testInfo.workerIndex}-${testInfo.retry}-${testInfo.repeatEachIndex}`
     const firstName = `First test account ${suffix}`
     const secondName = `Second test account ${suffix}`

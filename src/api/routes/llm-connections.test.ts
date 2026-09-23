@@ -33,13 +33,18 @@ vi.mock('../middleware/auth', () => ({
   IsAdmin: (): MiddlewareHandler => async (c, next) =>
     c.req.header('Test-User') === 'admin' ? next() : c.json({ error: 'Forbidden' }, 403),
 }))
+vi.mock('@shared/lib/agent-actor', () => ({
+  containerHost: { getReadiness: () => ({ status: 'READY' }), hasRunningAgents: () => false },
+}))
+vi.mock('@shared/lib/startup', () => ({ getServicesInitError: () => null }))
+import runtimeStatusRoutes from './runtime-status'
 import routes from './llm-connections'
 import llmRoutes from './llm'
 import { getConnection, saveConnection, resolveConnectionSelection } from '@shared/lib/llm-provider/connections'
 import { connectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 
 let database: TestDatabase
-const app = new Hono().route('/connections', routes).route('/llm', llmRoutes)
+const app = new Hono().route('/connections', routes).route('/llm', llmRoutes).route('/runtime-status', runtimeStatusRoutes)
 const catalog = [{ id: 'model', label: 'Test model', supportedEfforts: ['low'] }]
 function draft(userId: string | null = null) {
   return {
@@ -79,6 +84,19 @@ afterEach(async () => {
 })
 
 describe('connection API ownership and root protection', () => {
+  it('keeps runtime key status on the selected connection when its saved model retires', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', '')
+    const created = await request('', 'POST', draft())
+    expect(created.status).toBe(201)
+    const { id } = await created.json()
+    state.settings.llmDefault = { llmProviderId: id, model: 'retired-model' }
+
+    const response = await app.request('/runtime-status', { headers: { 'Test-User': 'admin' } })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ apiKeyConfigured: true })
+  })
+
   it('keeps keys private and rejects cross-owner edits, deletes and global creation', async () => {
     const created = await request('', 'POST', draft('alice'), 'alice')
     expect(created.status).toBe(201)

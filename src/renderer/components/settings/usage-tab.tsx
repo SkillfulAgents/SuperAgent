@@ -30,7 +30,7 @@ import {
   useHideSettingsHeader,
 } from '@renderer/components/settings/settings-page'
 import { useUser } from '@renderer/context/user-context'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useModelSettings } from '@renderer/hooks/use-settings'
 import { useUsageData } from '@renderer/hooks/use-usage'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 import { cn } from '@shared/lib/utils/cn'
@@ -138,7 +138,7 @@ export function UsageTab() {
   useHideSettingsHeader(true)
 
   const { isAuthMode, isAdmin } = useUser()
-  const { data: settings } = useSettings()
+  const { data: settings } = useModelSettings()
   const [days, setDays] = useState(7)
   const [globalView, setGlobalView] = useState(!isAuthMode || isAdmin)
   const [segmentation, setSegmentation] = useState<Segmentation>('byModel')

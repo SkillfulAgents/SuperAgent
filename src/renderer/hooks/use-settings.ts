@@ -133,6 +133,7 @@ export function useUpdateSettings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      queryClient.invalidateQueries({ queryKey: ['runtime-status'] })
       // Voice provider / key / default voice live in these settings, and the
       // speaker buttons and Voice tab gate on the derived status.
       queryClient.invalidateQueries({ queryKey: ['voice-configured'] })
