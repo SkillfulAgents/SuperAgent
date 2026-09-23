@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Copy } from 'lucide-react'
+import { Copy, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { copyTextToClipboard } from '@renderer/lib/clipboard'
 import { Button } from '@renderer/components/ui/button'
@@ -67,7 +67,10 @@ export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, ac
         </Button>
       </div>
       <a className="underline" href={login.url} target="_blank" rel="noreferrer">Open {name} sign-in</a>
-      <p className="text-muted-foreground">Waiting for sign-in…</p>
+      <p role="status" className="flex items-center gap-2 text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+        Waiting for sign-in…
+      </p>
     </div>}
     <Button type="button" variant="outline" disabled={busy} onClick={() => void start()}>
       {busy ? 'Starting sign-in…' : accountLabel ? `Reconnect ${name}` : login ? 'Get a new code' : `Sign in with ${name}`}
