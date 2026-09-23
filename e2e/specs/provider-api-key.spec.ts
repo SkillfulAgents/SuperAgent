@@ -83,13 +83,20 @@ test.describe('Provider connection lifecycle', () => {
       )
       .toBe(first.id)
     expect((await request.delete(`/api/llm-connections/${first.id}`)).status()).toBe(400)
-    await expect(
-      page.getByRole('button', { name: 'Delete First test account', exact: true })
-    ).toHaveCount(0)
+    const deleteFirst = page.getByRole('button', { name: 'Delete First test account', exact: true })
+    await expect(deleteFirst).toBeVisible()
+    await expect(deleteFirst).toBeDisabled()
+    // The disabled button's wrapper remains focusable to explain the restriction.
+    await page.locator('[tabindex="0"]').filter({ has: deleteFirst }).focus()
+    await expect(page.getByRole('tooltip')).toHaveText(
+      'Choose another provider as the app default before deleting this one.'
+    )
+    await page.keyboard.press('Escape')
     await page.getByTestId('settings-model-trigger').first().click()
     await page.getByRole('combobox', { name: 'Connection' }).selectOption(second.id)
     await page.keyboard.press('Escape')
-    await page.getByRole('button', { name: 'Delete First test account', exact: true }).click()
+    await expect(deleteFirst).toBeEnabled()
+    await deleteFirst.click()
     await expect(
       page.getByRole('button', { name: 'Edit First test account', exact: true })
     ).toHaveCount(0)
