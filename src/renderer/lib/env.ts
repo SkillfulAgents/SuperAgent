@@ -30,7 +30,7 @@ export async function initApiBaseUrl(): Promise<void> {
     const resolved = await window.electronAPI.getApiTarget?.().catch(() => null)
     if (resolved) {
       cachedApiBaseUrl = resolved.baseUrl
-      setActiveTarget(resolved.target, resolved.fallback)
+      setActiveTarget(resolved.target, resolved.fallback, resolved.deploymentUrl)
       return
     }
 
