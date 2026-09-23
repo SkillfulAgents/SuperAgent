@@ -227,3 +227,38 @@ it('publishes the resolved fallback when the saved summarizer model has retired'
   expect(res.status).toBe(200)
   expect((await res.json()).summarizerSelection).toEqual({ llmProviderId: id, model: 'haiku' })
 })
+
+it('stores subscription tokens privately, preserves/replaces them, and enforces helper and auth isolation', async () => {
+  const subscription = { name: 'Claude plan', provider: 'claude-subscription', userId: null,
+    config: { apiKeys: { claudeSubscriptionToken: 'sk-ant-oat01-test-subscription' } } }
+  const created = await request('', 'POST', subscription)
+  expect(created.status).toBe(201)
+  const { id } = await created.json()
+  const publicResponse = await (await request('')).json()
+  expect(JSON.stringify(publicResponse)).not.toContain('sk-ant-oat01-test-subscription')
+  expect(publicResponse.connections[0]).toMatchObject({ supportsDirectApi: false, isConfigured: true })
+  expect((await request('/defaults/summarizer', 'PUT', { llmProviderId: id, model: 'sonnet' })).status).toBe(400)
+  expect((await request('/defaults/default', 'PUT', { llmProviderId: id, model: 'sonnet' })).status).toBe(400)
+  const { id: api } = await (await request('', 'POST', draft())).json()
+  expect((await request('/defaults/summarizer', 'PUT', { llmProviderId: api, model: 'model' })).status).toBe(200)
+  expect((await request('/defaults/default', 'PUT', { llmProviderId: id, model: 'sonnet' })).status).toBe(200)
+  expect((await request('/defaults/summarizer', 'PUT', null)).status).toBe(400)
+  expect((await request(`/${api}`, 'DELETE')).status).toBe(400)
+  for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR']) {
+    const response = await request(`/${id}`, 'PUT', { ...subscription, config: { runtimeEnv: { [key]: 'conflicting' } } })
+    expect(response.status).toBe(400)
+  }
+  expect((await request(`/${id}`, 'PUT', { ...subscription, config: { runtimeEnv: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '4096' } } })).status).toBe(200)
+  const first = await connectionRuntime((await resolveConnectionSelection({ llmProviderId: id, model: 'sonnet' }))!, 'agent')
+  expect(first.env).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-test-subscription', ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', ANTHROPIC_BASE_URL: '', CLAUDE_CODE_USE_BEDROCK: '', CLAUDE_CODE_MAX_OUTPUT_TOKENS: '4096' })
+  expect((await request(`/${id}`, 'PUT', { ...subscription, config: { apiKeys: { claudeSubscriptionToken: 'sk-ant-oat01-replacement' } } })).status).toBe(200)
+  const next = await connectionRuntime((await resolveConnectionSelection({ llmProviderId: id, model: 'sonnet' }))!, 'agent')
+  expect(next.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-replacement')
+  expect(next.generation).toBeGreaterThan(first.generation)
+  const apiRuntime = await connectionRuntime((await resolveConnectionSelection({ llmProviderId: api, model: 'model' }))!, 'agent')
+  expect(apiRuntime.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('')
+  expect(JSON.stringify(apiRuntime)).not.toContain('sk-ant-oat01')
+  const invalid = await request('', 'POST', { ...subscription, config: { apiKeys: { claudeSubscriptionToken: 'not-a-token' } } })
+  expect(invalid.status).toBe(400)
+  expect(JSON.stringify(await invalid.json())).not.toContain('not-a-token')
+})
