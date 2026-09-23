@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Hono } from 'hono'
-import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-policy'
+import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-error'
 
 // ---------------------------------------------------------------------------
 // Mock dependencies
@@ -92,13 +92,13 @@ describe('LLM proxy endpoint', () => {
     state.resolvedModel = 'claude-sonnet-5'
   })
 
-  it.each(['config', 'v1/messages'])('returns an actionable 503 for stale helper settings on %s', async path => {
+  it.each(['config', 'v1/messages'])('reports unavailable helpers on %s', async path => {
     state.hasDefault = true
     state.helperError = new HelperConfigurationError()
     const app = createApp()
     const res = path === 'config' ? await get(app, '/api/llm/config')
       : await post(app, '/api/llm/v1/messages', { messages: [{ role: 'user', content: 'hi' }] })
-    expect(res.status).toBe(503)
+    expect(res.status).toBe(path === 'config' ? 200 : 503)
     expect(await res.json()).toMatchObject({ error: state.helperError.message })
     expect(mockCreate).not.toHaveBeenCalled()
   })

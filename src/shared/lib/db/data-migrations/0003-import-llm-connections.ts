@@ -17,8 +17,7 @@ export const importLlmConnections: DataMigration = {
     const { getLlmProvider, resolveModelForProvider } = await import('../../llm-provider')
     const { connectionFromProviderSettings, legacyLlmProviderId } = await import('../../llm-provider/provider-settings')
     const { resolveSelection } = await import('../../llm-provider/connection-schema')
-    const { connectionCatalog, globalHelperState } = await import('../../llm-provider/connections')
-    const { assertHelperState, assertHelperTransition } = await import('../../llm-provider/helper-policy')
+    const { connectionCatalog } = await import('../../llm-provider/connections')
     const settings = getSettings()
     const active = settings.llmProvider ?? 'anthropic'
     const models = getEffectiveModels()
@@ -50,14 +49,6 @@ export const importLlmConnections: DataMigration = {
           .where(and(isNull(table.llmProviderId), eq(table.model, model))).run()
       }
     }
-    const defaults = {
-      llmDefault: settings.llmDefault ?? selection(models.agentModel, 'agent'),
-      llmSummarizer: settings.llmSummarizer === undefined ? selection(models.summarizerModel, 'summarizer') : settings.llmSummarizer,
-    }
-    const lookup = async (id: string) => await db.select().from(llmConnections).where(eq(llmConnections.id, id)).get() ?? null
-    const after = await globalHelperState({ ...settings, ...defaults }, lookup)
-    if (settings.llmDefault) assertHelperTransition(await globalHelperState(settings, lookup), after)
-    else assertHelperState(after)
     mutateSettings((s) => {
       // These values are now editable on the imported connection. Keep shared
       // tool variables (including general AWS credentials) in global settings.
@@ -65,9 +56,9 @@ export const importLlmConnections: DataMigration = {
         Object.entries(s.customEnvVars).filter(([key]) => !isProviderEnvVar(key)),
       )
       s.llmLegacyProviderId ??= imported.id
-      s.llmDefault = defaults.llmDefault
+      s.llmDefault ??= selection(models.agentModel, 'agent')
       // An explicit null already means inherit the app default.
-      s.llmSummarizer = defaults.llmSummarizer
+      if (s.llmSummarizer === undefined) s.llmSummarizer = selection(models.summarizerModel, 'summarizer')
     })
   },
 }

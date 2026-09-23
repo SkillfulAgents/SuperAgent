@@ -64,7 +64,7 @@ beforeEach(() => {
 })
 
 describe('SettingsModelSelect (flat picker)', () => {
-  it('filters agent-only providers for direct API settings without falling back to their catalog', async () => {
+  it('does not use an agent-only catalog for direct API settings', async () => {
     const settings = settingsWith({ webProvider: 'native' }).data
     useSettingsMock.mockReturnValue({ data: { ...settings, connections: [
       { id: 'subscription', name: 'Subscription', userId: null, supportsDirectApi: false, catalog: CATALOG, defaultModel: 'opus' },
@@ -285,21 +285,20 @@ describe('SettingsModelSelect (flat picker)', () => {
       expect(await screen.findByTestId('model-no-websearch-warning')).toBeInTheDocument()
     })
   })
-})
 
-
-it.each([1, 2])('recovers a missing helper selection with %i API-capable providers', async count => {
- const settings = settingsWith({ webProvider: 'native' }).data
- const connections = [
-  { id: 'sub', name: 'Subscription', userId: null, supportsDirectApi: false, catalog: CATALOG, defaultModel: 'opus' },
-  ...Array.from({ length: count }, (_, i) => ({ id: `api-${i}`, name: `API ${i}`, userId: null, supportsDirectApi: true, catalog: CATALOG, defaultModel: 'haiku' })),
- ]
- useSettingsMock.mockReturnValue({ data: { ...settings, connections, defaultSelection: { llmProviderId: 'sub', model: 'opus' } } })
- const choose = vi.fn()
- render(<SettingsModelSelect model={undefined} directApiOnly globalOnly onModelChange={vi.fn()} onSelectionChange={choose} />)
- await userEvent.click(screen.getByTestId('settings-model-trigger'))
- await userEvent.click(screen.getByTestId('model-latest-haiku'))
- expect(choose).toHaveBeenCalledWith({ llmProviderId: 'api-0', model: 'haiku' })
- if (count === 1) expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
- else expect(screen.getByRole('combobox')).toHaveValue('api-0')
+  it.each([1, 2])('recovers a missing helper selection with %i API-capable providers', async count => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    const connections = [
+      { id: 'sub', name: 'Subscription', userId: null, supportsDirectApi: false, catalog: CATALOG, defaultModel: 'opus' },
+      ...Array.from({ length: count }, (_, i) => ({ id: `api-${i}`, name: `API ${i}`, userId: null, supportsDirectApi: true, catalog: CATALOG, defaultModel: 'haiku' })),
+    ]
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections, defaultSelection: { llmProviderId: 'sub', model: 'opus' } } })
+    const choose = vi.fn()
+    render(<SettingsModelSelect model={undefined} directApiOnly globalOnly onModelChange={vi.fn()} onSelectionChange={choose} />)
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('model-latest-haiku'))
+    expect(choose).toHaveBeenCalledWith({ llmProviderId: 'api-0', model: 'haiku' })
+    expect(screen.getByRole('combobox')).toHaveValue('api-0')
+    expect(screen.getByRole('option', { name: 'Subscription' })).toBeDisabled()
+  })
 })

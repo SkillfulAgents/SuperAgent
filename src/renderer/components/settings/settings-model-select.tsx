@@ -84,7 +84,8 @@ function SettingsModelSelectImpl({
   // agent-home Default Model card), where the admin-gated settings 403.
   const { data: settings } = useModelSettings(agentSlug, llmProviderId)
   const connections = settings?.connections ? { connections: settings.connections, defaultSelection: settings.defaultSelection } : undefined
-  const choices = connections?.connections.filter(c => (!globalOnly || c.userId === null) && (!directApiOnly || c.supportsDirectApi !== false)) ?? []
+  const providers = connections?.connections.filter(c => !globalOnly || c.userId === null) ?? []
+  const choices = providers.filter(c => !directApiOnly || c.supportsDirectApi !== false)
   const selected = resolveSelection(model && llmProviderId ? { model, llmProviderId } : null, choices)
     ?? resolveSelection(connections?.defaultSelection, choices)
   const selectedConnection = choices.find(c => c.id === selected?.llmProviderId)
@@ -152,11 +153,11 @@ function SettingsModelSelectImpl({
         <fieldset disabled={disabled} className="contents">
         {/* Keep provider → brand → model together when the outer sections reverse. */}
         <div className="flex flex-col">
-          {onSelectionChange && choices.length > 1 && <div className="relative mx-1 mb-1 text-xs">
+          {onSelectionChange && providers.length > 1 && <div className="relative mx-1 mb-1 text-xs">
             <select aria-label="Connection" className="w-full cursor-pointer appearance-none rounded-sm border-0 bg-transparent py-1 pl-1 pr-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={selectedConnection?.id ?? ''} onChange={e => {
               const next = choices.find(c => c.id === e.target.value)
               if (next?.defaultModel) onSelectionChange({ llmProviderId: next.id, model: next.defaultModel })
-            }}>{choices.map(c => <option key={c.id} value={c.id}>{c.name}{c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}</option>)}</select>
+            }}>{providers.map(c => <option key={c.id} value={c.id} disabled={directApiOnly && c.supportsDirectApi === false}>{c.name}{c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}</option>)}</select>
             <ChevronDown className="pointer-events-none absolute right-1 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
           </div>}
           <ModelFamilyList

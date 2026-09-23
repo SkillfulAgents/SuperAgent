@@ -1,4 +1,4 @@
-import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-policy'
+import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-error'
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { getConfiguredLlmClient, configuredHelperModel } from '@shared/lib/llm-provider/helpers'
@@ -54,7 +54,7 @@ llm.get('/config', async (c) => {
       provider: provider.id,
     })
   } catch (error) {
-    if (error instanceof HelperConfigurationError) return c.json({ configured: false, error: error.message }, 503)
+    if (error instanceof HelperConfigurationError) return c.json({ configured: false, error: error.message })
     throw error
   }
 })

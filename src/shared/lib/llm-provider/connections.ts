@@ -1,4 +1,4 @@
-import { assertHelperState, assertHelperTransition, effectiveHelper, HelperConfigurationError, isHelperSelection } from './helper-policy'
+import { HelperConfigurationError } from './helper-error'
 import { withGlobalModelPricing } from './global-pricing'
 import { findAdminOnlyProviderEnvVars } from './provider-env'
 import { connectionModelOverridesSchema, normalizeConnectionModelOverrides } from './connection-schema'
@@ -14,7 +14,7 @@ import {
   llmConnections,
   user,
 } from '../db/schema'
-import { getSettings, mutateSettings, type AppSettings } from '../config/settings'
+import { getSettings, mutateSettings } from '../config/settings'
 import { isAuthMode } from '../auth/mode'
 import {
   createLlmProvider,
@@ -190,8 +190,6 @@ export async function saveConnection(
       updatedAt: new Date(),
     }
     if (previous) {
-      const proposed = { ...previous, ...values }
-      await assertConnectionHelperEdits(new Map([[llmProviderId, proposed]]))
       const updated = await db
         .update(llmConnections)
         .set({
@@ -241,17 +239,20 @@ export async function setGlobalSelection(
     const resolved = await resolveConnectionSelection(selection)
     if (selection && (!resolved || resolved.connection.userId !== null))
       throw new Error('Select a model from a global connection')
-    const before = await globalHelperState()
-    let summarizer = purpose === 'summarizer' ? resolved : before.summarizer
+    if (purpose === 'summarizer' && resolved && !resolved.provider.supportsDirectApi)
+      throw new Error('This provider cannot be used as a summarizer. Choose an API-capable provider.')
     let summarizerSelection = purpose === 'summarizer' ? selection : getSettings().llmSummarizer
-    const root = purpose === 'default' ? resolved : before.root
-    // Preserve the actual helper already in use; never select a new billing
-    // account merely because the app default now requires subscription auth.
-    if (purpose === 'default' && root?.provider.supportsDirectApi === false && !isHelperSelection(summarizer)) {
-      summarizer = effectiveHelper(before)
-      if (summarizer) summarizerSelection = { llmProviderId: summarizer.llmProviderId, model: summarizer.model }
+    const root = purpose === 'default' ? resolved : await resolveGlobalSelection()
+    if (root?.provider.supportsDirectApi === false) {
+      const summarizer = await resolveConnectionSelection(summarizerSelection)
+      if (!isHelperSelection(summarizer)) {
+        // Preserve the API helper already in use when switching to a subscription.
+        const inherited = purpose === 'default' ? await resolveGlobalSelection() : null
+        if (!isHelperSelection(inherited))
+          throw new Error('Choose a separate API-capable summarizer before using this app default.')
+        summarizerSelection = { llmProviderId: inherited.llmProviderId, model: inherited.model }
+      }
     }
-    assertHelperState({ root, summarizer })
     mutateSettings((s) => {
       if (purpose === 'default' && selection) s.llmDefault = selection
       s.llmSummarizer = summarizerSelection
@@ -279,10 +280,6 @@ export async function resolveConnectionSelection(
 ) {
   if (!selection) return null
   const row = await getConnection(selection.llmProviderId)
-  return resolveRowSelection(row, selection, allowLegacyPin)
-}
-
-function resolveRowSelection(row: ConnectionRow | null, selection: StoredModelSelection, allowLegacyPin = false) {
   if (!row) return null
   if (!selection.model) return defaultSelectionForConnection(row)
   const provider = providerForConnection(row)
@@ -318,17 +315,15 @@ export function storedSelection(
  * model falls back within its provider; a lost row falls back to the migrated
  * active global provider, never to a personal account or an ambient API key.
  */
-export async function resolveGlobalSelection(
-  settings: AppSettings = getSettings(),
-  lookup: (id: string) => Promise<ConnectionRow | null> = getConnection,
-): Promise<ResolvedConnection | null> {
+export async function resolveGlobalSelection(): Promise<ResolvedConnection | null> {
+  const settings = getSettings()
   const root = settings.llmDefault
-  const selected = root ? resolveRowSelection(await lookup(root.llmProviderId), root) : null
+  const selected = await resolveConnectionSelection(root)
   if (selected?.connection.userId === null) return selected
   const ids = new Set([root?.llmProviderId, settings.llmLegacyProviderId, legacyLlmProviderId(settings.llmProvider ?? 'anthropic')])
   for (const id of ids) {
     if (!id) continue
-    const row = await lookup(id)
+    const row = await getConnection(id)
     if (row?.userId !== null) continue
     const fallback = defaultSelectionForConnection(row)
     if (fallback) return fallback
@@ -350,24 +345,8 @@ export async function resolveSelectionHierarchy(
 
 export const resolveExecutionSelection = resolveSelectionHierarchy
 
-export async function globalHelperState(
-  settings: AppSettings = getSettings(),
-  lookup: (id: string) => Promise<ConnectionRow | null> = getConnection,
-) {
-  const selection = settings.llmSummarizer
-  return {
-    root: await resolveGlobalSelection(settings, lookup),
-    summarizer: selection ? resolveRowSelection(await lookup(selection.llmProviderId), selection) : null,
-  }
-}
-
-export async function assertConnectionHelperEdits(
-  proposed: ReadonlyMap<string, ConnectionRow>,
-  settings: AppSettings = getSettings(),
-) {
-  const before = await globalHelperState()
-  const after = await globalHelperState(settings, async id => proposed.get(id) ?? await getConnection(id))
-  assertHelperTransition(before, after)
+export function isHelperSelection(selection: ResolvedConnection | null): selection is ResolvedConnection {
+  return selection !== null && selection.connection.userId === null && selection.provider.supportsDirectApi
 }
 
 /** One reason, in enforcement order, for both the API and the settings tooltip. */
@@ -383,7 +362,9 @@ function connectionDeletionReason(row: ConnectionRow, viewer: ConnectionViewer, 
 }
 
 export async function resolveHelperSelection(): Promise<ResolvedConnection> {
-  const helper = effectiveHelper(await globalHelperState())
-  if (!helper) throw new HelperConfigurationError()
-  return helper
+  const override = await resolveConnectionSelection(getSettings().llmSummarizer)
+  if (isHelperSelection(override)) return override
+  const root = await resolveGlobalSelection()
+  if (isHelperSelection(root)) return root
+  throw new HelperConfigurationError()
 }

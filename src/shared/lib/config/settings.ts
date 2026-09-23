@@ -927,7 +927,8 @@ export function getEffectiveBrowserbaseProjectId(): string | undefined {
 /**
  * Get the effective model settings, with defaults applied.
  */
-export function getEffectiveModels(settings: AppSettings = getSettings()): ModelSettings {
+export function getEffectiveModels(): ModelSettings {
+  const settings = getSettings()
   const catalogDefaults = getCatalogDefaultModels(
     settings.llmProvider ?? 'anthropic',
     settings.modelCatalog,

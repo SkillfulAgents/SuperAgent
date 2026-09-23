@@ -1,4 +1,3 @@
-import { isHelperSelection } from '@shared/lib/llm-provider/helper-policy'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { Authenticated, IsAdmin } from '../middleware/auth'
@@ -6,6 +5,7 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getSettings } from '@shared/lib/config/settings'
 import {
+  isHelperSelection,
   listConnections,
   resolveConnectionSelection,
   resolveGlobalSelection,

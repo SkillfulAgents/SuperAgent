@@ -674,30 +674,31 @@ it('publishes the same default used for provider-only selections, including disa
 })
 
 
-describe('global helper policy', () => {
+describe('summarizer selection', () => {
   beforeEach(() => {
     const create = providerRegistry.createLlmProvider
     vi.spyOn(providerRegistry, 'createLlmProvider').mockImplementation((id, config) => {
       const provider = create(id, config)
-      // Model a future connection whose capability depends on configuration,
-      // without adding a test-only provider to the shipped registry.
-      Object.defineProperty(provider, 'supportsDirectApi', { value: config.apiKeys.genericApiKey !== 'agent-only' })
+      // Stand in for a statically agent-only provider until SUP-903 adds one.
+      Object.defineProperty(provider, 'supportsDirectApi', { value: id !== 'generic' })
       return provider
     })
   })
+  async function apiConnection(name = 'Api') {
+    return saveConnection({ name, provider: 'anthropic', config: { apiKeys: { anthropicApiKey: 'test-key' } }, modelOverrides: catalog }, admin)
+  }
   async function setup(inherit = false) {
-    const api = await add('Api')
+    const api = await apiConnection()
     const sub = await add('Sub')
-    await saveConnection({ name: 'Sub', provider: 'generic', config: { apiKeys: { genericApiKey: 'agent-only' } } }, admin, sub)
     await setGlobalSelection('default', { llmProviderId: api, model: 'a' })
     await setGlobalSelection('summarizer', inherit ? null : { llmProviderId: api, model: 'a' })
     return { api, sub }
   }
-  it('rejects an agent-only summarizer', async () => {
+  it('rejects an explicitly selected agent-only summarizer', async () => {
     const { sub } = await setup()
-    await expect(setGlobalSelection('summarizer', { llmProviderId: sub, model: 'a' })).rejects.toThrow('API-capable')
+    await expect(setGlobalSelection('summarizer', { llmProviderId: sub, model: 'a' })).rejects.toThrow('This provider cannot be used as a summarizer')
   })
-  it('preserves an inherited helper explicitly when switching the app default', async () => {
+  it('preserves an inherited helper when switching to a subscription default', async () => {
     const { api, sub } = await setup(true)
     await setGlobalSelection('default', { llmProviderId: sub, model: 'a' })
     expect(state.settings.llmSummarizer).toEqual({ llmProviderId: api, model: 'a' })
@@ -708,43 +709,51 @@ describe('global helper policy', () => {
     const { sub } = await setup()
     state.settings.llmDefault = { llmProviderId: sub, model: 'a' }
     state.settings.llmSummarizer = null
-    await expect(setGlobalSelection('default', { llmProviderId: sub, model: 'a' })).rejects.toThrow('API-capable')
+    await expect(setGlobalSelection('default', { llmProviderId: sub, model: 'a' })).rejects.toThrow('Choose a separate API-capable summarizer')
     await expect(resolveHelperSelection()).rejects.toThrow('API-capable')
   })
   it('prevents clearing or deleting the required helper', async () => {
     const { api, sub } = await setup()
     await setGlobalSelection('default', { llmProviderId: sub, model: 'a' })
-    await expect(setGlobalSelection('summarizer', null)).rejects.toThrow('API-capable')
+    await expect(setGlobalSelection('summarizer', null)).rejects.toThrow('Choose a separate API-capable summarizer')
     const listed = (await listConnections(admin)).find(c => c.id === api)!
     expect(listed.canDelete).toBe(false)
     await expect(deleteConnection(api, admin)).rejects.toThrow(listed.deletionBlockedReason)
   })
-  it('prevents removing a working required helper model', async () => {
-    const { api, sub } = await setup()
-    await setGlobalSelection('default', { llmProviderId: sub, model: 'a' })
-    await expect(saveConnection({ name: 'Api', provider: 'generic', config: {}, modelOverrides: [] }, admin, api)).rejects.toThrow('API-capable')
-    expect((await resolveHelperSelection()).llmProviderId).toBe(api)
-  })
-  it('allows credential and name repairs when the helper model is already retired', async () => {
+  it('allows credential and name repairs when the helper model is retired', async () => {
     const { api, sub } = await setup()
     await setGlobalSelection('default', { llmProviderId: sub, model: 'a' })
     state.settings.llmSummarizer = { llmProviderId: api, model: 'retired' }
-    await saveConnection({ name: 'Repaired', provider: 'generic', config: { apiKeys: { genericApiKey: 'replacement' } } }, admin, api)
+    await saveConnection({ name: 'Repaired', provider: 'anthropic', config: { apiKeys: { anthropicApiKey: 'replacement' } } }, admin, api)
     expect((await getConnection(api))?.name).toBe('Repaired')
     expect(providerForConnection((await getConnection(api))!).getEffectiveApiKey()).toBe('replacement')
     await setGlobalSelection('summarizer', { llmProviderId: api, model: 'a' })
     expect((await resolveHelperSelection()).llmProviderId).toBe(api)
   })
-  it.each(['summarizer', 'default'] as const)('rejects edits that change the %s capability and break helpers', async purpose => {
-    const { api, sub } = await setup(purpose === 'default')
-    if (purpose === 'summarizer') await setGlobalSelection('default', { llmProviderId: sub, model: 'a' })
-    await expect(saveConnection({ name: 'Api', provider: 'generic', config: { apiKeys: { genericApiKey: 'agent-only' } } }, admin, api)).rejects.toThrow('API-capable')
-    expect(providerForConnection((await getConnection(api))!).supportsDirectApi).toBe(true)
+  it('ignores a stale agent-only override during unrelated edits and API default changes', async () => {
+    const { api, sub } = await setup()
+    const other = await apiConnection('Other')
+    state.settings.llmSummarizer = { llmProviderId: sub, model: 'a' }
+    expect((await resolveHelperSelection()).llmProviderId).toBe(api)
+    await saveConnection({ name: 'Renamed', provider: 'anthropic', config: {} }, admin, other)
+    await setGlobalSelection('default', { llmProviderId: other, model: 'a' })
+    expect((await resolveHelperSelection()).llmProviderId).toBe(other)
+  })
+  it('does not block Platform startup or a legacy import on a stale helper', async () => {
+    const { sub } = await setup()
+    state.settings.llmSummarizer = { llmProviderId: sub, model: 'a' }
+    state.settings.llmProvider = 'platform'
+    state.platformToken = 'test-platform'
+    delete state.settings.llmDefault
+    await ensureManagedPlatformConnection()
+    expect((await resolveHelperSelection()).llmProviderId).toBe('legacy-platform')
+    expect(await runDataMigrations(handle.db, [importLlmConnections])).toEqual([3])
+    expect(await runDataMigrations(handle.db, [importLlmConnections])).toEqual([])
   })
   it('releases the previous helper when a replacement is selected', async () => {
     const { api, sub } = await setup()
     await setGlobalSelection('default', { llmProviderId: sub, model: 'a' })
-    const replacement = await add('Replacement')
+    const replacement = await apiConnection('Replacement')
     await setGlobalSelection('summarizer', { llmProviderId: replacement, model: 'a' })
     await deleteConnection(api, admin)
     expect((await resolveHelperSelection()).llmProviderId).toBe(replacement)
@@ -756,21 +765,5 @@ describe('global helper policy', () => {
     const listed = (await listConnections(admin)).find(c => c.id === sub)!
     expect(listed.deletionBlockedReason).toContain('app default')
     await expect(deleteConnection(sub, admin)).rejects.toThrow(listed.deletionBlockedReason)
-  })
-  it('validates a legacy catalog sync before changing any connection or committing settings', async () => {
-    state.settings.llmProvider = 'anthropic'
-    state.settings.apiKeys = { anthropicApiKey: 'direct-api-key' }
-    await syncProviderSettings({ providers: ['anthropic'] })
-    const sub = await add('Sub')
-    await saveConnection({ name: 'Sub', provider: 'generic', config: { apiKeys: { genericApiKey: 'agent-only' } } }, admin, sub)
-    await setGlobalSelection('summarizer', { llmProviderId: 'legacy-anthropic', model: 'claude-opus-4-8' })
-    await setGlobalSelection('default', { llmProviderId: sub, model: 'a' })
-    const before = await getConnection('legacy-anthropic')
-    const save = vi.fn()
-    await expect(syncProviderSettings({ providers: ['anthropic'], catalog: true }, {
-      read: () => ({ ...state.settings, modelCatalog: { anthropic: { overrides: [{ id: 'claude-opus-4-8', disabled: true }] } } }), save,
-    })).rejects.toThrow('API-capable')
-    expect(save).not.toHaveBeenCalled()
-    expect(await getConnection('legacy-anthropic')).toEqual(before)
   })
 })
