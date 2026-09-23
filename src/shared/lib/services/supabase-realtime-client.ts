@@ -9,7 +9,20 @@
  */
 
 import WebSocket from 'ws'
-import type { RealtimeConfig } from './webhook-events-client'
+
+export interface RealtimeConfig {
+  url: string
+  apikey: string
+  jwt: string
+  channel: string
+  /**
+   * Postgres table to subscribe to. Optional for backwards compatibility with
+   * the webhook-events poll response, which predates the field — the realtime
+   * client defaults to `webhook_events`. Row scoping is enforced by RLS via
+   * the JWT's claims (whole-channel subscribe), so no filter param is needed.
+   */
+  table?: string
+}
 
 type RealtimeCallback = (payload: unknown) => void
 type RealtimeRecord = {
@@ -31,6 +44,7 @@ export class SupabaseRealtimeClient {
   private maxReconnectAttempts = 10
   private onEvent: RealtimeCallback | null = null
   private onDisconnect: (() => void) | null = null
+  private onConnect: (() => void) | null = null
   private config: RealtimeConfig | null = null
   private isConnected = false
   private isStopped = false
@@ -40,14 +54,21 @@ export class SupabaseRealtimeClient {
     return String(++this.ref)
   }
 
+  /**
+   * `onConnect` runs on every open, including the client's own reconnects:
+   * INSERTs made while the socket was down were never announced, so a caller
+   * that treats notifications as wake-ups should catch up there.
+   */
   async connect(
     config: RealtimeConfig,
     onEvent: RealtimeCallback,
     onDisconnect?: () => void,
+    onConnect?: () => void,
   ): Promise<void> {
     this.config = config
     this.onEvent = onEvent
     this.onDisconnect = onDisconnect ?? null
+    this.onConnect = onConnect ?? null
     this.isStopped = false
     this.reconnectAttempts = 0
 
@@ -123,6 +144,7 @@ export class SupabaseRealtimeClient {
           })
         }, 30000)
 
+        this.onConnect?.()
         resolve()
       }
 

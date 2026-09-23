@@ -265,6 +265,13 @@ function notifyPlatformServiceAuthChanged(connected: boolean): void {
     .catch((error) =>
       captureException(error, { tags: { area: 'platform-auth', op: 'notify-notifications' } }),
     )
+  // The webhook relay goes (un)available with the connection, and starts over
+  // when the token changes.
+  void import('../webhook-relay')
+    .then((mod) => mod.getWebhookRelay().onAuthChanged())
+    .catch((error) =>
+      captureException(error, { tags: { area: 'platform-auth', op: 'notify-webhook-relay' } }),
+    )
 }
 
 function getEnvManagedStatus(): PlatformAuthStatus | null {

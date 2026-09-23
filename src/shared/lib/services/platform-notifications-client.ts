@@ -15,7 +15,7 @@ import {
   platformNotificationsListSchema,
   type PlatformNotificationsList,
 } from '@shared/lib/services/platform-notifications-schema'
-import type { RealtimeConfig } from '@shared/lib/services/webhook-events-client'
+import type { RealtimeConfig } from '@shared/lib/services/supabase-realtime-client'
 
 // Org JWTs encode the acting member as `<token>::<memberId>`; opaque keys ignore it.
 function buildBearer(memberId: string): string {

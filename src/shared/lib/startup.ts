@@ -8,6 +8,7 @@ import { mcpReauthManager } from './proxy/mcp-reauth-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { triggerManager } from './scheduler/trigger-manager'
 import { platformNotificationsManager } from './scheduler/platform-notifications-manager'
+import { getWebhookRelay } from './webhook-relay'
 import { agentIntegrationManager } from './agent-integrations/agent-integration-manager'
 import { captureException } from './error-reporting'
 import { registerAllAccountProviders } from './account-providers/register'
@@ -184,6 +185,12 @@ async function initializeServicesInner() {
     }
   }
 
+  // The host's one connection to the platform webhook queue, shared by every
+  // feature that receives webhooks. Cheap to start: it claims nothing until a
+  // consumer registers, and follows platform connect/disconnect through the
+  // auth-changed notifier.
+  getWebhookRelay().start()
+
   // Lane order is priority: the limiter grants slots FIFO, and the last three
   // starts below are open-ended (image pull on fresh installs; the task
   // scheduler's catch-up scan boots a container per overdue task; the trigger
@@ -288,6 +295,7 @@ export async function shutdownServices() {
   await stopAllProviders()
   taskScheduler.stop()
   triggerManager.stop()
+  getWebhookRelay().stop()
   platformNotificationsManager.stop()
   sessionAutoDeleteMonitor.stop()
   apiLogAutoDeleteMonitor.stop()

@@ -9,6 +9,7 @@ import { decodeOrgIdFromToken } from '@shared/lib/platform-attribution'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getSubscribedComposioTriggerIds } from '@shared/lib/services/webhook-trigger-service'
+import type { RealtimeConfig } from '@shared/lib/services/supabase-realtime-client'
 
 // ============================================================================
 // Types
@@ -22,19 +23,7 @@ export interface WebhookEvent {
   created_at: string
 }
 
-export interface RealtimeConfig {
-  url: string
-  apikey: string
-  jwt: string
-  channel: string
-  /**
-   * Postgres table to subscribe to. Optional for backwards compatibility with
-   * the webhook-events poll response, which predates the field — the realtime
-   * client defaults to `webhook_events`. Row scoping is enforced by RLS via
-   * the JWT's claims (whole-channel subscribe), so no filter param is needed.
-   */
-  table?: string
-}
+export type { RealtimeConfig }
 
 export interface PollResult {
   events: WebhookEvent[]
