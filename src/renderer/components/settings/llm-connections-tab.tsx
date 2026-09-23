@@ -208,7 +208,11 @@ function ConnectionEditor({
   const [apiKey, setApiKey] = useState('')
   const [oauthLoginId, setOAuthLoginId] = useState<string>()
   const [accountLabel, setAccountLabel] = useState(existing?.accountLabel)
-  const connected = useCallback((id: string, label: string) => { setOAuthLoginId(id); setAccountLabel(label) }, [])
+  const connected = useCallback((id: string, label: string) => {
+    setOAuthLoginId(id)
+    setAccountLabel(label)
+    setName(current => current.trim() ? current : `${provider === 'codex-subscription' ? 'Codex' : 'Grok'} - ${label}`)
+  }, [provider])
   const [apiFormat, setApiFormat] = useState<NonNullable<ConnectionConfig['apiFormat']>>(existing?.apiFormat ?? 'messages')
   const [chatTokenLimitField, setChatTokenLimitField] = useState<NonNullable<ConnectionConfig['chatTokenLimitField']>>(existing?.chatTokenLimitField ?? 'max_completion_tokens')
   const [baseUrl, setBaseUrl] = useState(existing?.baseUrl ?? '')
