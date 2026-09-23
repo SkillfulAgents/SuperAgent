@@ -33,6 +33,7 @@ describe('Claude Subscription', () => {
 
   it.each<[number | undefined, unknown]>([
     [401, 'Unauthorized'],
+    [undefined, 'API Error: 401 Invalid token'],
     [undefined, { error: { type: 'authentication_error', message: 'Unauthorized' } }],
     [undefined, { type: 'authentication_error', message: 'Unauthorized' }],
     [undefined, 'authentication_error: Unauthorized'],
@@ -42,6 +43,12 @@ describe('Claude Subscription', () => {
   ])('makes authentication failures actionable (%s, %j)', (status, body) => {
     const provider = new ClaudeSubscriptionLlmProvider()
     expect(provider.presentationForTurnError(status, body, 'unknown')?.message).toContain('claude setup-token')
+  })
+
+  it('uses the SDK authentication code when no status or recognizable text is supplied', () => {
+    const provider = new ClaudeSubscriptionLlmProvider()
+    expect(provider.presentationForTurnError(undefined, 'Invalid credential', 'authentication_failed')?.message).toContain('claude setup-token')
+    expect(provider.presentationForTurnError(undefined, 'Invalid value for max_tokens', 'invalid_request')?.message).not.toContain('claude setup-token')
   })
 
   it.each<[number | undefined, unknown]>([

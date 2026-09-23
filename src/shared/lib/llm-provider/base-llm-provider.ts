@@ -188,7 +188,7 @@ export abstract class BaseLlmProvider {
     apiErrorCode: string | null | undefined,
   ): ProviderErrorPresentation | null {
     if (!isUpstreamApiErrorCode(apiErrorCode)) return null
-    const specialized = this.parseErrorResponseOverride(status, body)
+    const specialized = this.parseErrorResponseOverride(status, body, apiErrorCode)
     if (specialized) return specialized
     return PROVIDER_ERROR_CODES.has(apiErrorCode) ? defaultParseErrorResponse(status, body) : null
   }
@@ -201,6 +201,7 @@ export abstract class BaseLlmProvider {
   protected parseErrorResponseOverride(
     _status: number | undefined,
     _body: unknown,
+    _apiErrorCode?: string,
   ): ProviderErrorPresentation | null {
     return null
   }
