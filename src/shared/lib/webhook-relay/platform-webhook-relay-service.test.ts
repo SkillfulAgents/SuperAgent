@@ -357,6 +357,30 @@ describe('PlatformWebhookRelayService', () => {
       expect(platform.ackedIds()).toEqual([event.id])
     })
 
+    it('never drops a pending ack; claiming for the scope pauses until acks drain', async () => {
+      startRelay({ requestTimeoutMs: 60 * 60_000 })
+      platform.realtimeEnabled = false
+      const slowAck = deferred()
+      platform.ackGate = slowAck.promise
+      platform.add('sub_a', 'whep_one', 1500)
+      relay.register(consumer(['whep_one']))
+      await settle()
+
+      // Claims stopped once 1,000 acks were waiting, instead of claiming on
+      // and dropping the oldest ids.
+      expect(platform.pending.get('sub_a')!.length).toBeGreaterThan(0)
+      expect(platform.acknowledge).toHaveBeenCalledTimes(1)
+
+      platform.ackGate = null
+      slowAck.resolve()
+      await settle()
+
+      const acked = platform.ackedIds()
+      expect(acked).toHaveLength(1500)
+      expect(new Set(acked).size).toBe(1500)
+      expect(platform.pending.get('sub_a')).toEqual([])
+    })
+
     it("keeps acking other scopes while one scope's acks fail", async () => {
       startRelay()
       platform.failAckScopes.add('sub_bad')
@@ -575,6 +599,39 @@ describe('PlatformWebhookRelayService', () => {
       await settle()
       expect(platform.claims.length).toBeGreaterThan(claimsWhileFull)
       expect(platform.ackedIds()).toHaveLength(4)
+    })
+
+    it('resumes claiming as soon as a consumer that filled up during accept catches up', async () => {
+      startRelay({ maxConsumerBacklog: 3, tickMs: 30_000, reconcileMs: 5 * 60_000 })
+      const gate = deferred()
+      let calls = 0
+      const c = consumer(['whep_one'], async () => {
+        if (++calls === 1) await gate.promise
+        return 'accepted'
+      })
+      platform.add('sub_a', 'whep_one', 2)
+      relay.register(c)
+      await settle()
+      const [socket] = sockets
+      const notify = () => socket.onInsert?.({ composio_trigger_id: 'whep_one', status: 'pending' })
+
+      // While the first batch is being accepted, the queue fills up...
+      platform.add('sub_a', 'whep_one')
+      notify()
+      await settle()
+      // ...so this claim is held back.
+      platform.add('sub_a', 'whep_one', 50)
+      notify()
+      await settle()
+      expect(platform.pending.get('sub_a')).toHaveLength(50)
+
+      gate.resolve()
+      await settle()
+
+      // No new notification and no reconciliation: draining the consumer
+      // has to restart claiming by itself.
+      expect(platform.pending.get('sub_a')).toEqual([])
+      expect(platform.ackedIds()).toHaveLength(53)
     })
 
     it("starts claims outside the caller's request scope", async () => {

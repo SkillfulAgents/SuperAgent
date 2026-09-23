@@ -50,7 +50,6 @@ const MAX_ENDPOINTS_PER_CLAIM = 500
 const VALID_ENDPOINT_ID = /^(ti|whep)_[A-Za-z0-9_-]{1,128}$/
 // Acked ids end up in the proxy's Supabase filter URL.
 const ACK_CHUNK_SIZE = 100
-const MAX_PENDING_ACKS_PER_SCOPE = 1000
 
 export interface RealtimeConnection {
   /** `onConnect` runs on every open, including the connection's own reconnects. */
@@ -106,6 +105,8 @@ export interface PlatformWebhookRelayOptions {
   realtimeTokenRefreshMs?: number
   /** Stop claiming a consumer's endpoints while this many of its events wait. */
   maxConsumerBacklog?: number
+  /** Stop claiming for a scope while this many of its acks wait. */
+  maxPendingAcks?: number
   /** Claims one lane (a scope's chunk of endpoints) gets per round before the others go. */
   maxClaimsPerTurn?: number
   /** Deadline for each claim/ack request. */
@@ -130,6 +131,8 @@ interface ConsumerState {
   offering: boolean
   retryTimer: NodeJS.Timeout | null
   retryAttempt: number
+  /** A claim skipped this consumer's endpoints because its queue was full. */
+  heldBack: boolean
   disposed: boolean
 }
 
@@ -155,6 +158,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   private readonly reconcileMs: number
   private readonly realtimeTokenRefreshMs: number
   private readonly maxConsumerBacklog: number
+  private readonly maxPendingAcks: number
   private readonly maxClaimsPerTurn: number
   private readonly requestTimeoutMs: number
   private readonly retryDelaysMs: readonly number[]
@@ -169,6 +173,8 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   // claiming, delivery, or other scopes' acks.
   private readonly pendingAcks = new Map<RelayScope, Set<string>>()
   private readonly ackBackoff = new Map<RelayScope, { attempt: number; retryAt: number }>()
+  /** Scopes whose claims were skipped because their acks had piled up. */
+  private readonly ackHeldBack = new Set<RelayScope>()
   private acking = false
   private ackTimer: NodeJS.Timeout | null = null
 
@@ -201,6 +207,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     this.reconcileMs = options.reconcileMs ?? 5 * 60_000
     this.realtimeTokenRefreshMs = options.realtimeTokenRefreshMs ?? 40 * 60_000
     this.maxConsumerBacklog = options.maxConsumerBacklog ?? 200
+    this.maxPendingAcks = options.maxPendingAcks ?? 1000
     this.maxClaimsPerTurn = options.maxClaimsPerTurn ?? 4
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000
     this.retryDelaysMs = options.retryDelaysMs ?? [5_000, 30_000, 2 * 60_000, 10 * 60_000]
@@ -320,6 +327,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       offering: false,
       retryTimer: null,
       retryAttempt: 0,
+      heldBack: false,
       disposed: false,
     }
     this.takeOwnership(state)
@@ -399,10 +407,23 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     return false
   }
 
-  /** Still owned by a consumer in this scope, and that consumer has room. */
+  /**
+   * Still owned by a consumer in this scope, with room for more events and
+   * acks. A skip for lack of room is recorded, so whatever frees the room
+   * (the consumer draining, or acks going through) wakes the loop again.
+   */
   private isClaimable(scope: RelayScope, endpointId: string): boolean {
     const owner = this.owners.get(this.ownerKey(scope, endpointId))
-    return owner !== undefined && owner.queue.length < this.maxConsumerBacklog
+    if (!owner) return false
+    if (owner.queue.length >= this.maxConsumerBacklog) {
+      owner.heldBack = true
+      return false
+    }
+    if ((this.pendingAcks.get(scope)?.size ?? 0) >= this.maxPendingAcks) {
+      this.ackHeldBack.add(scope)
+      return false
+    }
+    return true
   }
 
   // ==========================================================================
@@ -679,7 +700,6 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   private async offer(state: ConsumerState): Promise<void> {
     // stop() may have landed while this offer waited for a concurrency slot.
     if (!this.started || state.disposed) return
-    const wasSaturated = state.queue.length >= this.maxConsumerBacklog
     const batch = state.queue.slice(0, CLAIM_BATCH_SIZE)
 
     let outcome: RelayAcceptResult | ReadonlyMap<string, RelayAcceptResult>
@@ -710,8 +730,11 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (retrying) this.scheduleRetry(state)
     else state.retryAttempt = 0
 
-    // The rounds skipped this consumer's endpoints while it was full.
-    if (wasSaturated && state.queue.length < this.maxConsumerBacklog) this.wake()
+    // A round skipped this consumer's endpoints while it was full.
+    if (state.heldBack && state.queue.length < this.maxConsumerBacklog) {
+      state.heldBack = false
+      this.wake()
+    }
   }
 
   private scheduleRetry(state: ConsumerState): void {
@@ -732,15 +755,12 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   // Acknowledgement
   // ==========================================================================
 
+  // Never dropped: a scope whose acks pile up stops being claimed instead
+  // (isClaimable), which bounds this by maxPendingAcks plus what consumers
+  // already hold.
   private queueAck(scope: RelayScope, eventId: string): void {
     const pending = this.pendingAcks.get(scope) ?? new Set<string>()
     pending.add(eventId)
-    // An unacked event is already handled here; the platform fails it after
-    // 48h. Bounded so a scope that can never ack can't grow without limit.
-    for (const id of pending) {
-      if (pending.size <= MAX_PENDING_ACKS_PER_SCOPE) break
-      pending.delete(id)
-    }
     this.pendingAcks.set(scope, pending)
   }
 
@@ -775,6 +795,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
           for (const id of ids) pending.delete(id)
           if (pending.size === 0) this.pendingAcks.delete(ackScope)
           this.ackBackoff.delete(ackScope)
+          if (this.ackHeldBack.has(ackScope) && pending.size < this.maxPendingAcks) {
+            this.ackHeldBack.delete(ackScope)
+            this.wake()
+          }
         } catch (error) {
           const attempt = this.ackBackoff.get(ackScope)?.attempt ?? 0
           const delay = this.retryDelaysMs[Math.min(attempt, this.retryDelaysMs.length - 1)]
