@@ -504,29 +504,38 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   }
 
   /**
-   * Runs one platform request with a deadline, cancelled by stop(). Settles
-   * when the signal fires even if the request ignores it, so a hung request
-   * can never wedge the claim loop or the ack worker.
+   * Runs one platform request, cancelled by stop(). Waiting is bounded by a
+   * deadline, and settles even if the request ignores its signal, so a hung
+   * request can never wedge the claim loop or the ack worker.
+   *
+   * With `onLateResult` the deadline only stops the waiting: the request
+   * keeps going and its result is handed over if it arrives. A claim needs
+   * that, because the platform may already have claimed the rows (claims are
+   * final until SUP-931), and cancelling would lose them. Anything else is
+   * cancelled at the deadline.
    */
-  private request<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  private request<T>(fn: (signal: AbortSignal) => Promise<T>, onLateResult?: (result: T) => void): Promise<T> {
     const controller = new AbortController()
     const lifecycle = this.lifecycle.signal
     const onStop = () => controller.abort(lifecycle.reason)
-    const timer = setTimeout(
-      () => controller.abort(new Error(`Webhook relay request timed out after ${this.requestTimeoutMs}ms`)),
-      this.requestTimeoutMs,
-    )
     lifecycle.addEventListener('abort', onStop, { once: true })
     if (lifecycle.aborted) onStop()
-    const aborted = new Promise<never>((_, reject) => {
+    const run = new Promise<T>((resolve) => resolve(fn(controller.signal)))
+    void run.catch(() => {}).finally(() => lifecycle.removeEventListener('abort', onStop))
+
+    let timer: NodeJS.Timeout | undefined
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        if (onLateResult) void run.then(onLateResult, () => {})
+        else controller.abort(new Error('deadline'))
+        reject(new Error(`Webhook relay request timed out after ${this.requestTimeoutMs}ms`))
+      }, this.requestTimeoutMs)
+    })
+    const cancelled = new Promise<never>((_, reject) => {
       if (controller.signal.aborted) reject(controller.signal.reason)
       else controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true })
     })
-    const run = new Promise<T>((resolve) => resolve(fn(controller.signal)))
-    return Promise.race([run, aborted]).finally(() => {
-      clearTimeout(timer)
-      lifecycle.removeEventListener('abort', onStop)
-    })
+    return Promise.race([run, deadline, cancelled]).finally(() => clearTimeout(timer))
   }
 
   // ==========================================================================
@@ -633,7 +642,13 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       if (endpointIds.length === 0) return { error: null, more: false }
       let claim: PlatformClaim
       try {
-        claim = await this.request((signal) => this.deps.claim(scope, endpointIds, signal))
+        claim = await this.request(
+          (signal) => this.deps.claim(scope, endpointIds, signal),
+          (late) => {
+            if (late.claimed > 0) console.warn(`[WebhookRelay] Late claim response for scope ${scope}: ${late.claimed} event(s)`)
+            this.dispatch(scope, late.events)
+          },
+        )
       } catch (error) {
         const message = errorMessage(error)
         console.warn(`[WebhookRelay] Claim failed for scope ${scope}: ${message}`)
@@ -710,7 +725,6 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       captureException(error, { tags: { area: 'webhook-relay', op: 'accept' }, extra: { consumerId: state.id } })
       outcome = 'retry'
     }
-    if (state.disposed) return
 
     const settled: QueuedEvent[] = []
     let retrying = false
@@ -719,13 +733,16 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       if (result === 'retry') retrying = true
       else settled.push(queued)
     }
+    // Settled work is done even if the consumer let go meanwhile.
+    for (const queued of settled) this.queueAck(queued.scope, queued.event.id)
+    this.flushAcks()
+    if (state.disposed) return
+
     if (settled.length > 0) {
       const settledIds = new Set(settled.map((queued) => queued.event.id))
       state.queue = state.queue.filter((queued) => !settledIds.has(queued.event.id))
       for (const id of settledIds) state.queuedIds.delete(id)
     }
-    for (const queued of settled) this.queueAck(queued.scope, queued.event.id)
-    this.flushAcks()
 
     if (retrying) this.scheduleRetry(state)
     else state.retryAttempt = 0

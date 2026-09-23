@@ -322,6 +322,23 @@ describe('PlatformWebhookRelayService', () => {
       expect(platform.acknowledge).not.toHaveBeenCalled()
     })
 
+    it('acks what a consumer settled even if it let go during accept', async () => {
+      startRelay()
+      const [event] = platform.add('sub_a', 'whep_one')
+      const gate = deferred()
+      const handle = relay.register(consumer(['whep_one'], async () => {
+        await gate.promise
+        return 'accepted'
+      }))
+      await settle()
+
+      handle.dispose()
+      gate.resolve()
+      await settle()
+
+      expect(platform.ackedIds()).toEqual([event.id])
+    })
+
     it('stops claiming an endpoint as soon as its consumer lets go, mid-round', async () => {
       createRelay()
       platform.realtimeEnabled = false
@@ -453,6 +470,30 @@ describe('PlatformWebhookRelayService', () => {
       await settle()
       expect(platform.ackedIds()).toEqual([event.id])
       expect(relay.snapshot().transport).toBe('polling')
+    })
+
+    it('still delivers a claim that answers after its deadline', async () => {
+      startRelay({ requestTimeoutMs: 10_000 })
+      platform.realtimeEnabled = false
+      await settle()
+      const [event] = platform.add('sub_a', 'whep_one')
+      const slow = deferred()
+      platform.claimGate = slow.promise
+      const c = consumer(['whep_one'])
+      relay.register(c)
+      await settle()
+
+      await vi.advanceTimersByTimeAsync(10_000)
+      await settle()
+      expect(relay.snapshot().transport).toBe('unreachable')
+      expect(c.accept).not.toHaveBeenCalled()
+
+      // The platform had claimed it; the answer turns up late.
+      platform.claimGate = null
+      slow.resolve()
+      await settle()
+      expect(c.accept).toHaveBeenCalledWith([event])
+      expect(platform.ackedIds()).toEqual([event.id])
     })
 
     it('coalesces wakes during a round into one more round', async () => {

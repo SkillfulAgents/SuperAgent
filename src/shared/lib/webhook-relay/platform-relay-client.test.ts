@@ -102,6 +102,19 @@ describe('claimPlatformRelayEvents', () => {
     expect(mockCaptureException).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps the claimed events when the realtime block is malformed', async () => {
+    mockFetch.mockResolvedValue(Response.json({
+      events: [{ id: 'whe_1', composio_trigger_id: 'whep_a', trigger_type: 'CUSTOM_WEBHOOK', payload: {}, created_at: 't' }],
+      realtime: { ...realtime, apikey: '' },
+    }))
+
+    const claim = await claimPlatformRelayEvents('local', ['whep_a'])
+
+    expect(claim.events.map((event) => event.id)).toEqual(['whe_1'])
+    expect(claim.realtime).toBeNull()
+    expect(mockCaptureException).toHaveBeenCalledTimes(1)
+  })
+
   it('throws a PlatformRelayError with the status on failure', async () => {
     mockFetch.mockResolvedValue(new Response('member gone', { status: 403 }))
 

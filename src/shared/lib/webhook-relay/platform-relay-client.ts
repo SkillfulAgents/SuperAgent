@@ -9,7 +9,11 @@ import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import type { RealtimeConfig } from '@shared/lib/services/supabase-realtime-client'
-import { platformClaimResponseSchema, platformRelayEventSchema } from './platform-relay-schema'
+import {
+  platformClaimResponseSchema,
+  platformRealtimeConfigSchema,
+  platformRelayEventSchema,
+} from './platform-relay-schema'
 import type { RelayEvent, RelayScope } from './types'
 
 export class PlatformRelayError extends Error {
@@ -91,7 +95,19 @@ export async function claimPlatformRelayEvents(
       createdAt: event.data.created_at,
     })
   }
-  return { events, claimed: parsed.events.length, realtime: parsed.realtime ?? null }
+  return { events, claimed: parsed.events.length, realtime: parseRealtime(parsed.realtime) }
+}
+
+// Only a wake-up hint: without it the relay polls, so a bad one is dropped.
+function parseRealtime(raw: unknown): RealtimeConfig | null {
+  if (raw === null || raw === undefined) return null
+  const realtime = platformRealtimeConfigSchema.safeParse(raw)
+  if (realtime.success) return realtime.data
+  captureException(realtime.error, {
+    level: 'warning',
+    tags: { area: 'webhook-relay', op: 'realtime-parse' },
+  })
+  return null
 }
 
 /** Marks events consumed. Must use the scope that claimed them. */

@@ -27,12 +27,13 @@ export const platformRelayEventSchema = z
   })
   .loose()
 
-// Rows are validated one by one so a single malformed row can't discard the
-// rest of an already-claimed batch.
+// Rows and the realtime block are validated separately, so neither a
+// malformed row nor a malformed wake-up hint can discard an already-claimed
+// batch.
 export const platformClaimResponseSchema = z
   .object({
     events: z.array(z.unknown()),
-    realtime: platformRealtimeConfigSchema.nullable().optional(),
+    realtime: z.unknown().optional(),
   })
   .loose()
 
