@@ -1,17 +1,17 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { DialogHeader, DialogTitle, DialogDescription } from '@renderer/components/ui/dialog'
-import { Input } from '@renderer/components/ui/input'
-import { Label } from '@renderer/components/ui/label'
+import { Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateAgentIntegration } from '@renderer/hooks/use-agent-integrations'
 import { emailSetupSchema, type EmailAccessLevel } from '@shared/lib/email-integrations/config-schema'
 import { EmailAccessFields, parseEmailDomains } from './email-access-fields'
+import { IntegrationSetupLayout, IntegrationSetupField, IntegrationSetupFeedback } from './integration-setup-layout'
 import type { IntegrationSetupProps } from './setup-types'
 
 export function EmailIntegrationSetupForm({ agentSlug, onClose }: IntegrationSetupProps) {
+  const formId = useId()
   const { data: agent } = useAgent(agentSlug)
   const { data: platform } = usePlatformAuthStatus()
   const [localPart, setLocalPart] = useState(() => (agent?.name ?? agentSlug).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64))
@@ -21,22 +21,42 @@ export function EmailIntegrationSetupForm({ agentSlug, onClose }: IntegrationSet
   const [error, setError] = useState<string | null>(null)
   const create = useCreateAgentIntegration()
   const navigate = useNavigate()
-  return <form className="space-y-5 overflow-y-auto max-h-[75vh] p-1" onSubmit={async event => {
-    event.preventDefault(); setError(null)
-    const parsed = emailSetupSchema.safeParse({ localPart, displayName, accessLevel, allowedDomains: parseEmailDomains(domains) })
-    if (!parsed.success) { setError(parsed.error.issues[0]?.message ?? 'Check your email settings'); return }
-    try {
-      const result = await create.mutateAsync({ agentSlug, provider: 'platform-email', name: parsed.data.displayName, config: parsed.data })
-      onClose()
-      void navigate({ to: '/agents/$slug/chat/$integrationId', params: { slug: agentSlug, integrationId: result.id } })
-    } catch (err) { setError(err instanceof Error ? err.message : 'Could not create inbox') }
-  }}>
-    <DialogHeader><DialogTitle>Add Email</DialogTitle><DialogDescription>Give this agent an inbox on your company’s Platform domain. Each inbox belongs to one agent.</DialogDescription></DialogHeader>
-    <div className="space-y-2"><Label htmlFor="email-name">Sender name</Label><Input id="email-name" value={displayName} onChange={e => setDisplayName(e.target.value)} required maxLength={200} /></div>
-    <div className="space-y-2"><Label htmlFor="email-slug">Inbox name</Label><Input id="email-slug" value={localPart} onChange={e => setLocalPart(e.target.value)} required maxLength={64} /><p className="text-xs text-muted-foreground">{localPart || 'assistant'}@your-company-domain. The assigned address stays fixed when you rename the agent. Domain setup can take a few minutes.</p></div>
-    <EmailAccessFields value={accessLevel} onChange={setAccessLevel} domains={domains} onDomainsChange={setDomains} disabled={create.isPending} />
-    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-    {!platform?.connected && <p role="alert">Connect Platform to set up email.</p>}
-    <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={create.isPending || !platform?.connected}>{create.isPending ? 'Creating inbox…' : 'Create inbox'}</Button></div>
-  </form>
+
+  return <IntegrationSetupLayout
+    provider="platform-email"
+    label="Email"
+    instructions={<>
+      <ol className="list-decimal list-outside ml-5 space-y-2.5 text-sm font-normal text-foreground">
+        <li>Choose the sender name people will see and a unique inbox name for this agent.</li>
+        <li>Choose who can email the agent and who it can email.</li>
+        <li>Click Create inbox. Your company’s email domain will be configured automatically if needed.</li>
+      </ol>
+      <p className="text-xs text-muted-foreground">Each inbox belongs to one agent, with an address like assistant@company.ongamut.so. Renaming the sender later keeps the address fixed.</p>
+      <p className="text-xs text-muted-foreground">Domain setup can take a few minutes. Once connected, send an email to start a conversation.</p>
+    </>}
+    feedback={<>
+      {error && <IntegrationSetupFeedback state="error">{error}</IntegrationSetupFeedback>}
+      {!platform?.connected && <IntegrationSetupFeedback state="error">Connect Platform to set up email.</IntegrationSetupFeedback>}
+    </>}
+    actions={<Button size="sm" type="submit" form={formId} disabled={create.isPending || !platform?.connected}>
+      {create.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Creating inbox…</> : 'Create inbox'}
+    </Button>}
+  >
+    <form id={formId} className="space-y-3" onSubmit={async event => {
+      event.preventDefault()
+      if (create.isPending) return
+      setError(null)
+      const parsed = emailSetupSchema.safeParse({ localPart, displayName, accessLevel, allowedDomains: parseEmailDomains(domains) })
+      if (!parsed.success) { setError(parsed.error.issues[0]?.message ?? 'Check your email settings'); return }
+      try {
+        const result = await create.mutateAsync({ agentSlug, provider: 'platform-email', name: parsed.data.displayName, config: parsed.data })
+        onClose()
+        void navigate({ to: '/agents/$slug/chat/$integrationId', params: { slug: agentSlug, integrationId: result.id } })
+      } catch (err) { setError(err instanceof Error ? err.message : 'Could not create inbox') }
+    }}>
+      <IntegrationSetupField id="email-name" label="Sender name" value={displayName} onChange={event => setDisplayName(event.target.value)} required maxLength={200} disabled={create.isPending} />
+      <IntegrationSetupField id="email-slug" label="Inbox name" value={localPart} onChange={event => setLocalPart(event.target.value)} required maxLength={64} disabled={create.isPending} />
+      <EmailAccessFields value={accessLevel} onChange={setAccessLevel} domains={domains} onDomainsChange={setDomains} disabled={create.isPending} />
+    </form>
+  </IntegrationSetupLayout>
 }
