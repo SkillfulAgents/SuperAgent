@@ -91,6 +91,8 @@ export async function listConnections(
     )
     .all()
   const defaultSelection = await resolveGlobalSelection()
+  const requiredSummarizer = defaultSelection?.provider.supportsDirectApi === false
+    ? await resolveConnectionSelection(getSettings().llmSummarizer) : null
   return rows.map(({ connection: row, ownerName }) => {
     const provider = providerForConnection(row)
     const config = parseConnectionJson(connectionConfigSchema, row.config)
@@ -103,6 +105,7 @@ export async function listConnections(
       ownerName,
       managed: row.managed,
       isConfigured: provider.getApiKeyStatus().isConfigured,
+      supportsDirectApi: provider.supportsDirectApi,
       catalog: connectionCatalog(row),
       defaultModel: defaultSelectionForConnection(row)?.model ?? null,
       modelOverrides: connectionModelOverrides(row),
@@ -112,9 +115,12 @@ export async function listConnections(
       region: config.apiKeys.bedrockRegion,
       customEnvVarKeys: canManage ? Object.keys(config.runtimeEnv) : [],
       canManage,
+      deletionBlockedReason: requiredSummarizer?.llmProviderId === row.id
+        ? 'Choose another API-capable summarizer before deleting this provider.' : undefined,
       canDelete:
         canManage &&
         defaultSelection?.llmProviderId !== row.id &&
+        requiredSummarizer?.llmProviderId !== row.id &&
         !(row.managed && provider.getApiKeyStatus().isConfigured),
     }
   })
@@ -178,6 +184,11 @@ export async function saveConnection(
     ) {
       throw new Error('Change the app default before removing its model')
     }
+    if (root?.provider.supportsDirectApi === false) {
+      const summarizer = getSettings().llmSummarizer
+      if (summarizer?.llmProviderId === llmProviderId && !resolveSelection(summarizer, [{ id: llmProviderId, catalog }]))
+        throw new Error('Choose another API-capable summarizer before removing its model')
+    }
     const values = {
       name: input.name,
       provider: input.provider,
@@ -213,8 +224,11 @@ export async function deleteConnection(id: string, viewer: ConnectionViewer): Pr
     const row = await getConnection(id)
     if (!row) throw new Error('Connection not found')
     assertManageConnection(row, viewer)
-    if ((await resolveGlobalSelection())?.llmProviderId === id)
+    const root = await resolveGlobalSelection()
+    if (root?.llmProviderId === id)
       throw new Error('Change the app default before deleting this connection')
+    if (root?.provider.supportsDirectApi === false && getSettings().llmSummarizer?.llmProviderId === id)
+      throw new Error('Choose another API-capable summarizer before deleting this connection')
     if (row.managed && providerForConnection(row).getApiKeyStatus().isConfigured)
       throw new Error('Platform cannot be deleted while connected')
     await db.delete(llmConnections).where(eq(llmConnections.id, id)).run()
@@ -240,6 +254,13 @@ export async function setGlobalSelection(
     const resolved = await resolveConnectionSelection(selection)
     if (selection && (!resolved || resolved.connection.userId !== null))
       throw new Error('Select a model from a global connection')
+    if (purpose === 'summarizer' && resolved && !resolved.provider.supportsDirectApi)
+      throw new Error('Summarizers require a provider that supports direct API calls')
+    const root = purpose === 'default' ? resolved : await resolveGlobalSelection()
+    const summarizer = purpose === 'summarizer' ? resolved : await resolveConnectionSelection(getSettings().llmSummarizer)
+    if (root?.provider.supportsDirectApi === false &&
+      !(summarizer?.connection.userId === null && summarizer.provider.supportsDirectApi))
+      throw new Error('Choose an API-capable global summarizer before using this app default')
     mutateSettings((s) => {
       if (purpose === 'default' && selection) s.llmDefault = selection
       else s.llmSummarizer = selection
@@ -334,6 +355,9 @@ export const resolveExecutionSelection = resolveSelectionHierarchy
 
 export async function resolveHelperSelection(): Promise<ResolvedConnection> {
   const override = await resolveConnectionSelection(getSettings().llmSummarizer)
-  if (override?.connection.userId === null) return override
-  return resolveSelectionHierarchy()
+  if (override?.connection.userId === null && override.provider.supportsDirectApi) return override
+  const root = await resolveSelectionHierarchy()
+  if (!root.provider.supportsDirectApi)
+    throw new Error('Choose an API-capable global summarizer in Settings → Model Providers')
+  return root
 }

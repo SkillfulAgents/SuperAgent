@@ -69,6 +69,9 @@ export abstract class BaseLlmProvider {
   /** Whether this provider can discover remote catalog models by search query. */
   readonly supportsModelSearch: boolean = false
 
+  /** Whether this provider supports host-side Messages API calls (including summaries). */
+  get supportsDirectApi(): boolean { return true }
+
   /**
    * Value of `ENABLE_TOOL_SEARCH` for containers on this provider, or
    * undefined to leave the variable unset so the CLI decides for itself.

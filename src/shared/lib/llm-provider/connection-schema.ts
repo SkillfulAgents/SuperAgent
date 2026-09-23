@@ -119,6 +119,7 @@ export const connectionInfoSchema = z.object({
   ownerName: z.string().nullable(),
   managed: z.boolean(),
   isConfigured: z.boolean(),
+  supportsDirectApi: z.boolean().optional(),
   catalog: modelCatalogSchema,
   modelOverrides: connectionModelOverridesSchema,
   defaultModel: z.string().nullable(),
@@ -129,6 +130,7 @@ export const connectionInfoSchema = z.object({
   customEnvVarKeys: z.array(z.string()).optional(),
   canManage: z.boolean(),
   canDelete: z.boolean(),
+  deletionBlockedReason: z.string().optional(),
 })
 export type ConnectionInfo = z.infer<typeof connectionInfoSchema>
 

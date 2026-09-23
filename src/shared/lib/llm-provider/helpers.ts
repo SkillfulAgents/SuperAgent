@@ -25,6 +25,9 @@ export async function getConfiguredLlmClient(): Promise<Anthropic> {
   if (!provider.getApiKeyStatus().isConfigured) {
     throw new Error('LLM API key not configured')
   }
+  if (provider.supportsDirectApi === false) {
+    throw new Error('Choose an API-capable global summarizer in Settings → Model Providers')
+  }
   const client = provider.createClient()
   if (selection) helperModels.set(client, selection.wireModel)
   return client

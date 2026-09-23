@@ -12,6 +12,7 @@ import {
 import { getEffectiveModels, type AppSettings } from '../config/settings'
 import { resolveSelection } from './connection-schema'
 import { getLlmProvider } from './index'
+import { GenericLlmProvider } from './generic-provider'
 
 const state = vi.hoisted(() => ({
   settings: {} as AppSettings,
@@ -102,6 +103,34 @@ afterEach(async () => {
 })
 
 describe('LLM connections', () => {
+  it('allows agent-only app defaults only with a protected, API-capable global summarizer', async () => {
+    const api = await add('Api')
+    const agentOnly = await add('AgentOnly')
+    await setGlobalSelection('default', { llmProviderId: api, model: 'a' })
+    vi.spyOn(GenericLlmProvider.prototype, 'supportsDirectApi', 'get').mockImplementation(function () {
+      return this.getEffectiveApiKey() !== 'key-AgentOnly'
+    })
+    await expect(setGlobalSelection('summarizer', { llmProviderId: agentOnly, model: 'a' })).rejects.toThrow('direct API')
+    await expect(setGlobalSelection('default', { llmProviderId: agentOnly, model: 'a' })).rejects.toThrow('global summarizer')
+    await setGlobalSelection('summarizer', { llmProviderId: api, model: 'a' })
+    await setGlobalSelection('default', { llmProviderId: agentOnly, model: 'a' })
+    expect((await resolveExecutionSelection()).llmProviderId).toBe(agentOnly)
+    expect((await resolveHelperSelection()).llmProviderId).toBe(api)
+    await expect(setGlobalSelection('summarizer', null)).rejects.toThrow('global summarizer')
+    await expect(deleteConnection(api, admin)).rejects.toThrow('summarizer')
+    await expect(saveConnection({ name: 'Api', provider: 'generic', config: {}, modelOverrides: [] }, admin, api)).rejects.toThrow('summarizer')
+    expect((await listConnections(admin)).find(c => c.id === api)).toMatchObject({ canDelete: false, deletionBlockedReason: expect.stringContaining('summarizer') })
+    const replacement = await add('Replacement')
+    await setGlobalSelection('summarizer', { llmProviderId: replacement, model: 'a' })
+    await deleteConnection(api, admin)
+    // Stale/invalid on-disk state cannot send helper calls to an agent-only provider.
+    state.settings.llmSummarizer = { llmProviderId: 'deleted', model: 'a' }
+    await expect(resolveHelperSelection()).rejects.toThrow('API-capable')
+    await setGlobalSelection('default', { llmProviderId: replacement, model: 'a' })
+    await setGlobalSelection('summarizer', null)
+    expect((await resolveHelperSelection()).llmProviderId).toBe(replacement)
+  })
+
   it('stores no connection prices and reads one global rate across accounts and deletion', async () => {
     state.settings.modelPricing = { 'model-a': { inputPerMtok: 2, outputPerMtok: 3 } }
     const first = await add('First')

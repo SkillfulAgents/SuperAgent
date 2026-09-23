@@ -17,6 +17,7 @@ interface SettingsModelSelectProps {
   agentSlug?: string
   llmProviderId?: string | null
   globalOnly?: boolean
+  directApiOnly?: boolean
   onSelectionChange?: (selection: ModelSelection) => void
   /** Currently-selected model — a concrete id (pinned) or a bare family alias (latest); undefined while loading. */
   model: string | undefined
@@ -66,6 +67,7 @@ function SettingsModelSelectImpl({
   model,
   llmProviderId,
   globalOnly,
+  directApiOnly,
   onSelectionChange,
   onModelChange,
   includeEffort = false,
@@ -82,7 +84,7 @@ function SettingsModelSelectImpl({
   // agent-home Default Model card), where the admin-gated settings 403.
   const { data: settings } = useModelSettings(agentSlug, llmProviderId)
   const connections = settings?.connections ? { connections: settings.connections, defaultSelection: settings.defaultSelection } : undefined
-  const choices = connections?.connections.filter(c => !globalOnly || c.userId === null) ?? []
+  const choices = connections?.connections.filter(c => (!globalOnly || c.userId === null) && (!directApiOnly || c.supportsDirectApi !== false)) ?? []
   const selected = resolveSelection(model && llmProviderId ? { model, llmProviderId } : null, choices)
     ?? resolveSelection(connections?.defaultSelection, choices)
   const selectedConnection = choices.find(c => c.id === selected?.llmProviderId)
@@ -90,8 +92,8 @@ function SettingsModelSelectImpl({
   const selectedModel = onSelectionChange && choices.length > 0 ? selected?.model : model
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const catalog = useMemo(
-    () => onSelectionChange && selectedConnection ? selectedConnection.catalog : settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
-    [settings, activeProvider, selectedConnection, onSelectionChange],
+    () => onSelectionChange && selectedConnection ? selectedConnection.catalog : directApiOnly && connections?.connections.length ? [] : settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
+    [settings, activeProvider, selectedConnection, onSelectionChange, directApiOnly, connections?.connections.length],
   )
 
   // Resolve the current selection for the trigger label.

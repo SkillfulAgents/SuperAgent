@@ -64,6 +64,19 @@ beforeEach(() => {
 })
 
 describe('SettingsModelSelect (flat picker)', () => {
+  it('filters agent-only providers for direct API settings without falling back to their catalog', async () => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections: [
+      { id: 'subscription', name: 'Subscription', userId: null, supportsDirectApi: false, catalog: CATALOG, defaultModel: 'opus' },
+    ], defaultSelection: { llmProviderId: 'subscription', model: 'opus' } } })
+    const onSelectionChange = vi.fn()
+    render(<SettingsModelSelect model="opus" llmProviderId="subscription" directApiOnly globalOnly onModelChange={vi.fn()} onSelectionChange={onSelectionChange} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Select model')
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    expect(screen.queryByTestId('model-latest-opus')).not.toBeInTheDocument()
+    expect(onSelectionChange).not.toHaveBeenCalled()
+  })
+
   it('keeps the legacy selection visible when no connections are configured yet', async () => {
     const settings = settingsWith({ webProvider: 'native' }).data
     useSettingsMock.mockReturnValue({ data: { ...settings, connections: [], defaultSelection: null } })

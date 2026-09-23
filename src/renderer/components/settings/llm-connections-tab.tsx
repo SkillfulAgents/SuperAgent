@@ -67,18 +67,24 @@ export function LlmConnectionsTab() {
             />
           </div>
           <div className="flex items-center justify-between p-4 gap-3">
-            <span className="text-sm">Summarizer</span>
+            <div>
+              <span className="text-sm">Summarizer</span>
+              {data.connections.find(c => c.id === data.defaultSelection?.llmProviderId)?.supportsDirectApi === false && (
+                <p className="text-xs text-muted-foreground">This app default requires a separate API-capable summarizer.</p>
+              )}
+            </div>
             <div className="flex items-center gap-2">
               <SettingsModelSelect
                 model={(data.summarizerSelection ?? data.defaultSelection)?.model}
                 llmProviderId={(data.summarizerSelection ?? data.defaultSelection)?.llmProviderId}
                 globalOnly
+                directApiOnly
                 disabled={mutation.isPending}
                 onModelChange={() => {}}
                 onSelectionChange={(s) => changeDefault('summarizer', s)}
               />
               {data.summarizerSelection && (
-                <Button variant="ghost" size="sm" disabled={mutation.isPending} onClick={() => changeDefault('summarizer', null)}>
+                <Button variant="ghost" size="sm" disabled={mutation.isPending || data.connections.find(c => c.id === data.defaultSelection?.llmProviderId)?.supportsDirectApi === false} onClick={() => changeDefault('summarizer', null)}>
                   Use app default
                 </Button>
               )}
@@ -155,7 +161,7 @@ export function LlmConnectionsTab() {
                   : connection.managed && connection.isConfigured
                     ? 'Disconnect Platform before deleting this provider.'
                     : !connection.canDelete
-                      ? 'Choose another provider as the app default before deleting this one.'
+                      ? connection.deletionBlockedReason ?? 'Choose another provider as the app default before deleting this one.'
                       : mutation.isPending
                         ? 'Wait for the current change to finish.'
                         : 'Delete provider'}
