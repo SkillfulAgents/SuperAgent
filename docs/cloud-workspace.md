@@ -356,14 +356,26 @@ with the macOS traffic lights, so the control shows icons only and reveals its
 labels on hover (and on focus, for keyboard users), pushing the buttons after it
 past the right edge while open.
 
-- **Hidden unless there is somewhere to go.** A single-machine user never sees a
-  control with one real option.
-- **Availability is asked only from the local side.** This is the trap:
+- **Always shown in the desktop app**, so it is how a user without cloud agents
+  finds them. A Cloud press never acts on the cached answer:
+
+  ```
+  not connected                       → Settings → Account
+  offline, check failed, no token     → "Couldn't connect" banner
+  deployed, token held                → switch (below)
+  no workspace, or an unknown status  → platform's Cloud Agents page
+  pending/deploying, destroying,
+  destroyed, error                    → banner naming the state, [Platform ↗]
+  ```
+
+  Waking and fixing happen on platform's page. Banners don't update; the user
+  presses Cloud again. Only a `deployed` workspace is minted against. Platform
+  says `deployed` until a pause finishes, so a press mid-pause still switches in.
+- **The workspace is asked about only from the local side.** This is the trap:
   `GET /api/platform-auth/deployments` goes through `apiFetch`, so *in cloud mode
   it travels through the proxy to the deployment* — and `getCloudWorkspace`
   self-gates off the Electron main process, so the deployment answers
-  "no workspace" about itself. Believing that would hide the control exactly when
-  the user needs it to get back. Being in cloud mode is its own proof of
+  "no workspace" about itself. Being in cloud mode is its own proof of
   reachability, so the query is disabled there.
 - **Switching reloads onto `/`, never in place.** Agent ids are per-deployment,
   so the route you are standing on almost certainly does not exist on the other
