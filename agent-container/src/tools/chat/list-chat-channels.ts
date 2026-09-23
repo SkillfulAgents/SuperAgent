@@ -33,7 +33,9 @@ Only integrations whose capabilities include list_channels support this (see lis
     try {
       const data = await callChatHost<ChannelsResult>('channels', { integration_id })
       if (data.channels.length === 0) {
-        return textResult('No channels found for this integration.')
+        return textResult(data.provider === 'platform-email'
+          ? 'No email conversations yet. To start a new email, use send_chat_message with email.to, email.subject and email.idempotency_key. No existing conversation is required.'
+          : 'No channels found for this integration.')
       }
       const lines = data.channels.map((ch) => {
         const flags = [

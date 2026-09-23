@@ -4,6 +4,7 @@ import type { AppDatabase } from '../db/drivers/types'
 import { user, agentAcl } from '../db/schema'
 import { createAgentIntegration, getAgentIntegration, updateAgentIntegration, DuplicateIntegrationIdentityError } from '../services/agent-integration-service'
 import { emailConfigSchema, emailMessageSchema, emailSetupSchema, type EmailConfig, type EmailMessage, type EmailSend } from './config-schema'
+import { listAgentIntegrationInventory } from '../agent-integrations/inventory'
 import { platformEmailProvider } from './provider'
 import { agentUserEmails, inboundAllowed, recipientAllowed, wasContacted } from './policy'
 import { EmailAgentIntegration, emailDefinition } from './email-agent-integration'
@@ -108,6 +109,13 @@ describe('email access levels', () => {
 })
 
 describe('email lifecycle and delivery', () => {
+  it('advertises how to send a new email without exposing inbox credentials', async () => {
+    const inventory = await listAgentIntegrationInventory('agent-a')
+    expect(inventory[0].instructions).toContain('email: {to:')
+    expect(inventory[0].instructions).toContain('No existing session or conversation is required')
+    expect(inventory[0]).not.toHaveProperty('config')
+    expect(JSON.stringify(inventory)).not.toContain('test-token')
+  })
   it('adds a display card while preserving the exact model input and attachment path', async () => {
     const mail = message({ text: 'Please review.\n\nOn Tuesday, Agent wrote:\n> Draft attached.', attachments: [{ id: 'file-1', filename: 'plan.pdf', size: 4, contentType: 'application/pdf' }] })
     const putDoc = vi.fn()

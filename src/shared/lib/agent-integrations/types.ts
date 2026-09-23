@@ -138,6 +138,8 @@ export interface AgentIntegrationDefinition {
   managementAccess?: 'user' | 'owner'
   /** Operations available to the agent. UI controls are separate. */
   capabilities: readonly string[]
+  /** Provider-specific usage returned by agent integration discovery. */
+  agentInstructions?: string
   managementCapabilities?: readonly IntegrationCapability[]
   settings: readonly { key: string; label: string; type: 'boolean' }[]
   setup: { kind: string; credentialFields: readonly string[] }

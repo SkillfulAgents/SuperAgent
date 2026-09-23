@@ -170,8 +170,12 @@ xAgentChat.post('/send', async (c) => {
 
     if (integration.provider === 'platform-email') {
       const config = emailConfigSchema.parse(JSON.parse(integration.config))
-      const email = emailToolSchema.parse(body.email)
-      if (chat_id || user_id) return c.json({ error: 'Email uses structured email recipients or reply_to_message_id, not chat_id/user_id' }, 400)
+      if (!body.email || chat_id || user_id) return c.json({
+        error: 'Email requires the email object: {to: ["recipient@example.com"], subject: "Subject", idempotency_key: "unique-send-key"}, with the body in message. For a reply, use email.reply_to_message_id. Do not pass chat_id/user_id. If your send_chat_message tool has no email parameter, restart the agent with an updated container image. Nothing was sent.',
+      }, 400)
+      const parsed = emailToolSchema.safeParse(body.email)
+      if (!parsed.success) return c.json({ error: `Invalid email parameters: ${parsed.error.issues.map(issue => `${issue.path.join('.') || 'email'}: ${issue.message}`).join('; ')}. Nothing was sent.` }, 400)
+      const email = parsed.data
       const currentSession = session_id ? await getAgentIntegrationSessionBySessionId(callerSlug, session_id) : null
       const client = clientFor(integration)
       if (currentSession && !currentSession.archivedAt && currentSession.integrationId === integration.id && email.reply_to_message_id) {
