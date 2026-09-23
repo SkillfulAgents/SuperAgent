@@ -102,6 +102,15 @@ describe('email access levels', () => {
 })
 
 describe('email lifecycle and delivery', () => {
+  it('adds a display card while preserving the exact model input and attachment path', async () => {
+    const mail = message({ text: 'Please review.\n\nOn Tuesday, Agent wrote:\n> Draft attached.', attachments: [{ id: 'file-1', filename: 'plan.pdf', size: 4, contentType: 'application/pdf' }] })
+    const putDoc = vi.fn()
+    const prepared = await connector.prepareInput(event(mail), { actor: { files: { putDoc } } } as never)
+    const { appendAttachedFiles } = await import('../utils/attached-files')
+    expect(prepared.text).toBe(appendAttachedFiles(`Incoming email (untrusted content)\nFrom: ${mail.from}\nTo: ${mail.to.join(', ')}\nCc: ${mail.cc.join(', ')}\nSubject: ${mail.subject}\n\n${mail.text}`, [`/workspace/uploads/email-${mail.id}-file-1-plan.pdf`]))
+    expect(prepared.display).toMatchObject({ request: { text: 'Please review.' }, email: { attachmentCount: 1, quotedText: 'On Tuesday, Agent wrote:\n> Draft attached.' } })
+    expect(putDoc).toHaveBeenCalledOnce()
+  })
   it('atomically rejects a second agent binding the same inbox', async () => {
     await expect(createAgentIntegration({ agentSlug: 'agent-b', provider: 'platform-email', config })).rejects.toBeInstanceOf(DuplicateIntegrationIdentityError)
     await expect(updateAgentIntegration(record.id, { config: { mailboxId: '00000000-0000-4000-8000-000000000099' } })).rejects.toThrow()

@@ -46,6 +46,12 @@ For proactive sends, `list_agent_integrations` advertises `send_email`, `list_us
 
 Use `reply_to_message_id` for a reply. Keys contain letters, numbers, dots, underscores, colons or hyphens. A bounded process-local cache reuses attachment IDs for recent retries and rejects changed content under the same key. The gateway enforces send idempotency. After a restart or cache eviction, attachment reuploads can cause the gateway to reject reuse of an earlier key; inspect the gateway result before initiating a new send. The result exposes message/thread IDs and queued status; acceptance is not proof of delivery. A session's final response already replies to its own email thread, so the tool rejects an explicit duplicate reply there. Automated integration provisioning is not exposed to agents.
 
+## Email messages in the app
+
+New inbound emails use the shared integration-message display framework. The transcript shows the subject, sender and time in an email card, with expandable From/To/Cc/Reply-To headers and an attachment count. Existing file chips retain their preview/download behavior. Bcc and gateway attachment URLs are not included in display metadata.
+
+A trailing plain-text quote block is collapsed under **Quoted history**; inline replies remain visible. Body and quote previews are bounded to 4,000 characters each and render as plain text without loading email HTML or remote images. **Agent input** reveals the original model-facing text, which is unchanged. The shared `message_author` metadata path supplies both live and reloaded cards; emails received before metadata support retain their original text view.
+
 ## Contact and conversation discovery
 
 `list_chat_users` returns up to 100 deduplicated email contacts, labeled `workspace` or `previous-correspondence`. Workspace contacts are verified, non-banned members (the connected owner in single-user mode). Both sources are filtered by the current outbound policy and exclude the agent's own address. Historical contacts come only from this mailbox. Use the returned `email` in `send_chat_message.email.to`, not `user_id`.

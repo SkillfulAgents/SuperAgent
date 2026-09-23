@@ -4,12 +4,13 @@ import { emailMessageSchema } from './config-schema'
 const model = vi.hoisted(() => vi.fn())
 vi.mock('../config/settings', () => ({ getEffectiveModels: () => ({ summarizerModel: 'configured-summary' }) }))
 vi.mock('../llm-provider', () => ({ resolveActiveProviderModel: (model: string) => model }))
-vi.mock('../llm-provider/helpers', () => ({ getConfiguredLlmClient: () => ({}), createSummarizerText: model }))
+vi.mock('../llm-provider/helpers', () => ({ getConfiguredLlmClient: async () => ({}), createSummarizerText: model }))
 const mail = emailMessageSchema.parse({ id: 'm', mailboxId: 'b', threadId: 't', direction: 'inbound', messageId: null, replyToMessageId: null, from: 'a@company.com', to: ['agent@company.com'], cc: [], bcc: [], replyTo: [], subject: 'Report?', text: 'Send the report', html: null, status: 'received', createdAt: 1 })
 beforeEach(() => model.mockReset())
 it('uses the configured model with structured output and all answer blocks', async () => {
   model.mockResolvedValue(JSON.stringify({ action: 'send', text: 'Your report is ready.' }))
   expect(await composeEmailReply(mail, [mail], ['Your report is ready.', 'Just the monitor.'], 1)).toEqual({ action: 'send', text: 'Your report is ready.' })
+  expect(model.mock.calls[0][0]).toEqual({})
   const request = model.mock.calls[0][1]
   expect(request.model).toBe('configured-summary')
   expect(JSON.parse(request.messages[0].content)).toMatchObject({ assistantTextBlocks: ['Your report is ready.', 'Just the monitor.'], attachmentCount: 1 })
