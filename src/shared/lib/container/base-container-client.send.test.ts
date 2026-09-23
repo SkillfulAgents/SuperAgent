@@ -2,9 +2,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BaseContainerClient } from './base-container-client'
 import { MessageNotAcceptedError } from './message-dispatch-error'
 import * as settings from '../config/settings'
+import * as providerRuntime from '../llm-provider/connection-runtime'
 import type { ContainerInfo } from './types'
 vi.mock('./host-token-store', () => ({ getOrCreateHostToken: () => 'test-host-token' }))
 vi.mock('../config/settings', () => ({ getSettings: () => ({}), getModelCatalogSettings: () => ({}), getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'allow' }) }))
+// These tests isolate HTTP acceptance evidence; provider persistence has its
+// own database-backed coverage in base-container-client.llm-provider.test.ts.
+vi.mock('../llm-provider/connections', () => ({
+  storedSelection: () => null,
+  resolveExecutionSelection: async () => ({ llmProviderId: 'provider', model: 'test-model' }),
+}))
+vi.mock('../llm-provider/connection-runtime', () => ({
+  connectionRuntime: async () => ({ llmProviderId: 'provider', model: 'test-model', modelPromptHints: [], subagentModels: [], modelContextWindows: {}, env: {} }),
+  rememberSessionRuntime: () => {},
+}))
+vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
+  sessions: { metadata: async () => ({}), updateMetadata: async () => {} },
+  config: { get: async () => ({}) },
+}) } }))
 class Client extends BaseContainerClient {
   constructor(private readonly info: ContainerInfo = { status: 'running', port: 1234 }) { super({ agentId: 'test' }) }
   protected getRunnerCommand() { return 'unused' }
@@ -49,6 +64,15 @@ describe('runtime handoff rejection evidence', () => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
     vi.spyOn(settings, 'getAgentCapabilitySettings').mockImplementationOnce(() => { throw new Error('settings temporarily unavailable') })
     await expect(new Client().createSession({ initialMessage: 'first input' })).rejects.toMatchObject({ reason: 'unavailable' })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+  it.each(['create', 'send'] as const)('retries %s provider resolution failures before input dispatch', async operation => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
+    vi.spyOn(providerRuntime, 'connectionRuntime').mockRejectedValueOnce(new Error('provider temporarily unavailable'))
+    const client = new Client()
+    await expect(operation === 'create'
+      ? client.createSession({ initialMessage: 'first input' })
+      : client.sendMessage('session', 'follow-up')).rejects.toMatchObject({ reason: 'unavailable' })
     expect(fetch).not.toHaveBeenCalled()
   })
   it.each(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'])('recognizes %s as proof the creation request was not delivered', async code => {

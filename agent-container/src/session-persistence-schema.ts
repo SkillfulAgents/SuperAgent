@@ -1,3 +1,4 @@
+import { withoutProviderCredentials } from './connection-runtime';
 import { z } from 'zod';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
@@ -13,6 +14,7 @@ export const sessionMetadataSchema = z
     modelPromptHints: z.array(z.string()).optional(),
     availableEnvVars: z.array(z.string()).optional(),
     model: z.string().optional(),
+    llmProviderId: z.string().optional(),
     browserModel: z.string().optional(),
     dashboardBuilderModel: z.string().optional(),
     subagentModels: subagentModelCatalogSchema,
@@ -23,7 +25,7 @@ export const sessionMetadataSchema = z
     maxThinkingTokens: z.number().optional(),
     maxTurns: z.number().optional(),
     maxBudgetUsd: z.number().optional(),
-    customEnvVars: z.record(z.string(), z.string()).optional(),
+    customEnvVars: z.record(z.string(), z.string()).transform(withoutProviderCredentials).optional(),
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
     speed: speedLevelSchema,
     capabilityPolicies: agentCapabilityPoliciesSchema,

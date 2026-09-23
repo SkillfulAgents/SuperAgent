@@ -1,4 +1,5 @@
 import { SessionInputNotAcceptedError } from './session-creation-error';
+import { connectionRuntimeSchema, rememberConnectionRuntime, cachedConnectionRuntime, runtimeFingerprint, resolvePrewarmRuntime, type ConnectionRuntime } from './connection-runtime';
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from 'crypto';
 import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession } from '@anthropic-ai/claude-agent-sdk';
@@ -254,6 +255,14 @@ export class SessionManager extends EventEmitter {
     // default must not look like two different profiles). The session's own
     // shape decides whether a parked process fits; the host's default shape
     // decides what to warm next.
+    if (request.llmRuntime) {
+      request.llmRuntime = connectionRuntimeSchema.parse(request.llmRuntime);
+      rememberConnectionRuntime(request.llmRuntime);
+    }
+    if (request.prewarmDefaults?.llmRuntime) {
+      request.prewarmDefaults.llmRuntime = connectionRuntimeSchema.parse(request.prewarmDefaults.llmRuntime);
+      rememberConnectionRuntime(request.prewarmDefaults.llmRuntime);
+    }
     const normalized = {
       ...request,
       speed,
@@ -272,6 +281,7 @@ export class SessionManager extends EventEmitter {
         userSystemPrompt: request.systemPrompt,
         modelPromptHints: request.modelPromptHints,
         availableEnvVars: request.availableEnvVars,
+        llmRuntime: request.llmRuntime,
         model: request.model,
         browserModel: request.browserModel,
         dashboardBuilderModel: request.dashboardBuilderModel,
@@ -423,6 +433,7 @@ export class SessionManager extends EventEmitter {
       systemPrompt: request.systemPrompt,
       modelPromptHints: request.modelPromptHints,
       availableEnvVars: request.availableEnvVars,
+      llmProviderId: request.llmProviderId,
       model: request.model,
       browserModel: request.browserModel,
       dashboardBuilderModel: request.dashboardBuilderModel,
@@ -492,6 +503,7 @@ export class SessionManager extends EventEmitter {
    */
   async prewarm(profile: WarmProfile): Promise<void> {
     if (!this.prewarmEnabled || this.shuttingDown) return;
+    if (profile.llmProviderId && !cachedConnectionRuntime(profile.llmProviderId, profile.credentialGeneration, profile.model, profile.runtimeFingerprint)) return;
 
     const key = warmProfileKey(profile);
     // Recorded even when a warm-up is already in flight, so that one can see
@@ -520,6 +532,7 @@ export class SessionManager extends EventEmitter {
         userSystemPrompt: profile.systemPrompt,
         modelPromptHints: profile.modelPromptHints,
         availableEnvVars: profile.availableEnvVars,
+        llmRuntime: cachedConnectionRuntime(profile.llmProviderId, profile.credentialGeneration, profile.model, profile.runtimeFingerprint),
         model: profile.model,
         browserModel: profile.browserModel,
         dashboardBuilderModel: profile.dashboardBuilderModel,
@@ -575,7 +588,21 @@ export class SessionManager extends EventEmitter {
   prewarmFromLastProfile(): void {
     const profile = this.warmProfileStore.read();
     if (!profile) return;
-    void this.prewarm(profile);
+    if (!profile.llmProviderId) {
+      void this.prewarm(profile);
+      return;
+    }
+    // Credentials are never persisted. Refresh the agent default from the host
+    // on boot, before a session exists, then warm using the current generation.
+    void resolvePrewarmRuntime().then(runtime => {
+      // A real request supersedes the boot hint while the callback is in flight.
+      if (this.desiredWarmKey !== null || this.shuttingDown) return;
+      return this.prewarm({ ...profile, llmProviderId: runtime.llmProviderId,
+        credentialGeneration: runtime.generation, runtimeFingerprint: runtimeFingerprint(runtime),
+        model: runtime.model, browserModel: runtime.browserModel,
+        dashboardBuilderModel: runtime.dashboardBuilderModel, modelPromptHints: runtime.modelPromptHints,
+        subagentModels: runtime.subagentModels, modelContextWindows: runtime.modelContextWindows });
+    }).catch(error => console.warn('[SessionManager] Boot prewarm could not resolve the provider:', error));
   }
 
   /**
@@ -626,6 +653,11 @@ export class SessionManager extends EventEmitter {
     console.log(`Attempting to resume session ${sessionId} with Claude session ID ${persisted.claudeSessionId}`);
 
     try {
+      // Reading a persisted session must not depend on the credential service.
+      // Defer the subprocess until the first send, which carries fresh runtime
+      // credentials from the host (or resolves them for an internal send).
+      const requiresConnectionRuntime = !!(persisted.llmProviderId ||
+        (globalThis.process.env.SUPERAGENT_HOST_API_URL && globalThis.process.env.PROXY_TOKEN));
       // Create a new Claude Code process with resume
       const process = new ClaudeCodeProcess({
         sessionId,
@@ -634,6 +666,7 @@ export class SessionManager extends EventEmitter {
         userSystemPrompt: persisted.systemPrompt,
         modelPromptHints: persisted.modelPromptHints,
         availableEnvVars: persisted.availableEnvVars,
+        requiresConnectionRuntime,
         model: persisted.model,
         browserModel: persisted.browserModel,
         dashboardBuilderModel: persisted.dashboardBuilderModel,
@@ -712,7 +745,7 @@ export class SessionManager extends EventEmitter {
 
       // Start the process (which will resume the Claude session)
       // Note: slash commands are captured later when init event fires via WebSocket
-      await process.start();
+      if (!requiresConnectionRuntime) await process.start();
 
       // Publish only once fully started — concurrent callers wait on the
       // resuming promise, never on a half-initialized entry. A failed start
@@ -867,7 +900,7 @@ export class SessionManager extends EventEmitter {
     sessionId: string,
     content: string,
     uuid?: UUID,
-    options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
+    options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
   ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
@@ -903,6 +936,10 @@ export class SessionManager extends EventEmitter {
     sessionData.session.lastActivity = new Date();
     this.persistence.updateLastActivity(sessionId);
 
+    if (options?.llmRuntime) {
+      rememberConnectionRuntime(options.llmRuntime);
+      this.persistence.updateConnection(sessionId, options.llmRuntime.llmProviderId);
+    }
     // Persist runtime-options changes so resume after eviction uses the latest values
     if (options?.effort !== undefined) {
       this.persistence.updateEffort(sessionId, options.effort);

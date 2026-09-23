@@ -2,6 +2,7 @@ import { MessageNotAcceptedError } from '../container/message-dispatch-error'
 import { IntegrationDeliveryQueue, DeliveryCancelled, PermanentDeliveryError, type DeliveryAttempt } from './delivery-queue'
 import { parseDeliveryEnvelope } from './delivery-schema'
 import type { DeliveryRecord } from './delivery-store'
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { syncRemoteMcpAgents } from '../services/connection-sync-service'
 /**
  * Application-wide integration lifecycle, serialized input, and actor sessions.
@@ -31,7 +32,6 @@ import {
   resolveActiveSession,
   getLastDisplayName,
 } from './store'
-import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
@@ -1195,8 +1195,9 @@ export class AgentIntegrationManager {
     // Model/effort/speed preference order: integration override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(integration.agentSlug)
-    const resolved = resolveRuntimeInherit(
-      { model: integration.model, effort: integration.effort, speed: integration.speed },
+    const resolved = await resolveConnectionRuntimeInherit(
+      { model: integration.model,
+      llmProviderId: integration.llmProviderId, effort: integration.effort, speed: integration.speed },
       agentPrefs,
       models,
     )
@@ -1207,6 +1208,7 @@ export class AgentIntegrationManager {
       initialMessageUuid: attempt.id,
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       model: resolved.model,
+      llmProviderId: resolved.llmProviderId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       effort: resolved.effort,

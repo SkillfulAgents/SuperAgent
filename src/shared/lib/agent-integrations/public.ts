@@ -5,7 +5,7 @@ export type IntegrationCapability = 'reset_conversation' | 'session_timeout' | '
 /** Credential-free fields shared by every integration family. */
 export type PublicAgentIntegration<Settings extends object = object> = Pick<AgentIntegrationRecord,
   | 'id' | 'agentSlug' | 'provider' | 'name' | 'status' | 'errorMessage'
-  | 'createdByUserId' | 'model' | 'effort' | 'speed' | 'createdAt' | 'updatedAt'
+  | 'createdByUserId' | 'llmProviderId' | 'model' | 'effort' | 'speed' | 'createdAt' | 'updatedAt'
 > & {
   /** Whether the provider's stored credentials validate. */
   hasCredentials: boolean

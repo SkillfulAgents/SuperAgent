@@ -1,3 +1,4 @@
+import { getSettings } from '@shared/lib/config/settings'
 /**
  * Webhook Trigger Service
  *
@@ -158,6 +159,7 @@ export interface CreateWebhookTriggerParams {
   createdByUserId?: string
   /** Acting platform member the upstream subscription was minted under (SUP-765). */
   mintedByMemberId?: string
+  llmProviderId?: string | null
   model?: string
   effort?: string
   speed?: string
@@ -185,6 +187,7 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     createdBySessionId: params.createdBySessionId ?? null,
     createdByUserId: params.createdByUserId ?? null,
     mintedByMemberId: params.mintedByMemberId ?? null,
+    llmProviderId: params.model ? (params.llmProviderId === undefined ? getSettings().llmDefault?.llmProviderId : params.llmProviderId) : null,
     model: params.model ?? null,
     effort: params.effort ?? null,
     speed: params.speed ?? null,
@@ -684,13 +687,18 @@ export async function updateWebhookTriggerName(
  */
 export async function updateWebhookTriggerRuntimeOptions(
   triggerId: string,
-  options: { model?: string | null; effort?: string | null; speed?: string | null },
+  options: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null },
 ): Promise<boolean> {
   const trigger = await getWebhookTrigger(triggerId)
   if (!trigger || trigger.status === 'cancelled') return false
 
   const updates: Record<string, string | null> = {}
-  if ('model' in options) updates.model = options.model ?? null
+  if ('llmProviderId' in options) updates.llmProviderId = options.llmProviderId ?? null
+  if ('model' in options) {
+    updates.model = options.model ?? null
+    if (!options.model) updates.llmProviderId = null
+    else if (options.llmProviderId === undefined && getSettings().llmDefault) updates.llmProviderId = trigger.llmProviderId ?? getSettings().llmDefault!.llmProviderId
+  }
   if ('effort' in options) updates.effort = options.effort ?? null
   if ('speed' in options) updates.speed = options.speed ?? null
 

@@ -13,6 +13,10 @@ const getSettings = vi.fn().mockReturnValue({})
 const getPlatformAccessToken = vi.fn().mockReturnValue(null)
 const isAuthMode = vi.fn().mockReturnValue(true)
 const clearPendingApprovalBans = vi.fn()
+const ensureManagedPlatformConnection = vi.fn(async () => {})
+vi.mock('./llm-provider/connection-settings', () => ({
+  ensureManagedPlatformConnection: () => ensureManagedPlatformConnection(),
+}))
 
 vi.mock('./services/skillset-reconcile', () => ({
   reconcileSkillsetConfigsForCurrentAuth: () => reconcile(),
@@ -257,6 +261,7 @@ describe('initializeServices post-bind critical path', () => {
     await initializeServices()
     expect(reconcile).toHaveBeenCalledTimes(1)
     expect(validateAuth).not.toHaveBeenCalled()
+    expect(ensureManagedPlatformConnection).toHaveBeenCalledTimes(1)
   })
 
   it('afterBindInitialize marks bound, inits, then logs timing', async () => {

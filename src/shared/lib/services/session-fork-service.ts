@@ -44,9 +44,10 @@ export type ForkedSession = SessionInfo & {
 
 function runtimeChoices(metadata: SessionMetadata | null | undefined): Pick<
   SessionMetadata,
-  'model' | 'effort' | 'speed'
+  'model' | 'llmProviderId' | 'effort' | 'speed'
 > {
   return {
+    ...(metadata?.llmProviderId ? { llmProviderId: metadata.llmProviderId } : {}),
     ...(metadata?.model ? { model: metadata.model } : {}),
     ...(metadata?.effort ? { effort: metadata.effort } : {}),
     ...(metadata?.speed ? { speed: metadata.speed } : {}),

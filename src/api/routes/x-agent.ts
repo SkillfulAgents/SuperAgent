@@ -1,3 +1,4 @@
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * X-Agent Work routes
  *
@@ -37,7 +38,6 @@ import {
   type XAgentOperation,
 } from '@shared/lib/services/x-agent-policy-service'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
-import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { captureException } from '@shared/lib/error-reporting'
@@ -1002,7 +1002,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       const customEnvVars = getCustomEnvVars()
       const targetPrefs = await readAgentPreferences(targetSlug)
       const models = getEffectiveModels()
-      const resolved = resolveRuntimeInherit({}, targetPrefs, models)
+      const resolved = await resolveConnectionRuntimeInherit({}, targetPrefs, models)
       const callerName = await getAgentDisplayNameBestEffort(callerSlug)
       const initialMessageUuid = isAuthMode() && attributedUserId
         ? randomUUID()
@@ -1032,6 +1032,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         initialMessage: deliveredPrompt,
         ...(initialMessageUuid ? { initialMessageUuid } : {}),
         model: resolved.model,
+      llmProviderId: resolved.llmProviderId,
         browserModel: models.browserModel,
         dashboardBuilderModel: models.dashboardBuilderModel,
         effort: resolved.effort,

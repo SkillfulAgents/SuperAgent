@@ -27,7 +27,7 @@ vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
     subscribe: runtime.subscribe, withSend: (_id: string, send: () => Promise<void>) => send() },
 }) } }))
 vi.mock('../services/agent-service', () => ({ agentExists: async () => true }))
-vi.mock('../config/settings', () => ({ getEffectiveModels: () => ({ agentModel: 'test' }) }))
+vi.mock('../config/settings', () => ({ getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test' }) }))
 vi.mock('../services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('../services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
 vi.mock('../container/message-persister', () => ({ messagePersister: { addGlobalNotificationClient: () => () => {} } }))

@@ -1,3 +1,4 @@
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Trigger Manager
  *
@@ -24,7 +25,6 @@ import {
   getConnectedAccountOwnerUserId,
 } from '@shared/lib/services/webhook-trigger-service'
 import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-service'
-import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import {
@@ -343,8 +343,9 @@ class TriggerManager {
     // Model/effort/speed preference order: trigger override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(trigger.agentSlug)
-    const resolved = resolveRuntimeInherit(
-      { model: trigger.model, effort: trigger.effort, speed: trigger.speed },
+    const resolved = await resolveConnectionRuntimeInherit(
+      { model: trigger.model,
+      llmProviderId: trigger.llmProviderId, effort: trigger.effort, speed: trigger.speed },
       agentPrefs,
       models,
     )
@@ -352,6 +353,7 @@ class TriggerManager {
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: prompt,
       model: resolved.model,
+      llmProviderId: resolved.llmProviderId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },

@@ -1,3 +1,4 @@
+import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
 import {
   query,
   startup,
@@ -23,6 +24,7 @@ import { computerUseTools } from './tools/computer-use';
 import { fileHooks, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
 import { promptDate } from './prompt-date';
+import { prepareResumeDiagnostics } from './resume-diagnostics';
 
 /**
  * `Query` plus the `cancel_async_message` control request, which drops a queued
@@ -531,6 +533,8 @@ export interface ClaudeCodeProcessOptions {
   maxThinkingTokens?: number;
   maxTurns?: number;
   maxBudgetUsd?: number;
+  llmRuntime?: ConnectionRuntime;
+  requiresConnectionRuntime?: boolean;
   customEnvVars?: Record<string, string>;
   effort?: EffortLevel;
   speed?: SpeedLevel;
@@ -559,6 +563,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
   private maxBudgetUsd: number | undefined;
+  private llmRuntime: ConnectionRuntime | undefined;
+  private readonly requiresConnectionRuntime: boolean;
   private customEnvVars: Record<string, string> | undefined;
   private effort: EffortLevel | undefined;
   private speed: SpeedLevel | undefined;
@@ -657,11 +663,11 @@ export class ClaudeCodeProcess extends EventEmitter {
     // The host resolves selections to a concrete wire id (family aliases →
     // their latest concrete id) before they reach the container, so we pass
     // the model straight through — including '/'-style OpenRouter ids.
-    this.model = options.model;
-    this.browserModel = options.browserModel;
-    this.dashboardBuilderModel = options.dashboardBuilderModel;
-    this.subagentModels = options.subagentModels ?? [];
-    this.modelContextWindows = options.modelContextWindows ?? {};
+    this.model = options.llmRuntime?.model ?? options.model;
+    this.browserModel = options.llmRuntime?.browserModel ?? options.browserModel;
+    this.dashboardBuilderModel = options.llmRuntime?.dashboardBuilderModel ?? options.dashboardBuilderModel;
+    this.subagentModels = options.llmRuntime?.subagentModels ?? options.subagentModels ?? [];
+    this.modelContextWindows = options.llmRuntime?.modelContextWindows ?? options.modelContextWindows ?? {};
     this.webSearchProvider = options.webSearchProvider;
     this.webFetchProvider = options.webFetchProvider;
     this.maxOutputTokens = options.maxOutputTokens;
@@ -669,13 +675,15 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.maxTurns = options.maxTurns;
     this.maxBudgetUsd = options.maxBudgetUsd;
     this.customEnvVars = options.customEnvVars;
+    this.llmRuntime = options.llmRuntime;
+    this.requiresConnectionRuntime = options.requiresConnectionRuntime ?? false;
     this.effort = options.effort;
     this.speed = options.speed;
     this.capabilityPolicies = options.capabilityPolicies;
     this.sessionCapabilityGrants = new Set(options.sessionCapabilityGrants ?? []);
     this.availableEnvVars = options.availableEnvVars;
     this.userSystemPrompt = options.userSystemPrompt;
-    this.modelPromptHints = options.modelPromptHints;
+    this.modelPromptHints = options.llmRuntime?.modelPromptHints ?? options.modelPromptHints;
     this.refreshSystemPrompt();
   }
 
@@ -899,7 +907,9 @@ export class ClaudeCodeProcess extends EventEmitter {
       console.log(`[Session ${this.sessionId}] createQuery: claiming pre-warmed subprocess`);
       return warm.query(this.messageQueue!);
     }
-    return query({ prompt: this.messageQueue!, options: this.buildQueryOptions() });
+    const options = this.buildQueryOptions();
+    if (options.resume) prepareResumeDiagnostics(options.resume, options.env?.CLAUDE_CONFIG_DIR);
+    return query({ prompt: this.messageQueue!, options });
   }
 
   /**
@@ -955,6 +965,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   }
 
   private buildQueryOptions(): Options {
+    if (this.requiresConnectionRuntime && !this.llmRuntime) throw new Error('LLM provider runtime is required');
     const remoteMcpConfigs = this.buildRemoteMcpServers();
     const remoteMcpToolPatterns = Object.keys(remoteMcpConfigs).map(name => `mcp__${name}__*`);
     this.connectedAccountsSnapshot = connectedAccountsSnapshot();
@@ -1009,6 +1020,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       model: this.model,
       cwd: this.workingDirectory,
       abortController: this.abortController!,
+      // The SDK preserves tool/conversation history and repairs rejected
+      // thinking signatures on the wire when the destination account differs.
       resume: this.claudeSessionId || undefined,
       // A fresh session runs under the id we already hold (tempSessionId /
       // the prewarm uuid) instead of one the CLI mints at init. That is what
@@ -1072,8 +1085,9 @@ export class ClaudeCodeProcess extends EventEmitter {
         // overlaying it, so we must spread process.env explicitly or the Claude
         // subprocess loses PATH, HOME, ANTHROPIC_API_KEY, connected-account env
         // vars, and anything else set on the container.
-        ...process.env,
-        ...this.customEnvVars,
+        ...(this.llmRuntime ? withoutProviderCredentials(process.env) : process.env),
+        ...(this.llmRuntime ? withoutProviderCredentials(this.customEnvVars ?? {}) : this.customEnvVars),
+        ...Object.fromEntries(Object.entries(this.llmRuntime?.env ?? {}).map(([key, value]) => [key, value || undefined])),
         // Platform services use the host-injected credentials across every
         // session, regardless of its LLM provider or custom env overrides.
         PLATFORM_BASE_URL: process.env.PLATFORM_BASE_URL,
@@ -1115,7 +1129,8 @@ export class ClaudeCodeProcess extends EventEmitter {
         // var for non-claude-* models, so it never affects Claude sessions. A
         // user-set custom env var (spread above) deliberately wins.
         ...(this.contextWindowForModel(this.model) &&
-          !this.customEnvVars?.CLAUDE_CODE_MAX_CONTEXT_TOKENS && {
+          !this.customEnvVars?.CLAUDE_CODE_MAX_CONTEXT_TOKENS &&
+          !this.llmRuntime?.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS && {
             CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(this.contextWindowForModel(this.model)),
           }),
       }), this.speed),
@@ -1615,10 +1630,27 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
+    const nextRuntime = options?.llmRuntime ?? (this.requiresConnectionRuntime && !this.llmRuntime
+      ? await resolveSessionRuntime(this.sessionId) : undefined);
+    const connectionChanged = nextRuntime !== undefined && (
+      nextRuntime.llmProviderId !== this.llmRuntime?.llmProviderId ||
+      nextRuntime.model !== this.llmRuntime?.model ||
+      nextRuntime.generation !== this.llmRuntime?.generation ||
+      JSON.stringify(nextRuntime.env) !== JSON.stringify(this.llmRuntime?.env)
+    );
+    if (nextRuntime) {
+      this.llmRuntime = nextRuntime;
+      this.browserModel = nextRuntime.browserModel;
+      this.dashboardBuilderModel = nextRuntime.dashboardBuilderModel;
+      this.subagentModels = nextRuntime.subagentModels;
+      this.modelContextWindows = nextRuntime.modelContextWindows;
+      this.modelPromptHints = nextRuntime.modelPromptHints;
+      this.refreshSystemPrompt();
+    }
     const effort = options?.effort;
     const speed = options?.speed;
-    const model = options?.model;
+    const model = nextRuntime?.model ?? options?.model;
     const connectedAccountsChanged =
       connectedAccountsSnapshot() !== this.connectedAccountsSnapshot;
     const remoteMcpsChanged = remoteMcpsSnapshot() !== this.remoteMcpsSnapshot;
@@ -1696,6 +1728,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       await this.restart();
       queryRebuilt = true;
     } else if (
+      connectionChanged ||
       effortChanged ||
       speedChanged ||
       capabilityBlockChanged ||
@@ -1865,6 +1898,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
     console.log(`[Session ${this.sessionId}] Restarting session`);
     this.stopping = false;
+    await this.queryInstance?.return(undefined);
     this.initializeQuery();
     this.processingDone = this.processMessages();
   }
@@ -1943,6 +1977,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       ]);
     }
 
+    await this.queryInstance?.return(undefined);
     this.isReady = false;
     this.queryInstance = null;
     this.messageQueue = null;
@@ -2208,6 +2243,10 @@ export class ClaudeCodeProcess extends EventEmitter {
 
     // Abort the current query
     this.abortController!.abort();
+
+    // Drain SDK teardown before replacing a transcript or resuming it. The
+    // message iterator can finish before the child has flushed and exited.
+    await this.queryInstance?.return(undefined);
 
     // Wait for the current processing to stop
     await new Promise<void>((resolve) => {

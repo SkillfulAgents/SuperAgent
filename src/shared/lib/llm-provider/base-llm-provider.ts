@@ -40,7 +40,23 @@ export interface AgentIdentity {
   name?: string
 }
 
+export interface ProviderConfiguration {
+  runtimeEnv?: Record<string, string>
+  apiKeys: ApiKeySettings
+  env: Record<string, string | undefined>
+}
+
 export abstract class BaseLlmProvider {
+  constructor(protected readonly configuration?: ProviderConfiguration) {}
+
+  protected configuredKeys(): ApiKeySettings {
+    return this.configuration?.apiKeys ?? getSettings().apiKeys ?? {}
+  }
+
+  protected envValue(name: string): string | undefined {
+    return this.configuration ? this.configuration.runtimeEnv?.[name] ?? this.configuration.env[name] : process.env[name]
+  }
+
   abstract readonly id: LlmProviderId
   abstract readonly name: string
   abstract readonly defaultModelOptions: readonly ProviderDefaultModelOption[]
@@ -71,11 +87,11 @@ export abstract class BaseLlmProvider {
 
   /** Check whether an API key is configured and its source. */
   getApiKeyStatus(): ApiKeyStatus {
-    const settings = getSettings()
+    const settings = { apiKeys: this.configuredKeys() }
     if (settings.apiKeys?.[this.settingsKeyField]) {
       return { isConfigured: true, source: 'settings' }
     }
-    if (process.env[this.envVarName]) {
+    if (this.envValue(this.envVarName)) {
       return { isConfigured: true, source: 'env' }
     }
     return { isConfigured: false, source: 'none' }
@@ -83,10 +99,10 @@ export abstract class BaseLlmProvider {
 
   /** Get the effective API key (settings take precedence over env var). */
   getEffectiveApiKey(): string | undefined {
-    const settings = getSettings()
+    const settings = { apiKeys: this.configuredKeys() }
     const fromSettings = settings.apiKeys?.[this.settingsKeyField]
     if (fromSettings) return fromSettings
-    return process.env[this.envVarName]
+    return this.envValue(this.envVarName)
   }
 
   /** Create an Anthropic-compatible SDK client configured for this provider. */

@@ -35,9 +35,10 @@ export function useUpdateAgentPreferences(agentSlug: string) {
       }
       return res.json()
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['agent-preferences', agentSlug] })
-      queryClient.invalidateQueries({ queryKey: ['agents'] })
-    },
+    // Keep saved-setting controls pending until their authoritative props refresh.
+    onSuccess: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['agent-preferences', agentSlug] }),
+      queryClient.invalidateQueries({ queryKey: ['agents'] }),
+    ]),
   })
 }

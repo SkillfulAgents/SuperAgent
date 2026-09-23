@@ -9,7 +9,7 @@ const runtime = vi.hoisted(() => ({
   create: vi.fn(async () => ({ id: 'session' })), send: vi.fn(async () => {}),
   mapping: undefined as { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string } | undefined,
   row: { id: 'integration', agentSlug: 'agent', provider: 'tasks', config: '{}', status: 'active', name: null,
-    errorMessage: null, model: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() } as AgentIntegrationRecord,
+    errorMessage: null, model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() } as AgentIntegrationRecord,
 }))
 vi.mock('../services/agent-integration-service', () => ({ listStartupAgentIntegrations: () => [runtime.row], getAgentIntegration: () => runtime.row }))
 vi.mock('../services/agent-integration-session-service', () => ({
@@ -24,7 +24,7 @@ vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
   messages: { send: runtime.send, subscribe: () => () => {}, withSend: (_id: string, send: () => Promise<void>) => send() },
 }) } }))
 vi.mock('../services/agent-service', () => ({ agentExists: async () => true }))
-vi.mock('../config/settings', () => ({ getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
+vi.mock('../config/settings', () => ({ getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
 vi.mock('../services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('../services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
 vi.mock('../container/message-persister', () => ({ messagePersister: { addGlobalNotificationClient: () => () => {} } }))

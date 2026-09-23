@@ -20,7 +20,7 @@ export function toPublicAgentIntegration(row: AgentIntegrationRecord): PublicAge
     return { ...provider.serialize(row), capabilities, managementAccess }
   } catch {
     return { id: row.id, agentSlug: row.agentSlug, provider: row.provider, name: row.name,
-      status: publicIntegrationStatus(row), model: row.model, effort: row.effort, speed: row.speed,
+      status: publicIntegrationStatus(row), llmProviderId: row.llmProviderId, model: row.model, effort: row.effort, speed: row.speed,
       createdByUserId: row.createdByUserId, createdAt: row.createdAt, updatedAt: row.updatedAt,
       hasCredentials: false, settings: {}, capabilities, managementAccess,
       errorMessage: definition

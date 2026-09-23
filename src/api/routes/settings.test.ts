@@ -1,3 +1,5 @@
+vi.mock('@shared/lib/llm-provider/connections', () => ({ listConnections: vi.fn(async () => []) }))
+vi.mock('@shared/lib/llm-provider/connection-settings', () => ({ syncProviderSettings: vi.fn(async () => {}) }))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
@@ -177,6 +179,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   auditLog: {},
   webhookTriggers: {},
   chatIntegrations: {},
+  llmConnections: {},
   chatIntegrationSessions: {},
   chatIntegrationAccess: {},
   slackThreadState: {},
@@ -1129,6 +1132,15 @@ describe('settings route', () => {
       const body = await res.json()
       expect(body.error).toContain('PROXY_TOKEN')
       expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('directs global LLM overrides to the connection editor without storing them', async () => {
+      const res = await app.request('/api/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customEnvVars: { ANTHROPIC_BASE_URL: 'https://wrong-scope.example' } }),
+      })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('Edit connection')
     })
 
     it('accepts customEnvVars with only non-reserved keys (200)', async () => {

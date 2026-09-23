@@ -1,3 +1,4 @@
+import { connectionRuntimeSchema } from './connection-runtime';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 // Captures SUPERAGENT_HOST_TOKEN and strips it from process.env — import early
@@ -244,6 +245,7 @@ app.post('/sessions/:id/messages', async (c) => {
       effort: body.effort,
       speed: speedLevelSchema.parse(body.speed),
       model: body.model,
+      llmRuntime: body.llmRuntime ? connectionRuntimeSchema.parse(body.llmRuntime) : undefined,
       shouldQuery: body.shouldQuery,
       isAutomated: body.isAutomated,
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),

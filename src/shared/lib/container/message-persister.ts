@@ -1,3 +1,5 @@
+import { withSessionSendContext } from './session-send-context'
+import { sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { z } from 'zod'
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
 import { mergeCanonicalSlashCommands } from './slash-commands'
@@ -89,7 +91,7 @@ import { notificationManager } from '@shared/lib/notifications/notification-mana
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
 import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capability-policy-schema'
-import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
+import { getLlmProvider, getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
@@ -842,7 +844,7 @@ class MessagePersister {
       const generation = marked.activityGeneration
       const activity = marked.provisionalActivity
       try {
-        return await send()
+        return await withSessionSendContext(agentSlug, sessionId, before.isActive, send)
       } catch (error) {
         const state = this.streamingStates.get(key)
         // A later send, interrupt, recovery, or new runtime turn owns its state.
@@ -2881,7 +2883,8 @@ class MessagePersister {
           // The active provider owns the copy for its own upstream errors
           // (severity, icon, markdown message + CTA link). Sent alongside the
           // raw error so the UI never re-derives provider-specific copy.
-          const errorPresentation = getActiveLlmProvider().presentationForTurnError(
+          const runtimeProvider = sessionRuntime(agentSlug, sessionId)?.provider
+          const errorPresentation = (runtimeProvider ? getLlmProvider(runtimeProvider) : getActiveLlmProvider()).presentationForTurnError(
             apiErrorStatus ?? undefined,
             errorMessage,
             apiErrorCode,
@@ -6078,7 +6081,7 @@ ${continuation}`
         const [modelId] = Object.keys(modelUsage)
         const firstModel = modelUsage[modelId] as { contextWindow?: number } | undefined
         const catalogWindow = modelId
-          ? getModelContextWindow(modelId, getActiveLlmProvider().id)
+          ? sessionRuntime(agentSlug, sessionId)?.modelContextWindows[modelId] ?? getModelContextWindow(modelId, getActiveLlmProvider().id)
           : undefined
         if (catalogWindow) {
           state.lastContextWindow = catalogWindow

@@ -261,8 +261,9 @@ export function useUpdateScheduledTaskRuntimeOptions() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ taskId, model, effort, speed }: { taskId: string; agentSlug: string; model?: string | null; effort?: string | null; speed?: string | null }) => {
+    mutationFn: async ({ taskId, llmProviderId, model, effort, speed }: { taskId: string; agentSlug: string; llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null }) => {
       const body: Record<string, string | null> = {}
+      if (llmProviderId !== undefined) body.llmProviderId = llmProviderId
       if (model !== undefined) body.model = model
       if (effort !== undefined) body.effort = effort
       if (speed !== undefined) body.speed = speed
@@ -277,10 +278,10 @@ export function useUpdateScheduledTaskRuntimeOptions() {
       }
       return res.json() as Promise<ApiScheduledTask>
     },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] })
-      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', data.agentSlug] })
-    },
+    onSuccess: (data) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] }),
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', data.agentSlug] }),
+    ]),
   })
 }
 

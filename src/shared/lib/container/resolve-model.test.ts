@@ -8,6 +8,7 @@ vi.mock('../config/settings', () => ({
   getModelCatalogSettings: () => settingsMock().modelCatalog ?? {},
 }))
 
+import { getEffectiveCatalog } from '../llm-provider'
 import { getContainerModelPromptHints } from './resolve-model'
 
 beforeEach(() => {
@@ -16,17 +17,17 @@ beforeEach(() => {
 
 describe('getContainerModelPromptHints', () => {
   it('returns GPT tool-use hints for a resolved Platform GPT id', () => {
-    const hints = getContainerModelPromptHints('gpt-5.5')
+    const hints = getContainerModelPromptHints('gpt-5.5', getEffectiveCatalog('platform'))
     expect(hints.some((h) => h.includes('ToolSearch'))).toBe(true)
     expect(hints.some((h) => h.includes('pages as an empty string'))).toBe(true)
   })
 
   it('returns no hints for a Claude model on the active provider', () => {
-    expect(getContainerModelPromptHints('claude-opus-4-8')).toEqual([])
+    expect(getContainerModelPromptHints('claude-opus-4-8', getEffectiveCatalog('platform'))).toEqual([])
   })
 
   it('returns no hints for an undefined or unknown model', () => {
-    expect(getContainerModelPromptHints(undefined)).toEqual([])
-    expect(getContainerModelPromptHints('nope')).toEqual([])
+    expect(getContainerModelPromptHints(undefined, getEffectiveCatalog('platform'))).toEqual([])
+    expect(getContainerModelPromptHints('nope', getEffectiveCatalog('platform'))).toEqual([])
   })
 })

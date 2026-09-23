@@ -64,6 +64,48 @@ beforeEach(() => {
 })
 
 describe('SettingsModelSelect (flat picker)', () => {
+  it('keeps the legacy selection visible when no connections are configured yet', async () => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections: [], defaultSelection: null } })
+    const onModelChange = vi.fn()
+    const onSelectionChange = vi.fn()
+    render(<SettingsModelSelect model="haiku" onModelChange={onModelChange} onSelectionChange={onSelectionChange} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Haiku · latest')
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('model-latest-opus'))
+    expect(onModelChange).toHaveBeenCalledWith('opus')
+    expect(onSelectionChange).not.toHaveBeenCalled()
+  })
+
+  it('blocks model picks while a connection save is pending, then uses the saved connection', async () => {
+    const choices = [
+      { id: 'old', name: 'Old', defaultModel: 'sonnet', catalog: CATALOG },
+      { id: 'new', name: 'New', defaultModel: 'haiku', catalog: [
+        ...CATALOG.map(m => ({ ...m, isDefault: m.family === 'opus' || m.family === 'haiku' })),
+      ] },
+    ]
+    useSettingsMock.mockReturnValue({ data: { connections: choices, defaultSelection: { llmProviderId: 'old', model: 'sonnet' } } })
+    const onSelectionChange = vi.fn()
+    const props = { model: 'sonnet', llmProviderId: 'old', onSelectionChange, onModelChange: vi.fn() }
+    const { rerender } = render(<SettingsModelSelect {...props} />)
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.selectOptions(screen.getByLabelText('Connection'), 'new')
+    expect(onSelectionChange).toHaveBeenLastCalledWith({ llmProviderId: 'new', model: 'haiku' })
+    rerender(<SettingsModelSelect {...props} disabled />)
+    expect(screen.getByLabelText('Connection')).toBeDisabled()
+    expect(screen.getByTestId('model-latest-opus')).toBeDisabled()
+    await userEvent.click(screen.getByTestId('model-latest-opus'))
+    expect(onSelectionChange).toHaveBeenCalledTimes(1)
+    rerender(<SettingsModelSelect {...props} model="haiku" llmProviderId="new" />)
+    await userEvent.click(screen.getByTestId('model-latest-opus'))
+    expect(onSelectionChange).toHaveBeenLastCalledWith({ llmProviderId: 'new', model: 'opus' })
+    // A failed save unlocks the authoritative selection too.
+    rerender(<SettingsModelSelect {...props} disabled />)
+    rerender(<SettingsModelSelect {...props} />)
+    await userEvent.click(screen.getByTestId('model-latest-haiku'))
+    expect(onSelectionChange).toHaveBeenLastCalledWith({ llmProviderId: 'old', model: 'haiku' })
+  })
+
   it('stores the bare family alias when "latest" is picked', async () => {
     const user = userEvent.setup()
     const onModelChange = vi.fn()
