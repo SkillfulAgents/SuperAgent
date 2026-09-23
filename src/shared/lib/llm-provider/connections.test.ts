@@ -107,7 +107,7 @@ describe('LLM connections', () => {
     const api = await add('Api')
     const agentOnly = await add('AgentOnly')
     await setGlobalSelection('default', { llmProviderId: api, model: 'a' })
-    vi.spyOn(GenericLlmProvider.prototype, 'supportsDirectApi', 'get').mockImplementation(function () {
+    vi.spyOn(GenericLlmProvider.prototype, 'supportsDirectApi', 'get').mockImplementation(function (this: GenericLlmProvider) {
       return this.getEffectiveApiKey() !== 'key-AgentOnly'
     })
     await expect(setGlobalSelection('summarizer', { llmProviderId: agentOnly, model: 'a' })).rejects.toThrow('direct API')
