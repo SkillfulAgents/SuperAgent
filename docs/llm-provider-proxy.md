@@ -47,5 +47,29 @@ reasoning settings, images and hosted tools are accepted.
 
 Local tests cover both formats with the real Anthropic client against a controlled
 upstream: tool responses, streaming, usage, quota errors, model discovery, URL
-handling, runtime selection and backward compatibility. Live generic-provider
-validation is pending a temporary API credential; these tests do not replace it.
+handling, runtime selection and backward compatibility.
+
+Live validation against `https://api.openai.com/v1` passed using a newly built
+Gamut container with the bundled Claude SDK, Gamut prompts and real browser service:
+
+| Case | Chat Completions (`gpt-5.1`) | Responses (`gpt-5.4-mini`) |
+| --- | --- | --- |
+| Question and session continuation | 17 × 23 = 391; +9 = 400 | Same |
+| Bash + Read | Wrote and read a file; correct content and SHA-256 | Same |
+| Deferred ToolSearch | Loaded browser tools, opened example.com, read Example Domain | Same |
+| Image in Read result | COPPER; two blue circles, red triangle, green square | Same |
+| Hosted WebSearch | Not supported by this translation route | Python TaskGroup documentation and introduction in 3.11 |
+| Host helper + forced tool call | 72; report_result(value=72) | Same |
+| Model listing and key validation | Passed through GenericLlmProvider | Same |
+
+Both routes returned nonzero input, output and cache usage. The test image was
+`superagent-container:sup908-openai`; session IDs were
+`cf8e3ca8-3c23-4120-bcf9-e1a61364a1b1` (Responses) and
+`53628a81-8ce1-4437-8740-0905a1fbe113` (Chat Completions). Throwaway scripts and credentials are outside the repo.
+
+An initial Chat Completions run with `gpt-5.4-mini` returned an upstream 400:
+function tools with reasoning effort require Responses (or effort `none`) for
+that model. Use Responses for that combination; the adapter preserves the error
+and does not silently change the selected API or reasoning effort. Successful
+Chat Completions coverage uses `gpt-5.1`. These tests establish the exercised
+models and capabilities, not universal support across every compatible service.
