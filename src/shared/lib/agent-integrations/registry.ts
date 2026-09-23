@@ -1,3 +1,4 @@
+import { platformEmailProvider } from '../email-integrations/provider'
 import type { IntegrationProviderSetup } from './setup-types'
 import type { SQLiteTable } from 'drizzle-orm/sqlite-core'
 import type { PublicAgentIntegration } from './public'
@@ -95,4 +96,4 @@ export class AgentIntegrationRegistry {
   }
 }
 
-export const agentIntegrationRegistry = new AgentIntegrationRegistry([...chatProviders, ...taskManagerProviders])
+export const agentIntegrationRegistry = new AgentIntegrationRegistry([...chatProviders, ...taskManagerProviders, platformEmailProvider])

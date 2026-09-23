@@ -1,3 +1,5 @@
+const platformState = vi.hoisted(() => ({ connected: true }))
+vi.mock('@renderer/hooks/use-platform-auth', () => ({ usePlatformAuthStatus: () => ({ data: platformState }) }))
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
@@ -77,6 +79,7 @@ describe('HomeAgentIntegrations', () => {
   })
 
   beforeEach(() => {
+  platformState.connected = true
     vi.clearAllMocks()
     mockCanManage.mockReturnValue(true)
     mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION] })
@@ -161,4 +164,20 @@ it('does not invite viewers to configure providers or render an empty setup grid
   expect(screen.getByText('No external integrations have been configured for this agent.')).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /connect via/i })).not.toBeInTheDocument()
   expect(container.querySelector('.grid')).toBeNull()
+})
+
+it('only offers Email on Platform-connected deployments', async () => {
+  mockCanManage.mockReturnValue(true)
+  platformState.connected = false
+  mockUseChatIntegrations.mockReturnValue({ data: [] })
+  renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.queryByRole('button', { name: 'Connect via Email' })).not.toBeInTheDocument()
+})
+
+it('offers Email to connected Platform owners', () => {
+  platformState.connected = true
+  mockCanManage.mockReturnValue(true)
+  mockUseChatIntegrations.mockReturnValue({ data: [] })
+  renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.getByRole('button', { name: 'Connect via Email' })).toBeInTheDocument()
 })

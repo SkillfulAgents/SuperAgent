@@ -1,3 +1,4 @@
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { isPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { useState } from 'react'
 import { Plus } from 'lucide-react'
@@ -47,7 +48,8 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
   const navigate = useNavigate()
   const { canAdminAgent, canUseAgent } = useUser()
   const canManageApproval = canAdminAgent(agentSlug)
-  const providers = integrationSetupProviders.filter(provider => provider.managementAccess === 'owner' ? canManageApproval : canUseAgent(agentSlug))
+  const { data: platform } = usePlatformAuthStatus()
+  const providers = integrationSetupProviders.filter(provider => !provider.platformOnly || platform?.connected).filter(provider => provider.managementAccess === 'owner' ? canManageApproval : canUseAgent(agentSlug))
   const { data: agent } = useAgent(agentSlug)
   const agentName = agent?.name ?? agentSlug
   const rows = Array.isArray(integrations) ? integrations : []

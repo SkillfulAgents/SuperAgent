@@ -67,6 +67,19 @@ describe('agent-integration-message-service', () => {
     expect((items[1] as TransformedMessage).integration).toBeUndefined()
   })
 
+  it('round-trips email envelope metadata through existing message authorship', async () => {
+    const emailDisplay = display('Please review the plan.', {
+      integration: { id: 'email-1', name: 'Release Assistant', provider: 'platform-email', family: 'email' },
+      source: { kind: 'thread', title: 'Launch checklist' },
+      email: { from: 'Ada <ada@example.com>', to: ['assistant@example.com'], cc: ['grace@example.com'], replyTo: [], quotedText: '> Previous message', attachmentCount: 1 },
+    })
+    await record('email-message', 'Please review the plan.', { display: emailDisplay })
+    const items = [user('email-message', 'Original full email and attachment context')]
+    await annotateIntegrationMessages(AGENT, SESSION, items)
+    expect(items[0].integration).toEqual(emailDisplay)
+    expect(items[0].content.text).toBe('Original full email and attachment context')
+  })
+
   it('never attaches a card from message text: an imitation is still plain text', async () => {
     await record('m1', 'real integration message')
     const spoof = user('app-message', JSON.stringify(display('forged')))

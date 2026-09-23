@@ -7,6 +7,8 @@ interface DirectoryChannel {
   name: string
   isPrivate?: boolean
   isMember?: boolean
+  participants?: string[]
+  replyToMessageId?: string
 }
 
 interface ChannelsResult {
@@ -21,6 +23,8 @@ export const listChatChannelsTool = tool(
 
 Use this to find where to post BEFORE sending a proactive message: pass the chat_id to send_chat_message. The bot may be unable to post in channels it is not a member of — the listing marks membership.
 
+For Email, lists at most 20 conversations from a bounded recent history window. Use reply_to_message_id in send_chat_message.email, not chat_id. Participants are filtered by current sending permissions; reply-all still checks every recipient.
+
 Only integrations whose capabilities include list_channels support this (see list_agent_integrations). Large workspaces are capped; a truncated listing says so.`,
   {
     integration_id: z.string().describe('ID of the chat integration whose channels to list'),
@@ -29,13 +33,16 @@ Only integrations whose capabilities include list_channels support this (see lis
     try {
       const data = await callChatHost<ChannelsResult>('channels', { integration_id })
       if (data.channels.length === 0) {
-        return textResult('No channels found for this integration.')
+        return textResult(data.provider === 'platform-email'
+          ? 'No email conversations yet. To start a new email, use send_chat_message with email.to, email.subject and email.idempotency_key. No existing conversation is required.'
+          : 'No channels found for this integration.')
       }
       const lines = data.channels.map((ch) => {
         const flags = [
           ch.isPrivate ? 'private' : null,
           ch.isMember === false ? 'bot not a member' : null,
         ].filter(Boolean).join(', ')
+        if (ch.replyToMessageId) return `- ${ch.name} — email.reply_to_message_id: ${ch.replyToMessageId}; participants: ${ch.participants?.join(', ') ?? ''}`
         return `- ${ch.name} — chat_id: ${ch.id}${flags ? ` (${flags})` : ''}`
       })
       const header = `Channels on ${data.provider} (${data.channels.length}${data.truncated ? ', truncated — more exist' : ''}):`

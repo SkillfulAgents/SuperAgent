@@ -72,9 +72,10 @@ export function extractTextFromLlmResponse(
  */
 export async function createSummarizerText(
   client: Anthropic,
-  request: Omit<Anthropic.MessageCreateParamsNonStreaming, 'max_tokens'>,
+  request: Omit<Anthropic.MessageCreateParamsNonStreaming, 'max_tokens'> & { max_tokens?: number },
   signal?: AbortSignal,
 ): Promise<string | null> {
+  const maxTokens = request.max_tokens ?? SUMMARIZER_MAX_TOKENS
   request = { ...request, model: helperModels.get(client) ?? request.model }
   const create = async (
     params: Anthropic.MessageCreateParamsNonStreaming,
@@ -97,7 +98,7 @@ export async function createSummarizerText(
   }
 
   const response = await withRetry(() =>
-    create({ ...request, max_tokens: SUMMARIZER_MAX_TOKENS }),
+    create({ ...request, max_tokens: maxTokens }),
   )
   const text = extractTextFromLlmResponse(response)
   // Retry on ANY text-less response, not just stop_reason 'max_tokens' — some
@@ -110,7 +111,7 @@ export async function createSummarizerText(
     const retried = await withRetry(() =>
       create({
         ...request,
-        max_tokens: SUMMARIZER_MAX_TOKENS,
+        max_tokens: maxTokens,
         thinking: { type: 'enabled', budget_tokens: SUMMARIZER_THINKING_BUDGET },
       }),
     )

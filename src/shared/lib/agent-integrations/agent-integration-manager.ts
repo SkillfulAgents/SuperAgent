@@ -1139,6 +1139,9 @@ export class AgentIntegrationManager {
       return // createSession sends the first input; never send it a second time.
     } else {
       check()
+      // Clarification replies can resume synchronously; route output to this message first.
+      const replyingSession = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
+      if (replyingSession) replyingSession.context = this.withActivity(context, replyingSession, { sessionId })
       if (await attempt.consume(sessionId, () => conn.connector.consumeInput(message, { ...context, actor, sessionId }, input), check)) return
       if (route.displayName && route.displayName !== chatSession?.displayName && conn.connector.shouldUpdateDisplayName(chatSession?.displayName)) {
         await updateIntegrationSessionName(chatSession!.id, route.displayName)

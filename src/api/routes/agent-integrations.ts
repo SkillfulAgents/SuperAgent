@@ -312,7 +312,7 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
     } else if (config !== undefined && status !== 'paused') {
       // Config changed while active — reconnect to pick up new credentials
       await agentIntegrationManager.removeIntegration(id)
-      await agentIntegrationManager.addIntegration(id)
+      if (integration.status !== 'paused') await agentIntegrationManager.addIntegration(id)
     }
 
     const updated = await getAgentIntegration(id)
@@ -337,6 +337,8 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
       const message = error.issues[0]?.message ?? 'Invalid config'
       return c.json({ error: `Invalid config: ${message}` }, 400)
     }
+    const failure = setupError(error)
+    if (failure) return c.json({ error: failure.error }, failure.status)
     console.error('Failed to update agent integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'update-integration' }, extra: { integrationId: c.req.param('integrationId') } })
     return c.json({ error: 'Failed to update agent integration' }, 500)

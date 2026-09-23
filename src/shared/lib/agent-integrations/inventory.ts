@@ -19,6 +19,7 @@ export async function listAgentIntegrationInventory(agentSlug: string) {
       if (connection) mcp = { name: integrationMcpName(row.id), status: connection.status, identity: connection.identity, tools: connection.tools.map(tool => tool.name) }
     } catch { /* A damaged connection remains listed and cannot hide healthy accounts. */ }
     return { id: row.id, provider: row.provider, family: definition?.family ?? 'unknown', name: row.name, status: publicIntegrationStatus(row),
-      capabilities: [...(definition?.capabilities ?? [])], sessions, mcp }
+      capabilities: [...(definition?.capabilities ?? [])], sessions, mcp,
+      ...(definition?.agentInstructions ? { instructions: definition.agentInstructions } : {}) }
   }))
 }

@@ -1,3 +1,8 @@
+import { EmailPolicyError } from '@shared/lib/email-integrations/policy'
+import { emailConfigSchema } from '@shared/lib/email-integrations/config-schema'
+import { clientFor } from '@shared/lib/email-integrations/gateway-client'
+import { emailToolSchema, sendToolEmail } from '@shared/lib/email-integrations/outbound'
+import { emailThreadRoute } from '@shared/lib/email-integrations/routing'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { Hono } from 'hono'
 import { agentRegistry } from '@shared/lib/agent-actor'
@@ -163,6 +168,28 @@ xAgentChat.post('/send', async (c) => {
       return c.json({ error: 'Chat integration does not belong to this agent' }, 403)
     }
 
+    if (integration.provider === 'platform-email') {
+      const config = emailConfigSchema.parse(JSON.parse(integration.config))
+      if (!body.email || chat_id || user_id) return c.json({
+        error: 'Email requires the email object: {to: ["recipient@example.com"], subject: "Subject", idempotency_key: "unique-send-key"}, with the body in message. For a reply, use email.reply_to_message_id. Do not pass chat_id/user_id. If your send_chat_message tool has no email parameter, restart the agent with an updated container image. Nothing was sent.',
+      }, 400)
+      const parsed = emailToolSchema.safeParse(body.email)
+      if (!parsed.success) return c.json({ error: `Invalid email parameters: ${parsed.error.issues.map(issue => `${issue.path.join('.') || 'email'}: ${issue.message}`).join('; ')}. Nothing was sent.` }, 400)
+      const email = parsed.data
+      const currentSession = session_id ? await getAgentIntegrationSessionBySessionId(callerSlug, session_id) : null
+      const client = clientFor(integration)
+      if (currentSession && !currentSession.archivedAt && currentSession.integrationId === integration.id && email.reply_to_message_id) {
+        const parent = await client.message(config.mailboxId, email.reply_to_message_id)
+        if (await emailThreadRoute(integration, parent.threadId) === currentSession.externalChatId) return c.json({ error: 'Your final response is already delivered to this email thread automatically' }, 400)
+      }
+      const connector = await resolveLiveConnector(integration.id, integration.status)
+      const tool = connector?.getTools({ integration, externalId: '' }).find(tool => tool.name === 'send_email')
+      if (!tool) return c.json({ error: 'Email integration is not connected' }, 409)
+      const sent = await sendToolEmail(integration, email, message, tool)
+      await notifySessionOfOutboundMessage(integration.id, callerSlug, sent.threadId, message, context).catch(() => {})
+      return c.json({ chatId: sent.threadId, messageId: sent.id, provider: integration.provider, status: sent.status })
+    }
+
     // Static capability check first: an unsupported provider must get the
     // "unsupported" answer without the connector ever being touched (a
     // reconnect attempt could otherwise resurrect it or mask the real error).
@@ -269,6 +296,8 @@ xAgentChat.post('/send', async (c) => {
 
     return c.json({ chatId: resolvedChatId, provider: integration.provider })
   } catch (error) {
+    if (error instanceof z.ZodError) return c.json({ error: error.issues[0]?.message ?? 'Invalid email' }, 400)
+    if (error instanceof EmailPolicyError) return c.json({ error: error.message }, 403)
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'send' } })
     return c.json({ error: 'Failed to send chat message' }, 500)
   }

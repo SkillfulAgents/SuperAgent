@@ -86,6 +86,17 @@ export const integrationMessageTaskSchema = z.object({
   labels: z.array(label).max(20).optional(),
 })
 
+/** Envelope facts for an email preview; never raw HTML, Bcc or attachment URLs. */
+export const integrationMessageEmailSchema = z.object({
+  from: z.string().max(520),
+  to: z.array(z.string().max(520)).max(20),
+  cc: z.array(z.string().max(520)).max(20),
+  replyTo: z.array(z.string().max(520)).max(20),
+  recipientsTruncated: z.boolean().optional(),
+  quotedText: z.string().max(INTEGRATION_MESSAGE_LIMITS.requestText).optional(),
+  attachmentCount: z.number().int().nonnegative(),
+})
+
 /** What a provider describes; the host adds the integration identity. */
 export const integrationMessagePresentationSchema = z.object({
   event: z.object({
@@ -103,6 +114,7 @@ export const integrationMessagePresentationSchema = z.object({
   }).optional(),
   source: integrationMessageSourceSchema,
   task: integrationMessageTaskSchema.optional(),
+  email: integrationMessageEmailSchema.optional(),
 })
 
 export const integrationMessageDisplaySchema = integrationMessagePresentationSchema.extend({
