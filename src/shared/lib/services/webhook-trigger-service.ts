@@ -139,6 +139,25 @@ export async function getSubscribedComposioTriggerIds(): Promise<string[]> {
 
 export type { WebhookTrigger, NewWebhookTrigger }
 
+/**
+ * Tell the trigger manager the set of subscribed endpoints may have changed,
+ * so it re-registers them with the webhook relay. Lazy import avoids the
+ * circular dep. Best-effort: catch so a late rejection can't reach the
+ * process-level unhandledRejection handler (fatal in Electron main) or outlive
+ * a test. The success log is the only positive signal this fire-and-forget
+ * path ran; webhook-trigger-service.coldstart.test.ts asserts on it.
+ */
+function notifyWebhookTriggersChanged(reason: string): void {
+  void import('@shared/lib/scheduler/trigger-manager')
+    .then(async ({ triggerManager }) => {
+      await triggerManager.syncRegistrations()
+      console.log(`[webhook-triggers] relay registrations synced (${reason})`)
+    })
+    .catch((err) => {
+      console.warn('[webhook-triggers] relay registration sync failed:', err)
+    })
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -201,22 +220,7 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     agentSlug: params.agentSlug,
   })
 
-  // Cold-start fix: a host that booted with 0 active triggers never
-  // subscribed Realtime. Lazy import avoids the circular dep.
-  // Best-effort: catch so a late rejection can't reach the process-level
-  // unhandledRejection handler (fatal in Electron main) or outlive a test.
-  // The success log is the only positive signal this fire-and-forget path ran;
-  // webhook-trigger-service.coldstart.test.ts asserts on it.
-  void import('@shared/lib/scheduler/trigger-manager')
-    .then(async ({ triggerManager }) => {
-      if (!triggerManager.isRealtimeActive()) {
-        await triggerManager.pollAndProcess()
-      }
-      console.log(`[webhook-triggers] cold-start nudge completed for trigger ${id}`)
-    })
-    .catch((err) => {
-      console.warn('[webhook-triggers] cold-start poll skipped:', err)
-    })
+  notifyWebhookTriggersChanged(`created ${id}`)
 
   return id
 }
@@ -377,7 +381,9 @@ export async function cancelWebhookTrigger(triggerId: string): Promise<boolean> 
       )
     )
 
-  return changesOf(result) > 0
+  const cancelled = changesOf(result) > 0
+  if (cancelled) notifyWebhookTriggersChanged(`cancelled ${triggerId}`)
+  return cancelled
 }
 
 /**
@@ -441,6 +447,7 @@ export async function markTriggerFailed(triggerId: string, _error: string): Prom
     .update(webhookTriggers)
     .set({ status: 'failed' })
     .where(eq(webhookTriggers.id, triggerId))
+  notifyWebhookTriggersChanged(`failed ${triggerId}`)
 }
 
 /**
@@ -645,6 +652,7 @@ export async function updateComposioTriggerId(
     .update(webhookTriggers)
     .set({ composioTriggerId })
     .where(eq(webhookTriggers.id, triggerId))
+  notifyWebhookTriggersChanged(`re-pointed ${triggerId}`)
 }
 
 /**

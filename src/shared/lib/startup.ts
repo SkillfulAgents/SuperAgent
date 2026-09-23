@@ -194,7 +194,7 @@ async function initializeServicesInner() {
   // Lane order is priority: the limiter grants slots FIFO, and the last three
   // starts below are open-ended (image pull on fresh installs; the task
   // scheduler's catch-up scan boots a container per overdue task; the trigger
-  // manager's initial poll processes claimed webhook events). The two
+  // manager's registration reads every subscribed trigger). The two
   // user-facing connects are cheap handshakes — schedule them first so chat
   // messages and notifications cannot go dark behind minutes of catch-up work.
 
@@ -236,19 +236,16 @@ async function initializeServicesInner() {
     console.error('Failed to start task scheduler:', error)
   })
 
-  // Start trigger manager whenever platform auth exists: webhook events
-  // (Composio-brokered AND custom endpoints) are claimed from the platform
-  // with the platform token, so a personal Composio key must not disable
-  // delivery — same trap as the endpoint tool/teardown gating. The manager
-  // itself no-ops per-poll when the token is missing.
-  if (getPlatformAccessToken()) {
-    scheduleStartupIo(
-      () => triggerManager.start(),
-      () => triggerManager.stop(),
-    ).catch((error) => {
-      console.error('Failed to start trigger manager:', error)
-    })
-  }
+  // Register webhook triggers with the relay. Unconditional: the relay only
+  // claims while the platform is connected, and a connection made after
+  // launch re-syncs the registrations. A personal Composio key must not
+  // disable delivery either, since events are claimed with the platform token.
+  scheduleStartupIo(
+    () => triggerManager.start(),
+    () => triggerManager.stop(),
+  ).catch((error) => {
+    console.error('Failed to start trigger manager:', error)
+  })
 
   // Start session auto-delete monitor (deferred — waits before first check)
   sessionAutoDeleteMonitor.start().catch((error) => {

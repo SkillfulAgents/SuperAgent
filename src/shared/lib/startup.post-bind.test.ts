@@ -202,8 +202,13 @@ describe('initializeServices post-bind critical path', () => {
   })
 
 
+  it('starts the trigger manager without a platform token, so a later connect can deliver', async () => {
+    const { initializeServices } = await import('./startup')
+    await initializeServices()
+    await vi.waitFor(() => expect(triggerManagerStart).toHaveBeenCalledTimes(1))
+  })
+
   it('bounds heavy startup I/O to three concurrent tasks', async () => {
-    getPlatformAccessToken.mockReturnValue('profile-token')
     let active = 0
     let peak = 0
     const releases: Array<() => void> = []
