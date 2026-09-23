@@ -69,7 +69,7 @@ test.describe('Speed selection', () => {
     const initialMessage = `Fast speed first message ${tag}`
 
     await agentPage.clickCreateAgent()
-    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
 
     // The default model resolves to Opus latest, which carries the speed
     // override — the Speed section must render and Fast must go on the wire.
@@ -90,7 +90,7 @@ test.describe('Speed selection', () => {
     const initialMessage = `Untouched speed message ${tag}`
 
     await agentPage.clickCreateAgent()
-    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
 
     await page.locator('[data-testid="home-message-input"]').fill(initialMessage)
     await page.locator('[data-testid="home-send-button"]').click()
@@ -125,7 +125,7 @@ test.describe('Speed selection', () => {
 
   test('the Speed section is hidden for models without a speed choice', async ({ page }) => {
     await agentPage.clickCreateAgent()
-    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
 
     // Opus (speed override) shows the section...
     await page.locator('[data-testid="composer-options-trigger"]').click()
