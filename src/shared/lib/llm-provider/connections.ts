@@ -45,6 +45,7 @@ export function providerForConnection(
   const apiKeys = { ...config.apiKeys }
   return createLlmProvider(providerSchema.parse(row.provider), {
     apiKeys,
+    apiFormat: config.apiFormat,
     oauth: config.oauth,
     resolveCredential: row.id ? (generation) => resolveConnectionCredential(row.id!, generation) : undefined,
     env: Object.fromEntries(
@@ -117,6 +118,7 @@ export async function listConnections(
       browserModel: row.browserModel,
       dashboardModel: row.dashboardModel,
       baseUrl: config.apiKeys.genericBaseUrl,
+      apiFormat: config.apiFormat,
       region: config.apiKeys.bedrockRegion,
       customEnvVarKeys: canManage ? Object.keys(config.runtimeEnv) : [],
       canManage,

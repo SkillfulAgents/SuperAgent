@@ -44,6 +44,7 @@ export interface AgentIdentity {
 }
 
 export interface ProviderConfiguration {
+  apiFormat?: ConnectionConfig['apiFormat']
   oauth?: OAuthCredential
   resolveCredential?: (rejectedGeneration?: number) => Promise<OAuthCredential & { generation: number }>
   runtimeEnv?: Record<string, string>

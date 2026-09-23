@@ -10,7 +10,10 @@ export const modelSelectionSchema = z.object({
 })
 export type ModelSelection = z.infer<typeof modelSelectionSchema>
 
+export const apiFormatSchema = z.enum(['messages', 'chat-completions', 'responses'])
+
 export const connectionConfigSchema = z.object({
+  apiFormat: apiFormatSchema.optional(),
   oauth: oauthCredentialSchema.optional(),
   apiKeys: z
     .object({
@@ -81,6 +84,7 @@ export function mergeConnectionConfig(
 ): ConnectionConfig {
   const config = connectionConfigSchema.parse({
     oauth: previous?.oauth ? { ...previous.oauth, refreshLease: undefined } : undefined,
+    apiFormat: input.apiFormat ?? previous?.apiFormat,
     apiKeys: { ...previous?.apiKeys, ...input.apiKeys },
     runtimeEnv: previous?.runtimeEnv ?? {},
     env: previous?.env ?? {}, // Host bindings come only from migration.
@@ -133,6 +137,7 @@ export const connectionInfoSchema = z.object({
   browserModel: z.string().nullable(),
   dashboardModel: z.string().nullable(),
   baseUrl: z.string().optional(),
+  apiFormat: apiFormatSchema.optional(),
   region: z.string().optional(),
   customEnvVarKeys: z.array(z.string()).optional(),
   canManage: z.boolean(),

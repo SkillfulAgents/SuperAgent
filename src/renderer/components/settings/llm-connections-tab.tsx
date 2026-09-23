@@ -208,6 +208,7 @@ function ConnectionEditor({
   const [oauthLoginId, setOAuthLoginId] = useState<string>()
   const [accountLabel, setAccountLabel] = useState(existing?.accountLabel)
   const connected = useCallback((id: string, label: string) => { setOAuthLoginId(id); setAccountLabel(label) }, [])
+  const [apiFormat, setApiFormat] = useState<NonNullable<ConnectionConfig['apiFormat']>>(existing?.apiFormat ?? 'messages')
   const [baseUrl, setBaseUrl] = useState(existing?.baseUrl ?? '')
   const [accessKey, setAccessKey] = useState('')
   const [secretKey, setSecretKey] = useState('')
@@ -243,7 +244,7 @@ function ConnectionEditor({
         provider,
         userId: owner,
         oauthLoginId,
-        config: { apiKeys, runtimeEnv: Object.fromEntries(Object.entries(runtimeEnv).filter(([, value]) => value !== undefined)) },
+        config: { apiKeys, ...(provider === 'generic' ? { apiFormat } : {}), runtimeEnv: Object.fromEntries(Object.entries(runtimeEnv).filter(([, value]) => value !== undefined)) },
         modelOverrides: overrides,
         browserModel: browserModel || null,
         dashboardModel: dashboardModel || null,
@@ -349,6 +350,16 @@ function ConnectionEditor({
             placeholder={existing ? 'Leave blank to keep current credential' : provider === 'claude-subscription' ? 'Paste setup-token output' : 'API key'}
             required={provider === 'claude-subscription' && !existing}
           />
+        </label>
+      )}
+      {provider === 'generic' && (
+        <label className="grid gap-1 text-sm">
+          API format
+          <select className={selectClass} value={apiFormat} onChange={e => setApiFormat(e.target.value as typeof apiFormat)}>
+            <option value="messages">Anthropic Messages</option>
+            <option value="chat-completions">OpenAI Chat Completions</option>
+            <option value="responses">OpenAI Responses</option>
+          </select>
         </label>
       )}
       {provider === 'generic' && (
