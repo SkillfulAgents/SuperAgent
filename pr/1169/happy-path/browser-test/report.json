@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the chat.",
+  "reason": "Successfully tested browser capability: agent opened browser, navigated to example.com, retrieved page title \"Example Domain\", and reported results.",
   "steps": [
-    "Step 1 - Navigate to http://localhost:47891 — Successfully loaded the Gamut app homepage showing agent list.",
-    "Step 2 - Click on QA-20260923-032829-3bng agent in sidebar — Successfully opened the agent's chat interface.",
-    "Step 3 - Send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully typed and sent using Ctrl+Enter.",
-    "Step 4 - Wait for agent response (up to 3 minutes) — Agent completed work in approximately 11 seconds. Status changed from \"working\" to \"idle\".",
-    "Step 5 - Verify response mentions \"Example Domain\" and take screenshot — Agent's response correctly states: \"The title of https://example.com is 'Example Domain'. I closed the browser afterwards.\" This explicitly mentions \"Example Domain\" as required. Screenshot captured showing the complete chat conversation."
+    "Navigated to http://localhost:47891 - Page loaded successfully showing Gamut homepage with sidebar containing available agents.",
+    "Clicked on \"QA-20260923-180326-sgej\" agent in sidebar - Agent page opened successfully with chat interface ready for input.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in message input box - Message visible in textbox and ready to send.",
+    "Clicked Send message button - Message sent successfully, session created with URL showing new session ID (8251cfb6-32a4-46c4-9bde-0a528566fb6f), agent status changed to \"working\".",
+    "Waited for agent response - Agent completed task in 11 seconds using 3 tool calls and 147,953 tokens.",
+    "Verified response mentions \"Example Domain\" - Response received stating: \"The page title of https://example.com is \"Example Domain\". The page loaded normally, and I've closed the browser.\" Verification successful."
   ],
   "bugs": [],
-  "durationMs": 53978,
-  "sessionId": "555527bc-cb7b-42f2-8dae-80feede0b095",
+  "durationMs": 86245,
+  "sessionId": "6b6e33e4-8ddc-4b64-91da-ac419ac65b23",
   "cost": {
-    "inputTokens": 350,
-    "outputTokens": 10195,
-    "cacheCreationTokens": 80134,
-    "cacheReadTokens": 1048431,
+    "inputTokens": 404,
+    "outputTokens": 11665,
+    "cacheCreationTokens": 81944,
+    "cacheReadTokens": 1229522,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.256336
+    "totalCostUsd": 0.284111
   }
 }
