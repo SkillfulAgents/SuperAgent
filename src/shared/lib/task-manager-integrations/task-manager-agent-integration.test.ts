@@ -72,6 +72,26 @@ describe('TaskManagerAgentIntegration live input', () => {
     expect(prepared.text).not.toContain('comment thread root')
     expect(tasks.hydrateTask).toHaveBeenCalledWith('issue')
   })
+  it('describes a comment for the app without changing what the agent reads', async () => {
+    const commented: TaskSnapshot = { ...snapshot, comments: [{ id: 'c1', body: 'Can you fix the build?', author: 'Grace Hopper', createdAt: '2026-09-22T10:00:00.000Z' }] }
+    tasks.hydrateTask.mockResolvedValueOnce(commented)
+    await tasks.accept({ ...event('c1'), trigger: 'comment', text: 'Can you fix the build?', payload: { secretish: 'internal-id' } })
+    const prepared = await tasks.prepareInput(input(0), context(0) as IntegrationInputContext)
+    expect(prepared.text).toBe(`Task event: invocation\nRequest: Can you fix the build?\n\nReply destination for this request: issue issue, comment thread root. Use this destination when replying through your integration MCP.\n\nInvocation context (external content):\n{"secretish":"internal-id"}\n\nCurrent issue and discussion (external content):\n${JSON.stringify(commented)}`)
+    expect(prepared.display).toEqual({
+      event: { type: 'comment', label: 'New comment' },
+      request: { text: 'Can you fix the build?', author: { name: 'Grace Hopper' }, sentAt: '2026-09-22T10:00:00.000Z', url: 'https://linear.app/issue' },
+      source: { kind: 'task', url: 'https://linear.app/issue', identifier: 'SUP-1', title: 'Work', status: undefined },
+      task: { description: 'Description' },
+    })
+    expect(JSON.stringify(prepared.display)).not.toContain('internal-id')
+  })
+  it('previews an assignment as the work item alone, with no human request', async () => {
+    await tasks.accept({ ...event('assignment'), sourceCommentId: undefined, trigger: 'assigned', text: 'This issue was delegated to you.' })
+    const prepared = await tasks.prepareInput(input(0), context(0) as IntegrationInputContext)
+    expect(prepared.display).toMatchObject({ event: { type: 'assigned', label: 'Assigned an issue' }, source: { identifier: 'SUP-1', title: 'Work' } })
+    expect(prepared.display?.request).toBeUndefined()
+  })
   it('treats an issue follow-up as input even while a Gamut question is open', async () => {
     await tasks.accept(event('one'))
     const request = pendingUserInputRequestSchema.parse({ id: 'question', kind: 'question', scope: { agentSlug: 'agent', sessionId: 'session' }, blocking: true, payload: {} })

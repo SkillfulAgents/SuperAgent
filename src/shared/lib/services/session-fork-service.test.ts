@@ -77,6 +77,11 @@ vi.mock('@/api/routes/message-author', () => ({
   insertMessageAuthorsBestEffort,
 }))
 
+const { hasIntegrationMessages } = vi.hoisted(() => ({
+  hasIntegrationMessages: vi.fn(async () => false),
+}))
+vi.mock('@shared/lib/services/agent-integration-message-service', () => ({ hasIntegrationMessages }))
+
 vi.mock('@shared/lib/db', () => ({
   db: {
     select: () => ({
@@ -88,7 +93,7 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
-  messageAuthor: { id: 'id', sessionId: 'session_id', userId: 'user_id' },
+  messageAuthor: { id: 'id', sessionId: 'session_id', userId: 'user_id', integrationId: 'integration_id', display: 'display' },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -193,6 +198,27 @@ describe('forkSession', () => {
     releaseCopy()
     releaseAttr()
     await pending
+  })
+
+  it('re-keys integration authors in every mode, cards included', async () => {
+    hasIntegrationMessages.mockResolvedValueOnce(true)
+    streamJsonlFile.mockImplementation(async function* () {
+      yield { type: 'user', uuid: 'new-user', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-user' } }
+      yield { type: 'assistant', uuid: 'new-assistant', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-assistant' } }
+    })
+    dbSelectFrom.mockResolvedValueOnce([{ id: 'old-user', userId: null, integrationId: 'integration-1', display: '{"version":1}' }])
+
+    const fork = await forkSession('test-agent', 'src-1')
+
+    expect(insertMessageAuthorsBestEffort).toHaveBeenCalledExactlyOnceWith([
+      { id: 'new-user', sessionId: fork.id, agentSlug: 'test-agent', userId: null, integrationId: 'integration-1', display: '{"version":1}' },
+    ])
+  })
+
+  it('does not scan the fork without auth attribution or integration authors', async () => {
+    await forkSession('test-agent', 'src-1')
+    expect(streamJsonlFile).not.toHaveBeenCalled()
+    expect(insertMessageAuthorsBestEffort).not.toHaveBeenCalled()
   })
 
   it('does not re-read metadata for runtime choices', async () => {

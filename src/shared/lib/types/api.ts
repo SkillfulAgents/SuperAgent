@@ -9,6 +9,7 @@ import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/co
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
+import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 
 export type { ApiAgentWidget }
 
@@ -212,6 +213,12 @@ export interface ApiMessage {
   toolCalls: ApiToolCall[]
   createdAt: Date
   sender?: ApiMessageSender
+  /**
+   * Present on a message an integration delivered (Slack, Linear, …). Written
+   * by the host beside the transcript, never parsed from the message text, so
+   * `content.text` stays exactly what the agent received.
+   */
+  integration?: IntegrationMessageDisplay
   /** SDK error code when assistant message failed due to LLM provider error */
   apiError?: string
   /** Provider-authored copy for the apiError (severity, icon, markdown + CTA link). */

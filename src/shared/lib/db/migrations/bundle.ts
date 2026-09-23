@@ -525,5 +525,17 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1790107007903,
     "hash": "83e4baf8856c8602ade2f60a396a13ac628d626f761765398eea9e7d4d25951a"
+  },
+  {
+    "sql": [
+      "-- A message's author is either a person in the app or an agent integration.\n-- Integration rows carry no user, so user_id becomes nullable, and they hold\n-- the card the app draws for the message (display, JSON). SQLite cannot drop\n-- NOT NULL in place, so rebuild the table; every existing row is a user row\n-- and carries over unchanged. Nothing references message_author.\nCREATE TABLE `message_author_new` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`session_id` text NOT NULL,\n\t`agent_slug` text NOT NULL,\n\t`user_id` text,\n\t`integration_id` text,\n\t`display` text,\n\t`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,\n\tCONSTRAINT \"message_author_author_check\" CHECK((\"user_id\" is null) <> (\"integration_id\" is null) and (\"integration_id\" is null) = (\"display\" is null))\n);\n",
+      "\nINSERT INTO `message_author_new` (`id`, `session_id`, `agent_slug`, `user_id`, `created_at`)\n\tSELECT `id`, `session_id`, `agent_slug`, `user_id`, `created_at` FROM `message_author`;\n",
+      "\nDROP TABLE `message_author`;\n",
+      "\nALTER TABLE `message_author_new` RENAME TO `message_author`;\n",
+      "\nCREATE INDEX `message_author_session_idx` ON `message_author` (`session_id`);\n"
+    ],
+    "bps": true,
+    "folderMillis": 1790125000109,
+    "hash": "2a55801aa6124e98dfa6d1ced402a9b81c60bf21237bbf2eb2c6ca3abe8eace9"
   }
 ]

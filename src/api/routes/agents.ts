@@ -104,7 +104,7 @@ import {
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
 import { scheduledTasks, webhookTriggers, chatIntegrations, connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
-import { eq, and, inArray, desc, count } from 'drizzle-orm'
+import { eq, and, inArray, isNotNull, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
@@ -143,6 +143,7 @@ import { widgetRefreshService } from '@shared/lib/services/widget-refresh-servic
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
+import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
@@ -2160,6 +2161,24 @@ function attachProviderErrorPresentations(transformed: TransformedItem[]): void 
   }
 }
 
+/** Rows authored by a person; an integration's rows carry its card instead (see annotateIntegrationMessages). */
+function userAuthors(rows: { messageId: string; userId: string | null }[]): { messageId: string; userId: string }[] {
+  return rows.flatMap(row => row.userId ? [{ messageId: row.messageId, userId: row.userId }] : [])
+}
+
+// Integration cards are decoration: a lookup failure leaves the messages as text.
+async function annotateIntegrationMessagesBestEffort(
+  transformed: TransformedItem[],
+  agentSlug: string,
+  sessionId: string,
+): Promise<void> {
+  try {
+    await annotateIntegrationMessages(agentSlug, sessionId, transformed)
+  } catch (error) {
+    captureException(error, { tags: { component: 'agents', operation: 'annotate-integration-messages' }, level: 'warning' })
+  }
+}
+
 async function annotateAndRecoverMessages(
   transformed: TransformedItem[],
   agentSlug: string,
@@ -2190,6 +2209,8 @@ async function annotateAndRecoverMessages(
     }
   }
 
+  await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
+
   if (!isAuthMode()) return
 
   const userMessageIds = transformed.filter((m) => m.type === 'user').map((m) => m.id)
@@ -2198,13 +2219,13 @@ async function annotateAndRecoverMessages(
   // Scope the lookup to the ids actually in this response — a delta window is
   // a handful of items, and loading the whole session's author history per
   // refetch would erase the bounded-memory benefit on auth deployments.
-  const authors = await db
+  const authors = userAuthors(await db
     .select({
       messageId: messageAuthor.id,
       userId: messageAuthor.userId,
     })
     .from(messageAuthor)
-    .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds)))
+    .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds), isNotNull(messageAuthor.userId))))
 
   const profiles = await getUserSummaries(authors.map(author => author.userId))
   const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
@@ -2368,6 +2389,8 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       }
     }
 
+    await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
+
     // In auth mode, annotate user messages with sender info
     if (isAuthMode()) {
       const userMessageIds = transformed
@@ -2375,13 +2398,13 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         .map((m) => m.id)
 
       if (userMessageIds.length > 0) {
-        const authors = await db
+        const authors = userAuthors(await db
           .select({
             messageId: messageAuthor.id,
             userId: messageAuthor.userId,
           })
           .from(messageAuthor)
-          .where(eq(messageAuthor.sessionId, sessionId))
+          .where(and(eq(messageAuthor.sessionId, sessionId), isNotNull(messageAuthor.userId))))
 
         const profiles = await getUserSummaries(authors.map(author => author.userId))
         const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
@@ -3089,10 +3112,9 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
       console.error('Failed to cancel pending wake for deleted session:', error)
     })
 
-    // Clean up message author records for this session (auth mode only).
-    if (isAuthMode()) {
-      await db.delete(messageAuthor).where(eq(messageAuthor.sessionId, sessionId))
-    }
+    // Clean up message author records for this session: people (auth mode)
+    // and integrations (every mode).
+    await db.delete(messageAuthor).where(eq(messageAuthor.sessionId, sessionId))
 
     // Clean up notification rows for this session in BOTH modes (notifications
     // are stored regardless of auth mode; userId is nullable), so deleting a

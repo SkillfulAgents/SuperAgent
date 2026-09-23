@@ -35,6 +35,8 @@ import {
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { recordIntegrationMessage } from '@shared/lib/services/agent-integration-message-service'
+import { INTEGRATION_MESSAGE_DISPLAY_VERSION, INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, type IntegrationMessageDisplay } from './message-display-schema'
 // ── Sentry helpers ─────────────────────────────────────────────────────
 
 const COMPONENT = 'agent-integration'
@@ -1148,8 +1150,11 @@ export class AgentIntegrationManager {
     if (!(await this.isAllowed(integrationId, chatId))) return
     attempt.assertCurrent()
     if (this.connections.get(integrationId) !== conn || this.generationOf(integrationId) !== generation) throw new DeliveryCancelled()
-    const send = (targetSession: string) => actor.messages.withSend(targetSession, () =>
-      attempt.handoff(targetSession, () => actor.messages.send(targetSession, input.text, attempt.id), check))
+    const send = async (targetSession: string) => {
+      await this.showInput(integration, conn.connector, actor, targetSession, attempt.id, input, { live: true })
+      return actor.messages.withSend(targetSession, () =>
+        attempt.handoff(targetSession, () => actor.messages.send(targetSession, input.text, attempt.id), check))
+    }
     try { await send(sessionId) }
     catch (error) {
       if (!(error instanceof MessageNotAcceptedError) || error.reason !== 'session-gone') throw error
@@ -1169,6 +1174,38 @@ export class AgentIntegrationManager {
         try { await touchIntegrationSession(chatSession.id) } catch { /* best-effort */ }
         this.lastSessionTouch.set(chatSession.id, now)
       }
+    }
+  }
+
+  /**
+   * Record the app's card for an input under the uuid it is sent with (the
+   * delivery ID, stable across retries), before the handoff, so the transcript
+   * entry resolves to it on arrival. A handoff that fails or is uncertain keeps
+   * its row: an accepted message must not lose its card, and an unaccepted one
+   * never matches a transcript entry. Watchers of an existing session get the
+   * card live, as for a message sent from the app.
+   */
+  private async showInput(integration: AgentIntegrationRecord, connector: AgentIntegration, actor: AgentActor, sessionId: string, uuid: string, input: PreparedIntegrationInput, opts: { live: boolean }): Promise<void> {
+    if (!input.display) return
+    const display = await recordIntegrationMessage({
+      id: uuid, sessionId, agentSlug: integration.agentSlug,
+      display: {
+        ...input.display,
+        version: INTEGRATION_MESSAGE_DISPLAY_VERSION,
+        integration: {
+          id: integration.id,
+          name: clampIntegrationText(this.registry.displayName(integration), INTEGRATION_MESSAGE_LIMITS.name),
+          provider: integration.provider,
+          family: connector.definition.family,
+        },
+      } satisfies IntegrationMessageDisplay,
+    })
+    if (!display || !opts.live) return
+    // Decoration only: a failed broadcast must never block the handoff.
+    try {
+      actor.messages.broadcastEvent(sessionId, { type: 'user_message', uuid, content: input.text, queued: actor.sessions.isActive(sessionId), integration: display })
+    } catch (error) {
+      reportError(error, 'broadcast-message-display', { integrationId: integration.id, provider: integration.provider }, 'warning')
     }
   }
 
@@ -1220,6 +1257,8 @@ export class AgentIntegrationManager {
     // reconciliation can find the initial message's UUID without replaying it.
     const sessionId = containerSession.id
     await attempt.bind(sessionId)
+    // Nobody can be watching a session that did not exist: the transcript carries it.
+    await this.showInput(integration, connector, actor, sessionId, attempt.id, input, { live: false })
     // Runtime acceptance outlives a socket. Finish routing under the delivery's
     // durable ownership rather than the connector/generation captured at send.
     const checkSetup = async () => {

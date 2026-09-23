@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
-import { chatIntegrations, chatIntegrationSessions, integrationDeliveries } from '../db/schema'
+import { chatIntegrations, chatIntegrationSessions, integrationDeliveries, messageAuthor } from '../db/schema'
 import { AgentIntegrationManager } from './agent-integration-manager'
 import { AgentIntegrationRegistry } from './registry'
 import { MockChatAgentIntegration } from '../chat-integrations/mock-connector'
@@ -18,12 +18,12 @@ import type { CreateSessionOptions } from '../container/types'
 let handle: TestDatabase
 let database: AppDatabase
 vi.mock('../db', () => ({ get db() { return database } }))
-const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), interrupt: vi.fn(), attach: vi.fn(), subscribed: vi.fn(), subscribe: vi.fn() }))
+const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), interrupt: vi.fn(), attach: vi.fn(), subscribed: vi.fn(), subscribe: vi.fn(), broadcast: vi.fn() }))
 vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
   container: { start: runtime.start }, inputs: { open: () => [], cancelAwaiting: async () => {} },
   sessions: { create: runtime.create, register: runtime.register, updateMetadata: async () => {}, markActive: () => {},
-    subscribeStream: runtime.attach, isStreamSubscribed: runtime.subscribed, activity: () => 'working', isAwaitingInput: () => false },
-  messages: { send: runtime.send, interrupt: runtime.interrupt, findLastEntry: runtime.receipt,
+    subscribeStream: runtime.attach, isStreamSubscribed: runtime.subscribed, activity: () => 'working', isAwaitingInput: () => false, isActive: () => true },
+  messages: { send: runtime.send, interrupt: runtime.interrupt, findLastEntry: runtime.receipt, broadcastEvent: runtime.broadcast,
     subscribe: runtime.subscribe, withSend: (_id: string, send: () => Promise<void>) => send() },
 }) } }))
 vi.mock('../services/agent-service', () => ({ agentExists: async () => true }))
@@ -81,6 +81,20 @@ beforeEach(async () => {
 afterEach(async () => { vi.restoreAllMocks(); manager?.stop(); await new Promise(resolve => setTimeout(resolve, 20)); await handle.close() })
 
 describe('shared manager durability with real integration storage', () => {
+  it.each(['slack', 'linear'] as const)('keys each %s card by its delivery, for the first input and a follow-up', async provider => {
+    await start(provider)
+    await adapter.input('first')
+    await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))
+    await adapter.input('second')
+    await vi.waitFor(async () => expect((await rows()).filter(row => row.state === 'delivered')).toHaveLength(2))
+    const cards = await database.select().from(messageAuthor).all()
+    expect(cards.map(card => card.id).sort()).toEqual((await rows()).map(row => row.id).sort())
+    expect(cards.every(card => card.sessionId === 'session-1' && card.agentSlug === 'agent' && card.integrationId === 'integration' && card.userId === null)).toBe(true)
+    // Only the follow-up can have watchers; the first input created the session.
+    expect(runtime.broadcast).toHaveBeenCalledExactlyOnceWith('session-1', expect.objectContaining({
+      type: 'user_message', uuid: runtime.send.mock.calls[0][2], integration: expect.objectContaining({ version: 1 }),
+    }))
+  })
   it.each(['slack', 'telegram', 'imessage', 'linear'] as const)('uses one durable path and immediate running-session delivery for %s', async provider => {
     await start(provider)
     runtime.send.mockImplementation(async (sessionId: string, _text: string, uuid: string) => {

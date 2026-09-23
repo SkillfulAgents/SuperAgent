@@ -12,6 +12,7 @@ import { renderWithProviders } from '@renderer/test/test-utils'
 import { createUserMessage, createAssistantMessage, createToolCall, createCompactBoundary } from '@renderer/test/factories'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
+import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 
 // Mock useMessages
 const mockFetchOlder = vi.fn()
@@ -67,7 +68,7 @@ const mockStreamState = {
   activeSubagents: [] as any[],
   completedSubagents: null as Set<string> | null,
   typingUser: null as { id: string; name?: string } | null,
-  peerUserMessages: [] as Array<{ uuid: string; receivedAt: number; content: string; sender: { id: string; name?: string; email?: string }; queued?: boolean }>,
+  peerUserMessages: [] as Array<{ uuid: string; receivedAt: number; content: string; sender?: { id: string; name?: string; email?: string }; queued?: boolean; integration?: IntegrationMessageDisplay }>,
   discardedCommandUuids: [] as string[],
   thinkingBlocks: [] as Array<{ id: number; persistedId?: string; text: string; startedAt: number; endedAt: number | null }>,
   error: null as string | null,
@@ -2275,6 +2276,29 @@ describe('MessageList', () => {
       )
 
       expect(screen.getByText('Hello from peer')).toBeInTheDocument()
+    })
+
+    it('renders an integration message live as its card, with no app sender, in any mode', () => {
+      mockCurrentUser = null
+      mockMessagesData.data = []
+      Object.assign(mockStreamState, {
+        peerUserMessages: [{
+          uuid: 'integration-1', receivedAt: Date.now(), content: 'Task event: invocation\nRequest: raw model context',
+          integration: {
+            version: 1,
+            integration: { id: 'i-1', name: 'Support bot', provider: 'slack', family: 'chat' },
+            event: { type: 'message', label: 'Channel message' },
+            request: { text: 'Can you check the deploy?', author: { name: 'Ada Lovelace' } },
+            source: { kind: 'channel', title: '#ops' },
+          },
+        }],
+      })
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getByTestId('integration-message')).toHaveAttribute('data-provider', 'slack')
+      expect(screen.getByText('Can you check the deploy?')).toBeInTheDocument()
+      expect(screen.queryByText(/raw model context/)).not.toBeInTheDocument()
     })
 
     it('renders queued peer messages as ghosts with a Queued label', () => {

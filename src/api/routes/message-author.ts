@@ -1,15 +1,11 @@
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 
-type AuthorRow = {
-  id: string
-  sessionId: string
-  agentSlug: string
-  userId: string
-}
+type AuthorRow = Pick<typeof messageAuthor.$inferInsert, 'id' | 'sessionId' | 'agentSlug' | 'userId' | 'integrationId' | 'display'>
 
 /**
- * Record who authored a user message (auth mode). Best-effort: a stale userId
+ * Record who authored a user message: a person (auth mode) or an integration
+ * (its card rides along). Best-effort: a stale userId
  * whose user row is gone throws on the FK; the session stays usable and only
  * the sender badge is lost.
  */
