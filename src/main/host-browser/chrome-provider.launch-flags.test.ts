@@ -77,6 +77,11 @@ const pm = vi.hoisted(() => ({
 }))
 vi.mock('./profile-maintenance', () => pm)
 
+const recovery = vi.hoisted(() => ({ watch: vi.fn(), stop: vi.fn() }))
+vi.mock('./google-passkey-recovery', () => ({
+  GooglePasskeyRecovery: class { watch = recovery.watch; stop = recovery.stop },
+}))
+
 vi.mock('child_process', () => ({ spawn: h.spawnMock, execSync: h.execSyncMock }))
 vi.mock('net', () => ({ default: h.netMock, ...h.netMock }))
 
@@ -248,5 +253,59 @@ describe('ChromeProvider launch flags (profile disk growth)', () => {
     }
     expect(pm.markProfileInUse).toHaveBeenCalledWith('agent-diskfull')
     expect(pm.unmarkProfileInUse).toHaveBeenCalledWith('agent-diskfull')
+  })
+})
+
+describe('ChromeProvider Google passkey recovery lifecycle', () => {
+  const browserWsUrl = 'ws://127.0.0.1:9999/devtools/browser/test'
+  let provider: ChromeProvider
+
+  beforeEach(() => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    recovery.watch.mockClear()
+    recovery.stop.mockClear()
+    h.spawnMock.mockClear()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ webSocketDebuggerUrl: browserWsUrl })))
+    provider = new ChromeProvider()
+  })
+
+  afterEach(async () => {
+    await provider.stopAll()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
+  })
+
+  it('watches the browser-level CDP URL from loopback on launch and reuse, and stops on stop()', async () => {
+    await provider.launch('agent1')
+    expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:9999/json/version', expect.anything())
+    expect(recovery.watch).toHaveBeenLastCalledWith('agent1', browserWsUrl)
+
+    await provider.launch('agent1')
+    expect(h.spawnMock).toHaveBeenCalledOnce()
+    expect(recovery.watch).toHaveBeenCalledTimes(2)
+
+    await provider.stop('agent1')
+    expect(recovery.stop).toHaveBeenCalledWith('agent1')
+  })
+
+  it('stops the watcher when Chrome exits externally', async () => {
+    await provider.launch('agent1')
+    const child = h.spawnMock.mock.results[0].value as { kill: () => void }
+    child.kill()
+    await vi.waitFor(() => expect(recovery.stop).toHaveBeenCalledWith('agent1'))
+  })
+
+  it('still launches when /json/version is unreachable', async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error('ECONNREFUSED'))
+    await expect(provider.launch('agent1')).resolves.toMatchObject({ port: 9999 })
+    expect(recovery.watch).not.toHaveBeenCalled()
+  })
+
+  it('does not watch a malformed /json/version response', async () => {
+    vi.mocked(fetch).mockResolvedValue(Response.json({ Browser: 'Chrome' }))
+    await expect(provider.launch('agent1')).resolves.toMatchObject({ port: 9999 })
+    expect(recovery.watch).not.toHaveBeenCalled()
   })
 })
