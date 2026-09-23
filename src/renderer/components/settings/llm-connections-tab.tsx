@@ -71,7 +71,7 @@ export function LlmConnectionsTab() {
           <div className="flex items-center justify-between p-4 gap-3">
             <div>
               <span className="text-sm">Summarizer</span>
-              {!data.summarizerSelection && !defaultRequiresSummarizer && <p className="text-xs text-muted-foreground">Using app default</p>}
+              {data.defaultSelection && !data.summarizerSelection && !defaultRequiresSummarizer && <p className="text-xs text-muted-foreground">Using app default</p>}
               {defaultRequiresSummarizer && (
                 <p className="text-xs text-muted-foreground">This app default requires a separate API-capable summarizer.</p>
               )}

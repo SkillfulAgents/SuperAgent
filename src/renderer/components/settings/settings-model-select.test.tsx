@@ -286,6 +286,20 @@ describe('SettingsModelSelect (flat picker)', () => {
     })
   })
 
+  it('does not bind another picker to the first provider when no app default exists', async () => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections: [
+      { id: 'first', name: 'First', userId: null, supportsDirectApi: true, catalog: CATALOG, defaultModel: 'haiku' },
+    ], defaultSelection: null } })
+    const onSelectionChange = vi.fn()
+    const onModelChange = vi.fn()
+    render(<SettingsModelSelect model={undefined} onModelChange={onModelChange} onSelectionChange={onSelectionChange} />)
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('model-latest-haiku'))
+    expect(onSelectionChange).not.toHaveBeenCalled()
+    expect(onModelChange).toHaveBeenCalledWith('haiku')
+  })
+
   it.each([1, 2])('recovers a missing helper selection with %i API-capable providers', async count => {
     const settings = settingsWith({ webProvider: 'native' }).data
     const connections = [

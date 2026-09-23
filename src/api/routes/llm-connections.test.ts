@@ -219,3 +219,11 @@ describe('connection environment permissions', () => {
     expect(JSON.parse((await getConnection(id))!.config).runtimeEnv).toEqual({ ANTHROPIC_BASE_URL: 'https://personal-proxy.example' })
   })
 })
+
+it('publishes the resolved fallback when the saved summarizer model has retired', async () => {
+  const id = await saveConnection({ name: 'API', provider: 'anthropic', config: { apiKeys: { anthropicApiKey: 'test-key' } } }, { admin: true, userId: null })
+  state.settings.llmSummarizer = { llmProviderId: id, model: 'claude-retired-model' }
+  const res = await request('')
+  expect(res.status).toBe(200)
+  expect((await res.json()).summarizerSelection).toEqual({ llmProviderId: id, model: 'haiku' })
+})

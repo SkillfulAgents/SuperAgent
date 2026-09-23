@@ -41,6 +41,12 @@ beforeEach(() => {
 })
 
 describe('global helper settings', () => {
+  it('does not claim inheritance without an app default', () => {
+    state.data.defaultSelection = null
+    render(<LlmConnectionsTab />)
+    expect(screen.queryByText('Using app default')).not.toBeInTheDocument()
+  })
+
   it('identifies an inherited summarizer explicitly', () => {
     render(<LlmConnectionsTab />)
     expect(screen.getByText('Using app default')).toBeVisible()

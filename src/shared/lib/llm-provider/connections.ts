@@ -244,7 +244,7 @@ export async function setGlobalSelection(
     let summarizerSelection = purpose === 'summarizer' ? selection : getSettings().llmSummarizer
     const root = purpose === 'default' ? resolved : await resolveGlobalSelection()
     if (root?.provider.supportsDirectApi === false) {
-      const summarizer = await resolveConnectionSelection(summarizerSelection)
+      const summarizer = purpose === 'summarizer' ? resolved : await resolveSummarizerSelection()
       if (!isHelperSelection(summarizer)) {
         // Preserve the API helper already in use when switching to a subscription.
         const inherited = purpose === 'default' ? await resolveGlobalSelection() : null
@@ -262,11 +262,11 @@ export async function setGlobalSelection(
 
 type StoredModelSelection = { llmProviderId: string; model?: string }
 
-function defaultSelectionForConnection(row: ConnectionRow) {
+function defaultSelectionForConnection(row: ConnectionRow, purpose: 'agent' | 'summarizer' = 'agent') {
   const catalog = connectionCatalog(row)
   const provider = providerForConnection(row)
   const preferred = resolveSelection(
-    { llmProviderId: row.id, model: provider.getDefaultModel('agent') },
+    { llmProviderId: row.id, model: provider.getDefaultModel(purpose) },
     [{ id: row.id, catalog }],
   )
   const fallback = catalog.find(model => model.isDefault) ?? catalog[0]
@@ -355,16 +355,27 @@ function connectionDeletionReason(row: ConnectionRow, viewer: ConnectionViewer, 
     return row.userId ? 'Only the owner can delete this provider.' : 'Only an administrator can delete global providers.'
   if (root?.llmProviderId === row.id) return 'Change the app default before deleting this connection'
   if (row.managed && providerForConnection(row).getApiKeyStatus().isConfigured)
-    return 'Platform cannot be deleted while connected'
+    return 'Disconnect Platform before deleting this provider.'
   if (root?.provider.supportsDirectApi === false && getSettings().llmSummarizer?.llmProviderId === row.id)
     return 'Choose another API-capable summarizer before deleting this connection'
   return undefined
 }
 
+/** A retired/disabled helper model follows the same account's summarizer default. */
+export async function resolveSummarizerSelection(): Promise<ResolvedConnection | null> {
+  const saved = getSettings().llmSummarizer
+  const selected = await resolveConnectionSelection(saved)
+  if (isHelperSelection(selected)) return selected
+  const row = saved ? await getConnection(saved.llmProviderId) : null
+  if (!row || row.userId !== null || !providerForConnection(row).supportsDirectApi) return null
+  return defaultSelectionForConnection(row, 'summarizer')
+}
+
 export async function resolveHelperSelection(): Promise<ResolvedConnection> {
-  const override = await resolveConnectionSelection(getSettings().llmSummarizer)
+  const override = await resolveSummarizerSelection()
   if (isHelperSelection(override)) return override
   const root = await resolveGlobalSelection()
   if (isHelperSelection(root)) return root
+  if (!root) throw new HelperConfigurationError('Configure a global default provider and model in Settings → Model Providers')
   throw new HelperConfigurationError()
 }

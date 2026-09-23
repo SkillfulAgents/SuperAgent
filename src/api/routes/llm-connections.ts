@@ -7,7 +7,7 @@ import { getSettings } from '@shared/lib/config/settings'
 import {
   isHelperSelection,
   listConnections,
-  resolveConnectionSelection,
+  resolveSummarizerSelection,
   resolveGlobalSelection,
   saveConnection,
   deleteConnection,
@@ -38,7 +38,7 @@ routes.onError((error, c) =>
 routes.get('/', async (c) => {
   const connections = await listConnections(viewer(c))
   const root = await resolveGlobalSelection()
-  const summarizer = await resolveConnectionSelection(getSettings().llmSummarizer)
+  const summarizer = await resolveSummarizerSelection()
   return c.json({
     connections,
     legacyLlmProviderId: getSettings().llmLegacyProviderId,

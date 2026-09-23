@@ -1,3 +1,4 @@
+import { getConfiguredLlmClient, configuredHelperModel } from './helpers'
 import { calculateCost } from '../services/usage-service'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
@@ -352,7 +353,7 @@ it('keeps one managed Platform account and prevents deletion while logged in', a
     .all()
   expect(rows).toHaveLength(1)
   expect(rows[0]).toMatchObject({ managed: true, userId: null })
-  await expect(deleteConnection(rows[0].id, admin)).rejects.toThrow('while connected')
+  await expect(deleteConnection(rows[0].id, admin)).rejects.toThrow('Disconnect Platform before deleting')
   await expect(
     saveConnection({ name: 'Duplicate', provider: 'platform', config: {} }, admin)
   ).rejects.toThrow('Platform login')
@@ -719,6 +720,43 @@ describe('summarizer selection', () => {
     const listed = (await listConnections(admin)).find(c => c.id === api)!
     expect(listed.canDelete).toBe(false)
     await expect(deleteConnection(api, admin)).rejects.toThrow(listed.deletionBlockedReason)
+  })
+  it.each(['disabled', 'retired', 'custom removed'])('falls back within the summarizer account when its model is %s', async reason => {
+    const { api, sub } = await setup()
+    await setGlobalSelection('summarizer', { llmProviderId: api, model: reason === 'custom removed' ? 'model-a' : 'claude-opus-4-8' })
+    await setGlobalSelection('default', { llmProviderId: sub, model: 'a' })
+    if (reason === 'retired') state.settings.llmSummarizer!.model = 'claude-retired-version'
+    else await saveConnection({ name: 'Api', provider: 'anthropic', config: {}, modelOverrides: reason === 'disabled' ? [{ id: 'claude-opus-4-8', disabled: true }] : [] }, admin, api)
+    const helper = await resolveHelperSelection()
+    expect(helper.llmProviderId).toBe(api)
+    expect(helper.model).toBe('haiku')
+    expect(configuredHelperModel(await getConfiguredLlmClient())).toBe(helper.wireModel)
+    // Choosing another subscription default still accepts the resolved helper.
+    await setGlobalSelection('default', { llmProviderId: sub, model: 'a' })
+  })
+  it('keeps legacy agent-only settings from replacing the app default or summarizer', async () => {
+    await setup()
+    const before = { root: state.settings.llmDefault, helper: state.settings.llmSummarizer }
+    state.settings.llmProvider = 'generic'
+    state.settings.apiKeys = { genericApiKey: 'legacy-key', genericBaseUrl: 'https://legacy.example' }
+    const agentOnly = providerRegistry.createLlmProvider('generic', { apiKeys: state.settings.apiKeys, env: {} })
+    const get = providerRegistry.getLlmProvider
+    vi.spyOn(providerRegistry, 'getLlmProvider').mockImplementation(id => id === 'generic' ? agentOnly : get(id))
+    await syncProviderSettings({ providers: ['generic'], selectDefault: true })
+    expect(state.settings.llmDefault).toEqual(before.root)
+    expect(state.settings.llmSummarizer).toEqual(before.helper)
+  })
+  it('explains how to recover a required Platform summarizer after logout', async () => {
+    const { sub } = await setup()
+    state.platformToken = 'test-platform'
+    await ensureManagedPlatformConnection()
+    await setGlobalSelection('summarizer', { llmProviderId: 'legacy-platform', model: 'haiku' })
+    await setGlobalSelection('default', { llmProviderId: sub, model: 'a' })
+    state.platformToken = undefined
+    await expect(getConfiguredLlmClient()).rejects.toThrow('Reconnect Platform or choose another summarizer')
+  })
+  it('asks for an app default when none resolves', async () => {
+    await expect(resolveHelperSelection()).rejects.toThrow('Configure a global default provider and model')
   })
   it('allows credential and name repairs when the helper model is retired', async () => {
     const { api, sub } = await setup()
