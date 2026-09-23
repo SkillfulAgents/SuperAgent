@@ -1,3 +1,7 @@
+import type { IntegrationSessionContext } from '../agent-integrations/types'
+import { getAgentIntegration } from '../services/agent-integration-service'
+import { readEmailState } from './state'
+import { emailThreadStateSchema, parseEmailIntegrationConfig } from './config-schema'
 import { and, eq, inArray, or, isNull } from 'drizzle-orm'
 import { db } from '../db'
 import { agentAcl, user } from '../db/schema'
@@ -48,4 +52,15 @@ export function platformConnected() { return !!getPlatformAccessToken() }
 
 export class EmailPolicyError extends Error {
   constructor(message: string) { super(message); this.name = 'EmailPolicyError' }
+}
+
+export async function emailSessionAllowed(context: IntegrationSessionContext): Promise<boolean> {
+  const record = await getAgentIntegration(context.integration.id)
+  if (!record || record.status !== 'active') return false
+  const state = await readEmailState(record.id, `thread:${context.externalId}`, emailThreadStateSchema)
+  if (!state) return false
+  const config = parseEmailIntegrationConfig(record.config)
+  const members = await agentUserEmails(record.agentSlug)
+  if (state.message.direction === 'outbound') return [...state.message.to, ...state.message.cc, ...state.message.bcc].every(value => recipientAllowed(config, value, members))
+  return inboundAllowed(config, state.message, members, state.contacted)
 }

@@ -1,11 +1,11 @@
-import { platformConnected } from './policy'
+import { platformConnected, emailSessionAllowed } from './policy'
 import type { IntegrationProvider } from '../agent-integrations/registry'
 import { IntegrationSetupError } from '../agent-integrations/setup-types'
 import { emailIntegrationState } from '../db/schema'
 import { emailConfigSchema, emailConfigPatchSchema, parseEmailConfig } from './config-schema'
 import { EmailGatewayError } from './gateway-client'
 import { provisionEmail, updateEmailMailbox, disableEmailMailbox } from './setup'
-import { emailDefinition, emailSessionAllowed, emailSessionPolicy } from './email-agent-integration'
+import { emailDefinition, emailSessionPolicy } from './definitions'
 
 async function setupCall<T>(run: () => Promise<T>): Promise<T> {
   try { return await run() }

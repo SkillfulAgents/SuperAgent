@@ -1,3 +1,5 @@
+import { emailSessionPolicy } from './definitions'
+export { emailDefinition } from './definitions'
 import { composeEmailReply } from './composition'
 import { emailDirectory, workspaceEmailContacts, type EmailHistoryPage } from './directory'
 import { captureException } from '../error-reporting'
@@ -11,27 +13,8 @@ import { agentRegistry } from '../agent-actor'
 import { sanitizeUploadFilename } from '../utils/path-safety'
 import { appendAttachedFiles } from '../utils/attached-files'
 import { emailReplyJobSchema, type EmailReplyJob, parseEmailIntegrationConfig, emailMessageSchema, emailSendSchema, emailThreadStateSchema, type EmailMessage, type EmailSend } from './config-schema'
-import { EmailPolicyError, agentUserEmails, emailAddress, inboundAllowed, recipientAllowed, wasContacted } from './policy'
+import { EmailPolicyError, emailSessionAllowed, agentUserEmails, emailAddress, inboundAllowed, recipientAllowed, wasContacted } from './policy'
 import { deleteEmailState, pendingEmailReplies, readEmailState, replaceEmailState, writeEmailState } from './state'
-
-export const emailDefinition = {
-  provider: 'platform-email', name: 'Email', family: 'email', managementAccess: 'owner', managementCapabilities: [], capabilities: ['send_email', 'list_users', 'list_channels'], settings: [],
-  setup: { kind: 'platform-email', credentialFields: [] },
-} as const
-export const emailSessionPolicy = (integration: AgentIntegrationRecord, route: Partial<IntegrationRoute>) => ({
-  timeoutHours: null, name: route.displayName || integration.name || 'Email conversation',
-  metadata: { isChatIntegrationSession: true, chatIntegrationId: integration.id },
-})
-export async function emailSessionAllowed(context: IntegrationSessionContext): Promise<boolean> {
-  const record = await getAgentIntegration(context.integration.id)
-  if (!record || record.status !== 'active') return false
-  const state = await readEmailState(record.id, `thread:${context.externalId}`, emailThreadStateSchema)
-  if (!state) return false
-  const config = parseEmailIntegrationConfig(record.config)
-  const members = await agentUserEmails(record.agentSlug)
-  if (state.message.direction === 'outbound') return [...state.message.to, ...state.message.cc, ...state.message.bcc].every(value => recipientAllowed(config, value, members))
-  return inboundAllowed(config, state.message, members, state.contacted)
-}
 
 /** Provider-independent thread routing, admission, input framing and final-only delivery. */
 export abstract class EmailAgentIntegration extends AgentIntegration {
