@@ -1,3 +1,4 @@
+import { isHelperSelection } from '@shared/lib/llm-provider/helper-policy'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { Authenticated, IsAdmin } from '../middleware/auth'
@@ -43,7 +44,7 @@ routes.get('/', async (c) => {
     legacyLlmProviderId: getSettings().llmLegacyProviderId,
     defaultSelection: root ? { llmProviderId: root.llmProviderId, model: root.model } : null,
     summarizerSelection:
-      summarizer?.connection.userId === null
+      isHelperSelection(summarizer)
         ? { llmProviderId: summarizer.llmProviderId, model: summarizer.model }
         : null,
   })

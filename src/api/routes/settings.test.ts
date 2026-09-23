@@ -1,5 +1,10 @@
+import { syncProviderSettings } from '@shared/lib/llm-provider/connection-settings'
+import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-policy'
 vi.mock('@shared/lib/llm-provider/connections', () => ({ listConnections: vi.fn(async () => []) }))
-vi.mock('@shared/lib/llm-provider/connection-settings', () => ({ syncProviderSettings: vi.fn(async () => {}) }))
+vi.mock('@shared/lib/llm-provider/connection-settings', () => ({ syncProviderSettings: vi.fn(async (_sync, patch) => {
+  const settings = patch.read()
+  patch.save({ llmDefault: settings.llmDefault, llmSummarizer: settings.llmSummarizer })
+}) }))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
@@ -992,6 +997,14 @@ describe('settings route', () => {
 
       expect(res.status).toBe(200)
       expect(mockEnsureImageReady).not.toHaveBeenCalled()
+    })
+
+    it('does not persist a legacy settings patch rejected by the helper policy', async () => {
+      vi.mocked(syncProviderSettings).mockRejectedValueOnce(new HelperConfigurationError())
+      const res = await putSettings({ llmProvider: 'openrouter' })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: new HelperConfigurationError().message })
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
     })
 
     it('calls updateSettings with fully merged settings', async () => {

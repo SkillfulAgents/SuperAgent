@@ -1,3 +1,4 @@
+import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-policy'
 import { captureException } from '@shared/lib/error-reporting'
 import { resolveGlobalSelection } from '@shared/lib/llm-provider/connections'
 import { resolveSelection } from '@shared/lib/llm-provider/connection-schema'
@@ -403,8 +404,8 @@ settings.put(
 
       // Read FRESH and fail-closed: never merge onto the possibly-
       // corruption-defaulted cache (that is what overwrote real API keys/auth).
-      // Applying and validating the candidate below are synchronous, so a valid
-      // write still has no await between this strict read and updateSettings.
+      // LLM edits validate their staged connection changes before saving, and
+      // re-read settings at commit time to preserve unrelated concurrent edits.
       const currentSettings = loadSettingsStrict()
       const hasRunningAgents = containerHost.hasRunningAgents()
       const newSettings = applySettingsPatch(currentSettings, body, {
@@ -448,7 +449,6 @@ settings.put(
         }
       }
 
-      updateSettings(newSettings)
       if (body.llmProvider !== undefined || body.models !== undefined || body.modelCatalog !== undefined || body.apiKeys !== undefined) {
         const active = newSettings.llmProvider ?? 'anthropic'
         const touched = new Set<LlmProviderId>()
@@ -462,8 +462,17 @@ settings.put(
         await syncProviderSettings({ providers: [...touched], apiKeys: body.apiKeys,
           catalog: !!body.modelCatalog,
           models: (['agentModel', 'summarizerModel', 'browserModel', 'dashboardBuilderModel'] as const).filter(key => !!body.llmProvider || Object.hasOwn(body.models ?? {}, key)),
-          selectDefault: !!body.llmProvider })
-      }
+          selectDefault: !!body.llmProvider }, {
+            // Re-read after async validation so unrelated concurrent settings
+            // edits are not overwritten by an earlier request snapshot.
+            read: () => applySettingsPatch(loadSettingsStrict(), body, {
+              now: new Date(), getProviderDefaultModels: id => getLlmProvider(id).getDefaultModels(),
+            }),
+            save: defaults => updateSettings({ ...applySettingsPatch(loadSettingsStrict(), body, {
+              now: new Date(), getProviderDefaultModels: id => getLlmProvider(id).getDefaultModels(),
+            }), ...defaults }),
+          })
+      } else updateSettings(newSettings)
 
       // A new auto-sleep timeout applies to the containers already up.
       if (body.app?.autoSleepTimeoutMinutes !== undefined) {
@@ -512,6 +521,7 @@ settings.put(
       })
       return c.json(buildSettingsResponse(newSettings, hasRunningAgents, runnerAvailability))
     } catch (error) {
+      if (error instanceof HelperConfigurationError) return c.json({ error: error.message }, 400)
       console.error('Failed to update settings:', error)
       return c.json({ error: 'Failed to update settings' }, 500)
     }

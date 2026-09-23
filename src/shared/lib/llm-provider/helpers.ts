@@ -1,3 +1,4 @@
+import { assertDirectApiProvider } from './helper-policy'
 import { resolveHelperSelection } from './connections'
 import { getSettings } from '../config/settings'
 /**
@@ -25,9 +26,7 @@ export async function getConfiguredLlmClient(): Promise<Anthropic> {
   if (!provider.getApiKeyStatus().isConfigured) {
     throw new Error('LLM API key not configured')
   }
-  if (provider.supportsDirectApi === false) {
-    throw new Error('Choose an API-capable global summarizer in Settings → Model Providers')
-  }
+  if (!selection) assertDirectApiProvider(provider)
   const client = provider.createClient()
   if (selection) helperModels.set(client, selection.wireModel)
   return client

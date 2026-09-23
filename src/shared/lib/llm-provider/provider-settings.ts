@@ -1,5 +1,5 @@
 import { isProviderEnvVar } from './provider-env'
-import { getSettings, getEffectiveModels } from '../config/settings'
+import { getSettings, getEffectiveModels, type AppSettings } from '../config/settings'
 import { getLlmProvider, resolveModelForProvider } from './index'
 import type { LlmProviderId } from './provider-types'
 import { connectionModelOverridesSchema, normalizeConnectionModelOverrides } from './connection-schema'
@@ -25,10 +25,9 @@ const envNames: Record<LlmProviderId, string[]> = {
 /** Build the account used by the existing provider settings/onboarding API.
  * No database access: also usable while openDatabase is running migrations.
  */
-export function connectionFromProviderSettings(id: LlmProviderId, extraModels: Iterable<string> = []) {
-  const settings = getSettings()
+export function connectionFromProviderSettings(id: LlmProviderId, extraModels: Iterable<string> = [], settings: AppSettings = getSettings()) {
   const active = settings.llmProvider ?? 'anthropic'
-  const models = getEffectiveModels()
+  const models = getEffectiveModels(settings)
   const provider = getLlmProvider(id)
   const config = connectionConfigSchema.parse({
     apiKeys: Object.fromEntries(

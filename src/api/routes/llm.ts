@@ -1,3 +1,4 @@
+import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-policy'
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { getConfiguredLlmClient, configuredHelperModel } from '@shared/lib/llm-provider/helpers'
@@ -44,13 +45,18 @@ function getDefaultModel(): string {
 
 // GET /api/llm/config
 llm.get('/config', async (c) => {
-  const selected = getSettings().llmDefault ? await resolveHelperSelection() : null
-  const provider = selected?.provider ?? getActiveLlmProvider()
-  return c.json({
-    configured: provider.getApiKeyStatus().isConfigured,
-    defaultModel: selected?.wireModel ?? getDefaultModel(),
-    provider: provider.id,
-  })
+  try {
+    const selected = getSettings().llmDefault ? await resolveHelperSelection() : null
+    const provider = selected?.provider ?? getActiveLlmProvider()
+    return c.json({
+      configured: provider.getApiKeyStatus().isConfigured,
+      defaultModel: selected?.wireModel ?? getDefaultModel(),
+      provider: provider.id,
+    })
+  } catch (error) {
+    if (error instanceof HelperConfigurationError) return c.json({ configured: false, error: error.message }, 503)
+    throw error
+  }
 })
 
 // POST /api/llm/v1/messages — matches the path the Anthropic SDK sends
@@ -86,8 +92,8 @@ llm.post('/v1/messages', async (c) => {
   try {
     client = await getConfiguredLlmClient()
     if (!body.model) model = configuredHelperModel(client) ?? model
-  } catch {
-    return c.json({ error: 'LLM provider not configured. Check Gamut settings.' }, 503)
+  } catch (error) {
+    return c.json({ error: error instanceof HelperConfigurationError ? error.message : 'LLM provider not configured. Check Gamut settings.' }, 503)
   }
 
   try {

@@ -70,7 +70,7 @@ export abstract class BaseLlmProvider {
   readonly supportsModelSearch: boolean = false
 
   /** Whether this provider supports host-side Messages API calls (including summaries). */
-  get supportsDirectApi(): boolean { return true }
+  readonly supportsDirectApi: boolean = true
 
   /**
    * Value of `ENABLE_TOOL_SEARCH` for containers on this provider, or

@@ -36,6 +36,8 @@ export function LlmConnectionsTab() {
   const { user, isAdmin, isAuthMode } = useUser()
   const mutation = useConnectionMutation()
   const [editing, setEditing] = useState<ConnectionInfo | 'new' | null>(null)
+  const defaultRequiresSummarizer = data?.connections.find(c => c.id === data.defaultSelection?.llmProviderId)?.supportsDirectApi === false
+  const summarizerSelection = data?.summarizerSelection ?? (defaultRequiresSummarizer ? null : data?.defaultSelection)
   const changeDefault = (purpose: string, selection: ModelSelection | null) =>
     mutation.mutate(
       { path: `/defaults/${purpose}`, method: 'PUT', body: selection },
@@ -69,14 +71,15 @@ export function LlmConnectionsTab() {
           <div className="flex items-center justify-between p-4 gap-3">
             <div>
               <span className="text-sm">Summarizer</span>
-              {data.connections.find(c => c.id === data.defaultSelection?.llmProviderId)?.supportsDirectApi === false && (
+              {!data.summarizerSelection && !defaultRequiresSummarizer && <p className="text-xs text-muted-foreground">Using app default</p>}
+              {defaultRequiresSummarizer && (
                 <p className="text-xs text-muted-foreground">This app default requires a separate API-capable summarizer.</p>
               )}
             </div>
             <div className="flex items-center gap-2">
               <SettingsModelSelect
-                model={(data.summarizerSelection ?? data.defaultSelection)?.model}
-                llmProviderId={(data.summarizerSelection ?? data.defaultSelection)?.llmProviderId}
+                model={summarizerSelection?.model}
+                llmProviderId={summarizerSelection?.llmProviderId}
                 globalOnly
                 directApiOnly
                 disabled={mutation.isPending}
@@ -84,7 +87,7 @@ export function LlmConnectionsTab() {
                 onSelectionChange={(s) => changeDefault('summarizer', s)}
               />
               {data.summarizerSelection && (
-                <Button variant="ghost" size="sm" disabled={mutation.isPending || data.connections.find(c => c.id === data.defaultSelection?.llmProviderId)?.supportsDirectApi === false} onClick={() => changeDefault('summarizer', null)}>
+                <Button variant="ghost" size="sm" disabled={mutation.isPending || defaultRequiresSummarizer} onClick={() => changeDefault('summarizer', null)}>
                   Use app default
                 </Button>
               )}
@@ -154,17 +157,7 @@ export function LlmConnectionsTab() {
                 </span>
               </TooltipTrigger>
               <TooltipContent className="max-w-64">
-                {!connection.canManage
-                  ? connection.userId
-                    ? 'Only the owner can delete this provider.'
-                    : 'Only an administrator can delete global providers.'
-                  : connection.managed && connection.isConfigured
-                    ? 'Disconnect Platform before deleting this provider.'
-                    : !connection.canDelete
-                      ? connection.deletionBlockedReason ?? 'Choose another provider as the app default before deleting this one.'
-                      : mutation.isPending
-                        ? 'Wait for the current change to finish.'
-                        : 'Delete provider'}
+                {connection.deletionBlockedReason ?? (mutation.isPending ? 'Wait for the current change to finish.' : 'Delete provider')}
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>

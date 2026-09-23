@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+const capabilities = vi.hoisted(() => ({ directApi: true }))
 const mockGetApiKeyStatus = vi.fn()
 const mockCreateClient = vi.fn()
 
 vi.mock('./index', () => ({
   getActiveLlmProvider: () => ({
+    supportsDirectApi: capabilities.directApi,
     getApiKeyStatus: mockGetApiKeyStatus,
     createClient: mockCreateClient,
   }),
@@ -21,7 +23,7 @@ import { getConfiguredLlmClient, extractTextFromLlmResponse, createSummarizerTex
 import type Anthropic from '@anthropic-ai/sdk'
 
 describe('getConfiguredLlmClient', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(() => { vi.clearAllMocks(); capabilities.directApi = true })
 
   it('returns client when API key is configured', async () => {
     const fakeClient = { messages: {} }
@@ -31,6 +33,13 @@ describe('getConfiguredLlmClient', () => {
     const client = await getConfiguredLlmClient()
     expect(client).toBe(fakeClient)
     expect(mockCreateClient).toHaveBeenCalledOnce()
+  })
+
+  it('rejects an agent-only legacy provider before creating a client', async () => {
+    capabilities.directApi = false
+    mockGetApiKeyStatus.mockReturnValue({ isConfigured: true })
+    await expect(getConfiguredLlmClient()).rejects.toThrow('Choose an API-capable global summarizer')
+    expect(mockCreateClient).not.toHaveBeenCalled()
   })
 
   it('throws when API key is not configured', async () => {
