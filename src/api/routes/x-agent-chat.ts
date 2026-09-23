@@ -1,9 +1,8 @@
 import { EmailPolicyError } from '@shared/lib/email-integrations/policy'
-import { emailConfigSchema, emailThreadStateSchema } from '@shared/lib/email-integrations/config-schema'
+import { emailConfigSchema } from '@shared/lib/email-integrations/config-schema'
 import { clientFor } from '@shared/lib/email-integrations/gateway-client'
 import { emailToolSchema, sendToolEmail } from '@shared/lib/email-integrations/outbound'
-import { emailThreadRoute } from '@shared/lib/email-integrations/state'
-import { writeIntegrationState } from '@shared/lib/agent-integrations/state-store'
+import { emailThreadRoute } from '@shared/lib/email-integrations/routing'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { Hono } from 'hono'
 import { agentRegistry } from '@shared/lib/agent-actor'
@@ -177,13 +176,12 @@ xAgentChat.post('/send', async (c) => {
       const client = clientFor(integration)
       if (currentSession && !currentSession.archivedAt && currentSession.integrationId === integration.id && email.reply_to_message_id) {
         const parent = await client.message(config.mailboxId, email.reply_to_message_id)
-        if (await emailThreadRoute(integration.id, parent.threadId) === currentSession.externalChatId) return c.json({ error: 'Your final response is already delivered to this email thread automatically' }, 400)
+        if (await emailThreadRoute(integration, parent.threadId) === currentSession.externalChatId) return c.json({ error: 'Your final response is already delivered to this email thread automatically' }, 400)
       }
       const connector = await resolveLiveConnector(integration.id, integration.status)
       const tool = connector?.getTools({ integration, externalId: '' }).find(tool => tool.name === 'send_email')
       if (!tool) return c.json({ error: 'Email integration is not connected' }, 409)
       const sent = await sendToolEmail(integration, email, message, tool)
-      if (!email.reply_to_message_id) await writeIntegrationState(integration.id, `thread:${sent.threadId}`, emailThreadStateSchema, { message: sent, contacted: false })
       await notifySessionOfOutboundMessage(integration.id, callerSlug, sent.threadId, message, context).catch(() => {})
       return c.json({ chatId: sent.threadId, messageId: sent.id, provider: integration.provider, status: sent.status })
     }

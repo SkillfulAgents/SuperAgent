@@ -1,4 +1,3 @@
-import { readIntegrationState, writeIntegrationState } from '../agent-integrations/state-store'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { agentRegistry } from '../agent-actor'
@@ -12,16 +11,16 @@ export const emailToolSchema = z.object({
   subject: z.string().optional(), reply_to_message_id: z.string().uuid().optional(), reply_all: z.boolean().default(false),
   attachment_paths: z.array(z.string()).max(10).default([]), idempotency_key: z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/, 'Use letters, numbers, dots, underscores, colons or hyphens'),
 }).strict().refine(value => !!value.reply_to_message_id || (!!value.to?.length && !!value.subject), 'New emails require recipients and a subject')
-const intentSchema = z.object({ hash: z.string(), input: emailSendSchema })
+const intents = new Map<string, { hash: string; input: z.infer<typeof emailSendSchema> }>()
 const pending = new Map<string, Promise<unknown>>()
-/** Preserve uploaded IDs across retries so a stable gateway idempotency key has a stable payload. */
+/** Bounded process-local upload reuse. The gateway owns send idempotency. */
 export async function sendToolEmail(record: AgentIntegrationRecord, input: z.infer<typeof emailToolSchema>, text: string, tool: IntegrationTool) {
   const key = `send:${createHash('sha256').update(input.idempotency_key).digest('hex')}`
   const lock = `${record.id}:${key}`
   const previous = pending.get(lock) ?? Promise.resolve()
   const run = previous.catch(() => {}).then(async () => {
     const hash = createHash('sha256').update(JSON.stringify({ input, text })).digest('hex')
-    const saved = await readIntegrationState(record.id, key, intentSchema)
+    const saved = intents.get(lock)
     if (saved && saved.hash !== hash) throw new Error('Email idempotency key already used with different content')
     let send = saved?.input
     if (!send) {
@@ -38,7 +37,8 @@ export async function sendToolEmail(record: AgentIntegrationRecord, input: z.inf
         attachmentIds.push(z.object({ id: z.string().uuid() }).parse(await response.json()).id)
       }
       send = emailSendSchema.parse({ to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject, text, replyToMessageId: input.reply_to_message_id, replyAll: input.reply_all, attachmentIds, idempotencyKey: input.idempotency_key })
-      await writeIntegrationState(record.id, key, intentSchema, { hash, input: send })
+      if (intents.size >= 100) intents.delete(intents.keys().next().value!)
+      intents.set(lock, { hash, input: send })
     }
     return emailMessageSchema.parse(await tool.execute(send))
   })

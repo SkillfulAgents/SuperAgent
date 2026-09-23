@@ -1,4 +1,3 @@
-import { EmailHeldMessages } from './email-held-messages'
 import { useState } from 'react'
 import { z } from 'zod'
 import { emailAccessSchema } from '@shared/lib/email-integrations/config-schema'
@@ -20,6 +19,5 @@ export function EmailSettingsCard({ integration, canManageAccess }: { integratio
     {canManageAccess && <Button size="sm" disabled={update.isPending} onClick={() => update.mutate({ id: integration.id, config: { accessLevel, allowedDomains: parseEmailDomains(domains) } })}>Save email access</Button>}
     {update.isError && <p role="alert" className="text-xs text-destructive">{update.error.message}</p>}
     {update.isSuccess && <p role="status" className="text-xs text-muted-foreground">Email access saved.</p>}
-    {canManageAccess && <EmailHeldMessages integrationId={integration.id} />}
   </div></DetailCard>
 }

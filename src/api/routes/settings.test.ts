@@ -179,7 +179,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   chatIntegrations: {},
   chatIntegrationSessions: {},
   chatIntegrationAccess: {},
-  integrationState: {},
+  slackThreadState: {},
   remoteMcpServers: {},
   agentRemoteMcps: {},
   mcpAuditLog: {},

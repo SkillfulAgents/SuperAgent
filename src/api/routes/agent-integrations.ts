@@ -106,24 +106,6 @@ agentIntegrationsRouter.get('/:integrationId', IntegrationAgentRole('viewer'), a
   }
 })
 
-// Owner review is separate from agent tools; release rechecks current admission policy.
-agentIntegrationsRouter.get('/:integrationId/email-held', IntegrationAgentRole('owner'), async c => {
-  const integration = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
-  if (integration.provider !== 'platform-email') return c.json({ error: 'Not an email integration' }, 400)
-  const { heldEmails } = await import('@shared/lib/email-integrations/review')
-  return c.json({ data: await heldEmails(integration.id) })
-})
-agentIntegrationsRouter.post('/:integrationId/email-held/:messageId/release', IntegrationAgentRole('owner'), async c => {
-  const integration = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
-  if (integration.provider !== 'platform-email' || integration.status !== 'active') return c.json({ error: 'Email integration must be active' }, 409)
-  const connector = agentIntegrationManager.getConnector(integration.id)
-  const { EmailAgentIntegration } = await import('@shared/lib/email-integrations/email-agent-integration')
-  if (!(connector instanceof EmailAgentIntegration)) return c.json({ error: 'Email integration is not connected' }, 409)
-  await connector.releaseHeld(c.req.param('messageId'))
-  await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: integration.id, action: 'updated', details: { releasedEmailId: c.req.param('messageId') } })
-  return c.json({ queued: true }, 202)
-})
-
 // POST /api/agent-integrations/test-credentials - Test credentials before creating
 // NOTE: must be declared before `POST /:id` — Hono matches routes in declaration
 // order, so a parameterized `/:id` would otherwise shadow this static path.

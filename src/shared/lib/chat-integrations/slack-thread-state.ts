@@ -1,10 +1,8 @@
-import { readIntegrationState, writeIntegrationState } from '../agent-integrations/state-store'
 import { and, desc, eq, isNull, like, max } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { chatIntegrationSessions } from '@shared/lib/db/schema'
+import { chatIntegrationSessions, slackThreadState } from '@shared/lib/db/schema'
 
-import { MAX_TRACKED_SLACK_THREADS, slackParticipationSchema } from './slack-thread-state-schema'
-export { MAX_TRACKED_SLACK_THREADS } from './slack-thread-state-schema'
+export const MAX_TRACKED_SLACK_THREADS = 1000
 
 export interface SlackThreadStateStore {
   /** Oldest to newest, for the authenticated bot within this installation. */
@@ -16,13 +14,16 @@ export interface SlackThreadStateStore {
 export function createSlackThreadStateStore(integrationId: string): SlackThreadStateStore {
   const save: SlackThreadStateStore['save'] = async (botUserId, threads) => {
     const activeThreads = [...threads].slice(-MAX_TRACKED_SLACK_THREADS)
-    await writeIntegrationState(integrationId, 'slack:participation', slackParticipationSchema, { botUserId, activeThreads })
+    await db.insert(slackThreadState).values({ integrationId, botUserId, activeThreads })
+      .onConflictDoUpdate({ target: slackThreadState.integrationId, set: { botUserId, activeThreads } })
+      .run()
   }
 
   return {
     save,
     async load(botUserId) {
-      const state = await readIntegrationState(integrationId, 'slack:participation', slackParticipationSchema)
+      const state = await db.select().from(slackThreadState)
+        .where(eq(slackThreadState.integrationId, integrationId)).get()
       if (state?.botUserId === botUserId) return state.activeThreads
 
       // Upgrade existing per-thread sessions once. Shared-session mode never

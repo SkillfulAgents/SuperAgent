@@ -337,20 +337,6 @@
       "when": 1790107007902,
       "tag": "0047_integration_deliveries",
       "breakpoints": true
-    },
-    {
-      "idx": 48,
-      "version": "6",
-      "when": 1790119162425,
-      "tag": "0048_email_integration_state",
-      "breakpoints": true
-    },
-    {
-      "idx": 49,
-      "version": "6",
-      "when": 1790124566708,
-      "tag": "0049_shared_integration_state",
-      "breakpoints": true
     }
   ]
 }

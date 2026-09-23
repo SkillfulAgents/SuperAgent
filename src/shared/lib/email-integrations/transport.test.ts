@@ -1,14 +1,15 @@
-import { readIntegrationState, writeIntegrationState } from '../agent-integrations/state-store'
+import { eq, sql } from 'drizzle-orm'
+import { chatIntegrations } from '../db/schema'
+import { createAgentIntegrationSession } from '../services/agent-integration-session-service'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
 import { createAgentIntegration, getAgentIntegration } from '../services/agent-integration-service'
 import { PlatformEmailAgentIntegration } from './platform-email-agent-integration'
-import { emailConfigSchema, emailMessageSchema, emailThreadStateSchema } from './config-schema'
+import { emailConfigSchema, emailMessageSchema, parseEmailConfig } from './config-schema'
 
 let handle: TestDatabase, testDb: AppDatabase
-const transport = vi.hoisted(() => ({ json: vi.fn(), message: vi.fn(), unwatch: vi.fn(), watch: vi.fn() }))
+const transport = vi.hoisted(() => ({ json: vi.fn(), message: vi.fn(), canonicalThreadId: vi.fn(), unwatch: vi.fn(), watch: vi.fn() }))
 vi.mock('../db', () => ({ get db() { return testDb } }))
 vi.mock('./live', () => ({ watchEmail: transport.watch }))
 vi.mock('./gateway-client', async importOriginal => ({ ...await importOriginal<typeof import('./gateway-client')>(), clientFor: () => transport }))
@@ -28,13 +29,13 @@ beforeEach(async () => {
 })
 afterEach(async () => { await connector.disconnect(); vi.useRealTimers(); await handle.close() })
 it('resumes its persisted poll cursor, fetches full messages and checkpoints after handoff', async () => {
-  await writeIntegrationState(id, 'cursor', z.number(), 10)
+  await testDb.update(chatIntegrations).set({ config: JSON.stringify({ ...config, eventCursor: 10 }) }).where(eq(chatIntegrations.id, id)).run()
   transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : path.startsWith('/events') ? { data: [{ cursor: 11, type: 'message.received', messageId: message.id }], hasMore: false, cursor: 11 } : { status: 'active', domain: { status: 'ready' } })
   const inputs = vi.fn(); connector.onEvent(inputs)
   await connector.connect(); await vi.advanceTimersByTimeAsync(0)
   expect(transport.json).toHaveBeenCalledWith(expect.stringContaining('after=10'), expect.anything())
   expect(inputs).toHaveBeenCalledWith(expect.objectContaining({ payload: message, externalId: 'canonical' }))
-  expect(await readIntegrationState(id, 'cursor', z.number())).toBe(11)
+  expect(parseEmailConfig((await getAgentIntegration(id))!.config).eventCursor).toBe(11)
   await connector.disconnect()
   await vi.advanceTimersByTimeAsync(60000)
   expect(inputs).toHaveBeenCalledOnce()
@@ -45,19 +46,37 @@ it('retries after failed handoff without advancing the cursor', async () => {
   const inputs = vi.fn().mockRejectedValueOnce(new Error('handoff failed')).mockResolvedValue(undefined)
   connector.onEvent(inputs)
   await connector.connect(); await vi.advanceTimersByTimeAsync(0)
-  expect(await readIntegrationState(id, 'cursor', z.number())).toBe(null)
+  expect(parseEmailConfig((await getAgentIntegration(id))!.config).eventCursor).toBe(0)
   await vi.advanceTimersByTimeAsync(30000)
-  expect(await readIntegrationState(id, 'cursor', z.number())).toBe(1)
+  expect(parseEmailConfig((await getAgentIntegration(id))!.config).eventCursor).toBe(1)
 })
-it('replays previously unaccepted replies after reconciliation and preserves an existing inbound route', async () => {
-  await writeIntegrationState(id, 'thread:original', emailThreadStateSchema, { message: { ...message, threadId: 'original' }, contacted: false })
-  transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : path.startsWith('/events') ? { data: [{ cursor: 2, type: 'thread.reconciled', messageId: message.id, data: { fromThreadId: 'original', toThreadId: 'canonical' } }], hasMore: false } : { status: 'active', domain: { status: 'ready' } })
+it('routes reconciled gateway threads through existing shared sessions, including after reconnect', async () => {
+  await createAgentIntegrationSession({ integrationId: id, externalChatId: 'original', sessionId: 'session-1' })
+  transport.canonicalThreadId.mockResolvedValue('canonical')
+  transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : path.startsWith('/events') ? { data: [{ cursor: 2, type: 'message.received', messageId: message.id }], hasMore: false } : { status: 'active', domain: { status: 'ready' } })
   const inputs = vi.fn(); connector.onEvent(inputs)
   await connector.connect(); await vi.advanceTimersByTimeAsync(0)
-  expect(inputs).toHaveBeenCalledWith(expect.objectContaining({ externalId: 'original', payload: message }))
-  await writeIntegrationState(id, `accepted:${message.id}`, z.boolean(), true)
-  await vi.advanceTimersByTimeAsync(30000)
-  expect(inputs).toHaveBeenCalledOnce()
+  expect(inputs).toHaveBeenCalledWith(expect.objectContaining({ id: message.id, externalId: 'original', payload: message }))
+  await connector.disconnect()
+  connector = new PlatformEmailAgentIntegration((await getAgentIntegration(id))!)
+  connector.onEvent(inputs)
+  await connector.connect(); await vi.advanceTimersByTimeAsync(0)
+  expect(inputs).toHaveBeenLastCalledWith(expect.objectContaining({ externalId: 'original' }))
+})
+it('does not create a second input when the gateway announces a thread merge', async () => {
+  transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : path.startsWith('/events') ? { data: [{ cursor: 2, type: 'thread.reconciled', messageId: message.id }], hasMore: false } : { status: 'active', domain: { status: 'ready' } })
+  const inputs = vi.fn(); connector.onEvent(inputs)
+  await connector.connect(); await vi.advanceTimersByTimeAsync(0)
+  expect(inputs).not.toHaveBeenCalled()
+  expect(parseEmailConfig((await getAgentIntegration(id))!.config).eventCursor).toBe(2)
+})
+it('checkpoints without overwriting a concurrent settings edit', async () => {
+  transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : path.startsWith('/events') ? { data: [{ cursor: 3, type: 'message.received', messageId: message.id }], hasMore: false } : { status: 'active', domain: { status: 'ready' } })
+  connector.onEvent(async () => {
+    await testDb.update(chatIntegrations).set({ config: sql`json_set(${chatIntegrations.config}, '$.displayName', 'Renamed')` }).where(eq(chatIntegrations.id, id)).run()
+  })
+  await connector.connect(); await vi.advanceTimersByTimeAsync(0)
+  expect(parseEmailConfig((await getAgentIntegration(id))!.config)).toMatchObject({ displayName: 'Renamed', eventCursor: 3 })
 })
 it('waits for domain readiness before consuming email', async () => {
   transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : { status: 'active', domain: { status: 'pending' } })

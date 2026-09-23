@@ -37,6 +37,10 @@ export class EmailGatewayClient {
     return schema.parse(await response.json())
   }
   message(mailboxId: string, messageId: string) { return this.json(`/mailboxes/${encodeURIComponent(mailboxId)}/messages/${encodeURIComponent(messageId)}`, emailMessageSchema) }
+  async canonicalThreadId(mailboxId: string, threadId: string) {
+    const result = await this.json(`/mailboxes/${encodeURIComponent(mailboxId)}/threads/${encodeURIComponent(threadId)}`, z.object({ thread: z.object({ id: z.string() }) }))
+    return result.thread.id
+  }
   async thread(mailboxId: string, threadId: string) {
     const schema = z.object({ messages: z.array(emailMessageSchema), cursor: z.number(), hasMore: z.boolean() })
     const messages: z.infer<typeof emailMessageSchema>[] = []

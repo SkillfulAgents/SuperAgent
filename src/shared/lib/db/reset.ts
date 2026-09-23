@@ -13,7 +13,6 @@ import {
   webhookTriggers,
   chatIntegrations,
   integrationDeliveries,
-  integrationState,
   remoteMcpServers,
   agentRemoteMcps,
   mcpAuditLog,
@@ -66,7 +65,6 @@ function factoryResetTables(): SQLiteTable[] { return [
   // Provider-owned child tables precede their installation parent.
   ...agentIntegrationRegistry.storageTables(),
   integrationDeliveries,
-  integrationState,
   chatIntegrations,
   // connected accounts + dependents (api scope policies + agent mappings cascade)
   agentConnectedAccounts,

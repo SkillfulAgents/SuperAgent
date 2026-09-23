@@ -21,6 +21,7 @@ export const emailIntegrationConfigSchema = emailSetupSchema.safeExtend({
   address: z.string().email(),
 })
 export const emailConfigSchema = emailIntegrationConfigSchema.safeExtend({
+  eventCursor: z.number().int().nonnegative().default(0),
   platformOrgId: z.string().min(1),
   platformMemberId: z.string().min(1),
 })
@@ -50,7 +51,6 @@ export const emailSendSchema = z.object({
   idempotencyKey: z.string().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/, 'Use letters, numbers, dots, underscores, colons or hyphens'),
 }).strict()
 export type EmailSend = z.infer<typeof emailSendSchema>
-export const emailThreadStateSchema = z.object({ message: emailMessageSchema, contacted: z.boolean() })
 
 export function parseEmailConfig(value: string): EmailConfig {
   try { return emailConfigSchema.parse(JSON.parse(value)) }
@@ -64,9 +64,3 @@ export function parseEmailIntegrationConfig(value: string): EmailIntegrationConf
 
 export const emailDraftSchema = z.object({ action: z.enum(['send', 'none']), text: z.string().max(131072) }).strict()
   .refine(value => value.action === 'none' || !!value.text.trim(), 'An email needs a body')
-export const emailReplyJobSchema = z.object({
-  parentId: z.string(), sessionId: z.string().optional(),
-  parts: z.array(z.string()), attachmentIds: z.array(z.string()),
-  draft: emailDraftSchema.optional(), attempts: z.number().default(0), retryAfter: z.number().default(0),
-})
-export type EmailReplyJob = z.infer<typeof emailReplyJobSchema>

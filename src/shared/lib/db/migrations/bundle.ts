@@ -512,26 +512,5 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1790107007902,
     "hash": "97d1ee90bc2cb982ac039fffb71ed61f7ce3afdd3e44d0c597b0f5c4ddab9c9e"
-  },
-  {
-    "sql": [
-      "CREATE TABLE `email_integration_state` (\n\t`integration_id` text NOT NULL,\n\t`key` text NOT NULL,\n\t`value` text NOT NULL,\n\tPRIMARY KEY(`integration_id`, `key`),\n\tFOREIGN KEY (`integration_id`) REFERENCES `chat_integrations`(`id`) ON UPDATE no action ON DELETE cascade\n);\n"
-    ],
-    "bps": true,
-    "folderMillis": 1790119162425,
-    "hash": "f10c33f8bfac4239337f1d907eaf486cfc9446401500d2daf3701e3fc6e26093"
-  },
-  {
-    "sql": [
-      "CREATE TABLE `integration_state` (\n\t`integration_id` text NOT NULL,\n\t`key` text NOT NULL,\n\t`value` text NOT NULL,\n\t`available_at` integer,\n\tPRIMARY KEY(`integration_id`, `key`),\n\tFOREIGN KEY (`integration_id`) REFERENCES `chat_integrations`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
-      "\nCREATE INDEX `integration_state_due_idx` ON `integration_state` (`integration_id`,`available_at`);",
-      "\nINSERT INTO `integration_state` (`integration_id`, `key`, `value`, `available_at`)\nSELECT `integration_id`, `key`, `value`,\n  CASE WHEN substr(`key`, 1, 10) = 'reply-job:' AND json_valid(`value`)\n    THEN COALESCE(json_extract(`value`, '$.retryAfter'), 0) ELSE NULL END\nFROM `email_integration_state`;\n",
-      "\nINSERT INTO `integration_state` (`integration_id`, `key`, `value`)\nSELECT `integration_id`, 'slack:participation',\n  json_object('botUserId', `bot_user_id`, 'activeThreads', json(`active_threads`))\nFROM `slack_thread_state`;\n",
-      "\nDROP TABLE `email_integration_state`;",
-      "\nDROP TABLE `slack_thread_state`;\n"
-    ],
-    "bps": true,
-    "folderMillis": 1790124566708,
-    "hash": "e45ff2537ec7cea17ef61891923af3de6420992643129c27b48f4db40c0533dc"
   }
 ]
