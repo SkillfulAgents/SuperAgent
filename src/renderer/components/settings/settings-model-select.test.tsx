@@ -13,12 +13,14 @@ vi.mock('@renderer/context/user-context', () => ({
   useUser: () => useUserMock(),
 }))
 
-import { SettingsModelSelect } from './settings-model-select'
+import { ModelPickerPopover, SettingsModelSelect } from './settings-model-select'
 import { DialogContext, type DialogContextType } from '@renderer/context/dialog-context'
+import type { EffortLevel } from '@shared/lib/container/types'
+import type { ModelDefinition } from '@shared/lib/llm-provider'
 
-const ALL = ['low', 'medium', 'high', 'xhigh', 'max']
-const STD = ['low', 'medium', 'high']
-const CATALOG = [
+const ALL: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
+const STD: EffortLevel[] = ['low', 'medium', 'high']
+const CATALOG: ModelDefinition[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
   { id: 'claude-opus-4-6', label: 'Opus 4.6', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
@@ -64,6 +66,19 @@ beforeEach(() => {
 })
 
 describe('SettingsModelSelect (flat picker)', () => {
+  it('does not use an agent-only catalog for direct API settings', async () => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections: [
+      { id: 'subscription', name: 'Subscription', userId: null, supportsDirectApi: false, catalog: CATALOG, defaultModel: 'opus' },
+    ], defaultSelection: { llmProviderId: 'subscription', model: 'opus' } } })
+    const onSelectionChange = vi.fn()
+    render(<SettingsModelSelect model="opus" llmProviderId="subscription" directApiOnly globalOnly onModelChange={vi.fn()} onSelectionChange={onSelectionChange} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Select model')
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    expect(screen.queryByTestId('model-latest-opus')).not.toBeInTheDocument()
+    expect(onSelectionChange).not.toHaveBeenCalled()
+  })
+
   it('keeps the legacy selection visible when no connections are configured yet', async () => {
     const settings = settingsWith({ webProvider: 'native' }).data
     useSettingsMock.mockReturnValue({ data: { ...settings, connections: [], defaultSelection: null } })
@@ -271,5 +286,70 @@ describe('SettingsModelSelect (flat picker)', () => {
       await user.click(screen.getByTestId('settings-model-trigger'))
       expect(await screen.findByTestId('model-no-websearch-warning')).toBeInTheDocument()
     })
+  })
+
+  it.each([1, 2])('only implicitly binds a non-summarizer picker with a single connection (%i available)', async count => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections: [
+      ...Array.from({ length: count }, (_, i) => ({ id: `provider-${i}`, name: `Provider ${i}`, userId: null, supportsDirectApi: true, catalog: CATALOG, defaultModel: 'haiku' })),
+    ], defaultSelection: null } })
+    const onSelectionChange = vi.fn()
+    const onModelChange = vi.fn()
+    render(<SettingsModelSelect model={undefined} onModelChange={onModelChange} onSelectionChange={onSelectionChange} />)
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('model-latest-haiku'))
+    if (count === 1) {
+      expect(onSelectionChange).toHaveBeenCalledWith({ llmProviderId: 'provider-0', model: 'haiku' })
+      expect(onModelChange).not.toHaveBeenCalled()
+    } else {
+      expect(onSelectionChange).not.toHaveBeenCalled()
+      expect(onModelChange).toHaveBeenCalledWith('haiku')
+    }
+  })
+
+  it.each([1, 2])('recovers a missing helper selection with %i API-capable providers', async count => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    const connections = [
+      { id: 'sub', name: 'Subscription', userId: null, supportsDirectApi: false, catalog: CATALOG, defaultModel: 'opus' },
+      ...Array.from({ length: count }, (_, i) => ({ id: `api-${i}`, name: `API ${i}`, userId: null, supportsDirectApi: true, catalog: CATALOG, defaultModel: 'haiku' })),
+    ]
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections, defaultSelection: { llmProviderId: 'sub', model: 'opus' } } })
+    const choose = vi.fn()
+    render(<SettingsModelSelect model={undefined} directApiOnly globalOnly onModelChange={vi.fn()} onSelectionChange={choose} />)
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('model-latest-haiku'))
+    expect(choose).toHaveBeenCalledWith({ llmProviderId: 'api-0', model: 'haiku' })
+    expect(screen.getByRole('combobox')).toHaveValue('api-0')
+    expect(screen.getByRole('option', { name: 'Subscription' })).toBeDisabled()
+  })
+})
+
+describe('ModelPickerPopover', () => {
+  it('uses the caller catalog without reading settings', async () => {
+    useSettingsMock.mockClear()
+    const onPick = vi.fn()
+    render(<ModelPickerPopover catalog={CATALOG} model="claude-opus-4-7" onPick={onPick} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Opus 4.7 · pinned')
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('model-latest-haiku'))
+    expect(onPick).toHaveBeenCalledWith('haiku')
+    expect(useSettingsMock).not.toHaveBeenCalled()
+  })
+
+  it('labels an empty selection with emptyLabel and picks it back as an empty string', async () => {
+    const onPick = vi.fn()
+    const { rerender } = render(<ModelPickerPopover catalog={CATALOG} model="" onPick={onPick} emptyLabel="Use session model" />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Use session model')
+    rerender(<ModelPickerPopover catalog={CATALOG} model="sonnet" onPick={onPick} emptyLabel="Use session model" />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Sonnet · latest')
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('settings-model-empty'))
+    expect(onPick).toHaveBeenCalledWith('')
+  })
+
+  it('omits the empty row when no emptyLabel is given', async () => {
+    render(<ModelPickerPopover catalog={CATALOG} model="sonnet" onPick={vi.fn()} />)
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    expect(screen.queryByTestId('settings-model-empty')).toBeNull()
   })
 })

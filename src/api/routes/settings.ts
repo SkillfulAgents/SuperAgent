@@ -391,6 +391,10 @@ settings.put(
     try {
       const body = c.req.valid('json')
 
+      if (body.llmProvider && !getLlmProvider(body.llmProvider).supportsDirectApi) {
+        return c.json({ error: 'Select this provider in Settings → Model Providers, where a separate API-capable summarizer can be chosen.' }, 400)
+      }
+
       // A default read-aloud voice must be one the (possibly just-picked)
       // provider offers; the patch schema only knows it is a string.
       const ttsVoice = body.voice?.ttsVoice

@@ -5,8 +5,9 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getSettings } from '@shared/lib/config/settings'
 import {
+  isHelperSelection,
   listConnections,
-  resolveConnectionSelection,
+  resolveSummarizerSelection,
   resolveGlobalSelection,
   saveConnection,
   deleteConnection,
@@ -37,13 +38,13 @@ routes.onError((error, c) =>
 routes.get('/', async (c) => {
   const connections = await listConnections(viewer(c))
   const root = await resolveGlobalSelection()
-  const summarizer = await resolveConnectionSelection(getSettings().llmSummarizer)
+  const summarizer = await resolveSummarizerSelection()
   return c.json({
     connections,
     legacyLlmProviderId: getSettings().llmLegacyProviderId,
     defaultSelection: root ? { llmProviderId: root.llmProviderId, model: root.model } : null,
     summarizerSelection:
-      summarizer?.connection.userId === null
+      isHelperSelection(summarizer)
         ? { llmProviderId: summarizer.llmProviderId, model: summarizer.model }
         : null,
   })

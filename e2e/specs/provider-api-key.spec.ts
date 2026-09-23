@@ -3,7 +3,8 @@ import { test, expect, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { SessionPage } from '../pages/session.page'
 
-test.describe.configure({ mode: 'serial' })
+// Keep running later cases after a failure; the wizard config uses one worker.
+test.describe.configure({ mode: 'default' })
 
 async function mockValidation(page: Page, result: { valid: boolean; error?: string }) {
   await page.route('**/api/llm-connections/validate', (route) =>
@@ -21,11 +22,27 @@ async function addForm(page: Page) {
 }
 
 test.describe('Provider connection lifecycle', () => {
+  let existingIds: Set<string>
   test.beforeEach(async ({ request }) => {
     await request.put('/api/user-settings', { data: { setupCompleted: true } })
+    await request.put('/api/settings', { data: { apiKeys: { anthropicApiKey: 'sk-ant-e2e-placeholder' } } })
     await request.put('/api/settings', {
-      data: { app: { setupCompleted: true }, apiKeys: { anthropicApiKey: '' } },
+      data: { llmProvider: 'anthropic', app: { setupCompleted: true }, apiKeys: { anthropicApiKey: '' } },
     })
+    const baseline = await (await request.get('/api/llm-connections')).json()
+    existingIds = new Set(baseline.connections.map((connection: { id: string }) => connection.id))
+  })
+
+  test.afterEach(async ({ request }) => {
+    // Restore the legacy defaults before deleting this case's accounts. This
+    // also runs on failure, so retries cannot inherit duplicate names/defaults.
+    await request.put('/api/settings', { data: { llmProvider: 'anthropic' } })
+    const saved = await (await request.get('/api/llm-connections')).json()
+    for (const connection of saved.connections) {
+      if (!existingIds.has(connection.id)) {
+        expect((await request.delete(`/api/llm-connections/${connection.id}`)).ok()).toBe(true)
+      }
+    }
   })
 
   test('keyless sidebar warning still deep-links to model settings', async ({ page }) => {
@@ -56,10 +73,14 @@ test.describe('Provider connection lifecycle', () => {
   test('adds two accounts without changing the default, switches explicitly, and protects the root', async ({
     page,
     request,
-  }) => {
+  }, testInfo) => {
+    // Distinguish accounts across retries even if a failed teardown leaves one behind.
+    const suffix = `${testInfo.workerIndex}-${testInfo.retry}-${testInfo.repeatEachIndex}`
+    const firstName = `First test account ${suffix}`
+    const secondName = `Second test account ${suffix}`
     const before = await (await request.get('/api/llm-connections')).json()
     await mockValidation(page, { valid: true })
-    for (const name of ['First test account', 'Second test account']) {
+    for (const name of [firstName, secondName]) {
       await addForm(page)
       await page.getByLabel('Name', { exact: true }).fill(name)
       await page.getByLabel('API key', { exact: true }).fill('sk-ant-e2e-placeholder')
@@ -71,8 +92,8 @@ test.describe('Provider connection lifecycle', () => {
     const added = await (await request.get('/api/llm-connections')).json()
     expect(added.defaultSelection).toEqual(before.defaultSelection)
     expect(JSON.stringify(added)).not.toContain('sk-ant-e2e-placeholder')
-    const first = added.connections.find((c: { name: string }) => c.name === 'First test account')
-    const second = added.connections.find((c: { name: string }) => c.name === 'Second test account')
+    const first = added.connections.find((c: { name: string }) => c.name === firstName)
+    const second = added.connections.find((c: { name: string }) => c.name === secondName)
     await page.getByTestId('settings-model-trigger').first().click()
     await page.getByRole('combobox', { name: 'Connection' }).selectOption(first.id)
     await page.keyboard.press('Escape')
@@ -83,13 +104,13 @@ test.describe('Provider connection lifecycle', () => {
       )
       .toBe(first.id)
     expect((await request.delete(`/api/llm-connections/${first.id}`)).status()).toBe(400)
-    const deleteFirst = page.getByRole('button', { name: 'Delete First test account', exact: true })
+    const deleteFirst = page.getByRole('button', { name: `Delete ${firstName}`, exact: true })
     await expect(deleteFirst).toBeVisible()
     await expect(deleteFirst).toBeDisabled()
     // The disabled button's wrapper remains focusable to explain the restriction.
     await page.locator('[tabindex="0"]').filter({ has: deleteFirst }).focus()
     await expect(page.getByRole('tooltip')).toHaveText(
-      'Choose another provider as the app default before deleting this one.'
+      'Change the app default before deleting this connection'
     )
     await page.keyboard.press('Escape')
     await page.getByTestId('settings-model-trigger').first().click()
@@ -98,7 +119,7 @@ test.describe('Provider connection lifecycle', () => {
     await expect(deleteFirst).toBeEnabled()
     await deleteFirst.click()
     await expect(
-      page.getByRole('button', { name: 'Edit First test account', exact: true })
+      page.getByRole('button', { name: `Edit ${firstName}`, exact: true })
     ).toHaveCount(0)
     await page.goto('/')
     await expect(page.getByText('Click to set up')).toHaveCount(0)

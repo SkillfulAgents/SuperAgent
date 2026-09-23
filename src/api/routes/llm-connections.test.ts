@@ -1,7 +1,8 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { Hono, type MiddlewareHandler } from 'hono'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
-import { user } from '@shared/lib/db/schema'
+import { eq } from 'drizzle-orm'
+import { user, llmConnections } from '@shared/lib/db/schema'
 import type { AppSettings } from '@shared/lib/config/settings'
 
 const state = vi.hoisted(() => ({
@@ -32,12 +33,18 @@ vi.mock('../middleware/auth', () => ({
   IsAdmin: (): MiddlewareHandler => async (c, next) =>
     c.req.header('Test-User') === 'admin' ? next() : c.json({ error: 'Forbidden' }, 403),
 }))
+vi.mock('@shared/lib/agent-actor', () => ({
+  containerHost: { getReadiness: () => ({ status: 'READY' }), hasRunningAgents: () => false },
+}))
+vi.mock('@shared/lib/startup', () => ({ getServicesInitError: () => null }))
+import runtimeStatusRoutes from './runtime-status'
 import routes from './llm-connections'
+import llmRoutes from './llm'
 import { getConnection, saveConnection, resolveConnectionSelection } from '@shared/lib/llm-provider/connections'
 import { connectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 
 let database: TestDatabase
-const app = new Hono().route('/connections', routes)
+const app = new Hono().route('/connections', routes).route('/llm', llmRoutes).route('/runtime-status', runtimeStatusRoutes)
 const catalog = [{ id: 'model', label: 'Test model', supportedEfforts: ['low'] }]
 function draft(userId: string | null = null) {
   return {
@@ -77,6 +84,19 @@ afterEach(async () => {
 })
 
 describe('connection API ownership and root protection', () => {
+  it('keeps runtime key status on the selected connection when its saved model retires', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', '')
+    const created = await request('', 'POST', draft())
+    expect(created.status).toBe(201)
+    const { id } = await created.json()
+    state.settings.llmDefault = { llmProviderId: id, model: 'retired-model' }
+
+    const response = await app.request('/runtime-status', { headers: { 'Test-User': 'admin' } })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ apiKeyConfigured: true })
+  })
+
   it('keeps keys private and rejects cross-owner edits, deletes and global creation', async () => {
     const created = await request('', 'POST', draft('alice'), 'alice')
     expect(created.status).toBe(201)
@@ -218,4 +238,119 @@ describe('connection environment permissions', () => {
     expect((await request(`/${id}`, 'PUT', { ...renamed, config: { runtimeEnv: { NODE_OPTIONS: null } } }, 'alice')).status).toBe(200)
     expect(JSON.parse((await getConnection(id))!.config).runtimeEnv).toEqual({ ANTHROPIC_BASE_URL: 'https://personal-proxy.example' })
   })
+})
+
+it('publishes the resolved fallback when the saved summarizer model has retired', async () => {
+  const id = await saveConnection({ name: 'API', provider: 'anthropic', config: { apiKeys: { anthropicApiKey: 'test-key' } } }, { admin: true, userId: null })
+  state.settings.llmSummarizer = { llmProviderId: id, model: 'claude-retired-model' }
+  const res = await request('')
+  expect(res.status).toBe(200)
+  expect((await res.json()).summarizerSelection).toEqual({ llmProviderId: id, model: 'haiku' })
+})
+
+it('stores subscription tokens privately, preserves/replaces them, and enforces helper and auth isolation', async () => {
+  const subscription = { name: 'Claude plan', provider: 'claude-subscription', userId: null,
+    config: { apiKeys: { claudeSubscriptionToken: 'sk-ant-oat01-test-subscription' } } }
+  const created = await request('', 'POST', subscription)
+  expect(created.status).toBe(201)
+  const { id } = await created.json()
+  const publicResponse = await (await request('')).json()
+  expect(JSON.stringify(publicResponse)).not.toContain('sk-ant-oat01-test-subscription')
+  expect(publicResponse.connections[0]).toMatchObject({ supportsDirectApi: false, isConfigured: true })
+  expect((await request('/defaults/summarizer', 'PUT', { llmProviderId: id, model: 'sonnet' })).status).toBe(400)
+  expect((await request('/defaults/default', 'PUT', { llmProviderId: id, model: 'sonnet' })).status).toBe(400)
+  const { id: api } = await (await request('', 'POST', draft())).json()
+  expect((await request('/defaults/summarizer', 'PUT', { llmProviderId: api, model: 'model' })).status).toBe(200)
+  expect((await request('/defaults/default', 'PUT', { llmProviderId: id, model: 'sonnet' })).status).toBe(200)
+  expect((await request('/defaults/summarizer', 'PUT', null)).status).toBe(400)
+  expect((await request(`/${api}`, 'DELETE')).status).toBe(400)
+  for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR']) {
+    const response = await request(`/${id}`, 'PUT', { ...subscription, config: { runtimeEnv: { [key]: 'conflicting' } } })
+    expect(response.status).toBe(400)
+  }
+  expect((await request(`/${id}`, 'PUT', { ...subscription, config: { runtimeEnv: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '4096' } } })).status).toBe(200)
+  const first = await connectionRuntime((await resolveConnectionSelection({ llmProviderId: id, model: 'sonnet' }))!, 'agent')
+  expect(first.env).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-test-subscription', ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', ANTHROPIC_BASE_URL: '', CLAUDE_CODE_USE_BEDROCK: '', CLAUDE_CODE_MAX_OUTPUT_TOKENS: '4096' })
+  expect((await request(`/${id}`, 'PUT', { ...subscription, config: { apiKeys: { claudeSubscriptionToken: 'sk-ant-oat01-replacement' } } })).status).toBe(200)
+  const next = await connectionRuntime((await resolveConnectionSelection({ llmProviderId: id, model: 'sonnet' }))!, 'agent')
+  expect(next.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-replacement')
+  expect(next.generation).toBeGreaterThan(first.generation)
+  const apiRuntime = await connectionRuntime((await resolveConnectionSelection({ llmProviderId: api, model: 'model' }))!, 'agent')
+  expect(apiRuntime.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('')
+  expect(JSON.stringify(apiRuntime)).not.toContain('sk-ant-oat01')
+  const invalid = await request('', 'POST', { ...subscription, config: { apiKeys: { claudeSubscriptionToken: 'not-a-token' } } })
+  expect(invalid.status).toBe(400)
+  expect(JSON.stringify(await invalid.json())).not.toContain('not-a-token')
+})
+
+
+it('accepts future setup-token versions without requiring an app update', async () => {
+  const response = await request('', 'POST', {
+    name: 'Future Claude token', provider: 'claude-subscription',
+    config: { apiKeys: { claudeSubscriptionToken: 'sk-ant-oat02-future-token' } },
+  })
+  expect(response.status).toBe(201)
+})
+
+describe('subscription credentials require a subscription provider', () => {
+  it.each(['anthropic', 'openrouter', 'generic', 'bedrock'])('rejects OAuth env on %s during save and validation', async provider => {
+    const input = { ...draft(), provider, config: { runtimeEnv: { CLAUDE_CODE_OAUTH_TOKEN: 'private-subscription-token' } } }
+    for (const [path, body] of [['', input], ['/validate', { connection: input }]] as const) {
+      const response = await request(path, 'POST', body)
+      expect(response.status).toBe(400)
+      const { error } = await response.json()
+      expect(error).toContain('Subscription tokens require a Claude Subscription provider')
+      expect(error).not.toContain('private-subscription-token')
+    }
+  })
+
+  it.each(['runtimeEnv', 'env'])('checks retained %s bindings and allows explicitly removing them', async field => {
+    const input = { name: 'API', provider: 'anthropic', config: { apiKeys: { anthropicApiKey: 'test-key' } } }
+    const { id } = await (await request('', 'POST', input)).json()
+    const saved = (await getConnection(id))!
+    const config = JSON.parse(saved.config)
+    config[field].CLAUDE_CODE_OAUTH_TOKEN = 'legacy-subscription-token'
+    await database.db.update(llmConnections).set({ config: JSON.stringify(config) }).where(eq(llmConnections.id, id)).run()
+    const renamed = { ...input, name: 'Renamed', config: {} }
+    expect((await request(`/${id}`, 'PUT', renamed)).status).toBe(400)
+    expect((await request('/validate', 'POST', { id, connection: renamed })).status).toBe(400)
+    expect((await request(`/${id}`, 'PUT', { ...renamed, config: { runtimeEnv: { CLAUDE_CODE_OAUTH_TOKEN: null } } })).status).toBe(200)
+  })
+
+  it('rejects the connection-only credential field on an API provider too', async () => {
+    const response = await request('', 'POST', {
+      name: 'API', provider: 'anthropic', config: { apiKeys: { claudeSubscriptionToken: 'sk-ant-oat01-test-token' } },
+    })
+    expect(response.status).toBe(400)
+  })
+})
+
+it('routes dashboard shim requests to the API summarizer when the app default is a subscription', async () => {
+  const { id: api } = await (await request('', 'POST', draft())).json()
+  expect((await request('/defaults/default', 'PUT', { llmProviderId: api, model: 'model' })).status).toBe(200)
+  const { id: subscription } = await (await request('', 'POST', {
+    name: 'Claude plan', provider: 'claude-subscription',
+    config: { apiKeys: { claudeSubscriptionToken: 'sk-ant-oat01-test-subscription' } },
+  })).json()
+  expect((await request('/defaults/default', 'PUT', { llmProviderId: subscription, model: 'sonnet' })).status).toBe(200)
+  const config = await app.request('/llm/config', { headers: { 'Test-User': 'admin' } })
+  expect(await config.json()).toMatchObject({ configured: true, provider: 'generic', defaultModel: 'model' })
+  const sent: Request[] = []
+  const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+    sent.push(new Request(input, init))
+    return Response.json({ id: 'test-message', type: 'message', content: [{ type: 'text', text: 'OK' }] })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  for (const model of [undefined, 'explicit-dashboard-model']) {
+    const response = await app.request('/llm/v1/messages', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Test-User': 'admin' },
+      body: JSON.stringify({ model, max_tokens: 20, messages: [{ role: 'user', content: 'Hello' }] }),
+    })
+    expect(response.status).toBe(200)
+    const upstream = sent.at(-1)!
+    expect(upstream.url).toBe('https://provider.example/v1/messages')
+    expect(upstream.headers.get('authorization')).toBe('Bearer private-api-key')
+    expect(await upstream.json()).toMatchObject({ model: model ?? 'model' })
+  }
+  expect(fetchMock).toHaveBeenCalledTimes(2)
 })

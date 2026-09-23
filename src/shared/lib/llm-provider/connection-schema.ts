@@ -13,6 +13,7 @@ export const connectionConfigSchema = z.object({
   apiKeys: z
     .object({
       anthropicApiKey: z.string().optional(),
+      claudeSubscriptionToken: z.string().trim().optional(),
       openrouterApiKey: z.string().optional(),
       genericApiKey: z.string().optional(),
       genericBaseUrl: z.string().optional(),
@@ -82,6 +83,7 @@ export function mergeConnectionConfig(
   })
   const keyEnvironment: Record<string, string[]> = {
     anthropicApiKey: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
+    claudeSubscriptionToken: ['CLAUDE_CODE_OAUTH_TOKEN'],
     openrouterApiKey: ['OPENROUTER_API_KEY'],
     genericApiKey: ['GENERIC_API_KEY'],
     genericBaseUrl: ['GENERIC_BASE_URL'],
@@ -119,6 +121,7 @@ export const connectionInfoSchema = z.object({
   ownerName: z.string().nullable(),
   managed: z.boolean(),
   isConfigured: z.boolean(),
+  supportsDirectApi: z.boolean().optional(),
   catalog: modelCatalogSchema,
   modelOverrides: connectionModelOverridesSchema,
   defaultModel: z.string().nullable(),
@@ -129,6 +132,7 @@ export const connectionInfoSchema = z.object({
   customEnvVarKeys: z.array(z.string()).optional(),
   canManage: z.boolean(),
   canDelete: z.boolean(),
+  deletionBlockedReason: z.string().optional(),
 })
 export type ConnectionInfo = z.infer<typeof connectionInfoSchema>
 

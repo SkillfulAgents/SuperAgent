@@ -50,6 +50,7 @@ import { BaseLlmProvider, type ProviderConfiguration } from './base-llm-provider
 import type { ModelDefinition } from './model-catalog-schema'
 import { getEffectiveCatalog, getProviderCatalog, resolveModelForProvider } from './model-catalog'
 import { AnthropicLlmProvider } from './anthropic-provider'
+import { ClaudeSubscriptionLlmProvider } from './claude-subscription-provider'
 import { OpenRouterLlmProvider } from './openrouter-provider'
 import { BedrockLlmProvider } from './bedrock-provider'
 import { PlatformLlmProvider } from './platform-provider'
@@ -58,6 +59,7 @@ import { getSettings } from '../config/settings'
 
 const providers: Record<LlmProviderId, BaseLlmProvider> = {
   anthropic: new AnthropicLlmProvider(),
+  'claude-subscription': new ClaudeSubscriptionLlmProvider(),
   openrouter: new OpenRouterLlmProvider(),
   bedrock: new BedrockLlmProvider(),
   platform: new PlatformLlmProvider(),
@@ -68,6 +70,7 @@ const providers: Record<LlmProviderId, BaseLlmProvider> = {
 export function createLlmProvider(id: LlmProviderId, configuration: ProviderConfiguration): BaseLlmProvider {
   switch (id) {
     case 'anthropic': return new AnthropicLlmProvider(configuration)
+    case 'claude-subscription': return new ClaudeSubscriptionLlmProvider(configuration)
     case 'openrouter': return new OpenRouterLlmProvider(configuration)
     case 'bedrock': return new BedrockLlmProvider(configuration)
     case 'generic': return new GenericLlmProvider(configuration)

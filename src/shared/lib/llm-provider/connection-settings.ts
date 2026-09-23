@@ -82,7 +82,9 @@ export async function syncProviderSettings(sync: ProviderSettingsSync): Promise<
     }
     if (!sync.providers.includes(active)) return
     const configured = await getConnection(legacyLlmProviderId(active))
-    if (!configured) return
+    // Agent-only defaults are selected through Model Providers, where a separate
+    // summarizer can be chosen. The legacy settings path only selects API defaults.
+    if (!configured || !getLlmProvider(active).supportsDirectApi) return
     const initialSetup = !settings.llmDefault
     if (initialSetup || sync.selectDefault || (sync.models?.length && settings.llmDefault?.llmProviderId === configured.id)) {
       const selection = (model: string, purpose: 'agent' | 'summarizer') => ({

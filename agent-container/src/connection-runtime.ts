@@ -81,7 +81,7 @@ export function withoutProviderCredentials<T extends string | undefined>(
   return Object.fromEntries(
     Object.entries(env).filter(
       ([key]) =>
-        !/^(ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN$|CLAUDE_CODE_USE_(BEDROCK|VERTEX)$|AWS_BEARER_TOKEN_BEDROCK$)/.test(
+        !/^(ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN$|CLAUDE_CODE_USE_(BEDROCK|VERTEX|FOUNDRY)$|AWS_BEARER_TOKEN_BEDROCK$)/.test(
           key
         )
     )

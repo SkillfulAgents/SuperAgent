@@ -1,3 +1,4 @@
+import { HelperConfigurationError } from './helper-error'
 import { resolveHelperSelection } from './connections'
 import { getSettings } from '../config/settings'
 /**
@@ -23,8 +24,10 @@ export async function getConfiguredLlmClient(): Promise<Anthropic> {
   const selection = getSettings().llmDefault ? await resolveHelperSelection() : null
   const provider = selection?.provider ?? getActiveLlmProvider()
   if (!provider.getApiKeyStatus().isConfigured) {
+    if (provider.id === 'platform') throw new HelperConfigurationError('Reconnect Platform or choose another summarizer in Settings → Model Providers')
     throw new Error('LLM API key not configured')
   }
+  if (!selection && provider.supportsDirectApi === false) throw new HelperConfigurationError()
   const client = provider.createClient()
   if (selection) helperModels.set(client, selection.wireModel)
   return client

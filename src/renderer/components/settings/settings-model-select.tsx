@@ -1,6 +1,7 @@
 import { resolveSelection, type ModelSelection } from '@shared/lib/llm-provider/connection-schema'
-import { memo, useContext, useMemo } from 'react'
-import { ChevronDown, RotateCcw, Settings } from 'lucide-react'
+import { memo, useContext, useMemo, type ReactNode } from 'react'
+import { Check, ChevronDown, RotateCcw, Settings } from 'lucide-react'
+import { cn } from '@shared/lib/utils'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
@@ -12,15 +13,28 @@ import { EFFORT_LABELS, EffortSection, useEffortClamp } from '@renderer/componen
 import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from '@renderer/components/messages/speed-section'
 import { EFFORT_LEVELS, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
 import type { LlmProviderId } from '@shared/lib/config/settings'
+import type { ModelDefinition } from '@shared/lib/llm-provider'
 
-interface SettingsModelSelectProps {
+interface SettingsModelSelectProps extends Omit<ModelPickerPopoverProps, 'catalog' | 'onPick' | 'webProvider' | 'header' | 'emptyLabel'> {
   agentSlug?: string
   llmProviderId?: string | null
   globalOnly?: boolean
+  directApiOnly?: boolean
   onSelectionChange?: (selection: ModelSelection) => void
+  onModelChange: (model: string) => void
+}
+
+interface ModelPickerPopoverProps {
+  catalog: ModelDefinition[]
   /** Currently-selected model — a concrete id (pinned) or a bare family alias (latest); undefined while loading. */
   model: string | undefined
-  onModelChange: (model: string) => void
+  /** Receives a concrete id, a bare family alias, or '' for the empty row. */
+  onPick: (model: string) => void
+  webProvider?: string
+  /** Rendered above the model list (e.g. a connection switcher). */
+  header?: ReactNode
+  /** Adds a top row that stores '' — for hosts where "no model" means inherit. */
+  emptyLabel?: string
   /** Show the effort picker alongside the model. Off by default for model-only knobs. */
   includeEffort?: boolean
   effort?: EffortLevel
@@ -66,8 +80,54 @@ function SettingsModelSelectImpl({
   model,
   llmProviderId,
   globalOnly,
+  directApiOnly,
   onSelectionChange,
   onModelChange,
+  ...pickerProps
+}: SettingsModelSelectProps) {
+  // Picker-safe endpoint — this select also serves non-admin surfaces (the
+  // agent-home Default Model card), where the admin-gated settings 403.
+  const { data: settings } = useModelSettings(agentSlug, llmProviderId)
+  const connections = settings?.connections ? { connections: settings.connections, defaultSelection: settings.defaultSelection } : undefined
+  const providers = connections?.connections.filter(c => !globalOnly || c.userId === null) ?? []
+  const choices = providers.filter(c => !directApiOnly || c.supportsDirectApi !== false)
+  const selected = resolveSelection(model && llmProviderId ? { model, llmProviderId } : null, choices)
+    ?? resolveSelection(connections?.defaultSelection, choices)
+  const selectedConnection = choices.find(c => c.id === selected?.llmProviderId)
+    ?? (directApiOnly || (!connections?.defaultSelection && choices.length === 1) ? choices[0] : undefined)
+  const selectedModel = onSelectionChange && choices.length > 0 ? selected?.model : model
+  const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
+  const catalog = useMemo(
+    () => onSelectionChange && selectedConnection ? selectedConnection.catalog : directApiOnly && connections?.connections.length ? [] : settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
+    [settings, activeProvider, selectedConnection, onSelectionChange, directApiOnly, connections?.connections.length],
+  )
+
+  return (
+    <ModelPickerPopover
+      {...pickerProps}
+      catalog={catalog}
+      model={selectedModel}
+      onPick={m => onSelectionChange && selectedConnection ? onSelectionChange({ llmProviderId: selectedConnection.id, model: m }) : onModelChange(m)}
+      webProvider={settings?.webProvider}
+      header={onSelectionChange && providers.length > 1 && <div className="relative mx-1 mb-1 text-xs">
+        <select aria-label="Connection" className="w-full cursor-pointer appearance-none rounded-sm border-0 bg-transparent py-1 pl-1 pr-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={selectedConnection?.id ?? ''} onChange={e => {
+          const next = choices.find(c => c.id === e.target.value)
+          if (next?.defaultModel) onSelectionChange({ llmProviderId: next.id, model: next.defaultModel })
+        }}>{providers.map(c => <option key={c.id} value={c.id} disabled={directApiOnly && c.supportsDirectApi === false}>{c.name}{c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}</option>)}</select>
+        <ChevronDown className="pointer-events-none absolute right-1 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+      </div>}
+    />
+  )
+}
+
+/** Presentational picker over a caller-supplied catalog; no settings fetch. */
+export function ModelPickerPopover({
+  catalog,
+  model,
+  onPick,
+  webProvider,
+  header,
+  emptyLabel,
   includeEffort = false,
   effort = 'medium',
   onEffortChange,
@@ -77,27 +137,11 @@ function SettingsModelSelectImpl({
   disabled,
   align = 'end',
   appDefault,
-}: SettingsModelSelectProps) {
-  // Picker-safe endpoint — this select also serves non-admin surfaces (the
-  // agent-home Default Model card), where the admin-gated settings 403.
-  const { data: settings } = useModelSettings(agentSlug, llmProviderId)
-  const connections = settings?.connections ? { connections: settings.connections, defaultSelection: settings.defaultSelection } : undefined
-  const choices = connections?.connections.filter(c => !globalOnly || c.userId === null) ?? []
-  const selected = resolveSelection(model && llmProviderId ? { model, llmProviderId } : null, choices)
-    ?? resolveSelection(connections?.defaultSelection, choices)
-  const selectedConnection = choices.find(c => c.id === selected?.llmProviderId)
-    ?? (!connections?.defaultSelection && choices.length === 1 ? choices[0] : undefined)
-  const selectedModel = onSelectionChange && choices.length > 0 ? selected?.model : model
-  const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
-  const catalog = useMemo(
-    () => onSelectionChange && selectedConnection ? selectedConnection.catalog : settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
-    [settings, activeProvider, selectedConnection, onSelectionChange],
-  )
-
+}: ModelPickerPopoverProps) {
   // Resolve the current selection for the trigger label.
-  const resolved = findCatalogModel(selectedModel, catalog)
-  const isLatestSelected = selectedModel !== undefined && catalog.some((m) => m.family === selectedModel)
-  const selectedFamily = isLatestSelected ? selectedModel : resolved?.family
+  const resolved = findCatalogModel(model, catalog)
+  const isLatestSelected = model !== undefined && catalog.some((m) => m.family === model)
+  const selectedFamily = isLatestSelected ? model : resolved?.family
 
   useEffortClamp(includeEffort ? resolved : undefined, effort, onEffortChange)
   useSpeedClamp(includeSpeed ? resolved : undefined, speed, onSpeedChange)
@@ -111,6 +155,7 @@ function SettingsModelSelectImpl({
   if (isLatestSelected && selectedFamily) triggerLabel = `${familyDisplayName(selectedFamily)} · latest`
   else if (resolved?.family) triggerLabel = `${resolved.label} · pinned`
   else if (resolved) triggerLabel = resolved.label
+  else if (emptyLabel !== undefined && !model) triggerLabel = emptyLabel
 
   return (
     // Uncontrolled: picks never dismiss (matching the composer) — model and
@@ -150,19 +195,27 @@ function SettingsModelSelectImpl({
         <fieldset disabled={disabled} className="contents">
         {/* Keep provider → brand → model together when the outer sections reverse. */}
         <div className="flex flex-col">
-          {onSelectionChange && choices.length > 1 && <div className="relative mx-1 mb-1 text-xs">
-            <select aria-label="Connection" className="w-full cursor-pointer appearance-none rounded-sm border-0 bg-transparent py-1 pl-1 pr-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={selectedConnection?.id ?? ''} onChange={e => {
-              const next = choices.find(c => c.id === e.target.value)
-              if (next?.defaultModel) onSelectionChange({ llmProviderId: next.id, model: next.defaultModel })
-            }}>{choices.map(c => <option key={c.id} value={c.id}>{c.name}{c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}</option>)}</select>
-            <ChevronDown className="pointer-events-none absolute right-1 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-          </div>}
+          {header}
+          {emptyLabel !== undefined && (
+            <button
+              type="button"
+              data-testid="settings-model-empty"
+              onClick={() => onPick('')}
+              className={cn(
+                'flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-left text-xs hover:bg-accent',
+                !model && 'bg-accent'
+              )}
+            >
+              <span className="truncate">{emptyLabel}</span>
+              {!model && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" />}
+            </button>
+          )}
           <ModelFamilyList
             catalog={catalog}
-            value={selectedModel}
-            onPick={m => onSelectionChange && selectedConnection ? onSelectionChange({ llmProviderId: selectedConnection.id, model: m }) : onModelChange(m)}
+            value={model}
+            onPick={onPick}
             offerLatest
-            webProvider={settings?.webProvider}
+            webProvider={webProvider}
           />
         </div>
         {includeEffort && (

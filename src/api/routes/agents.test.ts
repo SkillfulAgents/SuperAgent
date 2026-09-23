@@ -4067,6 +4067,64 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     })
   })
 
+  it.each([
+    ['', 'authentication_failed', 'Invalid credential'],
+    ['?limit=2', 'authentication_failed', 'Invalid credential'],
+    ['?after=previous', 'unknown', 'API Error: 401 Invalid token'],
+    ['/subagent/sub-1/messages', 'unknown', 'API Error: 401 Invalid token'],
+  ])('restores subscription authentication guidance from the session account (%s)', async (path, apiError, text) => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const lookup = vi.spyOn(connections, 'getConnection').mockResolvedValue({
+      id: 'subscription-account', provider: 'claude-subscription',
+      config: JSON.stringify({ apiKeys: { claudeSubscriptionToken: 'sk-ant-oat01-test' } }),
+    } as never)
+    try {
+      mockIsAuthMode.mockReturnValue(false)
+      if (path.startsWith('/subagent')) vi.mocked(readJsonl).mockResolvedValueOnce([])
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({ llmProviderId: 'subscription-account', model: 'retired-model' } as never)
+      const messages = [{ id: 'error-1', type: 'assistant', content: { text }, apiError, toolCalls: [], createdAt: new Date() }]
+      mockTransformMessages.mockReturnValue(messages)
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages, nextCursor: null } as never)
+      vi.mocked(getSessionMessagesDelta).mockResolvedValue({ messages, anchor: null } as never)
+      const url = path.startsWith('/subagent') ? URL.replace('/messages', path) : `${URL}${path}`
+      const res = await getReq(app, url)
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      const restored = Array.isArray(body) ? body : body.messages
+      expect(restored[0].errorPresentation.message).toContain('claude setup-token')
+      expect(lookup).toHaveBeenCalledExactlyOnceWith('subscription-account')
+    } finally {
+      lookup.mockRestore()
+    }
+  })
+
+  it.each([null, 'deleted-account'])('falls back from a cleared or deleted session binding (%s)', async llmProviderId => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const { getLlmProvider } = await import('@shared/lib/llm-provider')
+    const lookup = vi.spyOn(connections, 'getConnection').mockResolvedValue(null)
+    const fallback = vi.spyOn(connections, 'resolveGlobalSelection').mockResolvedValue({
+      provider: getLlmProvider('claude-subscription'),
+    } as never)
+    const settings = mockRuntimeSettings()
+    mockRuntimeSettings.mockReturnValue({ ...settings, llmLegacyProviderId: 'legacy-anthropic' } as never)
+    try {
+      mockIsAuthMode.mockReturnValue(false)
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({ llmProviderId } as never)
+      mockTransformMessages.mockReturnValue([
+        { id: 'error-1', type: 'assistant', content: { text: 'Invalid credential' }, apiError: 'authentication_failed', toolCalls: [] },
+      ])
+      const res = await getReq(app, URL)
+      expect(res.status).toBe(200)
+      expect((await res.json())[0].errorPresentation.message).toContain('claude setup-token')
+      expect(lookup).not.toHaveBeenCalledWith('legacy-anthropic')
+      expect(fallback).toHaveBeenCalledOnce()
+    } finally {
+      lookup.mockRestore()
+      fallback.mockRestore()
+      mockRuntimeSettings.mockReturnValue(settings)
+    }
+  })
+
   it('does not query messageAuthor in non-auth mode', async () => {
     mockIsAuthMode.mockReturnValue(false)
     mockTransformMessages.mockReturnValue([
