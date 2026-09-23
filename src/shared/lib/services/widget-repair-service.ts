@@ -1,6 +1,6 @@
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import type { SessionMetadata } from '@shared/lib/types/agent'
@@ -173,12 +173,13 @@ async function startRepairSession(
       readWidgetLogTail(agentSlug, widgetSlug),
     ])
     const models = getEffectiveModels()
-    const resolved = resolveRuntimeInherit({}, agentPrefs, models)
+    const resolved = await resolveConnectionRuntimeInherit({}, agentPrefs, models)
 
     const session = await actor.sessions.create({
       ...(availableEnvVars.length > 0 ? { availableEnvVars } : {}),
       initialMessage: buildPrompt(widgetSlug, error, logTail),
       model: resolved.model,
+      llmProviderId: resolved.llmProviderId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },

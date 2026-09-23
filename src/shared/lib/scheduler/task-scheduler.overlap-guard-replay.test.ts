@@ -173,6 +173,7 @@ function dueRecurringTask(agentSlug: string, lastSessionId: string): ScheduledTa
     createdByUserId: 'user-1',
     timezone: null,
     model: null,
+    llmProviderId: null,
     effort: null,
     speed: null,
     resumeSessionId: null,

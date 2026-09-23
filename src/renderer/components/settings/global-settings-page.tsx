@@ -142,13 +142,14 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
       : []),
     // Everyone: the tab carries each person's own read-aloud voice; the
     // provider and key sections inside it are admin-gated.
+    { id: 'llm', label: 'Model Providers', icon: <Sparkle className="h-4 w-4" />, render: () => deferredTab(<LlmTab />) },
     { id: 'voice', label: 'Voice', icon: <Mic className="h-4 w-4" />, render: () => deferredTab(<VoiceTab />) },
   ]
 
   // The plumbing agents run on — providers and runtime, mostly set-once.
   const infrastructureSections: SettingsPageSection[] = showAdminSettings
     ? [
-        { id: 'llm', label: 'Model Provider', icon: <Sparkle className="h-4 w-4" />, render: () => deferredTab(<LlmTab />) },
+
         { id: 'account-provider', label: 'Account Provider', icon: <Route className="h-4 w-4" />, render: () => deferredTab(<AccountProviderTab />) },
         { id: 'runtime', label: 'Container Runtime', icon: <Cuboid className="h-4 w-4" />, render: () => deferredTab(<RuntimeTab />) },
       ]

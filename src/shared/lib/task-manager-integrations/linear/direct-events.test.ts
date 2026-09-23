@@ -67,3 +67,13 @@ it('ignores another recipient and treats edits to missed comments as context', (
   expect(notificationEvent({ ...notification, user: { id: 'someone-else' } }, 'app')).toBeNull()
   expect(commentEvent(comment, 'app', { threads: new Set() }, false)?.kind).toBe('context')
 })
+
+it('names what happened so the app can label the card', () => {
+  expect(notificationEvent(notification, 'app')?.trigger).toBe('comment_mention')
+  expect(notificationEvent({ ...notification, type: 'issueMention', comment: null }, 'app')?.trigger).toBe('mentioned')
+  expect(notificationEvent({ ...notification, type: 'issueAssignedToYou', comment: null }, 'app')?.trigger).toBe('assigned')
+  expect(commentEvent(comment, 'app', { threads: new Set() })?.trigger).toBe('comment')
+  const status = { ...history, fromDelegate: null, fromState: { id: 'todo' }, toState: { id: 'done', name: 'Done', type: 'completed' } }
+  expect(historyAction(status, issue, 'app', true)).toMatchObject({ event: { trigger: 'status_changed' } })
+  expect(historyAction({ ...history, fromDelegate: null }, issue, 'app', true)).toMatchObject({ event: { trigger: 'updated' } })
+})

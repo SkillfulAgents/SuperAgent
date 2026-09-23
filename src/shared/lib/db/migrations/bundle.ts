@@ -512,5 +512,30 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1790107007902,
     "hash": "97d1ee90bc2cb982ac039fffb71ed61f7ce3afdd3e44d0c597b0f5c4ddab9c9e"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `llm_connections` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text,\n\t`name` text NOT NULL,\n\t`provider` text NOT NULL,\n\t`managed` integer DEFAULT false NOT NULL,\n\t`config` text NOT NULL,\n\t`model_overrides` text DEFAULT '[]' NOT NULL,\n\t`browser_model` text,\n\t`dashboard_model` text,\n\t`generation` integer DEFAULT 0 NOT NULL,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE INDEX `llm_connections_owner_idx` ON `llm_connections` (`user_id`);",
+      "\nCREATE UNIQUE INDEX `llm_connections_platform_unique` ON `llm_connections` (`provider`) WHERE provider = 'platform';",
+      "\nALTER TABLE `chat_integrations` ADD `llm_provider_id` text REFERENCES llm_connections(id) ON DELETE SET NULL;",
+      "\nALTER TABLE `scheduled_tasks` ADD `llm_provider_id` text REFERENCES llm_connections(id) ON DELETE SET NULL;",
+      "\nALTER TABLE `webhook_triggers` ADD `llm_provider_id` text REFERENCES llm_connections(id) ON DELETE SET NULL;"
+    ],
+    "bps": true,
+    "folderMillis": 1790107007903,
+    "hash": "83e4baf8856c8602ade2f60a396a13ac628d626f761765398eea9e7d4d25951a"
+  },
+  {
+    "sql": [
+      "-- A message's author is either a person in the app or an agent integration.\n-- Integration rows carry no user, so user_id becomes nullable, and they hold\n-- the card the app draws for the message (display, JSON). SQLite cannot drop\n-- NOT NULL in place, so rebuild the table; every existing row is a user row\n-- and carries over unchanged. Nothing references message_author.\nCREATE TABLE `message_author_new` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`session_id` text NOT NULL,\n\t`agent_slug` text NOT NULL,\n\t`user_id` text,\n\t`integration_id` text,\n\t`display` text,\n\t`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,\n\tCONSTRAINT \"message_author_author_check\" CHECK((\"user_id\" is null) <> (\"integration_id\" is null) and (\"integration_id\" is null) = (\"display\" is null))\n);\n",
+      "\nINSERT INTO `message_author_new` (`id`, `session_id`, `agent_slug`, `user_id`, `created_at`)\n\tSELECT `id`, `session_id`, `agent_slug`, `user_id`, `created_at` FROM `message_author`;\n",
+      "\nDROP TABLE `message_author`;\n",
+      "\nALTER TABLE `message_author_new` RENAME TO `message_author`;\n",
+      "\nCREATE INDEX `message_author_session_idx` ON `message_author` (`session_id`);\n"
+    ],
+    "bps": true,
+    "folderMillis": 1790125000109,
+    "hash": "2a55801aa6124e98dfa6d1ced402a9b81c60bf21237bbf2eb2c6ca3abe8eace9"
   }
 ]

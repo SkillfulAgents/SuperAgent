@@ -54,6 +54,7 @@ const INTEGRATION: ListItem = {
   requireApproval: false,
   sessionTimeout: null,
   model: null,
+  llmProviderId: null,
   effort: null,
   speed: null,
   status: 'active',

@@ -357,7 +357,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   mcpAuditLog: { agentSlug: 'agent_slug', createdAt: 'created_at' },
   agentAcl: { id: 'id', userId: 'user_id', agentSlug: 'agent_slug', role: 'role' },
   user: { id: 'id', name: 'name', email: 'email' },
-  messageAuthor: { id: 'id', sessionId: 'session_id', agentSlug: 'agent_slug', userId: 'user_id' },
+  messageAuthor: { id: 'id', sessionId: 'session_id', agentSlug: 'agent_slug', userId: 'user_id', integrationId: 'integration_id', display: 'display' },
   apiScopePolicies: { accountId: 'account_id', scope: 'scope' },
   mcpToolPolicies: { mcpId: 'mcp_id', toolName: 'tool_name' },
 }))
@@ -366,6 +366,7 @@ vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
   and: (...args: unknown[]) => args,
   inArray: (col: string, vals: string[]) => ({ col, vals }),
+  isNotNull: (col: string) => ({ col, notNull: true }),
   desc: (col: string) => ({ col }),
   count: () => 'count_fn',
   like: (col: string, val: string) => ({ col, val }),
@@ -543,6 +544,11 @@ vi.mock('@shared/lib/services/session-unread-service', () => ({
   getSessionIdsMarkedUnread: vi.fn(() => Promise.resolve(new Set())),
   getSessionIdsMarkedUnreadByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteSessionUnreadMarks: vi.fn(() => Promise.resolve(0)),
+}))
+
+vi.mock('@shared/lib/services/agent-integration-message-service', () => ({
+  annotateIntegrationMessages: vi.fn(() => Promise.resolve()),
+  hasIntegrationMessages: vi.fn(() => Promise.resolve(false)),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -1171,6 +1177,7 @@ describe('GET /:id/webhook-triggers', () => {
     createdByUserId: 'owner-private-id',
     mintedByMemberId: 'sub_member-private-id',
     model: null,
+  llmProviderId: null,
     effort: null,
     speed: null,
     createdAt: new Date('2026-07-17T00:00:00Z'),
@@ -1230,6 +1237,7 @@ describe('GET /:id/chat-integrations', () => {
       requireApproval: true,
       sessionTimeout: null,
       model: null,
+  llmProviderId: null,
       effort: null,
       speed: null,
       status: 'active',
@@ -3818,6 +3826,20 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
   // ---- Runtime options forwarding ----
 
+  it.each([null, { id: 'private-provider', userId: 'another-user' }])('returns 404 for an unavailable provider pick before recording or sending the message', async row => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const lookup = vi.spyOn(connections, 'getConnection').mockResolvedValue(row as never)
+    try {
+      const res = await postJson(app, URL, { content: 'hello', llmProviderId: 'private-provider' })
+      expect(res.status).toBe(404)
+      expect(await res.json()).toEqual({ error: 'LLM provider not found' })
+      expect(mockSendMessage).not.toHaveBeenCalled()
+      expect(mockDbInsertValues).not.toHaveBeenCalled()
+    } finally {
+      lookup.mockRestore()
+    }
+  })
+
   it('forwards effort to sendMessage when present in body', async () => {
     mockIsAuthMode.mockReturnValue(false)
 
@@ -3850,7 +3872,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body).toMatchObject({ success: true, queued: false })
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '[SYSTEM] note', body.uuid, { shouldQuery: false })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '[SYSTEM] note', body.uuid, { shouldQuery: false, preserveRuntime: true })
     // No turn starts, so the session must not be left looking busy, and an
     // append is never "queued" behind one: the agent reads it with its next turn.
     expect(messagePersister.isSessionActive).not.toHaveBeenCalled()
@@ -3979,7 +4001,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body.queued).toBe(true)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {})
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { preserveRuntime: true })
     expect(updateSessionMetadata).not.toHaveBeenCalled()
     expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
   })
@@ -8375,8 +8397,8 @@ describe('agent preferences — PUT /:id/preferences', () => {
     const res = await putJson(PREFS_URL, { defaultModel: null })
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ defaultEffort: 'high' })
-    expect(persistedPreferences()).toEqual({ defaultEffort: 'high' })
+    expect(await res.json()).toEqual({ defaultEffort: 'high', defaultLlmProviderId: null })
+    expect(persistedPreferences()).toEqual({ defaultEffort: 'high', defaultLlmProviderId: null })
   })
 
   it('trims surrounding whitespace before storing defaultModel', async () => {

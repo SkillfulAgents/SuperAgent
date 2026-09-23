@@ -518,6 +518,8 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
     updatedAt: now,
   })
   writeRecord(record)
+  const { ensureManagedPlatformConnection } = await import('@shared/lib/llm-provider/connection-settings')
+  await ensureManagedPlatformConnection()
 
   if (existing?.token !== trimmedToken) {
     // Running containers baked the previous token into their env at start.

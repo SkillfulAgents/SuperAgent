@@ -19,6 +19,8 @@ export class ContainerNotFoundError extends Error {
 }
 
 export interface SendMessageOptions extends RuntimeOptions {
+  /** Internal: a queued message keeps the active turn configuration. */
+  preserveRuntime?: boolean
   /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
   isAutomated?: boolean
 }
@@ -105,6 +107,7 @@ export interface CreateSessionOptions {
   availableEnvVars?: string[]
   initialMessage: string // Required: first message to send (triggers session ID generation)
   initialMessageUuid?: string // Optional UUID for message author attribution
+  llmProviderId?: string | null
   model?: string // Claude model to use for this session
   browserModel?: string // Model for browser subagent
   dashboardBuilderModel?: string // Model for the dashboard-builder subagent
@@ -127,6 +130,7 @@ export interface CreateSessionOptions {
    * default session would discard that process and start cold.
    */
   prewarmDefaults?: {
+    llmProviderId?: string
     model?: string
     effort?: EffortLevel
     speed?: SpeedLevel

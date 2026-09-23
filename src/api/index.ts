@@ -32,6 +32,8 @@ import runtimeStatusRouter from './routes/runtime-status'
 import firewallRouter from './routes/firewall'
 import voiceRouter from './routes/voice'
 import llmRouter from './routes/llm'
+import llmRuntimeRouter from './routes/llm-runtime'
+import llmConnectionsRouter from './routes/llm-connections'
 import faviconRouter from './routes/favicon'
 import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
@@ -273,6 +275,8 @@ app.route('/api/voice', voiceRouter)
 // may have the old paths baked in. Same router, same handlers.
 app.route('/api/stt', voiceRouter)
 app.route('/api/llm', llmRouter)
+app.route('/api/llm-runtime', llmRuntimeRouter)
+app.route('/api/llm-connections', llmConnectionsRouter)
 app.route('/api/favicon', faviconRouter)
 app.route('/api/debug', debugRouter)
 

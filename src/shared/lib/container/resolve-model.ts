@@ -1,6 +1,5 @@
+import type { ModelDefinition } from '../llm-provider/model-catalog-schema'
 import {
-  getActiveLlmProvider,
-  getModelPromptHints,
   resolveActiveProviderModel,
   type ModelPurpose,
 } from '@shared/lib/llm-provider'
@@ -28,18 +27,7 @@ export function resolveContainerModel(
   }
 }
 
-/**
- * Catalog prompt hints for an already-resolved wire model id (the value
- * resolveContainerModel produced), looked up in the active provider's catalog.
- * Empty for Claude/unknown models.
- */
-export function getContainerModelPromptHints(resolvedModel: string | undefined): string[] {
-  if (!resolvedModel) return []
-  try {
-    return getModelPromptHints(resolvedModel, getActiveLlmProvider().id)
-  } catch {
-    // Same test-context fallback as resolveContainerModel: settings/provider
-    // registry may be unmocked, in which case there are no hints to apply.
-    return []
-  }
+/** Prompt hints from the same resolved catalog used for this runtime. */
+export function getContainerModelPromptHints(resolvedModel: string | undefined, catalog: readonly ModelDefinition[]): string[] {
+  return catalog.find(model => model.id === resolvedModel)?.promptHints ?? []
 }

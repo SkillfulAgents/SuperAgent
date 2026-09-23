@@ -160,6 +160,10 @@ async function initializeServicesInner() {
     })(),
     listAgents(),
   ])
+  // Provision hosted Platform installs and later logins independently of legacy
+  // data migrations, before any agent or helper resolves its initial model.
+  const { ensureManagedPlatformConnection } = await import('./llm-provider/connection-settings')
+  await ensureManagedPlatformConnection()
   markBoot('dbReady')
   const slugs = agents.map((a) => a.slug)
   await containerHost.initializeAgents(slugs)

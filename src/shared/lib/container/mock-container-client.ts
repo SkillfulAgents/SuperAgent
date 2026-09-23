@@ -1,4 +1,7 @@
 import { MessageNotAcceptedError } from './message-dispatch-error'
+import { getSettings } from '../config/settings'
+import { resolveSelectionHierarchy, storedSelection } from '../llm-provider/connections'
+import { isQueuedSessionSend } from './session-send-context'
 import { EventEmitter } from 'events'
 import { createHash, randomUUID } from 'crypto'
 import * as fs from 'fs'
@@ -3254,7 +3257,20 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
     // Resolve like the real container client so E2E sees the concrete wire id.
-    const model = resolveContainerModel(options?.model, 'agent')
+    let model = resolveContainerModel(options?.model, 'agent')
+    if (getSettings().llmDefault && !options?.preserveRuntime && !isQueuedSessionSend(this.config.agentId, sessionId)) {
+      const { agentRegistry } = await import('../agent-actor')
+      const actor = agentRegistry.get(this.config.agentId)
+      const metadata = await actor.sessions.metadata(sessionId)
+      const preferences = await actor.config.get('preferences')
+      const selected = await resolveSelectionHierarchy(
+        storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId),
+        storedSelection(metadata?.model, metadata?.llmProviderId),
+        storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId),
+      )
+      model = selected.wireModel
+      await actor.sessions.updateMetadata(sessionId, { model: selected.model, llmProviderId: selected.llmProviderId })
+    }
     // Record for E2E test assertions
     MockContainerClient.lastSendMessageCall = {
       sessionId,

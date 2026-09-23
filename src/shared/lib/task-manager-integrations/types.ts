@@ -1,9 +1,13 @@
+/** What happened in the task manager, for the app's message card. */
+export type TaskEventTrigger = 'assigned' | 'mentioned' | 'comment_mention' | 'comment' | 'status_changed' | 'updated'
+
 /** Provider-normalized event. Stable item IDs and reply destinations are separate. */
 export interface TaskEvent {
   id: string
   taskId: string
   interactionId: string
   kind: 'invocation' | 'status' | 'context'
+  trigger?: TaskEventTrigger
   timestamp: string
   text: string
   /** The triggering comment, distinct from the thread used for the reply. */

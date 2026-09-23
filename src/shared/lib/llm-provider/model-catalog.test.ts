@@ -619,7 +619,7 @@ describe('getModelContextWindow', () => {
 
 describe('getModelContextWindowMap', () => {
   it('maps every Platform model that declares a window, non-latest included', () => {
-    const map = getModelContextWindowMap('platform')
+    const map = getModelContextWindowMap(getEffectiveCatalog('platform'))
     expect(map['grok-4.7']).toBe(500_000)
     expect(map['grok-4.6']).toBe(500_000)
     expect(map['grok-4.5']).toBe(500_000)
@@ -628,7 +628,7 @@ describe('getModelContextWindowMap', () => {
   })
 
   it('omits Claude models (no catalog window; the SDK supplies theirs)', () => {
-    const map = getModelContextWindowMap('platform')
+    const map = getModelContextWindowMap(getEffectiveCatalog('platform'))
     expect(Object.keys(map).some(id => id.startsWith('claude-'))).toBe(false)
   })
 })

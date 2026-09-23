@@ -1,3 +1,4 @@
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * X-Agent Work routes
  *
@@ -15,7 +16,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, isNotNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
 import { insertMessageAuthorBestEffort } from './message-author'
@@ -37,7 +38,6 @@ import {
   type XAgentOperation,
 } from '@shared/lib/services/x-agent-policy-service'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
-import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { captureException } from '@shared/lib/error-reporting'
@@ -125,10 +125,12 @@ async function getLatestMessageAuthorUserId(
       .where(and(
         eq(messageAuthor.agentSlug, agentSlug),
         eq(messageAuthor.sessionId, sessionId),
+        // An integration-delivered message has no user author.
+        isNotNull(messageAuthor.userId),
       ))
       .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
       .limit(1)
-    return rows[0]?.userId
+    return rows[0]?.userId ?? undefined
   } catch (error) {
     // Attribution is optional. A DB/read failure must never block the invoke.
     console.warn('[x-agent] failed to resolve triggering message author; continuing unattributed', {
@@ -1002,7 +1004,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       const customEnvVars = getCustomEnvVars()
       const targetPrefs = await readAgentPreferences(targetSlug)
       const models = getEffectiveModels()
-      const resolved = resolveRuntimeInherit({}, targetPrefs, models)
+      const resolved = await resolveConnectionRuntimeInherit({}, targetPrefs, models)
       const callerName = await getAgentDisplayNameBestEffort(callerSlug)
       const initialMessageUuid = isAuthMode() && attributedUserId
         ? randomUUID()
@@ -1032,6 +1034,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         initialMessage: deliveredPrompt,
         ...(initialMessageUuid ? { initialMessageUuid } : {}),
         model: resolved.model,
+      llmProviderId: resolved.llmProviderId,
         browserModel: models.browserModel,
         dashboardBuilderModel: models.dashboardBuilderModel,
         effort: resolved.effort,

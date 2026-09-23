@@ -182,10 +182,12 @@ cross-agent isolation, pause/delete, shared token refresh, stale authorization
 responses, auditing, outage recovery and both database drivers. Full two-app
 end-to-end agent testing remains separate from the proxy isolation tests.
 
-A shared renderer for automated integration messages is tracked in
-[SUP-879](https://linear.app/datawizz/issue/SUP-879). It will separate display metadata
-(integration name, provider/type, source link and preview) from model-facing context.
-Until then, the shared conversation viewer still displays the context text.
+The app shows each Linear input as a ticket preview (identifier, title, status,
+priority, labels, people and a description excerpt), with the invoking comment and its
+author beneath it for comment events; an assignment shows the ticket alone. The preview
+is built from the same snapshot the agent reads and stored beside the transcript; the
+agent's input text is unchanged and stays behind the card's **Agent input** toggle. See
+[Message display](agent-integrations.md#message-display).
 
 References: [app manifests](https://linear.app/developers/oauth-app-manifests),
 [OAuth](https://linear.app/developers/oauth-2-0-authentication),

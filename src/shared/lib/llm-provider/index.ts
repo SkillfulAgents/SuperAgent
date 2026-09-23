@@ -46,7 +46,7 @@ export {
 
 import type { LlmProviderId } from './provider-types'
 import type { ModelPurpose, ProviderDefaultModelOption } from './base-llm-provider'
-import { BaseLlmProvider } from './base-llm-provider'
+import { BaseLlmProvider, type ProviderConfiguration } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
 import { getEffectiveCatalog, getProviderCatalog, resolveModelForProvider } from './model-catalog'
 import { AnthropicLlmProvider } from './anthropic-provider'
@@ -62,6 +62,17 @@ const providers: Record<LlmProviderId, BaseLlmProvider> = {
   bedrock: new BedrockLlmProvider(),
   platform: new PlatformLlmProvider(),
   generic: new GenericLlmProvider(),
+}
+
+/** A fresh instance bound to one connection, without ambient credential fallback. */
+export function createLlmProvider(id: LlmProviderId, configuration: ProviderConfiguration): BaseLlmProvider {
+  switch (id) {
+    case 'anthropic': return new AnthropicLlmProvider(configuration)
+    case 'openrouter': return new OpenRouterLlmProvider(configuration)
+    case 'bedrock': return new BedrockLlmProvider(configuration)
+    case 'generic': return new GenericLlmProvider(configuration)
+    case 'platform': return new PlatformLlmProvider()
+  }
 }
 
 /** Get a specific provider by ID. */

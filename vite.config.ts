@@ -68,7 +68,9 @@ export default defineConfig({
         const dbModule = path.resolve(__dirname, 'src/shared/lib/db/index.ts')
         const ensureDatabaseOpen = async () => {
           const { isDatabaseOpen, openDatabase } = await server.ssrLoadModule(dbModule)
-          if (!isDatabaseOpen()) await openDatabase()
+          if (!isDatabaseOpen()) {
+            await openDatabase()
+          }
         }
         server.middlewares.use((req, res, next) => {
           if (!req.url?.startsWith('/api')) return next()

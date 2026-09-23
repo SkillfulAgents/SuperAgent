@@ -95,6 +95,7 @@ export function useCreateSession() {
       message: string
       effort?: EffortLevel
       speed?: SpeedLevel
+      llmProviderId?: string | null
       model?: string
       // Provenance for sessions confirmed via a dashboard's dispatch dialog.
       dashboardDispatch?: SessionDashboardDispatch
@@ -110,6 +111,7 @@ export function useCreateSession() {
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.speed ? { speed: data.speed } : {}),
           ...(data.model ? { model: data.model } : {}),
+          ...(data.llmProviderId !== undefined ? { llmProviderId: data.llmProviderId } : {}),
           ...(data.dashboardDispatch ? { dashboardDispatch: data.dashboardDispatch } : {}),
         }),
       })

@@ -30,6 +30,7 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: () => ({}),
   getEffectiveModels: () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-sonnet-4-20250514',

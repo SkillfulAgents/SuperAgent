@@ -1,4 +1,9 @@
 import { captureException } from '@shared/lib/error-reporting'
+import { resolveGlobalSelection } from '@shared/lib/llm-provider/connections'
+import { resolveSelection } from '@shared/lib/llm-provider/connection-schema'
+import { mergeCatalog } from '@shared/lib/llm-provider/catalog-merge'
+import { listConnections } from '@shared/lib/llm-provider/connections'
+import { syncProviderSettings } from '@shared/lib/llm-provider/connection-settings'
 import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
@@ -141,13 +146,21 @@ settings.get('/model-icons/:fileName', Authenticated(), serveUploadedModelIcon)
 // editing provider config/catalog is. Serve the picker-safe subset above the
 // admin gate; it carries no secrets (provider ids/names, an isConfigured
 // boolean, catalogs, and default selections).
-settings.get('/models', Authenticated(), (c) => {
+settings.get('/models', Authenticated(), async (c) => {
   try {
     const appSettings = getSettings()
+    const connections = await listConnections({ userId: getCurrentUserId(c), admin: false })
+    const defaultSelection = await resolveGlobalSelection()
+    const root = connections.find(connection => connection.id === defaultSelection?.llmProviderId)
     const response: ModelPickerSettingsResponse = {
-      llmProvider: appSettings.llmProvider ?? 'anthropic',
-      llmProviderStatus: getAllProviderInfo(),
-      models: getEffectiveModels(),
+      enableToolSearch: appSettings.enableToolSearch ?? true,
+      modelPricing: appSettings.modelPricing ?? {},
+      connections,
+      defaultSelection: defaultSelection ? { llmProviderId: defaultSelection.llmProviderId, model: defaultSelection.model } : undefined,
+      legacyLlmProviderId: appSettings.llmLegacyProviderId,
+      llmProvider: root?.provider ?? appSettings.llmProvider ?? 'anthropic',
+      llmProviderStatus: getAllProviderInfo().map(p => root?.provider === p.id ? { ...p, catalog: root.catalog } : p),
+      models: { ...getEffectiveModels(), ...(defaultSelection ? { agentModel: defaultSelection.model } : {}) },
       webProvider: resolveEffectiveWebVendor(),
     }
     return c.json(response)
@@ -424,7 +437,33 @@ settings.put(
         )
       }
 
+      const root = currentSettings.llmDefault
+      if (root && body.modelCatalog && root.llmProviderId.startsWith('legacy-')) {
+        const provider = root.llmProviderId.slice('legacy-'.length) as LlmProviderId
+        if (Object.hasOwn(body.modelCatalog, provider)) {
+          const catalog = mergeCatalog(getLlmProvider(provider).getBuiltinCatalog(), newSettings.modelCatalog?.[provider]?.overrides ?? [])
+          if (!resolveSelection(root, [{ id: root.llmProviderId, catalog }])) {
+            return c.json({ error: 'Change the app default before removing its model' }, 400)
+          }
+        }
+      }
+
       updateSettings(newSettings)
+      if (body.llmProvider !== undefined || body.models !== undefined || body.modelCatalog !== undefined || body.apiKeys !== undefined) {
+        const active = newSettings.llmProvider ?? 'anthropic'
+        const touched = new Set<LlmProviderId>()
+        if (body.apiKeys) {
+          for (const [provider, keys] of Object.entries({ anthropic: ['anthropicApiKey'], openrouter: ['openrouterApiKey'], generic: ['genericApiKey', 'genericBaseUrl'], bedrock: ['bedrockApiKey', 'bedrockAccessKeyId', 'bedrockSecretAccessKey', 'bedrockRegion'] })) {
+            if (keys.some(key => Object.hasOwn(body.apiKeys!, key))) touched.add(provider as LlmProviderId)
+          }
+        }
+        if (body.llmProvider || body.models) touched.add(active)
+        if (body.modelCatalog) for (const provider of Object.keys(body.modelCatalog)) touched.add(provider as LlmProviderId)
+        await syncProviderSettings({ providers: [...touched], apiKeys: body.apiKeys,
+          catalog: !!body.modelCatalog,
+          models: (['agentModel', 'summarizerModel', 'browserModel', 'dashboardBuilderModel'] as const).filter(key => !!body.llmProvider || Object.hasOwn(body.models ?? {}, key)),
+          selectDefault: !!body.llmProvider })
+      }
 
       // A new auto-sleep timeout applies to the containers already up.
       if (body.app?.autoSleepTimeoutMinutes !== undefined) {

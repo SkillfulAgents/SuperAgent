@@ -20,6 +20,10 @@ import type { SessionActivity } from '@shared/lib/types/agent'
 import type { ChatProvider } from './config-schema'
 import { incomingMessageSchema } from './message-schema'
 import { captureException } from '@shared/lib/error-reporting'
+import {
+  INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, integrationTimestamp, safeIntegrationLink,
+  type IntegrationMessagePresentation, type IntegrationMessageSource,
+} from '../agent-integrations/message-display-schema'
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -33,6 +37,18 @@ export interface IncomingMessage {
   chatName?: string            // Display name of the chat/channel (for session naming)
   files?: { name: string; url: string; mimeType?: string }[]
   timestamp: Date
+  /** Shown in the app only; never part of the agent's input. Links must be public https. */
+  display?: ChatMessageDisplayHints
+}
+
+/** Provider extras for the app's message card. */
+export interface ChatMessageDisplayHints {
+  /** What the person wrote, when `text` also carries injected context (earlier thread messages). */
+  requestText?: string
+  avatarUrl?: string
+  messageUrl?: string
+  conversationUrl?: string
+  workspace?: string
 }
 
 export interface OutgoingMessage {
@@ -97,6 +113,14 @@ export type ChatConnectorClass = Pick<
   typeof ChatAgentIntegration,
   'generateSystemPrompt' | 'discoveryCapabilities' | 'classifyChatId'
 >
+
+const CHAT_EVENT_LABELS: Record<IntegrationMessageSource['kind'], string> = {
+  direct: 'Direct message',
+  group: 'Group message',
+  channel: 'Channel message',
+  thread: 'Thread reply',
+  task: 'Message',
+}
 
 // ── Abstract class ──────────────────────────────────────────────────────
 
@@ -283,12 +307,35 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
 
   async prepareInput(event: IntegrationInputEvent, context: IntegrationInputContext): Promise<PreparedIntegrationInput> {
     const message = incomingMessageSchema.parse(event.payload)
-    const { text, failedFiles } = await this.inputBuilder.buildMessageContent(context.integration, message)
+    const { text, failedFiles, request } = await this.inputBuilder.buildMessageContent(context.integration, message)
     const skip = failedFiles.length > 0 && !text.trim()
     if (failedFiles.length && (await this.isAllowed(context))) {
       await this.sendMessage(context.externalId, { text: `Could not download file(s): ${failedFiles.join(', ')}. ${skip ? 'Message was not sent to the agent.' : 'Your text message will still be sent.'}\n\nIf this is a Slack bot, ensure the \`files:read\` scope is added and the app is reinstalled.` })
     }
-    return { text, skip, systemPrompt: (this.constructor as ChatConnectorClass).generateSystemPrompt?.(message) }
+    return { text, skip, systemPrompt: (this.constructor as ChatConnectorClass).generateSystemPrompt?.(message), display: this.describeMessage(message, request) }
+  }
+
+  /** The app's card for an incoming chat message: who wrote what, where. */
+  protected describeMessage(message: IncomingMessage, request: string): IntegrationMessagePresentation {
+    const conversation = (this.constructor as ChatConnectorClass).classifyChatId?.(message)
+    const kind = !conversation || conversation === 'dm' ? 'direct' : conversation
+    const hints = message.display
+    const author = message.userName || message.userId
+    return {
+      event: { type: 'message', label: CHAT_EVENT_LABELS[kind] },
+      request: {
+        text: clampIntegrationText(request, INTEGRATION_MESSAGE_LIMITS.requestText),
+        ...(author ? { author: { name: clampIntegrationText(author, INTEGRATION_MESSAGE_LIMITS.name), avatarUrl: safeIntegrationLink(hints?.avatarUrl) } } : {}),
+        sentAt: integrationTimestamp(message.timestamp),
+        url: safeIntegrationLink(hints?.messageUrl),
+      },
+      source: {
+        kind,
+        title: message.chatName ? clampIntegrationText(message.chatName, INTEGRATION_MESSAGE_LIMITS.label) : undefined,
+        url: safeIntegrationLink(hints?.conversationUrl),
+        workspace: hints?.workspace ? clampIntegrationText(hints.workspace, INTEGRATION_MESSAGE_LIMITS.label) : undefined,
+      },
+    }
   }
 
   async consumeInput(event: IntegrationInputEvent, context: IntegrationInputContext, input: PreparedIntegrationInput): Promise<boolean> {

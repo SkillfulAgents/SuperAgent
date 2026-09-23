@@ -1,5 +1,6 @@
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 import type { ComponentType } from 'react'
+import type { IntegrationMessageProps } from './messages/types'
 
 export interface IntegrationSetupProps {
   agentSlug: string
@@ -15,5 +16,7 @@ export interface IntegrationSetupProvider {
   Setup: ComponentType<IntegrationSetupProps>
   Settings?: ComponentType<{ integration: PublicAgentIntegration; canManageAccess?: boolean }>
   ConnectionSettings?: ComponentType<{ integration: PublicAgentIntegration }>
+  /** Preview of a message this provider delivered into a session; the generic card otherwise. */
+  Message?: ComponentType<IntegrationMessageProps>
   iconClassName?: string
 }

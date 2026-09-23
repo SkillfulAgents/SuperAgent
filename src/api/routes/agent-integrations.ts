@@ -1,3 +1,5 @@
+import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
+import { LlmSelectionAccessError, assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Shared Agent Integration CRUD Routes
  *
@@ -161,7 +163,9 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
   try {
     const agentSlug = getAgentId(c)
     const body = await c.req.json()
-    const { provider, name, config, showToolCalls, sessionTimeout, model, effort } = body
+    const { provider, name, config, showToolCalls, sessionTimeout, llmProviderId, model, effort } = body
+    const parsedRuntime = RuntimeOptionsPatchSchema.omit({ speed: true }).safeParse({ llmProviderId, model, effort })
+    if (!parsedRuntime.success) return c.json({ error: 'Invalid runtime options' }, 400)
     const parsedSpeed = speedOverrideSchema.safeParse(body.speed)
     if (!parsedSpeed.success) {
       return c.json({ error: `Invalid speed. Must be one of: ${SPEED_LEVELS.join(', ')}` }, 400)
@@ -174,6 +178,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
+    await assertConnectionSelectionAccess(llmProviderId)
     const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, agentSlug, getCurrentUserId(c)))
 
     // Get the authenticated user ID if available
@@ -190,8 +195,9 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
         status: prepared.status,
         showToolCalls: showToolCalls ?? false,
         sessionTimeout: sessionTimeout ?? null,
-        model: model ?? null,
-        effort: effort ?? null,
+        ...parsedRuntime.data,
+        model: parsedRuntime.data.model ?? null,
+        effort: parsedRuntime.data.effort ?? null,
         speed: parsedSpeed.data ?? null,
         createdByUserId,
       })
@@ -236,6 +242,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
     return c.json(toPublicAgentIntegration(integration), 201)
   } catch (error) {
+    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)
     console.error('Failed to create agent integration:', error)
@@ -268,13 +275,16 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
   try {
     const id = c.req.param('integrationId')
     const body = await c.req.json()
-    const { name, config, showToolCalls, sessionTimeout, model, effort, status } = body
+    const { name, config, showToolCalls, sessionTimeout, llmProviderId, model, effort, status } = body
+    const parsedRuntime = RuntimeOptionsPatchSchema.omit({ speed: true }).safeParse({ llmProviderId, model, effort })
+    if (!parsedRuntime.success) return c.json({ error: 'Invalid runtime options' }, 400)
     const parsedSpeed = speedOverrideSchema.safeParse(body.speed)
     if (!parsedSpeed.success) {
       return c.json({ error: `Invalid speed. Must be one of: ${SPEED_LEVELS.join(', ')}` }, 400)
     }
 
     const integration = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
+    await assertConnectionSelectionAccess(llmProviderId, integration.llmProviderId)
     await agentIntegrationRegistry.getProvider(integration.provider).updateSettings?.(integration, body)
 
     // Step 1: Persist DB updates first (config, name, showToolCalls)
@@ -283,8 +293,9 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
     if (config !== undefined) updates.config = config
     if (showToolCalls !== undefined) updates.showToolCalls = showToolCalls
     if (sessionTimeout !== undefined) updates.sessionTimeout = sessionTimeout
-    if (model !== undefined) updates.model = model
-    if (effort !== undefined) updates.effort = effort
+    for (const [key, value] of Object.entries(parsedRuntime.data)) {
+      if (value !== undefined) updates[key] = value
+    }
     if (body.speed !== undefined) updates.speed = parsedSpeed.data ?? null
 
     if (Object.keys(updates).length > 0) {
@@ -309,6 +320,7 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated' })
     return c.json(toPublicAgentIntegration(updated))
   } catch (error) {
+    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     if (error instanceof DuplicateIntegrationIdentityError) {
       captureException(error, {
         tags: { ...SENTRY_TAGS, operation: 'update-integration-duplicate' },

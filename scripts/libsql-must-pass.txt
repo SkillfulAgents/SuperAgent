@@ -4,9 +4,14 @@
 src/shared/lib/db/batch.test.ts
 src/shared/lib/db/migrations/bundle.test.ts
 src/shared/lib/db/data-migrations/index.test.ts
+src/shared/lib/db/data-migrations/0003-import-llm-connections.test.ts
 src/shared/lib/db/data-migrations/0002-global-model-pricing.test.ts
 src/shared/lib/db/testing/create-test-database.test.ts
 src/shared/lib/services/api-log-auto-delete.test.ts
+src/shared/lib/llm-provider/connections.test.ts
+src/shared/lib/llm-provider/connection-bootstrap.test.ts
+src/api/routes/llm-connections.test.ts
+src/api/routes/llm-runtime.test.ts
 src/shared/lib/notifications/push/apns-device-service.test.ts
 src/shared/lib/notifications/push/push-subscription-service.test.ts
 src/shared/lib/agent-actor/agent-catalog.test.ts
@@ -34,3 +39,5 @@ src/shared/lib/agent-integrations/agent-integration-delivery.test.ts
 src/shared/lib/email-integrations/email-integration.test.ts
 src/shared/lib/email-integrations/transport.test.ts
 src/api/routes/email-integrations.test.ts
+src/shared/lib/services/agent-integration-message-service.test.ts
+src/shared/lib/container/base-container-client.llm-provider.test.ts

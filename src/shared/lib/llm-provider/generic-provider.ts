@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { EffortLevel } from '../container/types'
-import { getSettings, getModelCatalogSettings, type ApiKeyStatus } from '../config/settings'
+import { getModelCatalogSettings, type ApiKeyStatus } from '../config/settings'
 import { isHostOnlyHostname, rewriteLoopbackForContainer } from './container-url'
 import {
   GENERIC_CATALOG_DEFAULT_MODELS,
@@ -105,9 +105,9 @@ export class GenericLlmProvider extends BaseLlmProvider {
 
   /** User-supplied endpoint, from settings (preferred) or GENERIC_BASE_URL env. */
   getEffectiveBaseUrl(): string | undefined {
-    const fromSettings = getSettings().apiKeys?.genericBaseUrl?.trim()
+    const fromSettings = this.configuredKeys().genericBaseUrl?.trim()
     if (fromSettings) return fromSettings
-    const fromEnv = process.env[BASE_URL_ENV]?.trim()
+    const fromEnv = this.envValue(BASE_URL_ENV)?.trim()
     return fromEnv || undefined
   }
 

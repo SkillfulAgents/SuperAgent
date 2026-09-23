@@ -1587,7 +1587,7 @@ async function generatePRSuggestions(
 
   let client
   try {
-    client = getConfiguredLlmClient()
+    client = await getConfiguredLlmClient()
   } catch {
     console.warn('[PR suggestions] No LLM API key configured')
     return fallback
@@ -1811,7 +1811,7 @@ async function generatePublishSuggestions(
 
   let client
   try {
-    client = getConfiguredLlmClient()
+    client = await getConfiguredLlmClient()
   } catch {
     console.warn('[Publish suggestions] No LLM API key configured')
     return fallback

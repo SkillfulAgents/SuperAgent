@@ -184,7 +184,7 @@ it('applies provider-owned serialization, write permission and settings without 
   const implementation = { ...original, definition: { ...original.definition, family: 'task-manager', managementAccess: 'owner' as const },
     updateSettings: settings, serialize: (record: Parameters<typeof original.create>[0]) => ({
       id: record.id, agentSlug: record.agentSlug, provider: record.provider, name: record.name, status: record.status,
-      errorMessage: null, createdByUserId: record.createdByUserId, model: record.model, effort: record.effort, speed: record.speed,
+      errorMessage: null, createdByUserId: record.createdByUserId, llmProviderId: record.llmProviderId, model: record.model, effort: record.effort, speed: record.speed,
       createdAt: record.createdAt, updatedAt: record.updatedAt, hasCredentials: true, settings: { providerOwned: true },
     }) }
   const provider = vi.spyOn(agentIntegrationRegistry, 'getProvider').mockImplementation(name => name === 'telegram' ? implementation : original)
