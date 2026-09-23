@@ -120,6 +120,9 @@ describe('LLM connections', () => {
     await expect(deleteConnection(api, admin)).rejects.toThrow('summarizer')
     await expect(saveConnection({ name: 'Api', provider: 'generic', config: {}, modelOverrides: [] }, admin, api)).rejects.toThrow('summarizer')
     expect((await listConnections(admin)).find(c => c.id === api)).toMatchObject({ canDelete: false, deletionBlockedReason: expect.stringContaining('summarizer') })
+    state.settings.llmSummarizer = { llmProviderId: api, model: 'retired-model' }
+    expect((await listConnections(admin)).find(c => c.id === api)).toMatchObject({ canDelete: false, deletionBlockedReason: expect.stringContaining('summarizer') })
+    await expect(deleteConnection(api, admin)).rejects.toThrow('summarizer')
     const replacement = await add('Replacement')
     await setGlobalSelection('summarizer', { llmProviderId: replacement, model: 'a' })
     await deleteConnection(api, admin)

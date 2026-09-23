@@ -91,8 +91,8 @@ export async function listConnections(
     )
     .all()
   const defaultSelection = await resolveGlobalSelection()
-  const requiredSummarizer = defaultSelection?.provider.supportsDirectApi === false
-    ? await resolveConnectionSelection(getSettings().llmSummarizer) : null
+  const requiredSummarizerId = defaultSelection?.provider.supportsDirectApi === false
+    ? getSettings().llmSummarizer?.llmProviderId : undefined
   return rows.map(({ connection: row, ownerName }) => {
     const provider = providerForConnection(row)
     const config = parseConnectionJson(connectionConfigSchema, row.config)
@@ -115,12 +115,12 @@ export async function listConnections(
       region: config.apiKeys.bedrockRegion,
       customEnvVarKeys: canManage ? Object.keys(config.runtimeEnv) : [],
       canManage,
-      deletionBlockedReason: requiredSummarizer?.llmProviderId === row.id
+      deletionBlockedReason: requiredSummarizerId === row.id
         ? 'Choose another API-capable summarizer before deleting this provider.' : undefined,
       canDelete:
         canManage &&
         defaultSelection?.llmProviderId !== row.id &&
-        requiredSummarizer?.llmProviderId !== row.id &&
+        requiredSummarizerId !== row.id &&
         !(row.managed && provider.getApiKeyStatus().isConfigured),
     }
   })
