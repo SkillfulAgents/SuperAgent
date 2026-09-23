@@ -15,10 +15,12 @@ vi.mock('@renderer/context/user-context', () => ({
 
 import { ModelPickerPopover, SettingsModelSelect } from './settings-model-select'
 import { DialogContext, type DialogContextType } from '@renderer/context/dialog-context'
+import type { EffortLevel } from '@shared/lib/container/types'
+import type { ModelDefinition } from '@shared/lib/llm-provider'
 
-const ALL = ['low', 'medium', 'high', 'xhigh', 'max']
-const STD = ['low', 'medium', 'high']
-const CATALOG = [
+const ALL: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
+const STD: EffortLevel[] = ['low', 'medium', 'high']
+const CATALOG: ModelDefinition[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
   { id: 'claude-opus-4-6', label: 'Opus 4.6', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
