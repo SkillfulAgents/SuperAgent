@@ -13,7 +13,7 @@ vi.mock('@renderer/context/user-context', () => ({
   useUser: () => useUserMock(),
 }))
 
-import { SettingsModelSelect } from './settings-model-select'
+import { ModelPickerPopover, SettingsModelSelect } from './settings-model-select'
 import { DialogContext, type DialogContextType } from '@renderer/context/dialog-context'
 
 const ALL = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -284,5 +284,35 @@ describe('SettingsModelSelect (flat picker)', () => {
       await user.click(screen.getByTestId('settings-model-trigger'))
       expect(await screen.findByTestId('model-no-websearch-warning')).toBeInTheDocument()
     })
+  })
+})
+
+describe('ModelPickerPopover', () => {
+  it('uses the caller catalog without reading settings', async () => {
+    useSettingsMock.mockClear()
+    const onPick = vi.fn()
+    render(<ModelPickerPopover catalog={CATALOG} model="claude-opus-4-7" onPick={onPick} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Opus 4.7 · pinned')
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('model-latest-haiku'))
+    expect(onPick).toHaveBeenCalledWith('haiku')
+    expect(useSettingsMock).not.toHaveBeenCalled()
+  })
+
+  it('labels an empty selection with emptyLabel and picks it back as an empty string', async () => {
+    const onPick = vi.fn()
+    const { rerender } = render(<ModelPickerPopover catalog={CATALOG} model="" onPick={onPick} emptyLabel="Use session model" />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Use session model')
+    rerender(<ModelPickerPopover catalog={CATALOG} model="sonnet" onPick={onPick} emptyLabel="Use session model" />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Sonnet · latest')
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('settings-model-empty'))
+    expect(onPick).toHaveBeenCalledWith('')
+  })
+
+  it('omits the empty row when no emptyLabel is given', async () => {
+    render(<ModelPickerPopover catalog={CATALOG} model="sonnet" onPick={vi.fn()} />)
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    expect(screen.queryByTestId('settings-model-empty')).toBeNull()
   })
 })

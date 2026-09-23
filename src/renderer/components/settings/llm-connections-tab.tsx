@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@rende
 import { useUser } from '@renderer/context/user-context'
 import { useModelSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useLlmConnections, useConnectionMutation } from '@renderer/hooks/use-llm-connections'
-import { SettingsModelSelect } from './settings-model-select'
+import { ModelPickerPopover, SettingsModelSelect } from './settings-model-select'
 import { CatalogEditor } from './model-catalog/catalog-editor'
 import { mergeCatalog } from '@shared/lib/llm-provider/catalog-merge'
 import type { CatalogOverrideEntry } from '@shared/lib/llm-provider/model-catalog-schema'
@@ -450,25 +450,15 @@ function ConnectionEditor({
         />
       )}
       {(['Browser', 'Dashboard'] as const).map((label) => (
-        <label key={label} className="grid gap-1 text-sm">
+        <div key={label} className="flex items-center justify-between gap-2 text-sm">
           {label} model
-          <select
-            className={selectClass}
-            value={label === 'Browser' ? browserModel : dashboardModel}
-            onChange={(e) =>
-              label === 'Browser'
-                ? setBrowserModel(e.target.value)
-                : setDashboardModel(e.target.value)
-            }
-          >
-            <option value="">Use session model</option>
-            {catalog.map((m) => (
-              <option value={m.id} key={m.id}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
+          <ModelPickerPopover
+            catalog={catalog}
+            model={label === 'Browser' ? browserModel : dashboardModel}
+            onPick={label === 'Browser' ? setBrowserModel : setDashboardModel}
+            emptyLabel="Use session model"
+          />
+        </div>
       ))}
       <div className="flex gap-2">
         <Button type="submit" disabled={mutation.isPending}>
