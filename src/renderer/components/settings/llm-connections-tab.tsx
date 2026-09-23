@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@rende
 import { useUser } from '@renderer/context/user-context'
 import { useModelSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useLlmConnections, useConnectionMutation } from '@renderer/hooks/use-llm-connections'
-import { SettingsModelSelect } from './settings-model-select'
+import { ModelPickerPopover, SettingsModelSelect } from './settings-model-select'
 import { CatalogEditor } from './model-catalog/catalog-editor'
 import { mergeCatalog } from '@shared/lib/llm-provider/catalog-merge'
 import type { CatalogOverrideEntry } from '@shared/lib/llm-provider/model-catalog-schema'
@@ -25,6 +25,7 @@ import type { LlmProviderId } from '@shared/lib/llm-provider/provider-types'
 const selectClass = 'h-9 rounded-md border bg-background px-3 text-sm'
 const providers = {
   anthropic: 'Anthropic',
+  'claude-subscription': 'Claude Subscription',
   openrouter: 'OpenRouter',
   bedrock: 'AWS Bedrock',
   generic: 'Generic',
@@ -218,6 +219,7 @@ function ConnectionEditor({
     const apiKeys: ConnectionConfig['apiKeys'] = {}
     if (apiKey) {
       if (provider === 'anthropic') apiKeys.anthropicApiKey = apiKey
+      if (provider === 'claude-subscription') apiKeys.claudeSubscriptionToken = apiKey.trim()
       if (provider === 'openrouter') apiKeys.openrouterApiKey = apiKey
       if (provider === 'generic') apiKeys.genericApiKey = apiKey
       if (provider === 'bedrock') apiKeys.bedrockApiKey = apiKey
@@ -287,6 +289,10 @@ function ConnectionEditor({
               onChange={(e) => {
                 const next = e.target.value as LlmProviderId
                 setProvider(next)
+                setApiKey('')
+                setRuntimeEnv({})
+                setBrowserModel('')
+                setDashboardModel('')
                 setOverrides([])
               }}
             >
@@ -312,16 +318,26 @@ function ConnectionEditor({
           )}
         </div>
       )}
+      {provider === 'claude-subscription' && (
+        <div className="rounded-lg bg-muted p-3 text-sm space-y-2">
+          <p>In a terminal with Claude Code installed, run:</p>
+          <pre className="select-all rounded bg-background px-3 py-2"><code>claude setup-token</code></pre>
+          <p>Sign in with your Claude subscription in the browser, then paste the token printed in your terminal below.</p>
+          <p className="text-muted-foreground">Authentication is checked on your first agent message. To replace an expired or revoked token, run the command again and edit this provider.</p>
+          <p className="text-muted-foreground">App defaults using this provider need a separate API-capable summarizer. Displayed costs are API-equivalent estimates.</p>
+        </div>
+      )}
       {provider !== 'platform' && (
         <label htmlFor={`${formId}-apiKey`} className="block text-sm">
-          API key
+          {provider === 'claude-subscription' ? 'Subscription token' : 'API key'}
           <Input
             id={`${formId}-apiKey`}
             type="password"
             autoComplete="new-password"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
-            placeholder={existing ? 'Leave blank to keep current key' : 'API key'}
+            placeholder={existing ? 'Leave blank to keep current credential' : provider === 'claude-subscription' ? 'Paste setup-token output' : 'API key'}
+            required={provider === 'claude-subscription' && !existing}
           />
         </label>
       )}
@@ -427,31 +443,21 @@ function ConnectionEditor({
         />
       )}
       {(['Browser', 'Dashboard'] as const).map((label) => (
-        <label key={label} className="grid gap-1 text-sm">
+        <div key={label} className="flex items-center justify-between gap-2 text-sm">
           {label} model
-          <select
-            className={selectClass}
-            value={label === 'Browser' ? browserModel : dashboardModel}
-            onChange={(e) =>
-              label === 'Browser'
-                ? setBrowserModel(e.target.value)
-                : setDashboardModel(e.target.value)
-            }
-          >
-            <option value="">Use session model</option>
-            {catalog.map((m) => (
-              <option value={m.id} key={m.id}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
+          <ModelPickerPopover
+            catalog={catalog}
+            model={label === 'Browser' ? browserModel : dashboardModel}
+            onPick={label === 'Browser' ? setBrowserModel : setDashboardModel}
+            emptyLabel="Use session model"
+          />
+        </div>
       ))}
       <div className="flex gap-2">
         <Button type="submit" disabled={mutation.isPending}>
           Save
         </Button>
-        {!existing?.managed && (
+        {!existing?.managed && provider !== 'claude-subscription' && (
           <Button
             type="button"
             variant="outline"

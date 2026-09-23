@@ -1,5 +1,5 @@
-import { LlmSelectionAccessError, assertConnectionSelectionAccess, withSessionSelection } from '@shared/lib/llm-provider/connection-runtime'
-import { listConnections } from '@shared/lib/llm-provider/connections'
+import { LlmSelectionAccessError, assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
@@ -187,7 +187,7 @@ import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSetti
 import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
 import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
-import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
+import { getActiveLlmProvider, getLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
@@ -2151,12 +2151,22 @@ const messagesListQuerySchema = z
 
 // Presentation is derived fresh per response (not persisted), so provider copy
 // changes and provider switches apply to history retroactively.
-function attachProviderErrorPresentations(transformed: TransformedItem[]): void {
+async function attachProviderErrorPresentations(transformed: TransformedItem[], agentSlug: string, sessionId: string): Promise<void> {
+  if (!transformed.some(item => item?.type === 'assistant' && item.apiError)) return
+  const runtimeProvider = sessionRuntime(agentSlug, sessionId)?.provider
+  let provider = runtimeProvider ? getLlmProvider(runtimeProvider) : undefined
+  if (!provider) {
+    const metadata = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
+    // Resolve the saved account even if its selected model has since retired.
+    const id = storedSelection(metadata?.model, metadata?.llmProviderId)?.llmProviderId
+    const connection = id ? await getConnection(id) : null
+    provider = connection ? providerForConnection(connection) : (await resolveGlobalSelection())?.provider ?? getActiveLlmProvider()
+  }
   for (const item of transformed) {
     // Holes serialize as null (JSON.stringify / streamJsonArrayResponse); skip so this walk does not 500.
     if (!item || item.type !== 'assistant' || !item.apiError) continue
     item.errorPresentation =
-      getActiveLlmProvider().presentationForTurnError(undefined, item.content.text, item.apiError) ?? undefined
+      provider.presentationForTurnError(undefined, item.content.text, item.apiError) ?? undefined
   }
 }
 
@@ -2165,7 +2175,7 @@ async function annotateAndRecoverMessages(
   agentSlug: string,
   sessionId: string,
 ): Promise<void> {
-  attachProviderErrorPresentations(transformed)
+  await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
   await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
 
   const settledRequests = agentRegistry.get(agentSlug).inputs.settled(sessionId)
@@ -2332,7 +2342,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     c.req.raw.signal.throwIfAborted()
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
     const transformed = transformMessages(filtered)
-    attachProviderErrorPresentations(transformed)
+    await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
 
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
@@ -2540,7 +2550,7 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
       (e): e is JsonlMessageEntry => e.type === 'user' || e.type === 'assistant'
     )
     const transformed = transformMessages(messageEntries)
-    attachProviderErrorPresentations(transformed)
+    await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
     // Fanned out in parallel across all subagent ids by the activity log, so
     // stream the serialization instead of building one JSON string per request.
     return streamJsonArrayResponse(c, transformed, {

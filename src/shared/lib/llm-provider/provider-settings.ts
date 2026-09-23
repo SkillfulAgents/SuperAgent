@@ -1,14 +1,15 @@
 import { isProviderEnvVar } from './provider-env'
-import { getSettings, getEffectiveModels } from '../config/settings'
+import { getSettings, getEffectiveModels, type ApiKeySettings } from '../config/settings'
 import { getLlmProvider, resolveModelForProvider } from './index'
 import type { LlmProviderId } from './provider-types'
 import { connectionModelOverridesSchema, normalizeConnectionModelOverrides } from './connection-schema'
 import { mergeCatalog } from './catalog-merge'
-import { connectionConfigSchema, resolveSelection, type ConnectionConfig } from './connection-schema'
+import { connectionConfigSchema, resolveSelection } from './connection-schema'
 
 export const legacyLlmProviderId = (provider: LlmProviderId) => `legacy-${provider}`
-export const providerCredentialFields: Record<LlmProviderId, (keyof ConnectionConfig['apiKeys'])[]> = {
+export const providerCredentialFields: Record<LlmProviderId, (keyof ApiKeySettings)[]> = {
   anthropic: ['anthropicApiKey'],
+  'claude-subscription': [],
   openrouter: ['openrouterApiKey'],
   generic: ['genericApiKey', 'genericBaseUrl'],
   bedrock: ['bedrockApiKey', 'bedrockAccessKeyId', 'bedrockSecretAccessKey', 'bedrockRegion'],
@@ -16,6 +17,7 @@ export const providerCredentialFields: Record<LlmProviderId, (keyof ConnectionCo
 }
 const envNames: Record<LlmProviderId, string[]> = {
   anthropic: ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'],
+  'claude-subscription': [],
   openrouter: ['OPENROUTER_API_KEY'],
   generic: ['GENERIC_API_KEY', 'GENERIC_BASE_URL'],
   bedrock: ['AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_REGION'],

@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
+import type { ConnectionConfig } from './connection-schema'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
@@ -42,14 +43,14 @@ export interface AgentIdentity {
 
 export interface ProviderConfiguration {
   runtimeEnv?: Record<string, string>
-  apiKeys: ApiKeySettings
+  apiKeys: ApiKeySettings & ConnectionConfig['apiKeys']
   env: Record<string, string | undefined>
 }
 
 export abstract class BaseLlmProvider {
   constructor(protected readonly configuration?: ProviderConfiguration) {}
 
-  protected configuredKeys(): ApiKeySettings {
+  protected configuredKeys(): ProviderConfiguration['apiKeys'] {
     return this.configuration?.apiKeys ?? getSettings().apiKeys ?? {}
   }
 
@@ -62,8 +63,8 @@ export abstract class BaseLlmProvider {
   abstract readonly defaultModelOptions: readonly ProviderDefaultModelOption[]
   abstract readonly catalogDefaultModels: CatalogDefaultModels
 
-  /** Which field in ApiKeySettings stores this provider's key. */
-  protected abstract readonly settingsKeyField: keyof ApiKeySettings
+  /** Which field in the provider credentials stores this provider's key. */
+  protected abstract readonly settingsKeyField: keyof ProviderConfiguration['apiKeys']
   /** Environment variable name for this provider's key. */
   protected abstract readonly envVarName: string
   /** Whether this provider can discover remote catalog models by search query. */
@@ -187,7 +188,7 @@ export abstract class BaseLlmProvider {
     apiErrorCode: string | null | undefined,
   ): ProviderErrorPresentation | null {
     if (!isUpstreamApiErrorCode(apiErrorCode)) return null
-    const specialized = this.parseErrorResponseOverride(status, body)
+    const specialized = this.parseErrorResponseOverride(status, body, apiErrorCode)
     if (specialized) return specialized
     return PROVIDER_ERROR_CODES.has(apiErrorCode) ? defaultParseErrorResponse(status, body) : null
   }
@@ -200,6 +201,7 @@ export abstract class BaseLlmProvider {
   protected parseErrorResponseOverride(
     _status: number | undefined,
     _body: unknown,
+    _apiErrorCode?: string,
   ): ProviderErrorPresentation | null {
     return null
   }
