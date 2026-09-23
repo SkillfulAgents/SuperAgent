@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "The agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back correctly.",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 147846,
+  "sessionId": "7bf071c7-2670-475d-bcc5-e54659cdce4c",
+  "cost": {
+    "inputTokens": 398,
+    "outputTokens": 11026,
+    "cacheCreationTokens": 105337,
+    "cacheReadTokens": 1062017,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.293401
+  }
+}
