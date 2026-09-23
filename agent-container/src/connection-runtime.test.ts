@@ -32,3 +32,12 @@ it('cannot reuse a warm process after an environment credential rotates without 
     cachedConnectionRuntime('another-account', 3, 'model', runtimeFingerprint(next))
   ).toBeUndefined()
 })
+
+it('strips subscription and every cloud auth mode before applying a different provider', async () => {
+  const { withoutProviderCredentials } = await import('./connection-runtime')
+  expect(withoutProviderCredentials({
+    ANTHROPIC_API_KEY: 'api-key', ANTHROPIC_AUTH_TOKEN: 'bearer', ANTHROPIC_BASE_URL: 'https://old.example',
+    CLAUDE_CODE_OAUTH_TOKEN: 'subscription', CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: '1',
+    CLAUDE_CODE_USE_FOUNDRY: '1', PLATFORM_AUTH_TOKEN: 'platform-services', PATH: '/usr/bin',
+  })).toEqual({ PLATFORM_AUTH_TOKEN: 'platform-services', PATH: '/usr/bin' })
+})

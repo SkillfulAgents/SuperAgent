@@ -13,6 +13,7 @@ export const connectionConfigSchema = z.object({
   apiKeys: z
     .object({
       anthropicApiKey: z.string().optional(),
+      claudeSubscriptionToken: z.string().trim().optional(),
       openrouterApiKey: z.string().optional(),
       genericApiKey: z.string().optional(),
       genericBaseUrl: z.string().optional(),
@@ -82,6 +83,7 @@ export function mergeConnectionConfig(
   })
   const keyEnvironment: Record<string, string[]> = {
     anthropicApiKey: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
+    claudeSubscriptionToken: ['CLAUDE_CODE_OAUTH_TOKEN'],
     openrouterApiKey: ['OPENROUTER_API_KEY'],
     genericApiKey: ['GENERIC_API_KEY'],
     genericBaseUrl: ['GENERIC_BASE_URL'],
