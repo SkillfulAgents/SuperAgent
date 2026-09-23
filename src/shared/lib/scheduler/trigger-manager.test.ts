@@ -251,6 +251,54 @@ describe('TriggerManager', () => {
     })
   })
 
+  describe('registration upkeep', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('retries a failed sync with backoff', async () => {
+      vi.useFakeTimers()
+      mockGetSubscribedIds.mockImplementationOnce(() => {
+        throw new Error('database is locked')
+      })
+
+      await triggerManager.start()
+      expect(relay.consumers.size).toBe(0)
+
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect([...relay.consumers.keys()]).toEqual(['webhook-triggers:sub_test_member'])
+    })
+
+    it('re-syncs periodically, picking up changes it was not told about', async () => {
+      vi.useFakeTimers()
+      await triggerManager.start()
+
+      mockGetSubscribedIds.mockReturnValue(['ti_abc', 'whep_new'])
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+
+      expect(relay.consumers.get('webhook-triggers:sub_test_member')?.endpointIds).toEqual(['ti_abc', 'whep_new'])
+    })
+
+    it('leaves no re-sync timer behind once stopped', async () => {
+      vi.useFakeTimers()
+      await triggerManager.start()
+      expect(vi.getTimerCount()).toBe(1)
+
+      triggerManager.stop()
+
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('leaves handed-over events for the relay to retry once stopped, instead of starting sessions', async () => {
+      await triggerManager.start()
+      const { accept } = relay.consumers.get('webhook-triggers:sub_test_member')!
+      triggerManager.stop()
+
+      await expect(accept([event('whe_1', 'ti_abc', 'X')])).resolves.toBe('retry')
+      expect(mockCreateSession).not.toHaveBeenCalled()
+    })
+  })
+
   describe('delivery', () => {
     it('starts a session for a delivered event and accepts it', async () => {
       const trigger = {

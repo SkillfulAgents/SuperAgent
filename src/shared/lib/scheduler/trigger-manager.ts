@@ -90,6 +90,12 @@ function isHandshakeEvent(event: RelayEvent): boolean {
   return envelope.success && envelope.data.kind === 'handshake'
 }
 
+// A failed registration sync is retried with backoff. After a good one the
+// registrations are re-derived every few minutes anyway, in case trigger rows
+// changed without the manager being told.
+const SYNC_RETRY_DELAYS_MS = [5_000, 30_000, 2 * 60_000]
+const RESYNC_INTERVAL_MS = 5 * 60_000
+
 interface MemberRegistration {
   handle: RelayConsumerHandle
   endpointIds: string[]
@@ -109,6 +115,8 @@ class TriggerManager {
   private isRunning = false
   private readonly registrations = new Map<string, MemberRegistration>()
   private syncQueue: Promise<void> = Promise.resolve()
+  private resyncTimer: NodeJS.Timeout | null = null
+  private failedSyncs = 0
 
   async start(): Promise<void> {
     if (this.isRunning) {
@@ -129,6 +137,9 @@ class TriggerManager {
 
   stop(): void {
     this.isRunning = false
+    if (this.resyncTimer) clearTimeout(this.resyncTimer)
+    this.resyncTimer = null
+    this.failedSyncs = 0
     for (const registration of this.registrations.values()) registration.handle.dispose()
     this.registrations.clear()
     console.log('[TriggerManager] Stopped')
@@ -141,8 +152,31 @@ class TriggerManager {
    */
   syncRegistrations(): Promise<void> {
     const run = this.syncQueue.then(() => this.syncOnce())
-    this.syncQueue = run.catch(() => {})
+    this.syncQueue = run.then(
+      () => {
+        this.failedSyncs = 0
+        this.scheduleResync(RESYNC_INTERVAL_MS)
+      },
+      (error: unknown) => {
+        const delay = SYNC_RETRY_DELAYS_MS[Math.min(this.failedSyncs, SYNC_RETRY_DELAYS_MS.length - 1)]
+        this.failedSyncs++
+        console.warn(`[TriggerManager] Registration sync failed; retrying in ${delay}ms:`, error)
+        this.scheduleResync(delay)
+      },
+    )
     return run
+  }
+
+  private scheduleResync(delayMs: number): void {
+    if (this.resyncTimer) clearTimeout(this.resyncTimer)
+    this.resyncTimer = null
+    if (!this.isRunning) return
+    this.resyncTimer = setTimeout(() => {
+      this.resyncTimer = null
+      // A failure schedules its own retry.
+      this.syncRegistrations().catch(() => {})
+    }, delayMs)
+    this.resyncTimer.unref?.()
   }
 
   private async syncOnce(): Promise<void> {
@@ -186,7 +220,12 @@ class TriggerManager {
     }
   }
 
-  private async acceptEvents(events: readonly RelayEvent[]): Promise<ReadonlyMap<string, RelayAcceptResult>> {
+  private async acceptEvents(
+    events: readonly RelayEvent[],
+  ): Promise<RelayAcceptResult | ReadonlyMap<string, RelayAcceptResult>> {
+    // Stopped (shutting down): the relay may still be handing over events
+    // claimed before; leave them for it rather than starting sessions now.
+    if (!this.isRunning) return 'retry'
     const results = new Map<string, RelayAcceptResult>()
     for (const [endpointId, group] of groupByEndpoint(events)) {
       // Acknowledged even when processing fails, as before: retrying a
