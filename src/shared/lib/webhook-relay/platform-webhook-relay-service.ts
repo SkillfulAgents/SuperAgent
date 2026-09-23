@@ -135,12 +135,21 @@ interface ConsumerState {
   heldBack: boolean
   /** Disposed, but still delivering events claimed before that. */
   draining: boolean
+  /** Claims in flight that include this consumer's endpoints. */
+  claimsInFlight: number
   disposed: boolean
 }
 
 interface ClaimLane {
   scope: RelayScope
   endpointIds: string[]
+}
+
+class RequestDeadlineError extends Error {
+  constructor(ms: number) {
+    super(`Webhook relay request timed out after ${ms}ms`)
+    this.name = 'RequestDeadlineError'
+  }
 }
 
 function errorMessage(error: unknown): string {
@@ -332,6 +341,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       retryAttempt: 0,
       heldBack: false,
       draining: false,
+      claimsInFlight: 0,
       disposed: false,
     }
     this.takeOwnership(state)
@@ -360,17 +370,20 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
         if (state.disposed || state.draining) return
         this.releaseOwnership(state)
         this.consumers.delete(state.id)
-        // Nothing more is claimed for it, but what was already claimed is
-        // delivered first: those events exist nowhere else (SUP-931).
-        if (state.queue.length === 0) this.finish(state)
-        else {
-          state.draining = true
-          this.drainingConsumers.add(state)
-        }
+        // Nothing more is claimed for it, but what was already claimed,
+        // queued or still in flight, is delivered first: those events exist
+        // nowhere else (SUP-931).
+        state.draining = true
+        this.drainingConsumers.add(state)
+        this.finishIfDrained(state)
         if (!this.hasEndpoints()) this.dropRealtime()
         this.emit()
       },
     }
+  }
+
+  private finishIfDrained(state: ConsumerState): void {
+    if (state.draining && state.queue.length === 0 && state.claimsInFlight === 0 && !state.offering) this.finish(state)
   }
 
   private finish(state: ConsumerState): void {
@@ -529,13 +542,16 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
    * deadline, and settles even if the request ignores its signal, so a hung
    * request can never wedge the claim loop or the ack worker.
    *
-   * With `onLateResult` the deadline only stops the waiting: the request
-   * keeps going and its result is handed over if it arrives. A claim needs
-   * that, because the platform may already have claimed the rows (claims are
-   * final until SUP-931), and cancelling would lose them. Anything else is
-   * cancelled at the deadline.
+   * With `late`, the deadline only stops the waiting: the request keeps
+   * going, rejects with RequestDeadlineError, and its eventual outcome goes
+   * to `late`. A claim needs that, because the platform may already have
+   * claimed the rows (claims are final until SUP-931), and cancelling would
+   * lose them. Anything else is cancelled at the deadline.
    */
-  private request<T>(fn: (signal: AbortSignal) => Promise<T>, onLateResult?: (result: T) => void): Promise<T> {
+  private request<T>(
+    fn: (signal: AbortSignal) => Promise<T>,
+    late?: { result(result: T): void; failure(): void },
+  ): Promise<T> {
     const controller = new AbortController()
     const lifecycle = this.lifecycle.signal
     const onStop = () => controller.abort(lifecycle.reason)
@@ -547,9 +563,9 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     let timer: NodeJS.Timeout | undefined
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        if (onLateResult) void run.then(onLateResult, () => {})
+        if (late) void run.then(late.result, late.failure)
         else controller.abort(new Error('deadline'))
-        reject(new Error(`Webhook relay request timed out after ${this.requestTimeoutMs}ms`))
+        reject(new RequestDeadlineError(this.requestTimeoutMs))
       }, this.requestTimeoutMs)
     })
     const cancelled = new Promise<never>((_, reject) => {
@@ -661,16 +677,35 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       const endpointIds = lane.endpointIds.filter((id) => this.isClaimable(scope, id))
       // A full consumer wakes the loop itself once it drains.
       if (endpointIds.length === 0) return { error: null, more: false }
+      // The response goes to whoever owned each endpoint when the claim was
+      // sent, even if that consumer is disposed meanwhile (e.g. replaced by a
+      // registration under another scope): it stays draining until then.
+      const owners = new Map(endpointIds.map((id) => [id, this.owners.get(this.ownerKey(scope, id))!]))
+      const holders = new Set(owners.values())
+      for (const holder of holders) holder.claimsInFlight++
+      let released = false
+      const release = () => {
+        if (released) return
+        released = true
+        for (const holder of holders) {
+          holder.claimsInFlight--
+          this.finishIfDrained(holder)
+        }
+      }
+
       let claim: PlatformClaim
       try {
-        claim = await this.request(
-          (signal) => this.deps.claim(scope, endpointIds, signal),
-          (late) => {
+        claim = await this.request((signal) => this.deps.claim(scope, endpointIds, signal), {
+          result: (late) => {
             if (late.claimed > 0) console.warn(`[WebhookRelay] Late claim response for scope ${scope}: ${late.claimed} event(s)`)
-            this.dispatch(scope, late.events)
+            this.dispatch(scope, late.events, owners)
+            release()
           },
-        )
+          failure: release,
+        })
       } catch (error) {
+        // Past the deadline the request is still outstanding; `late` releases it.
+        if (!(error instanceof RequestDeadlineError)) release()
         const message = errorMessage(error)
         console.warn(`[WebhookRelay] Claim failed for scope ${scope}: ${message}`)
         if (!this.failingScopes.has(scope)) {
@@ -683,7 +718,8 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       if (claim.claimed > 0) console.log(`[WebhookRelay] Claimed ${claim.claimed} event(s) for scope ${scope}`)
       // Claimed rows are ours whatever happened meanwhile; dispatch them
       // even if the identity changed, then stop.
-      this.dispatch(scope, claim.events)
+      this.dispatch(scope, claim.events, owners)
+      release()
       if (generation !== this.generation) return { error: null, more: false }
       this.useRealtimeConfig(generation, claim.realtime)
       if (claim.claimed < CLAIM_BATCH_SIZE) return { error: null, more: false }
@@ -695,12 +731,13 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   // Delivery
   // ==========================================================================
 
-  private dispatch(scope: RelayScope, events: readonly RelayEvent[]): void {
+  /** Queues claimed events for the consumers that owned their endpoints when the claim went out. */
+  private dispatch(scope: RelayScope, events: readonly RelayEvent[], owners: ReadonlyMap<string, ConsumerState>): void {
     let unowned = 0
     const touched = new Set<ConsumerState>()
     for (const event of events) {
-      const owner = this.owners.get(this.ownerKey(scope, event.endpointId))
-      if (!owner) {
+      const owner = owners.get(event.endpointId)
+      if (!owner || owner.disposed) {
         unowned++
         continue
       }
@@ -710,10 +747,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       touched.add(owner)
     }
     if (unowned > 0) {
-      // Its consumer let go of the endpoint while the claim was in flight.
-      // Nothing delivered it, so it isn't acknowledged either: once claims
-      // lease (SUP-931) it returns to the queue for whoever owns it next.
-      console.warn(`[WebhookRelay] Leaving ${unowned} claimed event(s) unacknowledged: no consumer in scope ${scope}`)
+      // Only for an endpoint the claim didn't ask for. Nothing delivered it,
+      // so it isn't acknowledged: once claims lease (SUP-931) it returns to
+      // the queue.
+      console.warn(`[WebhookRelay] Leaving ${unowned} claimed event(s) unacknowledged: no consumer asked for them in scope ${scope}`)
     }
     for (const state of touched) this.pump(state)
   }
@@ -728,6 +765,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
         })
         .finally(() => {
           state.offering = false
+          this.finishIfDrained(state)
           this.pump(state)
         })
     })
@@ -768,10 +806,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (retrying) this.scheduleRetry(state)
     else state.retryAttempt = 0
 
-    if (state.draining) {
-      if (state.queue.length === 0) this.finish(state)
-      return
-    }
+    if (state.draining) return
     // A round skipped this consumer's endpoints while it was full.
     if (state.heldBack && state.queue.length < this.maxConsumerBacklog) {
       state.heldBack = false

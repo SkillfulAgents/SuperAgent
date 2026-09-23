@@ -304,9 +304,9 @@ describe('PlatformWebhookRelayService', () => {
       expect(platform.ackedIds()).toHaveLength(1)
     })
 
-    it('leaves events unacknowledged when their consumer let go of the endpoint mid-claim', async () => {
+    it('delivers a claim that was in flight when its consumer let go', async () => {
       startRelay()
-      platform.add('sub_a', 'whep_one')
+      const [event] = platform.add('sub_a', 'whep_one')
       const gate = deferred()
       platform.claimGate = gate.promise
       const c = consumer(['whep_one'])
@@ -318,8 +318,54 @@ describe('PlatformWebhookRelayService', () => {
       platform.claimGate = null
       await settle()
 
-      expect(c.accept).not.toHaveBeenCalled()
-      expect(platform.acknowledge).not.toHaveBeenCalled()
+      expect(c.accept).toHaveBeenCalledWith([event])
+      expect(platform.ackedIds()).toEqual([event.id])
+    })
+
+    it('delivers a claim in flight during a replacement under another scope to the consumer that sent it', async () => {
+      startRelay()
+      platform.realtimeEnabled = false
+      await settle()
+      const [event] = platform.add('local', 'whep_one')
+      const gate = deferred()
+      platform.claimGate = gate.promise
+      const old = consumer(['whep_one'], undefined, 'local', 'webhook-triggers:local')
+      const handle = relay.register(old)
+      await settle()
+
+      // Auth resolves the scope to a member while the claim is outstanding.
+      handle.dispose()
+      const replacement = consumer(['whep_one'], undefined, 'sub_member', 'webhook-triggers:sub_member')
+      relay.register(replacement)
+      platform.claimGate = null
+      gate.resolve()
+      await settle()
+
+      expect(old.accept).toHaveBeenCalledWith([event])
+      expect(replacement.accept).not.toHaveBeenCalled()
+      expect(platform.ackedIds()).toEqual([event.id])
+    })
+
+    it('delivers a claim answering after its deadline to the consumer that sent it, even if replaced meanwhile', async () => {
+      startRelay({ requestTimeoutMs: 10_000 })
+      platform.realtimeEnabled = false
+      await settle()
+      const [event] = platform.add('local', 'whep_one')
+      const slow = deferred()
+      platform.claimGate = slow.promise
+      const old = consumer(['whep_one'], undefined, 'local', 'old')
+      const handle = relay.register(old)
+      await settle()
+      await vi.advanceTimersByTimeAsync(10_000)
+
+      handle.dispose()
+      relay.register(consumer(['whep_one'], undefined, 'sub_member', 'new'))
+      platform.claimGate = null
+      slow.resolve()
+      await settle()
+
+      expect(old.accept).toHaveBeenCalledWith([event])
+      expect(platform.ackedIds()).toEqual([event.id])
     })
 
     it('still delivers everything already claimed for a consumer it replaces', async () => {
