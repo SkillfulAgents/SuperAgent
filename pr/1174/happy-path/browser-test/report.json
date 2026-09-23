@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the Gamut agent can execute browser tools to navigate to example.com and report the page title \"Example Domain\"",
+  "reason": "Verified that the browser use feature works correctly - agent successfully opens a browser, navigates to a URL, retrieves the page title, and reports it back in a timely manner.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut homepage showing available agents",
-    "Clicked on agent \"QA-20260923-222443-pc83\" in the sidebar — Successfully opened the agent's chat interface and configuration page",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted, visible in the chat log with timestamp \"Today at 10:25 PM\"",
-    "Waited up to 3 minutes for agent response — Agent completed processing in 9 seconds, showing \"Worked for 9s · 3 tool calls · 148,774 tokens\"",
-    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\". I've closed the browser.\" This confirms the agent successfully opened a browser, navigated to https://example.com, and extracted the correct page title"
+    "Step 1 - Navigated to http://localhost:47891 - Successfully loaded the Gamut home page showing agent list",
+    "Step 2 - Clicked the \"QA-20260923-230253-qn9t\" agent in the sidebar - Successfully opened the agent page with chat interface",
+    "Step 3 - Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message successfully entered and sent to the agent",
+    "Step 4 - Waited up to 3 minutes for agent response - Agent completed within 9 seconds, well under the 3-minute limit",
+    "Step 5 - Verified the response mentions \"Example Domain\" - Agent response states: \"The page title is 'Example Domain'. The page loaded normally and I've closed the browser.\""
   ],
   "bugs": [],
-  "durationMs": 97482,
-  "sessionId": "e3b8cda2-1140-4242-921d-d8010e263c8f",
+  "durationMs": 83666,
+  "sessionId": "d7152996-764b-40eb-a2a4-18ae94f844c6",
   "cost": {
     "inputTokens": 464,
-    "outputTokens": 10858,
-    "cacheCreationTokens": 77565,
-    "cacheReadTokens": 1388598,
+    "outputTokens": 15431,
+    "cacheCreationTokens": 90336,
+    "cacheReadTokens": 1547083,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.29057
+    "totalCostUsd": 0.345247
   }
 }
