@@ -38,7 +38,12 @@ function bearerFor(scope: RelayScope): string {
   return decodeOrgIdFromToken(token) ? `${token}::${scope}` : token
 }
 
-async function relayPost(path: '/poll' | '/ack', scope: RelayScope, body: unknown): Promise<Response> {
+async function relayPost(
+  path: '/poll' | '/ack',
+  scope: RelayScope,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<Response> {
   const response = await fetch(`${getPlatformProxyBaseUrl()}/v1/webhook-events${path}`, {
     method: 'POST',
     headers: {
@@ -46,6 +51,7 @@ async function relayPost(path: '/poll' | '/ack', scope: RelayScope, body: unknow
       Authorization: `Bearer ${bearerFor(scope)}`,
     },
     body: JSON.stringify(body),
+    signal,
   })
   if (!response.ok) {
     const text = await response.text().catch(() => '')
@@ -61,8 +67,9 @@ async function relayPost(path: '/poll' | '/ack', scope: RelayScope, body: unknow
 export async function claimPlatformRelayEvents(
   scope: RelayScope,
   endpointIds: readonly string[],
+  signal?: AbortSignal,
 ): Promise<PlatformClaim> {
-  const response = await relayPost('/poll', scope, { trigger_ids: endpointIds })
+  const response = await relayPost('/poll', scope, { trigger_ids: endpointIds }, signal)
   const parsed = platformClaimResponseSchema.parse(await response.json())
   const events: RelayEvent[] = []
   for (const row of parsed.events) {
@@ -91,8 +98,9 @@ export async function claimPlatformRelayEvents(
 export async function acknowledgePlatformRelayEvents(
   scope: RelayScope,
   eventIds: readonly string[],
+  signal?: AbortSignal,
 ): Promise<void> {
   if (eventIds.length === 0) return
-  const response = await relayPost('/ack', scope, { event_ids: eventIds })
+  const response = await relayPost('/ack', scope, { event_ids: eventIds }, signal)
   await response.text().catch(() => '')
 }

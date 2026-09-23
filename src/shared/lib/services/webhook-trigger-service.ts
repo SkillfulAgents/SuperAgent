@@ -21,7 +21,7 @@ import { trackServerEvent } from '../analytics/server-analytics'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
-import { disablePlatformWebhookEndpoint } from '@shared/lib/services/webhook-endpoints-client'
+import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 
 const PLATFORM_PROVIDER_ID = 'platform'
@@ -493,20 +493,20 @@ export async function cancelWebhookTriggerWithCleanup(
   return true
 }
 
-// Custom endpoints live on the platform proxy regardless of Composio key mode,
+// Custom endpoints live on the webhook relay regardless of Composio key mode,
 // so gate on platform auth or a user-supplied Composio key leaves the URL live.
 function canReachUpstream(kind: WebhookTrigger['kind']): boolean {
   return kind === 'custom' ? Boolean(getPlatformAccessToken()) : isPlatformComposioActive()
 }
 
-// One place that speaks both upstream vocabularies (platform endpoint disable
+// One place that speaks both upstream vocabularies (relay endpoint disable
 // vs Composio subscription delete). Callers own attribution.
 async function deleteUpstream(
   kind: WebhookTrigger['kind'],
   memberId: string,
   upstreamId: string,
 ): Promise<void> {
-  if (kind === 'custom') await disablePlatformWebhookEndpoint(memberId, upstreamId)
+  if (kind === 'custom') await getWebhookRelay().disableEndpoint(memberId, upstreamId)
   else await deleteComposioTrigger(upstreamId)
 }
 

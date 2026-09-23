@@ -4,9 +4,16 @@
  * A relay receives webhooks at public URLs ("endpoints") on the host's behalf
  * and queues them until the host claims them. One service per host owns the
  * connection, claiming, acknowledgement and health; features (webhook
- * triggers, agent integrations) register as consumers of their endpoints'
- * events and never talk to the relay themselves.
+ * triggers, agent integrations) mint endpoints through it and register as
+ * consumers of their events; they never talk to a relay provider directly.
  */
+
+import type {
+  VerificationProfile,
+  WebhookEndpoint,
+  WebhookEndpointEvent,
+  WebhookFilterTestResult,
+} from '@shared/lib/services/webhook-endpoint-schema'
 
 /**
  * Authorization scope an endpoint's events are claimed under: the platform
@@ -55,6 +62,30 @@ export interface RelayConsumerHandle {
   dispose(): void
 }
 
+/** A public URL the relay receives webhooks at. */
+export type RelayEndpoint = WebhookEndpoint
+
+export interface RelayEndpointSpec {
+  name: string
+  /** Signature check applied before a delivery is accepted. */
+  verification?: VerificationProfile
+  /** Deliveries that don't match are recorded but never delivered. */
+  filterExp?: string
+}
+
+/** `null` clears a setting; an omitted field is left as is. */
+export interface RelayEndpointChanges {
+  name?: string
+  verification?: VerificationProfile | null
+  filterExp?: string | null
+}
+
+export interface RelayEndpointEvents {
+  filterExp: string | null
+  /** Newest first, including deliveries the filter withheld. */
+  events: WebhookEndpointEvent[]
+}
+
 export type WebhookRelayUnavailableReason =
   /** This build has no relay to connect to. */
   | 'not_configured'
@@ -86,6 +117,23 @@ export interface WebhookRelayService {
   onChange(listener: (snapshot: WebhookRelaySnapshot) => void): () => void
   /** Allowed while unavailable; delivery starts once the relay is. */
   register(consumer: RelayConsumer): RelayConsumerHandle
+
+  // Endpoint provisioning. Each endpoint belongs to the scope that minted it,
+  // and every call about it must use that scope. These reject with
+  // WebhookRelayUnavailableError while the relay is unavailable.
+  createEndpoint(scope: RelayScope, spec: RelayEndpointSpec): Promise<RelayEndpoint>
+  updateEndpoint(scope: RelayScope, endpointId: string, changes: RelayEndpointChanges): Promise<RelayEndpoint>
+  /** The URL stops accepting deliveries. */
+  disableEndpoint(scope: RelayScope, endpointId: string): Promise<void>
+  listEndpointEvents(scope: RelayScope, endpointId: string, limit?: number): Promise<RelayEndpointEvents>
+  /** Dry-runs a filter against recent deliveries without changing the endpoint. */
+  testEndpointFilter(
+    scope: RelayScope,
+    endpointId: string,
+    filterExp: string,
+    limit?: number,
+  ): Promise<WebhookFilterTestResult>
+
   /** Claim soon, e.g. right after minting a new endpoint. Coalesced. */
   wake(): void
   start(): void

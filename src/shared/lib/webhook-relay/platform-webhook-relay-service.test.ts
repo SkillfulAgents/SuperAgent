@@ -4,12 +4,15 @@ vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
 import type { RealtimeConfig } from '@shared/lib/services/supabase-realtime-client'
 import type { PlatformClaim } from './platform-relay-client'
+import { WebhookRelayUnavailableError } from './errors'
 import {
   PlatformWebhookRelayService,
+  type PlatformEndpointsApi,
   type PlatformWebhookRelayDeps,
   type PlatformWebhookRelayOptions,
   type RealtimeConnection,
 } from './platform-webhook-relay-service'
+import { UnavailableWebhookRelayService } from './unavailable-webhook-relay-service'
 import { LOCAL_RELAY_SCOPE, type RelayAcceptResult, type RelayConsumer, type RelayEvent } from './types'
 
 // ============================================================================
@@ -23,6 +26,9 @@ class FakePlatform {
   acks: Array<{ scope: string; ids: string[] }> = []
   failingScopes = new Set<string>()
   failAcks = 0
+  failAckScopes = new Set<string>()
+  ackGate: Promise<void> | null = null
+  signals: AbortSignal[] = []
   realtimeEnabled = true
   claimGate: Promise<void> | null = null
   private nextId = 0
@@ -38,8 +44,9 @@ class FakePlatform {
     return added
   }
 
-  claim = vi.fn(async (scope: string, endpointIds: readonly string[]): Promise<PlatformClaim> => {
+  claim = vi.fn(async (scope: string, endpointIds: readonly string[], signal?: AbortSignal): Promise<PlatformClaim> => {
     this.claims.push({ scope, endpointIds: [...endpointIds] })
+    if (signal) this.signals.push(signal)
     if (this.claimGate) await this.claimGate
     if (this.failingScopes.has(scope)) throw new Error(`claim failed for ${scope}`)
     const taken: RelayEvent[] = []
@@ -56,6 +63,8 @@ class FakePlatform {
   })
 
   acknowledge = vi.fn(async (scope: string, ids: readonly string[]) => {
+    if (this.ackGate) await this.ackGate
+    if (this.failAckScopes.has(scope)) throw new Error(`ack failed for ${scope}`)
     if (this.failAcks > 0) {
       this.failAcks--
       throw new Error('ack failed')
@@ -115,11 +124,13 @@ let sockets: FakeRealtime[]
 let token: string | null
 let orgToken: boolean
 let relay: PlatformWebhookRelayService
+let endpoints: { [K in keyof PlatformEndpointsApi]: ReturnType<typeof vi.fn> }
 
 function deps(overrides: Partial<PlatformWebhookRelayDeps> = {}): PlatformWebhookRelayDeps {
   return {
     claim: platform.claim,
     acknowledge: platform.acknowledge,
+    endpoints: endpoints as unknown as PlatformEndpointsApi,
     getToken: () => token,
     requiresMemberScope: () => orgToken,
     createRealtime: () => {
@@ -132,9 +143,13 @@ function deps(overrides: Partial<PlatformWebhookRelayDeps> = {}): PlatformWebhoo
   }
 }
 
-function startRelay(options: PlatformWebhookRelayOptions = {}, overrides: Partial<PlatformWebhookRelayDeps> = {}) {
+function createRelay(options: PlatformWebhookRelayOptions = {}, overrides: Partial<PlatformWebhookRelayDeps> = {}) {
   relay = new PlatformWebhookRelayService(deps(overrides), options)
-  relay.start()
+  return relay
+}
+
+function startRelay(options: PlatformWebhookRelayOptions = {}, overrides: Partial<PlatformWebhookRelayDeps> = {}) {
+  createRelay(options, overrides).start()
   return relay
 }
 
@@ -163,6 +178,13 @@ beforeEach(() => {
   sockets = []
   token = 'plat_sa_token'
   orgToken = false
+  endpoints = {
+    create: vi.fn(async () => ({ id: 'whep_new', url: 'https://relay.test/v1/hooks/whep_new' })),
+    update: vi.fn(async () => ({ id: 'whep_new' })),
+    disable: vi.fn(async () => {}),
+    listEvents: vi.fn(async () => ({ filterExp: null, events: [] })),
+    testFilter: vi.fn(async () => ({})),
+  }
 })
 
 afterEach(() => {
@@ -282,9 +304,9 @@ describe('PlatformWebhookRelayService', () => {
       expect(platform.ackedIds()).toHaveLength(1)
     })
 
-    it('discards events whose consumer let go of the endpoint mid-claim', async () => {
+    it('leaves events unacknowledged when their consumer let go of the endpoint mid-claim', async () => {
       startRelay()
-      const [event] = platform.add('sub_a', 'whep_one')
+      platform.add('sub_a', 'whep_one')
       const gate = deferred()
       platform.claimGate = gate.promise
       const c = consumer(['whep_one'])
@@ -297,11 +319,32 @@ describe('PlatformWebhookRelayService', () => {
       await settle()
 
       expect(c.accept).not.toHaveBeenCalled()
-      expect(platform.ackedIds()).toEqual([event.id])
+      expect(platform.acknowledge).not.toHaveBeenCalled()
     })
 
-    it('retries a failed ack in the next round', async () => {
-      startRelay({ tickMs: 30_000 })
+    it('stops claiming an endpoint as soon as its consumer lets go, mid-round', async () => {
+      createRelay()
+      platform.realtimeEnabled = false
+      platform.add('sub_a', 'whep_a', 60)
+      const gate = deferred()
+      platform.claimGate = gate.promise
+      relay.register(consumer(['whep_a'], undefined, 'sub_a', 'a'))
+      const b = relay.register(consumer(['whep_b'], undefined, 'sub_a', 'b'))
+      relay.start()
+      await settle()
+      expect(platform.claims[0].endpointIds).toEqual(['whep_a', 'whep_b'])
+
+      b.dispose()
+      platform.claimGate = null
+      gate.resolve()
+      await settle()
+
+      // The first batch came back full, so the lane claims again, without whep_b.
+      expect(platform.claims[1].endpointIds).toEqual(['whep_a'])
+    })
+
+    it('retries a failed ack after backoff', async () => {
+      startRelay({ retryDelaysMs: [5_000] })
       platform.realtimeEnabled = false
       platform.failAcks = 1
       const [event] = platform.add('sub_a', 'whep_one')
@@ -309,13 +352,85 @@ describe('PlatformWebhookRelayService', () => {
       await settle()
       expect(platform.acks).toEqual([])
 
-      await vi.advanceTimersByTimeAsync(30_000)
+      await vi.advanceTimersByTimeAsync(5_000)
       await settle()
       expect(platform.ackedIds()).toEqual([event.id])
+    })
+
+    it("keeps acking other scopes while one scope's acks fail", async () => {
+      startRelay()
+      platform.failAckScopes.add('sub_bad')
+      platform.add('sub_bad', 'whep_bad')
+      const [good] = platform.add('sub_good', 'whep_good')
+      relay.register(consumer(['whep_bad'], undefined, 'sub_bad'))
+      relay.register(consumer(['whep_good'], undefined, 'sub_good'))
+      await settle()
+
+      expect(platform.ackedIds()).toEqual([good.id])
+    })
+
+    it('keeps claiming and delivering while an ack hangs, then times it out and retries', async () => {
+      startRelay({ requestTimeoutMs: 10_000, retryDelaysMs: [5_000], tickMs: 60_000 })
+      const hang = deferred()
+      platform.ackGate = hang.promise
+      const [first] = platform.add('sub_a', 'whep_one')
+      const c = consumer(['whep_one'])
+      relay.register(c)
+      await settle()
+      const [socket] = sockets
+
+      const [second] = platform.add('sub_a', 'whep_one')
+      socket.onInsert?.({ composio_trigger_id: 'whep_one', status: 'pending' })
+      await settle()
+      expect(c.accept).toHaveBeenLastCalledWith([second])
+      expect(platform.acks).toEqual([])
+
+      platform.ackGate = null
+      await vi.advanceTimersByTimeAsync(10_000 + 5_000)
+      await settle()
+      expect(platform.ackedIds().sort()).toEqual([first.id, second.id].sort())
     })
   })
 
   describe('scheduling', () => {
+    it('gives every scope a turn while another keeps returning full batches', async () => {
+      createRelay({ maxClaimsPerTurn: 2 })
+      platform.realtimeEnabled = false
+      platform.add('sub_busy', 'whep_busy', 300)
+      const [quiet] = platform.add('sub_quiet', 'whep_quiet')
+      relay.register(consumer(['whep_busy'], undefined, 'sub_busy'))
+      relay.register(consumer(['whep_quiet'], undefined, 'sub_quiet'))
+      relay.start()
+      await settle()
+
+      const scopes = platform.claims.map((claim) => claim.scope)
+      expect(scopes.slice(0, 3)).toEqual(['sub_busy', 'sub_busy', 'sub_quiet'])
+      expect(platform.ackedIds()).toContain(quiet.id)
+      // The busy scope still drains, a turn at a time.
+      expect(platform.ackedIds()).toHaveLength(301)
+    })
+
+    it('times out a hung claim and claims again on the next tick', async () => {
+      startRelay({ requestTimeoutMs: 10_000, tickMs: 30_000 })
+      platform.realtimeEnabled = false
+      await settle()
+      platform.claimGate = new Promise(() => {})
+      relay.register(consumer(['whep_one']))
+      await settle()
+
+      await vi.advanceTimersByTimeAsync(10_000)
+      await settle()
+      expect(relay.snapshot()).toMatchObject({ transport: 'unreachable' })
+      expect(relay.snapshot().lastError).toMatch(/timed out/)
+
+      platform.claimGate = null
+      const [event] = platform.add('sub_a', 'whep_one')
+      await vi.advanceTimersByTimeAsync(30_000)
+      await settle()
+      expect(platform.ackedIds()).toEqual([event.id])
+      expect(relay.snapshot().transport).toBe('polling')
+    })
+
     it('coalesces wakes during a round into one more round', async () => {
       startRelay()
       platform.realtimeEnabled = false
@@ -550,6 +665,88 @@ describe('PlatformWebhookRelayService', () => {
       await settle()
 
       expect(platform.claim).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('stop and start', () => {
+    it('suspends retries and delivery on stop, and resumes them on start', async () => {
+      startRelay({ retryDelaysMs: [5_000] })
+      platform.add('sub_a', 'whep_one')
+      const results: RelayAcceptResult[] = ['retry', 'accepted']
+      const c = consumer(['whep_one'], async () => results.shift()!)
+      relay.register(c)
+      await settle()
+      expect(c.accept).toHaveBeenCalledTimes(1)
+
+      relay.stop()
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(c.accept).toHaveBeenCalledTimes(1)
+
+      relay.start()
+      await settle()
+      expect(c.accept).toHaveBeenCalledTimes(2)
+      expect(platform.ackedIds()).toHaveLength(1)
+    })
+
+    it('does not start the next batch when one finishes after stop', async () => {
+      startRelay()
+      platform.realtimeEnabled = false
+      platform.add('sub_a', 'whep_one', 60)
+      const gate = deferred()
+      const c = consumer(['whep_one'], async () => {
+        await gate.promise
+        return 'accepted'
+      })
+      relay.register(c)
+      await settle()
+      expect(c.accept).toHaveBeenCalledTimes(1)
+
+      relay.stop()
+      gate.resolve()
+      await settle()
+
+      expect(c.accept).toHaveBeenCalledTimes(1)
+    })
+
+    it('cancels in-flight requests on stop', async () => {
+      startRelay()
+      platform.claimGate = new Promise(() => {})
+      relay.register(consumer(['whep_one']))
+      await settle()
+      const [signal] = platform.signals
+      expect(signal.aborted).toBe(false)
+
+      relay.stop()
+
+      expect(signal.aborted).toBe(true)
+    })
+  })
+
+  describe('endpoints', () => {
+    it('provisions endpoints through the platform API in its own vocabulary', async () => {
+      startRelay()
+
+      await relay.createEndpoint('sub_a', { name: 'Deploys', filterExp: 'body.ok' })
+      await relay.updateEndpoint('sub_a', 'whep_new', { filterExp: null })
+      await relay.disableEndpoint('sub_a', 'whep_new')
+
+      expect(endpoints.create).toHaveBeenCalledWith('sub_a', { name: 'Deploys', filter_exp: 'body.ok' })
+      expect(endpoints.update).toHaveBeenCalledWith('sub_a', 'whep_new', { filter_exp: null })
+      expect(endpoints.disable).toHaveBeenCalledWith('sub_a', 'whep_new')
+    })
+
+    it('rejects provisioning while the platform is disconnected', async () => {
+      token = null
+      startRelay()
+
+      await expect(relay.createEndpoint('sub_a', { name: 'x' })).rejects.toBeInstanceOf(WebhookRelayUnavailableError)
+      expect(endpoints.create).not.toHaveBeenCalled()
+    })
+
+    it('a host with no relay rejects provisioning', async () => {
+      const none = new UnavailableWebhookRelayService('not_configured')
+
+      await expect(none.createEndpoint()).rejects.toMatchObject({ reason: 'not_configured' })
     })
   })
 

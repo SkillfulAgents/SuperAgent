@@ -5,8 +5,9 @@
  * reason to claim them sooner. Claims run in one coalesced loop per host:
  * a realtime INSERT for a registered endpoint wakes it, a tick polls while
  * realtime is down, and a slower reconciliation claim covers notifications
- * that never arrived. Claimed events are handed to their endpoint's consumer
- * and acknowledged once the consumer settles them (anything but `retry`).
+ * that never arrived. Claimed events are handed to their endpoint's consumer,
+ * and acknowledged by a separate worker once the consumer settles them
+ * (anything but `retry`).
  *
  * Claims are final on the platform today: an event claimed but not settled
  * before the process exits is not redelivered (SUP-931). `retry` events stay
@@ -16,6 +17,13 @@
 import pLimit from 'p-limit'
 import { captureException } from '@shared/lib/error-reporting'
 import type { RealtimeConfig } from '@shared/lib/services/supabase-realtime-client'
+import type {
+  VerificationProfile,
+  WebhookEndpoint,
+  WebhookEndpointEvent,
+  WebhookFilterTestResult,
+} from '@shared/lib/services/webhook-endpoint-schema'
+import { WebhookRelayUnavailableError } from './errors'
 import type { PlatformClaim } from './platform-relay-client'
 import { platformRealtimeRecordSchema } from './platform-relay-schema'
 import {
@@ -23,6 +31,10 @@ import {
   type RelayAcceptResult,
   type RelayConsumer,
   type RelayConsumerHandle,
+  type RelayEndpoint,
+  type RelayEndpointChanges,
+  type RelayEndpointEvents,
+  type RelayEndpointSpec,
   type RelayEvent,
   type RelayScope,
   type WebhookRelayService,
@@ -38,7 +50,7 @@ const MAX_ENDPOINTS_PER_CLAIM = 500
 const VALID_ENDPOINT_ID = /^(ti|whep)_[A-Za-z0-9_-]{1,128}$/
 // Acked ids end up in the proxy's Supabase filter URL.
 const ACK_CHUNK_SIZE = 100
-const MAX_DEFERRED_ACKS_PER_SCOPE = 1000
+const MAX_PENDING_ACKS_PER_SCOPE = 1000
 
 export interface RealtimeConnection {
   /** `onConnect` runs on every open, including the connection's own reconnects. */
@@ -53,9 +65,30 @@ export interface RealtimeConnection {
   updateToken(jwt: string): Promise<void>
 }
 
+/** The platform's endpoint routes, in the platform's own vocabulary. */
+export interface PlatformEndpointsApi {
+  create(
+    memberId: string,
+    params: { name: string; verification?: VerificationProfile; filter_exp?: string },
+  ): Promise<WebhookEndpoint>
+  update(
+    memberId: string,
+    endpointId: string,
+    params: { name?: string; verification?: VerificationProfile | null; filter_exp?: string | null },
+  ): Promise<WebhookEndpoint>
+  disable(memberId: string, endpointId: string): Promise<void>
+  listEvents(
+    memberId: string,
+    endpointId: string,
+    limit?: number,
+  ): Promise<{ filterExp: string | null; events: WebhookEndpointEvent[] }>
+  testFilter(memberId: string, endpointId: string, filterExp: string, limit?: number): Promise<WebhookFilterTestResult>
+}
+
 export interface PlatformWebhookRelayDeps {
-  claim(scope: RelayScope, endpointIds: readonly string[]): Promise<PlatformClaim>
-  acknowledge(scope: RelayScope, eventIds: readonly string[]): Promise<void>
+  claim(scope: RelayScope, endpointIds: readonly string[], signal: AbortSignal): Promise<PlatformClaim>
+  acknowledge(scope: RelayScope, eventIds: readonly string[], signal: AbortSignal): Promise<void>
+  endpoints: PlatformEndpointsApi
   getToken(): string | null
   /** True for an org token, which needs a real member scope on every call. */
   requiresMemberScope(): boolean
@@ -73,6 +106,10 @@ export interface PlatformWebhookRelayOptions {
   realtimeTokenRefreshMs?: number
   /** Stop claiming a consumer's endpoints while this many of its events wait. */
   maxConsumerBacklog?: number
+  /** Claims one lane (a scope's chunk of endpoints) gets per round before the others go. */
+  maxClaimsPerTurn?: number
+  /** Deadline for each claim/ack request. */
+  requestTimeoutMs?: number
   retryDelaysMs?: readonly number[]
   acceptConcurrency?: number
 }
@@ -96,6 +133,11 @@ interface ConsumerState {
   disposed: boolean
 }
 
+interface ClaimLane {
+  scope: RelayScope
+  endpointIds: string[]
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -113,16 +155,26 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   private readonly reconcileMs: number
   private readonly realtimeTokenRefreshMs: number
   private readonly maxConsumerBacklog: number
+  private readonly maxClaimsPerTurn: number
+  private readonly requestTimeoutMs: number
   private readonly retryDelaysMs: readonly number[]
   private readonly limit: ReturnType<typeof pLimit>
 
   private readonly consumers = new Map<string, ConsumerState>()
   private readonly owners = new Map<string, ConsumerState>()
   private readonly listeners = new Set<(snapshot: WebhookRelaySnapshot) => void>()
-  private readonly deferredAcks = new Map<RelayScope, Set<string>>()
   private readonly failingScopes = new Set<RelayScope>()
 
+  // Acks run in their own worker so a stalled or failing scope never holds up
+  // claiming, delivery, or other scopes' acks.
+  private readonly pendingAcks = new Map<RelayScope, Set<string>>()
+  private readonly ackBackoff = new Map<RelayScope, { attempt: number; retryAt: number }>()
+  private acking = false
+  private ackTimer: NodeJS.Timeout | null = null
+
   private started = false
+  // Aborted by stop(), cancelling every request still in flight.
+  private lifecycle = new AbortController()
   private online = false
   private token: string | null = null
   // Bumped whenever the connection goes away, so async work from an older
@@ -149,6 +201,8 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     this.reconcileMs = options.reconcileMs ?? 5 * 60_000
     this.realtimeTokenRefreshMs = options.realtimeTokenRefreshMs ?? 40 * 60_000
     this.maxConsumerBacklog = options.maxConsumerBacklog ?? 200
+    this.maxClaimsPerTurn = options.maxClaimsPerTurn ?? 4
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000
     this.retryDelaysMs = options.retryDelaysMs ?? [5_000, 30_000, 2 * 60_000, 10 * 60_000]
     this.limit = pLimit(options.acceptConcurrency ?? 4)
   }
@@ -200,6 +254,52 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
         captureException(error, { tags: { area: 'webhook-relay', op: 'status-listener' } })
       }
     }
+  }
+
+  // ==========================================================================
+  // Endpoints
+  // ==========================================================================
+
+  private requireAvailable(): void {
+    if (!this.deps.getToken()) throw new WebhookRelayUnavailableError('platform_disconnected')
+  }
+
+  async createEndpoint(scope: RelayScope, spec: RelayEndpointSpec): Promise<RelayEndpoint> {
+    this.requireAvailable()
+    return this.deps.endpoints.create(scope, {
+      name: spec.name,
+      ...(spec.verification ? { verification: spec.verification } : {}),
+      ...(spec.filterExp ? { filter_exp: spec.filterExp } : {}),
+    })
+  }
+
+  async updateEndpoint(scope: RelayScope, endpointId: string, changes: RelayEndpointChanges): Promise<RelayEndpoint> {
+    this.requireAvailable()
+    return this.deps.endpoints.update(scope, endpointId, {
+      ...(changes.name !== undefined ? { name: changes.name } : {}),
+      ...(changes.verification !== undefined ? { verification: changes.verification } : {}),
+      ...(changes.filterExp !== undefined ? { filter_exp: changes.filterExp } : {}),
+    })
+  }
+
+  async disableEndpoint(scope: RelayScope, endpointId: string): Promise<void> {
+    this.requireAvailable()
+    await this.deps.endpoints.disable(scope, endpointId)
+  }
+
+  async listEndpointEvents(scope: RelayScope, endpointId: string, limit?: number): Promise<RelayEndpointEvents> {
+    this.requireAvailable()
+    return this.deps.endpoints.listEvents(scope, endpointId, limit)
+  }
+
+  async testEndpointFilter(
+    scope: RelayScope,
+    endpointId: string,
+    filterExp: string,
+    limit?: number,
+  ): Promise<WebhookFilterTestResult> {
+    this.requireAvailable()
+    return this.deps.endpoints.testFilter(scope, endpointId, filterExp, limit)
   }
 
   // ==========================================================================
@@ -299,9 +399,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     return false
   }
 
-  private isSaturated(scope: RelayScope, endpointId: string): boolean {
+  /** Still owned by a consumer in this scope, and that consumer has room. */
+  private isClaimable(scope: RelayScope, endpointId: string): boolean {
     const owner = this.owners.get(this.ownerKey(scope, endpointId))
-    return owner !== undefined && owner.queue.length >= this.maxConsumerBacklog
+    return owner !== undefined && owner.queue.length < this.maxConsumerBacklog
   }
 
   // ==========================================================================
@@ -311,12 +412,20 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   start(): void {
     if (this.started) return
     this.started = true
+    this.lifecycle = new AbortController()
     this.applyAuth()
+    // Resume delivery that stop() suspended.
+    for (const state of this.consumers.values()) this.pump(state)
   }
 
   stop(): void {
     if (!this.started) return
     this.started = false
+    this.lifecycle.abort(new Error('Webhook relay stopped'))
+    for (const state of this.consumers.values()) {
+      if (state.retryTimer) clearTimeout(state.retryTimer)
+      state.retryTimer = null
+    }
     this.goOffline()
     this.emit()
   }
@@ -348,6 +457,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     })
     console.log('[WebhookRelay] Online')
     this.wake()
+    this.flushAcks()
     this.emit()
   }
 
@@ -359,6 +469,8 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     this.failingScopes.clear()
     if (this.tick) clearInterval(this.tick)
     this.tick = null
+    if (this.ackTimer) clearTimeout(this.ackTimer)
+    this.ackTimer = null
     this.dropRealtime()
   }
 
@@ -368,6 +480,32 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (!realtimeUp || Date.now() - this.lastRoundAt >= this.reconcileMs) this.wake()
     // Realtime may have dropped since the last round.
     this.emit()
+  }
+
+  /**
+   * Runs one platform request with a deadline, cancelled by stop(). Settles
+   * when the signal fires even if the request ignores it, so a hung request
+   * can never wedge the claim loop or the ack worker.
+   */
+  private request<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController()
+    const lifecycle = this.lifecycle.signal
+    const onStop = () => controller.abort(lifecycle.reason)
+    const timer = setTimeout(
+      () => controller.abort(new Error(`Webhook relay request timed out after ${this.requestTimeoutMs}ms`)),
+      this.requestTimeoutMs,
+    )
+    lifecycle.addEventListener('abort', onStop, { once: true })
+    if (lifecycle.aborted) onStop()
+    const aborted = new Promise<never>((_, reject) => {
+      if (controller.signal.aborted) reject(controller.signal.reason)
+      else controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true })
+    })
+    const run = new Promise<T>((resolve) => resolve(fn(controller.signal)))
+    return Promise.race([run, aborted]).finally(() => {
+      clearTimeout(timer)
+      lifecycle.removeEventListener('abort', onStop)
+    })
   }
 
   // ==========================================================================
@@ -398,22 +536,26 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     }
   }
 
-  private claimPlan(): Map<RelayScope, string[]> {
-    const plan = new Map<RelayScope, Set<string>>()
+  /** One lane per scope and chunk of at most 500 endpoints. */
+  private claimLanes(): ClaimLane[] {
+    const byScope = new Map<RelayScope, Set<string>>()
     for (const state of this.consumers.values()) {
       if (state.endpointIds.size === 0) continue
-      let ids = plan.get(state.scope)
-      if (!ids) plan.set(state.scope, (ids = new Set()))
+      let ids = byScope.get(state.scope)
+      if (!ids) byScope.set(state.scope, (ids = new Set()))
       for (const id of state.endpointIds) ids.add(id)
     }
-    return new Map([...plan].map(([scope, ids]) => [scope, [...ids]]))
+    const lanes: ClaimLane[] = []
+    for (const [scope, ids] of byScope) {
+      for (const endpointIds of chunk([...ids], MAX_ENDPOINTS_PER_CLAIM)) lanes.push({ scope, endpointIds })
+    }
+    return lanes
   }
 
   private async runRound(generation: number): Promise<void> {
     this.lastRoundAt = Date.now()
-    await this.flushDeferredAcks(generation)
-    const plan = this.claimPlan()
-    if (plan.size === 0) {
+    const lanes = this.claimLanes()
+    if (lanes.length === 0) {
       this.dropRealtime()
       return
     }
@@ -421,20 +563,27 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     let succeeded = 0
     let failed = 0
     let lastError: string | null = null
-    for (const [scope, endpointIds] of plan) {
+    const failedScopes = new Set<RelayScope>()
+    for (const lane of lanes) {
       if (generation !== this.generation) return
-      if (scope === LOCAL_RELAY_SCOPE && this.deps.requiresMemberScope()) {
+      if (failedScopes.has(lane.scope)) continue
+      if (lane.scope === LOCAL_RELAY_SCOPE && this.deps.requiresMemberScope()) {
         if (!this.warnedLocalScope) {
           this.warnedLocalScope = true
           console.warn('[WebhookRelay] Skipping the local scope: an org token claims per member')
         }
         continue
       }
-      const error = await this.claimScope(generation, scope, endpointIds)
-      if (error === null) succeeded++
-      else {
+      const { error, more } = await this.claimLane(generation, lane)
+      if (error === null) {
+        succeeded++
+        // Still full after its turn: every other lane goes first, then it
+        // gets another round.
+        if (more) this.dirty = true
+      } else {
         failed++
         lastError = error
+        failedScopes.add(lane.scope)
       }
     }
     if (generation !== this.generation) return
@@ -451,36 +600,38 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     }
   }
 
-  /** Claims until each batch comes back short. Returns the error, or null. */
-  private async claimScope(generation: number, scope: RelayScope, endpointIds: string[]): Promise<string | null> {
-    for (const ids of chunk(endpointIds, MAX_ENDPOINTS_PER_CLAIM)) {
-      let remaining = ids
-      for (;;) {
-        remaining = remaining.filter((id) => !this.isSaturated(scope, id))
-        if (remaining.length === 0) break
-        let claim: PlatformClaim
-        try {
-          claim = await this.deps.claim(scope, remaining)
-        } catch (error) {
-          const message = errorMessage(error)
-          console.warn(`[WebhookRelay] Claim failed for scope ${scope}: ${message}`)
-          if (!this.failingScopes.has(scope)) {
-            this.failingScopes.add(scope)
-            captureException(error, { level: 'warning', tags: { area: 'webhook-relay', op: 'claim' } })
-          }
-          return message
+  /** Claims a lane for at most maxClaimsPerTurn batches. */
+  private async claimLane(generation: number, lane: ClaimLane): Promise<{ error: string | null; more: boolean }> {
+    const { scope } = lane
+    for (let turn = 0; turn < this.maxClaimsPerTurn; turn++) {
+      // Re-checked before every claim: a consumer may have let go of an
+      // endpoint or filled its backlog since the lane was planned, and a
+      // claim for an endpoint nobody owns would take events nobody delivers.
+      const endpointIds = lane.endpointIds.filter((id) => this.isClaimable(scope, id))
+      // A full consumer wakes the loop itself once it drains.
+      if (endpointIds.length === 0) return { error: null, more: false }
+      let claim: PlatformClaim
+      try {
+        claim = await this.request((signal) => this.deps.claim(scope, endpointIds, signal))
+      } catch (error) {
+        const message = errorMessage(error)
+        console.warn(`[WebhookRelay] Claim failed for scope ${scope}: ${message}`)
+        if (!this.failingScopes.has(scope)) {
+          this.failingScopes.add(scope)
+          captureException(error, { level: 'warning', tags: { area: 'webhook-relay', op: 'claim' } })
         }
-        if (claim.claimed > 0) console.log(`[WebhookRelay] Claimed ${claim.claimed} event(s) for scope ${scope}`)
-        // Claimed rows are ours whatever happened meanwhile; dispatch them
-        // even if the identity changed, then stop.
-        this.dispatch(scope, claim.events)
-        if (generation !== this.generation) return null
-        this.useRealtimeConfig(generation, claim.realtime)
-        if (claim.claimed < CLAIM_BATCH_SIZE) break
+        return { error: message, more: false }
       }
+      this.failingScopes.delete(scope)
+      if (claim.claimed > 0) console.log(`[WebhookRelay] Claimed ${claim.claimed} event(s) for scope ${scope}`)
+      // Claimed rows are ours whatever happened meanwhile; dispatch them
+      // even if the identity changed, then stop.
+      this.dispatch(scope, claim.events)
+      if (generation !== this.generation) return { error: null, more: false }
+      this.useRealtimeConfig(generation, claim.realtime)
+      if (claim.claimed < CLAIM_BATCH_SIZE) return { error: null, more: false }
     }
-    this.failingScopes.delete(scope)
-    return null
+    return { error: null, more: true }
   }
 
   // ==========================================================================
@@ -488,12 +639,12 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   // ==========================================================================
 
   private dispatch(scope: RelayScope, events: readonly RelayEvent[]): void {
-    const unowned: string[] = []
+    let unowned = 0
     const touched = new Set<ConsumerState>()
     for (const event of events) {
       const owner = this.owners.get(this.ownerKey(scope, event.endpointId))
       if (!owner) {
-        unowned.push(event.id)
+        unowned++
         continue
       }
       if (owner.queuedIds.has(event.id)) continue
@@ -501,16 +652,17 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       owner.queuedIds.add(event.id)
       touched.add(owner)
     }
-    if (unowned.length > 0) {
+    if (unowned > 0) {
       // Its consumer let go of the endpoint while the claim was in flight.
-      console.warn(`[WebhookRelay] Discarding ${unowned.length} event(s) with no consumer in scope ${scope}`)
-      void this.acknowledge(scope, unowned)
+      // Nothing delivered it, so it isn't acknowledged either: once claims
+      // lease (SUP-931) it returns to the queue for whoever owns it next.
+      console.warn(`[WebhookRelay] Leaving ${unowned} claimed event(s) unacknowledged: no consumer in scope ${scope}`)
     }
     for (const state of touched) this.pump(state)
   }
 
   private pump(state: ConsumerState): void {
-    if (state.offering || state.retryTimer || state.disposed || state.queue.length === 0) return
+    if (!this.started || state.offering || state.retryTimer || state.disposed || state.queue.length === 0) return
     state.offering = true
     this.deps.detach(() => {
       void this.limit(() => this.offer(state))
@@ -525,6 +677,8 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   }
 
   private async offer(state: ConsumerState): Promise<void> {
+    // stop() may have landed while this offer waited for a concurrency slot.
+    if (!this.started || state.disposed) return
     const wasSaturated = state.queue.length >= this.maxConsumerBacklog
     const batch = state.queue.slice(0, CLAIM_BATCH_SIZE)
 
@@ -550,23 +704,19 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       state.queue = state.queue.filter((queued) => !settledIds.has(queued.event.id))
       for (const id of settledIds) state.queuedIds.delete(id)
     }
+    for (const queued of settled) this.queueAck(queued.scope, queued.event.id)
+    this.flushAcks()
 
     if (retrying) this.scheduleRetry(state)
     else state.retryAttempt = 0
-
-    const byScope = new Map<RelayScope, string[]>()
-    for (const queued of settled) {
-      const ids = byScope.get(queued.scope) ?? []
-      ids.push(queued.event.id)
-      byScope.set(queued.scope, ids)
-    }
-    for (const [scope, ids] of byScope) await this.acknowledge(scope, ids)
 
     // The rounds skipped this consumer's endpoints while it was full.
     if (wasSaturated && state.queue.length < this.maxConsumerBacklog) this.wake()
   }
 
   private scheduleRetry(state: ConsumerState): void {
+    // After stop(), start() resumes delivery instead.
+    if (!this.started || state.disposed) return
     const delay = this.retryDelaysMs[Math.min(state.retryAttempt, this.retryDelaysMs.length - 1)]
     state.retryAttempt++
     this.deps.detach(() => {
@@ -578,39 +728,80 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     })
   }
 
-  private async acknowledge(scope: RelayScope, eventIds: readonly string[]): Promise<void> {
-    if (!this.online) {
-      this.deferAcks(scope, eventIds)
-      return
-    }
-    for (const ids of chunk(eventIds, ACK_CHUNK_SIZE)) {
-      try {
-        await this.deps.acknowledge(scope, ids)
-      } catch (error) {
-        console.warn(`[WebhookRelay] Ack failed for scope ${scope}; will retry: ${errorMessage(error)}`)
-        this.deferAcks(scope, ids)
-      }
-    }
-  }
+  // ==========================================================================
+  // Acknowledgement
+  // ==========================================================================
 
-  private deferAcks(scope: RelayScope, eventIds: readonly string[]): void {
-    const deferred = this.deferredAcks.get(scope) ?? new Set<string>()
-    for (const id of eventIds) deferred.add(id)
-    // Unacked events are already handled here; the platform fails them after
+  private queueAck(scope: RelayScope, eventId: string): void {
+    const pending = this.pendingAcks.get(scope) ?? new Set<string>()
+    pending.add(eventId)
+    // An unacked event is already handled here; the platform fails it after
     // 48h. Bounded so a scope that can never ack can't grow without limit.
-    for (const id of deferred) {
-      if (deferred.size <= MAX_DEFERRED_ACKS_PER_SCOPE) break
-      deferred.delete(id)
+    for (const id of pending) {
+      if (pending.size <= MAX_PENDING_ACKS_PER_SCOPE) break
+      pending.delete(id)
     }
-    this.deferredAcks.set(scope, deferred)
+    this.pendingAcks.set(scope, pending)
   }
 
-  private async flushDeferredAcks(generation: number): Promise<void> {
-    for (const [scope, ids] of [...this.deferredAcks]) {
-      if (generation !== this.generation) return
-      this.deferredAcks.delete(scope)
-      await this.acknowledge(scope, [...ids])
+  private flushAcks(): void {
+    if (this.acking || !this.online || this.pendingAcks.size === 0) return
+    this.acking = true
+    this.deps.detach(() => {
+      void this.runAcks()
+    })
+  }
+
+  private nextAckScope(): RelayScope | null {
+    const now = Date.now()
+    for (const scope of this.pendingAcks.keys()) {
+      const backoff = this.ackBackoff.get(scope)
+      if (!backoff || backoff.retryAt <= now) return scope
     }
+    return null
+  }
+
+  private async runAcks(): Promise<void> {
+    try {
+      for (let scope = this.nextAckScope(); scope !== null && this.online; scope = this.nextAckScope()) {
+        const ackScope = scope
+        const pending = this.pendingAcks.get(ackScope)!
+        const ids = [...pending].slice(0, ACK_CHUNK_SIZE)
+        // Rotate to the back, so one busy scope can't keep the others waiting.
+        this.pendingAcks.delete(ackScope)
+        this.pendingAcks.set(ackScope, pending)
+        try {
+          await this.request((signal) => this.deps.acknowledge(ackScope, ids, signal))
+          for (const id of ids) pending.delete(id)
+          if (pending.size === 0) this.pendingAcks.delete(ackScope)
+          this.ackBackoff.delete(ackScope)
+        } catch (error) {
+          const attempt = this.ackBackoff.get(ackScope)?.attempt ?? 0
+          const delay = this.retryDelaysMs[Math.min(attempt, this.retryDelaysMs.length - 1)]
+          this.ackBackoff.set(ackScope, { attempt: attempt + 1, retryAt: Date.now() + delay })
+          console.warn(`[WebhookRelay] Ack failed for scope ${ackScope}; retrying in ${delay}ms: ${errorMessage(error)}`)
+        }
+      }
+    } finally {
+      this.acking = false
+      this.scheduleAckRetry()
+    }
+  }
+
+  private scheduleAckRetry(): void {
+    if (this.ackTimer) clearTimeout(this.ackTimer)
+    this.ackTimer = null
+    if (!this.online || this.pendingAcks.size === 0) return
+    const now = Date.now()
+    let next = Infinity
+    for (const scope of this.pendingAcks.keys()) next = Math.min(next, this.ackBackoff.get(scope)?.retryAt ?? now)
+    this.deps.detach(() => {
+      this.ackTimer = setTimeout(() => {
+        this.ackTimer = null
+        this.flushAcks()
+      }, Math.max(0, next - now))
+      this.ackTimer.unref?.()
+    })
   }
 
   // ==========================================================================
