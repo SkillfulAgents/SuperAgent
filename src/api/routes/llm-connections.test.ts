@@ -15,6 +15,10 @@ vi.mock('@shared/lib/llm-provider/grok-oauth', () => ({
   startGrokLogin: async () => ({ device: { device_code: 'private-device', user_code: 'CODE', verification_uri: 'https://accounts.x.ai', expires_in: 1800, interval: 5 }, endpoints: { token_endpoint: 'https://auth.x.ai/token' } }),
   pollGrokLogin: async () => ({ credential: { accessToken: 'private-oauth-access', refreshToken: 'private-oauth-refresh', expiresAt: Date.now() + 3600000, accountLabel: 'Alice Grok' } }),
 }))
+vi.mock('@shared/lib/llm-provider/codex-oauth', () => ({
+  startCodexLogin: async () => ({ device: { device_code: 'private-codex-device', user_code: 'CODE', verification_uri: 'https://auth.openai.com/codex/device', expires_in: 900, interval: 5 }, endpoints: { token_endpoint: 'https://auth.openai.com/oauth/token' } }),
+  pollCodexLogin: async () => ({ credential: { accessToken: 'private-codex-access', refreshToken: 'private-codex-refresh', expiresAt: Date.now() + 3600000, accountId: 'account', accountLabel: 'Alice Codex' } }),
+}))
 vi.mock('@shared/lib/db', () => ({
   get db() {
     return state.db
@@ -405,4 +409,23 @@ it('preserves the rotated credential pair when a name edit lands during refresh'
   const saved = await getConnection('refresh-edit')
   expect(saved?.name).toBe('New name')
   expect(connectionConfigSchema.parse(JSON.parse(saved!.config)).oauth).toEqual(fresh)
+})
+
+it('binds Codex grants to their provider and keeps dashboard helpers on the API provider', async () => {
+  const { id: api } = await (await request('', 'POST', draft())).json()
+  await request('/defaults/default', 'PUT', { llmProviderId: api, model: 'model' })
+  const login = await (await request('/oauth/codex/start', 'POST', { userId: null })).json()
+  expect((await request(`/oauth/${login.id}/poll`, 'POST', {})).status).toBe(200)
+  const connection = { name: 'Codex', provider: 'codex-subscription', userId: null, oauthLoginId: login.id, config: {} }
+  expect((await request('', 'POST', { ...connection, provider: 'grok-subscription' })).status).toBe(400)
+  const saved = await request('', 'POST', connection)
+  expect(saved.status).toBe(201)
+  const { id } = await saved.json()
+  expect((await request('/defaults/default', 'PUT', { llmProviderId: id, model: 'gpt' })).status).toBe(200)
+  expect((await request('/defaults/summarizer', 'PUT', { llmProviderId: id, model: 'gpt' })).status).toBe(400)
+  const config = await app.request('/llm/config', { headers: { 'Test-User': 'admin' } })
+  expect(await config.json()).toMatchObject({ configured: true, provider: 'generic', defaultModel: 'model' })
+  const publicData = JSON.stringify(await (await request('', 'GET')).json())
+  expect(publicData).toContain('Alice Codex')
+  expect(publicData).not.toContain('private-codex')
 })

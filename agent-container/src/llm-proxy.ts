@@ -1,4 +1,5 @@
 import { CredentialRefreshError } from './credential-refresh-error'
+import { normalizeCodexRequest, collectCodexResponse, normalizeCodexError } from './llm-proxy-codex'
 import { normalizeGrokMessages, grokWireFormat } from './llm-proxy-grok'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, createHash } from 'node:crypto'
@@ -115,10 +116,11 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
               ...(config.omitReasoningEffort ? { mapReasoningEffort: () => undefined } : {}),
             }) : body
         upstreamBody = options.adapter?.upstreamRequest?.(upstreamBody) ?? upstreamBody
+        if (config.adapter === 'codex') upstreamBody = normalizeCodexRequest(upstreamBody)
         return fetch(`${config.baseUrl.replace(/\/$/, '')}${path}`, {
           method: 'POST', redirect: 'error', signal: abort.signal,
           headers: { 'content-type': 'application/json', ...(format === 'messages' ? { 'anthropic-version': '2023-06-01' } : {}),
-            ...config.headers, authorization: `Bearer ${credential.accessToken}` },
+            ...config.headers, ...(config.adapter === 'codex' && credential.accountId ? { 'ChatGPT-Account-ID': credential.accountId } : {}), authorization: `Bearer ${credential.accessToken}` },
           body: JSON.stringify(upstreamBody),
         })
       }
@@ -134,7 +136,7 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       }
       if (!upstream.ok) {
         const error = await upstream.json().catch(() => ({}))
-        sendJson(res, upstream.status, responsesErrorToMessagesError(error, upstream.status)); return
+        sendJson(res, upstream.status, responsesErrorToMessagesError(config.adapter === 'codex' ? normalizeCodexError(error) : error, upstream.status)); return
       }
       if (validated.data.stream) {
         if (!upstream.body) throw new Error('Missing upstream stream')
@@ -143,7 +145,7 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
         await pipeline(Readable.fromWeb(stream as import('node:stream/web').ReadableStream<Uint8Array>), res)
       } else {
-        const json = await upstream.json() as Json
+        const json = config.adapter === 'codex' ? await collectCodexResponse(upstream, abort) : await upstream.json() as Json
         sendJson(res, 200, format === 'responses' ? responsesResponseToMessages(json, replyOptions)
           : format === 'chat-completions' ? chatCompletionsResponseToMessages(json, replyOptions) : json)
       }

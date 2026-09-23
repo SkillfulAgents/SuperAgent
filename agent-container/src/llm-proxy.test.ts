@@ -197,6 +197,46 @@ describe('embedded provider proxy', () => {
     expect(exchanges).toBe(1)
   })
 
+  it('adapts Codex requests and collects streams for non-streaming callers', async () => {
+    const seen: string[] = []
+    const base = await upstream((body, req, res) => {
+      seen.push(String(req.headers['chatgpt-account-id']))
+      expect(body.store).toBe(false)
+      expect(body.stream).toBe(true)
+      expect(body.instructions).toBe('')
+      expect(body.max_output_tokens).toBeUndefined()
+      if (req.headers.authorization === 'Bearer old') { json(res, { error: { message: 'expired' } }, 401); return }
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: {
+        id: 'r', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }],
+        usage: { input_tokens: 3, output_tokens: 1 },
+      } })}\n\n`)
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {},
+      credential: { accessToken: 'old', accountId: 'account-a', generation: 1 } },
+      refreshCredential: async () => ({ accessToken: 'new', accountId: 'account-b', generation: 2 }),
+    })
+    const message = await client(handle).messages.create(prompt)
+    expect(message.content).toContainEqual({ type: 'text', text: 'OK' })
+    expect(message.usage.input_tokens).toBe(3)
+    expect(seen).toEqual(['account-a', 'account-b'])
+  })
+
+  it('preserves Codex model eligibility errors', async () => {
+    const base = await upstream((_body, _req, res) => json(res, { detail: 'This model is not supported with a ChatGPT account' }, 400))
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', generation: 0 } } })
+    await expect(client(handle).messages.create(prompt)).rejects.toThrow('not supported with a ChatGPT account')
+  })
+
+  it('rejects truncated non-streaming Codex responses', async () => {
+    const base = await upstream((_body, _req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end('event: response.created\ndata: {"type":"response.created","response":{"id":"r"}}\n\n')
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', accountId: 'a', generation: 0 } } })
+    await expect(client(handle).messages.create(prompt)).rejects.toThrow('Provider proxy request failed')
+  })
+
   it('does not refresh quota errors and preserves the error message', async () => {
     let refreshed = false
     const base = await upstream((_body, _req, res) => json(res, { error: { message: 'Quota used' } }, 429))

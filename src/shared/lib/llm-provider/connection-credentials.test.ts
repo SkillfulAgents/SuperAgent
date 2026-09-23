@@ -7,21 +7,22 @@ import { connectionConfigSchema } from './connection-schema'
 
 const state = vi.hoisted(() => ({ db: null as TestDatabase['db'] | null, exchange: vi.fn() }))
 vi.mock('../db', () => ({ get db() { return state.db } }))
+vi.mock('./codex-oauth', () => ({ refreshCodexCredential: state.exchange }))
 vi.mock('./grok-oauth', () => ({ refreshGrokCredential: state.exchange }))
 import { resolveConnectionCredential } from './connection-credentials'
 let handle: TestDatabase
 const expired = { accessToken: 'old', refreshToken: 'refresh-old', expiresAt: 0 }
 const fresh = { accessToken: 'new', refreshToken: 'refresh-new', expiresAt: Date.now() + 3_600_000 }
-async function seed(oauth = expired, id = 'connection') {
-  await handle.db.insert(llmConnections).values({ id, provider: 'grok-subscription', name: 'Grok', config: JSON.stringify(connectionConfigSchema.parse({ oauth })), createdAt: new Date(), updatedAt: new Date() }).run()
+async function seed(oauth = expired, id = 'connection', provider = 'grok-subscription') {
+  await handle.db.insert(llmConnections).values({ id, provider, name: 'Grok', config: JSON.stringify(connectionConfigSchema.parse({ oauth })), createdAt: new Date(), updatedAt: new Date() }).run()
 }
 async function row(id = 'connection') { return handle.db.select().from(llmConnections).where(eq(llmConnections.id, id)).get() }
 beforeEach(async () => { handle = await createTestDatabase(); state.db = handle.db; state.exchange.mockReset().mockResolvedValue(fresh) })
 afterEach(async () => { await handle.close() })
 
 describe('app-owned subscription credentials', () => {
-  it('coalesces concurrent refresh through the database lease and persists the rotated pair', async () => {
-    await seed()
+  it.each(['grok-subscription', 'codex-subscription'])('coalesces %s refresh and persists the rotated pair', async provider => {
+    await seed(expired, 'connection', provider)
     state.exchange.mockImplementation(async () => { await new Promise(resolve => setTimeout(resolve, 25)); return fresh })
     const credentials = await Promise.all(Array.from({ length: 5 }, () => resolveConnectionCredential('connection')))
     expect(state.exchange).toHaveBeenCalledTimes(1)
