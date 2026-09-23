@@ -65,7 +65,7 @@ export function EmailIntegrationSetupForm({ agentSlug, onClose }: IntegrationSet
             : setup.isPending ? 'Loading email domain…' : 'Address preview unavailable. Your domain will be checked when you create the inbox.'}
         </p>
       </div>
-      <EmailAccessFields value={accessLevel} onChange={setAccessLevel} domains={domains} onDomainsChange={setDomains} disabled={create.isPending} />
+      <EmailAccessFields agentSlug={agentSlug} value={accessLevel} onChange={setAccessLevel} domains={domains} onDomainsChange={setDomains} disabled={create.isPending} />
     </form>
   </IntegrationSetupLayout>
 }

@@ -361,7 +361,7 @@ export function useTestAgentIntegrationCredentials() {
 }
 
 /** Provider-supplied links before an account exists; no installation is created. */
-export function useAgentIntegrationSetup(agentSlug: string, provider: string, name?: string) {
+export function useAgentIntegrationSetup(agentSlug: string, provider: string, name?: string, enabled = true) {
   return useQuery({
     queryKey: agentIntegrationKeys.setup(agentSlug, provider, name),
     queryFn: async ({ signal }) => {
@@ -371,6 +371,7 @@ export function useAgentIntegrationSetup(agentSlug: string, provider: string, na
       return integrationSetupMetadataSchema.parse(await response.json())
     },
     staleTime: 60_000,
+    enabled,
   })
 }
 

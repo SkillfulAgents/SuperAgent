@@ -1,4 +1,4 @@
-import { platformConnected, emailSessionAllowed } from './policy'
+import { platformConnected, emailSessionAllowed, agentUserEmails } from './policy'
 import type { IntegrationProvider } from '../agent-integrations/registry'
 import { IntegrationSetupError } from '../agent-integrations/setup-types'
 import { emailConfigSchema, emailConfigPatchSchema, parseEmailConfig } from './config-schema'
@@ -17,7 +17,16 @@ async function setupCall<T>(run: () => Promise<T>): Promise<T> {
 export const platformEmailProvider: IntegrationProvider = {
   definition: emailDefinition,
   policy: { isAllowed: async context => platformConnected() && await emailSessionAllowed(context), sessionPolicy: emailSessionPolicy },
-  setup: { describe(context) { return setupCall(() => describeEmailSetup(context.userId ?? null)) }, async prepare(input, context) { return { config: await setupCall(() => provisionEmail(context.agentSlug, context.userId ?? null, input)) } } },
+  setup: {
+    async describe(context) {
+      const [domain, members] = await Promise.all([
+        setupCall(() => describeEmailSetup(context.userId ?? null)),
+        agentUserEmails(context.agentSlug),
+      ])
+      return { ...domain, agentUserEmails: [...members].sort() }
+    },
+    async prepare(input, context) { return { config: await setupCall(() => provisionEmail(context.agentSlug, context.userId ?? null, input)) } },
+  },
   configuration: {
     identityLabel: 'Inbox', identityPaths: ['$.mailboxId'],
     uniqueKey(input) { const result = emailConfigSchema.safeParse(input); return result.success ? result.data.mailboxId : null },

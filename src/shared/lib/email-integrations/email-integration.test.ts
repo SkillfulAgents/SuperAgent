@@ -4,6 +4,7 @@ import type { AppDatabase } from '../db/drivers/types'
 import { user, agentAcl } from '../db/schema'
 import { createAgentIntegration, getAgentIntegration, updateAgentIntegration, DuplicateIntegrationIdentityError } from '../services/agent-integration-service'
 import { emailConfigSchema, emailMessageSchema, emailSetupSchema, type EmailConfig, type EmailMessage, type EmailSend } from './config-schema'
+import { platformEmailProvider } from './provider'
 import { agentUserEmails, inboundAllowed, recipientAllowed, wasContacted } from './policy'
 import { EmailAgentIntegration, emailDefinition } from './email-agent-integration'
 
@@ -13,6 +14,7 @@ let handle: TestDatabase, testDb: AppDatabase
 const composer = vi.hoisted(() => vi.fn())
 vi.mock('./composition', async original => ({ ...await original<typeof import('./composition')>(), composeEmailReply: composer }))
 const platform = vi.hoisted(() => ({ connected: true, email: 'owner@company.com', auth: false }))
+vi.mock('./setup-preview', () => ({ describeEmailSetup: async () => ({ emailDomain: 'company.ongamut.so' }) }))
 vi.mock('../db', () => ({ get db() { return testDb } }))
 vi.mock('../auth/mode', () => ({ isAuthMode: () => platform.auth }))
 vi.mock('../services/platform-auth-service', () => ({ getPlatformAccessToken: () => platform.connected ? 'test-token' : null, getPlatformAuthStatus: () => ({ email: platform.email }) }))
@@ -91,6 +93,9 @@ describe('email access levels', () => {
     expect(inboundAllowed(open, message({ from: 'outside@example.net', authentication: null }), members, false)).toBe(true)
     expect(inboundAllowed(open, message({ status: 'automated' }), members, false)).toBe(false)
   })
+  it('previews the actual connected account as the permitted address in non-auth mode', async () => {
+    expect(await platformEmailProvider.setup!.describe!({ agentSlug: 'agent-a', callbackUrl: '' })).toMatchObject({ agentUserEmails: ['owner@company.com'] })
+  })
   it('reads current verified agent ACL members and deployment admins only', async () => {
     platform.auth = true
     for (const [id, role, verified, banned] of [['owner', null, true, false], ['viewer', null, true, false], ['admin', 'admin', true, false], ['unverified', 'admin', false, false], ['banned', 'admin', true, true]] as const) {
@@ -98,6 +103,7 @@ describe('email access levels', () => {
     }
     await testDb.insert(agentAcl).values([{ id: 'acl-1', agentSlug: 'agent-a', userId: 'owner', role: 'owner', createdAt: new Date() }, { id: 'acl-2', agentSlug: 'agent-a', userId: 'viewer', role: 'viewer', createdAt: new Date() }]).run()
     expect(await agentUserEmails('agent-a')).toEqual(new Set(['owner@company.com', 'admin@company.com']))
+    expect(await platformEmailProvider.setup!.describe!({ agentSlug: 'agent-a', callbackUrl: '' })).toMatchObject({ agentUserEmails: ['admin@company.com', 'owner@company.com'] })
   })
 })
 
