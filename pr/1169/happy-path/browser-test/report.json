@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the browser-use feature correctly allows agents to open a browser, navigate to a URL, retrieve the page title, and report back with the accurate result.",
+  "steps": [
+    "Navigated to http://localhost:47891 — The Gamut app home page loaded successfully showing \"Your Agents\" view with available agents listed in the sidebar.",
+    "Found and clicked the \"QA-20260923-005629-gijf\" agent in the sidebar — The agent page opened successfully with the chat interface ready for input.",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — The message was submitted successfully and a new session \"Browser Title Lookup Task\" was created with status \"working\".",
+    "Waited for agent response (up to 3 minutes) — The agent completed the task in approximately 10 seconds, using 3 tool calls and 147,944 tokens.",
+    "Verified response mentions \"Example Domain\" — The agent's response correctly states: \"The page title of https://example.com is \"Example Domain\". I've closed the browser.\" The response explicitly mentions \"Example Domain\" as required."
+  ],
+  "bugs": [],
+  "durationMs": 60816,
+  "sessionId": "1b7fc9b9-6b16-4e47-abc8-8e1b1fa5174d",
+  "cost": {
+    "inputTokens": 360,
+    "outputTokens": 10516,
+    "cacheCreationTokens": 70385,
+    "cacheReadTokens": 1002787,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.2412
+  }
+}
