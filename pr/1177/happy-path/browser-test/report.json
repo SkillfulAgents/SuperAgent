@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified browser-use feature: agent successfully opens browser, navigates to URL, retrieves page title, and displays live preview panel with tool call cards",
+  "steps": [
+    "Navigate to http://localhost:47891 — Application loaded successfully at homepage showing sidebar with \"Your Agents\" section containing two agents including \"QA-20260923-222503-v2ic\"",
+    "Click agent \"QA-20260923-222503-v2ic\" in sidebar — Agent opened successfully, URL changed to /agents/qa-20260923-222503-v2ic-ma5x76tt12, chat interface loaded with message input box and idle status",
+    "Send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message submitted successfully, new session created titled \"Browser Page Title Retrieval Session\", agent status changed to \"working\"",
+    "Wait for response up to 3 minutes — Response received in 6 seconds, agent completed work with 2 tool calls and 111,902 tokens used",
+    "Verify response mentions \"Example Domain\" — Response text displayed: \"I opened https://example.com in the browser, and the page title is **'Example Domain'**. The browser is still open if you want to do anything else there.\" ✓ Contains \"Example Domain\"",
+    "Observe live browser preview panel — Live browser preview panel appeared below chat showing URL https://example.com/, page title \"Example Domain\", navigation buttons, browser agent actions section with auto-follow toggle, and \"Open Browser https://example.com\" tool call card displaying the browser activity"
+  ],
+  "bugs": [],
+  "durationMs": 99134,
+  "sessionId": "8783c66d-5b38-434c-9241-ec2e61313b46",
+  "cost": {
+    "inputTokens": 50,
+    "outputTokens": 3044,
+    "cacheCreationTokens": 21556,
+    "cacheReadTokens": 86444,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.050859
+  }
+}
