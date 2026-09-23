@@ -1,15 +1,15 @@
 import { isProviderEnvVar } from './provider-env'
-import { getSettings, getEffectiveModels } from '../config/settings'
+import { getSettings, getEffectiveModels, type ApiKeySettings } from '../config/settings'
 import { getLlmProvider, resolveModelForProvider } from './index'
 import type { LlmProviderId } from './provider-types'
 import { connectionModelOverridesSchema, normalizeConnectionModelOverrides } from './connection-schema'
 import { mergeCatalog } from './catalog-merge'
-import { connectionConfigSchema, resolveSelection, type ConnectionConfig } from './connection-schema'
+import { connectionConfigSchema, resolveSelection } from './connection-schema'
 
 export const legacyLlmProviderId = (provider: LlmProviderId) => `legacy-${provider}`
-export const providerCredentialFields: Record<LlmProviderId, (keyof ConnectionConfig['apiKeys'])[]> = {
+export const providerCredentialFields: Record<LlmProviderId, (keyof ApiKeySettings)[]> = {
   anthropic: ['anthropicApiKey'],
-  'claude-subscription': ['claudeSubscriptionToken'],
+  'claude-subscription': [],
   openrouter: ['openrouterApiKey'],
   generic: ['genericApiKey', 'genericBaseUrl'],
   bedrock: ['bedrockApiKey', 'bedrockAccessKeyId', 'bedrockSecretAccessKey', 'bedrockRegion'],

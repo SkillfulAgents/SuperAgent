@@ -44,7 +44,10 @@ export class ClaudeSubscriptionLlmProvider extends BaseLlmProvider {
   }
 
   protected override parseErrorResponseOverride(status: number | undefined, body: unknown): ProviderErrorPresentation | null {
-    if (status === 401 || /token.*(?:expired|revoked|invalid)|(?:expired|revoked|invalid).*token|authentication_error/i.test(extractErrorMessage(body))) {
+    const error = body && typeof body === 'object' && 'error' in body ? body.error : body
+    const authenticationError = error && typeof error === 'object' && 'type' in error && error.type === 'authentication_error'
+    const expiredToken = /\btoken\s+(?:(?:has been|has|is|was)\s+)?(?:expired|revoked)\b|\b(?:expired|revoked)\s+(?:(?:oauth|access|refresh)\s+)?token\b|\bauthentication_error\b/i.test(extractErrorMessage(body))
+    if (status === 401 || authenticationError || expiredToken) {
       return { severity: 'error', icon: 'info', message: `**Claude Subscription sign-in expired or invalid.** ${CLAUDE_SUBSCRIPTION_RECONNECT}` }
     }
     return null

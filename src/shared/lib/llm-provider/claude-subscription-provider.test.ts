@@ -31,11 +31,28 @@ describe('Claude Subscription', () => {
     expect(await provider.validateKey()).toMatchObject({ valid: false, error: expect.stringContaining('agent message') })
   })
 
-  it('makes expired/revoked tokens actionable without mislabeling quota or permission errors', () => {
+  it.each<[number | undefined, unknown]>([
+    [401, 'Unauthorized'],
+    [undefined, { error: { type: 'authentication_error', message: 'Unauthorized' } }],
+    [undefined, { type: 'authentication_error', message: 'Unauthorized' }],
+    [undefined, 'authentication_error: Unauthorized'],
+    [undefined, 'OAuth token has expired'],
+    [undefined, 'Access token has been revoked'],
+    [undefined, 'Expired OAuth token'],
+  ])('makes authentication failures actionable (%s, %j)', (status, body) => {
     const provider = new ClaudeSubscriptionLlmProvider()
-    expect(provider.presentationForTurnError(401, 'Unauthorized', 'authentication_failed')?.message).toContain('claude setup-token')
-    expect(provider.presentationForTurnError(undefined, 'OAuth token has expired', 'unknown')?.message).toContain('replace the token')
-    expect(provider.presentationForTurnError(429, 'Quota exhausted', 'rate_limit')?.message).not.toContain('sign-in expired')
-    expect(provider.presentationForTurnError(403, 'Model not permitted', 'unknown')).toBeNull()
+    expect(provider.presentationForTurnError(status, body, 'unknown')?.message).toContain('claude setup-token')
+  })
+
+  it.each<[number | undefined, unknown]>([
+    [400, 'Invalid value for max_tokens'],
+    [400, { error: { type: 'invalid_request_error', message: 'budget_tokens: invalid value' } }],
+    [400, 'Invalid token budget'],
+    [400, 'max_tokens exceeds the limit; this value is invalid'],
+    [429, 'Quota exhausted'],
+    [403, 'Model not permitted'],
+  ])('does not mislabel ordinary errors as expired credentials (%s, %j)', (status, body) => {
+    const provider = new ClaudeSubscriptionLlmProvider()
+    expect(provider.presentationForTurnError(status, body, 'unknown')).toBeNull()
   })
 })

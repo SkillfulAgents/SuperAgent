@@ -49,8 +49,6 @@ export interface ContainerSettings {
 
 export interface ApiKeySettings {
   anthropicApiKey?: string
-  /** Stored only in an LLM connection, never in legacy app settings. */
-  claudeSubscriptionToken?: string
   openrouterApiKey?: string
   /** Generic (custom baseURL) provider key, sent as ANTHROPIC_AUTH_TOKEN. */
   genericApiKey?: string
