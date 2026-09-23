@@ -1,5 +1,5 @@
 import { chatProviderSetup } from './setup'
-import { chatIntegrationAccess, chatIntegrationSessions, slackThreadState } from '../db/schema'
+import { chatIntegrationAccess, chatIntegrationSessions } from '../db/schema'
 import { z, type ZodType } from 'zod'
 import type { IntegrationProvider } from '../agent-integrations/registry'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
@@ -34,7 +34,7 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
     definition: chatDefinitions[provider],
     policy: chatIntegrationPolicy,
     setup: chatProviderSetup(provider, schema),
-    storage: () => [chatIntegrationAccess, chatIntegrationSessions, ...(provider === 'slack' ? [slackThreadState] : [])],
+    storage: () => [chatIntegrationAccess, chatIntegrationSessions],
     serialize: record => toPublicChatIntegration(record as ChatIntegration),
     configuration: {
       identityLabel: provider === 'imessage' ? 'Phone number' : 'Bot token',

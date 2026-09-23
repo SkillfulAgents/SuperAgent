@@ -1,3 +1,4 @@
+import { readIntegrationState, writeIntegrationState, replaceIntegrationState, deleteIntegrationState } from '../agent-integrations/state-store'
 import { emailSessionPolicy } from './definitions'
 export { emailDefinition } from './definitions'
 import { composeEmailReply } from './composition'
@@ -14,7 +15,7 @@ import { sanitizeUploadFilename } from '../utils/path-safety'
 import { appendAttachedFiles } from '../utils/attached-files'
 import { emailReplyJobSchema, type EmailReplyJob, parseEmailIntegrationConfig, emailMessageSchema, emailSendSchema, emailThreadStateSchema, type EmailMessage, type EmailSend } from './config-schema'
 import { EmailPolicyError, emailSessionAllowed, agentUserEmails, emailAddress, inboundAllowed, recipientAllowed, wasContacted } from './policy'
-import { deleteEmailState, pendingEmailReplies, readEmailState, replaceEmailState, writeEmailState } from './state'
+import { pendingEmailReplies } from './state'
 
 /** Provider-independent thread routing, admission, input framing and final-only delivery. */
 export abstract class EmailAgentIntegration extends AgentIntegration {
@@ -39,7 +40,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     // Held messages must not become discoverable through a directory listing.
     for (const thread of history.threads) {
       for (let i = thread.length - 1; i >= 0; i--) {
-        if (await readEmailState(current.id, `screen:${thread[i].id}`, z.string()) === 'held') thread.splice(i, 1)
+        if (await readIntegrationState(current.id, `screen:${thread[i].id}`, z.string()) === 'held') thread.splice(i, 1)
       }
     }
     return emailDirectory(config, members, workspace, history)
@@ -54,13 +55,13 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     return run
   }
   private async processReplyJob(key: string) {
-    const job = await readEmailState(this.record.id, key, emailReplyJobSchema)
+    const job = await readIntegrationState(this.record.id, key, emailReplyJobSchema)
     if (!job) return
     const current = await getAgentIntegration(this.record.id)
     if (!current || current.status !== 'active' || !this.isAvailable()) return
     const deliveryKey = key.slice('reply-job:'.length)
-    if (await readEmailState(this.record.id, `delivered:${deliveryKey}`, z.boolean())) {
-      await deleteEmailState(this.record.id, key)
+    if (await readIntegrationState(this.record.id, `delivered:${deliveryKey}`, z.boolean())) {
+      await deleteIntegrationState(this.record.id, key)
       return
     }
     try {
@@ -70,23 +71,23 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
         job.draft = job.parts.some(part => part.trim())
           ? await composeEmailReply(parent, history, job.parts, job.attachmentIds.length)
           : { action: 'send', text: 'Please find the attached files.' }
-        await writeEmailState(this.record.id, key, emailReplyJobSchema, job)
+        await writeIntegrationState(this.record.id, key, emailReplyJobSchema, job, { availableAt: job.retryAfter })
       }
       if (job.draft.action === 'send') {
         await this.send({ text: job.draft.text, attachmentIds: job.attachmentIds, replyToMessageId: job.parentId, idempotencyKey: deliveryKey })
       }
-      await writeEmailState(this.record.id, `delivered:${deliveryKey}`, z.boolean(), true)
-      await deleteEmailState(this.record.id, key)
+      await writeIntegrationState(this.record.id, `delivered:${deliveryKey}`, z.boolean(), true)
+      await deleteIntegrationState(this.record.id, key)
     } catch (error) {
       job.attempts++
       job.retryAfter = Date.now() + Math.min(900000, 30000 * 2 ** Math.min(job.attempts - 1, 5))
-      await writeEmailState(this.record.id, key, emailReplyJobSchema, job)
+      await writeIntegrationState(this.record.id, key, emailReplyJobSchema, job, { availableAt: job.retryAfter })
       throw error
     }
   }
   protected async retryReplies() {
     for (const { key } of await pendingEmailReplies(this.record.id)) {
-      const job = await readEmailState(this.record.id, key, emailReplyJobSchema)
+      const job = await readIntegrationState(this.record.id, key, emailReplyJobSchema)
       if (!job || job.retryAfter > Date.now()) continue
       try { await this.processReply(key) }
       catch (error) { captureException(error, { tags: { component: 'email-integration', operation: 'reply-retry' } }) }
@@ -110,31 +111,31 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     if (!allowed) return false
     const knownSender = message.authentication?.dmarc === 'pass' && (contacted || members.has(emailAddress(message.from) ?? ''))
     if (config.accessLevel === 'anyone' && !knownSender) {
-      const reviewed = await readEmailState(current.id, `screen:${message.id}`, z.enum(['allowed', 'held', 'approved']))
+      const reviewed = await readIntegrationState(current.id, `screen:${message.id}`, z.enum(['allowed', 'held', 'approved']))
       if (!reviewed) {
         const safe = screenUnsolicitedEmail(message)
-        await writeEmailState(current.id, `screen:${message.id}`, z.enum(['allowed', 'held', 'approved']), safe ? 'allowed' : 'held')
+        await writeIntegrationState(current.id, `screen:${message.id}`, z.enum(['allowed', 'held', 'approved']), safe ? 'allowed' : 'held')
         if (!safe) {
-          await writeEmailState(current.id, `held:${message.id}`, emailMessageSchema, message)
+          await writeIntegrationState(current.id, `held:${message.id}`, emailMessageSchema, message)
           return false
         }
       } else if (reviewed === 'held') return false
     }
-    await writeEmailState(current.id, `thread:${context.externalId}`, emailThreadStateSchema, { message, contacted })
-    await writeEmailState(current.id, `accepted:${message.id}`, z.boolean(), true)
+    await writeIntegrationState(current.id, `thread:${context.externalId}`, emailThreadStateSchema, { message, contacted })
+    await writeIntegrationState(current.id, `accepted:${message.id}`, z.boolean(), true)
     return true
   }
   async releaseHeld(messageId: string): Promise<void> {
-    const reviewed = await readEmailState(this.record.id, `screen:${messageId}`, z.string())
+    const reviewed = await readIntegrationState(this.record.id, `screen:${messageId}`, z.string())
     if (reviewed !== 'held') return
-    const message = await readEmailState(this.record.id, `held:${messageId}`, emailMessageSchema)
+    const message = await readIntegrationState(this.record.id, `held:${messageId}`, emailMessageSchema)
     if (!message) throw new Error('Held email not found')
-    if (!await replaceEmailState(this.record.id, `screen:${message.id}`, 'held', 'approved')) return
+    if (!await replaceIntegrationState(this.record.id, `screen:${message.id}`, z.enum(['held', 'approved']), 'held', 'approved')) return
     try {
       await this.emitEvent({ type: 'input', id: `review:${message.id}`, externalId: message.threadId, timestamp: new Date(message.createdAt), payload: message })
-      await deleteEmailState(this.record.id, `held:${message.id}`)
+      await deleteIntegrationState(this.record.id, `held:${message.id}`)
     } catch (error) {
-      await replaceEmailState(this.record.id, `screen:${message.id}`, 'approved', 'held')
+      await replaceIntegrationState(this.record.id, `screen:${message.id}`, z.enum(['held', 'approved']), 'approved', 'held')
       throw error
     }
   }
@@ -235,21 +236,21 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     if (output.type !== 'turn-completed' && output.type !== 'message') return
     const turn = output.type === 'message' ? { parts: [output.text], attachments: [] } : this.turns.get(this.turnKey(context))
     if (!turn || (!turn.parts.some(part => part.trim()) && !turn.attachments.length)) return
-    const state = await readEmailState(this.record.id, `thread:${context.externalId}`, emailThreadStateSchema)
+    const state = await readIntegrationState(this.record.id, `thread:${context.externalId}`, emailThreadStateSchema)
     const parentId = context.replyTarget?.messageId ?? state?.message.id
     if (!parentId) return
     const parts = turn.parts.filter(part => part.trim())
     const hash = createHash('sha256').update(JSON.stringify([this.record.id, context.sessionId, parentId, parts, turn.attachments])).digest('hex')
-    if (await readEmailState(this.record.id, `delivered:${hash}`, z.boolean())) {
+    if (await readIntegrationState(this.record.id, `delivered:${hash}`, z.boolean())) {
       this.turns.delete(this.turnKey(context))
       return
     }
     const key = `reply-job:${hash}`
-    if (!await readEmailState(this.record.id, key, emailReplyJobSchema)) {
+    if (!await readIntegrationState(this.record.id, key, emailReplyJobSchema)) {
       const job: EmailReplyJob = { parentId, sessionId: context.sessionId, parts, attachmentIds: turn.attachments, attempts: 0, retryAfter: 0,
         // Questions and host notices are already deliberate recipient-facing text.
         ...(output.type === 'message' ? { draft: { action: 'send', text: output.text } as const } : {}) }
-      await writeEmailState(this.record.id, key, emailReplyJobSchema, job)
+      await writeIntegrationState(this.record.id, key, emailReplyJobSchema, job, { availableAt: job.retryAfter })
     }
     // Snapshot is durable before the asynchronous model/gateway calls. New output
     // belongs to the next response and cannot be erased when this send finishes.

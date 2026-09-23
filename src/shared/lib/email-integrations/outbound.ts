@@ -1,10 +1,11 @@
+import { readIntegrationState, writeIntegrationState } from '../agent-integrations/state-store'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { agentRegistry } from '../agent-actor'
 import type { AgentIntegrationRecord, IntegrationTool } from '../agent-integrations/types'
 import { parseEmailConfig, emailMessageSchema, emailSendSchema } from './config-schema'
 import { clientFor } from './gateway-client'
-import { readEmailState, writeEmailState } from './state'
+
 import { sanitizeUploadFilename } from '../utils/path-safety'
 export const emailToolSchema = z.object({
   to: z.array(z.string().email()).optional(), cc: z.array(z.string().email()).default([]), bcc: z.array(z.string().email()).default([]),
@@ -20,7 +21,7 @@ export async function sendToolEmail(record: AgentIntegrationRecord, input: z.inf
   const previous = pending.get(lock) ?? Promise.resolve()
   const run = previous.catch(() => {}).then(async () => {
     const hash = createHash('sha256').update(JSON.stringify({ input, text })).digest('hex')
-    const saved = await readEmailState(record.id, key, intentSchema)
+    const saved = await readIntegrationState(record.id, key, intentSchema)
     if (saved && saved.hash !== hash) throw new Error('Email idempotency key already used with different content')
     let send = saved?.input
     if (!send) {
@@ -37,7 +38,7 @@ export async function sendToolEmail(record: AgentIntegrationRecord, input: z.inf
         attachmentIds.push(z.object({ id: z.string().uuid() }).parse(await response.json()).id)
       }
       send = emailSendSchema.parse({ to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject, text, replyToMessageId: input.reply_to_message_id, replyAll: input.reply_all, attachmentIds, idempotencyKey: input.idempotency_key })
-      await writeEmailState(record.id, key, intentSchema, { hash, input: send })
+      await writeIntegrationState(record.id, key, intentSchema, { hash, input: send })
     }
     return emailMessageSchema.parse(await tool.execute(send))
   })

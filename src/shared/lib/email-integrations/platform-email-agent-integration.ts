@@ -1,3 +1,4 @@
+import { readIntegrationState, writeIntegrationState } from '../agent-integrations/state-store'
 import { EMAIL_HISTORY_THREAD_LIMIT } from './directory'
 import { captureException } from '../error-reporting'
 import { createHash } from 'node:crypto'
@@ -7,7 +8,7 @@ import { z } from 'zod'
 import { EmailAgentIntegration, emailDefinition } from './email-agent-integration'
 import { parseEmailConfig, emailMessageSchema, emailThreadStateSchema, type EmailSend } from './config-schema'
 import { clientFor, emailEventsSchema, mailboxSchema } from './gateway-client'
-import { emailThreadRoute, readEmailState, writeEmailState } from './state'
+import { emailThreadRoute } from './state'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 
 /** Standalone gateway transport; credentials are resolved from Platform for each request. */
@@ -56,7 +57,7 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
         .catch(error => { captureException(error, { tags: { component: 'email-integration', operation: 'reply-recovery' } }) })
         .finally(() => { this.replyRetries = undefined })
     }
-    let cursor = await readEmailState(this.record.id, 'cursor', z.number()) ?? 0
+    let cursor = await readIntegrationState(this.record.id, 'cursor', z.number()) ?? 0
     for (let page = 0; page < 10 && !this.stopped; page++) {
       const result = await this.client.json(`/events?mailboxIds=${this.config.mailboxId}&after=${cursor}&limit=100`, emailEventsSchema)
       for (const event of result.data) {
@@ -65,19 +66,19 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
           const merge = z.object({ fromThreadId: z.string(), toThreadId: z.string() }).parse(event.data)
           const oldRoute = await this.threadRoute(merge.fromThreadId)
           const newRoute = await this.threadRoute(merge.toThreadId)
-          const oldState = await readEmailState(this.record.id, `thread:${oldRoute}`, emailThreadStateSchema)
-          const newState = await readEmailState(this.record.id, `thread:${newRoute}`, emailThreadStateSchema)
+          const oldState = await readIntegrationState(this.record.id, `thread:${oldRoute}`, emailThreadStateSchema)
+          const newState = await readIntegrationState(this.record.id, `thread:${newRoute}`, emailThreadStateSchema)
           // Keep an existing inbound session when the canonical thread has no session yet.
-          if (oldState && !newState && oldRoute !== newRoute) await writeEmailState(this.record.id, `route:${merge.toThreadId}`, z.string(), oldRoute)
+          if (oldState && !newState && oldRoute !== newRoute) await writeIntegrationState(this.record.id, `route:${merge.toThreadId}`, z.string(), oldRoute)
         }
-        const replay = event.type === 'thread.reconciled' && event.messageId && !await readEmailState(this.record.id, `accepted:${event.messageId}`, z.boolean())
+        const replay = event.type === 'thread.reconciled' && event.messageId && !await readIntegrationState(this.record.id, `accepted:${event.messageId}`, z.boolean())
         if ((event.type === 'message.received' || replay) && event.messageId) {
           const message = await this.getMessage(event.messageId)
           if (this.stopped) return
           await this.emitEvent({ type: 'input', id: replay ? `reconciled:${message.id}` : message.id, externalId: await this.threadRoute(message.threadId), timestamp: new Date(message.createdAt), payload: message })
         }
         // The shared manager durably accepts input before this provider advances its cursor.
-        await writeEmailState(this.record.id, 'cursor', z.number(), event.cursor)
+        await writeIntegrationState(this.record.id, 'cursor', z.number(), event.cursor)
         cursor = event.cursor
       }
       if (!result.hasMore) return
@@ -117,11 +118,11 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
   protected async uploadAttachment(data: Buffer, filename: string) {
     if (data.length > 5 * 1024 * 1024) throw new Error('Attachment exceeds 5 MiB')
     const key = `upload:${createHash('sha256').update(filename).update(data).digest('hex')}`
-    const existing = await readEmailState(this.record.id, key, z.string())
+    const existing = await readIntegrationState(this.record.id, key, z.string())
     if (existing) return existing
     const response = await this.client.request(`${this.base}/attachments`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': filename.replace(/[^\x20-\x7e]/g, '_') }, body: new Uint8Array(data) })
     const id = z.object({ id: z.string().uuid() }).parse(await response.json()).id
-    await writeEmailState(this.record.id, key, z.string(), id)
+    await writeIntegrationState(this.record.id, key, z.string(), id)
     return id
   }
 }

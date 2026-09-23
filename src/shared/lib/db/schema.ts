@@ -724,16 +724,6 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   integrationIdIdx: index('chat_integration_sessions_integration_id_idx').on(table.integrationId),
 }))
 
-// Slack participation is independent of session routing: multiple threads can
-// share one channel session. Keep the bounded, least-recently-used thread list
-// across connector recreation, scoped to the installation and bot identity.
-export const slackThreadState = sqliteTable('slack_thread_state', {
-  integrationId: text('integration_id').primaryKey()
-    .references(() => chatIntegrations.id, { onDelete: 'cascade' }),
-  botUserId: text('bot_user_id').notNull(),
-  activeThreads: text('active_threads', { mode: 'json' }).$type<string[]>().notNull(),
-})
-
 export const chatIntegrationAccess = sqliteTable('chat_integration_access', {
   id: text('id').primaryKey(),
   integrationId: text('integration_id').notNull()
@@ -828,9 +818,13 @@ export type NewChatIntegrationAccess = typeof chatIntegrationAccess.$inferInsert
 export type AuditLogEntry = typeof auditLog.$inferSelect
 export type NewAuditLogEntry = typeof auditLog.$inferInsert
 
-// Durable email cursor, policy, review and send state owned by the email provider.
-export const emailIntegrationState = sqliteTable('email_integration_state', {
+// Opaque provider state owned by the integration framework, scoped to an installation.
+export const integrationState = sqliteTable('integration_state', {
   integrationId: text('integration_id').notNull().references(() => chatIntegrations.id, { onDelete: 'cascade' }),
   key: text('key').notNull(),
   value: text('value').notNull(),
-}, table => ({ pk: primaryKey({ columns: [table.integrationId, table.key] }) }))
+  availableAt: integer('available_at'),
+}, table => ({
+  pk: primaryKey({ columns: [table.integrationId, table.key] }),
+  due: index('integration_state_due_idx').on(table.integrationId, table.availableAt),
+}))

@@ -1,3 +1,4 @@
+import { readIntegrationState, writeIntegrationState } from '../agent-integrations/state-store'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
@@ -6,7 +7,7 @@ import { createAgentIntegration, getAgentIntegration, updateAgentIntegration, Du
 import { emailConfigSchema, emailMessageSchema, emailSetupSchema, type EmailConfig, type EmailMessage, type EmailSend } from './config-schema'
 import { agentUserEmails, inboundAllowed, recipientAllowed, wasContacted } from './policy'
 import { EmailAgentIntegration, emailDefinition } from './email-agent-integration'
-import { readEmailState, writeEmailState } from './state'
+
 import { screenUnsolicitedEmail } from './screening'
 import { toPublicAgentIntegration } from '../agent-integrations/serialization'
 import type { AgentIntegrationRecord, IntegrationInputEvent } from '../agent-integrations/types'
@@ -176,14 +177,14 @@ describe('email lifecycle and delivery', () => {
     })
     await connector.deliver(context, { type: 'message', text: 'First answer' })
     const { emailThreadStateSchema } = await import('./config-schema')
-    expect((await readEmailState(record.id, 'thread:thread-1', emailThreadStateSchema))?.message.id).toBe(next.id)
+    expect((await readIntegrationState(record.id, 'thread:thread-1', emailThreadStateSchema))?.message.id).toBe(next.id)
   })
   it('held release cleans the review list and restores its verdict after a failed handoff', async () => {
     const { heldEmails } = await import('./review')
     const { z } = await import('zod')
     const mail = message()
-    await writeEmailState(record.id, `held:${mail.id}`, emailMessageSchema, mail)
-    await writeEmailState(record.id, `screen:${mail.id}`, z.string(), 'held')
+    await writeIntegrationState(record.id, `held:${mail.id}`, emailMessageSchema, mail)
+    await writeIntegrationState(record.id, `screen:${mail.id}`, z.string(), 'held')
     const remove = connector.onEvent(() => { throw new Error('handoff failed') })
     await expect(connector.releaseHeld(mail.id)).rejects.toThrow('handoff failed')
     expect(await heldEmails(record.id)).toHaveLength(1)
@@ -326,7 +327,7 @@ describe('email discovery', () => {
     await updateAgentIntegration(record.id, { config: { accessLevel: 'anyone' } })
     connector.history = [message({ from: 'stranger@example.net' })]
     const { z } = await import('zod')
-    await writeEmailState(record.id, `screen:${connector.history[0].id}`, z.string(), 'held')
+    await writeIntegrationState(record.id, `screen:${connector.history[0].id}`, z.string(), 'held')
     expect((await list('list_users')).items).toEqual([])
     expect((await list('list_channels')).items).toEqual([])
   })

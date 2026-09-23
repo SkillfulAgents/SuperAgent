@@ -34,3 +34,6 @@ src/shared/lib/agent-integrations/agent-integration-delivery.test.ts
 src/shared/lib/email-integrations/email-integration.test.ts
 src/shared/lib/email-integrations/transport.test.ts
 src/api/routes/email-integrations.test.ts
+src/shared/lib/agent-integrations/state-store.test.ts
+src/shared/lib/chat-integrations/slack-thread-state.test.ts
+src/shared/lib/db/migrations/integration-state.test.ts

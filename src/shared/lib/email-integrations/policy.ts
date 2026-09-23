@@ -1,6 +1,7 @@
+import { readIntegrationState } from '../agent-integrations/state-store'
 import type { IntegrationSessionContext } from '../agent-integrations/types'
 import { getAgentIntegration } from '../services/agent-integration-service'
-import { readEmailState } from './state'
+
 import { emailThreadStateSchema, parseEmailIntegrationConfig } from './config-schema'
 import { and, eq, inArray, or, isNull } from 'drizzle-orm'
 import { db } from '../db'
@@ -57,7 +58,7 @@ export class EmailPolicyError extends Error {
 export async function emailSessionAllowed(context: IntegrationSessionContext): Promise<boolean> {
   const record = await getAgentIntegration(context.integration.id)
   if (!record || record.status !== 'active') return false
-  const state = await readEmailState(record.id, `thread:${context.externalId}`, emailThreadStateSchema)
+  const state = await readIntegrationState(record.id, `thread:${context.externalId}`, emailThreadStateSchema)
   if (!state) return false
   const config = parseEmailIntegrationConfig(record.config)
   const members = await agentUserEmails(record.agentSlug)
