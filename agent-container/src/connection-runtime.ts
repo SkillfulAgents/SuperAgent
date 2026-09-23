@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
+import { llmProxyConfigSchema } from './llm-proxy-schema'
 import { subagentModelCatalogSchema, modelContextWindowsSchema } from './subagent-model-catalog'
 
 export const connectionRuntimeSchema = z.object({
@@ -13,6 +14,7 @@ export const connectionRuntimeSchema = z.object({
   subagentModels: subagentModelCatalogSchema,
   modelContextWindows: modelContextWindowsSchema,
   env: z.record(z.string(), z.string()),
+  proxy: llmProxyConfigSchema.optional(),
 })
 export type ConnectionRuntime = z.infer<typeof connectionRuntimeSchema>
 
@@ -31,7 +33,8 @@ export function rememberConnectionRuntime(runtime: ConnectionRuntime): void {
     if (
       cached.llmProviderId === runtime.llmProviderId &&
       (cached.generation !== runtime.generation ||
-        JSON.stringify(cached.env) !== JSON.stringify(runtime.env))
+        JSON.stringify(cached.env) !== JSON.stringify(runtime.env) ||
+        JSON.stringify(cached.proxy) !== JSON.stringify(runtime.proxy))
     )
       runtimes.delete(key)
   }
@@ -51,8 +54,8 @@ export function cachedConnectionRuntime(
     ? runtime
     : undefined
 }
-export async function resolveSessionRuntime(sessionId: string): Promise<ConnectionRuntime> {
-  return requestRuntime('resolve', { sessionId })
+export async function resolveSessionRuntime(sessionId: string, credentialRequest?: { llmProviderId: string; rejectedGeneration?: number }): Promise<ConnectionRuntime> {
+  return requestRuntime('resolve', { sessionId, ...credentialRequest })
 }
 
 export async function resolvePrewarmRuntime(): Promise<ConnectionRuntime> {
