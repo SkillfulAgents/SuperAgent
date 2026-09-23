@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react'
+import { Copy } from 'lucide-react'
+import { toast } from 'sonner'
+import { copyTextToClipboard } from '@renderer/lib/clipboard'
 import { Button } from '@renderer/components/ui/button'
 import { apiFetch } from '@renderer/lib/api'
 
@@ -53,7 +56,16 @@ export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, ac
     {provider === 'codex' && <p className="text-muted-foreground">App defaults using this provider need a separate API-capable summarizer.</p>}
     {accountLabel && <p>Signed in as <strong>{accountLabel}</strong></p>}
     {login && <div className="space-y-2">
-      <p>Code: <strong className="font-mono select-all">{login.code}</strong></p>
+      <div className="flex items-center gap-1">
+        <p>Code: <strong className="font-mono select-all">{login.code}</strong></p>
+        <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label="Copy sign-in code" title="Copy sign-in code" onClick={() => {
+          void copyTextToClipboard(login.code)
+            .then(() => toast.success('Sign-in code copied'))
+            .catch(() => toast.error('Could not copy code. Select and copy it manually.'))
+        }}>
+          <Copy className="h-3.5 w-3.5" />
+        </Button>
+      </div>
       <a className="underline" href={login.url} target="_blank" rel="noreferrer">Open {name} sign-in</a>
       <p className="text-muted-foreground">Waiting for sign-in…</p>
     </div>}
