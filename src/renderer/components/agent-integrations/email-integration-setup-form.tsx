@@ -4,7 +4,7 @@ import { Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { useCreateAgentIntegration } from '@renderer/hooks/use-agent-integrations'
+import { useAgentIntegrationSetup, useCreateAgentIntegration } from '@renderer/hooks/use-agent-integrations'
 import { emailSetupSchema, type EmailAccessLevel } from '@shared/lib/email-integrations/config-schema'
 import { EmailAccessFields, parseEmailDomains } from './email-access-fields'
 import { IntegrationSetupLayout, IntegrationSetupField, IntegrationSetupFeedback } from './integration-setup-layout'
@@ -12,6 +12,8 @@ import type { IntegrationSetupProps } from './setup-types'
 
 export function EmailIntegrationSetupForm({ agentSlug, onClose }: IntegrationSetupProps) {
   const formId = useId()
+  const previewId = useId()
+  const setup = useAgentIntegrationSetup(agentSlug, 'platform-email')
   const { data: agent } = useAgent(agentSlug)
   const { data: platform } = usePlatformAuthStatus()
   const [localPart, setLocalPart] = useState(() => (agent?.name ?? agentSlug).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64))
@@ -55,7 +57,14 @@ export function EmailIntegrationSetupForm({ agentSlug, onClose }: IntegrationSet
       } catch (err) { setError(err instanceof Error ? err.message : 'Could not create inbox') }
     }}>
       <IntegrationSetupField id="email-name" label="Sender name" value={displayName} onChange={event => setDisplayName(event.target.value)} required maxLength={200} disabled={create.isPending} />
-      <IntegrationSetupField id="email-slug" label="Inbox name" value={localPart} onChange={event => setLocalPart(event.target.value)} required maxLength={64} disabled={create.isPending} />
+      <div className="space-y-1.5">
+        <IntegrationSetupField aria-describedby={previewId} id="email-slug" label="Inbox name" value={localPart} onChange={event => setLocalPart(event.target.value)} required maxLength={64} disabled={create.isPending} />
+        <p id={previewId} className="text-xs text-muted-foreground break-all" aria-live="polite">
+          {setup.data?.emailDomain
+            ? localPart.trim() ? `${localPart.trim().toLowerCase()}@${setup.data.emailDomain}` : `Choose an inbox name at @${setup.data.emailDomain}`
+            : setup.isPending ? 'Loading email domain…' : 'Address preview unavailable. Your domain will be checked when you create the inbox.'}
+        </p>
+      </div>
       <EmailAccessFields value={accessLevel} onChange={setAccessLevel} domains={domains} onDomainsChange={setDomains} disabled={create.isPending} />
     </form>
   </IntegrationSetupLayout>
