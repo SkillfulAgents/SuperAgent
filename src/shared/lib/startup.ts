@@ -160,8 +160,8 @@ async function initializeServicesInner() {
     })(),
     listAgents(),
   ])
-  // The deployment may add Platform credentials after the one-time import.
-  // Keep its managed connection lifecycle separate from historical migration.
+  // Provision hosted Platform installs and later logins independently of legacy
+  // data migrations, before any agent or helper resolves its initial model.
   const { ensureManagedPlatformConnection } = await import('./llm-provider/connection-settings')
   await ensureManagedPlatformConnection()
   markBoot('dbReady')

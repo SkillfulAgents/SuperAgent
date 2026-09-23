@@ -6,7 +6,7 @@ import { getLlmProvider, resolveModelForProvider } from './index'
 import type { LlmProviderId } from './provider-types'
 import { connectionConfigSchema, parseConnectionJson, connectionModelOverridesSchema, mergeConnectionConfig } from './connection-schema'
 import { resolveSelection } from './connection-schema'
-import { connectionCatalog, connectionModelOverrides, getConnection, mutateConnections } from './connections'
+import { connectionCatalog, connectionModelOverrides, getConnection, mutateConnections, resolveConnectionSelection } from './connections'
 import { connectionFromProviderSettings, legacyLlmProviderId, providerCredentialFields } from './provider-settings'
 
 export interface ProviderSettingsSync {
@@ -102,13 +102,43 @@ export async function syncProviderSettings(sync: ProviderSettingsSync): Promise<
   })
 }
 
-/** Called on Platform login and environment initialization, never on reads.
- * Insert only: reconnecting preserves the managed connection's catalog/defaults.
+/** Called on Platform login and startup. Provision from current code defaults,
+ * independently of legacy data migrations; preserve existing connection edits.
+ * Hosted deployments select Platform in their seed settings and skip onboarding,
+ * so this path also initializes their app/helper defaults when absent.
  */
 export async function ensureManagedPlatformConnection(): Promise<void> {
   await mutateConnections(async () => {
-    if (!getLlmProvider('platform').getApiKeyStatus().isConfigured) return
-    await db.insert(llmConnections).values(connectionFromProviderSettings('platform'))
-      .onConflictDoNothing().run()
+    const provider = getLlmProvider('platform')
+    if (!provider.getApiKeyStatus().isConfigured) return
+    const llmProviderId = legacyLlmProviderId('platform')
+    await db.insert(llmConnections).values({
+      id: llmProviderId,
+      provider: provider.id,
+      name: provider.name,
+      userId: null,
+      managed: true,
+      config: JSON.stringify(connectionConfigSchema.parse({})),
+      modelOverrides: JSON.stringify(connectionModelOverridesSchema.parse([])),
+      browserModel: provider.getDefaultModel('browser'),
+      dashboardModel: provider.getDefaultModel('dashboard'),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }).onConflictDoNothing().run()
+
+    const settings = getSettings()
+    if (settings.llmProvider !== 'platform' || settings.llmDefault) return
+    const selected = await resolveConnectionSelection({ llmProviderId })
+    if (!selected) return
+    const summarizer = resolveSelection(
+      { llmProviderId, model: provider.getDefaultModel('summarizer') },
+      [{ id: llmProviderId, catalog: connectionCatalog(selected.connection) }],
+    )
+    mutateSettings((s) => {
+      s.llmDefault = { llmProviderId, model: selected.model }
+      if (s.llmSummarizer === undefined) {
+        s.llmSummarizer = summarizer ? { llmProviderId, model: summarizer.model } : null
+      }
+    })
   })
 }
