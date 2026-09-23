@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, like, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../db'
 import { emailIntegrationState } from '../db/schema'
@@ -30,4 +30,11 @@ export async function emailThreadRoute(integrationId: string, id: string): Promi
     id = next
   }
   throw new Error('Invalid email thread redirect')
+}
+
+export async function pendingEmailReplies(integrationId: string) {
+  return db.select({ key: emailIntegrationState.key }).from(emailIntegrationState)
+    .where(and(eq(emailIntegrationState.integrationId, integrationId), like(emailIntegrationState.key, 'reply-job:%'),
+      sql`COALESCE(json_extract(${emailIntegrationState.value}, '$.retryAfter'), 0) <= ${Date.now()}`))
+    .orderBy(sql`COALESCE(json_extract(${emailIntegrationState.value}, '$.retryAfter'), 0)`).limit(5).all()
 }

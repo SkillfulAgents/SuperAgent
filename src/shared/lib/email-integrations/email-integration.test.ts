@@ -11,6 +11,8 @@ import { screenUnsolicitedEmail } from './screening'
 import { toPublicAgentIntegration } from '../agent-integrations/serialization'
 import type { AgentIntegrationRecord, IntegrationInputEvent } from '../agent-integrations/types'
 let handle: TestDatabase, testDb: AppDatabase
+const composer = vi.hoisted(() => vi.fn())
+vi.mock('./composition', async original => ({ ...await original<typeof import('./composition')>(), composeEmailReply: composer }))
 const platform = vi.hoisted(() => ({ connected: true, email: 'owner@company.com', auth: false }))
 vi.mock('../db', () => ({ get db() { return testDb } }))
 vi.mock('../auth/mode', () => ({ isAuthMode: () => platform.auth }))
@@ -33,12 +35,15 @@ class FakeEmail extends EmailAgentIntegration {
   isConnected = () => true
   getMessage = async () => this.incoming
   getThread = async () => this.history
+  recentHistory = async () => ({ threads: [this.history], truncated: false })
+  retry = () => this.retryReplies()
   downloadAttachment = async () => Buffer.from('file')
   uploadAttachment = async () => '00000000-0000-4000-8000-000000000004'
   async submit(input: EmailSend) { this.submitted.push(input); return message({ direction: 'outbound', text: input.text, to: input.to ?? [] }) }
 }
 let record: AgentIntegrationRecord, connector: FakeEmail
 beforeEach(async () => {
+  composer.mockReset().mockResolvedValue({ action: 'send', text: 'Final response' })
   platform.connected = true; platform.auth = false
   handle = await createTestDatabase(); testDb = handle.db
   const id = await createAgentIntegration({ agentSlug: 'agent-a', provider: 'platform-email', config })
@@ -229,5 +234,111 @@ describe('email lifecycle and delivery', () => {
     expect(view.settings).toMatchObject({ address: config.address, accessLevel: 'agent-users-and-replies' })
     expect(JSON.stringify(view)).not.toContain('member-1')
     expect(view).not.toHaveProperty('config')
+  })
+})
+
+
+describe('email response composition', () => {
+  const context = () => ({ integration: record, externalId: 'thread-1', sessionId: 'session-1', replyTarget: { messageId: connector.incoming.id } })
+  async function block(text: string) {
+    await connector.deliver(context(), { type: 'runtime', event: { type: 'stream_start' } })
+    await connector.deliver(context(), { type: 'runtime', event: { type: 'stream_delta', text } })
+  }
+  it('composes the substantive answer before a monitor acknowledgment and includes prior mail', async () => {
+    connector.history = [message()]
+    await block('The deployment succeeded; the report is ready.')
+    await block("That is just the monitor; no action needed.")
+    composer.mockResolvedValue({ action: 'send', text: 'Your deployment succeeded and the report is ready.' })
+    await connector.deliver(context(), { type: 'turn-completed', event: {} })
+    expect(composer).toHaveBeenCalledWith(connector.incoming, connector.history, ['The deployment succeeded; the report is ready.', 'That is just the monitor; no action needed.'], 0)
+    expect(connector.submitted[0].text).toBe('Your deployment succeeded and the report is ready.')
+    // A subsequent monitor-only turn can choose not to email again.
+    await block('Another routine monitor tick.')
+    composer.mockResolvedValue({ action: 'none', text: '' })
+    await connector.deliver(context(), { type: 'turn-completed', event: {} })
+    expect(connector.submitted).toHaveLength(1)
+  })
+  it('saves the draft and retries after reconnect with identical body/key and no second model call', async () => {
+    await block('The answer')
+    const submit = vi.spyOn(connector, 'submit').mockRejectedValueOnce(new Error('Lost response'))
+    await expect(connector.deliver(context(), { type: 'turn-completed', event: {} })).rejects.toThrow('Lost response')
+    const first = submit.mock.calls[0][0]
+    connector = new FakeEmail(record)
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60000)
+    await connector.retry()
+    expect(connector.submitted[0]).toEqual(first)
+    expect(composer).toHaveBeenCalledOnce()
+    await connector.retry()
+    expect(connector.submitted).toHaveLength(1)
+  })
+  it('retries composer failure without sending the last monitor acknowledgment as a fallback', async () => {
+    await block('Useful answer')
+    await block('Only the monitor')
+    composer.mockRejectedValueOnce(new Error('Model unavailable'))
+    await expect(connector.deliver(context(), { type: 'turn-completed', event: {} })).rejects.toThrow('Model unavailable')
+    expect(connector.submitted).toHaveLength(0)
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60000)
+    await connector.retry()
+    expect(connector.submitted).toHaveLength(1)
+    expect(composer.mock.calls[1][2]).toEqual(['Useful answer', 'Only the monitor'])
+  })
+  it('keeps response blocks isolated across reply targets', async () => {
+    await block('First request answer')
+    const other = { ...context(), replyTarget: { messageId: '00000000-0000-4000-8000-000000000009' } }
+    await connector.deliver(other, { type: 'runtime', event: { type: 'stream_delta', text: 'Second answer' } })
+    await connector.deliver(context(), { type: 'turn-completed', event: {} })
+    await connector.deliver(other, { type: 'turn-completed', event: {} })
+    expect(composer.mock.calls.map(call => call[2])).toEqual([['First request answer'], ['Second answer']])
+  })
+  it('rechecks narrowed access before sending a saved draft', async () => {
+    connector.incoming = message({ from: 'external@example.net' })
+    await updateAgentIntegration(record.id, { config: { accessLevel: 'anyone' } })
+    await block('Answer')
+    vi.spyOn(connector, 'submit').mockRejectedValueOnce(new Error('Offline'))
+    await expect(connector.deliver(context(), { type: 'turn-completed', event: {} })).rejects.toThrow()
+    await updateAgentIntegration(record.id, { config: { accessLevel: 'agent-users' } })
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60000)
+    await connector.retry()
+    expect(connector.submitted).toHaveLength(0)
+    expect(composer).toHaveBeenCalledOnce()
+  })
+})
+
+describe('email discovery', () => {
+  async function list(name: string) {
+    return connector.getTools({ integration: record, externalId: '' }).find(tool => tool.name === name)!.execute({}) as Promise<{ items: Record<string, unknown>[]; truncated: boolean }>
+  }
+  it('filters both workspace contacts and historical recipients using current policy', async () => {
+    platform.auth = true
+    for (const id of ['owner', 'coworker']) await testDb.insert(user).values({ id, name: id, email: `${id}@company.com`, emailVerified: true }).run()
+    await testDb.insert(agentAcl).values({ id: 'acl', agentSlug: 'agent-a', userId: 'owner', role: 'owner', createdAt: new Date() }).run()
+    connector.history = [message({ direction: 'outbound', status: 'sent', to: ['external@example.net', 'owner@company.com'] })]
+    expect((await list('list_users')).items).toHaveLength(3)
+    await updateAgentIntegration(record.id, { config: { accessLevel: 'agent-users' } })
+    expect((await list('list_users')).items.map(item => item.email)).toEqual(['owner@company.com'])
+    expect((await list('list_channels')).items).toHaveLength(0) // Reply would address an external recipient too.
+    await updateAgentIntegration(record.id, { config: { accessLevel: 'allowed-domains', allowedDomains: ['example.net'] } })
+    expect((await list('list_users')).items.map(item => item.email)).toEqual(['external@example.net'])
+  })
+  it('does not expose held unsolicited mail or disabled workspace accounts', async () => {
+    platform.auth = true
+    await testDb.insert(user).values({ id: 'banned', name: 'Banned', email: 'banned@company.com', emailVerified: true, banned: true }).run()
+    await updateAgentIntegration(record.id, { config: { accessLevel: 'anyone' } })
+    connector.history = [message({ from: 'stranger@example.net' })]
+    const { z } = await import('zod')
+    await writeEmailState(record.id, `screen:${connector.history[0].id}`, z.string(), 'held')
+    expect((await list('list_users')).items).toEqual([])
+    expect((await list('list_channels')).items).toEqual([])
+  })
+  it('caps conversations at 20, with newest eligible first and a usable reply ID', async () => {
+    vi.spyOn(connector, 'recentHistory').mockResolvedValue({ threads: Array.from({ length: 25 }, (_, n) => [message({ threadId: `thread-${n}`, id: `message-${n}`, createdAt: n })]), truncated: false })
+    const result = await list('list_channels')
+    expect(result.items).toHaveLength(20)
+    expect(result.truncated).toBe(true)
+    expect(result.items[0]).toMatchObject({ id: 'thread-24', replyToMessageId: 'message-24', participants: ['owner@company.com'] })
+  })
+  it('deduplicates contacts and preserves the workspace name/source', async () => {
+    connector.history = [message({ from: 'Owner <OWNER@company.com>' })]
+    expect((await list('list_users')).items).toEqual([{ id: 'owner@company.com', email: 'owner@company.com', name: 'owner@company.com', source: 'workspace' }])
   })
 })

@@ -25,9 +25,9 @@ For an organization runtime JWT, first-time domain discovery additionally uses t
 
 One shared, authenticated SSE subscription per Platform member wakes the mailbox consumers. Per-integration polling with a durable cursor is authoritative and recovers missed events after reconnect; the fallback interval is 30 seconds. A mail thread has one persistent agent session, without chat-style idle rotation. Late thread reconciliation retries previously unaccepted replies and retains an existing inbound route when the canonical thread has no session. If both threads already have histories, subsequent messages follow the canonical thread; existing transcripts are not merged.
 
-Inbound attachments are fetched through the authorized gateway into the agent workspace. Only the final response is sent; progress and tool chatter are suppressed. `deliver_file` adds attachments to that response. The gateway handles sender names, MIME, quoting and RFC threading. Automatic replies target the sender/Reply-To; explicit reply-all adds checked To/Cc, never inherited Bcc.
+Inbound attachments are fetched through the authorized gateway into the agent workspace. At turn completion, the configured summarizer model composes a complete plain-text email from all assistant text blocks and a bounded email-chain window. This preserves an answer that precedes a monitor acknowledgment. It can suppress monitor-only or already-sent follow-ups. Thinking and tool results are excluded. A malformed or unavailable model response leaves a durable pending reply for retry; it never falls back to sending the last monitor acknowledgment. `deliver_file` adds attachments to that response. The gateway handles sender names, MIME, quoting and RFC threading. Automatic replies target the sender/Reply-To; explicit reply-all adds checked To/Cc, never inherited Bcc.
 
-For proactive sends, `list_chat_integrations` advertises `send_email`; `send_chat_message` accepts:
+For proactive sends, `list_agent_integrations` advertises `send_email`, `list_users`, and `list_channels`; `send_chat_message` accepts:
 
 ```json
 {
@@ -46,15 +46,23 @@ For proactive sends, `list_chat_integrations` advertises `send_email`; `send_cha
 
 Use `reply_to_message_id` for a reply. Keys contain letters, numbers, dots, underscores, colons or hyphens. Retries preserve attachment IDs and reject changed content under the same key. The result exposes message/thread IDs and queued status; acceptance is not proof of delivery. A session's final response already replies to its own email thread, so the tool rejects an explicit duplicate reply there. Automated integration provisioning is not exposed to agents.
 
+## Contact and conversation discovery
+
+`list_chat_users` returns up to 100 deduplicated email contacts, labeled `workspace` or `previous-correspondence`. Workspace contacts are verified, non-banned members (the connected owner in single-user mode). Both sources are filtered by the current outbound policy and exclude the agent's own address. Historical contacts come only from this mailbox; held inbound mail is excluded. Use the returned `email` in `send_chat_message.email.to`, not `user_id`.
+
+`list_chat_channels` returns at most **20** eligible email conversations with subject, allowed participants and `replyToMessageId`. Use that ID as `email.reply_to_message_id`, not `chat_id`. Results are ordered by the latest eligible message found. Discovery scans up to 50 recently created gateway threads and the first 100 messages per thread, plus up to 1,000 workspace members. A `truncated` result signals that the listing is incomplete. This is bounded discovery, not a full-mailbox search; an old thread with new activity may fall outside the window. The send path always checks current policy again, including every reply-all recipient.
+
 ## Persistence and known boundary
 
-Migration `0048_email_integration_state.sql` stores poll cursors, thread admission state, held-mail review, upload/send intents and delivery receipts. State uses awaited, conditional SQL compatible with SQLite and libSQL/D1. Email and gateway retention remain indefinite.
+Migration `0048_email_integration_state.sql` stores poll cursors, thread admission state, held-mail review, upload/send intents, pending reply compositions and delivery receipts. State uses awaited, conditional SQL compatible with SQLite and libSQL/D1. Email and gateway retention remain indefinite.
 
-Inbound acceptance now uses the shared durable delivery engine introduced in SUP-922. The provider advances its cursor only after the manager persists the event; retries use stable message IDs. Owner releases and late reconciliation use distinct stable delivery IDs so the manager can reconsider a previously filtered message. Runtime execution still cannot be claimed to be exactly once across every external side effect. Final email sends use gateway idempotency keys and durable delivery receipts to suppress duplicates.
+Inbound acceptance now uses the shared durable delivery engine introduced in SUP-922. The provider advances its cursor only after the manager persists the event; retries use stable message IDs. Owner releases and late reconciliation use distinct stable delivery IDs so the manager can reconsider a previously filtered message. Runtime execution still cannot be claimed to be exactly once across every external side effect. Completed response snapshots and composed drafts are persisted before sending. Gateway/model failures retry with backoff during polling, including after reconnect; a saved draft retains its text, attachment IDs and idempotency key. Suppressed replies also receive a completion receipt. Runtime text is buffered until completion, so a host crash during an unfinished turn can still lose that buffer. Final email sends use gateway idempotency keys and durable delivery receipts to suppress duplicates.
 
 
 ## Validation
 
-Focused tests cover all four policies, spoofed authentication, current ACLs, immutable/duplicate inboxes, owner-only configuration, CC/BCC/Reply-To, final-only delivery, attachments and retry idempotency, held review, questions versus approvals, polling recovery, thread reconciliation, shared SSE and fresh credentials. Database tests also run with `DB_DRIVER=libsql`. UI setup/settings are reviewed in light and dark themes.
+Focused tests cover all four policies, spoofed authentication, current ACLs, immutable/duplicate inboxes, owner-only configuration, CC/BCC/Reply-To, final-only delivery, attachments and retry idempotency, held review, questions versus approvals, multi-block email composition, monitor-only suppression, durable draft recovery, policy-filtered contact discovery, capped conversations, polling recovery, thread reconciliation, shared SSE and fresh credentials. Database tests also run with `DB_DRIVER=libsql`. UI setup/settings are reviewed in light and dark themes.
 
 A controlled live test on 2026-09-22 exercised the concrete integration against the deployed gateway using owned pilot mailboxes: send + CC, authenticated receive, attachment download, default-policy reply admission, live/poll notification, a bounded Haiku call and a threaded reply with duplicate-delivery suppression. This tested the integration transport with model output, not a full agent-container session. Gateway 0.2.2 was deployed after a verified private R2 backup.
+
+The composer was additionally checked with three live configured-model calls: preserving an answer before a monitor acknowledgment, suppressing a monitor-only follow-up, and retaining a later correction plus an attachment reference. These checks did not send email.

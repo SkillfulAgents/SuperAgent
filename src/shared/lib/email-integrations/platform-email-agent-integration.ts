@@ -1,3 +1,4 @@
+import { EMAIL_HISTORY_THREAD_LIMIT } from './directory'
 import { captureException } from '../error-reporting'
 import { createHash } from 'node:crypto'
 import { platformConnected } from './policy'
@@ -20,6 +21,7 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
   private stopped = true
   private timer?: ReturnType<typeof setTimeout>
   private pending?: Promise<void>
+  private replyRetries?: Promise<void>
   private unwatch?: () => void
   constructor(record: AgentIntegrationRecord) { super(record); this.config = parseEmailConfig(record.config); this.client = clientFor(record) }
   private get base() { return `/mailboxes/${encodeURIComponent(this.config.mailboxId)}` }
@@ -47,6 +49,12 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
       const box = await this.client.json(this.base, mailboxSchema)
       if (box.domain?.status !== 'ready') return
       this.connected = true
+    }
+    // Model backoff/retries must not delay accepting new gateway events.
+    if (!this.replyRetries) {
+      this.replyRetries = this.retryReplies()
+        .catch(error => { captureException(error, { tags: { component: 'email-integration', operation: 'reply-recovery' } }) })
+        .finally(() => { this.replyRetries = undefined })
     }
     let cursor = await readEmailState(this.record.id, 'cursor', z.number()) ?? 0
     for (let page = 0; page < 10 && !this.stopped; page++) {
@@ -76,10 +84,26 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
     }
   }
   private threadRoute(id: string) { return emailThreadRoute(this.record.id, id) }
-  async disconnect() { this.stopped = true; this.connected = false; this.unwatch?.(); clearTimeout(this.timer); await this.pending }
+  async disconnect() { this.stopped = true; this.connected = false; this.unwatch?.(); clearTimeout(this.timer); await this.pending; await this.replyRetries }
   isConnected() { return this.connected }
   protected getMessage(id: string) { return this.client.message(this.config.mailboxId, id) }
   protected getThread(id: string) { return this.client.thread(this.config.mailboxId, id) }
+  protected async recentHistory() {
+    const page = await this.client.json(`${this.base}/threads?limit=${EMAIL_HISTORY_THREAD_LIMIT + 1}`, z.object({ data: z.array(z.object({ id: z.string() })) }))
+    const threads = []
+    let truncated = page.data.length > EMAIL_HISTORY_THREAD_LIMIT
+    const selected = page.data.slice(0, EMAIL_HISTORY_THREAD_LIMIT)
+    for (let offset = 0; offset < selected.length; offset += 5) {
+      // Bound gateway concurrency and history; do not fetch entire large archives.
+      const results = await Promise.all(selected.slice(offset, offset + 5).map(thread =>
+        this.client.json(`${this.base}/threads/${encodeURIComponent(thread.id)}?after=0`, z.object({ messages: z.array(emailMessageSchema), hasMore: z.boolean() }))))
+      for (const result of results) {
+        truncated ||= result.hasMore
+        threads.push(result.messages)
+      }
+    }
+    return { threads, truncated }
+  }
   protected submit(input: EmailSend) {
     const { idempotencyKey, ...body } = input
     return this.client.json(`${this.base}/messages`, emailMessageSchema, body, 'POST', idempotencyKey)

@@ -69,3 +69,15 @@ it('rejects a changed Platform identity before subscribing', async () => {
   await expect(connector.connect()).rejects.toThrow('owns this inbox')
   expect(transport.watch).not.toHaveBeenCalled()
 })
+
+it('bounds gateway discovery to 50 threads and one message page each', async () => {
+  transport.json.mockImplementation(async (path: string) => path.includes('/threads?')
+    ? { data: Array.from({ length: 51 }, (_, n) => ({ id: `thread-${n}` })) }
+    : { messages: [message], hasMore: true })
+  const result = await (connector as unknown as { recentHistory(): Promise<{ threads: unknown[]; truncated: boolean }> }).recentHistory()
+  expect(result.threads).toHaveLength(50)
+  expect(result.truncated).toBe(true)
+  expect(transport.json).toHaveBeenCalledTimes(51)
+  expect(transport.json.mock.calls[0][0]).toContain('limit=51')
+  expect(transport.json.mock.calls.slice(1).every(([path]) => path.endsWith('?after=0'))).toBe(true)
+})

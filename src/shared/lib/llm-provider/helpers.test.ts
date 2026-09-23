@@ -122,6 +122,12 @@ describe('createSummarizerText', () => {
     }))
   })
 
+  it('preserves a larger email composition budget on both attempts', async () => {
+    create.mockResolvedValueOnce(thinkingOnlyResponse).mockResolvedValueOnce(textResponse('Complete email'))
+    await createSummarizerText(clientWith(create), { ...REQUEST, max_tokens: 8192 })
+    expect(create.mock.calls.every(([request]) => request.max_tokens === 8192)).toBe(true)
+  })
+
   it('retries with a thinking cap when the response carries no text', async () => {
     create
       .mockResolvedValueOnce(thinkingOnlyResponse)

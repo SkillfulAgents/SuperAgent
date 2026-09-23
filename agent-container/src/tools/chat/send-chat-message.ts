@@ -26,7 +26,7 @@ If this session was started by an incoming chat message, do NOT use this tool to
 
 The destination is either a chat_id (an existing conversation or channel — see list_agent_integrations and list_chat_channels) or a user_id (a person from list_chat_users; the 1:1 conversation is opened automatically, so this works even if they never messaged the bot). Pass one or the other, never both. Omitting both works only when the integration has exactly one active chat. user_id is supported only where the integration's capabilities include dm_by_user_id.
 
-For Email (capability send_email), supply email with to/cc/bcc, subject and a stable idempotency_key. Use email.reply_to_message_id for an existing thread, or email.to + email.subject for a new thread. Do not use chat_id/user_id for email. attachment_paths are workspace files. A queued send is not proof of delivery. Reuse the same idempotency key and identical payload when retrying.
+For Email, discover allowed email addresses with list_chat_users and reply targets with list_chat_channels first. For Email (capability send_email), supply email with to/cc/bcc, subject and a stable idempotency_key. Use email.reply_to_message_id for an existing thread, or email.to + email.subject for a new thread. Do not use chat_id/user_id for email. attachment_paths are workspace files. A queued send is not proof of delivery. Reuse the same idempotency key and identical payload when retrying.
 
 Use the optional context parameter to attach internal notes that help the receiving chat's agent session understand the message's purpose on follow-up. Context is NOT sent to the user — it is only recorded in the session log.`,
     {

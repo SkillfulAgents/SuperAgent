@@ -61,3 +61,12 @@ export function parseEmailIntegrationConfig(value: string): EmailIntegrationConf
   try { return emailIntegrationConfigSchema.loose().parse(JSON.parse(value)) }
   catch { throw new Error('Invalid stored email configuration') }
 }
+
+export const emailDraftSchema = z.object({ action: z.enum(['send', 'none']), text: z.string().max(131072) }).strict()
+  .refine(value => value.action === 'none' || !!value.text.trim(), 'An email needs a body')
+export const emailReplyJobSchema = z.object({
+  parentId: z.string(), sessionId: z.string().optional(),
+  parts: z.array(z.string()), attachmentIds: z.array(z.string()),
+  draft: emailDraftSchema.optional(), attempts: z.number().default(0), retryAfter: z.number().default(0),
+})
+export type EmailReplyJob = z.infer<typeof emailReplyJobSchema>
