@@ -90,10 +90,11 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => ({ isStreaming: false }),
 }))
 
+const mockUseSettings = vi.fn()
+const mockUseModelSettings = vi.fn()
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({
-    data: { llmProvider: 'anthropic', apiKeyStatus: { anthropic: { isConfigured: true } } },
-  }),
+  useSettings: () => mockUseSettings(),
+  useModelSettings: () => mockUseModelSettings(),
 }))
 
 const { mockUserSettings, mockUpdateSettings, dndContextProps } = vi.hoisted(() => ({
@@ -416,6 +417,8 @@ const localStorageStub = {
 }
 
 beforeEach(() => {
+  mockUseSettings.mockReturnValue({ data: { llmProvider: 'anthropic', apiKeyStatus: { anthropic: { isConfigured: true } } } })
+  mockUseModelSettings.mockReturnValue({ data: { connections: [], defaultSelection: null } })
   vi.clearAllMocks()
   localStorageStore.clear()
   vi.stubGlobal('localStorage', localStorageStub)
@@ -457,6 +460,31 @@ beforeEach(() => {
 })
 
 describe('AppSidebar — layout & top nav', () => {
+  it.each(['anthropic', 'claude-subscription'])('uses the selected %s account instead of an empty legacy key', provider => {
+    mockUseSettings.mockReturnValue({ data: { llmProvider: 'anthropic', apiKeyStatus: { anthropic: { isConfigured: false } } } })
+    mockUseModelSettings.mockReturnValue({ data: {
+      connections: [{ id: 'selected', provider, isConfigured: true }],
+      defaultSelection: { llmProviderId: 'selected', model: 'sonnet' },
+    } })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByText('Click to set up')).not.toBeInTheDocument()
+  })
+
+  it('warns for a selected account without credentials even when the legacy key exists', () => {
+    mockUseModelSettings.mockReturnValue({ data: {
+      connections: [{ id: 'selected', provider: 'anthropic', isConfigured: false }],
+      defaultSelection: { llmProviderId: 'selected', model: 'sonnet' },
+    } })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByText('Click to set up')).toBeInTheDocument()
+  })
+
+  it('keeps the keyless warning before a connection default is configured', () => {
+    mockUseSettings.mockReturnValue({ data: { llmProvider: 'anthropic', apiKeyStatus: { anthropic: { isConfigured: false } } } })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByText('Click to set up')).toBeInTheDocument()
+  })
+
   it('restores the Gamut wordmark when browser chrome leaves the title bar empty', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByText('Gamut')).toBeInTheDocument()
