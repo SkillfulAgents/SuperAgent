@@ -32,6 +32,12 @@ describe('model pricing ids', () => {
     expect(pricingFor('vendor/toString')).toBeUndefined()
   })
 
+  it('prices observed Grok subscription deployment IDs at the shared API-equivalent rate', () => {
+    expect(pricingFor('grok-4.7-build')).toEqual(pricingFor('grok-4.7'))
+    expect(pricingFor('grok-4.6-build')).toEqual(pricingFor('grok-4.6'))
+    expect(canonicalPricingId('grok-4.7-build')).toBe('grok-4.7')
+  })
+
   it('answers repeated lookups with the same candidate list', () => {
     expect(modelPricingCandidates('anthropic/claude-sonnet-5-20260630')).toBe(
       modelPricingCandidates('anthropic/claude-sonnet-5-20260630'),

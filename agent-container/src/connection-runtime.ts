@@ -70,7 +70,7 @@ async function requestRuntime(path: string, body: object): Promise<ConnectionRun
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(75_000),
   })
   if (!response.ok) throw new Error(`Cannot resolve LLM provider (${response.status})`)
   const runtime = connectionRuntimeSchema.parse(await response.json())

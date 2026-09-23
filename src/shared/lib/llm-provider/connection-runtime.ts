@@ -90,7 +90,9 @@ export async function connectionRuntime(resolved: ResolvedConnection, agentId: s
   Object.assign(env, runtimeEnv)
   env.ENABLE_TOOL_SEARCH =
     getSettings().enableToolSearch === false ? 'false' : (runtimeEnv.ENABLE_TOOL_SEARCH ?? provider.toolSearchEnv ?? '')
+  const proxy = await provider.getContainerProxyConfig()
   return {
+    ...(proxy ? { proxy } : {}),
     llmProviderId: connection.id,
     generation: connection.generation,
     provider: provider.id,
@@ -112,7 +114,7 @@ export function rememberSessionRuntime(
   runtime: ConnectionRuntime
 ): void {
   // Retain only non-secret execution facts for presentation/accounting.
-  sessionRuntimes.set(`${agentId}:${sessionId}`, { ...runtime, env: {} })
+  sessionRuntimes.set(`${agentId}:${sessionId}`, { ...runtime, env: {}, proxy: undefined })
   if (sessionRuntimes.size > 500) sessionRuntimes.delete(sessionRuntimes.keys().next().value!)
 }
 export function sessionRuntime(agentId: string, sessionId: string): ConnectionRuntime | undefined {

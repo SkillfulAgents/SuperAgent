@@ -9,6 +9,10 @@ const state = vi.hoisted(() => ({
   db: null as TestDatabase['db'] | null,
   settings: {} as AppSettings,
 }))
+vi.mock('@shared/lib/llm-provider/grok-oauth', () => ({
+  startGrokLogin: async () => ({ device: { device_code: 'private-device', user_code: 'CODE', verification_uri: 'https://accounts.x.ai', expires_in: 1800, interval: 5 }, endpoints: { token_endpoint: 'https://auth.x.ai/token' } }),
+  pollGrokLogin: async () => ({ credential: { accessToken: 'private-oauth-access', refreshToken: 'private-oauth-refresh', expiresAt: Date.now() + 3600000, accountLabel: 'Alice Grok' } }),
+}))
 vi.mock('@shared/lib/db', () => ({
   get db() {
     return state.db
@@ -353,4 +357,27 @@ it('routes dashboard shim requests to the API summarizer when the app default is
     expect(await upstream.json()).toMatchObject({ model: model ?? 'model' })
   }
   expect(fetchMock).toHaveBeenCalledTimes(2)
+})
+
+
+it('binds OAuth grants to the initiating owner and never returns subscription credentials', async () => {
+  expect((await request('/oauth/grok/start', 'POST', { userId: null }, 'alice')).status).toBe(400)
+  const started = await request('/oauth/grok/start', 'POST', { userId: 'alice' }, 'alice')
+  expect(started.status).toBe(200)
+  const login = await started.json()
+  expect(JSON.stringify(login)).not.toContain('private-device')
+  expect((await request(`/oauth/${login.id}/poll`, 'POST', {}, 'bob')).status).toBe(400)
+  const polled = await request(`/oauth/${login.id}/poll`, 'POST', {}, 'alice')
+  expect(await polled.json()).toEqual({ status: 'connected', accountLabel: 'Alice Grok' })
+  const draft = { name: 'Grok', provider: 'grok-subscription', userId: 'alice', oauthLoginId: login.id, config: {} }
+  const saved = await request('', 'POST', draft, 'alice')
+  expect(saved.status).toBe(201)
+  const { id } = await saved.json()
+  const row = (await getConnection(id))!
+  expect(JSON.parse(row.config).oauth.refreshToken).toBe('private-oauth-refresh')
+  const listed = await request('', 'GET', undefined, 'alice')
+  const publicData = JSON.stringify(await listed.json())
+  expect(publicData).toContain('Alice Grok')
+  expect(publicData).not.toContain('private-oauth')
+  expect((await request('', 'POST', draft, 'alice')).status).toBe(400)
 })

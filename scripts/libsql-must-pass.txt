@@ -41,3 +41,4 @@ src/shared/lib/email-integrations/transport.test.ts
 src/api/routes/email-integrations.test.ts
 src/shared/lib/services/agent-integration-message-service.test.ts
 src/shared/lib/container/base-container-client.llm-provider.test.ts
+src/shared/lib/llm-provider/connection-credentials.test.ts

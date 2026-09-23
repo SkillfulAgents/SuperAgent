@@ -1,3 +1,4 @@
+import { startOAuthLogin, pollOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { Authenticated, IsAdmin } from '../middleware/auth'
@@ -35,6 +36,22 @@ routes.onError((error, c) =>
     400
   )
 )
+routes.post('/oauth/grok/start', async c => {
+  const input = z.object({ id: z.string().optional(), userId: z.string().nullable() }).parse(await c.req.json())
+  const actor = viewer(c)
+  if (input.id) {
+    const row = await getConnection(input.id)
+    if (!row || row.provider !== 'grok-subscription' || row.userId !== input.userId) throw new Error('Connection not found')
+    assertManageConnection(row, actor)
+  }
+  if (input.userId === null ? !actor.admin : input.userId !== actor.userId) throw new Error('Cannot manage this connection')
+  c.header('Cache-Control', 'no-store')
+  return c.json(await startOAuthLogin(actor, input.userId, input.id))
+})
+routes.post('/oauth/:id/poll', async c => {
+  c.header('Cache-Control', 'no-store')
+  return c.json(await pollOAuthLogin(c.req.param('id'), viewer(c)))
+})
 routes.get('/', async (c) => {
   const connections = await listConnections(viewer(c))
   const root = await resolveGlobalSelection()
@@ -70,6 +87,7 @@ routes.post('/validate', async (c) => {
     .parse(await c.req.json())
   const { input, config } = await prepareConnection(body.connection, viewer(c), body.id)
   const provider = providerForConnection({
+    id: body.id,
     provider: input.provider,
     config: JSON.stringify(config),
   })

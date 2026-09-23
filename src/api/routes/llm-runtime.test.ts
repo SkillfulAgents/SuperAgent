@@ -1,3 +1,6 @@
+import { eq } from 'drizzle-orm'
+import { llmConnections } from '@shared/lib/db/schema'
+import { connectionConfigSchema } from '@shared/lib/llm-provider/connection-schema'
 import { beforeEach, afterEach, expect, it, vi } from 'vitest'
 import { Hono, type MiddlewareHandler } from 'hono'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
@@ -101,4 +104,18 @@ it('prewarms the authenticated agent default without accepting a nominated provi
   expect(res.status).toBe(200)
   expect(res.headers.get('cache-control')).toBe('no-store')
   expect(await res.json()).toMatchObject({ llmProviderId: state.currentId, model: 'model' })
+})
+
+
+it('returns access-only proxy credentials and keeps them out of presentation metadata', async () => {
+  await handle.db.update(llmConnections).set({ provider: 'grok-subscription', config: JSON.stringify(connectionConfigSchema.parse({
+    oauth: { accessToken: 'private-access', refreshToken: 'never-container-refresh', expiresAt: Date.now() + 3600000 },
+  })) }).where(eq(llmConnections.id, state.currentId)).run()
+  const response = await request('resolve', { sessionId: 'own-session', llmProviderId: state.currentId })
+  expect(response.status).toBe(200)
+  const body = await response.json()
+  expect(body.proxy).toMatchObject({ adapter: 'grok', credential: { accessToken: 'private-access' } })
+  expect(JSON.stringify(body)).not.toContain('never-container-refresh')
+  expect(JSON.stringify(sessionRuntime('alpha', 'own-session'))).not.toContain('private-access')
+  expect((await request('resolve', { sessionId: 'own-session', llmProviderId: 'another-account', rejectedGeneration: 0 })).status).toBe(409)
 })

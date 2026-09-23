@@ -1,3 +1,5 @@
+import type { LlmProxyConfig } from '../../../../agent-container/src/llm-proxy-schema'
+import type { OAuthCredential } from './oauth-schema'
 import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
 import type { ConnectionConfig } from './connection-schema'
@@ -42,6 +44,8 @@ export interface AgentIdentity {
 }
 
 export interface ProviderConfiguration {
+  oauth?: OAuthCredential
+  resolveCredential?: (rejectedGeneration?: number) => Promise<OAuthCredential & { generation: number }>
   runtimeEnv?: Record<string, string>
   apiKeys: ApiKeySettings & ConnectionConfig['apiKeys']
   env: Record<string, string | undefined>
@@ -64,7 +68,7 @@ export abstract class BaseLlmProvider {
   abstract readonly catalogDefaultModels: CatalogDefaultModels
 
   /** Which field in the provider credentials stores this provider's key. */
-  protected abstract readonly settingsKeyField: keyof ProviderConfiguration['apiKeys']
+  protected abstract readonly settingsKeyField: keyof ProviderConfiguration['apiKeys'] | undefined
   /** Environment variable name for this provider's key. */
   protected abstract readonly envVarName: string
   /** Whether this provider can discover remote catalog models by search query. */
@@ -92,7 +96,7 @@ export abstract class BaseLlmProvider {
   /** Check whether an API key is configured and its source. */
   getApiKeyStatus(): ApiKeyStatus {
     const settings = { apiKeys: this.configuredKeys() }
-    if (settings.apiKeys?.[this.settingsKeyField]) {
+    if ((this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined)) {
       return { isConfigured: true, source: 'settings' }
     }
     if (this.envValue(this.envVarName)) {
@@ -104,7 +108,7 @@ export abstract class BaseLlmProvider {
   /** Get the effective API key (settings take precedence over env var). */
   getEffectiveApiKey(): string | undefined {
     const settings = { apiKeys: this.configuredKeys() }
-    const fromSettings = settings.apiKeys?.[this.settingsKeyField]
+    const fromSettings = (this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined)
     if (fromSettings) return fromSettings
     return this.envValue(this.envVarName)
   }
@@ -156,6 +160,8 @@ export abstract class BaseLlmProvider {
       dashboardBuilderModel: this.getDefaultModel('dashboard'),
     }
   }
+
+  async getContainerProxyConfig(): Promise<LlmProxyConfig | undefined> { return undefined }
 
   /** Get env vars to inject into agent containers. */
   abstract getContainerEnvVars(agent?: AgentIdentity): Promise<Record<string, string | undefined>>

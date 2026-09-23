@@ -48,6 +48,7 @@ export const GENERIC_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
 const BUILTIN_DEFAULTS: Record<LlmProviderId, CatalogDefaultModels> = {
   anthropic: ANTHROPIC_CATALOG_DEFAULT_MODELS,
   'claude-subscription': ANTHROPIC_CATALOG_DEFAULT_MODELS,
+  'grok-subscription': { agentModel: 'grok', summarizerModel: 'grok', browserModel: 'grok', dashboardBuilderModel: 'grok' },
   openrouter: OPENROUTER_CATALOG_DEFAULT_MODELS,
   bedrock: BEDROCK_CATALOG_DEFAULT_MODELS,
   platform: PLATFORM_CATALOG_DEFAULT_MODELS,

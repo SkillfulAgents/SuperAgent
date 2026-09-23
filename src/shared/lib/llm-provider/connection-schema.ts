@@ -1,3 +1,4 @@
+import { oauthCredentialSchema } from './oauth-schema'
 import { isReservedEnvVar } from '../container/reserved-env-vars'
 import { z } from 'zod'
 import { LLM_PROVIDER_IDS } from './provider-types'
@@ -10,6 +11,7 @@ export const modelSelectionSchema = z.object({
 export type ModelSelection = z.infer<typeof modelSelectionSchema>
 
 export const connectionConfigSchema = z.object({
+  oauth: oauthCredentialSchema.optional(),
   apiKeys: z
     .object({
       anthropicApiKey: z.string().optional(),
@@ -54,7 +56,8 @@ export const connectionInputSchema = z
     name: z.string().trim().min(1).max(120),
     provider: z.enum(LLM_PROVIDER_IDS),
     userId: z.string().min(1).nullable().default(null),
-    config: connectionConfigSchema.extend({
+    oauthLoginId: z.string().optional(),
+    config: connectionConfigSchema.omit({ oauth: true }).extend({
       // Omitted values are unchanged; null explicitly removes a saved value.
       runtimeEnv: z.record(
         z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'Invalid environment variable name'),
@@ -77,6 +80,7 @@ export function mergeConnectionConfig(
   input: z.infer<typeof connectionInputSchema>['config'],
 ): ConnectionConfig {
   const config = connectionConfigSchema.parse({
+    oauth: previous?.oauth,
     apiKeys: { ...previous?.apiKeys, ...input.apiKeys },
     runtimeEnv: previous?.runtimeEnv ?? {},
     env: previous?.env ?? {}, // Host bindings come only from migration.
@@ -119,6 +123,7 @@ export const connectionInfoSchema = z.object({
   provider: z.enum(LLM_PROVIDER_IDS),
   userId: z.string().nullable(),
   ownerName: z.string().nullable(),
+  accountLabel: z.string().optional(),
   managed: z.boolean(),
   isConfigured: z.boolean(),
   supportsDirectApi: z.boolean().optional(),

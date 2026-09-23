@@ -1,3 +1,5 @@
+import { credentialsFromLogin, consumeOAuthLogin } from './oauth-login'
+import { resolveConnectionCredential } from './connection-credentials'
 import { HelperConfigurationError } from './helper-error'
 import { withGlobalModelPricing } from './global-pricing'
 import { findAdminOnlyProviderEnvVars, isProviderEnvVar } from './provider-env'
@@ -7,7 +9,7 @@ import { parseConnectionJson } from './connection-schema'
 import { randomUUID } from 'node:crypto'
 import { legacyLlmProviderId, providerCredentialFields } from './provider-settings'
 import { changesOf } from '../db/batch'
-import { sql, eq, isNull, or } from 'drizzle-orm'
+import { sql, eq, isNull, or, and } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../db'
 import {
@@ -37,12 +39,14 @@ export type ConnectionViewer = { userId: string | null; admin: boolean }
 const providerSchema = z.enum(LLM_PROVIDER_IDS)
 
 export function providerForConnection(
-  row: Pick<ConnectionRow, 'provider' | 'config'>
+  row: Pick<ConnectionRow, 'provider' | 'config'> & Partial<Pick<ConnectionRow, 'id'>>
 ) {
   const config = parseConnectionJson(connectionConfigSchema, row.config)
   const apiKeys = { ...config.apiKeys }
   return createLlmProvider(providerSchema.parse(row.provider), {
     apiKeys,
+    oauth: config.oauth,
+    resolveCredential: row.id ? (generation) => resolveConnectionCredential(row.id!, generation) : undefined,
     env: Object.fromEntries(
       Object.entries(config.env).map(([key, name]) => [key, process.env[name]])
     ),
@@ -103,6 +107,7 @@ export async function listConnections(
       provider: provider.id,
       userId: row.userId,
       ownerName,
+      accountLabel: canManage ? config.oauth?.accountLabel : undefined,
       managed: row.managed,
       isConfigured: provider.getApiKeyStatus().isConfigured,
       supportsDirectApi: provider.supportsDirectApi,
@@ -149,6 +154,15 @@ export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, 
     throw new Error('Connection type and owner cannot change')
   const oldConfig = previous ? parseConnectionJson(connectionConfigSchema, previous.config) : null
   const config = mergeConnectionConfig(oldConfig, input.config)
+  if (input.oauthLoginId) {
+    if (input.provider !== 'grok-subscription') throw new Error('Invalid subscription sign-in')
+    config.oauth = credentialsFromLogin(input.oauthLoginId, viewer, input.userId, id)
+  }
+  if (input.provider === 'grok-subscription') {
+    if (!config.oauth) throw new Error('Sign in to Grok before saving this connection')
+    const conflicting = Object.keys(config.runtimeEnv).filter(key => isProviderEnvVar(key) || key === 'CLAUDE_CONFIG_DIR')
+    if (conflicting.length) throw new Error('Grok manages its own authentication. Remove provider authentication environment variables.')
+  }
   if (!viewer.admin) {
     // Check the merged config for saves and validation alike. Omitted saved
     // values cannot bypass the policy; explicit nulls can remove them.
@@ -208,15 +222,16 @@ export async function saveConnection(
           ...values,
           generation: sql`${llmConnections.generation} + 1`,
         })
-        .where(eq(llmConnections.id, llmProviderId))
+        .where(and(eq(llmConnections.id, llmProviderId), eq(llmConnections.config, previous.config), eq(llmConnections.generation, previous.generation)))
         .run()
-      if (!changesOf(updated)) throw new Error('Connection no longer exists')
+      if (!changesOf(updated)) throw new Error('Connection changed while saving. Please retry.')
     } else {
       await db
         .insert(llmConnections)
         .values({ ...values, id: llmProviderId, createdAt: new Date() })
         .run()
     }
+    if (input.oauthLoginId) consumeOAuthLogin(input.oauthLoginId)
     return llmProviderId
   })
 }
