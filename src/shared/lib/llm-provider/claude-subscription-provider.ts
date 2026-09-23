@@ -15,7 +15,7 @@ export class ClaudeSubscriptionLlmProvider extends BaseLlmProvider {
   protected readonly settingsKeyField = 'claudeSubscriptionToken' as const
   protected readonly envVarName = 'CLAUDE_CODE_OAUTH_TOKEN'
   override readonly toolSearchEnv = 'true' as const
-  override get supportsDirectApi(): boolean { return false }
+  override readonly supportsDirectApi = false
 
   // Optional connections never adopt ambient host or legacy settings credentials.
   override getEffectiveApiKey(): string | undefined {
