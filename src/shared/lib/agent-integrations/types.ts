@@ -2,6 +2,7 @@ import type { IntegrationCapability } from './public'
 import type { AgentActor } from '../agent-actor'
 import type { SessionActivity, SessionMetadata } from '../types/agent'
 import type { PendingUserInputRequest, UserInputRequestKind, UserInputRequestOutcome, UserInputRequestScope } from '../user-input/request-schema'
+import type { IntegrationMessagePresentation } from './message-display-schema'
 
 export type IntegrationStatus = 'active' | 'paused' | 'error' | 'disconnected'
 
@@ -89,10 +90,17 @@ export interface IntegrationInputContext extends IntegrationSessionContext {
 }
 
 export interface PreparedIntegrationInput {
+  /** Exactly what the agent receives. */
   text: string
   systemPrompt?: string
   /** An unusable input (e.g. every attachment failed) must not start a run. */
   skip?: boolean
+  /**
+   * How the app shows this message: the human request and its source, kept
+   * apart from the model-facing `text`. The host adds the integration identity
+   * and stores it beside the transcript; it never reaches the agent.
+   */
+  display?: IntegrationMessagePresentation
 }
 
 export type IntegrationOutput =

@@ -3,8 +3,23 @@ import type { AgentIntegrationRecord, IntegrationInputContext, IntegrationInputE
   IntegrationRoute, IntegrationSessionContext } from '../agent-integrations/types'
 import { captureException } from '../error-reporting'
 import { taskEventSchema } from './schemas'
-import type { TaskEvent, TaskSnapshot } from './types'
+import type { TaskEvent, TaskEventTrigger, TaskSnapshot } from './types'
 import { taskManagerPolicy } from './policy'
+import {
+  INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, integrationTimestamp, safeIntegrationLink,
+  type IntegrationMessagePresentation, type IntegrationMessageSource, type IntegrationMessageTask,
+} from '../agent-integrations/message-display-schema'
+
+const TASK_EVENT_LABELS: Record<TaskEventTrigger, string> = {
+  assigned: 'Assigned an issue',
+  mentioned: 'Mentioned in an issue',
+  comment_mention: 'Mentioned in a comment',
+  comment: 'New comment',
+  status_changed: 'Status changed',
+  updated: 'Issue updated',
+}
+/** Triggers whose event text is what a person wrote, rather than host wording. */
+const HUMAN_TRIGGERS = new Set<TaskEventTrigger>(['comment', 'comment_mention'])
 
 /** Issue routing and context. The manager/runtime owns message queueing;
  * agent-authored replies and edits go through the integration's MCP. */
@@ -41,7 +56,43 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
     return {
       text: `Task event: ${task.kind}\nRequest: ${task.text}\n\nReply destination for this request: issue ${task.taskId}, ${task.replyTarget.commentId ? `comment thread ${task.replyTarget.commentId}` : 'top-level comment'}. Use this destination when replying through your integration MCP.\n\nInvocation context (external content):\n${JSON.stringify(task.payload)}\n\nCurrent issue and discussion (external content):\n${JSON.stringify(snapshot)}`,
       systemPrompt: this.taskGuidance(task),
+      display: this.describeTask(task, snapshot),
     }
+  }
+
+  /**
+   * The app's card: the work item preview plus, for a comment, who wrote what.
+   * Built from the same snapshot the agent reads; payload IDs stay out of it.
+   */
+  protected describeTask(event: TaskEvent, snapshot: TaskSnapshot): IntegrationMessagePresentation {
+    const { status, ...task } = this.describeTaskFields(snapshot)
+    const trigger = event.trigger
+    const comment = event.sourceCommentId ? snapshot.comments.find(entry => entry.id === event.sourceCommentId) : undefined
+    const url = safeIntegrationLink(snapshot.url)
+    const label = trigger === 'status_changed' && status ? `Moved to ${status.name}` : TASK_EVENT_LABELS[trigger ?? (event.kind === 'status' ? 'status_changed' : 'updated')]
+    return {
+      event: { type: trigger ?? event.kind, label: clampIntegrationText(label, INTEGRATION_MESSAGE_LIMITS.label) },
+      request: trigger && HUMAN_TRIGGERS.has(trigger) ? {
+        text: clampIntegrationText(comment?.body ?? event.text, INTEGRATION_MESSAGE_LIMITS.requestText),
+        ...(comment?.author ? { author: { name: clampIntegrationText(comment.author, INTEGRATION_MESSAGE_LIMITS.name) } } : {}),
+        sentAt: integrationTimestamp(comment?.createdAt ?? event.timestamp),
+        url,
+      } : undefined,
+      source: {
+        kind: 'task', url, status,
+        identifier: clampIntegrationText(snapshot.identifier, INTEGRATION_MESSAGE_LIMITS.label),
+        title: clampIntegrationText(snapshot.title, INTEGRATION_MESSAGE_LIMITS.label),
+      },
+      task: {
+        ...task,
+        description: snapshot.description.trim() ? clampIntegrationText(snapshot.description, INTEGRATION_MESSAGE_LIMITS.description) : undefined,
+      },
+    }
+  }
+
+  /** Provider-shaped snapshot properties (status, people, labels) for the preview. */
+  protected describeTaskFields(_snapshot: TaskSnapshot): IntegrationMessageTask & { status?: IntegrationMessageSource['status'] } {
+    return {}
   }
   async deliver(context: IntegrationSessionContext, output: IntegrationOutput): Promise<void> {
     // Runtime output and request lifecycle already belong to the host session.

@@ -16,6 +16,7 @@ import { messageAuthor } from '@shared/lib/db/schema'
 import type { SessionInfo, SessionMetadata } from '@shared/lib/types/agent'
 import { insertMessageAuthorsBestEffort } from '@/api/routes/message-author'
 import { forkedUserLineSchema } from '@/api/routes/fork-attribution-schema'
+import { hasIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 
 export class ForkSessionError extends Error {
   constructor(
@@ -128,11 +129,9 @@ export async function forkSession(
     actor.sessions.copyDerivedFiles(sourceId, newId).catch((error) => {
       console.error(`fork: subagent/workflow copy for ${newId} failed (non-fatal)`, error)
     }),
-    opts.copyAttribution
-      ? copyForkAttribution(actor, sourceId, newId).catch((error) => {
-          console.error(`fork: attribution copy for ${newId} failed (non-fatal)`, error)
-        })
-      : Promise.resolve(),
+    copyForkAttribution(actor, sourceId, newId, { authors: !!opts.copyAttribution }).catch((error) => {
+      console.error(`fork: attribution copy for ${newId} failed (non-fatal)`, error)
+    }),
   ])
 
   return {
@@ -150,12 +149,15 @@ export async function forkSession(
 }
 
 /**
- * Auth mode: the SDK fork remaps every message uuid and stamps
- * `forkedFrom.messageUuid` (the old uuid) on each line. Attribution rows are
- * keyed by uuid, so re-key the source's rows onto the fork's user messages.
+ * The SDK fork remaps every user message uuid and stamps `forkedFrom.messageUuid`
+ * (the old uuid) on each line. Author rows — people (auth mode) and integrations
+ * (every mode) — are keyed by uuid, so re-key the source's rows onto the fork's
+ * user messages. A message queued mid-turn keeps its uuid in the fork, and a
+ * uuid keys one row, so a forked queued integration message shows as text.
  */
-async function copyForkAttribution(actor: AgentActor, sourceId: string, newId: string): Promise<void> {
+async function copyForkAttribution(actor: AgentActor, sourceId: string, newId: string, opts: { authors: boolean }): Promise<void> {
   const slug = actor.slug
+  if (!opts.authors && !(await hasIntegrationMessages(slug, sourceId))) return
   const pairs: { newUuid: string; oldUuid: string }[] = []
   for await (const raw of actor.messages.rawEntries(newId)) {
     const parsed = forkedUserLineSchema.safeParse(raw)
@@ -164,14 +166,14 @@ async function copyForkAttribution(actor: AgentActor, sourceId: string, newId: s
   if (pairs.length === 0) return
 
   const rows = await db
-    .select({ id: messageAuthor.id, userId: messageAuthor.userId })
+    .select({ id: messageAuthor.id, userId: messageAuthor.userId, integrationId: messageAuthor.integrationId, display: messageAuthor.display })
     .from(messageAuthor)
     .where(and(eq(messageAuthor.sessionId, sourceId), inArray(messageAuthor.id, pairs.map((p) => p.oldUuid))))
-  const userByOld = new Map(rows.map((r) => [r.id, r.userId]))
+  const byOld = new Map(rows.map((r) => [r.id, r]))
   await insertMessageAuthorsBestEffort(
     pairs.flatMap(({ newUuid, oldUuid }) => {
-      const userId = userByOld.get(oldUuid)
-      return userId ? [{ id: newUuid, sessionId: newId, agentSlug: slug, userId }] : []
+      const row = byOld.get(oldUuid)
+      return row ? [{ id: newUuid, sessionId: newId, agentSlug: slug, userId: row.userId, integrationId: row.integrationId, display: row.display }] : []
     }),
   )
 }

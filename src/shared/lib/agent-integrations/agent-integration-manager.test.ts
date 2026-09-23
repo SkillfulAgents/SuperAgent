@@ -7,7 +7,7 @@ import { AgentIntegrationManager } from './agent-integration-manager'
 import { AgentIntegrationRegistry } from './registry'
 import { captureException } from '../error-reporting'
 import { updateAgentIntegrationStatus } from '../services/agent-integration-service'
-import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationOutput, IntegrationSessionContext } from './types'
+import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationOutput, IntegrationSessionContext, PreparedIntegrationInput } from './types'
 
 const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
@@ -20,7 +20,10 @@ const state = vi.hoisted(() => ({
   markActive: vi.fn(), markIdle: vi.fn(), markProvisionalActive: vi.fn(), open: vi.fn(() => []),
   activity: vi.fn(() => 'idle'), recovery: [] as Array<{ externalId: string; sessionId?: string }>,
   create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), isStreamSubscribed: vi.fn(() => false), register: vi.fn(), metadata: vi.fn(),
+  broadcast: vi.fn(), isActive: vi.fn(() => false),
+  recordMessage: vi.fn(async (record: { display: unknown }) => record.display),
 }))
+vi.mock('@shared/lib/services/agent-integration-message-service', () => ({ recordIntegrationMessage: state.recordMessage }))
 vi.mock('./lifecycle', () => ({ onIntegrationAuthorizationLost: (callback: typeof state.authorizationLost) => { state.authorizationLost = callback; return () => { state.authorizationLost = undefined } } }))
 vi.mock('@shared/lib/services/connection-sync-service', () => ({ syncRemoteMcpAgents: state.syncMcp }))
 vi.mock('@shared/lib/services/agent-integration-service', () => ({
@@ -46,10 +49,10 @@ vi.mock('@shared/lib/agent-actor', () => ({
     inputs: { claim: state.claim, open: state.open },
     sessions: {
       create: state.create, register: state.register, updateMetadata: state.metadata,
-      activity: state.activity, activeIds: () => ['session-1'], markActive: state.markActive, markIdle: state.markIdle, markProvisionalActive: state.markProvisionalActive, subscribeStream: state.subscribeStream, isStreamSubscribed: state.isStreamSubscribed,
+      activity: state.activity, isActive: state.isActive, activeIds: () => ['session-1'], markActive: state.markActive, markIdle: state.markIdle, markProvisionalActive: state.markProvisionalActive, subscribeStream: state.subscribeStream, isStreamSubscribed: state.isStreamSubscribed,
     },
     messages: {
-      send: state.send, interrupt: state.interrupt,
+      send: state.send, interrupt: state.interrupt, broadcastEvent: state.broadcast,
       withSend: (_session: string, callback: () => Promise<void>) => callback(),
       subscribe: (session: string, callback: (event: unknown) => void) => {
         state.streams.set(session, callback)
@@ -75,7 +78,7 @@ class ObjectIntegration extends AgentIntegration {
   allowed = true
   outputs: Array<{ context: IntegrationSessionContext; output: IntegrationOutput }> = []
   released: IntegrationSessionContext[] = []
-  prepareInput = vi.fn(async (event: IntegrationInputEvent) => ({ text: `Object context: ${(event.payload as { text: string }).text}` }))
+  prepareInput = vi.fn(async (event: IntegrationInputEvent): Promise<PreparedIntegrationInput> => ({ text: `Object context: ${(event.payload as { text: string }).text}` }))
   sessionsToRecover = async () => state.recovery
   session(externalId: string) { return this.host.session(externalId) }
   async connect() { this.connected = true }
@@ -148,6 +151,63 @@ describe('AgentIntegration host contract', () => {
     expect(state.metadata).toHaveBeenCalledWith('session-1', { isAgentIntegrationSession: true, agentIntegrationId: 'installation-a' })
     expect('sendMessage' in adapter).toBe(false)
     expect(adapter.prepareInput).toHaveBeenCalledTimes(2)
+  })
+
+  describe('message display', () => {
+    const presentation = { event: { type: 'comment', label: 'New comment' }, request: { text: 'Please look' }, source: { kind: 'task' as const, identifier: 'OBJ-7' } }
+    const withDisplay = async (event: IntegrationInputEvent): Promise<PreparedIntegrationInput> =>
+      ({ text: `Object context: ${(event.payload as { text: string }).text}`, display: presentation })
+    const stored = {
+      ...presentation, version: 1,
+      integration: { id: 'installation-a', name: 'Objects', provider: 'test-objects', family: 'objects' },
+    }
+
+    it('records the card under the uuid the message is sent with and shows it live', async () => {
+      adapter.prepareInput.mockImplementation(withDisplay)
+      state.isActive.mockReturnValue(true)
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+      const initialMessageUuid = state.create.mock.calls[0][0].initialMessageUuid
+      expect(initialMessageUuid).toEqual(expect.any(String))
+      expect(state.recordMessage).toHaveBeenCalledWith({ id: initialMessageUuid, sessionId: 'session-1', agentSlug: 'installation-a', display: stored })
+
+      await adapter.input('comment-two', 'follow-up')
+      await vi.waitFor(() => expect(state.send).toHaveBeenCalledOnce())
+      const [, text, uuid] = state.send.mock.calls[0]
+      expect(text).toBe('Object context: follow-up')
+      expect(state.recordMessage).toHaveBeenLastCalledWith({ id: uuid, sessionId: 'session-1', agentSlug: 'installation-a', display: stored })
+      expect(state.broadcast).toHaveBeenCalledExactlyOnceWith('session-1', { type: 'user_message', uuid, content: text, queued: true, integration: stored })
+    })
+
+    it('records the card before the handoff, keyed by the delivery, so an uncertain send keeps it', async () => {
+      adapter.prepareInput.mockImplementation(withDisplay)
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+      state.send.mockImplementationOnce(async () => {
+        expect(state.recordMessage).toHaveBeenCalledTimes(2)
+        throw new Error('socket hang up')
+      })
+      await adapter.input('comment-two', 'follow-up')
+      await vi.waitFor(() => expect(state.send).toHaveBeenCalledOnce())
+      expect(state.recordMessage).toHaveBeenLastCalledWith(expect.objectContaining({ id: state.send.mock.calls[0][2], sessionId: 'session-1' }))
+    })
+
+    it('sends without a card or broadcast when the provider describes none, or the card is rejected', async () => {
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+      await adapter.input('comment-two', 'follow-up')
+      await vi.waitFor(() => expect(state.send).toHaveBeenCalledOnce())
+      expect(state.recordMessage).not.toHaveBeenCalled()
+
+      adapter.prepareInput.mockImplementation(withDisplay)
+      state.recordMessage.mockResolvedValueOnce(null)
+      await adapter.input('comment-three', 'again')
+      await vi.waitFor(() => expect(state.send).toHaveBeenCalledTimes(2))
+      expect(state.broadcast).not.toHaveBeenCalled()
+    })
   })
 
   it('delivers fast replay with the reply target, distinguishing a segment from turn completion', async () => {

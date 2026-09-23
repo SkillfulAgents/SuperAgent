@@ -6,6 +6,7 @@ import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy } from './types'
 import { taskManagerProviders } from '../task-manager-integrations/providers'
 import { chatProviders } from '../chat-integrations/providers'
+import { formatProviderName } from './presentation'
 
 export interface IntegrationProvider {
   setup?: IntegrationProviderSetup
@@ -65,6 +66,14 @@ export class AgentIntegrationRegistry {
     const provider = this.providers.get(record.provider)
     if (!provider) throw new Error(`Unknown integration provider: ${record.provider}`)
     return provider.policy.sessionPolicy(record, route)
+  }
+
+  /** The installation's name as the integration UI shows it, else the provider's. */
+  displayName(record: AgentIntegrationRecord): string {
+    const provider = this.providers.get(record.provider)
+    let name: string | null | undefined
+    try { name = provider?.serialize?.(record).name } catch { /* invalid stored config: fall through */ }
+    return name?.trim() || record.name?.trim() || provider?.definition.name || formatProviderName(record.provider)
   }
 
   async describeTarget(provider: string, externalId: string): Promise<{ type?: string }> {

@@ -37,6 +37,45 @@ The registry exposes serializable definitions (family, agent capabilities, manag
 
 The normalized response event carries a request ID, request kind, and value. Chat-specific callback strings and question-answer envelopes are decoded in the chat family. The host retains actor-bound review submission, input claims, and stale-response checks. `emitEvent` awaits its subscribers: the host persists accepted inputs before returning and processes responses inline. Shared delivery, retries and restart semantics are described in [Durable integration delivery](integration-delivery.md). The host logs and reports event-processing failures without changing connection status; connector errors still update status and notify the user. All chat events use `onEvent`.
 
+## Message display
+
+The agent's input never changes for display. `prepareInput` returns the model-facing
+`text` and, separately, an optional `display`: the human request (text, author, time,
+link), the source (conversation or work item, with a safe link, identifier, title,
+workspace and status) and the event (`type` plus a label). Families build it from what
+they already have: chat from the incoming message and provider hints (Slack adds the
+avatar, workspace and permalinks, and the request text without injected thread
+history), task managers from the event trigger and the issue snapshot (Linear adds
+status, priority, people and labels). Payload IDs, file URLs and credentials stay out.
+
+The manager adds the integration identity (ID, display-name snapshot, provider key,
+family) and version, validates the card (`message-display-schema.ts`: https links
+without credentials, bounded strings), and records the integration as the message's
+author in `message_author` (`user_id` null, `integration_id` set, the card in
+`display`) before the handoff. The row is keyed by the delivery ID, which is also the
+message uuid (and `initialMessageUuid` for a new session). A retry upserts the same row,
+moving it to a replacement session after self-heal; a failed or uncertain handoff keeps
+it, since the runtime may have accepted the message. The messages API joins it onto the
+user message as `integration` by exact uuid only; people's rows keep producing `sender`.
+A message queued mid-turn keeps its uuid too: the CLI writes it as the queued command's
+`source_uuid`, which becomes its transcript id. No message text is ever matched, so an
+identical message typed in the app never picks up a card. Live watchers get the same
+card in the `user_message` event. Author rows follow the existing `message_author`
+lifecycle, now in every mode: forks re-key them, and session, agent and factory-reset
+deletion remove them. A forked copy of a message queued mid-turn keeps its uuid, which
+already keys the source's row, so it renders as text. A card that does not validate is
+not stored, and the message renders as its text. Recording and broadcasting never block
+delivery.
+
+Only the host writes these rows, so a card cannot be spoofed by message text, and the
+external text keeps its untrusted-input role. In the renderer, the `integration` kind
+in `user-message-kinds` matches on this field alone and renders the provider's
+`Message` from `setup-providers.tsx` (Slack message row, Telegram and iMessage bubbles,
+Linear ticket preview), or a generic card for any other provider, including one this
+version does not know. The card shows the platform, event, request and source link;
+the full agent input sits behind a collapsed toggle. Messages from before this
+metadata, and sends whose card was not stored, render as ordinary text.
+
 ## Runtime recovery and authorization loss
 
 Families declare unfinished local work with `sessionsToRecover()`. The manager attaches host delivery before reconnecting the container stream, so terminal replay reaches the family even when no new external event arrives. Restoring unfinished sessions happens outside the integration-connect critical path; completed historical mappings do not start containers. Retries belong to those recovery demands and are cancelled when the integration or session is released.

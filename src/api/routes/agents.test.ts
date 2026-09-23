@@ -357,7 +357,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   mcpAuditLog: { agentSlug: 'agent_slug', createdAt: 'created_at' },
   agentAcl: { id: 'id', userId: 'user_id', agentSlug: 'agent_slug', role: 'role' },
   user: { id: 'id', name: 'name', email: 'email' },
-  messageAuthor: { id: 'id', sessionId: 'session_id', agentSlug: 'agent_slug', userId: 'user_id' },
+  messageAuthor: { id: 'id', sessionId: 'session_id', agentSlug: 'agent_slug', userId: 'user_id', integrationId: 'integration_id', display: 'display' },
   apiScopePolicies: { accountId: 'account_id', scope: 'scope' },
   mcpToolPolicies: { mcpId: 'mcp_id', toolName: 'tool_name' },
 }))
@@ -366,6 +366,7 @@ vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
   and: (...args: unknown[]) => args,
   inArray: (col: string, vals: string[]) => ({ col, vals }),
+  isNotNull: (col: string) => ({ col, notNull: true }),
   desc: (col: string) => ({ col }),
   count: () => 'count_fn',
   like: (col: string, val: string) => ({ col, val }),
@@ -543,6 +544,11 @@ vi.mock('@shared/lib/services/session-unread-service', () => ({
   getSessionIdsMarkedUnread: vi.fn(() => Promise.resolve(new Set())),
   getSessionIdsMarkedUnreadByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteSessionUnreadMarks: vi.fn(() => Promise.resolve(0)),
+}))
+
+vi.mock('@shared/lib/services/agent-integration-message-service', () => ({
+  annotateIntegrationMessages: vi.fn(() => Promise.resolve()),
+  hasIntegrationMessages: vi.fn(() => Promise.resolve(false)),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({

@@ -3,6 +3,7 @@ import { z } from 'zod'
 export const taskEventSchema = z.object({
   id: z.string().min(1), taskId: z.string().min(1), interactionId: z.string(),
   kind: z.enum(['invocation', 'status', 'context']), timestamp: z.string(),
+  trigger: z.enum(['assigned', 'mentioned', 'comment_mention', 'comment', 'status_changed', 'updated']).optional(),
   sourceCommentId: z.string().optional(),
   text: z.string(), title: z.string().optional(),
   replyTarget: z.record(z.string(), z.string()), payload: z.unknown(),

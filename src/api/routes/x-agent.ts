@@ -16,7 +16,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, isNotNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
 import { insertMessageAuthorBestEffort } from './message-author'
@@ -125,10 +125,12 @@ async function getLatestMessageAuthorUserId(
       .where(and(
         eq(messageAuthor.agentSlug, agentSlug),
         eq(messageAuthor.sessionId, sessionId),
+        // An integration-delivered message has no user author.
+        isNotNull(messageAuthor.userId),
       ))
       .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
       .limit(1)
-    return rows[0]?.userId
+    return rows[0]?.userId ?? undefined
   } catch (error) {
     // Attribution is optional. A DB/read failure must never block the invoke.
     console.warn('[x-agent] failed to resolve triggering message author; continuing unattributed', {

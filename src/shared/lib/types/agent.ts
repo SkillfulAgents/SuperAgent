@@ -253,9 +253,9 @@ export interface JsonlSystemEntry {
 /**
  * Attachment entry from Claude's JSONL format. The CLI records user messages
  * that arrive mid-turn (queued/steering input) as `queued_command` attachments
- * instead of regular user entries; `source_uuid` is the queue entry's id (NOT
- * the uuid the client sent with the message — the CLI regenerates it when the
- * message is enqueued mid-turn).
+ * instead of regular user entries; `source_uuid` is the queue entry's id, which
+ * for SDK input is the uuid the message was sent with (verified live on SDK
+ * 0.3.280; a fork leaves it unchanged). The line's own `uuid` is unrelated.
  */
 export interface JsonlAttachmentEntry {
   uuid: string
