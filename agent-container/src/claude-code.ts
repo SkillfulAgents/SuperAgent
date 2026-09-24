@@ -1,3 +1,4 @@
+import { adapterForProxy } from './llm-proxy-adapters';
 import { startLlmProxy, llmProxyBinding, type LlmProxyHandle } from './llm-proxy';
 import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
 import {
@@ -982,6 +983,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     const handle = await startLlmProxy({
       llmProviderId: runtime.llmProviderId,
       config: runtime.proxy!,
+      adapter: adapterForProxy(runtime.proxy!),
       ...(runtime.proxy!.credential.expiresAt !== undefined ? {
         refreshCredential: async (current, rejected) => {
           const updated = await resolveSessionRuntime(this.sessionId, {
