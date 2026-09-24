@@ -6084,6 +6084,44 @@ describe('MessagePersister', () => {
       expect(deltas).toHaveLength(0)
     })
 
+    it('broadcasts stream_delta when a finished answer never streamed', () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'answer-1',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'check the inbox' },
+            { type: 'text', text: 'Yes — got your email.' },
+          ],
+        },
+      })
+
+      const deltas = sseEvents.filter(e => e.type === 'stream_delta')
+      expect(deltas).toHaveLength(1)
+      expect(deltas[0].text).toBe('Yes — got your email.')
+    })
+
+    it('does not repeat stream_delta when the answer already streamed', () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Yes — got your email.' } },
+      })
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'answer-2',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Yes — got your email.' }] },
+      })
+
+      expect(sseEvents.filter(e => e.type === 'stream_delta')).toHaveLength(0)
+    })
+
     it('broadcasts stream_delta with apiErrorCode when no text was streaming', () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       sseEvents.length = 0
