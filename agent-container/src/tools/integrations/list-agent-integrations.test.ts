@@ -13,6 +13,12 @@ it('uses the common authenticated endpoint and preserves non-chat identities and
   expect(result.isError).toBeUndefined()
   expect(JSON.parse(result.content[0].text).integrations[0]).toMatchObject({ provider: 'test-tracker', status: 'paused', mcp: { tools: ['search'] } })
 })
+it('passes an email inbox address through to the agent', async () => {
+  vi.stubEnv('SUPERAGENT_HOST_API_URL', 'https://host/api'); vi.stubEnv('PROXY_TOKEN', 'token')
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ integrations: [{ id: 'mail', provider: 'platform-email', family: 'email', name: 'General Helper', status: 'active', address: 'helper@company.ongamut.so', capabilities: ['send_email'], instructions: 'Inbox address: helper@company.ongamut.so.', sessions: [], mcp: null }] })))
+  const result = await execute()
+  expect(JSON.parse(result.content[0].text).integrations[0].address).toBe('helper@company.ongamut.so')
+})
 it('reports host authorization errors without treating them as an empty account list', async () => {
   vi.stubEnv('SUPERAGENT_HOST_API_URL', 'https://host/api'); vi.stubEnv('PROXY_TOKEN', 'token')
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'Unauthorized' }, { status: 401 })))
