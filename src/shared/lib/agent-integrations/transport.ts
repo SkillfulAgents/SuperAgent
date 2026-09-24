@@ -30,7 +30,15 @@ export type IntegrationTransportConfig = { transport: IntegrationTransport; rela
 
 /** Reads the transport fields of any provider's config, whatever else it holds. */
 export function readIntegrationTransport(config: string | Record<string, unknown>): IntegrationTransportConfig {
-  const { transport, relay } = integrationTransportConfigSchema.parse(typeof config === 'string' ? JSON.parse(config) : config)
+  let raw: unknown = config
+  if (typeof config === 'string') {
+    try {
+      raw = JSON.parse(config)
+    } catch {
+      throw new Error('Integration config is not valid JSON')
+    }
+  }
+  const { transport, relay } = integrationTransportConfigSchema.parse(raw)
   return { transport, ...(relay ? { relay } : {}) }
 }
 
