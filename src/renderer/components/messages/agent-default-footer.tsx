@@ -1,7 +1,7 @@
-import { Check, Pin, Settings } from 'lucide-react'
-import { useNavigate } from '@tanstack/react-router'
+import { Check, MoreHorizontal, Pin, RotateCcw } from 'lucide-react'
 import { toast } from 'sonner'
 import { Separator } from '@renderer/components/ui/separator'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@renderer/components/ui/dropdown-menu'
 import { useModelSettings } from '@renderer/hooks/use-settings'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useUser } from '@renderer/context/user-context'
@@ -14,33 +14,23 @@ import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 interface AgentDefaultFooterProps {
   agentSlug: string
   state: ComposerOptionsState
-  /**
-   * Show the gear link to the agent home page, where the Agent Default Model
-   * card lives. Off for the agent-home composer itself — the card is already
-   * on screen there, and a link to the current page reads as a dead button.
-   */
-  agentHomeLink?: boolean
 }
 
 /**
- * Footer for the composer model popover: the per-session counterpart of the
- * settings picker's "Reset to Global Default" row, one level down the
- * hierarchy. Where that row compares an agent default against the app-wide
- * default, this one compares the session's pick against the agent default —
- * "Set as Agent Default" promotes the current model/effort/speed into agent
- * preferences so future sessions start there. Renders its own leading
+ * Footer for the composer model popover: always names the agent default (checked
+ * when the session's pick matches it), with a menu to promote the pick into agent
+ * preferences or clear them back to the global default. Renders its own leading
  * separator so a not-ready null return leaves no dangling rule.
  *
  * Only agent admins can write preferences (the PUT is AgentAdmin-gated), so
  * members get a read-only line naming the default instead of a button that
  * would 403.
  */
-export function AgentDefaultFooter({ agentSlug, state, agentHomeLink = true }: AgentDefaultFooterProps) {
+export function AgentDefaultFooter({ agentSlug, state }: AgentDefaultFooterProps) {
   const { data: settings } = useModelSettings()
   const { data: prefs, isFetched: prefsFetched } = useAgentPreferences(agentSlug)
   const updatePreferences = useUpdateAgentPreferences(agentSlug)
   const { canAdminAgent } = useUser()
-  const navigate = useNavigate()
 
   // The effective default this composer's untouched state would adopt:
   // agent preference → app-wide setting → built-in.
@@ -76,22 +66,31 @@ export function AgentDefaultFooter({ agentSlug, state, agentHomeLink = true }: A
     )
   }
 
+  const hasCustom = Boolean(prefs?.defaultModel || prefs?.defaultEffort || prefs?.defaultSpeed)
+  const resetToGlobal = () => {
+    state.applyGlobalDefault?.()
+    if (!hasCustom) return
+    updatePreferences.mutate(
+      { defaultModel: null, defaultLlmProviderId: null, defaultEffort: null, defaultSpeed: null },
+      { onError: () => toast.error("Couldn't reset the agent default") },
+    )
+  }
+
+  const defaultIsAlias = defaultModel !== undefined && state.catalog.some((m) => m.family === defaultModel)
+  const defaultModelLabel = defaultIsAlias ? familyDisplayName(defaultModel) : resolvedDefault?.label ?? defaultModel
+  const speedSuffix =
+    defaultSpeed !== 'normal' && SPEED_LABELS[defaultSpeed] ? ` · ${SPEED_LABELS[defaultSpeed]}` : ''
+  const defaultLabel = defaultModelLabel ? `${defaultModelLabel} · ${EFFORT_LABELS[defaultEffort]}${speedSuffix}` : ''
+
+  if (!defaultLabel) return null
+
   if (!canAdminAgent(agentSlug)) {
     // Members still learn the default exists and what it is.
-    const defaultIsAlias = defaultModel !== undefined && state.catalog.some((m) => m.family === defaultModel)
-    const defaultLabel = defaultIsAlias
-      ? familyDisplayName(defaultModel)
-      : resolvedDefault?.label ?? defaultModel
-    if (!defaultLabel) return null
-    const speedSuffix =
-      defaultSpeed !== 'normal' && SPEED_LABELS[defaultSpeed as SpeedLevel]
-        ? ` · ${SPEED_LABELS[defaultSpeed as SpeedLevel]}`
-        : ''
     return (
       <>
         <Separator className="my-2 bg-border/50" />
         <div className="truncate px-2 py-1 text-xs text-muted-foreground" data-testid="composer-agent-default-readonly">
-          Agent default: {defaultLabel} · {EFFORT_LABELS[defaultEffort]}{speedSuffix}
+          Agent default: {defaultLabel}
         </div>
       </>
     )
@@ -100,42 +99,54 @@ export function AgentDefaultFooter({ agentSlug, state, agentHomeLink = true }: A
   return (
     <>
       <Separator className="my-2 bg-border/50" />
-      <div className="flex items-center justify-between gap-2">
-        {/* The action is only offered when it would do something; a matching
-            pick states the status instead — which also serves as the
-            confirmation right after promoting. */}
-        {differs ? (
-          <button
-            type="button"
-            data-testid="composer-agent-default"
-            disabled={updatePreferences.isPending}
-            onClick={promote}
-            className="flex min-w-0 items-center gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-muted-foreground enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50"
-          >
-            <Pin className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            <span className="truncate">Set as Agent Default</span>
-          </button>
-        ) : (
-          <div
-            data-testid="composer-agent-default-current"
-            className="flex min-w-0 items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground"
-          >
-            <Check className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            <span className="truncate">Current Agent Default</span>
-          </div>
-        )}
-        {agentHomeLink && (
-          <button
-            type="button"
-            data-testid="composer-agent-default-change"
-            aria-label="Change agent default in Agent Home"
-            title="Change agent default in Agent Home"
-            onClick={() => void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })}
-            className="shrink-0 rounded-sm p-1 text-muted-foreground/70 hover:text-foreground"
-          >
-            <Settings className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-        )}
+      {/* Same header treatment as the Effort / Speed sections above. */}
+      <div className="flex items-center justify-between gap-2 px-2 py-1 text-[11px] font-medium text-muted-foreground/70">
+        <span
+          data-testid="composer-agent-default-current"
+          title={`Agent Default · ${defaultLabel}`}
+          className="flex min-w-0 items-center gap-1"
+        >
+          {!differs && <Check className="h-3 w-3 shrink-0" aria-hidden="true" />}
+          <span className="truncate">
+            <span>Agent Default</span>
+            <span className="text-[#007DED] dark:text-[#4EB3FF]"> · {defaultLabel}</span>
+          </span>
+        </span>
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              data-testid="composer-agent-default-menu"
+              aria-label="Agent default options"
+              title="Agent default options"
+              className="inline-flex shrink-0 hover:text-foreground"
+            >
+              <MoreHorizontal className="h-3 w-3" aria-hidden="true" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-0">
+            <DropdownMenuItem
+              data-testid="composer-agent-default"
+              className="gap-1.5 py-1 text-xs [&>svg]:size-3.5"
+              disabled={!differs || updatePreferences.isPending}
+              onSelect={promote}
+            >
+              <Pin aria-hidden="true" />
+              Set as Current Default
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="composer-agent-default-reset"
+              className="gap-1.5 py-1 text-xs [&>svg]:size-3.5"
+              // With no custom agent default, the agent default is the global one,
+              // so there is still something to do while the pick diverges from it.
+              disabled={(!hasCustom && !differs) || updatePreferences.isPending}
+              onSelect={resetToGlobal}
+            >
+              <RotateCcw aria-hidden="true" />
+              Use Global Default
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </>
   )

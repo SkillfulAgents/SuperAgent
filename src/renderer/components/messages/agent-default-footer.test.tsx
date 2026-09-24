@@ -20,11 +20,6 @@ vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({ canAdminAgent: canAdminAgentMock }),
 }))
 
-const navigateMock = vi.fn()
-vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => navigateMock,
-}))
-
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 
 import { AgentDefaultFooter } from './agent-default-footer'
@@ -65,18 +60,32 @@ beforeEach(() => {
   useAgentPreferencesMock.mockReturnValue({ data: {}, isFetched: true })
 })
 
+const openMenu = async (user: ReturnType<typeof userEvent.setup>) => {
+  await user.click(screen.getByTestId('composer-agent-default-menu'))
+}
+
 describe('AgentDefaultFooter', () => {
   it('renders nothing until agent preferences have answered', () => {
     useAgentPreferencesMock.mockReturnValue({ data: undefined, isFetched: false })
     render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith()} />)
-    expect(screen.queryByTestId('composer-agent-default')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('composer-agent-default-current')).not.toBeInTheDocument()
   })
 
-  it('shows the status label when the pick already is the agent default (alias vs concrete latest)', () => {
-    // Default is the bare alias 'opus'; the composer holds the concrete latest id.
+  it('checks the default line when the pick already is the agent default (alias vs concrete latest)', async () => {
+    const user = userEvent.setup()
     render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith({ model: 'claude-opus-4-8' })} />)
-    expect(screen.getByTestId('composer-agent-default-current')).toHaveTextContent('Current Agent Default')
-    expect(screen.queryByTestId('composer-agent-default')).not.toBeInTheDocument()
+    const line = screen.getByTestId('composer-agent-default-current')
+    expect(line).toHaveTextContent('Agent Default · Opus · Medium')
+    expect(line.querySelector('svg')).toBeInTheDocument()
+    await openMenu(user)
+    expect(screen.getByTestId('composer-agent-default')).toHaveAttribute('data-disabled')
+  })
+
+  it('keeps the default line visible, unchecked, when the pick diverges', () => {
+    render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith({ model: 'claude-sonnet-4-6' })} />)
+    const line = screen.getByTestId('composer-agent-default-current')
+    expect(line).toHaveTextContent('Agent Default · Opus · Medium')
+    expect(line.querySelector('svg')).not.toBeInTheDocument()
   })
 
   it('promotes a diverging pick, storing the family alias for a latest model', async () => {
@@ -87,9 +96,8 @@ describe('AgentDefaultFooter', () => {
         state={stateWith({ model: 'claude-sonnet-4-6', effort: 'high' as EffortLevel })}
       />,
     )
-    const promote = screen.getByTestId('composer-agent-default')
-    expect(promote).toBeEnabled()
-    await user.click(promote)
+    await openMenu(user)
+    await user.click(screen.getByTestId('composer-agent-default'))
     expect(mutateMock).toHaveBeenCalledWith(
       { defaultModel: 'sonnet', defaultEffort: 'high', defaultSpeed: null },
       expect.anything(),
@@ -99,6 +107,7 @@ describe('AgentDefaultFooter', () => {
   it('stores the concrete id when the pick is a pinned older version', async () => {
     const user = userEvent.setup()
     render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith({ model: 'claude-opus-4-7' })} />)
+    await openMenu(user)
     await user.click(screen.getByTestId('composer-agent-default'))
     expect(mutateMock).toHaveBeenCalledWith(
       expect.objectContaining({ defaultModel: 'claude-opus-4-7' }),
@@ -106,11 +115,11 @@ describe('AgentDefaultFooter', () => {
     )
   })
 
-  it('enables the promote action on an effort-only divergence', () => {
-    render(
-      <AgentDefaultFooter agentSlug="my-agent" state={stateWith({ effort: 'xhigh' as EffortLevel })} />,
-    )
-    expect(screen.getByTestId('composer-agent-default')).toBeEnabled()
+  it('enables promotion on an effort-only divergence', async () => {
+    const user = userEvent.setup()
+    render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith({ effort: 'xhigh' as EffortLevel })} />)
+    await openMenu(user)
+    expect(screen.getByTestId('composer-agent-default')).not.toHaveAttribute('data-disabled')
   })
 
   it('compares against the agent preference when one is set, not the app-wide default', () => {
@@ -124,36 +133,56 @@ describe('AgentDefaultFooter', () => {
         state={stateWith({ model: 'claude-sonnet-4-6', effort: 'high' as EffortLevel })}
       />,
     )
-    expect(screen.getByTestId('composer-agent-default-current')).toBeInTheDocument()
-    expect(screen.queryByTestId('composer-agent-default')).not.toBeInTheDocument()
+    const line = screen.getByTestId('composer-agent-default-current')
+    expect(line).toHaveTextContent('Agent Default · Sonnet · High')
+    expect(line.querySelector('svg')).toBeInTheDocument()
   })
 
-  it('shows members a read-only line naming the default instead of the button', () => {
-    canAdminAgentMock.mockReturnValue(false)
-    render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith()} />)
-    expect(screen.queryByTestId('composer-agent-default')).not.toBeInTheDocument()
-    expect(screen.getByTestId('composer-agent-default-readonly')).toHaveTextContent(
-      'Agent default: Opus · Medium',
+  it('clears a custom agent default back to the global default', async () => {
+    const user = userEvent.setup()
+    useAgentPreferencesMock.mockReturnValue({
+      data: { defaultModel: 'sonnet', defaultEffort: 'high' },
+      isFetched: true,
+    })
+    const applyGlobalDefault = vi.fn()
+    render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith({ applyGlobalDefault })} />)
+    await openMenu(user)
+    await user.click(screen.getByTestId('composer-agent-default-reset'))
+    expect(applyGlobalDefault).toHaveBeenCalledOnce()
+    expect(mutateMock).toHaveBeenCalledWith(
+      { defaultModel: null, defaultLlmProviderId: null, defaultEffort: null, defaultSpeed: null },
+      expect.anything(),
     )
   })
 
-  it('links to the agent home page where the default-model card lives', async () => {
+  it('switches the composer to the global default without writing prefs when the agent already follows it', async () => {
+    const user = userEvent.setup()
+    const applyGlobalDefault = vi.fn()
+    render(
+      <AgentDefaultFooter
+        agentSlug="my-agent"
+        state={stateWith({ model: 'claude-sonnet-4-6', applyGlobalDefault })}
+      />,
+    )
+    await openMenu(user)
+    await user.click(screen.getByTestId('composer-agent-default-reset'))
+    expect(applyGlobalDefault).toHaveBeenCalledOnce()
+    expect(mutateMock).not.toHaveBeenCalled()
+  })
+
+  it('disables Use Global Default when the agent and the pick already follow it', async () => {
     const user = userEvent.setup()
     render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith()} />)
-    await user.click(screen.getByTestId('composer-agent-default-change'))
-    expect(navigateMock).toHaveBeenCalledWith({ to: '/agents/$slug', params: { slug: 'my-agent' } })
+    await openMenu(user)
+    expect(screen.getByTestId('composer-agent-default-reset')).toHaveAttribute('data-disabled')
   })
 
-  it('hides the home link when the host is the agent home page itself', () => {
-    render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith()} agentHomeLink={false} />)
-    expect(screen.queryByTestId('composer-agent-default-change')).not.toBeInTheDocument()
-  })
-
-  it('swaps the status label for the promote action when the pick diverges', () => {
-    const { rerender } = render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith()} />)
-    expect(screen.getByTestId('composer-agent-default-current')).toBeInTheDocument()
-    rerender(<AgentDefaultFooter agentSlug="my-agent" state={stateWith({ model: 'claude-sonnet-4-6' })} />)
-    expect(screen.getByTestId('composer-agent-default')).toBeInTheDocument()
-    expect(screen.queryByTestId('composer-agent-default-current')).not.toBeInTheDocument()
+  it('shows members a read-only line naming the default instead of the menu', () => {
+    canAdminAgentMock.mockReturnValue(false)
+    render(<AgentDefaultFooter agentSlug="my-agent" state={stateWith()} />)
+    expect(screen.queryByTestId('composer-agent-default-menu')).not.toBeInTheDocument()
+    expect(screen.getByTestId('composer-agent-default-readonly')).toHaveTextContent(
+      'Agent default: Opus · Medium',
+    )
   })
 })
