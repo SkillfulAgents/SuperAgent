@@ -104,8 +104,11 @@ describe('skillset install', () => {
       // replaces: the skillset's CLAUDE.md lands on the one the agent was
       // created with, and a copy that refuses to write through an existing
       // entry unlinks it and copies again. Each of the three instructions
-      // writes first stats CLAUDE.md to choose it over AGENTS.md.
-      totalOps: 111,
+      // writes first stats CLAUDE.md to choose it over AGENTS.md. Moving the
+      // template's CLAUDE.md to AGENTS.md adds a read, an atomic write and a
+      // delete, and later reads miss CLAUDE.md before finding AGENTS.md; the
+      // agent is now created with AGENTS.md, so the unlink and second copy go.
+      totalOps: 117,
       // Recorded 430–490 ms on an idle machine; ~2× that, as the home
       // profiles are budgeted, so runner load cannot trip it while a
       // serialised copy path still would.
