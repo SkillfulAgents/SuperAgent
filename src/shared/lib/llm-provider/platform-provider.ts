@@ -25,7 +25,7 @@ export function sanitizeAgentName(name: string): string {
 
 export class PlatformLlmProvider extends BaseLlmProvider {
   readonly id = 'platform' as const
-  readonly name = 'Platform'
+  readonly name = 'Gamut Platform'
   readonly defaultModelOptions = PLATFORM_DEFAULT_MODEL_OPTIONS
   readonly catalogDefaultModels = PLATFORM_CATALOG_DEFAULT_MODELS
   // Not used — getApiKeyStatus/getEffectiveApiKey are both overridden to

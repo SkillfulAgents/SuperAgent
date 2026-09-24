@@ -20,11 +20,11 @@ function ConnectedUsage({ connection, compact, descriptionId }: { connection: Co
   </span> : <UsageBars usage={data} compact={compact} />
 }
 
-/** The fill and warning thresholds always describe the percentage consumed. */
+/** The fill always describes the percentage consumed, in the effort slider's blue at every level. */
 export function UsageBars({ usage, compact = false }: { usage?: Snapshot; compact?: boolean }) {
   if (usage?.status !== 'available' || !usage.limits.length) return null
   return (
-    <span className={`block space-y-2 ${compact ? 'mt-1.5 text-[10px]' : 'mt-3 max-w-lg text-xs'}`}>
+    <span className={`block space-y-2 ${compact ? 'mt-2.5 text-[10px]' : 'mt-3 max-w-lg text-xs'}`}>
       {usage.limits.map(limit => limit.kind === 'balance' ? (
         <span key={limit.id} className="flex items-center justify-between gap-3 text-muted-foreground">
           <span>{limit.label}</span>
@@ -39,9 +39,10 @@ export function UsageBars({ usage, compact = false }: { usage?: Snapshot; compac
             <span className="truncate">{limit.label}</span>
             {!compact && <span className="tabular-nums whitespace-nowrap">{Math.round(limit.usedPercent)}% used</span>}
           </span>
-          <Progress percent={limit.usedPercent} consumedThresholds={{ warning: 80, critical: 95 }} role="progressbar" aria-label={`${limit.label} usage`} aria-valuemin={0} aria-valuemax={100}
+          <Progress percent={limit.usedPercent} role="progressbar" aria-label={`${limit.label} usage`} aria-valuemin={0} aria-valuemax={100}
             aria-valuenow={Math.min(100, limit.usedPercent)} aria-valuetext={`${Math.round(limit.usedPercent)}% used${limit.resetsAt ? `, resets ${new Date(limit.resetsAt).toLocaleString()}` : ''}`}
-            className={`bg-foreground/10 ${compact ? 'h-1' : 'h-1.5'}`} />
+            // Same blue fill and track as the effort slider.
+            fillClassName="bg-[#0099FF]" className={`bg-[#E1F6FF] dark:bg-[#15384F] ${compact ? 'h-1' : 'h-1.5'}`} />
           {compact ? <span className="text-right tabular-nums text-muted-foreground">{Math.round(limit.usedPercent)}%</span> : limit.resetsAt && <span className="block text-[11px] text-muted-foreground">Resets {new Date(limit.resetsAt).toLocaleString()}</span>}
         </span>
       ))}

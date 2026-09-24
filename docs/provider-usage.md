@@ -3,7 +3,7 @@
 Provider settings show allowance meters, reset times and remaining balances. The
 provider dropdown in both model pickers shows the same data as labeled mini-bars
 and balances. It remains hidden when there is only one connection. Fill always
-means **consumed**: normal through 80%, orange above 80%, red above 95%.
+means **consumed**, in the effort slider's blue at every level (no warning colors).
 
 This is informational only. Exhaustion never disables a provider/model or changes
 request routing. Missing/failed/unsupported reporting has no UI placeholder;
@@ -62,6 +62,6 @@ On 2026-09-24 UTC, the implemented adapters returned real Codex and Grok weekly
 windows plus credit balances, and Platform organization credits using temporary
 credentials. That Platform account had no seat; populated and exhausted seats
 are covered by fixtures. Multi-window Codex responses, schema variations,
-401 isolation, cache coalescing, member isolation, zeros/missing values and color thresholds have
+401 isolation, cache coalescing, member isolation, zeros/missing values and the uniform bar color have
 regression coverage. The no-credit-entitlement case is fixture-tested, not
 confirmed with a live account. Light/dark screenshots use synthetic billing fixtures.
