@@ -32,6 +32,13 @@ export const platformEmailProvider: IntegrationProvider = {
     uniqueKey(input) { const result = emailConfigSchema.safeParse(input); return result.success ? result.data.mailboxId : null },
     merge: (stored, patch) => emailConfigSchema.parse({ ...parseEmailConfig(stored), ...emailConfigPatchSchema.parse(patch) }),
   },
+  agentDiscovery(record) {
+    try { return { address: parseEmailConfig(record.config).address } }
+    catch (error) {
+      if (error instanceof Error && error.message === 'Invalid stored email configuration') return {}
+      throw error
+    }
+  },
   serialize(record) {
     const { config, ...fields } = record
     const parsed = parseEmailConfig(config)

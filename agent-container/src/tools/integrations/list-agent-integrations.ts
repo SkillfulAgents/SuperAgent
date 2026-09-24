@@ -4,7 +4,7 @@ import { callHost, textResult, XAgentError } from '../agents/host-client'
 
 const integrationSchema = z.object({
   id: z.string(), provider: z.string(), family: z.string(), name: z.string().nullable(), status: z.string(),
-  capabilities: z.array(z.string()), instructions: z.string().optional(),
+  capabilities: z.array(z.string()), address: z.string().optional(), instructions: z.string().optional(),
   sessions: z.array(z.object({ externalId: z.string(), displayName: z.string().nullable(), type: z.string().optional() })),
   mcp: z.object({ name: z.string(), status: z.string(), identity: z.object({ name: z.string(), provider: z.string(), workspace: z.string().optional() }), tools: z.array(z.string()) }).nullable(),
 })

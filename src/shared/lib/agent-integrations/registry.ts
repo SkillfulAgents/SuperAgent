@@ -28,6 +28,8 @@ export interface IntegrationProvider {
   mcp?(record: AgentIntegrationRecord): Promise<IntegrationMcpConnection | null>
   cleanup?(record: AgentIntegrationRecord): Promise<void>
   describeTarget?(externalId: string): Promise<{ type?: string }>
+  /** Safe identity the agent may quote. Credentials stay out. */
+  agentDiscovery?(record: AgentIntegrationRecord): { address?: string }
 }
 
 /** The composition root is the only application module that enumerates families. */
@@ -79,6 +81,10 @@ export class AgentIntegrationRegistry {
 
   async describeTarget(provider: string, externalId: string): Promise<{ type?: string }> {
     return this.providers.get(provider)?.describeTarget?.(externalId) ?? {}
+  }
+
+  agentDiscovery(record: AgentIntegrationRecord): { address?: string } {
+    return this.providers.get(record.provider)?.agentDiscovery?.(record) ?? {}
   }
 
   async cleanup(record: AgentIntegrationRecord): Promise<void> {
