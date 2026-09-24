@@ -2352,6 +2352,11 @@ class MessagePersister {
           }
           if (assistantMessageId) state.assistantMessageIds.add(assistantMessageId)
           if (assistantEntryUuid) state.assistantEntryUuids.add(assistantEntryUuid)
+          // Email and chat delivery only see stream_delta. A finished answer
+          // with no text deltas would show in the transcript and never send.
+          if (!content.error && state.currentText.length === 0 && assistantText) {
+            this.broadcastToSSE(agentSlug, sessionId, { type: 'stream_delta', text: assistantText })
+          }
         }
 
         // Complete assistant message - JSONL is the source of truth
