@@ -42,8 +42,8 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
   }
   /** Context events are never input; they only resolve to 'rejected'. */
   protected async acceptTaskEvent(event: TaskEvent): Promise<IntegrationInputResult> {
-    if (!this.connected) return 'retry'
     if (event.kind === 'context') return 'rejected'
+    if (!this.connected) return 'retry'
     // Deduplication and acceptance belong to the shared manager for all families.
     return this.emitEvent({ type: 'input', id: event.id, externalId: event.taskId,
       timestamp: new Date(event.timestamp), payload: event })
