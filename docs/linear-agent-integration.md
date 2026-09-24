@@ -5,18 +5,20 @@
 The task family owns issue routing, context preparation and reply guidance.
 Follow-ups immediately enter the shared runtime's message queue, including during
 running turns; there is no task-specific queue or turn-completion lock.
-Linear owns OAuth identities and direct
-event delivery. The official Linear MCP owns outbound operations, through Gamut's
-shared MCP proxy.
+Linear owns OAuth identities and event
+delivery, over its own socket or through the host's webhook relay. The official
+Linear MCP owns outbound operations, through Gamut's shared MCP proxy.
 
 ## Set up an identity
 
-From the agent home, open **External Integrations → Add Integration → Linear**. This works without a
-Gamut platform account, hosted relay, or public webhook listener.
+From the agent home, open **External Integrations → Add Integration → Linear**. The live
+connection works without a Gamut platform account, hosted relay, or public webhook
+listener. When the host's webhook relay is available, setup offers webhooks instead
+and selects them by default ([Webhook transport](#webhook-transport)).
 
 1. Choose the agent's name in the shared setup modal and open its prefilled Linear application form.
 2. Create a **private** OAuth app for this agent. Choose its avatar in Linear.
-   The form supplies the callback URL and leaves webhooks disabled.
+   The form supplies the callback URL, and leaves webhooks disabled for a live connection.
 3. Copy the client ID and client secret into the same modal, then click **Connect**.
 4. Authorize in the Linear window that opens. A workspace admin may need to approve the app and grant
    access to the intended teams. The setup modal stays open until authorization succeeds,
@@ -33,6 +35,43 @@ never receive the Linear access token, refresh token or application secret.
 Refresh tokens rotate with one renewal in flight per installation. Removing an
 integration attempts token revocation and removes local access even when Linear is offline. Remove the OAuth application in Linear settings
 if it is no longer needed.
+
+## Webhook transport
+
+With the relay transport, Linear's webhooks for the app arrive through the host's
+[webhook relay](agent-integrations.md#transports) instead of a socket. Events queue
+on the platform while the host is offline and are delivered when it is back, which
+the live connection cannot do.
+
+Setup differs in three places. The webhook URL must exist before the Linear app, so
+**Get webhook URL** creates the installation (minting its relay endpoint) first. The
+app-creation link then turns webhooks on with that URL and the `AppUserNotification`,
+`Comment` and `Issue` resource types. Linear shows the app's webhook signing secret
+once the app exists; it is pasted with the client ID and secret, and authorization
+refuses to start without it. The secret stays on the host.
+
+Each delivery is verified before anything else: `Linear-Signature` must be the hex
+HMAC-SHA256 of the raw stored body, and the relay must have received it within a
+minute of Linear's signed `webhookTimestamp`. Freshness is judged at receipt, not at
+processing, because relayed events can be claimed much later. A signature mismatch
+marks the connection unhealthy once, since it usually means the wrong secret was
+pasted; handshakes and stale deliveries are dropped.
+
+A webhook is then used only as a pointer: the notification, comment or issue it
+names is read back through the same GraphQL fields as the live subscriptions and fed
+into the same handling. Both transports therefore produce identical events and event
+IDs (`assignment:`, `mention:`, `comment:`, `history:`), so switching transports
+never runs a request twice. Issue webhooks only matter for delegation, status and
+archival changes; the matching history entry is the one of that kind recorded within
+ten seconds of the change. Anything that isn't input is acknowledged and dropped.
+Access errors (the entity was deleted or unshared) drop the delivery; other read
+failures leave it with the relay, which offers it again with backoff.
+
+Switching an existing installation is explicit, from **Event Delivery** in its
+settings. Moving to webhooks mints the endpoint and shows the URL, event types and a
+field for the signing secret to configure in the Linear app; moving back disables the
+endpoint and forgets the secret. Deliveries the relay had already claimed at that
+moment are dropped. Either switch reconnects the integration.
 
 ## Live events
 
@@ -158,7 +197,8 @@ preparation with a bounded budget, then delivers a failure notice if exhausted.
 The shared integration UI shows **Degraded** when inbound events work
 but MCP is unavailable; transient failures do not clear credentials. Proxy
 failures also update outbound health. A 401 requires reconnecting the parent
-identity. Neither direction needs platform login or a webhook relay.
+identity. Outbound calls never need platform login or a webhook relay; inbound
+events need the relay only with the webhook transport.
 
 ## Native agent panel and follow-ups
 
@@ -168,9 +208,9 @@ application.” V1 therefore uses named app identities, issue sessions and ordin
 comment threads. It does not expose Linear's native Agent Session panel, native
 activity progress, or that panel's Stop signal.
 
-Shared webhook delivery and capability discovery are tracked in
-[SUP-871](https://linear.app/datawizz/issue/SUP-871). That service can later upgrade
-Linear and other integrations together. OAuth app creation through Linear's alpha
+Shared webhook delivery ([SUP-871](https://linear.app/datawizz/issue/SUP-871)) gives
+Linear its webhook transport. Enabling the `AgentSessionEvent` category, and with it
+the native panel, is a follow-up. OAuth app creation through Linear's alpha
 API is also deferred; initial setup uses prefilled application URLs.
 
 Live validation confirmed the existing app OAuth token authenticates to the hosted

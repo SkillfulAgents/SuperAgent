@@ -12,8 +12,15 @@ import {
 } from '../webhook-relay'
 import { WebhookEndpointsApiError } from '../webhook-relay/platform-endpoints-client'
 import { IntegrationSetupError } from './setup-types'
-import { integrationRelayBindingSchema, readIntegrationTransport, type IntegrationRelayBinding } from './transport'
-import type { AgentIntegrationRecord, IntegrationInputResult } from './types'
+import {
+  integrationRelayBindingSchema,
+  readIntegrationTransport,
+  supportedTransports,
+  type IntegrationRelayBinding,
+  type IntegrationTransport,
+  type IntegrationTransportConfig,
+} from './transport'
+import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationInputResult } from './types'
 
 /**
  * The scope an integration's endpoint is minted and claimed under: its
@@ -22,6 +29,11 @@ import type { AgentIntegrationRecord, IntegrationInputResult } from './types'
 export async function integrationRelayScope(userId?: string): Promise<string> {
   const resolved = userId ? await resolvePlatformMemberForCandidates([userId]) : null
   return resolved?.memberId ?? getStoredPlatformMemberId() ?? LOCAL_RELAY_SCOPE
+}
+
+/** The endpoint's name on the platform, which lists it alongside agent-minted ones. */
+export function integrationRelayName(providerName: string, agentSlug: string): string {
+  return `${providerName} integration for ${agentSlug}`
 }
 
 /** Mints the public URL an integration's webhooks will arrive at. */
@@ -67,6 +79,38 @@ export async function releaseIntegrationTransport(record: AgentIntegrationRecord
       extra: { integrationId: record.id, provider: record.provider, endpointId: relay.endpointId },
     })
   }
+}
+
+/**
+ * Moves an existing installation to another transport; `write` stores the new
+ * transport fields. A new endpoint is minted before the write and disabled
+ * again if the write fails; the old one is disabled only once the write has
+ * happened. Returns false when it is already on that transport.
+ */
+export async function changeIntegrationTransport(
+  record: AgentIntegrationRecord,
+  definition: Pick<AgentIntegrationDefinition, 'name' | 'transports'>,
+  to: IntegrationTransport,
+  write: (next: IntegrationTransportConfig) => Promise<void>,
+): Promise<boolean> {
+  const current = readIntegrationTransport(record.config)
+  if (current.transport === to) return false
+  if (!supportedTransports(definition).includes(to)) throw new IntegrationSetupError(`${definition.name} can't receive events over the ${to === 'relay' ? 'webhook relay' : 'direct connection'}`)
+  if (to === 'relay') {
+    const relay = await provisionIntegrationRelay(integrationRelayName(definition.name, record.agentSlug), record.createdByUserId ?? undefined)
+    try {
+      await write({ transport: 'relay', relay })
+    } catch (error) {
+      await disableIntegrationRelay(relay).catch((cleanup: unknown) => {
+        captureException(cleanup, { tags: { component: 'agent-integration', operation: 'release-relay-endpoint' }, extra: { integrationId: record.id } })
+      })
+      throw error
+    }
+    return true
+  }
+  await write({ transport: 'direct' })
+  await releaseIntegrationTransport(record)
+  return true
 }
 
 /** Every result but `retry` acknowledges the event to the relay. */

@@ -1,7 +1,7 @@
 import type { ChatIntegration } from '../../db/schema'
 import { parseTaskJson } from '../schemas'
 import { linearConfigSchema } from './config'
-import { linearAppCreationUrl } from './oauth'
+import { LINEAR_WEBHOOK_RESOURCE_TYPES, linearAppCreationUrl } from './oauth'
 
 export function publicLinearIntegration(row: ChatIntegration) {
   if (row.provider !== 'linear') throw new Error('Linear integration not found')
@@ -17,5 +17,8 @@ export function publicLinearIntegration(row: ChatIntegration) {
     authorized: authorizationState === 'connected', authorizationState, authorizationMessage,
     ...(pending ? { authorizationPendingUntil: config.oauth?.expiresAt } : {}),
     canReconnect: !!config.clientId && !!config.clientSecret, runOnStatusChange: config.runOnStatusChange,
+    transport: config.transport,
+    // What the Linear app's webhooks must point at; the signing secret itself never leaves the host.
+    webhook: config.relay ? { url: config.relay.url, resourceTypes: [...LINEAR_WEBHOOK_RESOURCE_TYPES], secretSaved: !!config.webhookSecret } : null,
     setup: { creationUrl: linearAppCreationUrl(row.name ?? row.agentSlug, config), redirectUri: config.redirectUri } }
 }

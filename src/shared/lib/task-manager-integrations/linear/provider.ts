@@ -30,11 +30,22 @@ export const linearProvider: IntegrationProvider = {
       authorizationPendingUntil: linear.authorizationPendingUntil, refreshIntervalMs: 30000, linear }
   },
   async updateSettings(record, input) {
-    const { runOnStatusChange: enabled } = linearSettingsPatchSchema.parse(input.settings ?? input)
-    if (enabled !== undefined) {
-      const { updateLinearConfig } = await import('./store')
-      await updateLinearConfig(record.id, latest => ({ ...latest, runOnStatusChange: enabled }))
+    const { runOnStatusChange: enabled, transport, webhookSecret } = linearSettingsPatchSchema.parse(input.settings ?? input)
+    const { updateLinearConfig } = await import('./store')
+    let reconnect = false
+    if (transport) {
+      const { changeIntegrationTransport } = await import('../../agent-integrations/relay-transport')
+      // The Linear app's webhooks change with it, so a relay secret never carries across.
+      reconnect = await changeIntegrationTransport(record, linearDefinition, transport, async next => {
+        await updateLinearConfig(record.id, latest => ({ ...latest, transport: next.transport, relay: next.relay, webhookSecret: next.transport === 'relay' ? webhookSecret : undefined }))
+      })
     }
+    if (webhookSecret !== undefined && !reconnect) {
+      await updateLinearConfig(record.id, latest => ({ ...latest, webhookSecret }))
+      reconnect = true
+    }
+    if (enabled !== undefined) await updateLinearConfig(record.id, latest => ({ ...latest, runOnStatusChange: enabled }))
+    return { reconnect }
   },
   async mcp(record) {
     const { linearMcpConnection } = await import('./mcp')

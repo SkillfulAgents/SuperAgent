@@ -7,6 +7,14 @@ let handle: TestDatabase
 let testDb: AppDatabase
 vi.mock('../../db', () => ({ get db() { return testDb } }))
 vi.mock('../../error-reporting', () => ({ captureException: vi.fn() }))
+const relayEndpoints = vi.hoisted(() => ({
+  create: vi.fn(async (_scope: string, _spec: { name: string }) => ({ id: `whep_${relayEndpoints.create.mock.calls.length}`, url: `https://relay.test/v1/hooks/whep_${relayEndpoints.create.mock.calls.length}` })),
+  disable: vi.fn(async (_scope: string, _id: string) => {}),
+}))
+vi.mock('../../webhook-relay', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../webhook-relay')>()),
+  getWebhookRelay: () => ({ createEndpoint: relayEndpoints.create, disableEndpoint: relayEndpoints.disable }),
+}))
 import { authorizeLinearSetup, completeLinearSetup, deleteLinearSetup, failLinearSetup, publicLinearIntegration } from './setup'
 import { getLinearConfig, updateLinearConfig } from './store'
 import * as linearStore from './store'
@@ -15,9 +23,9 @@ import { LinearClient } from './client'
 import { z } from 'zod'
 import { createAgentIntegration, getAgentIntegration } from '../../services/agent-integration-service'
 import { integrationSetupContext, prepareIntegrationSetup } from '../../agent-integrations/setup'
-async function createLinearSetup(agentSlug: string, name: string, userId: string, origin: string) {
-  const prepared = await prepareIntegrationSetup('linear', {}, integrationSetupContext('linear', origin, agentSlug, userId))
-  const id = await createAgentIntegration({ agentSlug, provider: 'linear', name, createdByUserId: userId, ...prepared })
+async function createLinearSetup(agentSlug: string, name: string, userId: string, origin: string, input: Record<string, unknown> = {}) {
+  const prepared = await prepareIntegrationSetup('linear', input, integrationSetupContext('linear', origin, agentSlug, userId))
+  const id = await createAgentIntegration({ agentSlug, provider: 'linear', name, createdByUserId: userId, config: prepared.config, status: prepared.status })
   return publicLinearIntegration((await getAgentIntegration(id))!)
 }
 const scopes = 'read write app:mentionable app:assignable'
@@ -37,6 +45,49 @@ async function setup(agentSlug = 'agent') {
   const url = await authorizeLinearSetup(integration.id, { clientId: 'client', clientSecret: 'client-secret' })
   return { id: integration.id, state: new URL(url).searchParams.get('state')! }
 }
+describe('Linear relay transport setup', () => {
+  it('prefills a relay app with webhooks on, the relay URL, and the resource types it reads', async () => {
+    const integration = await createLinearSetup('agent', 'Helper', 'owner', 'http://localhost:47897', { transport: 'relay' })
+
+    const url = new URL(integration.setup.creationUrl)
+    expect(url.searchParams.get('webhook.enabled')).toBe('true')
+    expect(url.searchParams.get('webhook.url')).toBe('https://relay.test/v1/hooks/whep_1')
+    expect(url.searchParams.getAll('webhook.resourceTypes')).toEqual(['AppUserNotification', 'Comment', 'Issue'])
+    expect(integration).toMatchObject({ transport: 'relay', webhook: { url: 'https://relay.test/v1/hooks/whep_1', secretSaved: false } })
+  })
+
+  it('needs the webhook signing secret before authorizing, and never shows it', async () => {
+    const integration = await createLinearSetup('agent', 'Helper', 'owner', 'http://localhost:47897', { transport: 'relay' })
+
+    await expect(authorizeLinearSetup(integration.id, { clientId: 'client', clientSecret: 'client-secret' })).rejects.toThrow('signing secret')
+    await authorizeLinearSetup(integration.id, { clientId: 'client', clientSecret: 'client-secret', webhookSecret: 'signing-secret' })
+
+    expect((await getLinearConfig(integration.id)).webhookSecret).toBe('signing-secret')
+    const row = (await getAgentIntegration(integration.id))!
+    expect(publicLinearIntegration(row).webhook?.secretSaved).toBe(true)
+    expect(JSON.stringify(toPublicAgentIntegration(row))).not.toContain('signing-secret')
+    // A retry with the saved credentials keeps the saved secret.
+    await expect(authorizeLinearSetup(integration.id, {})).resolves.toContain('linear.app/oauth/authorize')
+  })
+
+  it('switches an existing installation between transports and asks for a reconnect', async () => {
+    const integration = await createLinearSetup('agent', 'Helper', 'owner', 'http://localhost:47897')
+    const { linearProvider } = await import('./provider')
+
+    expect(await linearProvider.updateSettings!((await getAgentIntegration(integration.id))!, { settings: { transport: 'relay', webhookSecret: 'signing-secret' } })).toEqual({ reconnect: true })
+    expect(await getLinearConfig(integration.id)).toMatchObject({ transport: 'relay', relay: { endpointId: 'whep_1' }, webhookSecret: 'signing-secret' })
+
+    expect(await linearProvider.updateSettings!((await getAgentIntegration(integration.id))!, { settings: { transport: 'direct' } })).toEqual({ reconnect: true })
+    const direct = await getLinearConfig(integration.id)
+    expect(direct).toMatchObject({ transport: 'direct' })
+    expect(direct.relay).toBeUndefined()
+    expect(direct.webhookSecret).toBeUndefined()
+    expect(relayEndpoints.disable).toHaveBeenCalledExactlyOnceWith(expect.any(String), 'whep_1')
+
+    expect(await linearProvider.updateSettings!((await getAgentIntegration(integration.id))!, { settings: { runOnStatusChange: true } })).toEqual({ reconnect: false })
+  })
+})
+
 describe('Linear identity lifecycle', () => {
   it('uses the configured HTTPS callback behind a TLS-terminating proxy', async () => {
     vi.stubEnv('HOST_PUBLIC_URL', 'https://dev.example:8443/')
