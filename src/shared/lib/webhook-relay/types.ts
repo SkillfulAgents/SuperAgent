@@ -93,10 +93,12 @@ export interface RelayEndpointEvents {
 export type WebhookRelayUnavailableReason =
   /** This build has no relay to connect to. */
   | 'not_configured'
+  /** The relay isn't running: startup hasn't reached it yet, or the host is shutting down. */
+  | 'stopped'
   | 'platform_disconnected'
 
 /**
- * - idle: nothing is registered, so nothing is fetched
+ * - idle: nothing is registered that this identity can claim, so nothing is fetched
  * - connecting: registered, no claim has completed yet
  * - realtime: claims succeed and the realtime wake-up channel is open
  * - polling: claims succeed, realtime is down, so the relay polls on a timer
