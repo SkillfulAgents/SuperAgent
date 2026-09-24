@@ -17,9 +17,10 @@ const BASE_URL_ENV = 'GENERIC_BASE_URL'
 export function openAiBaseUrl(value: string): string {
   try {
     const url = new URL(value)
+    if (!/^https?:$/.test(url.protocol) || url.search || url.hash) throw new Error('Query strings and fragments are not supported')
     if (!url.pathname.replace(/\/+$/, '')) url.pathname = '/v1'
     return url.toString().replace(/\/+$/, '')
-  } catch { throw new Error('Generic provider base URL is invalid') }
+  } catch { throw new Error('Generic provider base URL must be an HTTP URL without a query string or fragment') }
 }
 
 /**
@@ -123,7 +124,7 @@ export class GenericLlmProvider extends BaseLlmProvider {
     // Anthropic-wire endpoint with Bearer auth (same shape as OpenRouter/Platform):
     // apiKey '' suppresses the x-api-key header; authToken sends Authorization: Bearer.
     return new Anthropic({ apiKey: '', baseURL, authToken: apiKey,
-      ...(this.apiFormat !== 'messages' ? { fetch: translatedMessagesFetch(openAiBaseUrl(baseURL), apiKey, this.apiFormat) } : {}),
+      ...(this.apiFormat !== 'messages' ? { fetch: translatedMessagesFetch(openAiBaseUrl(baseURL), apiKey, this.apiFormat, this.configuration?.chatTokenLimitField) } : {}),
     })
   }
 
@@ -133,7 +134,7 @@ export class GenericLlmProvider extends BaseLlmProvider {
     const accessToken = this.getEffectiveApiKey()
     if (!baseUrl || !accessToken) throw new Error('Generic provider URL and API key are required')
     return { format: this.apiFormat, baseUrl: rewriteLoopbackForContainer(openAiBaseUrl(baseUrl))!,
-      credential: { accessToken, generation: 0 }, headers: {}, chatTokenLimitField: 'max_completion_tokens' }
+      credential: { accessToken, generation: 0 }, headers: {}, chatTokenLimitField: this.configuration?.chatTokenLimitField ?? 'max_completion_tokens' }
   }
 
   getBuiltinCatalog(): ModelDefinition[] {

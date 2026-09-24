@@ -46,6 +46,7 @@ export function providerForConnection(
   return createLlmProvider(providerSchema.parse(row.provider), {
     apiKeys,
     apiFormat: config.apiFormat,
+    chatTokenLimitField: config.chatTokenLimitField,
     oauth: config.oauth,
     resolveCredential: row.id ? (generation) => resolveConnectionCredential(row.id!, generation) : undefined,
     env: Object.fromEntries(
@@ -119,6 +120,7 @@ export async function listConnections(
       dashboardModel: row.dashboardModel,
       baseUrl: config.apiKeys.genericBaseUrl,
       apiFormat: config.apiFormat,
+      chatTokenLimitField: config.chatTokenLimitField,
       region: config.apiKeys.bedrockRegion,
       customEnvVarKeys: canManage ? Object.keys(config.runtimeEnv) : [],
       canManage,

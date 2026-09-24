@@ -14,6 +14,7 @@ export const apiFormatSchema = z.enum(['messages', 'chat-completions', 'response
 
 export const connectionConfigSchema = z.object({
   apiFormat: apiFormatSchema.optional(),
+  chatTokenLimitField: z.enum(['max_tokens', 'max_completion_tokens']).optional(),
   oauth: oauthCredentialSchema.optional(),
   apiKeys: z
     .object({
@@ -85,6 +86,7 @@ export function mergeConnectionConfig(
   const config = connectionConfigSchema.parse({
     oauth: previous?.oauth ? { ...previous.oauth, refreshLease: undefined } : undefined,
     apiFormat: input.apiFormat ?? previous?.apiFormat,
+    chatTokenLimitField: input.chatTokenLimitField ?? previous?.chatTokenLimitField,
     apiKeys: { ...previous?.apiKeys, ...input.apiKeys },
     runtimeEnv: previous?.runtimeEnv ?? {},
     env: previous?.env ?? {}, // Host bindings come only from migration.
@@ -138,6 +140,7 @@ export const connectionInfoSchema = z.object({
   dashboardModel: z.string().nullable(),
   baseUrl: z.string().optional(),
   apiFormat: apiFormatSchema.optional(),
+  chatTokenLimitField: z.enum(['max_tokens', 'max_completion_tokens']).optional(),
   region: z.string().optional(),
   customEnvVarKeys: z.array(z.string()).optional(),
   canManage: z.boolean(),

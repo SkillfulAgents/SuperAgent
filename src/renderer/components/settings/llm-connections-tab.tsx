@@ -209,6 +209,7 @@ function ConnectionEditor({
   const [accountLabel, setAccountLabel] = useState(existing?.accountLabel)
   const connected = useCallback((id: string, label: string) => { setOAuthLoginId(id); setAccountLabel(label) }, [])
   const [apiFormat, setApiFormat] = useState<NonNullable<ConnectionConfig['apiFormat']>>(existing?.apiFormat ?? 'messages')
+  const [chatTokenLimitField, setChatTokenLimitField] = useState<NonNullable<ConnectionConfig['chatTokenLimitField']>>(existing?.chatTokenLimitField ?? 'max_completion_tokens')
   const [baseUrl, setBaseUrl] = useState(existing?.baseUrl ?? '')
   const [accessKey, setAccessKey] = useState('')
   const [secretKey, setSecretKey] = useState('')
@@ -244,7 +245,7 @@ function ConnectionEditor({
         provider,
         userId: owner,
         oauthLoginId,
-        config: { apiKeys, ...(provider === 'generic' ? { apiFormat } : {}), runtimeEnv: Object.fromEntries(Object.entries(runtimeEnv).filter(([, value]) => value !== undefined)) },
+        config: { apiKeys, ...(provider === 'generic' ? { apiFormat, chatTokenLimitField } : {}), runtimeEnv: Object.fromEntries(Object.entries(runtimeEnv).filter(([, value]) => value !== undefined)) },
         modelOverrides: overrides,
         browserModel: browserModel || null,
         dashboardModel: dashboardModel || null,
@@ -360,6 +361,16 @@ function ConnectionEditor({
             <option value="chat-completions">OpenAI Chat Completions</option>
             <option value="responses">OpenAI Responses</option>
           </select>
+        </label>
+      )}
+      {provider === 'generic' && apiFormat === 'chat-completions' && (
+        <label className="grid gap-1 text-sm">
+          Token limit parameter
+          <select className={selectClass} value={chatTokenLimitField} onChange={e => setChatTokenLimitField(e.target.value as typeof chatTokenLimitField)}>
+            <option value="max_completion_tokens">max_completion_tokens (OpenAI)</option>
+            <option value="max_tokens">max_tokens (legacy compatible endpoints)</option>
+          </select>
+          <span className="text-muted-foreground">Use max_tokens if your endpoint does not accept max_completion_tokens.</span>
         </label>
       )}
       {provider === 'generic' && (

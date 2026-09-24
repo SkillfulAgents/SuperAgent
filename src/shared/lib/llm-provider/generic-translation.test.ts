@@ -1,3 +1,5 @@
+import Anthropic from '@anthropic-ai/sdk'
+import { startLlmProxy } from '../../../../agent-container/src/llm-proxy'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createServer } from 'node:http'
 import { GenericLlmProvider } from './generic-provider'
@@ -49,8 +51,9 @@ const prompt = { model: 'test-model', max_tokens: 512, messages: [{ role: 'user'
 
 describe('generic OpenAI connection', () => {
   it('preserves the format on credential-only edits and leaves old connections native', async () => {
-    const previous = connectionConfigSchema.parse({ apiFormat: 'responses', apiKeys: { genericApiKey: 'old' } })
+    const previous = connectionConfigSchema.parse({ apiFormat: 'responses', chatTokenLimitField: 'max_tokens', apiKeys: { genericApiKey: 'old' } })
     expect(mergeConnectionConfig(previous, { apiKeys: { genericApiKey: 'new' }, env: {} }).apiFormat).toBe('responses')
+    expect(mergeConnectionConfig(previous, { apiKeys: {}, env: {} }).chatTokenLimitField).toBe('max_tokens')
     const native = new GenericLlmProvider({ apiKeys: { genericApiKey: 'key', genericBaseUrl: 'https://example.com' }, env: {} })
     expect(await native.getContainerProxyConfig()).toBeUndefined()
     expect(native.toolSearchEnv).toBeUndefined()
@@ -82,4 +85,31 @@ describe('generic OpenAI connection', () => {
     const provider = new GenericLlmProvider({ apiFormat: 'responses', apiKeys: { genericApiKey: 'key', genericBaseUrl: baseUrl }, env: {} })
     expect((await provider.getContainerProxyConfig())?.baseUrl).toBe(baseUrl.endsWith('/custom') ? baseUrl : 'https://endpoint.example/v1')
   })
+})
+
+it.each(['max_tokens', 'max_completion_tokens'] as const)('uses %s consistently for host helpers and agent proxy', async chatTokenLimitField => {
+  const upstream = await endpoint()
+  const provider = new GenericLlmProvider({ apiFormat: 'chat-completions', chatTokenLimitField, apiKeys: { genericApiKey: 'key', genericBaseUrl: upstream.url }, env: {} })
+  await provider.createClient().messages.create(prompt)
+  const runtime = (await provider.getContainerProxyConfig())!
+  // Loopback was rewritten for Docker; this test's proxy runs on the host.
+  const handle = await startLlmProxy({ llmProviderId: 'generic', config: { ...runtime, baseUrl: upstream.url + '/v1' } })
+  cleanup.push(handle.close)
+  await new Anthropic({ baseURL: handle.env.ANTHROPIC_BASE_URL, apiKey: handle.env.ANTHROPIC_API_KEY }).messages.create(prompt)
+  expect(upstream.requests).toHaveLength(2)
+  for (const request of upstream.requests) {
+    expect(request.body[chatTokenLimitField]).toBe(512)
+    expect(request.body[chatTokenLimitField === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens']).toBeUndefined()
+  }
+})
+it('rejects unsupported SDK endpoints without sending a completion upstream', async () => {
+  const upstream = await endpoint()
+  const provider = new GenericLlmProvider({ apiFormat: 'responses', apiKeys: { genericApiKey: 'key', genericBaseUrl: upstream.url }, env: {} })
+  await expect(provider.createClient().messages.countTokens({ model: 'test-model', messages: prompt.messages })).rejects.toMatchObject({ status: 404 })
+  expect(upstream.requests).toHaveLength(0)
+})
+it.each(['https://endpoint.test/v1?x=y', 'https://endpoint.test/v1#fragment'])('rejects ambiguous base URL %s', async genericBaseUrl => {
+  const provider = new GenericLlmProvider({ apiFormat: 'responses', apiKeys: { genericApiKey: 'key', genericBaseUrl }, env: {} })
+  expect(() => provider.createClient()).toThrow('without a query string or fragment')
+  await expect(provider.getContainerProxyConfig()).rejects.toThrow('without a query string or fragment')
 })

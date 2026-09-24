@@ -73,3 +73,9 @@ that model. Use Responses for that combination; the adapter preserves the error
 and does not silently change the selected API or reasoning effort. Successful
 Chat Completions coverage uses `gpt-5.1`. These tests establish the exercised
 models and capabilities, not universal support across every compatible service.
+
+For Chat Completions, each generic connection can choose its token-limit field:
+`max_completion_tokens` (the existing default) or `max_tokens` for endpoints that
+require it. Agent and host helper requests use the same setting. Translated base
+URLs must not include query strings or fragments, and the host adapter rejects
+SDK endpoints other than Messages instead of translating them as completions.

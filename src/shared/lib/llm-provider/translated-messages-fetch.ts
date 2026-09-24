@@ -3,8 +3,15 @@ import { z } from 'zod'
 import { expandDeferredTools } from '../../../../agent-container/src/llm-proxy-tools'
 
 /** Host-side helpers and dashboard shims use the same wire codecs as agents. */
-export function translatedMessagesFetch(baseUrl: string, apiKey: string, format: 'chat-completions' | 'responses'): typeof fetch {
-  return async (_input, init) => {
+export function translatedMessagesFetch(baseUrl: string, apiKey: string, format: 'chat-completions' | 'responses', tokenLimitField: 'max_tokens' | 'max_completion_tokens' = 'max_completion_tokens'): typeof fetch {
+  return async (input, init) => {
+    let pathname: string
+    try { pathname = new URL(input instanceof Request ? input.url : String(input)).pathname }
+    catch { return Response.json({ type: 'error', error: { type: 'invalid_request_error', message: 'Invalid Messages URL' } }, { status: 400 }) }
+    const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
+    if (method !== 'POST' || !pathname.endsWith('/messages')) {
+      return Response.json({ type: 'error', error: { type: 'not_found_error', message: 'Only Messages requests are supported by this translator' } }, { status: 404 })
+    }
     const {
       messagesRequestToResponses, responsesResponseToMessages, responsesStreamToMessagesStream,
       messagesRequestToChatCompletions, chatCompletionsResponseToMessages, chatCompletionsStreamToMessagesStream,
@@ -21,7 +28,7 @@ export function translatedMessagesFetch(baseUrl: string, apiKey: string, format:
     const options = { model: String(body.model), toolNames: toolNameRestoreMap(body), reasoningReplayScope: scope }
     const translated = format === 'responses'
       ? messagesRequestToResponses(body, { reasoningReplayScope: scope }).body
-      : messagesRequestToChatCompletions(body, { tokenLimitField: 'max_completion_tokens' })
+      : messagesRequestToChatCompletions(body, { tokenLimitField })
     const response = await fetch(`${baseUrl}/${format === 'responses' ? 'responses' : 'chat/completions'}`, {
       method: 'POST', redirect: 'error', signal: init?.signal,
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify(translated),
