@@ -23,6 +23,7 @@ export function EmailIntegrationSetupForm({ agentSlug, onClose }: IntegrationSet
   const [error, setError] = useState<string | null>(null)
   const create = useCreateAgentIntegration()
   const navigate = useNavigate()
+  const setupError = error ?? setup.error?.message
 
   return <IntegrationSetupLayout
     provider="platform-email"
@@ -37,7 +38,7 @@ export function EmailIntegrationSetupForm({ agentSlug, onClose }: IntegrationSet
       <p className="text-xs text-muted-foreground">Domain setup can take a few minutes. Once connected, send an email to start a conversation.</p>
     </>}
     feedback={<>
-      {error && <IntegrationSetupFeedback state="error">{error}</IntegrationSetupFeedback>}
+      {setupError && <IntegrationSetupFeedback state="error">{setupError}</IntegrationSetupFeedback>}
       {!platform?.connected && <IntegrationSetupFeedback state="error">Connect Platform to set up email.</IntegrationSetupFeedback>}
     </>}
     actions={<Button size="sm" type="submit" form={formId} disabled={create.isPending || !platform?.connected}>
