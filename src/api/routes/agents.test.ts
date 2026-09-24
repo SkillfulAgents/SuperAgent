@@ -632,6 +632,7 @@ const mockMountService = vi.hoisted(() => ({
   usesSharedVolumes: vi.fn(() => false),
 }))
 vi.mock('@shared/lib/services/mount-service', () => mockMountService)
+vi.mock('@shared/lib/services/shared-volume', () => ({ usesSharedVolumes: () => mockMountService.usesSharedVolumes() }))
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAnthropicApiKey: () => 'test-key',
   getEffectiveModels: () => mockGetEffectiveModels(),

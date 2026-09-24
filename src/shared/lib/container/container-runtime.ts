@@ -34,6 +34,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { captureException } from '@shared/lib/error-reporting'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
+import { isSharedVolumeMount, usesSharedVolumes } from '@shared/lib/services/shared-volume'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { mergeCustomEnvVars } from './reserved-env-vars'
@@ -630,8 +631,15 @@ export class ContainerRuntime {
 
     // The prompt lists the mounted folders. A mount the runtime drops at run
     // time (below) is still listed; the warning banner covers that case.
-    if (healthyMounts.length > 0) {
-      envVars['SUPERAGENT_MOUNTS'] = JSON.stringify(healthyMounts.map((m) => m.containerPath))
+    // A cloud VM mounts a row by its /mounts name alone, so only shared-volume
+    // rows may reach it: an older folder row at /mounts/finance would otherwise
+    // mount the volume `finance`.
+    const listedMounts = usesSharedVolumes() ? healthyMounts.filter(isSharedVolumeMount) : healthyMounts
+    if (listedMounts.length < healthyMounts.length) {
+      console.warn(`[ContainerRuntime] Not listing ${healthyMounts.length - listedMounts.length} non-volume mount(s) on a cloud runtime for ${slug}:`, healthyMounts.filter((m) => !listedMounts.includes(m)).map((m) => m.hostPath))
+    }
+    if (listedMounts.length > 0) {
+      envVars['SUPERAGENT_MOUNTS'] = JSON.stringify(listedMounts.map((m) => m.containerPath))
     }
 
     // Start container (user secrets are in .env file in workspace).

@@ -13,7 +13,6 @@ import { containerHost } from '@shared/lib/agent-actor'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { captureException } from '@shared/lib/error-reporting'
 import { getVolumesDir } from '@shared/lib/config/data-dir'
-import { getSettings } from '@shared/lib/config/settings'
 import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
 import { agentMountsSchema } from './mount-schema'
 import { SHARED_VOLUME_NAME_RE } from '@shared/lib/utils/shared-volume-name'
@@ -145,15 +144,6 @@ export async function addMount(slug: string, hostPath: string): Promise<AgentMou
     await writeMounts(slug, mounts)
     return mount
   })
-}
-
-/**
- * Whether this server's agents take shared volumes instead of host folders: a
- * MicroVM cannot bind a folder from this machine, only a volume on the
- * workspace disk. The mounts API takes a name here and a folder path elsewhere.
- */
-export function usesSharedVolumes(): boolean {
-  return getSettings().container.containerRunner === 'lambda-microvm'
 }
 
 /**

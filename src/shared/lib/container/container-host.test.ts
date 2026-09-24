@@ -142,6 +142,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: (id: string) => `/workspace/${id}`,
+  getVolumesDir: () => '/data/volumes',
 }))
 
 vi.mock('./message-persister', () => ({
@@ -540,6 +541,23 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
 
     const opts = mockStart.mock.calls[0][0]
     expect(opts.envVars.SUPERAGENT_MOUNTS).toBe(JSON.stringify(['/mounts/ok']))
+  })
+
+  it('lists only shared-volume rows on a cloud runtime, so an older folder row cannot mount a volume by name', async () => {
+    mockSettingsState.containerRunner = 'lambda-microvm'
+    try {
+      mockGetMountsWithHealth.mockReturnValue([
+        { id: 'm1', hostPath: '/data/volumes/team-brain', containerPath: '/mounts/team-brain', folderName: 'team-brain', addedAt: '2025-01-01', health: 'ok' },
+        { id: 'm2', hostPath: '/some/path/finance', containerPath: '/mounts/finance', folderName: 'finance', addedAt: '2025-01-01', health: 'ok' },
+      ])
+
+      await containerHost.runtime('test-agent').ensureRunning()
+
+      const opts = mockStart.mock.calls[0][0]
+      expect(opts.envVars.SUPERAGENT_MOUNTS).toBe(JSON.stringify(['/mounts/team-brain']))
+    } finally {
+      mockSettingsState.containerRunner = 'docker'
+    }
   })
 
   it('sets no SUPERAGENT_MOUNTS when nothing is mounted', async () => {

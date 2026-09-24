@@ -80,7 +80,8 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
-import { getMountsWithHealth, addMount, addSharedVolume, listSharedVolumes, removeMount, usesSharedVolumes } from '@shared/lib/services/mount-service'
+import { getMountsWithHealth, addMount, addSharedVolume, listSharedVolumes, removeMount } from '@shared/lib/services/mount-service'
+import { usesSharedVolumes } from '@shared/lib/services/shared-volume'
 import type { AgentMountsResponse } from '@shared/lib/types/mount'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
