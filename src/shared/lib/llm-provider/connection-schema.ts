@@ -80,7 +80,7 @@ export function mergeConnectionConfig(
   input: z.infer<typeof connectionInputSchema>['config'],
 ): ConnectionConfig {
   const config = connectionConfigSchema.parse({
-    oauth: previous?.oauth,
+    oauth: previous?.oauth ? { ...previous.oauth, refreshLease: undefined } : undefined,
     apiKeys: { ...previous?.apiKeys, ...input.apiKeys },
     runtimeEnv: previous?.runtimeEnv ?? {},
     env: previous?.env ?? {}, // Host bindings come only from migration.

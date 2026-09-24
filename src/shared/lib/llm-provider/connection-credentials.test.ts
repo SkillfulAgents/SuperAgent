@@ -1,3 +1,4 @@
+import { CredentialRefreshError } from '../../../../agent-container/src/credential-refresh-error'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
@@ -54,11 +55,30 @@ describe('app-owned subscription credentials', () => {
     await expect(resolveConnectionCredential('connection')).rejects.toThrow('no longer exists')
     expect(await row()).toBeUndefined()
   })
-  it('releases a failed exchange lease without destroying the saved credentials', async () => {
+  it('shares transient failures across waiters and retries after backoff', async () => {
     await seed()
-    state.exchange.mockRejectedValueOnce(new Error('Reconnect Grok'))
-    await expect(resolveConnectionCredential('connection')).rejects.toThrow('Reconnect Grok')
-    expect(connectionConfigSchema.parse(JSON.parse((await row())!.config)).oauth).toEqual(expired)
+    state.exchange.mockRejectedValueOnce(new Error('network unavailable'))
+    const results = await Promise.allSettled(Array.from({ length: 3 }, () => resolveConnectionCredential('connection')))
+    expect(results.every(result => result.status === 'rejected')).toBe(true)
+    expect(state.exchange).toHaveBeenCalledTimes(1)
+    const config = connectionConfigSchema.parse(JSON.parse((await row())!.config))
+    expect(config.oauth).toMatchObject(expired)
+    expect(config.oauth?.refreshLease).toBeUndefined()
+    expect(config.oauth?.refreshFailure?.reconnectRequired).toBe(false)
+    config.oauth!.refreshFailure!.retryAt = 0
+    await handle.db.update(llmConnections).set({ config: JSON.stringify(config) }).where(eq(llmConnections.id, 'connection')).run()
+    expect((await resolveConnectionCredential('connection')).accessToken).toBe('new')
+    expect(state.exchange).toHaveBeenCalledTimes(2)
+  })
+  it('shares revoked-token failure until reconnection replaces the credentials', async () => {
+    await seed()
+    state.exchange.mockRejectedValue(new CredentialRefreshError(401))
+    const results = await Promise.allSettled(Array.from({ length: 3 }, () => resolveConnectionCredential('connection')))
+    expect(results.every(result => result.status === 'rejected' && result.reason.status === 401)).toBe(true)
+    expect(state.exchange).toHaveBeenCalledTimes(1)
+    await expect(resolveConnectionCredential('connection')).rejects.toThrow('reconnect in Settings')
+    expect(state.exchange).toHaveBeenCalledTimes(1)
+    await handle.db.update(llmConnections).set({ config: JSON.stringify(connectionConfigSchema.parse({ oauth: fresh })), generation: 2 }).where(eq(llmConnections.id, 'connection')).run()
     expect((await resolveConnectionCredential('connection')).accessToken).toBe('new')
   })
   it('keeps accounts independent', async () => {

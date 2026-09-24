@@ -119,3 +119,13 @@ it('returns access-only proxy credentials and keeps them out of presentation met
   expect(JSON.stringify(sessionRuntime('alpha', 'own-session'))).not.toContain('private-access')
   expect((await request('resolve', { sessionId: 'own-session', llmProviderId: 'another-account', rejectedGeneration: 0 })).status).toBe(409)
 })
+
+it('returns a non-retryable reconnect contract for a revoked subscription', async () => {
+  await handle.db.update(llmConnections).set({ provider: 'grok-subscription', config: JSON.stringify(connectionConfigSchema.parse({
+    oauth: { accessToken: 'revoked', refreshToken: 'revoked-refresh', expiresAt: 0,
+      refreshFailure: { reconnectRequired: true, retryAt: 0 } },
+  })) }).where(eq(llmConnections.id, state.currentId)).run()
+  const response = await request('resolve', { sessionId: 'own-session', llmProviderId: state.currentId, rejectedGeneration: 0 })
+  expect(response.status).toBe(401)
+  expect(await response.json()).toMatchObject({ code: 'provider_reconnect_required', error: expect.stringContaining('reconnect in Settings') })
+})

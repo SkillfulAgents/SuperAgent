@@ -20,3 +20,7 @@ it('uses Responses only for native hosted search', () => {
   expect(grokWireFormat({ tools: [{ name: 'ToolSearch', input_schema: {} }] })).toBe('messages')
   expect(grokWireFormat({ tools: [{ type: 'web_search_20250305', name: 'web_search' }] })).toBe('responses')
 })
+
+it('does not invent a system field when the request has none', () => {
+  expect(normalizeGrokMessages({ messages: [{ role: 'user', content: 'Hi' }] })).not.toHaveProperty('system')
+})

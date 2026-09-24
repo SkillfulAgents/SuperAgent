@@ -1,5 +1,5 @@
 import { credentialsFromLogin, consumeOAuthLogin } from './oauth-login'
-import { resolveConnectionCredential } from './connection-credentials'
+import { resolveConnectionCredential, waitForConnectionRefresh } from './connection-credentials'
 import { HelperConfigurationError } from './helper-error'
 import { withGlobalModelPricing } from './global-pricing'
 import { findAdminOnlyProviderEnvVars, isProviderEnvVar } from './provider-env'
@@ -141,7 +141,7 @@ export function assertManageConnection(row: ConnectionRow, viewer: ConnectionVie
 
 export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, id?: string) {
   const input = connectionInputSchema.parse(raw)
-  const previous = id ? await getConnection(id) : null
+  let previous = id ? await getConnection(id) : null
   if (id && !previous) throw new Error('Connection not found')
   if (previous) assertManageConnection(previous, viewer)
   if (input.provider === 'platform' && !previous?.managed)
@@ -152,7 +152,14 @@ export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, 
     throw new Error('Only administrators can manage global connections')
   if (previous && (previous.provider !== input.provider || previous.userId !== input.userId))
     throw new Error('Connection type and owner cannot change')
-  const oldConfig = previous ? parseConnectionJson(connectionConfigSchema, previous.config) : null
+  let oldConfig = previous ? parseConnectionJson(connectionConfigSchema, previous.config) : null
+  while (!input.oauthLoginId && oldConfig?.oauth?.refreshLease && oldConfig.oauth.refreshLease.expiresAt > Date.now()) {
+    await waitForConnectionRefresh(id!)
+    previous = await getConnection(id!)
+    if (!previous) throw new Error('Connection not found')
+    assertManageConnection(previous, viewer)
+    oldConfig = parseConnectionJson(connectionConfigSchema, previous.config)
+  }
   const config = mergeConnectionConfig(oldConfig, input.config)
   if (input.oauthLoginId) {
     if (input.provider !== 'grok-subscription') throw new Error('Invalid subscription sign-in')

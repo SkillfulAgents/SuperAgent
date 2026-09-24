@@ -1,3 +1,4 @@
+import { CredentialRefreshError } from './credential-refresh-error'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import Anthropic from '@anthropic-ai/sdk'
@@ -168,6 +169,32 @@ describe('embedded provider proxy', () => {
     release({ accessToken: 'outdated-refresh', generation: 2 })
     await pending
     expect(seen).toEqual(['Bearer reconnected'])
+  })
+
+  it('does not retry a revoked refresh token and recovers after reconnect', async () => {
+    let exchanges = 0
+    const base = await upstream((_body, req, res) => {
+      if (req.headers.authorization === 'Bearer reconnected') json(res, reply)
+      else json(res, { error: { message: 'expired' } }, 401)
+    })
+    const handle = await proxy(base, 'messages', { refreshCredential: async () => { exchanges++; throw new CredentialRefreshError(401) } })
+    const retrying = new Anthropic({ baseURL: handle.env.ANTHROPIC_BASE_URL, apiKey: handle.env.ANTHROPIC_API_KEY, maxRetries: 2 })
+    for (let i = 0; i < 3; i++) await expect(retrying.messages.create(prompt)).rejects.toMatchObject({ status: 401 })
+    expect(exchanges).toBe(1)
+    handle.updateCredential({ accessToken: 'reconnected', generation: 2 })
+    await retrying.messages.create(prompt)
+  })
+  it('backs off transient refresh failures without exposing host exception details', async () => {
+    let exchanges = 0
+    const base = await upstream((_body, _req, res) => json(res, { error: { message: 'expired' } }, 401))
+    const handle = await proxy(base, 'messages', { refreshCredential: async () => { exchanges++; throw new Error('private credential details') } })
+    for (let i = 0; i < 3; i++) {
+      const error = await client(handle).messages.create(prompt).catch(error => error)
+      expect(error.status).toBe(503)
+      expect(error.message).toContain('temporarily unavailable')
+      expect(error.message).not.toContain('private credential details')
+    }
+    expect(exchanges).toBe(1)
   })
 
   it('does not refresh quota errors and preserves the error message', async () => {

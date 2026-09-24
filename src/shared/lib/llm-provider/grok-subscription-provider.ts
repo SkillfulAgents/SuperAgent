@@ -1,3 +1,6 @@
+import type { EffortLevel } from '../container/types'
+import { GROK_DEFAULT_MODELS } from './model-catalog-defaults'
+export { GROK_DEFAULT_MODELS } from './model-catalog-defaults'
 import Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
 import { BaseLlmProvider } from './base-llm-provider'
@@ -8,7 +11,6 @@ import { inferErrorStatus, extractErrorMessage } from './error-presentation'
 
 export const GROK_SUBSCRIPTION_BASE_URL = 'https://cli-chat-proxy.grok.com'
 export const GROK_CLIENT_HEADERS = { 'x-grok-client-mode': 'cli', 'x-grok-client-version': '1.0.4' }
-export const GROK_DEFAULT_MODELS = { agentModel: 'grok', summarizerModel: 'grok', browserModel: 'grok', dashboardBuilderModel: 'grok' }
 
 export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
   readonly id = 'grok-subscription' as const
@@ -79,8 +81,8 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
     const body = schema.parse(await response.json())
     return body.data.filter(model => model.id.toLowerCase().includes(query.toLowerCase())).map(model => ({
       id: model.id, label: model.name ?? model.id, contextWindow: model.context_window,
-      supportedEfforts: ['low', 'medium', 'high'] as const satisfies readonly string[], supportsWebSearch: true,
-    })).map(model => ({ ...model, supportedEfforts: [...model.supportedEfforts] }))
+      supportedEfforts: ['low', 'medium', 'high'] as EffortLevel[], supportsWebSearch: true,
+    }))
   }
   protected override parseErrorResponseOverride(status: number | undefined, body: unknown) {
     const actual = status ?? inferErrorStatus(extractErrorMessage(body))

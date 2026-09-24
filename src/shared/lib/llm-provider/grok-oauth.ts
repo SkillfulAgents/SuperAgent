@@ -1,3 +1,4 @@
+import { CredentialRefreshError } from '../../../../agent-container/src/credential-refresh-error'
 import { z } from 'zod'
 import { oauthCredentialSchema, type OAuthCredential } from './oauth-schema'
 
@@ -24,7 +25,7 @@ async function credential(value: unknown, previous?: OAuthCredential): Promise<O
   const data = tokenSchema.parse(value)
   const refreshToken = data.refresh_token ?? previous?.refreshToken
   if (!refreshToken) throw new Error('Grok did not issue a refresh token. Please sign in again.')
-  return oauthCredentialSchema.parse({ ...previous, accessToken: data.access_token, refreshToken, expiresAt: Date.now() + data.expires_in * 1000, refreshLease: undefined })
+  return oauthCredentialSchema.parse({ ...previous, accessToken: data.access_token, refreshToken, expiresAt: Date.now() + data.expires_in * 1000, refreshLease: undefined, refreshFailure: undefined })
 }
 export async function startGrokLogin() {
   const endpoints = await discovery()
@@ -54,6 +55,6 @@ export async function pollGrokLogin(deviceCode: string, tokenEndpoint: string, u
 export async function refreshGrokCredential(previous: OAuthCredential): Promise<OAuthCredential> {
   const { token_endpoint } = await discovery()
   const response = await exchange(token_endpoint, { grant_type: 'refresh_token', refresh_token: previous.refreshToken })
-  if (!response.ok) throw new Error('Grok sign-in expired or was revoked. Reconnect in Settings → Model Providers.')
+  if (!response.ok) throw new CredentialRefreshError(response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429 ? 401 : 503)
   return credential(await response.json(), previous)
 }

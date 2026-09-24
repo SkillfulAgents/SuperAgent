@@ -6,10 +6,12 @@ import { user, llmConnections } from '@shared/lib/db/schema'
 import type { AppSettings } from '@shared/lib/config/settings'
 
 const state = vi.hoisted(() => ({
+  refresh: vi.fn(),
   db: null as TestDatabase['db'] | null,
   settings: {} as AppSettings,
 }))
 vi.mock('@shared/lib/llm-provider/grok-oauth', () => ({
+  refreshGrokCredential: state.refresh,
   startGrokLogin: async () => ({ device: { device_code: 'private-device', user_code: 'CODE', verification_uri: 'https://accounts.x.ai', expires_in: 1800, interval: 5 }, endpoints: { token_endpoint: 'https://auth.x.ai/token' } }),
   pollGrokLogin: async () => ({ credential: { accessToken: 'private-oauth-access', refreshToken: 'private-oauth-refresh', expiresAt: Date.now() + 3600000, accountLabel: 'Alice Grok' } }),
 }))
@@ -380,4 +382,27 @@ it('binds OAuth grants to the initiating owner and never returns subscription cr
   expect(publicData).toContain('Alice Grok')
   expect(publicData).not.toContain('private-oauth')
   expect((await request('', 'POST', draft, 'alice')).status).toBe(400)
+})
+
+it('preserves the rotated credential pair when a name edit lands during refresh', async () => {
+  const { resolveConnectionCredential } = await import('@shared/lib/llm-provider/connection-credentials')
+  const { connectionConfigSchema } = await import('@shared/lib/llm-provider/connection-schema')
+  const fresh = { accessToken: 'rotated-access', refreshToken: 'rotated-refresh', expiresAt: Date.now() + 3600000 }
+  await database.db.insert(llmConnections).values({ id: 'refresh-edit', provider: 'grok-subscription', name: 'Old name',
+    config: JSON.stringify(connectionConfigSchema.parse({ oauth: { accessToken: 'old', refreshToken: 'old-refresh', expiresAt: 0 } })), createdAt: new Date(), updatedAt: new Date() }).run()
+  let release!: (value: typeof fresh) => void
+  let began!: () => void
+  const started = new Promise<void>(resolve => { began = resolve })
+  state.refresh.mockImplementation(() => { began(); return new Promise(resolve => { release = resolve }) })
+  const refreshing = resolveConnectionCredential('refresh-edit')
+  await started
+  const editing = request('/refresh-edit', 'PUT', { name: 'New name', provider: 'grok-subscription', userId: null, config: {} })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  expect((await getConnection('refresh-edit'))?.name).toBe('Old name')
+  release(fresh)
+  await refreshing
+  expect((await editing).status).toBe(200)
+  const saved = await getConnection('refresh-edit')
+  expect(saved?.name).toBe('New name')
+  expect(connectionConfigSchema.parse(JSON.parse(saved!.config)).oauth).toEqual(fresh)
 })

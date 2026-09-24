@@ -32,7 +32,7 @@ export function normalizeGrokMessages(body: Json): Json {
     const tool = record(raw)
     return tool?.input_schema ? { ...tool, input_schema: normalizeSchema(tool.input_schema) } : raw
   }) : body.tools
-  return { ...body, system, messages, ...(tools ? { tools } : {}) }
+  return { ...body, ...(system.length || body.system !== undefined ? { system } : {}), messages, ...(tools ? { tools } : {}) }
 }
 function normalizeSchema(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(normalizeSchema)

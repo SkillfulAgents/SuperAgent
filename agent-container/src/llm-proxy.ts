@@ -1,3 +1,4 @@
+import { CredentialRefreshError } from './credential-refresh-error'
 import { normalizeGrokMessages, grokWireFormat } from './llm-proxy-grok'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, createHash } from 'node:crypto'
@@ -42,14 +43,21 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
   const config = llmProxyConfigSchema.parse(options.config)
   let credential = config.credential
   let refreshing: Promise<ProxyCredential> | undefined
+  let refreshFailure: { error: CredentialRefreshError; generation: number; retryAt: number } | undefined
   const key = randomBytes(32).toString('hex')
   const active = new Set<AbortController>()
   async function refresh(previous: ProxyCredential, rejected: boolean): Promise<void> {
     if (!options.refreshCredential) return
     if (credential !== previous) return
+    if (refreshFailure?.generation === previous.generation && refreshFailure.retryAt > Date.now()) throw refreshFailure.error
     refreshing ??= options.refreshCredential(previous, rejected).then(value => {
       if (credential === previous) credential = proxyCredentialSchema.parse(value)
       return credential
+    }).catch(error => {
+      if (credential !== previous) return credential
+      const safe = error instanceof CredentialRefreshError ? error : new CredentialRefreshError()
+      refreshFailure = { error: safe, generation: previous.generation, retryAt: safe.status === 401 ? Infinity : Date.now() + 30_000 }
+      throw safe
     }).finally(() => { refreshing = undefined })
     await refreshing
   }
@@ -139,11 +147,12 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
         sendJson(res, 200, format === 'responses' ? responsesResponseToMessages(json, replyOptions)
           : format === 'chat-completions' ? chatCompletionsResponseToMessages(json, replyOptions) : json)
       }
-    } catch {
+    } catch (error) {
       // Do not log bodies, URLs with credentials, headers, or upstream exceptions.
       abort.abort()
       if (res.headersSent) res.destroy()
-      else if (!res.destroyed) sendError(res, 502, 'Provider proxy request failed')
+      else if (!res.destroyed) sendError(res, error instanceof CredentialRefreshError ? error.status : 502,
+        error instanceof CredentialRefreshError ? error.message : 'Provider proxy request failed')
     } finally { active.delete(abort) }
   }
   await new Promise<void>((resolve, reject) => {

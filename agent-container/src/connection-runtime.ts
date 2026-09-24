@@ -1,3 +1,4 @@
+import { CredentialRefreshError } from './credential-refresh-error'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { llmProxyConfigSchema } from './llm-proxy-schema'
@@ -72,7 +73,12 @@ async function requestRuntime(path: string, body: object): Promise<ConnectionRun
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(75_000),
   })
-  if (!response.ok) throw new Error(`Cannot resolve LLM provider (${response.status})`)
+  if (!response.ok) {
+    const error = await response.json().catch(() => null) as { code?: string } | null
+    if (error?.code === 'provider_reconnect_required') throw new CredentialRefreshError(401)
+    if (error?.code === 'provider_refresh_unavailable') throw new CredentialRefreshError(503)
+    throw new Error(`Cannot resolve LLM provider (${response.status})`)
+  }
   const runtime = connectionRuntimeSchema.parse(await response.json())
   rememberConnectionRuntime(runtime)
   return runtime
