@@ -44,6 +44,20 @@ export function describeConfigOpsContract(name: string, make: () => Promise<Conf
       expect(decode(await files.getDoc('.env'))).toBe('API_KEY=x\n')
     })
 
+    it('instructions use AGENTS.md only when there is no CLAUDE.md', async () => {
+      await files.putDoc('AGENTS.md', 'from agents\n')
+      expect(await config.get('instructions')).toBe('from agents\n')
+      await config.put('instructions', 'edited\n')
+      expect(decode(await files.getDoc('AGENTS.md'))).toBe('edited\n')
+      expect(await files.getDoc('CLAUDE.md')).toBeNull()
+
+      await files.putDoc('CLAUDE.md', 'from claude\n')
+      expect(await config.get('instructions')).toBe('from claude\n')
+      await config.put('instructions', 'edited again\n')
+      expect(decode(await files.getDoc('CLAUDE.md'))).toBe('edited again\n')
+      expect(decode(await files.getDoc('AGENTS.md'))).toBe('edited\n')
+    })
+
     it('JSON documents are validated on write, stored pretty-printed, and validated on read', async () => {
       await config.put('preferences', { defaultModel: 'claude-x' })
       expect(await config.get('preferences')).toEqual({ defaultModel: 'claude-x' })

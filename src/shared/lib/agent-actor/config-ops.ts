@@ -6,7 +6,7 @@
  * so both implementations are this function with different hooks.
  */
 import { ZodError } from 'zod'
-import { CONFIG_DOCS, ConfigDocError, configDocMode, type ConfigDoc, type ConfigDocId } from './config-schema'
+import { CONFIG_DOCS, ConfigDocError, configDocMode, configDocSpec, type ConfigDoc, type ConfigDocId } from './config-schema'
 import type { ConfigOps, FileOps } from './types'
 
 export interface ConfigOpsHooks {
@@ -65,15 +65,21 @@ export function createConfigOps(files: FileOps, hooks: ConfigOpsHooks = {}): Con
     return encoder.encode(JSON.stringify(validated, null, 2))
   }
 
+  const pathOf = async (id: ConfigDocId): Promise<string> => {
+    const spec = configDocSpec(id)
+    if (spec.kind !== 'text' || spec.fallbackPath === undefined || await files.stat(spec.path)) return spec.path
+    return await files.stat(spec.fallbackPath) ? spec.fallbackPath : spec.path
+  }
+
   const get = async <K extends ConfigDocId>(id: K): Promise<ConfigDoc<K> | null> => {
     await hooks.beforeGet?.(id)
-    const bytes = await files.getDoc(CONFIG_DOCS[id].path)
+    const bytes = await files.getDoc(await pathOf(id))
     return bytes === null ? null : decode(id, bytes)
   }
 
   const put = async <K extends ConfigDocId>(id: K, doc: ConfigDoc<K>): Promise<void> => {
     const mode = configDocMode(id)
-    await files.putDoc(CONFIG_DOCS[id].path, encode(id, doc), mode === undefined ? undefined : { mode })
+    await files.putDoc(await pathOf(id), encode(id, doc), mode === undefined ? undefined : { mode })
   }
 
   return {

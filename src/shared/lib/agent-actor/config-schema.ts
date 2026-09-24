@@ -29,6 +29,8 @@ interface TextDocSpec {
   shared: boolean
   /** File mode a filesystem implementation applies on write (the container must read `.env`). */
   mode?: number
+  /** Read and written instead of `path` when only this file exists. */
+  fallbackPath?: string
 }
 
 interface JsonDocSpec<T> {
@@ -41,8 +43,11 @@ interface JsonDocSpec<T> {
 export type ConfigDocSpec = TextDocSpec | JsonDocSpec<unknown>
 
 export const CONFIG_DOCS = {
-  /** The agent's `CLAUDE.md`: frontmatter (name, description, createdAt) plus instructions. */
-  instructions: { kind: 'text', path: 'CLAUDE.md', shared: false },
+  /**
+   * The agent's `CLAUDE.md`, or its `AGENTS.md` when it has no `CLAUDE.md` (the
+   * CLI's own precedence): frontmatter (name, description, createdAt) plus instructions.
+   */
+  instructions: { kind: 'text', path: 'CLAUDE.md', fallbackPath: 'AGENTS.md', shared: false },
   /** The agent's `.env`. The container's `POST /env` writes it too, and must be able to read it. */
   secrets: { kind: 'text', path: '.env', shared: true, mode: 0o666 },
   /** Per-agent defaults for new sessions. The agent may edit it by hand; the host re-reads before every write. */
