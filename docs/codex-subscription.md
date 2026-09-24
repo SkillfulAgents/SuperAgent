@@ -74,14 +74,20 @@ presentation belongs to the separate usage UI work; this PR does not add bars or
 an unavailable placeholder. Subscription exhaustion behavior is covered by error
 presentation tests, not a deliberately exhausted live account.
 
-Local verification: 400 focused app tests plus three provider tests; 38 affected
-DB tests also passed with libsql. The full container suite passed 1,284 tests with
-10 skips, followed by the 20-test proxy suite after adding the Codex error-envelope
-regression. Typecheck and lint passed (existing lint warnings only). Screenshots
-were captured in light/dark mode from scratch mock data.
+Local verification after review fixes: 413 focused app tests; 44 affected DB
+and runtime tests also passed with libsql. The full container suite passed 1,294
+tests with 10 skips. App/container typechecks and lint passed (existing warnings
+only). Generic endpoint screenshots were captured in light/dark mode, with the
+new token-limit setting saved through the real API.
 
 Completed error events on the forced-streaming, non-streaming SDK path retain
 upstream messages and status classification. Known subscription-quota failures
 suppress SDK retries; transient server failures remain retryable. An initial
 OAuth exchange without a refresh token asks the user to sign in again. Device
 polling still treats 403/404 as pending, matching the official CLI protocol.
+
+A second live app/container run on `superagent-container:provider-stack-reviewed`
+verified credential rotation without restarting the SDK query. Session
+`9db9cbb1-62fb-4f32-8474-59c48a5ad0ed` ran Bash, refreshed through the app-owned
+credential service, and recalled its marker on the next turn. The credential
+generation advanced from 1 to 2; the container logged no query restart.
