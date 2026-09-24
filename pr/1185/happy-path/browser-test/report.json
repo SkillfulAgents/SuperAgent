@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature test: Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported the result through chat.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully. Gamut application displayed with agent list in sidebar showing \"QA-20260924-185212-0pk6\" and \"QA-20260924-185211-4c1n\".",
+    "Step 2: Clicked on agent \"QA-20260924-185212-0pk6\" in the sidebar — Agent page opened successfully. Chat interface displayed with message input textbox and agent configuration options visible.",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the textbox — Message was entered correctly into the input field.",
+    "Step 4: Clicked \"Send message\" button — Message was sent successfully. Page transitioned to session view (URL changed to /sessions/0726cdf7-69e3-4c43-9aae-36d062bccca3). Agent status changed to \"working\" and displayed \"Working...\" indicator.",
+    "Step 5: Waited for agent response (up to 3 minutes) — Agent completed processing within 9 seconds. Response received with status \"idle\" indicating completion.",
+    "Step 6: Verified response mentions \"Example Domain\" — Response successfully received: \"The page title of https://example.com is \"Example Domain\". The page loaded normally, and I closed the browser afterwards.\" Response confirms the agent executed browser_open tool, navigated to the URL, captured the page title correctly, and closed the session. Work metrics show 9 seconds execution time, 3 tool calls, and 148,788 tokens used."
+  ],
+  "bugs": [],
+  "durationMs": 96817,
+  "sessionId": "4d3b4fe3-701d-4b46-ab53-a56c9bfed23b",
+  "cost": {
+    "inputTokens": 430,
+    "outputTokens": 11965,
+    "cacheCreationTokens": 88458,
+    "cacheReadTokens": 1369843,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.307812
+  }
+}
