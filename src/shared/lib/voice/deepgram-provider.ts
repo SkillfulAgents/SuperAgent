@@ -47,15 +47,6 @@ export class DeepgramVoiceProvider extends BaseVoiceProvider {
     }
   }
 
-  override supportsVoiceAgent(): boolean {
-    return true
-  }
-
-  override async mintVoiceAgentToken(apiKey: string): Promise<string> {
-    // Same Deepgram token works for both STT and Voice Agent endpoints
-    return this.mintEphemeralToken(apiKey)
-  }
-
   override getTtsVoices(): readonly TtsVoiceInfo[] {
     return DEEPGRAM_TTS_VOICES
   }

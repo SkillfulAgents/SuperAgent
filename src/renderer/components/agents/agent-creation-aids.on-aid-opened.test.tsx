@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockOnAidOpened = vi.fn()
-const mockOnVoiceResult = vi.fn()
+const mockOnStartVoiceMode = vi.fn()
 const mockOnImportComplete = vi.fn()
 
 vi.mock('@renderer/hooks/use-agent-templates', () => ({
@@ -19,23 +19,12 @@ vi.mock('@renderer/hooks/use-agent-templates', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-voice-input', () => ({
-  useIsVoiceAgentConfigured: () => true,
-}))
-
-vi.mock('@renderer/lib/api', () => ({
-  apiFetch: vi.fn(async () => ({
-    ok: true,
-    json: async () => ({ prompt: 'voice system prompt' }),
-  })),
+  useCanUseVoiceMode: () => true,
 }))
 
 const mockNavigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
-}))
-
-vi.mock('@renderer/components/ui/voice-agent', () => ({
-  VoiceAgent: () => null,
 }))
 
 import { AgentCreationAids } from './agent-creation-aids'
@@ -49,7 +38,7 @@ describe('AgentCreationAids onAidOpened', () => {
     const user = userEvent.setup()
     render(
       <AgentCreationAids
-        onVoiceResult={mockOnVoiceResult}
+        onStartVoiceMode={mockOnStartVoiceMode}
         onImportComplete={mockOnImportComplete}
         onAidOpened={mockOnAidOpened}
       />,
@@ -61,8 +50,7 @@ describe('AgentCreationAids onAidOpened', () => {
 
     await user.click(screen.getByRole('button', { name: /Brainstorm with Voice/i }))
     expect(mockOnAidOpened).toHaveBeenCalledTimes(2)
-
-    await user.click(screen.getByRole('button', { name: 'Close' }))
+    expect(mockOnStartVoiceMode).toHaveBeenCalledTimes(1)
 
     await user.click(screen.getByRole('button', { name: /Import an Agent/i }))
     expect(mockOnAidOpened).toHaveBeenCalledTimes(3)
@@ -84,7 +72,7 @@ describe('AgentCreationAids onNavigateAway', () => {
   function renderAids(onNavigateAway?: () => Promise<void>) {
     render(
       <AgentCreationAids
-        onVoiceResult={mockOnVoiceResult}
+        onStartVoiceMode={mockOnStartVoiceMode}
         onImportComplete={mockOnImportComplete}
         onNavigateAway={onNavigateAway}
       />,

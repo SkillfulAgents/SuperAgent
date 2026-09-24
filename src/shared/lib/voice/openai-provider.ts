@@ -182,14 +182,6 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
     return this.mintClientSecret(apiKey, { session: { type: 'transcription' } })
   }
 
-  override supportsVoiceAgent(): boolean {
-    return true
-  }
-
-  override async mintVoiceAgentToken(apiKey: string): Promise<string> {
-    return this.mintClientSecret(apiKey, { session: { type: 'realtime' } })
-  }
-
   override supportsTranscription(): boolean {
     return true
   }

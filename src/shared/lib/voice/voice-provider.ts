@@ -60,11 +60,6 @@ export abstract class BaseVoiceProvider {
     return { provider: this.id, token, protocol: this.getSttProtocol() }
   }
 
-  /** Whether this provider supports Voice Agent (S2S) sessions. */
-  supportsVoiceAgent(): boolean {
-    return false
-  }
-
   /** Renderer implementation used for an independently running agent session. */
   getConversationEngine(): VoiceConversationEngine | null {
     return this.supportsTts() ? 'chained' : null
@@ -73,25 +68,6 @@ export abstract class BaseVoiceProvider {
   /** Host-side delegated conversation sessions, when supported by the provider. */
   getLiveConversation(): LiveConversationProvider | null {
     return null
-  }
-
-  /** Mint a token for a Voice Agent session. Override in providers that support it. */
-  async mintVoiceAgentToken(apiKey: string): Promise<string> {
-    void apiKey
-    throw new Error(`Voice Agent not supported by ${this.name}`)
-  }
-
-  /** Convenience: resolve the effective key and mint a Voice Agent token. */
-  async getVoiceAgentToken(): Promise<VoiceTokenResponse> {
-    if (!this.supportsVoiceAgent()) {
-      throw new Error(`Voice Agent not supported by ${this.name}`)
-    }
-    const apiKey = this.getEffectiveApiKey()
-    if (!apiKey) {
-      throw new VoiceProviderError(this.missingCredentialMessage(), 400)
-    }
-    const token = await this.mintVoiceAgentToken(apiKey)
-    return { provider: this.id, token, protocol: this.getSttProtocol() }
   }
 
   /**

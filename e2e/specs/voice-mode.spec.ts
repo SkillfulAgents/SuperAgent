@@ -38,7 +38,6 @@ async function mockSpeech(page: Page, { supportsTts = true } = {}): Promise<Spee
       contentType: 'application/json',
       body: JSON.stringify({
         configured: true,
-        supportsVoiceAgent: false,
         supportsTts,
         voices: supportsTts ? [{ id: 'aura-2-thalia-en', label: 'Thalia', description: 'Clear, confident, energetic' }] : [],
         defaultVoice: supportsTts ? 'aura-2-thalia-en' : undefined,

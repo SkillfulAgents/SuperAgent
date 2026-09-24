@@ -3,7 +3,7 @@ import app from './index'
 
 /**
  * The voice router moved from /api/stt to /api/voice when it outgrew speech
- * recognition (it also mints voice-agent and text-to-speech credentials).
+ * recognition (it also mints text-to-speech credentials).
  * The old prefix stays mounted: the speech-recognition polyfill is cached in
  * browsers for an hour and fetches its token from the prefix it was built
  * with, and third-party dashboards may have the old paths baked in. Assert
