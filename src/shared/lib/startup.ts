@@ -44,6 +44,7 @@ const startupIoLimit = pLimit(STARTUP_IO_CONCURRENCY)
 let servicesShuttingDown = false
 let servicesInitPromise: Promise<void> | null = null
 let servicesInitError: string | null = null
+let stopWatchingWebhookRelay: (() => void) | null = null
 
 /**
  * Start post-bind I/O through one shared lane so image inspection, overdue
@@ -166,6 +167,17 @@ async function initializeServicesInner() {
   const { ensureManagedPlatformConnection } = await import('./llm-provider/connection-settings')
   await ensureManagedPlatformConnection()
   markBoot('dbReady')
+
+  // The host's one connection to the platform webhook queue, shared by every
+  // feature that receives webhooks. Cheap to start: it claims nothing until a
+  // consumer registers, and follows platform connect/disconnect through the
+  // auth-changed notifier. Started before anything can start a container, so
+  // an agent's webhook tools see the relay's real availability; the watcher
+  // marks agents stale whenever that availability moves.
+  const relay = getWebhookRelay()
+  relay.start()
+  stopWatchingWebhookRelay = containerHost.watchWebhookRelay(relay)
+
   const slugs = agents.map((a) => a.slug)
   await containerHost.initializeAgents(slugs)
 
@@ -184,12 +196,6 @@ async function initializeServicesInner() {
       await provider.stop(agentId)
     }
   }
-
-  // The host's one connection to the platform webhook queue, shared by every
-  // feature that receives webhooks. Cheap to start: it claims nothing until a
-  // consumer registers, and follows platform connect/disconnect through the
-  // auth-changed notifier.
-  getWebhookRelay().start()
 
   // Lane order is priority: the limiter grants slots FIFO, and the last three
   // starts below are open-ended (image pull on fresh installs; the task
@@ -292,6 +298,8 @@ export async function shutdownServices() {
   await stopAllProviders()
   taskScheduler.stop()
   triggerManager.stop()
+  stopWatchingWebhookRelay?.()
+  stopWatchingWebhookRelay = null
   getWebhookRelay().stop()
   platformNotificationsManager.stop()
   sessionAutoDeleteMonitor.stop()

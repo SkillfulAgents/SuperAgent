@@ -6,7 +6,7 @@ import { SERVICES } from './tools/search-connected-account-services'
 import { BROWSER_USE_GUIDANCE_HINT } from './tools/browser'
 import { COMPUTER_USE_GUIDANCE_HINT } from './tools/computer-use'
 
-const KEYS = ['COMPOSIO_PLATFORM_MODE', 'PLATFORM_AUTH_ACTIVE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM', 'SUPERAGENT_MOUNTS']
+const KEYS = ['COMPOSIO_PLATFORM_MODE', 'PLATFORM_AUTH_ACTIVE', 'WEBHOOK_RELAY_AVAILABLE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM', 'SUPERAGENT_MOUNTS']
 let saved: Record<string, string | undefined>
 beforeEach(() => { saved = Object.fromEntries(KEYS.map(k => [k, process.env[k]])); for (const k of KEYS) delete process.env[k] })
 afterEach(() => { for (const k of KEYS) { saved[k] === undefined ? delete process.env[k] : process.env[k] = saved[k]! } })
@@ -87,22 +87,40 @@ describe('generateSystemPrompt rendering', () => {
   const combos = [
     { label: 'neither connected', env: {}, composio: false, webhook: false },
     { label: 'composio only', env: { COMPOSIO_PLATFORM_MODE: 'true' }, composio: true, webhook: false },
-    { label: 'webhook only', env: { PLATFORM_AUTH_ACTIVE: 'true' }, composio: false, webhook: true },
-    { label: 'both connected', env: { COMPOSIO_PLATFORM_MODE: 'true', PLATFORM_AUTH_ACTIVE: 'true' }, composio: true, webhook: true },
+    { label: 'webhook only', env: { PLATFORM_AUTH_ACTIVE: 'true', WEBHOOK_RELAY_AVAILABLE: 'true' }, composio: false, webhook: true },
+    { label: 'both connected', env: { COMPOSIO_PLATFORM_MODE: 'true', PLATFORM_AUTH_ACTIVE: 'true', WEBHOOK_RELAY_AVAILABLE: 'true' }, composio: true, webhook: true },
   ]
+  // The host sets the token flag and the relay flag separately: webhook
+  // tools follow the relay, platform services only the token.
+  it.each([
+    { label: 'relay without a token', env: { WEBHOOK_RELAY_AVAILABLE: 'true' }, webhook: true, services: false },
+    { label: 'token without the relay', env: { PLATFORM_AUTH_ACTIVE: 'true', COMPOSIO_PLATFORM_MODE: 'true' }, webhook: false, services: true },
+  ])('$label: webhook tools follow the relay, platform services the token', ({ env, webhook, services }) => {
+    Object.assign(process.env, env)
+    const vars = buildSystemPromptVars()
+    expect(vars.webhookEndpoints).toBe(webhook)
+    expect(vars.composioTriggers).toBe(false)
+    expect(vars.anyTriggers).toBe(webhook)
+    expect(vars.platformServices).toBe(services)
+    const out = generateSystemPrompt()
+    expect(out.includes('create_webhook_endpoint')).toBe(webhook)
+    expect(out.includes('mcp__user-input__setup_trigger')).toBe(false)
+    expect(out.includes('## Built-in media generation')).toBe(services)
+  })
+
   it.each(combos)('$label: no leaked tokens, correct gating, header always present', ({ env, composio, webhook }) => {
     Object.assign(process.env, env)
     const out = generateSystemPrompt()
     expect(out).not.toMatch(/<%|%>/)                                          // no unrendered template tag
     expect(out).not.toMatch(/\$\{[A-Z_]+\}/)                                  // no dead ${VAR} interpolation
     expect(out).toContain('## Webhook Triggers')                             // header always -> disclaimer has a home
-    expect(out.includes('mcp__user-input__setup_trigger')).toBe(composio)     // composio tools gated
+    expect(out.includes('mcp__user-input__setup_trigger')).toBe(composio && webhook) // composio triggers also need the relay
     expect(out.includes('create_webhook_endpoint')).toBe(webhook)             // webhook body gated
     expect(out.includes('### Custom Webhook Endpoints')).toBe(composio && webhook) // child heading needs a sibling
     expect(out.includes('Prefer `setup_trigger`')).toBe(composio && webhook)  // composio-only bullet nested in webhook body
-    expect(out.includes('platform-dependent')).toBe(!composio && !webhook)    // disconnected fallback
-    // platformServices shares PLATFORM_AUTH_ACTIVE with webhookEndpoints, but
-    // its procedural API details now live in the on-demand guide.
+    expect(out.includes('platform-dependent')).toBe(!webhook)                 // no relay: disconnected fallback
+    // platformServices follows PLATFORM_AUTH_ACTIVE, set with the relay flag
+    // here; its procedural API details now live in the on-demand guide.
     expect(out.includes('## Built-in media generation')).toBe(webhook)
     expect(out.includes('/opt/gamut/docs/media-generation.md')).toBe(webhook)
     expect(out.includes('## Built-in lead enrichment')).toBe(webhook)
@@ -236,6 +254,7 @@ describe('generateSystemPrompt rendering', () => {
   it('references every image-owned capability guide and keeps its source file present', () => {
     process.env.COMPOSIO_PLATFORM_MODE = 'true'
     process.env.PLATFORM_AUTH_ACTIVE = 'true'
+    process.env.WEBHOOK_RELAY_AVAILABLE = 'true'
     process.env.HOST_PLATFORM = 'darwin'
     const out = generateSystemPrompt()
     const guides = [
@@ -271,6 +290,7 @@ describe('generateSystemPrompt rendering', () => {
           for (const subagents of ['allow', 'block'] as const) {
             process.env.COMPOSIO_PLATFORM_MODE = String(composio)
             process.env.PLATFORM_AUTH_ACTIVE = String(webhook)
+            process.env.WEBHOOK_RELAY_AVAILABLE = String(webhook)
             process.env.HOST_PLATFORM = host
             const out = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, { subagents })
             for (const match of out.matchAll(/\/opt\/gamut\/docs\/([\w./-]+\.md)/g)) {
@@ -298,6 +318,7 @@ describe('generateSystemPrompt rendering', () => {
     const sources = [readFileSync(join(__dirname, '..', 'docs', 'session-history.md'), 'utf8')]
     for (const subagents of ['allow', 'block'] as const) {
       process.env.PLATFORM_AUTH_ACTIVE = 'true'
+      process.env.WEBHOOK_RELAY_AVAILABLE = 'true'
       sources.push(generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, { subagents }))
     }
     for (const source of sources) {
@@ -491,11 +512,15 @@ describe('generateSystemPrompt rendering', () => {
   it.each(gateCombos)('composio=$composio webhook=$webhook desktop=$desktop: gating orphans no heading', ({ composio, webhook, desktop }) => {
     process.env.COMPOSIO_PLATFORM_MODE = 'true'
     process.env.PLATFORM_AUTH_ACTIVE = 'true'
+    process.env.WEBHOOK_RELAY_AVAILABLE = 'true'
     process.env.HOST_PLATFORM = 'darwin'
     const baseline = bodylessHeadings(generateSystemPrompt())
 
     if (!composio) delete process.env.COMPOSIO_PLATFORM_MODE
-    if (!webhook) delete process.env.PLATFORM_AUTH_ACTIVE
+    if (!webhook) {
+      delete process.env.PLATFORM_AUTH_ACTIVE
+      delete process.env.WEBHOOK_RELAY_AVAILABLE
+    }
     if (!desktop) process.env.HOST_PLATFORM = 'linux'
 
     expect(bodylessHeadings(generateSystemPrompt())).toEqual(baseline)
@@ -505,7 +530,10 @@ describe('generateSystemPrompt rendering', () => {
   // while X sits behind a gate that is off, pointing the agent at nothing.
   it.each(gateCombos)('composio=$composio webhook=$webhook desktop=$desktop: every cross-referenced section exists', ({ composio, webhook, desktop }) => {
     if (composio) process.env.COMPOSIO_PLATFORM_MODE = 'true'
-    if (webhook) process.env.PLATFORM_AUTH_ACTIVE = 'true'
+    if (webhook) {
+      process.env.PLATFORM_AUTH_ACTIVE = 'true'
+      process.env.WEBHOOK_RELAY_AVAILABLE = 'true'
+    }
     process.env.HOST_PLATFORM = desktop ? 'darwin' : 'linux'
     process.env.CONNECTED_ACCOUNTS = JSON.stringify({ gmail: [{ name: 'A', id: 'x' }] })
 

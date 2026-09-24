@@ -50,7 +50,7 @@ import {
   type ScheduledTaskUpdateInput,
   type WebhookTriggerUpdateInput,
 } from '@shared/lib/services/automation-update-schema'
-import { getWebhookRelay } from '@shared/lib/webhook-relay'
+import { getWebhookRelay, webhooksUnavailableMessage } from '@shared/lib/webhook-relay'
 import {
   createWebhookEndpointInputSchema,
   updateWebhookEndpointInputSchema,
@@ -59,7 +59,7 @@ import {
   CUSTOM_WEBHOOK_TRIGGER_TYPE,
   type WebhookEndpointEvent,
 } from '@shared/lib/services/webhook-endpoint-schema'
-import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import {
   getAvailableTriggers,
@@ -4843,6 +4843,12 @@ ${continuation}`
           await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
           return
         }
+        // Composio delivers trigger events through the relay.
+        const relayUnavailable = webhooksUnavailableMessage('Webhook triggers')
+        if (relayUnavailable) {
+          await this.rejectContainerInput(agentSlug, toolUseId, relayUnavailable)
+          return
+        }
 
         let input: { connected_account_id: string }
         try {
@@ -4898,6 +4904,12 @@ ${continuation}`
       try {
         if (!isPlatformComposioActive()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
+          return
+        }
+        // Composio delivers trigger events through the relay.
+        const relayUnavailable = webhooksUnavailableMessage('Webhook triggers')
+        if (relayUnavailable) {
+          await this.rejectContainerInput(agentSlug, toolUseId, relayUnavailable)
           return
         }
 
@@ -5051,12 +5063,12 @@ ${continuation}`
   ): void {
     void (async () => {
       try {
-        // Gate on platform auth, not Composio mode: custom endpoints live on
-        // the platform proxy and must keep working when the user brings their
-        // own Composio key (mirrors the teardown gate in
-        // webhook-trigger-service).
-        if (!getPlatformAccessToken()) {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
+        // Gate on the relay, not Composio mode: custom endpoints live on the
+        // relay and must keep working when the user brings their own
+        // Composio key.
+        const relayUnavailable = webhooksUnavailableMessage('Custom webhook endpoints')
+        if (relayUnavailable) {
+          await this.rejectContainerInput(agentSlug, toolUseId, relayUnavailable)
           return
         }
 
@@ -5191,12 +5203,12 @@ ${continuation}`
   ): void {
     void (async () => {
       try {
-        // Gate on platform auth, not Composio mode: custom endpoints live on
-        // the platform proxy and must keep working when the user brings their
-        // own Composio key (mirrors the teardown gate in
-        // webhook-trigger-service).
-        if (!getPlatformAccessToken()) {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
+        // Gate on the relay, not Composio mode: custom endpoints live on the
+        // relay and must keep working when the user brings their own
+        // Composio key.
+        const relayUnavailable = webhooksUnavailableMessage('Custom webhook endpoints')
+        if (relayUnavailable) {
+          await this.rejectContainerInput(agentSlug, toolUseId, relayUnavailable)
           return
         }
 
@@ -5298,8 +5310,9 @@ ${continuation}`
   ): void {
     void (async () => {
       try {
-        if (!getPlatformAccessToken()) {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
+        const relayUnavailable = webhooksUnavailableMessage('Custom webhook endpoints')
+        if (relayUnavailable) {
+          await this.rejectContainerInput(agentSlug, toolUseId, relayUnavailable)
           return
         }
 

@@ -377,12 +377,13 @@ export function buildSystemPromptVars(
   // Connected accounts run through Gamut's Composio (not a personal key). Managed
   // triggers and the platform-only accounts both exist only there.
   const composioPlatform = process.env.COMPOSIO_PLATFORM_MODE === 'true';
-  const composioTriggers = composioPlatform;
+  // Same gates as the webhook tools in mcp-server.ts: every trigger needs the
+  // host's webhook relay, and Composio's also need platform Composio.
+  const webhookEndpoints = process.env.WEBHOOK_RELAY_AVAILABLE === 'true';
+  const composioTriggers = composioPlatform && webhookEndpoints;
   const platformAccounts = composioPlatform;
-  const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
-  // Same gate as webhookEndpoints — do not tighten to also require proxy URL
-  // (PLATFORM_AUTH_ACTIVE also gates webhook tools in mcp-server.ts).
-  const platformServices = webhookEndpoints;
+  // Only the platform token: do not tighten to also require proxy URL.
+  const platformServices = process.env.PLATFORM_AUTH_ACTIVE === 'true';
   const modelHints = modelPromptHints || [];
   const connectedAccounts = connectedAccountGroups();
   const remoteMcps = remoteMcpViews();

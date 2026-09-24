@@ -24,7 +24,8 @@ import { useNavigate } from '@tanstack/react-router'
 import { useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import { useUser } from '@renderer/context/user-context'
 import { useSettings } from '@renderer/hooks/use-settings'
-import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
+import { useWebhookRelay } from '@renderer/hooks/use-webhook-relay'
+import type { WebhookRelayStatus } from '@shared/lib/webhook-relay/status'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -48,6 +49,22 @@ interface WebhookTriggerViewProps {
   agentSlug: string
 }
 
+/** Why this host isn't receiving webhook events right now, or null when it is. */
+function webhookRelayNotice(relay: WebhookRelayStatus): string | null {
+  switch (relay.unavailableReason) {
+    case 'platform_disconnected':
+      return 'Webhook triggers require a platform connection. Connect to the platform in Settings to enable triggers.'
+    case 'not_configured':
+      return 'This deployment has no webhook relay, so webhook triggers cannot receive events.'
+    case 'stopped':
+      return 'The webhook relay is not running, so this trigger is not receiving events right now.'
+    case null:
+      return relay.transport === 'unreachable'
+        ? 'The webhook relay cannot be reached right now. Events are held until it can, then delivered.'
+        : null
+  }
+}
+
 export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewProps) {
   const { data: trigger, isLoading, error } = useWebhookTrigger(triggerId)
   const { data: sessions = [] } = useWebhookTriggerSessions(triggerId)
@@ -59,7 +76,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const navigate = useNavigate()
   const { canUseAgent, canAdminAgent } = useUser()
   const { data: settings } = useSettings()
-  const { data: platformAuth } = usePlatformAuthStatus()
+  const { data: relay } = useWebhookRelay()
   const canCancel = canUseAgent(agentSlug)
   const canViewOwnerDetails = canAdminAgent(trigger?.agentSlug ?? agentSlug)
   const { data: agents } = useAgents()
@@ -85,7 +102,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const isActive = trigger?.status === 'active' || trigger?.status === 'paused'
   const isPaused = trigger?.status === 'paused'
   const hasLocalComposioKey = settings?.apiKeyStatus?.composio?.isConfigured ?? false
-  const isPlatformConnected = platformAuth?.connected ?? false
+  const relayNotice = relay ? webhookRelayNotice(relay) : null
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
@@ -256,16 +273,18 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
         actions={headerActions}
       />
 
-      {isActive && !isPlatformConnected && (
-        <Alert className="border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-400">
+      {isActive && relayNotice && (
+        <Alert
+          className="border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-400"
+          data-testid="webhook-relay-notice"
+        >
           <AlertTriangle className="h-4 w-4 !text-amber-600 dark:!text-amber-400" />
-          <AlertDescription>
-            Webhook triggers require a platform connection. Connect to the platform in Settings to enable triggers.
-          </AlertDescription>
+          <AlertDescription>{relayNotice}</AlertDescription>
         </Alert>
       )}
 
-      {isActive && isPlatformConnected && hasLocalComposioKey && (
+      {/* A personal key only affects Composio triggers; custom endpoints live on the relay. */}
+      {isActive && relay?.available && hasLocalComposioKey && !isCustom && (
         <Alert className="border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-400">
           <AlertTriangle className="h-4 w-4 !text-amber-600 dark:!text-amber-400" />
           <AlertDescription>

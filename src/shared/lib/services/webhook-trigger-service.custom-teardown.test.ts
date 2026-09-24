@@ -37,8 +37,10 @@ vi.mock('@shared/lib/composio/triggers', () => ({
 }))
 
 const mockDisableRelayEndpoint = vi.fn().mockResolvedValue(undefined)
+const mockRelayAvailable = vi.fn(() => true)
 vi.mock('@shared/lib/webhook-relay', () => ({
   getWebhookRelay: () => ({
+    snapshot: () => ({ available: mockRelayAvailable() }),
     disableEndpoint: (...args: unknown[]) => mockDisableRelayEndpoint(...args),
   }),
 }))
@@ -59,6 +61,7 @@ import {
 describe('custom-endpoint teardown and poll scoping', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
+    mockRelayAvailable.mockReturnValue(true)
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
@@ -125,9 +128,10 @@ describe('custom-endpoint teardown and poll scoping', () => {
     )
   })
 
-  it('skips the platform call when there is no platform auth at all', async () => {
+  it('skips the relay call while the relay is unavailable', async () => {
     mockIsPlatformComposioActive.mockReturnValue(false)
     mockGetPlatformAccessToken.mockReturnValue(null)
+    mockRelayAvailable.mockReturnValue(false)
 
     const triggerId = await createCustomTrigger()
     const cancelled = await cancelWebhookTriggerWithCleanup(triggerId)

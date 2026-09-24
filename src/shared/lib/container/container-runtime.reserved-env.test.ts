@@ -155,6 +155,12 @@ vi.mock('@shared/lib/composio/client', () => ({
   isPlatformComposioActive: () => false,
 }))
 
+const relayState = vi.hoisted(() => ({ available: false }))
+vi.mock('@shared/lib/webhook-relay', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/webhook-relay')>()),
+  getWebhookRelay: () => ({ snapshot: () => ({ available: relayState.available }) }),
+}))
+
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
   resolveTimezoneForAgent: () => 'America/New_York',
 }))
@@ -165,6 +171,8 @@ vi.mock('@shared/lib/services/mount-service', () => ({
 }))
 
 import { containerHost } from './container-host'
+import { messagePersister } from './message-persister'
+import { createFakeWebhookRelay } from '@shared/lib/webhook-relay/testing/fake-webhook-relay'
 
 describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reserved runtime env vars', () => {
   beforeEach(() => {
@@ -177,6 +185,7 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
     mockGetMountsWithHealth.mockReturnValue([])
 
     containerHost.runtime('test-agent').updateCachedStatus('stopped', null)
+    relayState.available = false
     mockStart.mockResolvedValue(undefined)
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 8080 })
 
@@ -201,6 +210,7 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
         TZ: 'Antarctica/Troll',
         HOST_PLATFORM: 'spoofed-os',
         CLAUDE_CODE_ATTRIBUTION_HEADER: '1',
+        WEBHOOK_RELAY_AVAILABLE: 'true',
         MY_CUSTOM: 'foo',
       },
     })
@@ -240,5 +250,94 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
 
     const envVars = mockStart.mock.calls[0][0].envVars
     expect(envVars.MY_CUSTOM).toBe('foo')
+  })
+})
+
+describe('ContainerRuntime webhook relay env', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerHost.dropRuntime('test-agent')
+    mockGetOrCreateProxyToken.mockResolvedValue('real-proxy-token')
+    mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
+    mockGetAppPort.mockReturnValue(3000)
+    mockGetMountsWithHealth.mockReturnValue([])
+    mockStart.mockResolvedValue(undefined)
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 8080 })
+    mockDbInnerJoin.mockReturnValue({ where: mockDbWhere })
+    mockDbWhere.mockResolvedValue([])
+    mockMcpInnerJoin.mockReturnValue({ where: mockMcpWhere })
+    mockMcpWhere.mockResolvedValue([])
+    mockGetSettings.mockReturnValue({ container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} })
+    containerHost.runtime('test-agent').updateCachedStatus('stopped', null)
+  })
+
+  async function start(available: boolean) {
+    relayState.available = available
+    await containerHost.runtime('test-agent').ensureRunning()
+    return mockStart.mock.calls.at(-1)![0].envVars as Record<string, string>
+  }
+
+  it('sets WEBHOOK_RELAY_AVAILABLE only while the relay can receive webhooks', async () => {
+    expect((await start(true)).WEBHOOK_RELAY_AVAILABLE).toBe('true')
+
+    containerHost.runtime('test-agent').updateCachedStatus('stopped', null)
+    // Also covers the custom-env clobber: the key is reserved.
+    mockGetSettings.mockReturnValue({
+      container: { agentImage: 'test-image', containerRunner: 'docker' },
+      app: {},
+      customEnvVars: { WEBHOOK_RELAY_AVAILABLE: 'true' },
+    })
+    expect((await start(false)).WEBHOOK_RELAY_AVAILABLE).toBeUndefined()
+  })
+
+  it('goes stale when availability moves away from what its env was built with', async () => {
+    await start(false)
+    const runtime = containerHost.runtime('test-agent')
+
+    containerHost.reconcileWebhookRelay(false)
+    expect(runtime.isStale()).toBe(false)
+
+    containerHost.reconcileWebhookRelay(true)
+    expect(runtime.isStale()).toBe(true)
+  })
+
+  it('assumes a container it did not start matches, until availability moves', () => {
+    const runtime = containerHost.runtime('test-agent')
+    runtime.updateCachedStatus('running', 8080)
+
+    containerHost.reconcileWebhookRelay(true)
+    expect(runtime.isStale()).toBe(false)
+
+    containerHost.reconcileWebhookRelay(false)
+    expect(runtime.isStale()).toBe(true)
+  })
+
+  it('forgets the start-time availability once stopped', async () => {
+    await start(true)
+    const runtime = containerHost.runtime('test-agent')
+    runtime.updateCachedStatus('stopped', null)
+    runtime.updateCachedStatus('running', 8080)
+
+    containerHost.reconcileWebhookRelay(false)
+    expect(runtime.isStale()).toBe(false)
+  })
+})
+
+describe('ContainerHost.watchWebhookRelay', () => {
+  it('publishes status changes and marks agents whose webhook tools went out of date', () => {
+    containerHost.dropRuntime('test-agent')
+    const runtime = containerHost.runtime('test-agent')
+    runtime.updateCachedStatus('running', 8080)
+    const relay = createFakeWebhookRelay()
+
+    const stop = containerHost.watchWebhookRelay(relay)
+    relay.setSnapshot({ available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null, lastError: null })
+    stop()
+
+    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+      type: 'webhook_relay_changed',
+      status: { available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null },
+    })
+    expect(runtime.isStale()).toBe(true)
   })
 })

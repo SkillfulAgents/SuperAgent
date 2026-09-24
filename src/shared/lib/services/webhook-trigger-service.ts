@@ -22,7 +22,7 @@ import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { getWebhookRelay } from '@shared/lib/webhook-relay'
-import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 
 const PLATFORM_PROVIDER_ID = 'platform'
 
@@ -501,9 +501,9 @@ export async function cancelWebhookTriggerWithCleanup(
 }
 
 // Custom endpoints live on the webhook relay regardless of Composio key mode,
-// so gate on platform auth or a user-supplied Composio key leaves the URL live.
+// so gate on the relay or a user-supplied Composio key leaves the URL live.
 function canReachUpstream(kind: WebhookTrigger['kind']): boolean {
-  return kind === 'custom' ? Boolean(getPlatformAccessToken()) : isPlatformComposioActive()
+  return kind === 'custom' ? getWebhookRelay().snapshot().available : isPlatformComposioActive()
 }
 
 // One place that speaks both upstream vocabularies (relay endpoint disable
