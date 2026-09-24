@@ -2229,6 +2229,20 @@ describe('exportAgentFull', () => {
     expect(entryNames).toContain('CLAUDE.md')
   })
 
+  it('exports AGENTS.md as CLAUDE.md when the workspace has no CLAUDE.md', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_CLAUDE_MD)
+
+    const zipBuffer = await exportAgentFull('full-agent')
+    const reader = await openZipFromBuffer(zipBuffer)
+    const entryNames = reader.entries.map((e) => e.fileName)
+    reader.close()
+
+    expect(entryNames).toContain('CLAUDE.md')
+    expect(entryNames).not.toContain('AGENTS.md')
+  })
+
   it('includes .env in the export', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })

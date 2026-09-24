@@ -586,9 +586,10 @@ export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): 
     }
 
     const { files } = agentRegistry.get(agentSlug)
+    const rootFiles = (await files.list('')).map((entry) => entry.path)
     return createWorkspaceZipStream(
       files,
-      (add) => walkFullExportFiles(files, add, signal),
+      (add) => walkFullExportFiles(files, (workspacePath) => add(workspacePath, templatePathOf(workspacePath, rootFiles)), signal),
       signal,
       1, // large workspaces — level 9 pegs 0.5 vCPU hosts
     )
