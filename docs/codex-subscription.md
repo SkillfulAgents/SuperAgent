@@ -35,7 +35,7 @@ header selects `service_tier: "priority"` for Fast, matching the official Codex
 client; Normal omits the tier. Discovery offers Fast only when the model advertises
 it via `service_tiers` or `additional_speed_tiers`. Model search filters hidden models.
 Fast mode uses more subscription credits; displayed costs remain API-equivalent.
-The translator preserves the served tier and does not label default-tier usage as
+The translator preserves the reported tier and does not label default-tier usage as
 Fast merely because Fast was requested.
 Discovery currently sends `client_version=0.156.1`: the old 0.116.0 probe returned
 only a hidden review model. This version is a compatibility setting, not an
@@ -106,11 +106,35 @@ shapes, and continued with the remembered marker after switching to Normal.
 Request-level tests cover Normal → Fast → Normal on one proxy listener, streaming
 and JSON replies, and `priority`/`fast`/`default` served-tier echoes.
 
-**Upstream limitation:** live subscription probes accepted `service_tier: "priority"`
-with HTTP 200 but reported `service_tier: "default"` for GPT-5.6 Sol, GPT-5.5, and
-GPT-6 Astra. Matching the CLI routing/beta headers did not change this; the `fast`
-wire alias returned HTTP 400. Thus request routing and agent compatibility are
-validated, but actual priority processing/latency improvement is not confirmed for
-this account. No synthetic Fast usage or automatic retry is added. The native
-Codex client also maps its Fast setting to `priority`:
-https://github.com/openai/codex/blob/main/codex-rs/protocol/src/config_types.rs
+**Tier-reporting caveat, not evidence of a downgrade:** the subscription endpoint
+returns `service_tier: "default"` even when Fast measurably increases output speed.
+The original probe incorrectly treated this field as proof that Fast was not served.
+The official Codex CLI 0.153.4, using the same temporary Pro account, reproduced
+`priority` requests followed by a `default` completion over both HTTP and WebSockets.
+Its native WebSocket request explicitly contained `service_tier: "priority"`.
+The account had credits available, was below its usage limit, and discovery
+advertised the `priority`/Fast tier for GPT-5.6 Sol.
+
+A six-request, alternating-order comparison on GPT-5.6 Sol used the same prompt
+(print integers 1 through 180), low reasoning effort, account and HTTP endpoint.
+Fast changed only `service_tier: "priority"`; Normal omitted the field. All outputs
+completed, with approximately 542–544 visible output tokens each. Throughput is
+visible output tokens (reported output minus reasoning tokens) divided by the
+interval from the first text delta to completion:
+
+| Mode | Output tokens/sec, three runs | Median completion time |
+| --- | --- | --- |
+| Normal | 55, 55, 45 | 11.45 s |
+| Fast | 82, 78, 78 | 8.50 s |
+
+The median output rate increased about 1.42×, consistent with the model's advertised
+1.5× Fast mode. This is a small live sample, not a latency guarantee or billing
+measurement. Both modes still reported `default`; no transport or extra-header
+change was required to obtain the measured speedup. The request mapping already
+in this PR is correct. The official CLI maps Fast to `priority` as well:
+https://github.com/openai/codex/blob/f5f08c54cb7a774594d3579c5731ea3e87f01c48/codex-rs/protocol/src/config_types.rs
+
+**Accounting limitation:** because API-equivalent pricing currently follows the
+reported usage tier, this backend echo can omit the Fast premium from the displayed
+estimate. It does not measure actual subscription credits consumed. No synthetic
+served-tier metadata or automatic retry is added.
