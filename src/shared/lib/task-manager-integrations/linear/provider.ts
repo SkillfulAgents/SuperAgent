@@ -5,6 +5,7 @@ import type { ChatIntegration } from '../../db/schema'
 import { taskManagerPolicy } from '../policy'
 import { parseTaskJson } from '../schemas'
 import { linearConfigSchema, linearSettingsPatchSchema } from './config'
+import { IntegrationSetupError } from '../../agent-integrations/setup-types'
 import { linearDefinition } from './definition'
 import { publicLinearIntegration } from './presentation'
 
@@ -37,11 +38,15 @@ export const linearProvider: IntegrationProvider = {
       const { changeIntegrationTransport } = await import('../../agent-integrations/relay-transport')
       // The Linear app's webhooks change with it, so a relay secret never carries across.
       reconnect = await changeIntegrationTransport(record, linearDefinition, transport, async next => {
-        await updateLinearConfig(record.id, latest => ({ ...latest, transport: next.transport, relay: next.relay, webhookSecret: next.transport === 'relay' ? webhookSecret : undefined }))
+        await updateLinearConfig(record.id, latest => {
+          // Another request switched it first; its endpoint must not be overwritten.
+          if (latest.transport === next.transport) throw new IntegrationSetupError('This integration already uses that transport')
+          return { ...latest, transport: next.transport, relay: next.relay, webhookSecret: next.transport === 'relay' ? webhookSecret : undefined, webhookSecretStatus: undefined }
+        })
       })
     }
     if (webhookSecret !== undefined && !reconnect) {
-      await updateLinearConfig(record.id, latest => ({ ...latest, webhookSecret }))
+      await updateLinearConfig(record.id, latest => ({ ...latest, webhookSecret, webhookSecretStatus: undefined }))
       reconnect = true
     }
     if (enabled !== undefined) await updateLinearConfig(record.id, latest => ({ ...latest, runOnStatusChange: enabled }))

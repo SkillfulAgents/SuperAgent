@@ -40,7 +40,7 @@ vi.mock('@shared/lib/webhook-relay', async (importOriginal) => ({
   getWebhookRelay: () => ({ createEndpoint: relay.create, disableEndpoint: relay.disable, register: vi.fn() }),
 }))
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
-import { getAgentIntegration, listAgentIntegrations } from '@shared/lib/services/agent-integration-service'
+import { getAgentIntegration, listAgentIntegrations, updateAgentIntegrationStatus } from '@shared/lib/services/agent-integration-service'
 import { WebhookRelayUnavailableError } from '@shared/lib/webhook-relay'
 import router from './agent-integrations'
 
@@ -143,4 +143,15 @@ it('reconnects an installation whose provider settings change needs it', async (
   expect((await patch({ transport: 'relay' })).status).toBe(200)
   expect(runtime.remove).toHaveBeenCalledExactlyOnceWith(row.id)
   expect(runtime.add).toHaveBeenCalledWith(row.id)
+})
+
+it('keeps a saved settings change when the reconnect it needs fails, and reports it on the row', async () => {
+  const row = await (await create('test-relay', { key: 'a' })).json()
+  await updateAgentIntegrationStatus(row.id, 'active')
+  runtime.add.mockRejectedValueOnce(new Error('Paste the webhook signing secret from your Linear app'))
+
+  const response = await app.request(`/api/agent-integrations/${row.id}`, { method: 'PATCH', headers, body: JSON.stringify({ settings: { transport: 'relay' } }) })
+
+  expect(response.status).toBe(200)
+  expect(await getAgentIntegration(row.id)).toMatchObject({ status: 'error', errorMessage: 'Paste the webhook signing secret from your Linear app' })
 })

@@ -97,8 +97,9 @@ describe('linearWebhookEvents', () => {
     const delegation = history('h-delegate', 400, { fromDelegate: { id: 'app' } })
     const title = history('h-title', 300, {})
     const earlier = history('h-old', -60_000, { fromDelegate: { id: 'app' } })
+    const other = history('h-other', 200, { fromDelegate: { id: 'someone' } })
     const status = history('h-status', 500, { fromState: { id: 'todo' }, toState: { id: 'done', name: 'Done', type: 'completed' } })
-    const { client: linear } = client({ issue: { ...issue, newest: { nodes: [status, delegation, title] }, oldest: { nodes: [earlier, title, delegation] } } })
+    const { client: linear } = client({ issue: { ...issue, newest: { nodes: [status, delegation, other, title] }, oldest: { nodes: [earlier, title, delegation] } } })
     const update = { type: 'Issue', action: 'update', createdAt: new Date(at).toISOString(), webhookTimestamp: at, data: { id: 'issue' } }
 
     const events = await linearWebhookEvents(linear, body({ ...update, updatedFrom: { delegateId: 'app', updatedAt: 'x' } }), 'app', () => false)
@@ -111,10 +112,23 @@ describe('linearWebhookEvents', () => {
     const { client: linear, request } = client({ issue: { ...issue, newest: { nodes: [status] }, oldest: { nodes: [] } } })
     const update = { type: 'Issue', action: 'update', createdAt: new Date(at).toISOString(), webhookTimestamp: at, updatedFrom: { stateId: 'todo' } }
 
-    expect(await linearWebhookEvents(linear, body({ ...update, data: { id: 'issue', delegateId: 'someone' } }), 'app', () => false)).toEqual([])
+    expect(await linearWebhookEvents(linear, body({ ...update, data: { id: 'issue', delegateId: 'someone', stateId: 'done' } }), 'app', () => false)).toEqual([])
     expect(request).not.toHaveBeenCalled()
-    expect(await linearWebhookEvents(linear, body({ ...update, data: { id: 'issue', delegateId: 'app' } }), 'app', () => false)).toHaveLength(1)
-    expect(await linearWebhookEvents(linear, body({ ...update, data: { id: 'issue', delegateId: null } }), 'app', id => id === 'issue')).toHaveLength(1)
+    expect(await linearWebhookEvents(linear, body({ ...update, data: { id: 'issue', delegateId: 'app', stateId: 'done' } }), 'app', () => false)).toHaveLength(1)
+    expect(await linearWebhookEvents(linear, body({ ...update, data: { id: 'issue', delegateId: null, stateId: 'done' } }), 'app', id => id === 'issue')).toHaveLength(1)
+  })
+
+  it('never replays a neighbouring change of the same kind', async () => {
+    // Withdrawn at T0, delegated again five seconds later: the second
+    // webhook must only report the second change, not stop the task again.
+    const withdrawn = history('h-withdrawn', 0, { fromDelegate: { id: 'app' }, toDelegate: null })
+    const delegated = history('h-delegated', 5_000, { fromDelegate: null, toDelegate: { id: 'app' } })
+    const { client: linear } = client({ issue: { ...issue, newest: { nodes: [delegated, withdrawn] }, oldest: { nodes: [withdrawn, delegated] } } })
+    const redelegation = { type: 'Issue', action: 'update', createdAt: new Date(at + 5_000).toISOString(), webhookTimestamp: at, data: { id: 'issue', delegateId: 'app' }, updatedFrom: { delegateId: null } }
+
+    const events = await linearWebhookEvents(linear, body(redelegation), 'app', () => false)
+
+    expect(events.map((event) => event.type === 'issueHistoryCreated' && event.data.id)).toEqual(['h-delegated'])
   })
 
   it('skips issue updates the direct transport would only ever treat as context', async () => {

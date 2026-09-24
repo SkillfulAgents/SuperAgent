@@ -45,7 +45,7 @@ export async function authorizeLinearSetup(id: string, input: unknown): Promise<
   // Without it no relayed event can be verified, so nothing would ever arrive.
   if (config.transport === 'relay' && !webhookSecret) throw new IntegrationSetupError('Paste the webhook signing secret from your Linear app')
   const authorization = linearAuthorization({ ...config, ...credentials })
-  await updateLinearConfig(id, latest => ({ ...latest, ...credentials, ...(webhookSecret ? { webhookSecret } : {}), oauth: authorization.oauth, authorizationError: undefined, authorizationPending: true, authorizationVersion: randomUUID() }))
+  await updateLinearConfig(id, latest => ({ ...latest, ...credentials, ...(suppliedSecret ? { webhookSecret: suppliedSecret, webhookSecretStatus: undefined } : {}), oauth: authorization.oauth, authorizationError: undefined, authorizationPending: true, authorizationVersion: randomUUID() }))
   return authorization.url
 }
 /** Only the matching attempt can change its failure state; stale callbacks are inert. */

@@ -53,19 +53,27 @@ refuses to start without it. The secret stays on the host.
 Each delivery is verified before anything else: `Linear-Signature` must be the hex
 HMAC-SHA256 of the raw stored body, and the relay must have received it within a
 minute of Linear's signed `webhookTimestamp`. Freshness is judged at receipt, not at
-processing, because relayed events can be claimed much later. A signature mismatch
-marks the connection unhealthy once, since it usually means the wrong secret was
-pasted; handshakes and stale deliveries are dropped.
+processing, because relayed events can be claimed much later. Handshakes and stale
+deliveries are dropped. A signature mismatch before the saved secret has ever
+verified a delivery almost always means the wrong secret was pasted: the event is
+kept for later, nothing more is claimed, and the connection fails (and stays failed
+across reconnects) until a new secret is saved, after which the waiting events are
+verified again. Once the secret has verified a delivery, a mismatch is a forgery and
+is dropped.
 
 A webhook is then used only as a pointer: the notification, comment or issue it
 names is read back through the same GraphQL fields as the live subscriptions and fed
 into the same handling. Both transports therefore produce identical events and event
 IDs (`assignment:`, `mention:`, `comment:`, `history:`), so switching transports
 never runs a request twice. Issue webhooks only matter for delegation, status and
-archival changes; the matching history entry is the one of that kind recorded within
-ten seconds of the change. Anything that isn't input is acknowledged and dropped.
+archival changes; the matching history entry records exactly that change (the same
+values before and after) and is the closest one within ten seconds, so a neighbouring
+change of the same kind is never replayed, and a stop is carried out once however
+often its webhook arrives. Anything that isn't input is acknowledged and dropped.
 Access errors (the entity was deleted or unshared) drop the delivery; other read
-failures leave it with the relay, which offers it again with backoff.
+failures leave it with the relay, which offers it again with backoff, and the rest of
+that batch waits for the retry instead of timing out in turn. Retried deliveries can
+arrive after later ones; each is read back in its current state.
 
 Switching an existing installation is explicit, from **Event Delivery** in its
 settings. Moving to webhooks mints the endpoint and shows the URL, event types and a

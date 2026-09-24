@@ -31,6 +31,8 @@ export const linearConfigSchema = z.object({
   ...integrationTransportConfigShape,
   /** Signs the app's webhooks (relay transport); Linear shows it once the app exists. */
   webhookSecret: z.string().min(1).optional(),
+  /** What deliveries said about that secret; cleared whenever it changes. */
+  webhookSecretStatus: z.enum(['verified', 'rejected']).optional(),
 })
 export type LinearConfig = z.infer<typeof linearConfigSchema>
 export type LinearIdentity = z.infer<typeof linearIdentitySchema>

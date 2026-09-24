@@ -20,6 +20,10 @@ import { describeLinearIssue } from './message-display'
 /** What became of an event: the handoff's result, or nothing to hand off. */
 type ReceiveOutcome = IntegrationInputResult | 'ignored'
 
+const SECRET_MISMATCH = 'Linear webhook signatures do not match the saved signing secret. Paste the signing secret from this agent\'s Linear app again.'
+/** Stops already carried out, so a redelivered or overlapping webhook never repeats one. */
+const MAX_REMEMBERED_STOPS = 500
+
 export class LinearAgentIntegration extends TaskManagerAgentIntegration {
   readonly provider = 'linear'
   readonly definition = linearDefinition
@@ -31,7 +35,11 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
   private processing: Promise<void> = Promise.resolve()
   private generation = 0
   private subscriptionFailed = false
-  private signatureFailed = false
+  /** A delivery verified with the saved secret, so a mismatch now is a forgery. */
+  private secretVerified = false
+  /** Deliveries don't match the saved secret: nothing is claimed until a new one is saved. */
+  private secretRejected = false
+  private readonly stoppedHistory = new Set<string>()
 
   constructor(installation: AgentIntegrationRecord) {
     super(installation)
@@ -39,7 +47,7 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     this.tasks = new LinearTasks(this.client)
   }
   isConnected(): boolean {
-    if (!this.connected) return false
+    if (!this.connected || this.secretRejected) return false
     // Relay: events wait on the platform while the relay is down, so being
     // attached is enough to keep delivering what was already accepted.
     return this.relayAttachment ? integrationRelays.isAttached(this.installation.id) : !!this.subscriptions?.isReady()
@@ -51,13 +59,16 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     const relay = config.transport === 'relay' ? config.relay : undefined
     if (config.transport === 'relay' && !relay) throw new Error('This integration has no webhook URL. Switch it to webhooks again to create one.')
     if (relay && !config.webhookSecret) throw new Error('Paste the webhook signing secret from your Linear app')
+    // Stays failed (and unclaimed, events waiting on the platform) until a new secret is saved.
+    if (relay && config.webhookSecretStatus === 'rejected') throw new Error(SECRET_MISMATCH)
     const identity = await new LinearClient(this.installation.id).identity()
     if (identity.appUserId !== config.identity.appUserId || identity.workspaceId !== config.identity.workspaceId) throw new Error('Linear app identity changed. Reconnect the integration.')
     if (generation !== this.generation) return
     this.participation = new LinearParticipation(identity, config.participation)
     this.connected = true
     this.subscriptionFailed = false
-    this.signatureFailed = false
+    this.secretVerified = config.webhookSecretStatus === 'verified'
+    this.secretRejected = false
     if (relay) {
       const secret = config.webhookSecret!
       this.relayAttachment = integrationRelays.attach(this.installation.id, relay,
@@ -111,7 +122,11 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
       const issue = event.data.issue
       if (!this.participation?.get(issue.id) && issue.delegate?.id !== appUserId && event.data.fromDelegate?.id !== appUserId) return 'ignored'
       const action = historyAction(event.data, issue, appUserId, config.runOnStatusChange)
-      if (action.type === 'stop') { await this.stopTask(action.taskId); return 'ignored' }
+      if (action.type === 'stop') {
+        if (!this.rememberStop(event.data.id)) return 'ignored'
+        await this.stopTask(action.taskId)
+        return 'ignored'
+      }
       task = action.event
     } else {
       const issue = event.data.issue
@@ -134,24 +149,36 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     return this.acceptTaskEvent(task)
   }
 
+  /** Returns false if this stop was already carried out. */
+  private rememberStop(historyId: string): boolean {
+    if (this.stoppedHistory.has(historyId)) return false
+    this.stoppedHistory.add(historyId)
+    if (this.stoppedHistory.size > MAX_REMEMBERED_STOPS) this.stoppedHistory.delete(this.stoppedHistory.values().next().value!)
+    return true
+  }
+
   /** Relay transport: each webhook is verified, read back by id, then received like a live event. */
   private async receiveRelayed(events: readonly RelayEvent[], secret: string, generation: number, version: string | undefined, appUserId: string) {
     const results = new Map<string, RelayAcceptResult>()
-    for (const event of events) results.set(event.id, await this.receiveWebhook(event, secret, generation, version, appUserId))
+    let unreadable = false
+    for (const event of events) {
+      // Once Linear can't be read, the rest wait for the retry instead of
+      // each timing out in turn while holding a delivery slot.
+      const result: RelayAcceptResult | 'unreadable' = unreadable ? 'retry' : await this.receiveWebhook(event, secret, generation, version, appUserId)
+      unreadable ||= result === 'unreadable'
+      results.set(event.id, result === 'unreadable' ? 'retry' : result)
+    }
     return results
   }
-  private async receiveWebhook(event: RelayEvent, secret: string, generation: number, version: string | undefined, appUserId: string): Promise<RelayAcceptResult> {
-    if (!this.connected || generation !== this.generation) return 'retry'
+  private async receiveWebhook(event: RelayEvent, secret: string, generation: number, version: string | undefined, appUserId: string): Promise<RelayAcceptResult | 'unreadable'> {
+    if (!this.connected || generation !== this.generation || this.secretRejected) return 'retry'
     const check = checkLinearWebhook(event, secret)
+    if (!check.ok && check.reason === 'signature') return this.signatureMismatch(event, secret)
     if (!check.ok) {
-      if (check.reason === 'signature' && !this.signatureFailed) {
-        // Most likely the secret pasted into Gamut isn't this app's: say so once.
-        this.signatureFailed = true
-        this.emitError(new Error('Linear webhook signatures do not match. Paste the signing secret from this agent\'s Linear app again.'))
-      }
       if (check.reason !== 'handshake') console.warn(`[Linear] Discarding relayed delivery ${event.id} for ${this.installation.id}: ${check.reason}`)
       return 'discard'
     }
+    if (!this.secretVerified) this.markSecretVerified(secret)
     let direct: DirectSubscriptionEvent[]
     try {
       direct = await linearWebhookEvents(this.client, check.body, appUserId, issueId => !!this.participation?.get(issueId))
@@ -159,7 +186,7 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
       // Deleted, or no longer shared with the app: nothing left to act on.
       if (error instanceof LinearAccessError) return 'discard'
       if (this.connected && generation === this.generation) this.report(error, 'relay-read')
-      return 'retry'
+      return 'unreadable'
     }
     let result: RelayAcceptResult = 'discard'
     for (const item of direct) {
@@ -169,6 +196,30 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
       if (outcome === 'accepted' || (outcome === 'duplicate' && result !== 'accepted')) result = outcome
     }
     return result
+  }
+
+  /**
+   * A delivery the saved secret doesn't verify. Once the secret has verified
+   * others it is a forgery and dropped. Before that, the secret itself is most
+   * likely wrong: keep the event for when it's fixed, stop claiming, and fail
+   * the connection until a new secret is saved, rather than drop every event.
+   */
+  private signatureMismatch(event: RelayEvent, secret: string): RelayAcceptResult {
+    if (this.secretVerified) {
+      console.warn(`[Linear] Discarding relayed delivery ${event.id} for ${this.installation.id}: not signed by this app`)
+      return 'discard'
+    }
+    this.secretRejected = true
+    this.relayAttachment?.detach()
+    void updateLinearConfig(this.installation.id, latest => latest.webhookSecret === secret && latest.webhookSecretStatus !== 'verified'
+      ? { ...latest, webhookSecretStatus: 'rejected' } : latest).catch(error => this.report(error, 'save-secret-status'))
+    this.emitError(new Error(SECRET_MISMATCH))
+    return 'retry'
+  }
+  private markSecretVerified(secret: string): void {
+    this.secretVerified = true
+    void updateLinearConfig(this.installation.id, latest => latest.webhookSecret === secret && latest.webhookSecretStatus !== 'verified'
+      ? { ...latest, webhookSecretStatus: 'verified' } : latest).catch(error => this.report(error, 'save-secret-status'))
   }
 
   async isAllowed(context: IntegrationSessionContext): Promise<boolean> {

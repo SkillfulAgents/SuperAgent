@@ -26,7 +26,7 @@ function integration(state: 'pending' | 'reconnect_needed' | 'connected' | 'setu
 function relayIntegration(state: 'pending' | 'reconnect_needed' | 'connected' | 'setup_required', secretSaved = false): PublicLinearIntegration {
   const base = integration(state)
   return { ...base, linear: { ...base.linear, transport: 'relay',
-    webhook: { url: 'https://relay.test/v1/hooks/whep_1', resourceTypes: ['AppUserNotification', 'Comment', 'Issue'], secretSaved },
+    webhook: { url: 'https://relay.test/v1/hooks/whep_1', resourceTypes: ['AppUserNotification', 'Comment', 'Issue'], secretSaved, secretRejected: false },
     setup: { ...base.linear.setup, creationUrl: 'https://linear.app/settings/api/applications/new?webhook.enabled=true' } } }
 }
 let client: QueryClient
@@ -216,5 +216,28 @@ describe('Linear over the webhook relay', () => {
       const patch = mocks.request.mock.calls.find(([, options]) => options?.method === 'PATCH')
       expect(JSON.parse(patch![1].body)).toEqual({ settings: { transport: 'relay' } })
     })
+  })
+})
+
+describe('Linear relay reconnection', () => {
+  it('asks for the signing secret when a relay account was left without one', async () => {
+    render(<LinearConnectionSettings integration={relayIntegration('setup_required')} />, { wrapper })
+    fillCredentials()
+    const button = screen.getByRole('button', { name: 'Continue to authorization' })
+    expect(button).toBeDisabled()
+
+    fireEvent.change(screen.getByLabelText('Webhook signing secret'), { target: { value: 'lin_wh_secret' } })
+    fireEvent.click(button)
+
+    await waitFor(() => expect(authorizationCount).toBe(1))
+    const authorize = mocks.request.mock.calls.find(([url]) => url.endsWith('/authorize'))!
+    expect(JSON.parse(authorize[1].body)).toEqual({ clientId: 'client-id', clientSecret: 'client-secret', webhookSecret: 'lin_wh_secret' })
+  })
+
+  it('says when deliveries do not match the saved secret', () => {
+    const rejected = relayIntegration('connected', true)
+    rejected.linear.webhook = { ...rejected.linear.webhook!, secretRejected: true }
+    render(<LinearIntegrationSettings integration={rejected} />, { wrapper })
+    expect(screen.getByText(/don’t match the saved signing secret/)).toBeInTheDocument()
   })
 })

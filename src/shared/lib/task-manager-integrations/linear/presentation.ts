@@ -19,6 +19,9 @@ export function publicLinearIntegration(row: ChatIntegration) {
     canReconnect: !!config.clientId && !!config.clientSecret, runOnStatusChange: config.runOnStatusChange,
     transport: config.transport,
     // What the Linear app's webhooks must point at; the signing secret itself never leaves the host.
-    webhook: config.relay ? { url: config.relay.url, resourceTypes: [...LINEAR_WEBHOOK_RESOURCE_TYPES], secretSaved: !!config.webhookSecret } : null,
+    webhook: config.relay ? {
+      url: config.relay.url, resourceTypes: [...LINEAR_WEBHOOK_RESOURCE_TYPES], secretSaved: !!config.webhookSecret,
+      secretRejected: config.webhookSecretStatus === 'rejected',
+    } : null,
     setup: { creationUrl: linearAppCreationUrl(row.name ?? row.agentSlug, config), redirectUri: config.redirectUri } }
 }

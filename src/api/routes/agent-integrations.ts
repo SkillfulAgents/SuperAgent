@@ -315,7 +315,16 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
     } else if ((config !== undefined || settingsChange?.reconnect) && status !== 'paused') {
       // Config changed while active — reconnect to pick up new credentials
       await agentIntegrationManager.removeIntegration(id)
-      if (integration.status !== 'paused') await agentIntegrationManager.addIntegration(id)
+      if (integration.status !== 'paused') {
+        try {
+          await agentIntegrationManager.addIntegration(id)
+        } catch (err) {
+          // The change is saved either way; a connection it can't make yet
+          // (e.g. a secret still to paste) is what the row's status reports.
+          captureException(err, { tags: { ...SENTRY_TAGS, operation: 'update-integration-connect' }, extra: { integrationId: id } })
+          await updateAgentIntegrationStatus(id, 'error', err instanceof Error ? err.message : String(err))
+        }
+      }
     }
 
     const updated = await getAgentIntegration(id)

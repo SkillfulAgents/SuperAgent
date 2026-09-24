@@ -156,6 +156,7 @@ export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onC
 export function LinearConnectionSettings({ integration }: { integration: PublicAgentIntegration }) {
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
+  const [webhookSecret, setWebhookSecret] = useState('')
   const [authUrl, setAuthUrl] = useState<string | null>(null)
   const [editCredentials, setEditCredentials] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -167,13 +168,15 @@ export function LinearConnectionSettings({ integration }: { integration: PublicA
   if (!isPublicLinearIntegration(integration)) return null
   const linear = integration.linear
   const needsCredentials = !linear.canReconnect || editCredentials
+  // A relay installation can't authorize without it (e.g. setup stopped after the webhook URL).
+  const needsWebhookSecret = needsCredentials && linear.transport === 'relay' && !linear.webhook?.secretSaved
   const pending = linear.authorizationState === 'pending'
   const authorize = async (useSaved = false) => {
     setBusy(true); setError(null); setAuthUrl(null)
     try {
       await openLogin(async () => {
-        const result = await authorization.mutateAsync({ id: integration.id, agentSlug: integration.agentSlug, config: useSaved ? {} : { clientId, clientSecret } })
-        setClientSecret(''); setEditCredentials(false); setAuthUrl(result.url)
+        const result = await authorization.mutateAsync({ id: integration.id, agentSlug: integration.agentSlug, config: useSaved ? {} : { clientId, clientSecret, ...(needsWebhookSecret ? { webhookSecret } : {}) } })
+        setClientSecret(''); setWebhookSecret(''); setEditCredentials(false); setAuthUrl(result.url)
         return result.url
       })
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not authorize integration') }
@@ -192,6 +195,7 @@ export function LinearConnectionSettings({ integration }: { integration: PublicA
         <div className="space-y-3"><p className="text-sm font-medium">2. Copy the app credentials</p>
           <div className="space-y-1"><Label htmlFor="linear-client-id">Client ID</Label><Input id="linear-client-id" autoComplete="off" value={clientId} onChange={event => { setClientId(event.target.value); setAuthUrl(null) }} /></div>
           <div className="space-y-1"><Label htmlFor="linear-client-secret">Client secret</Label><Input id="linear-client-secret" type="password" autoComplete="new-password" value={clientSecret} onChange={event => { setClientSecret(event.target.value); setAuthUrl(null) }} /></div>
+          {needsWebhookSecret && <div className="space-y-1"><Label htmlFor="linear-reconnect-webhook-secret">Webhook signing secret</Label><Input id="linear-reconnect-webhook-secret" type="password" autoComplete="new-password" value={webhookSecret} onChange={event => { setWebhookSecret(event.target.value); setAuthUrl(null) }} /></div>}
         </div>
       </>}
       <div className="space-y-2">
@@ -202,7 +206,7 @@ export function LinearConnectionSettings({ integration }: { integration: PublicA
           <p className="text-xs text-muted-foreground">Waiting for authorization. This page updates automatically.</p>
         </>}
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant={needsCredentials ? 'default' : 'outline'} disabled={busy || (needsCredentials && (!clientId.trim() || !clientSecret.trim()))} onClick={() => void authorize(!needsCredentials)}>
+          <Button size="sm" variant={needsCredentials ? 'default' : 'outline'} disabled={busy || (needsCredentials && (!clientId.trim() || !clientSecret.trim() || (needsWebhookSecret && !webhookSecret.trim())))} onClick={() => void authorize(!needsCredentials)}>
             {busy && <Loader2 className="h-4 w-4 animate-spin" />}{needsCredentials ? 'Continue to authorization' : pending ? 'Start again' : 'Reconnect account'}
           </Button>
           {linear.canReconnect && <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setEditCredentials(!editCredentials); setAuthUrl(null); setError(null) }}>{editCredentials ? 'Cancel' : 'Edit app credentials'}</Button>}
@@ -255,6 +259,7 @@ function LinearDeliverySettings({ integration }: { integration: PublicLinearInte
           <p className="break-all select-all font-mono" data-testid="linear-webhook-url">{webhook.url}</p>
         </div>
         {!webhook.secretSaved && <p role="alert" className="text-xs text-amber-700 dark:text-amber-400">Paste the app’s webhook signing secret to start receiving events.</p>}
+        {webhook.secretRejected && <p role="alert" className="text-xs text-amber-700 dark:text-amber-400">Linear’s deliveries don’t match the saved signing secret. Paste it again from the app’s settings; events wait until then.</p>}
         <div className="flex items-end gap-2">
           <div className="flex-1 space-y-1">
             <Label htmlFor="linear-webhook-secret-update">Webhook signing secret</Label>

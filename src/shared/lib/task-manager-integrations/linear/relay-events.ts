@@ -43,7 +43,7 @@ const commentWebhookSchema = webhookBodySchema.extend({
 })
 const issueWebhookSchema = webhookBodySchema.extend({
   type: z.literal('Issue'),
-  data: z.object({ id: z.string(), delegateId: z.string().nullish() }).loose(),
+  data: z.object({ id: z.string(), delegateId: z.string().nullish(), stateId: z.string().nullish() }).loose(),
   updatedFrom: z.record(z.string(), z.unknown()).nullish(),
 })
 export type LinearWebhookBody = z.infer<typeof webhookBodySchema>
@@ -91,9 +91,11 @@ const issueHistoryResult = z.object({ issue: directIssueSchema.extend({ newest: 
 /**
  * The subscription events a verified webhook stands for: none for anything
  * the direct transport doesn't subscribe to either. Comment and issue
- * webhooks cover the whole workspace, so the ones that can't concern this app
- * are dropped before costing a request. A Linear access error means the
- * entity is gone or out of reach.
+ * webhooks cover the whole workspace. Issue changes that can't concern this
+ * app, and its own comments, are dropped without a request; other people's
+ * comments still cost one, since a comment's issue doesn't say who it's
+ * delegated to. A Linear access error means the entity is gone or out of
+ * reach.
  */
 export async function linearWebhookEvents(
   client: LinearClient,
@@ -129,13 +131,19 @@ export async function linearWebhookEvents(
     const { issue: data } = await client.request(ISSUE_HISTORY_QUERY, { id: issue.data.data.id }, issueHistoryResult)
     const { newest, oldest, ...current } = data
     const changedAt = Date.parse(issue.data.createdAt)
+    const nearby = [...newest.nodes, ...oldest.nodes].filter((entry) => Math.abs(Date.parse(entry.createdAt) - changedAt) <= HISTORY_MATCH_WINDOW_MS)
+    // The entry recording exactly this change (same values before and after),
+    // nearest in time: a neighbouring change of the same kind, like a
+    // delegation withdrawn a moment before this one, must not be replayed.
+    const previous = (key: string) => (typeof updatedFrom[key] === 'string' ? updatedFrom[key] : null)
+    const kinds: Array<(entry: DirectHistory) => boolean> = []
+    if (wants.delegate) kinds.push((entry) => (entry.fromDelegate?.id ?? null) === previous('delegateId') && (entry.toDelegate?.id ?? null) === (issue.data.data.delegateId ?? null))
+    if (wants.state) kinds.push((entry) => (entry.fromState?.id ?? null) === previous('stateId') && entry.toState?.id === issue.data.data.stateId)
+    if (wants.archived) kinds.push((entry) => entry.archived === true)
     const entries = new Map<string, DirectHistory>()
-    for (const entry of [...newest.nodes, ...oldest.nodes]) {
-      if (Math.abs(Date.parse(entry.createdAt) - changedAt) > HISTORY_MATCH_WINDOW_MS) continue
-      const matches = (wants.delegate && (entry.fromDelegate || entry.toDelegate))
-        || (wants.state && entry.toState)
-        || (wants.archived && entry.archived)
-      if (matches) entries.set(entry.id, entry)
+    for (const matches of kinds) {
+      const closest = nearby.filter(matches).sort((a, b) => Math.abs(Date.parse(a.createdAt) - changedAt) - Math.abs(Date.parse(b.createdAt) - changedAt))[0]
+      if (closest) entries.set(closest.id, closest)
     }
     return [...entries.values()]
       .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))

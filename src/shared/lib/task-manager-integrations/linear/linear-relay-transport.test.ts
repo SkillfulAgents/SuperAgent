@@ -26,7 +26,7 @@ import { createFakeWebhookRelay } from '../../webhook-relay/testing/fake-webhook
 import { deliveryStore } from '../../agent-integrations/delivery-store'
 import { createAgentIntegration, getAgentIntegration } from '../../services/agent-integration-service'
 import { LinearAgentIntegration } from './linear-agent-integration'
-import { updateLinearConfig } from './store'
+import { getLinearConfig, updateLinearConfig } from './store'
 
 const secret = 'lin_wh_secret'
 const at = '2026-09-24T10:00:00.000Z'
@@ -103,30 +103,58 @@ describe('Linear over the webhook relay', () => {
     expect(events).toHaveLength(1)
   })
 
-  it('discards deliveries signed with another secret, and says so once', async () => {
+  it('keeps deliveries the saved secret does not verify, and fails until a new secret is saved', async () => {
     const errors = vi.fn(); integration.onError(errors)
     await connect()
+    const signedElsewhere = () => delivery({ type: 'AppUserNotification', action: 'issueAssignedToYou', appUserId: 'app', notification: { id: 'notif-1' } }, 'the-real-secret')
 
-    const forged = [1, 2].map(() => delivery({ type: 'AppUserNotification', action: 'issueAssignedToYou', appUserId: 'app', notification: { id: 'notif-1' } }, 'wrong'))
-
-    expect([...(await deliver(...forged)).values()]).toEqual(['discard', 'discard'])
+    const held = signedElsewhere()
+    expect(await deliver(held, assignment())).toEqual(new Map([[held.id, 'retry'], [`whe_${deliveries}`, 'retry']]))
     expect(errors).toHaveBeenCalledOnce()
-    expect(events).toEqual([])
+    expect(integration.isConnected()).toBe(false)
+    // Nothing more is claimed; what's waiting stays for the right secret.
+    expect(relay.current!.consumers.get(consumerId())?.endpointIds).toEqual([])
+    await vi.waitFor(async () => expect((await getLinearConfig(id)).webhookSecretStatus).toBe('rejected'))
+    integration = new LinearAgentIntegration((await getAgentIntegration(id))!)
+    await expect(connect()).rejects.toThrow('signatures do not match')
+
+    await updateLinearConfig(id, config => ({ ...config, webhookSecret: 'the-real-secret', webhookSecretStatus: undefined }))
+    integration = new LinearAgentIntegration((await getAgentIntegration(id))!)
+    integration.onEvent(async event => event.type === 'input' ? deliveryStore.accept(id, event, integration.resolveRoute(event)) : undefined)
+    await connect()
+    expect(await deliver(held)).toEqual(new Map([[held.id, 'accepted']]))
+    await vi.waitFor(async () => expect((await getLinearConfig(id)).webhookSecretStatus).toBe('verified'))
   })
 
-  it('stops the task when a person withdraws the delegation', async () => {
+  it('drops forgeries once the saved secret has verified a delivery', async () => {
+    const errors = vi.fn(); integration.onError(errors)
     await connect()
-    const update = delivery({ type: 'Issue', action: 'update', data: { id: 'issue' }, updatedFrom: { delegateId: 'app', updatedAt: at } })
+    await deliver(assignment())
 
-    expect(await deliver(update)).toEqual(new Map([[update.id, 'discard']]))
+    const forged = delivery({ type: 'AppUserNotification', action: 'issueAssignedToYou', appUserId: 'app', notification: { id: 'notif-1' } }, 'forged')
+    expect(await deliver(forged)).toEqual(new Map([[forged.id, 'discard']]))
+    expect(errors).not.toHaveBeenCalled()
+    expect(integration.isConnected()).toBe(true)
+  })
+
+  it('stops the task when a person withdraws the delegation, once however often the webhook comes', async () => {
+    await connect()
+    const update = () => delivery({ type: 'Issue', action: 'update', data: { id: 'issue', delegateId: null }, updatedFrom: { delegateId: 'app', updatedAt: at } })
+
+    const first = update()
+    expect(await deliver(first)).toEqual(new Map([[first.id, 'discard']]))
+    await deliver(update())
     expect(events).toEqual([{ type: 'cancel', externalId: 'issue' }])
   })
 
   it('retries while Linear cannot be read, and discards what no longer exists', async () => {
     await connect()
-    linear['notification(id:$id)'] = () => new Response('unavailable', { status: 503 })
-    const outage = assignment()
-    expect(await deliver(outage)).toEqual(new Map([[outage.id, 'retry']]))
+    const reads = vi.fn(() => new Response('unavailable', { status: 503 }))
+    linear['notification(id:$id)'] = reads
+    const [outage, behind] = [assignment(), assignment()]
+    expect(await deliver(outage, behind)).toEqual(new Map([[outage.id, 'retry'], [behind.id, 'retry']]))
+    // The rest of the batch waits for the retry instead of timing out in turn.
+    expect(reads).toHaveBeenCalledOnce()
 
     linear['notification(id:$id)'] = () => Response.json({ errors: [{ message: 'Entity not found: Notification', extensions: { code: 'INPUT_ERROR' } }] })
     const gone = assignment()
