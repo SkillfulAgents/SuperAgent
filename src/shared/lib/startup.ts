@@ -172,14 +172,16 @@ async function initializeServicesInner() {
   // feature that receives webhooks. Cheap to start: it claims nothing until a
   // consumer registers, and follows platform connect/disconnect through the
   // auth-changed notifier. Started before anything can start a container, so
-  // an agent's webhook tools see the relay's real availability; the watcher
-  // marks agents stale whenever that availability moves.
+  // an agent's webhook tools see the relay's real availability. Watched once
+  // the agents are known, so containers still running from before this
+  // launch get their baseline too; from then on it marks agents stale
+  // whenever that availability moves.
   const relay = getWebhookRelay()
   relay.start()
-  stopWatchingWebhookRelay = containerHost.watchWebhookRelay(relay)
 
   const slugs = agents.map((a) => a.slug)
   await containerHost.initializeAgents(slugs)
+  stopWatchingWebhookRelay = containerHost.watchWebhookRelay(relay)
 
   // Reclaim host-browser profile storage (orphaned/legacy dirs, regenerable
   // Chrome caches). Scheduled a few minutes out so it doesn't pile onto the

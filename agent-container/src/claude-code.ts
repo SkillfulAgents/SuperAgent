@@ -1,5 +1,6 @@
 import { startLlmProxy, llmProxyBinding, type LlmProxyHandle } from './llm-proxy';
 import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
+import { webhookRelayAvailable } from './webhook-relay-env';
 import {
   query,
   startup,
@@ -379,7 +380,7 @@ export function buildSystemPromptVars(
   const composioPlatform = process.env.COMPOSIO_PLATFORM_MODE === 'true';
   // Same gates as the webhook tools in mcp-server.ts: every trigger needs the
   // host's webhook relay, and Composio's also need platform Composio.
-  const webhookEndpoints = process.env.WEBHOOK_RELAY_AVAILABLE === 'true';
+  const webhookEndpoints = webhookRelayAvailable();
   const composioTriggers = composioPlatform && webhookEndpoints;
   const platformAccounts = composioPlatform;
   // Only the platform token: do not tighten to also require proxy URL.

@@ -22,6 +22,7 @@ import {
   resumeScheduledTaskTool,
 } from './tools/schedule-task'
 import { scheduleResumeTool } from './tools/schedule-resume'
+import { webhookRelayAvailable } from './webhook-relay-env'
 import {
   getAvailableTriggersTool,
   listTriggersTool,
@@ -76,7 +77,7 @@ export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTar
   // triggers also need platform Composio; custom webhook endpoints don't (they
   // live on the relay, so a personal Composio key must not hide them).
   // list/cancel work on local trigger rows and are useful in either mode.
-  const includeWebhookEndpoints = process.env.WEBHOOK_RELAY_AVAILABLE === 'true'
+  const includeWebhookEndpoints = webhookRelayAvailable()
   const includeComposioTriggers = includeWebhookEndpoints && process.env.COMPOSIO_PLATFORM_MODE === 'true'
 
   return createSdkMcpServer({

@@ -287,7 +287,16 @@ describe('ContainerRuntime webhook relay env', () => {
       app: {},
       customEnvVars: { WEBHOOK_RELAY_AVAILABLE: 'true' },
     })
-    expect((await start(false)).WEBHOOK_RELAY_AVAILABLE).toBeUndefined()
+    expect((await start(false)).WEBHOOK_RELAY_AVAILABLE).toBe('false')
+  })
+
+  it('goes stale when availability moves while the container is still starting', async () => {
+    // The watcher only sees running agents, so a start in flight checks itself.
+    mockStart.mockImplementationOnce(async () => { relayState.available = true })
+
+    await start(false)
+
+    expect(containerHost.runtime('test-agent').isStale()).toBe(true)
   })
 
   it('goes stale when availability moves away from what its env was built with', async () => {

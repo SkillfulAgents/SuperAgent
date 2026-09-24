@@ -94,7 +94,7 @@ describe('generateSystemPrompt rendering', () => {
   // tools follow the relay, platform services only the token.
   it.each([
     { label: 'relay without a token', env: { WEBHOOK_RELAY_AVAILABLE: 'true' }, webhook: true, services: false },
-    { label: 'token without the relay', env: { PLATFORM_AUTH_ACTIVE: 'true', COMPOSIO_PLATFORM_MODE: 'true' }, webhook: false, services: true },
+    { label: 'token without the relay', env: { PLATFORM_AUTH_ACTIVE: 'true', WEBHOOK_RELAY_AVAILABLE: 'false', COMPOSIO_PLATFORM_MODE: 'true' }, webhook: false, services: true },
   ])('$label: webhook tools follow the relay, platform services the token', ({ env, webhook, services }) => {
     Object.assign(process.env, env)
     const vars = buildSystemPromptVars()
@@ -106,6 +106,11 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('create_webhook_endpoint')).toBe(webhook)
     expect(out.includes('mcp__user-input__setup_trigger')).toBe(false)
     expect(out.includes('## Built-in media generation')).toBe(services)
+  })
+
+  it('falls back to the platform flag when a host too old to set the relay flag leaves it out', () => {
+    process.env.PLATFORM_AUTH_ACTIVE = 'true'
+    expect(buildSystemPromptVars()).toMatchObject({ webhookEndpoints: true, anyTriggers: true, platformServices: true })
   })
 
   it.each(combos)('$label: no leaked tokens, correct gating, header always present', ({ env, composio, webhook }) => {

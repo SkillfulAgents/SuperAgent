@@ -616,10 +616,9 @@ export class ContainerRuntime {
     // Webhook tools (custom endpoints, and Composio triggers with the flag
     // above) follow the relay, not Composio mode: a personal Composio key
     // must not take the endpoint tools away.
+    // Always set, so a container can tell "unavailable" from a host too old to say.
     this.webhookRelayAtStart = getWebhookRelay().snapshot().available
-    if (this.webhookRelayAtStart) {
-      envVars['WEBHOOK_RELAY_AVAILABLE'] = 'true'
-    }
+    envVars['WEBHOOK_RELAY_AVAILABLE'] = String(this.webhookRelayAtStart)
 
     // Platform services (media, enrichment, search) only need the token.
     if (getPlatformAccessToken()) {
@@ -693,6 +692,9 @@ export class ContainerRuntime {
     // syncAgentStatus here — it is guarded against updates during startup.)
     const info = startedInfo ?? await client.getInfoFromRuntime()
     this.updateCachedStatus(info.status, info.port)
+    // Availability may have moved while the container started; the watcher
+    // only sees running agents, so this one checks itself.
+    if (info.status === 'running') this.reconcileWebhookRelay(getWebhookRelay().snapshot().available)
 
     // The start is the first mark on the idle clock: it floors stale session
     // timestamps from before the previous sleep. The alarm is armed by

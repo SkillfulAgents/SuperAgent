@@ -37,10 +37,10 @@ vi.mock('@shared/lib/composio/triggers', () => ({
 }))
 
 const mockDisableRelayEndpoint = vi.fn().mockResolvedValue(undefined)
-const mockRelayAvailable = vi.fn(() => true)
+const mockRelayUnavailableReason = vi.fn((): string | null => null)
 vi.mock('@shared/lib/webhook-relay', () => ({
   getWebhookRelay: () => ({
-    snapshot: () => ({ available: mockRelayAvailable() }),
+    snapshot: () => ({ available: mockRelayUnavailableReason() === null, unavailableReason: mockRelayUnavailableReason() }),
     disableEndpoint: (...args: unknown[]) => mockDisableRelayEndpoint(...args),
   }),
 }))
@@ -61,7 +61,7 @@ import {
 describe('custom-endpoint teardown and poll scoping', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
-    mockRelayAvailable.mockReturnValue(true)
+    mockRelayUnavailableReason.mockReturnValue(null)
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
@@ -128,10 +128,20 @@ describe('custom-endpoint teardown and poll scoping', () => {
     )
   })
 
-  it('skips the relay call while the relay is unavailable', async () => {
+  it('takes the endpoint down even before the relay has started', async () => {
+    mockGetStoredPlatformMemberId.mockReturnValue('sub_stored')
+    mockRelayUnavailableReason.mockReturnValue('stopped')
+
+    const triggerId = await createCustomTrigger()
+    await cancelWebhookTriggerWithCleanup(triggerId)
+
+    expect(mockDisableRelayEndpoint).toHaveBeenCalledWith('sub_stored', 'whep_11111111-2222-4333-8444-555555555555')
+  })
+
+  it('skips the relay call while the platform is disconnected', async () => {
     mockIsPlatformComposioActive.mockReturnValue(false)
     mockGetPlatformAccessToken.mockReturnValue(null)
-    mockRelayAvailable.mockReturnValue(false)
+    mockRelayUnavailableReason.mockReturnValue('platform_disconnected')
 
     const triggerId = await createCustomTrigger()
     const cancelled = await cancelWebhookTriggerWithCleanup(triggerId)

@@ -304,8 +304,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     })
   }
 
+  // Only minting needs a running relay (a URL nobody claims from is the
+  // problem); taking one down just needs the platform.
   async disableEndpoint(scope: RelayScope, endpointId: string): Promise<void> {
-    this.requireAvailable()
+    if (!this.deps.getToken()) throw new WebhookRelayUnavailableError('platform_disconnected')
     await this.deps.endpoints.disable(scope, endpointId)
   }
 

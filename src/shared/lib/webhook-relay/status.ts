@@ -26,8 +26,11 @@ export interface WebhookRelayWatchers {
 
 /** Publishes every status change, and keeps running agents' webhook tools honest. */
 export function watchWebhookRelay(relay: WebhookRelayService, watchers: WebhookRelayWatchers): () => void {
-  // Catches agents started before the relay was: their env said unavailable.
-  watchers.reconcileAgents(relay.snapshot().available)
+  // Changes before this went unobserved: publish where things stand, and
+  // catch agents started before the relay was (their env said unavailable).
+  const current = relay.snapshot()
+  watchers.broadcast(toWebhookRelayStatus(current))
+  watchers.reconcileAgents(current.available)
   return relay.onChange((snapshot) => {
     watchers.broadcast(toWebhookRelayStatus(snapshot))
     watchers.reconcileAgents(snapshot.available)

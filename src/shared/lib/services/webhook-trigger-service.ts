@@ -501,9 +501,12 @@ export async function cancelWebhookTriggerWithCleanup(
 }
 
 // Custom endpoints live on the webhook relay regardless of Composio key mode,
-// so gate on the relay or a user-supplied Composio key leaves the URL live.
+// so gate on the relay or a user-supplied Composio key leaves the URL live. A
+// relay that hasn't started yet can still take one down.
 function canReachUpstream(kind: WebhookTrigger['kind']): boolean {
-  return kind === 'custom' ? getWebhookRelay().snapshot().available : isPlatformComposioActive()
+  if (kind !== 'custom') return isPlatformComposioActive()
+  const { unavailableReason } = getWebhookRelay().snapshot()
+  return unavailableReason === null || unavailableReason === 'stopped'
 }
 
 // One place that speaks both upstream vocabularies (relay endpoint disable

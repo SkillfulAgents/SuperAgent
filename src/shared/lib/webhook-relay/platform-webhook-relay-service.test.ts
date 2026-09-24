@@ -929,6 +929,16 @@ describe('PlatformWebhookRelayService', () => {
       expect(endpoints.create).not.toHaveBeenCalled()
     })
 
+    it('still takes an endpoint down while stopped, as long as the platform is connected', async () => {
+      createRelay()
+
+      await relay.disableEndpoint('sub_a', 'whep_old')
+      expect(endpoints.disable).toHaveBeenCalledWith('sub_a', 'whep_old')
+
+      token = null
+      await expect(relay.disableEndpoint('sub_a', 'whep_old')).rejects.toMatchObject({ reason: 'platform_disconnected' })
+    })
+
     it('a host with no relay rejects provisioning', async () => {
       const none = new UnavailableWebhookRelayService('not_configured')
 
