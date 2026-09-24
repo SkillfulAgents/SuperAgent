@@ -8,7 +8,7 @@ import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/s
 import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 
-import { getRequestUserId } from './request-context'
+import { getRequestUserId, runOutsideRequestUser } from './request-context'
 
 // Re-export so existing consumers keep importing from here.
 export { decodeOrgIdFromToken }
@@ -91,6 +91,17 @@ export function runWithAttribution<T>(
   fn: () => Promise<T> | T,
 ): Promise<T> | T {
   return auth ? attributionContext.run({ auth }, fn) : fn()
+}
+
+/**
+ * Run fn, and every async operation it schedules, with no attribution and no
+ * request user. Host-wide background work (the webhook relay's claim loop)
+ * sends its own explicit `::member` bearer; started from inside a request or
+ * a runWithAttribution scope, it would otherwise inherit that scope and the
+ * fetch interceptor would rewrite its Authorization header.
+ */
+export function runOutsideAttribution<T>(fn: () => T): T {
+  return attributionContext.exit(() => runOutsideRequestUser(fn))
 }
 
 async function fromCurrentRequest(): Promise<Attribution | null> {

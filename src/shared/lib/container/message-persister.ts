@@ -50,13 +50,7 @@ import {
   type ScheduledTaskUpdateInput,
   type WebhookTriggerUpdateInput,
 } from '@shared/lib/services/automation-update-schema'
-import {
-  createPlatformWebhookEndpoint,
-  updatePlatformWebhookEndpoint,
-  disablePlatformWebhookEndpoint,
-  listPlatformWebhookEvents,
-  testPlatformWebhookFilter,
-} from '@shared/lib/services/webhook-endpoints-client'
+import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import {
   createWebhookEndpointInputSchema,
   updateWebhookEndpointInputSchema,
@@ -5085,11 +5079,11 @@ ${continuation}`
         const mintedByMemberId =
           (await attribution.current())?.actingMemberId() ?? (memberId === 'local' ? undefined : memberId)
 
-        // 1. Mint the endpoint on the platform proxy
-        const endpoint = await createPlatformWebhookEndpoint(memberId, {
+        // 1. Mint the endpoint on the webhook relay
+        const endpoint = await getWebhookRelay().createEndpoint(memberId, {
           name: input.name.trim(),
           ...(verification ? { verification } : {}),
-          ...(filterExp ? { filter_exp: filterExp } : {}),
+          ...(filterExp ? { filterExp } : {}),
         })
 
         // 2. Save the local trigger row (rollback the mint on failure)
@@ -5119,7 +5113,7 @@ ${continuation}`
             tags: { area: 'webhook-endpoints', op: 'create-local-save' },
             extra: { endpointId: endpoint.id, agentSlug, sessionId },
           })
-          await disablePlatformWebhookEndpoint(memberId, endpoint.id).catch((rollbackError) => {
+          await getWebhookRelay().disableEndpoint(memberId, endpoint.id).catch((rollbackError) => {
             // Mint succeeded, local save failed, and now the rollback failed too:
             // a live public URL is orphaned with no local row. Loudest signal.
             console.error('[MessagePersister] Endpoint rollback failed — endpoint orphaned live:', rollbackError)
@@ -5247,7 +5241,11 @@ ${continuation}`
           trigger.mintedByMemberId ??
           (await resolvePlatformMemberForCandidates([trigger.createdByUserId]))?.memberId ??
           (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
-        await updatePlatformWebhookEndpoint(memberId, trigger.composioTriggerId, patch)
+        await getWebhookRelay().updateEndpoint(memberId, trigger.composioTriggerId, {
+          ...(patch.name !== undefined ? { name: patch.name } : {}),
+          ...(patch.verification !== undefined ? { verification: patch.verification } : {}),
+          ...(patch.filter_exp !== undefined ? { filterExp: patch.filter_exp } : {}),
+        })
 
         // Keep the local row in sync so list_triggers/UI don't show a stale name.
         if (patch.name) {
@@ -5331,7 +5329,7 @@ ${continuation}`
           (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
 
         if (input.test_filter_exp) {
-          const result = await testPlatformWebhookFilter(
+          const result = await getWebhookRelay().testEndpointFilter(
             memberId, trigger.composioTriggerId, input.test_filter_exp, input.limit)
           const lines = result.results.map((r) => {
             const stored = r.stored_status ? ` (stored: ${r.stored_status})` : ''
@@ -5345,7 +5343,7 @@ ${continuation}`
             `${lines.length ? lines.join('\n') : 'No stored deliveries to evaluate yet — send a test event first.'}\n\n` +
             `Nothing was changed. When the verdicts look right, apply it with update_webhook_endpoint (filter_exp).`)
         } else {
-          const { filterExp, events } = await listPlatformWebhookEvents(
+          const { filterExp, events } = await getWebhookRelay().listEndpointEvents(
             memberId, trigger.composioTriggerId, input.limit)
           await this.resolveContainerInput(agentSlug, toolUseId,
             `Active filter: ${filterExp ? `\`${filterExp}\`` : 'none (every event delivers)'}\n\n` +

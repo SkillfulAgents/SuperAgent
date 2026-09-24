@@ -2,22 +2,22 @@ import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connec
 /**
  * Trigger Manager
  *
- * Background process that handles incoming webhook events from Composio.
- * On startup: polls for pending events, subscribes to Supabase Realtime.
- * On event: looks up trigger in SQLite, starts agent session with prompt + payload.
- * Batches multiple events for the same trigger into a single session.
+ * Turns webhook events into agent sessions. It is a consumer of the host's
+ * webhook relay: for each platform member that owns triggers, it registers
+ * the endpoints (Composio trigger instances and custom endpoints) its active
+ * and paused triggers subscribe to, and the relay hands it their events.
+ * Events for the same trigger in one delivery are batched into one session.
  */
 
 import { captureException } from '@shared/lib/error-reporting'
-import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { runWithOptionalUser, attribution } from '@shared/lib/platform-attribution'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import {
   getDistinctPlatformMemberIdsForActiveTriggers,
+  getSubscribedComposioTriggerIds,
   getWebhookTriggersByComposioId,
   markTriggerFired,
   markTriggerFailed,
@@ -28,11 +28,12 @@ import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-servic
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import {
-  pollAndClaimEvents,
-  acknowledgeEvents,
-} from '@shared/lib/services/webhook-events-client'
-import type { WebhookEvent } from '@shared/lib/services/webhook-events-client'
-import { SupabaseRealtimeClient } from '@shared/lib/services/supabase-realtime-client'
+  getWebhookRelay,
+  LOCAL_RELAY_SCOPE,
+  type RelayAcceptResult,
+  type RelayConsumerHandle,
+  type RelayEvent,
+} from '@shared/lib/webhook-relay'
 import {
   webhookEnvelopeSchema,
   CUSTOM_WEBHOOK_TRIGGER_TYPE,
@@ -44,8 +45,8 @@ import {
  * URL can POST — so unverified events get explicit untrusted-data framing
  * before they become part of an agent prompt.
  */
-function formatEventPayload(event: WebhookEvent, label: string): string {
-  if (event.trigger_type === CUSTOM_WEBHOOK_TRIGGER_TYPE) {
+function formatEventPayload(event: RelayEvent, label: string): string {
+  if (event.type === CUSTOM_WEBHOOK_TRIGGER_TYPE) {
     // Fail closed: an envelope the schema can't parse (proxy drift, missing
     // `verified`) gets the untrusted framing too — anything on this trigger
     // type is public-URL input, and only an explicit verified:true earns trust.
@@ -58,7 +59,7 @@ function formatEventPayload(event: WebhookEvent, label: string): string {
       captureException(envelope.error, {
         level: 'warning',
         tags: { area: 'webhook-endpoints', op: 'envelope-parse' },
-        extra: { eventId: event.id, triggerType: event.trigger_type },
+        extra: { eventId: event.id, triggerType: event.type },
       })
     }
     // A valid signature authenticates the SENDER, not the CONTENT: a verified
@@ -73,7 +74,7 @@ function formatEventPayload(event: WebhookEvent, label: string): string {
   return `${label}:\n\`\`\`json\n${JSON.stringify(event.payload, null, 2)}\n\`\`\``
 }
 
-function composeTriggerPrompt(trigger: WebhookTrigger, events: WebhookEvent[]): string {
+function composeTriggerPrompt(trigger: WebhookTrigger, events: readonly RelayEvent[]): string {
   const payloads =
     events.length === 1
       ? formatEventPayload(events[0], 'Webhook payload')
@@ -83,209 +84,187 @@ function composeTriggerPrompt(trigger: WebhookTrigger, events: WebhookEvent[]): 
 }
 
 /** Registration handshakes are recorded platform-side for auditability but must not run the agent. */
-function isHandshakeEvent(event: WebhookEvent): boolean {
-  if (event.trigger_type !== CUSTOM_WEBHOOK_TRIGGER_TYPE) return false
+function isHandshakeEvent(event: RelayEvent): boolean {
+  if (event.type !== CUSTOM_WEBHOOK_TRIGGER_TYPE) return false
   const envelope = webhookEnvelopeSchema.safeParse(event.payload)
   return envelope.success && envelope.data.kind === 'handshake'
 }
 
+// A failed registration sync is retried with backoff. After a good one the
+// registrations are re-derived every few minutes anyway, in case trigger rows
+// changed without the manager being told.
+const SYNC_RETRY_DELAYS_MS = [5_000, 30_000, 2 * 60_000]
+const RESYNC_INTERVAL_MS = 5 * 60_000
+
+interface MemberRegistration {
+  handle: RelayConsumerHandle
+  endpointIds: string[]
+}
+
+function groupByEndpoint(events: readonly RelayEvent[]): Map<string, RelayEvent[]> {
+  const grouped = new Map<string, RelayEvent[]>()
+  for (const event of events) {
+    const group = grouped.get(event.endpointId)
+    if (group) group.push(event)
+    else grouped.set(event.endpointId, [event])
+  }
+  return grouped
+}
+
 class TriggerManager {
   private isRunning = false
-  private realtimeClient: SupabaseRealtimeClient | null = null
-  private jwtRefreshInterval: NodeJS.Timeout | null = null
-  private isProcessing = false
+  private readonly registrations = new Map<string, MemberRegistration>()
+  private syncQueue: Promise<void> = Promise.resolve()
+  private resyncTimer: NodeJS.Timeout | null = null
+  private failedSyncs = 0
 
   async start(): Promise<void> {
     if (this.isRunning) {
       console.log('[TriggerManager] Already running')
       return
     }
-
     this.isRunning = true
-
-    const proxyUrl = getPlatformProxyBaseUrl()
-    if (!proxyUrl) {
-      console.log('[TriggerManager] Platform proxy URL not configured, skipping')
-      this.isRunning = false
-      return
-    }
-
     console.log('[TriggerManager] Starting...')
-
     try {
-      await this.pollAndProcess()
+      await this.syncRegistrations()
     } catch (error) {
-      console.error('[TriggerManager] Initial poll failed:', error)
+      console.error('[TriggerManager] Initial registration failed:', error)
     }
-
     // Positive completion signal — "Starting..." above fires before the
-    // initial poll, so it cannot vouch that start() actually finished.
+    // registration, so it cannot vouch that start() actually finished.
     console.log('[TriggerManager] Started')
   }
 
   stop(): void {
     this.isRunning = false
-
-    if (this.realtimeClient) {
-      this.realtimeClient.disconnect()
-      this.realtimeClient = null
-    }
-
-    if (this.jwtRefreshInterval) {
-      clearInterval(this.jwtRefreshInterval)
-      this.jwtRefreshInterval = null
-    }
-
+    if (this.resyncTimer) clearTimeout(this.resyncTimer)
+    this.resyncTimer = null
+    this.failedSyncs = 0
+    for (const registration of this.registrations.values()) registration.handle.dispose()
+    this.registrations.clear()
     console.log('[TriggerManager] Stopped')
   }
 
-  isActive(): boolean {
-    return this.isRunning
+  /**
+   * Re-derive which members claim which endpoints, after triggers are
+   * created, cancelled or fail, and after the platform connection changes.
+   * Serialized, so an older run can't overwrite a newer one's registrations.
+   */
+  syncRegistrations(): Promise<void> {
+    const run = this.syncQueue.then(() => this.syncOnce())
+    this.syncQueue = run.then(
+      () => {
+        this.failedSyncs = 0
+        this.scheduleResync(RESYNC_INTERVAL_MS)
+      },
+      (error: unknown) => {
+        const delay = SYNC_RETRY_DELAYS_MS[Math.min(this.failedSyncs, SYNC_RETRY_DELAYS_MS.length - 1)]
+        this.failedSyncs++
+        console.warn(`[TriggerManager] Registration sync failed; retrying in ${delay}ms:`, error)
+        this.scheduleResync(delay)
+      },
+    )
+    return run
   }
 
-  isRealtimeActive(): boolean {
-    return this.realtimeClient?.isActive() ?? false
+  private scheduleResync(delayMs: number): void {
+    if (this.resyncTimer) clearTimeout(this.resyncTimer)
+    this.resyncTimer = null
+    if (!this.isRunning) return
+    this.resyncTimer = setTimeout(() => {
+      this.resyncTimer = null
+      // A failure schedules its own retry.
+      this.syncRegistrations().catch(() => {})
+    }, delayMs)
+    this.resyncTimer.unref?.()
   }
 
-  async pollAndProcess(): Promise<void> {
-    if (this.isProcessing) return
-    this.isProcessing = true
+  private async syncOnce(): Promise<void> {
+    if (!this.isRunning) return
+    // Paused triggers stay subscribed upstream, so their endpoints stay
+    // registered: paused-period events are claimed and discarded rather than
+    // piling up and firing a session on resume (SUP-225).
+    const endpointIds = (await getSubscribedComposioTriggerIds()).sort()
+    let memberIds = endpointIds.length > 0 ? await getDistinctPlatformMemberIdsForActiveTriggers() : []
+    // An opaque key is bound to one member by the platform, so it claims under
+    // the local scope. An org token needs a real member, and has none here.
+    if (endpointIds.length > 0 && memberIds.length === 0 && !attribution.requiresActingMember()) {
+      memberIds = [LOCAL_RELAY_SCOPE]
+    }
+    if (!this.isRunning) return
 
-    try {
-      // Poll once per distinct trigger owner; first realtime config wins.
-      // Opaque-key mode has no authAccount rows, so fall back to a placeholder
-      // (buildBearer ignores it). Org JWT mode returns early to avoid a bogus
-      // `${token}::local` bearer.
-      let memberIds = await getDistinctPlatformMemberIdsForActiveTriggers()
-      if (memberIds.length === 0) {
-        if (attribution.requiresActingMember() || !getPlatformAccessToken()) return
-        memberIds = ['local']
-      }
-
-      for (const memberId of memberIds) {
-        try {
-          const result = await pollAndClaimEvents(memberId)
-
-          if (result.events.length > 0) {
-            console.log(
-              `[TriggerManager] Processing ${result.events.length} event(s) for member ${memberId}`,
-            )
-            await this.processEvents(result.events, memberId)
-          }
-
-          if (result.realtime && !this.realtimeClient?.isActive()) {
-            await this.subscribeToRealtime(result.realtime, memberId)
-          }
-        } catch (error) {
-          console.error(`[TriggerManager] Poll failed for member ${memberId}:`, error)
+    for (const [memberId, registration] of this.registrations) {
+      if (memberIds.includes(memberId)) continue
+      registration.handle.dispose()
+      this.registrations.delete(memberId)
+    }
+    // Every member registers every endpoint: the platform only hands a member
+    // the events of endpoints it owns, and for older triggers which member
+    // that is can only be guessed (SUP-226, SUP-765).
+    for (const memberId of memberIds) {
+      const existing = this.registrations.get(memberId)
+      if (existing) {
+        if (existing.endpointIds.join('\n') !== endpointIds.join('\n')) {
+          existing.handle.update({ endpointIds })
+          existing.endpointIds = endpointIds
         }
+        continue
       }
-    } finally {
-      this.isProcessing = false
+      const handle = getWebhookRelay().register({
+        id: `webhook-triggers:${memberId}`,
+        scope: memberId,
+        endpointIds,
+        accept: (events) => this.acceptEvents(events),
+      })
+      this.registrations.set(memberId, { handle, endpointIds })
     }
   }
 
-  private async subscribeToRealtime(
-    config: { url: string; apikey: string; jwt: string; channel: string },
-    memberId: string,
-  ): Promise<void> {
-    if (this.realtimeClient) {
-      this.realtimeClient.disconnect()
-    }
-
-    this.realtimeClient = new SupabaseRealtimeClient()
-
-    try {
-      await this.realtimeClient.connect(
-        config,
-        () => {
-          // On any INSERT event, re-poll to claim and process
-          this.pollAndProcess().catch((err) => {
-            console.error('[TriggerManager] Re-poll after realtime event failed:', err)
-          })
-        },
-        () => {
-          // On disconnect, the client handles reconnection internally
-        },
-      )
-
-      // Refresh JWT every 50 minutes (token lasts 1 hour).
-      this.jwtRefreshInterval = setInterval(async () => {
-        try {
-          const freshResult = await pollAndClaimEvents(memberId)
-          if (freshResult.realtime?.jwt && this.realtimeClient) {
-            await this.realtimeClient.updateToken(freshResult.realtime.jwt)
-          }
-          if (freshResult.events.length > 0) {
-            await this.processEvents(freshResult.events, memberId)
-          }
-        } catch (error) {
-          console.error('[TriggerManager] JWT refresh failed:', error)
-        }
-      }, 50 * 60 * 1000)
-
-      console.log('[TriggerManager] Realtime subscription active')
-    } catch (error) {
-      console.error('[TriggerManager] Failed to subscribe to realtime:', error)
-    }
-  }
-
-  private async processEvents(events: WebhookEvent[], memberId: string): Promise<void> {
-    // Group events by composio_trigger_id for batching
-    const grouped = new Map<string, WebhookEvent[]>()
-    for (const event of events) {
-      const key = event.composio_trigger_id
-      let list = grouped.get(key)
-      if (!list) {
-        list = []
-        grouped.set(key, list)
-      }
-      list.push(event)
-    }
-
-    for (const [composioTriggerId, groupedEvents] of grouped) {
+  private async acceptEvents(
+    events: readonly RelayEvent[],
+  ): Promise<RelayAcceptResult | ReadonlyMap<string, RelayAcceptResult>> {
+    // Stopped (shutting down): the relay may still be handing over events
+    // claimed before; leave them for it rather than starting sessions now.
+    if (!this.isRunning) return 'retry'
+    const results = new Map<string, RelayAcceptResult>()
+    for (const [endpointId, group] of groupByEndpoint(events)) {
+      // Acknowledged even when processing fails, as before: retrying a
+      // trigger's events needs durable trigger delivery (SUP-934).
+      let result: RelayAcceptResult = 'accepted'
       try {
-        await this.processEventGroup(composioTriggerId, groupedEvents, memberId)
+        result = await this.processEventGroup(endpointId, group)
       } catch (error) {
-        console.error(
-          `[TriggerManager] Failed to process events for trigger ${composioTriggerId}:`,
-          error
-        )
-        // Ack events anyway to prevent them from piling up
-        await acknowledgeEvents(groupedEvents.map((e) => e.id), memberId).catch(console.error)
+        console.error(`[TriggerManager] Failed to process events for trigger ${endpointId}:`, error)
       }
+      for (const event of group) results.set(event.id, result)
     }
+    return results
   }
 
   private async processEventGroup(
     composioTriggerId: string,
-    events: WebhookEvent[],
-    memberId: string,
-  ): Promise<void> {
+    events: RelayEvent[],
+  ): Promise<RelayAcceptResult> {
     // Look up ALL local triggers sharing this Composio trigger ID
     const triggers = await getWebhookTriggersByComposioId(composioTriggerId)
     const activeTriggers = triggers.filter((t) => t.status === 'active')
 
     if (activeTriggers.length === 0) {
       console.warn(
-        `[TriggerManager] No active local triggers for composio ID ${composioTriggerId}, acking events`
+        `[TriggerManager] No active local triggers for composio ID ${composioTriggerId}, discarding events`
       )
-      await acknowledgeEvents(events.map((e) => e.id), memberId)
-      return
+      return 'discard'
     }
 
-    // Registration handshakes confirm the endpoint is reachable; ack them
-    // (below, together with the rest) without spawning a session.
+    // Registration handshakes confirm the endpoint is reachable; they are
+    // acknowledged without spawning a session.
     const sessionEvents = events.filter((e) => !isHandshakeEvent(e))
     if (sessionEvents.length < events.length) {
       console.log(
         `[TriggerManager] Skipping ${events.length - sessionEvents.length} handshake event(s) for ${composioTriggerId}`
       )
     }
-    if (sessionEvents.length === 0) {
-      await acknowledgeEvents(events.map((e) => e.id), memberId)
-      return
-    }
+    if (sessionEvents.length === 0) return 'discard'
 
     // Spawn a session for each local trigger (fan-out)
     for (const trigger of activeTriggers) {
@@ -298,14 +277,12 @@ class TriggerManager {
         )
       }
     }
-
-    // Ack events after all triggers have been processed
-    await acknowledgeEvents(events.map((e) => e.id), memberId)
+    return 'accepted'
   }
 
   private async spawnSessionForTrigger(
     trigger: WebhookTrigger,
-    events: WebhookEvent[]
+    events: readonly RelayEvent[]
   ): Promise<void> {
     // Attribute to the same user the poller claimed events under: prefer the
     // trigger creator, but fall back to the connected_account owner when the
@@ -321,7 +298,7 @@ class TriggerManager {
 
   private async spawnSessionInner(
     trigger: WebhookTrigger,
-    events: WebhookEvent[]
+    events: readonly RelayEvent[]
   ): Promise<void> {
     // Verify agent still exists
     if (!(await agentExists(trigger.agentSlug))) {

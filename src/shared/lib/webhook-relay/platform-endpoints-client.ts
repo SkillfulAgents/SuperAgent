@@ -1,9 +1,8 @@
 /**
- * Webhook Endpoints Client
- *
  * Calls the platform proxy's webhook-endpoint management routes
- * (/v1/webhook-endpoints) to mint, update, and disable the agent-minted
- * public webhook URLs served at /v1/hooks/{token}.
+ * (/v1/webhook-endpoints) to mint, update, and disable the public webhook URLs
+ * served at /v1/hooks/{token}. Only PlatformWebhookRelayService calls these;
+ * features go through the relay (getWebhookRelay()) so they work with any relay.
  */
 
 import { captureException } from '@shared/lib/error-reporting'
@@ -19,7 +18,7 @@ import {
   type WebhookEndpoint,
   type WebhookEndpointEvent,
   type WebhookFilterTestResult,
-} from './webhook-endpoint-schema'
+} from '@shared/lib/services/webhook-endpoint-schema'
 
 export class WebhookEndpointsApiError extends Error {
   constructor(

@@ -24,7 +24,7 @@ import {
   listPlatformWebhookEndpoints,
   listPlatformWebhookEvents,
   testPlatformWebhookFilter,
-} from './webhook-endpoints-client'
+} from './platform-endpoints-client'
 
 const ENDPOINT = {
   id: 'whep_11111111-2222-4333-8444-555555555555',
@@ -38,7 +38,7 @@ const ENDPOINT = {
   created_at: '2026-07-06T00:00:00Z',
 }
 
-describe('webhook-endpoints-client', () => {
+describe('platform-endpoints-client', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     originalFetch = globalThis.fetch
