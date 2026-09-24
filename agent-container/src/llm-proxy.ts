@@ -1,6 +1,6 @@
 import { CredentialRefreshError } from './credential-refresh-error'
 import { normalizeCodexRequest, collectCodexResponse, normalizeCodexError, CodexResponseError } from './llm-proxy-codex'
-import { normalizeGrokMessages, grokWireFormat } from './llm-proxy-grok'
+import { grokWireFormat } from './llm-proxy-grok'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
@@ -90,7 +90,6 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       if (!validated.success) { sendError(res, 400, 'Invalid Messages request'); return }
       let body: Json = expandDeferredTools(validated.data)
       const format = config.adapter === 'grok' ? grokWireFormat(body) : config.format
-      if (config.adapter === 'grok') body = normalizeGrokMessages(body)
       body = options.adapter?.request?.(body) ?? body
       const tools = Array.isArray(body.tools) ? body.tools as Json[] : []
       // Never silently drop hosted capabilities that the selected wire cannot execute.
