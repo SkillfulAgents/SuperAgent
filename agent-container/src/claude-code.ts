@@ -1,4 +1,4 @@
-import { startLlmProxy, type LlmProxyHandle } from './llm-proxy';
+import { startLlmProxy, llmProxyBinding, type LlmProxyHandle } from './llm-proxy';
 import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
 import {
   query,
@@ -969,9 +969,11 @@ export class ClaudeCodeProcess extends EventEmitter {
   }
 
   private async prepareLlmProxy(): Promise<void> {
-    const binding = this.llmRuntime?.proxy
-      ? JSON.stringify([this.llmRuntime.llmProviderId, this.llmRuntime.proxy]) : undefined;
-    if (this.llmProxy && this.llmProxyBinding === binding) return;
+    const binding = this.llmRuntime && llmProxyBinding(this.llmRuntime.llmProviderId, this.llmRuntime.proxy);
+    if (this.llmProxy && this.llmProxyBinding === binding && this.llmRuntime?.proxy) {
+      this.llmProxy.updateCredential(this.llmRuntime.proxy.credential);
+      return;
+    }
     await this.llmProxy?.close();
     this.llmProxy = undefined;
     this.llmProxyBinding = undefined;
@@ -1674,12 +1676,16 @@ export class ClaudeCodeProcess extends EventEmitter {
     const connectionChanged = nextRuntime !== undefined && (
       nextRuntime.llmProviderId !== this.llmRuntime?.llmProviderId ||
       nextRuntime.model !== this.llmRuntime?.model ||
-      nextRuntime.generation !== this.llmRuntime?.generation ||
+      (!nextRuntime.proxy && nextRuntime.generation !== this.llmRuntime?.generation) ||
       JSON.stringify(nextRuntime.env) !== JSON.stringify(this.llmRuntime?.env) ||
-      JSON.stringify(nextRuntime.proxy) !== JSON.stringify(this.llmRuntime?.proxy)
+      JSON.stringify([nextRuntime.browserModel, nextRuntime.dashboardBuilderModel, nextRuntime.subagentModels, nextRuntime.modelPromptHints, nextRuntime.modelContextWindows]) !==
+        JSON.stringify([this.llmRuntime?.browserModel, this.llmRuntime?.dashboardBuilderModel, this.llmRuntime?.subagentModels, this.llmRuntime?.modelPromptHints, this.llmRuntime?.modelContextWindows]) ||
+      llmProxyBinding(nextRuntime.llmProviderId, nextRuntime.proxy) !==
+        llmProxyBinding(this.llmRuntime?.llmProviderId ?? '', this.llmRuntime?.proxy)
     );
     if (nextRuntime) {
       this.llmRuntime = nextRuntime;
+      if (!connectionChanged && nextRuntime.proxy) this.llmProxy?.updateCredential(nextRuntime.proxy.credential);
       this.browserModel = nextRuntime.browserModel;
       this.dashboardBuilderModel = nextRuntime.dashboardBuilderModel;
       this.subagentModels = nextRuntime.subagentModels;
@@ -1783,6 +1789,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       // creation — and so does a connected-accounts change, which reaches the
       // model through the prompt alone.
       const reasons: string[] = [];
+      if (connectionChanged) reasons.push('LLM provider configuration changed');
       if (effortChanged) reasons.push(`effort ${currentEffort} -> ${effort}`);
       if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');

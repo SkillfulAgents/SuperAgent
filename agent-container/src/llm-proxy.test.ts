@@ -117,6 +117,59 @@ describe('embedded provider proxy', () => {
     expect(results).toHaveLength(2); expect(exchanges).toBe(1); expect(attempts).toBeLessThanOrEqual(4)
   })
 
+  it('drops reasoning from the prior account when an auth retry changes the account', async () => {
+    let phase = 'first'
+    const base = await upstream((body, req, res) => {
+      if (phase === 'retry' && req.headers.authorization === 'Bearer upstream-key') {
+        expect(JSON.stringify(body)).toContain('encrypted-account-a')
+        json(res, { error: { message: 'expired' } }, 401)
+        return
+      }
+      if (phase === 'retry') expect(JSON.stringify(body)).not.toContain('encrypted-account-a')
+      json(res, { id: 'r', status: 'completed', output: [
+        { type: 'reasoning', id: 'rs', encrypted_content: 'encrypted-account-a', summary: [{ type: 'summary_text', text: 'Reasoning' }] },
+        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Answer' }] },
+      ], usage: { input_tokens: 1, output_tokens: 1 } })
+    })
+    const first = await client(await proxy(base, 'responses')).messages.create(prompt)
+    phase = 'retry'
+    const next = await proxy(base, 'responses', { refreshCredential: async () => ({ accessToken: 'other-account', generation: 2 }) })
+    await client(next).messages.create({ ...prompt, messages: [
+      ...prompt.messages, { role: 'assistant', content: first.content }, { role: 'user', content: 'Continue' },
+    ] })
+  })
+
+  it('swaps credentials without replacing the listener and ignores stale snapshots', async () => {
+    const seen: unknown[] = []
+    const base = await upstream((_body, req, res) => { seen.push(req.headers.authorization); json(res, reply) })
+    const handle = await proxy(base)
+    const url = handle.env.ANTHROPIC_BASE_URL
+    handle.updateCredential({ accessToken: 'rotated', generation: 2 })
+    handle.updateCredential({ accessToken: 'stale', generation: 1 })
+    await client(handle).messages.create(prompt)
+    expect(handle.env.ANTHROPIC_BASE_URL).toBe(url)
+    expect(seen).toEqual(['Bearer rotated'])
+  })
+
+  it('does not let an in-flight refresh overwrite a newer runtime credential', async () => {
+    let release!: (value: { accessToken: string; generation: number }) => void
+    let began!: () => void
+    const started = new Promise<void>(resolve => { began = resolve })
+    const seen: unknown[] = []
+    const base = await upstream((_body, req, res) => { seen.push(req.headers.authorization); json(res, reply) })
+    const handle = await proxy(base, 'messages', {
+      config: { baseUrl: base, format: 'messages', headers: {}, credential: { accessToken: 'old', generation: 1, expiresAt: 0 } },
+      refreshCredential: () => { began(); return new Promise(resolve => { release = resolve }) },
+    })
+    const result = client(handle).messages.create(prompt)
+    const pending = result.then(value => value)
+    await started
+    handle.updateCredential({ accessToken: 'reconnected', generation: 3 })
+    release({ accessToken: 'outdated-refresh', generation: 2 })
+    await pending
+    expect(seen).toEqual(['Bearer reconnected'])
+  })
+
   it('does not refresh quota errors and preserves the error message', async () => {
     let refreshed = false
     const base = await upstream((_body, _req, res) => json(res, { error: { message: 'Quota used' } }, 429))

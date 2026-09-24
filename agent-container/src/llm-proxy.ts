@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { z } from 'zod'
@@ -23,6 +23,7 @@ export interface LlmProxyOptions {
 }
 export interface LlmProxyHandle {
   env: Record<string, string>
+  updateCredential(value: ProxyCredential): void
   close(): Promise<void>
 }
 
@@ -46,7 +47,7 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
     if (!options.refreshCredential) return
     if (credential !== previous) return
     refreshing ??= options.refreshCredential(previous, rejected).then(value => {
-      credential = proxyCredentialSchema.parse(value)
+      if (credential === previous) credential = proxyCredentialSchema.parse(value)
       return credential
     }).finally(() => { refreshing = undefined })
     await refreshing
@@ -87,25 +88,29 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       if (config.maxOutputTokens && typeof body.max_tokens === 'number') {
         body = { ...body, max_tokens: Math.min(body.max_tokens, config.maxOutputTokens) }
       }
-      const scope = JSON.stringify([options.llmProviderId, config.baseUrl, body.model])
-      const replyOptions = { model: validated.data.model, toolNames: toolNameRestoreMap(body), reasoningReplayScope: scope }
-      let upstreamBody = config.format === 'responses'
-        ? messagesRequestToResponses(body, { reasoningReplayScope: scope,
-          ...(config.omitReasoningEffort ? { mapReasoningEffort: () => undefined } : {}) }).body
-        : config.format === 'chat-completions'
-          ? messagesRequestToChatCompletions(body, {
-            tokenLimitField: config.chatTokenLimitField,
-            ...(config.omitReasoningEffort ? { mapReasoningEffort: () => undefined } : {}),
-          }) : body
-      upstreamBody = options.adapter?.upstreamRequest?.(upstreamBody) ?? upstreamBody
+      const replyOptions = { model: validated.data.model, toolNames: toolNameRestoreMap(body), reasoningReplayScope: '' }
       const path = config.format === 'responses' ? '/responses' : config.format === 'chat-completions' ? '/chat/completions' : '/messages'
-      const encoded = JSON.stringify(upstreamBody)
-      const request = () => fetch(`${config.baseUrl.replace(/\/$/, '')}${path}`, {
-        method: 'POST', redirect: 'error', signal: abort.signal,
-        headers: { 'content-type': 'application/json', ...(config.format === 'messages' ? { 'anthropic-version': '2023-06-01' } : {}),
-          ...config.headers, authorization: `Bearer ${credential.accessToken}` },
-        body: encoded,
-      })
+      const request = () => {
+        const account = credential.accountId ?? createHash('sha256').update(credential.accessToken).digest('hex')
+        // The codec reserves colons; rebuild the account-bound scope on auth retry.
+        const scope = createHash('sha256').update(JSON.stringify([options.llmProviderId, account, config.baseUrl, body.model])).digest('hex')
+        replyOptions.reasoningReplayScope = scope
+        let upstreamBody = config.format === 'responses'
+          ? messagesRequestToResponses(body, { reasoningReplayScope: scope,
+            ...(config.omitReasoningEffort ? { mapReasoningEffort: () => undefined } : {}) }).body
+          : config.format === 'chat-completions'
+            ? messagesRequestToChatCompletions(body, {
+              tokenLimitField: config.chatTokenLimitField,
+              ...(config.omitReasoningEffort ? { mapReasoningEffort: () => undefined } : {}),
+            }) : body
+        upstreamBody = options.adapter?.upstreamRequest?.(upstreamBody) ?? upstreamBody
+        return fetch(`${config.baseUrl.replace(/\/$/, '')}${path}`, {
+          method: 'POST', redirect: 'error', signal: abort.signal,
+          headers: { 'content-type': 'application/json', ...(config.format === 'messages' ? { 'anthropic-version': '2023-06-01' } : {}),
+            ...config.headers, authorization: `Bearer ${credential.accessToken}` },
+          body: JSON.stringify(upstreamBody),
+        })
+      }
       if (credential.expiresAt !== undefined && credential.expiresAt <= Date.now() + 30_000) await refresh(credential, false)
       const sent = credential
       let upstream = await request()
@@ -148,6 +153,11 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
   return {
     env: { ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`, ANTHROPIC_API_KEY: key,
       ANTHROPIC_AUTH_TOKEN: '', ANTHROPIC_CUSTOM_HEADERS: '', CLAUDE_CODE_OAUTH_TOKEN: '' },
+    updateCredential(value) {
+      const next = proxyCredentialSchema.parse(value)
+      // A runtime snapshot can predate a refresh performed inside this proxy.
+      if (next.generation > credential.generation) credential = next
+    },
     async close() {
       for (const abort of active) abort.abort()
       server.closeAllConnections()
@@ -163,4 +173,11 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 function sendError(res: ServerResponse, status: number, message: string): void {
   const type = status === 401 ? 'authentication_error' : status === 404 ? 'not_found_error' : status === 413 ? 'request_too_large' : status === 400 ? 'invalid_request_error' : 'api_error'
   sendJson(res, status, { type: 'error', error: { type, message } })
+}
+
+/** SDK process identity excludes rotating secrets, but includes account switches. */
+export function llmProxyBinding(llmProviderId: string, proxy?: LlmProxyConfig): string | undefined {
+  if (!proxy) return undefined
+  const { credential, ...configuration } = proxy
+  return JSON.stringify([llmProviderId, configuration, credential.accountId])
 }

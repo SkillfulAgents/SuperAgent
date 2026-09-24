@@ -3,6 +3,7 @@ import { z } from 'zod'
 // Execution-only data. Never put this object in session or warm-profile files.
 export const proxyCredentialSchema = z.object({
   accessToken: z.string().min(1),
+  accountId: z.string().optional(),
   generation: z.number().int(),
   expiresAt: z.number().optional(),
 })
