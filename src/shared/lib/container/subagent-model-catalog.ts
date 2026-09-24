@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { ModelDefinition } from '../llm-provider/model-catalog-schema'
 
-// Keep in sync with agent-container/src/subagent-model-catalog.ts. The
+// Keep in sync with agent-container/src/subagent-model-catalog-schema.ts. The
 // container is a standalone package and cannot import host @shared modules.
 export const MAX_SUBAGENT_MODELS = 32
 

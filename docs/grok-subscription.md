@@ -63,8 +63,9 @@ fetches against local fixture pages through a test host bridge; hosted WebSearch
 separately exercises live internet search. No external email/chat message was sent.
 Delivery consumers were covered by the message-persister and chat SSE tests.
 
-Automated validation passed 1,304 container tests and 911 host/provider,
-runtime, persistence and chat-stream tests, plus typecheck and lint. New regression
+Automated validation passed 1,304 container tests and the full host suite of
+13,859 tests with coverage, plus typecheck and lint. Host validation also passed
+with container dependencies absent, matching the host CI installation. New regression
 coverage includes interleaved parallel arguments, long MCP names, tool-result call
 IDs, old runtime descriptors, images, deferred schemas, quota errors and a 401
 reconnect that must not replay another account's reasoning. The generic persister
