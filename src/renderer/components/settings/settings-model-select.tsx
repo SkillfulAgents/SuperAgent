@@ -63,6 +63,10 @@ interface ModelPickerPopoverProps {
     isOverride: boolean
     /** Clear the override so the host follows the app-wide default again. */
     onUseAppDefault: () => void
+    /** Action label; defaults to "Reset to Global Default". */
+    label?: string
+    /** Hide the link to Settings → LLM Provider, e.g. when already on that tab. */
+    hideSettingsLink?: boolean
   }
 }
 
@@ -183,7 +187,7 @@ export function ModelPickerPopover({
         </Button>
       </PopoverTrigger>
       <PopoverContent
-        className="flex w-64 flex-col px-1 py-2 data-[side=bottom]:flex-col-reverse"
+        className="group/picker flex w-64 flex-col px-1 py-2 data-[side=bottom]:flex-col-reverse"
         align={align}
         collisionPadding={8}
         // Don't auto-focus the first element (a vendor tab) on open — focusing
@@ -237,11 +241,12 @@ export function ModelPickerPopover({
             />
           </>
         )}
+        {/* The reset action stays at the bottom whichever way the sections flip. */}
         {appDefault && (
-          <>
+          <div className="flex flex-col group-data-[side=bottom]/picker:order-first">
             <Separator className="my-2 bg-border/50" />
             <AppDefaultFooter {...appDefault} />
-          </>
+          </div>
         )}
         </fieldset>
       </PopoverContent>
@@ -254,13 +259,13 @@ export function ModelPickerPopover({
  * `useUser()` / DialogContext reads only mount for the one host that opts in —
  * the picker's other hosts stay free of a UserProvider requirement.
  */
-function AppDefaultFooter({ isOverride, onUseAppDefault }: NonNullable<SettingsModelSelectProps['appDefault']>) {
+function AppDefaultFooter({ isOverride, onUseAppDefault, label = 'Reset to Global Default', hideSettingsLink = false }: NonNullable<SettingsModelSelectProps['appDefault']>) {
   const { isAuthMode, isAdmin } = useUser()
   // Nullable by design: router-free hosts mount no DialogProvider — the
   // footer just drops its settings link there.
   const dialogs = useContext(DialogContext)
   // The LLM Provider tab is admin-gated — members get no link they can't use.
-  const canChangeAppDefault = dialogs !== null && (!isAuthMode || isAdmin)
+  const canChangeAppDefault = !hideSettingsLink && dialogs !== null && (!isAuthMode || isAdmin)
 
   return (
     <div className="flex items-center justify-between gap-2">
@@ -273,7 +278,7 @@ function AppDefaultFooter({ isOverride, onUseAppDefault }: NonNullable<SettingsM
         className="flex min-w-0 items-center gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-muted-foreground enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50"
       >
         <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-        <span className="truncate">Reset to Global Default</span>
+        <span className="truncate">{label}</span>
       </button>
       {canChangeAppDefault && (
         <button

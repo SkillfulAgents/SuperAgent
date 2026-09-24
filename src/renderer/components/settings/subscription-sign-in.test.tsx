@@ -14,7 +14,7 @@ it('shows the login link and code, then reports account identity without receivi
   expect(await screen.findByText('TEST')).toBeTruthy()
   expect(screen.getByRole('link').getAttribute('href')).toContain('accounts.x.ai')
   await waitFor(() => expect(connected).toHaveBeenCalledWith('flow', 'member@example.test'))
-  expect(screen.queryByText('Waiting for sign-in…')).toBeNull()
+  expect(screen.queryByText('Waiting for you to finish signing in…')).toBeNull()
 })
 it('shows an expired login error and permits a fresh login', async () => {
   state.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ id: 'flow', url: 'https://accounts.x.ai', code: 'TEST', interval: 0.01 })))
