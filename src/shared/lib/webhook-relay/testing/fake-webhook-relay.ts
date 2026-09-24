@@ -15,7 +15,7 @@ import type {
 export interface FakeWebhookRelay extends WebhookRelayService {
   /** Live registrations by consumer id, with their latest scope and endpoints. */
   readonly consumers: Map<string, RelayConsumer>
-  readonly log: Array<{ op: 'register' | 'update' | 'dispose'; id: string }>
+  readonly log: Array<{ op: 'register' | 'update' | 'retryNow' | 'dispose'; id: string }>
   /** Hands events to a consumer as a claim would, with its result per event id. */
   deliver(consumerId: string, events: readonly RelayEvent[]): Promise<Map<string, RelayAcceptResult>>
   /** Replaces the snapshot and tells onChange listeners, as a status change would. */
@@ -66,6 +66,9 @@ export function createFakeWebhookRelay(): FakeWebhookRelay {
           }
           consumers.set(consumer.id, current)
           log.push({ op: 'update', id: consumer.id })
+        },
+        retryNow() {
+          if (!disposed) log.push({ op: 'retryNow', id: consumer.id })
         },
         dispose() {
           if (disposed) return

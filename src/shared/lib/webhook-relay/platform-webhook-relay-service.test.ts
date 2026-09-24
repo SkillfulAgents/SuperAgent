@@ -288,6 +288,43 @@ describe('PlatformWebhookRelayService', () => {
       expect(platform.ackedIds()).toEqual([a.id, b.id])
     })
 
+    it('keeps delivering fresh events while one of them keeps retrying', async () => {
+      startRelay({ retryDelaysMs: [10 * 60_000] })
+      const [stuck] = platform.add('sub_a', 'whep_one')
+      const c = consumer(['whep_one'], async (events) =>
+        new Map(events.map((event) => [event.id, event.id === stuck.id ? 'retry' as const : 'accepted' as const])),
+      )
+      relay.register(c)
+      await settle()
+
+      const [fresh] = platform.add('sub_a', 'whep_two')
+      relay.register(consumer(['whep_two'], async () => 'accepted', 'sub_a', 'other'))
+      const [next] = platform.add('sub_a', 'whep_one')
+      relay.wake()
+      await settle()
+
+      // No time has passed: the stuck event's backoff held back nothing else.
+      expect(platform.ackedIds()).toEqual(expect.arrayContaining([fresh.id, next.id]))
+      expect(platform.ackedIds()).not.toContain(stuck.id)
+      expect(c.accept).toHaveBeenLastCalledWith([next])
+    })
+
+    it('offers waiting retries again at once on retryNow', async () => {
+      startRelay({ retryDelaysMs: [10 * 60_000] })
+      const [event] = platform.add('sub_a', 'whep_one')
+      const results: RelayAcceptResult[] = ['retry', 'accepted']
+      const c = consumer(['whep_one'], async () => results.shift()!)
+      const handle = relay.register(c)
+      await settle()
+      expect(platform.acks).toEqual([])
+
+      handle.retryNow()
+      await settle()
+
+      expect(c.accept).toHaveBeenCalledTimes(2)
+      expect(platform.ackedIds()).toEqual([event.id])
+    })
+
     it('treats a throwing consumer as a retry', async () => {
       startRelay({ retryDelaysMs: [5_000] })
       platform.add('sub_a', 'whep_one')
