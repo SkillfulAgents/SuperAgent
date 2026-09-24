@@ -1,5 +1,6 @@
 import { CodexSubscriptionLlmProvider } from './codex-subscription-provider'
 import { GrokSubscriptionLlmProvider } from './grok-subscription-provider'
+import { KimiSubscriptionLlmProvider } from './kimi-subscription-provider'
 export { BaseLlmProvider } from './base-llm-provider'
 export { LLM_PROVIDER_IDS } from './provider-types'
 export type { LlmProviderId } from './provider-types'
@@ -64,6 +65,7 @@ const providers: Record<LlmProviderId, BaseLlmProvider> = {
   'claude-subscription': new ClaudeSubscriptionLlmProvider(),
   'codex-subscription': new CodexSubscriptionLlmProvider(),
   'grok-subscription': new GrokSubscriptionLlmProvider(),
+  'kimi-subscription': new KimiSubscriptionLlmProvider(),
   openrouter: new OpenRouterLlmProvider(),
   bedrock: new BedrockLlmProvider(),
   platform: new PlatformLlmProvider(),
@@ -77,6 +79,7 @@ export function createLlmProvider(id: LlmProviderId, configuration: ProviderConf
     case 'claude-subscription': return new ClaudeSubscriptionLlmProvider(configuration)
     case 'codex-subscription': return new CodexSubscriptionLlmProvider(configuration)
     case 'grok-subscription': return new GrokSubscriptionLlmProvider(configuration)
+    case 'kimi-subscription': return new KimiSubscriptionLlmProvider(configuration)
     case 'openrouter': return new OpenRouterLlmProvider(configuration)
     case 'bedrock': return new BedrockLlmProvider(configuration)
     case 'generic': return new GenericLlmProvider(configuration)

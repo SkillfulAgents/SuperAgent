@@ -280,6 +280,18 @@ describe('embedded provider proxy', () => {
     expect(attempts).toBe(2)
   })
 
+  it('returns a Kimi plan-limit 401 without refreshing or replaying', async () => {
+    let attempts = 0
+    const message = 'Your current plan supports only kimi-k3 up to 256K context'
+    const base = await upstream((_body, _req, res) => { attempts++; json(res, { type: 'error', error: { type: 'permission_error', message } }, 401) })
+    const handle = await proxy(base, 'messages', {
+      config: { adapter: 'kimi', baseUrl: base, format: 'messages', headers: {}, credential: { accessToken: 'upstream-key', generation: 1 } },
+      refreshCredential: async () => { throw new Error('unexpected refresh') },
+    })
+    await expect(client(handle).messages.create(prompt)).rejects.toMatchObject({ status: 401, message: expect.stringContaining(message) })
+    expect(attempts).toBe(1)
+  })
+
   it('refreshes near expiry before sending and does not forward client auth or routing headers', async () => {
     const base = await upstream((_body, req, res) => {
       expect(req.headers.authorization).toBe('Bearer fresh')

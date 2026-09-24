@@ -13,6 +13,9 @@ const MODEL_PRICING_ALIASES: Record<string, string> = {
   // Subscription Messages replies report these concrete deployments (live verified).
   'grok-4.6-build': 'grok-4.6',
   'grok-4.7-build': 'grok-4.7',
+  // Kimi Code subscription slugs for K3 (live verified; the reply echoes the slug).
+  k3: 'kimi-k3',
+  'k3-256k': 'kimi-k3',
 }
 
 /**

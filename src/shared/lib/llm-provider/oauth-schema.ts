@@ -6,6 +6,8 @@ export const oauthCredentialSchema = z.object({
   expiresAt: z.number().finite(),
   accountId: z.string().optional(),
   accountLabel: z.string().optional(),
+  // Providers with regional deployments refresh and call the region that issued the credential.
+  region: z.string().optional(),
   // Persist failure state so waiters across workers do not repeat failed exchanges.
   refreshFailure: z.object({ reconnectRequired: z.boolean(), retryAt: z.number().finite() }).optional(),
   // A database compare-and-set lease coordinates refresh across app workers.

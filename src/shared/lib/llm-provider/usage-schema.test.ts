@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseCodexUsage, parseGrokUsage } from './usage-schema'
+import { parseCodexUsage, parseGrokUsage, parseKimiUsage } from './usage-schema'
 
 describe('provider allowance normalization', () => {
   it('keeps concurrent Codex windows, reset times and credits with their own units', () => {
@@ -58,5 +58,15 @@ describe('partial allowance payloads', () => {
   })
   it.each([[30, 'Monthly'], [14, '14 days']])('labels a %i-day Codex window as %s', (days, label) => {
     expect(parseCodexUsage({ rate_limit: { primary_window: { used_percent: 85, limit_window_seconds: Number(days) * 86400 } } }).limits[0].label).toBe(label)
+  })
+  it('reads Kimi subscription windows as used percentages', () => {
+    // Shape observed from a live Kimi Code Plus account.
+    const snapshot = parseKimiUsage({ limits: [{ window: { duration: 300, timeUnit: 'TIME_UNIT_MINUTE' }, detail: { limit: '100', remaining: '100' } }],
+      usages: { limit_5h: { used_ratio: 0.25, reset_time: '2026-09-24T23:58:26Z' }, limit_month_total: { used_ratio: 0, reset_time: '2026-10-25T00:00:00Z' }, limit_month_code: { used_ratio: 0 } } })
+    expect(snapshot.limits).toEqual([
+      { kind: 'window', id: '5h', label: '5-hour', usedPercent: 25, resetsAt: '2026-09-24T23:58:26Z' },
+      { kind: 'window', id: 'month', label: 'Monthly', usedPercent: 0, resetsAt: '2026-10-25T00:00:00Z' },
+    ])
+    expect(parseKimiUsage({}).status).toBe('unavailable')
   })
 })

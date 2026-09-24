@@ -7,6 +7,15 @@ import { llmConnections } from '../db/schema'
 import { changesOf } from '../db/batch'
 import { connectionConfigSchema, parseConnectionJson } from './connection-schema'
 import { refreshGrokCredential } from './grok-oauth'
+import { refreshKimiCredential } from './kimi-oauth'
+import type { OAuthCredential } from './oauth-schema'
+import { isOAuthProvider, type OAuthProvider } from './provider-types'
+
+const refreshers: Record<OAuthProvider, (previous: OAuthCredential) => Promise<OAuthCredential>> = {
+  'grok-subscription': refreshGrokCredential,
+  'codex-subscription': refreshCodexCredential,
+  'kimi-subscription': refreshKimiCredential,
+}
 
 /** The app owns refresh. A generation/config CAS prevents a late exchange from
  * overwriting reconnects, edits or deletion. The DB lease also covers workers.
@@ -35,8 +44,8 @@ export async function resolveConnectionCredential(id: string, rejectedGeneration
       .where(and(eq(llmConnections.id, id), eq(llmConnections.config, row.config), eq(llmConnections.generation, row.generation))).run()
     if (!changesOf(lease)) continue
     try {
-      if (row.provider !== 'grok-subscription' && row.provider !== 'codex-subscription') throw new Error('This provider cannot refresh credentials')
-      const next = row.provider === 'codex-subscription' ? await refreshCodexCredential(oauth) : await refreshGrokCredential(oauth)
+      if (!isOAuthProvider(row.provider)) throw new Error('This provider cannot refresh credentials')
+      const next = await refreshers[row.provider](oauth)
       const saved = await db.update(llmConnections).set({
         config: JSON.stringify(connectionConfigSchema.parse({ ...config, oauth: next })),
         generation: sql`${llmConnections.generation} + 1`, updatedAt: new Date(),

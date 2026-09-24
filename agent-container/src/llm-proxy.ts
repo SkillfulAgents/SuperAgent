@@ -1,6 +1,7 @@
 import { CredentialRefreshError } from './credential-refresh-error'
 import { normalizeCodexRequest, collectCodexResponse, normalizeCodexError, CodexResponseError } from './llm-proxy-codex'
 import { normalizeGrokResponses } from './llm-proxy-grok'
+import { isKimiPlanLimit } from './llm-proxy-kimi'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
@@ -131,13 +132,17 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       let upstream = await request()
       // Only a pre-stream authentication rejection may replay a request. No quota,
       // network or mid-stream retries, and the app remains the refresh authority.
+      let rejection: unknown
       if (upstream.status === 401 && options.refreshCredential) {
-        await upstream.body?.cancel()
-        await refresh(sent, true)
-        upstream = await request()
+        rejection = await upstream.json().catch(() => ({}))
+        if (!(config.adapter === 'kimi' && isKimiPlanLimit(rejection))) {
+          rejection = undefined
+          await refresh(sent, true)
+          upstream = await request()
+        }
       }
       if (!upstream.ok) {
-        const error = await upstream.json().catch(() => ({}))
+        const error = rejection ?? await upstream.json().catch(() => ({}))
         sendJson(res, upstream.status, responsesErrorToMessagesError(config.adapter === 'codex' ? normalizeCodexError(error) : error, upstream.status)); return
       }
       if (validated.data.stream) {
