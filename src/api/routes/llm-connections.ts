@@ -36,17 +36,19 @@ routes.onError((error, c) =>
     400
   )
 )
-routes.post('/oauth/grok/start', async c => {
+routes.post('/oauth/:provider/start', async c => {
+  const provider = z.enum(['grok', 'codex']).parse(c.req.param('provider'))
+  const providerId = provider === 'codex' ? 'codex-subscription' : 'grok-subscription'
   const input = z.object({ id: z.string().optional(), userId: z.string().nullable() }).parse(await c.req.json())
   const actor = viewer(c)
   if (input.id) {
     const row = await getConnection(input.id)
-    if (!row || row.provider !== 'grok-subscription' || row.userId !== input.userId) throw new Error('Connection not found')
+    if (!row || row.provider !== providerId || row.userId !== input.userId) throw new Error('Connection not found')
     assertManageConnection(row, actor)
   }
   if (input.userId === null ? !actor.admin : input.userId !== actor.userId) throw new Error('Cannot manage this connection')
   c.header('Cache-Control', 'no-store')
-  return c.json(await startOAuthLogin(actor, input.userId, input.id))
+  return c.json(await startOAuthLogin(actor, input.userId, input.id, providerId))
 })
 routes.post('/oauth/:id/poll', async c => {
   c.header('Cache-Control', 'no-store')

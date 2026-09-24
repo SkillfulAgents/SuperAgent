@@ -1,4 +1,4 @@
-import { GrokSignIn } from './grok-sign-in'
+import { SubscriptionSignIn } from './subscription-sign-in'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import { withGlobalModelPricing } from '@shared/lib/llm-provider/global-pricing'
 import type { GlobalModelPricing } from '@shared/lib/llm-provider/global-pricing-schema'
@@ -28,6 +28,7 @@ const providers = {
   anthropic: 'Anthropic',
   'claude-subscription': 'Claude Subscription',
   'grok-subscription': 'Grok Subscription',
+  'codex-subscription': 'Codex Subscription',
   openrouter: 'OpenRouter',
   bedrock: 'AWS Bedrock',
   generic: 'Generic',
@@ -207,7 +208,11 @@ function ConnectionEditor({
   const [apiKey, setApiKey] = useState('')
   const [oauthLoginId, setOAuthLoginId] = useState<string>()
   const [accountLabel, setAccountLabel] = useState(existing?.accountLabel)
-  const connected = useCallback((id: string, label: string) => { setOAuthLoginId(id); setAccountLabel(label) }, [])
+  const connected = useCallback((id: string, label: string) => {
+    setOAuthLoginId(id)
+    setAccountLabel(label)
+    setName(current => current.trim() ? current : `${provider === 'codex-subscription' ? 'Codex' : 'Grok'} - ${label}`)
+  }, [provider])
   const [apiFormat, setApiFormat] = useState<NonNullable<ConnectionConfig['apiFormat']>>(existing?.apiFormat ?? 'messages')
   const [chatTokenLimitField, setChatTokenLimitField] = useState<NonNullable<ConnectionConfig['chatTokenLimitField']>>(existing?.chatTokenLimitField ?? 'max_completion_tokens')
   const [baseUrl, setBaseUrl] = useState(existing?.baseUrl ?? '')
@@ -338,8 +343,8 @@ function ConnectionEditor({
           <p className="text-muted-foreground">App defaults using this provider need a separate API-capable summarizer. Displayed costs are API-equivalent estimates.</p>
         </div>
       )}
-      {provider === 'grok-subscription' && <GrokSignIn key={owner ?? 'global'} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} onConnected={connected} />}
-      {provider !== 'platform' && provider !== 'grok-subscription' && (
+      {(provider === 'grok-subscription' || provider === 'codex-subscription') && <SubscriptionSignIn provider={provider === 'codex-subscription' ? 'codex' : 'grok'} key={`${provider}:${owner ?? 'global'}`} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} onConnected={connected} />}
+      {provider !== 'platform' && provider !== 'grok-subscription' && provider !== 'codex-subscription' && (
         <label htmlFor={`${formId}-apiKey`} className="block text-sm">
           {provider === 'claude-subscription' ? 'Subscription token' : 'API key'}
           <Input
@@ -459,7 +464,7 @@ function ConnectionEditor({
         <CatalogEditor
           providerId={provider}
           llmProviderId={existing?.id}
-          supportsModelSearch={!!existing && (provider === 'openrouter' || provider === 'generic' || provider === 'grok-subscription')}
+          supportsModelSearch={!!existing && (provider === 'openrouter' || provider === 'generic' || provider === 'grok-subscription' || provider === 'codex-subscription')}
           builtinCatalog={catalogFor(provider)}
           effectiveCatalog={catalog}
           modelCatalog={{ [provider]: { overrides } }}
@@ -486,10 +491,10 @@ function ConnectionEditor({
         </div>
       ))}
       <div className="flex gap-2">
-        <Button type="submit" disabled={mutation.isPending || (provider === 'grok-subscription' && !oauthLoginId && !existing?.isConfigured)}>
+        <Button type="submit" disabled={mutation.isPending || ((provider === 'grok-subscription' || provider === 'codex-subscription') && !oauthLoginId && !existing?.isConfigured)}>
           Save
         </Button>
-        {!existing?.managed && provider !== 'claude-subscription' && provider !== 'grok-subscription' && (
+        {!existing?.managed && provider !== 'claude-subscription' && provider !== 'grok-subscription' && provider !== 'codex-subscription' && (
           <Button
             type="button"
             variant="outline"

@@ -1,4 +1,5 @@
 import { CredentialRefreshError } from '../../../../agent-container/src/credential-refresh-error'
+import { refreshCodexCredential } from './codex-oauth'
 import { randomUUID } from 'node:crypto'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '../db'
@@ -34,8 +35,8 @@ export async function resolveConnectionCredential(id: string, rejectedGeneration
       .where(and(eq(llmConnections.id, id), eq(llmConnections.config, row.config), eq(llmConnections.generation, row.generation))).run()
     if (!changesOf(lease)) continue
     try {
-      if (row.provider !== 'grok-subscription') throw new Error('This provider cannot refresh credentials')
-      const next = await refreshGrokCredential(oauth)
+      if (row.provider !== 'grok-subscription' && row.provider !== 'codex-subscription') throw new Error('This provider cannot refresh credentials')
+      const next = row.provider === 'codex-subscription' ? await refreshCodexCredential(oauth) : await refreshGrokCredential(oauth)
       const saved = await db.update(llmConnections).set({
         config: JSON.stringify(connectionConfigSchema.parse({ ...config, oauth: next })),
         generation: sql`${llmConnections.generation} + 1`, updatedAt: new Date(),
