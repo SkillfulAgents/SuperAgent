@@ -2,7 +2,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { ReactNode } from 'react'
 
 const state = vi.hoisted(() => ({
   data: {} as Record<string, unknown>,
@@ -21,19 +20,24 @@ vi.mock('@renderer/context/user-context', () => ({
 }))
 vi.mock('./settings-model-select', () => ({
   ModelPickerPopover: () => null,
-  SettingsModelSelect: ({ directApiOnly, model, llmProviderId }: { directApiOnly?: boolean; model?: string; llmProviderId?: string }) =>
-    <div data-testid={directApiOnly ? 'summarizer-selection' : 'default-selection'}>{llmProviderId}:{model}</div>,
+  SettingsModelSelect: ({ directApiOnly, model, llmProviderId, appDefault }: {
+    directApiOnly?: boolean; model?: string; llmProviderId?: string
+    appDefault?: { isOverride: boolean; onUseAppDefault: () => void; label?: string }
+  }) => (
+    <>
+      <div data-testid={directApiOnly ? 'summarizer-selection' : 'default-selection'}>{llmProviderId}:{model}</div>
+      {appDefault && <button type="button" disabled={!appDefault.isOverride} onClick={appDefault.onUseAppDefault}>{appDefault.label}</button>}
+    </>
+  ),
 }))
 vi.mock('./model-catalog/catalog-editor', () => ({ CatalogEditor: () => null }))
-// Keep tooltip text visible so the assertion targets the page's reason, not Radix timing.
-vi.mock('@renderer/components/ui/tooltip', () => {
-  const Wrapper = ({ children }: { children: ReactNode }) => <>{children}</>
-  return { TooltipProvider: Wrapper, Tooltip: Wrapper, TooltipTrigger: Wrapper, TooltipContent: Wrapper }
-})
 import { LlmConnectionsTab } from './llm-connections-tab'
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Radix Select needs these in jsdom.
+  HTMLElement.prototype.hasPointerCapture = () => false
+  HTMLElement.prototype.scrollIntoView = () => {}
   state.data = {
     connections: [{ id: 'api', name: 'API', userId: null, supportsDirectApi: true, canDelete: false, deletionBlockedReason: 'Change the app default first' }],
     defaultSelection: { llmProviderId: 'api', model: 'sonnet' },
@@ -52,7 +56,7 @@ describe('global helper settings', () => {
     render(<LlmConnectionsTab />)
     expect(screen.getByText('Using app default')).toBeVisible()
     expect(screen.getByTestId('summarizer-selection')).toHaveTextContent('api:sonnet')
-    expect(screen.queryByRole('button', { name: 'Use app default' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Use app default' })).toBeDisabled()
   })
 
   it('explains why an agent-only default requires its separate helper', async () => {
@@ -78,9 +82,10 @@ describe('global helper settings', () => {
     expect(screen.getByTestId('summarizer-selection')).not.toHaveTextContent('opus')
   })
 
-  it('shows the server deletion blocker verbatim', () => {
+  it('shows the server deletion blocker verbatim', async () => {
     render(<LlmConnectionsTab />)
-    expect(screen.getByRole('button', { name: 'Delete API' })).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Actions for API' }))
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled()
     expect(screen.getByText('Change the app default first')).toBeVisible()
   })
 
@@ -98,9 +103,11 @@ describe('generic API formats', () => {
     const user = userEvent.setup()
     render(<LlmConnectionsTab />)
     await user.click(screen.getByRole('button', { name: 'Add connection' }))
-    await user.selectOptions(screen.getByLabelText('Provider'), 'generic')
-    expect(screen.getByLabelText('API format')).toHaveValue('messages')
-    await user.selectOptions(screen.getByLabelText('API format'), 'responses')
+    await user.click(screen.getByRole('button', { name: /^Generic/ }))
+    expect(screen.getByRole('heading', { name: 'Set up Generic connection' })).toBeInTheDocument()
+    expect(screen.getByLabelText('API format')).toHaveTextContent('Anthropic Messages')
+    await user.click(screen.getByLabelText('API format'))
+    await user.click(screen.getByRole('option', { name: 'OpenAI Responses' }))
     await user.type(screen.getByLabelText('Base URL'), 'https://api.example.com/v1')
     await user.type(screen.getByLabelText('API key'), 'temporary-key')
     await user.click(screen.getByRole('button', { name: 'Save' }))

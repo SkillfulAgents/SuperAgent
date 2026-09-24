@@ -1,15 +1,27 @@
 import { ProviderUsage } from './provider-usage'
 import { SubscriptionSignIn } from './subscription-sign-in'
+import { CopyableValue, SetupPanel, SetupSteps } from './setup-steps'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import { withGlobalModelPricing } from '@shared/lib/llm-provider/global-pricing'
 import type { GlobalModelPricing } from '@shared/lib/llm-provider/global-pricing-schema'
-import { useCallback, useId, useState } from 'react'
-import { Plus, Pencil, Trash2 } from 'lucide-react'
+import { useCallback, useId, useState, type ReactNode } from 'react'
+import { ChevronDown, Globe, MoreHorizontal, Plus, Pencil, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
+import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { Switch } from '@renderer/components/ui/switch'
 import { Input } from '@renderer/components/ui/input'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/components/ui/collapsible'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@renderer/components/ui/dialog'
 import { useUser } from '@renderer/context/user-context'
 import { useModelSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useLlmConnections, useConnectionMutation } from '@renderer/hooks/use-llm-connections'
@@ -24,9 +36,14 @@ import type {
 } from '@shared/lib/llm-provider/connection-schema'
 import type { LlmProviderId } from '@shared/lib/llm-provider/provider-types'
 
-const selectClass = 'h-9 rounded-md border bg-background px-3 text-sm'
+const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+// Shared by connection rows and the Add connection row so the list keeps one row height.
+const CONNECTION_ROW = 'min-h-[3.75rem] py-3 px-4 flex items-center'
+const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
+// Radix Select items can't use '' as a value, so "Everyone" (a global connection, owner null) gets a sentinel.
+const EVERYONE = 'everyone'
 const providers = {
-  anthropic: 'Anthropic',
+  anthropic: 'Anthropic API',
   'claude-subscription': 'Claude Subscription',
   'grok-subscription': 'Grok Subscription',
   'codex-subscription': 'Codex Subscription',
@@ -34,13 +51,67 @@ const providers = {
   bedrock: 'AWS Bedrock',
   generic: 'Generic',
 }
+// Tints a bundled monochrome brand glyph (same mask approach as the Usage tab). `color` defaults to the
+// text color, so marks whose brand is black/white follow the theme.
+// provider-icons/ holds Simple Icons glyphs (CC0): anthropic/openrouter from 16.32.0, aws from 10.x (removed
+// later) recolored to AWS's squid-ink wordmark and orange smile. model-icons/anthropic.svg is the Claude spark.
+function BrandMark({ src, color = 'currentColor' }: { src: string; color?: string }) {
+  const url = `url("${import.meta.env.BASE_URL}${src}")`
+  return (
+    <span
+      className="h-5 w-5 text-foreground"
+      style={{ backgroundColor: color, maskImage: url, maskSize: 'contain', maskRepeat: 'no-repeat', maskPosition: 'center', WebkitMaskImage: url, WebkitMaskSize: 'contain', WebkitMaskRepeat: 'no-repeat', WebkitMaskPosition: 'center' }}
+      aria-hidden="true"
+    />
+  )
+}
+// Card logos in brand color. Anthropic, xAI and OpenAI marks are officially black/white, so they follow the theme.
+function ProviderLogo({ provider }: { provider: keyof typeof providers }) {
+  switch (provider) {
+    case 'anthropic':
+      return <BrandMark src="provider-icons/anthropic.svg" />
+    case 'claude-subscription':
+      return <BrandMark src="model-icons/anthropic.svg" color="#D97757" />
+    case 'grok-subscription':
+      return <ModelIcon icon="xai" className="h-5 w-5" />
+    case 'codex-subscription':
+      return <ModelIcon icon="openai" className="h-5 w-5" />
+    case 'bedrock':
+      return <img src={`${import.meta.env.BASE_URL}provider-icons/aws.svg`} alt="" aria-hidden="true" className="h-5 w-5 object-contain" />
+    case 'openrouter':
+      return <BrandMark src="provider-icons/openrouter.svg" color="#94A3B8" />
+    case 'generic':
+      return <Globe className="h-5 w-5 text-sky-500" aria-hidden="true" />
+  }
+}
+// Example names for the connection-name placeholder.
+const nameExamples: Record<keyof typeof providers, string> = {
+  anthropic: 'Team API key',
+  'claude-subscription': 'Personal Claude Max',
+  'grok-subscription': 'Personal Grok',
+  'codex-subscription': 'Work ChatGPT Pro',
+  openrouter: 'Shared OpenRouter',
+  bedrock: 'Bedrock us-east-1',
+  generic: 'Local vLLM server',
+}
+// Shown on the provider cards that open the Add connection flow.
+const providerDescriptions: Record<keyof typeof providers, string> = {
+  anthropic: 'Direct API access to Claude models with an API key.',
+  'claude-subscription': 'Use your Claude Pro or Max plan through a Claude Code setup token.',
+  'grok-subscription': 'Sign in with your xAI account to use your Grok subscription.',
+  'codex-subscription': 'Sign in with ChatGPT to use your Codex subscription.',
+  openrouter: 'Multi-model access through a single API key.',
+  bedrock: 'AWS managed Claude inference with IAM or API key credentials.',
+  generic: 'Any Anthropic- or OpenAI-compatible endpoint at a base URL.',
+}
 export function LlmConnectionsTab() {
   const { data, isLoading, error } = useLlmConnections()
   const { data: settings } = useModelSettings()
   const updateSettings = useUpdateSettings()
   const { user, isAdmin, isAuthMode } = useUser()
   const mutation = useConnectionMutation()
-  const [editing, setEditing] = useState<ConnectionInfo | 'new' | null>(null)
+  // 'pick' shows the provider cards; picking one opens the editor for a new connection with that provider.
+  const [editing, setEditing] = useState<ConnectionInfo | 'pick' | { provider: LlmProviderId } | null>(null)
   const defaultRequiresSummarizer = data?.connections.find(c => c.id === data.defaultSelection?.llmProviderId)?.supportsDirectApi === false
   const summarizerSelection = data?.summarizerSelection ?? (defaultRequiresSummarizer ? null : data?.defaultSelection)
   const changeDefault = (purpose: string, selection: ModelSelection | null) =>
@@ -57,137 +128,257 @@ export function LlmConnectionsTab() {
     )
   return (
     <div className="space-y-6">
-      {(!isAuthMode || isAdmin) && data && (
-        <div className="rounded-xl border divide-y">
-          <div className="flex items-center justify-between p-4 gap-3">
-            <span className="text-sm">App default</span>
-            <SettingsModelSelect
-              model={data.defaultSelection?.model}
-              llmProviderId={data.defaultSelection?.llmProviderId}
-              globalOnly
-              disabled={mutation.isPending}
-              includeEffort
-              effort={settings?.models?.agentEffort}
-              onEffortChange={(agentEffort) => updateSettings.mutate({ models: { agentEffort } })}
-              onModelChange={() => {}}
-              onSelectionChange={(s) => changeDefault('default', s)}
-            />
-          </div>
-          <div className="flex items-center justify-between p-4 gap-3">
-            <div>
-              <span className="text-sm">Summarizer</span>
-              {data.defaultSelection && !data.summarizerSelection && !defaultRequiresSummarizer && <p className="text-xs text-muted-foreground">Using app default</p>}
-              {defaultRequiresSummarizer && (
-                <p className="text-xs text-muted-foreground">This app default requires a separate API-capable summarizer.</p>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <SettingsModelSelect
-                model={summarizerSelection?.model}
-                llmProviderId={summarizerSelection?.llmProviderId}
-                globalOnly
-                directApiOnly
-                disabled={mutation.isPending}
-                onModelChange={() => {}}
-                onSelectionChange={(s) => changeDefault('summarizer', s)}
+      <div className="space-y-2">
+        <h3 className={SECTION_HEADING}>Provider connections</h3>
+        <div className={CARD_CLASS}>
+          {data?.connections.map((connection) => (
+            <div key={connection.id} className={cn(CONNECTION_ROW, 'gap-3')}>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-medium truncate">{connection.name}</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">
+                  {connection.userId ? (connection.ownerName ?? 'Personal') : 'Global'}
+                  {connection.accountLabel ? ` · ${connection.accountLabel}` : ''}
+                  {connection.managed ? ' · Managed by your Platform login' : ''}
+                  {!connection.isConfigured ? ' · Not configured' : ''}
+                </div>
+                <ProviderUsage connection={connection} />
+              </div>
+              <ConnectionRowMenu
+                connection={connection}
+                deleting={mutation.isPending}
+                onEdit={() => setEditing(connection)}
+                onDelete={() =>
+                  mutation.mutate(
+                    { path: `/${connection.id}`, method: 'DELETE' },
+                    { onError: (e) => toast.error(e.message) }
+                  )
+                }
               />
-              {data.summarizerSelection && (
-                <Button variant="ghost" size="sm" disabled={mutation.isPending || defaultRequiresSummarizer} onClick={() => changeDefault('summarizer', null)}>
-                  Use app default
-                </Button>
-              )}
             </div>
-          </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => setEditing('pick')}
+            className={cn(CONNECTION_ROW, 'w-full gap-2 text-xs font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors focus-visible:outline-none focus-visible:bg-muted/50')}
+          >
+            <Plus className="h-4 w-4" />
+            Add connection
+          </button>
         </div>
-      )}
-      {(!isAuthMode || isAdmin) && (
-        <div className="flex items-center justify-between gap-3">
-          <label htmlFor="llm-tool-search" className="text-sm">
-            Tool search
-          </label>
-          <Switch
-            id="llm-tool-search"
-            checked={settings?.enableToolSearch !== false}
-            onCheckedChange={(enableToolSearch) => updateSettings.mutate({ enableToolSearch })}
-          />
-        </div>
-      )}
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          Connect accounts and choose which one each session uses.
-        </p>
-        <Button size="sm" onClick={() => setEditing('new')}>
-          <Plus className="mr-1 h-4 w-4" />
-          Add connection
-        </Button>
+        <Dialog open={editing !== null} onOpenChange={(open) => { if (!open) setEditing(null) }}>
+          {/* Neither step has a description; say so rather than leave a dangling aria-describedby. */}
+          <DialogContent className="gap-8 p-10 sm:max-w-2xl" aria-describedby={undefined}>
+            {editing === 'pick' && <ProviderPicker onPick={(provider) => setEditing({ provider })} />}
+            {editing && editing !== 'pick' && (
+              <ConnectionEditor
+                key={'id' in editing ? editing.id : `new:${editing.provider}`}
+                existing={'id' in editing ? editing : undefined}
+                initialProvider={'id' in editing ? undefined : editing.provider}
+                userId={isAuthMode ? (user?.id ?? null) : null}
+                admin={!isAuthMode || isAdmin}
+                modelPricing={settings?.modelPricing ?? {}}
+                catalogFor={(provider) =>
+                  settings?.llmProviderStatus.find((p) => p.id === provider)?.builtinCatalog ?? []
+                }
+                onClose={() => setEditing(null)}
+              />
+            )}
+          </DialogContent>
+        </Dialog>
       </div>
-      {data?.connections.map((connection) => (
-        <div key={connection.id} className="rounded-xl border p-4 flex items-start gap-3">
-          <div className="flex-1 min-w-0">
-            <div className="font-medium text-sm">{connection.name}</div>
-            <div className="text-xs text-muted-foreground">
-              {connection.userId ? (connection.ownerName ?? 'Personal') : 'Global'}
-              {connection.accountLabel ? ` · ${connection.accountLabel}` : ''}
-              {connection.managed ? ' · Managed by your Platform login' : ''}
-              {!connection.isConfigured ? ' · Not configured' : ''}
+      {(!isAuthMode || isAdmin) && (
+        <div className="space-y-2">
+          <h3 className={SECTION_HEADING}>Global settings</h3>
+          <div className={CARD_CLASS}>
+            {data && (
+              <>
+                <div className="py-3 px-4 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <span className="text-xs font-medium">App default</span>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">Used by every agent that doesn&apos;t set its own model.</p>
+                  </div>
+                  <SettingsModelSelect
+                    model={data.defaultSelection?.model}
+                    llmProviderId={data.defaultSelection?.llmProviderId}
+                    globalOnly
+                    disabled={mutation.isPending}
+                    includeEffort
+                    effort={settings?.models?.agentEffort}
+                    onEffortChange={(agentEffort) => updateSettings.mutate({ models: { agentEffort } })}
+                    onModelChange={() => {}}
+                    onSelectionChange={(s) => changeDefault('default', s)}
+                  />
+                </div>
+                <div className="py-3 px-4 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <span className="text-xs font-medium">Summarizer</span>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">Writes session titles and notification summaries.</p>
+                    {data.defaultSelection && !data.summarizerSelection && !defaultRequiresSummarizer && <p className="text-[11px] text-muted-foreground mt-0.5">Using app default</p>}
+                    {defaultRequiresSummarizer && (
+                      <p className="text-[11px] text-muted-foreground mt-0.5">This app default requires a separate API-capable summarizer.</p>
+                    )}
+                  </div>
+                  <SettingsModelSelect
+                    model={summarizerSelection?.model}
+                    llmProviderId={summarizerSelection?.llmProviderId}
+                    globalOnly
+                    directApiOnly
+                    disabled={mutation.isPending}
+                    onModelChange={() => {}}
+                    onSelectionChange={(s) => changeDefault('summarizer', s)}
+                    appDefault={{
+                      // An app default that can't summarize needs its own summarizer, so there's nothing to fall back to.
+                      isOverride: !!data.summarizerSelection && !defaultRequiresSummarizer,
+                      onUseAppDefault: () => changeDefault('summarizer', null),
+                      label: 'Use app default',
+                      hideSettingsLink: true,
+                    }}
+                  />
+                </div>
+              </>
+            )}
+            <div className="py-3 px-4 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <label htmlFor="llm-tool-search" className="text-xs font-medium">
+                  Tool search
+                </label>
+                <p className="text-[11px] text-muted-foreground mt-0.5">Load tools only when needed to save context.</p>
+              </div>
+              <Switch
+                id="llm-tool-search"
+                checked={settings?.enableToolSearch !== false}
+                onCheckedChange={(enableToolSearch) => updateSettings.mutate({ enableToolSearch })}
+              />
             </div>
-            <ProviderUsage connection={connection} />
           </div>
-          {connection.canManage && (
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={`Edit ${connection.name}`}
-              onClick={() => setEditing(connection)}
-            >
-              <Pencil className="h-4 w-4" />
-            </Button>
-          )}
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="inline-flex" tabIndex={!connection.canDelete ? 0 : undefined}>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Delete ${connection.name}`}
-                    disabled={!connection.canDelete || mutation.isPending}
-                    onClick={() =>
-                      mutation.mutate(
-                        { path: `/${connection.id}`, method: 'DELETE' },
-                        { onError: (e) => toast.error(e.message) }
-                      )
-                    }
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-64">
-                {connection.deletionBlockedReason ?? (mutation.isPending ? 'Wait for the current change to finish.' : 'Delete provider')}
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
         </div>
-      ))}
-      {editing && (
-        <ConnectionEditor
-          key={editing === 'new' ? 'new' : editing.id}
-          existing={editing === 'new' ? undefined : editing}
-          userId={isAuthMode ? (user?.id ?? null) : null}
-          admin={!isAuthMode || isAdmin}
-          modelPricing={settings?.modelPricing ?? {}}
-          catalogFor={(provider) =>
-            settings?.llmProviderStatus.find((p) => p.id === provider)?.builtinCatalog ?? []
-          }
-          onClose={() => setEditing(null)}
-        />
       )}
     </div>
   )
 }
+function ConnectionRowMenu({
+  connection,
+  deleting,
+  onEdit,
+  onDelete,
+}: {
+  connection: ConnectionInfo
+  deleting: boolean
+  onEdit: () => void
+  onDelete: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const deleteDisabled = !connection.canDelete || deleting
+  const blockedReason = connection.deletionBlockedReason ?? (deleting ? 'Wait for the current change to finish.' : undefined)
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+          aria-label={`Actions for ${connection.name}`}
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-56 p-1">
+        {connection.canManage && (
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false)
+              onEdit()
+            }}
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted text-left"
+          >
+            <Pencil className="h-4 w-4" />
+            Edit
+          </button>
+        )}
+        <button
+          type="button"
+          disabled={deleteDisabled}
+          onClick={() => {
+            setOpen(false)
+            onDelete()
+          }}
+          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted text-left text-destructive disabled:pointer-events-none disabled:opacity-50"
+        >
+          <Trash2 className="h-4 w-4" />
+          Delete
+        </button>
+        {deleteDisabled && blockedReason && (
+          <p className="px-2 pb-1.5 pt-0.5 text-[11px] text-muted-foreground">{blockedReason}</p>
+        )}
+      </PopoverContent>
+    </Popover>
+  )
+}
+// A form field with its label beside the control rather than above it.
+function FieldRow({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center gap-4">
+      <label htmlFor={htmlFor} className="w-28 shrink-0 text-sm">{label}</label>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  )
+}
+function ClaudeSetupTokenSteps() {
+  return (
+    <SetupPanel
+      title="Setup instructions"
+      data-testid="claude-setup-token-steps"
+      notes={[
+        'The token is checked on your first agent message. If it expires, run the command again and edit this connection.',
+        'Pick a separate API-capable summarizer if this becomes the app default.',
+      ]}
+    >
+      <SetupSteps
+        steps={[
+          <>
+            <span>In a terminal with Claude Code installed, run:</span>
+            <CopyableValue value="claude setup-token" label="Copy command" />
+          </>,
+          'Sign in with your Claude subscription in the browser window that opens.',
+          'Paste the token it prints into Subscription token above.',
+        ]}
+      />
+    </SetupPanel>
+  )
+}
+function ProviderPicker({ onPick }: { onPick: (provider: LlmProviderId) => void }) {
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Select a provider to add</DialogTitle>
+      </DialogHeader>
+      <div className="grid gap-4 sm:grid-cols-2" data-testid="llm-provider-picker">
+        {(Object.keys(providers) as (keyof typeof providers)[]).map((id) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => onPick(id)}
+            className="flex items-start gap-4 rounded-xl border p-5 text-left transition-colors hover:border-muted-foreground/50 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {/* The AWS logo's wordmark is near-black, so its tile stays light in dark mode. */}
+            <span className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-background', id === 'bedrock' && 'dark:bg-white')}>
+              <ProviderLogo provider={id} />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-medium">{providers[id]}</span>
+              <span className="block text-xs leading-relaxed text-muted-foreground mt-1">{providerDescriptions[id]}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </>
+  )
+}
 function ConnectionEditor({
   existing,
+  initialProvider,
   userId,
   admin,
   catalogFor,
@@ -195,6 +386,7 @@ function ConnectionEditor({
   onClose,
 }: {
   existing?: ConnectionInfo
+  initialProvider?: LlmProviderId
   userId: string | null
   admin: boolean
   modelPricing: GlobalModelPricing
@@ -204,7 +396,8 @@ function ConnectionEditor({
   const formId = useId()
   const updateSettings = useUpdateSettings()
   const mutation = useConnectionMutation()
-  const [provider, setProvider] = useState<LlmProviderId>(existing?.provider ?? 'anthropic')
+  // Fixed for the editor's lifetime: a new connection's provider is chosen on the picker step.
+  const provider: LlmProviderId = existing?.provider ?? initialProvider ?? 'anthropic'
   const [name, setName] = useState(existing?.name ?? '')
   const [owner, setOwner] = useState<string | null>(existing?.userId ?? (admin ? null : userId))
   const [apiKey, setApiKey] = useState('')
@@ -225,6 +418,21 @@ function ConnectionEditor({
   )
   const [envName, setEnvName] = useState('')
   const [envValue, setEnvValue] = useState('')
+  // Subscriptions check their token on first use instead; managed connections have nothing to enter.
+  const canValidate = !existing?.managed && provider !== 'claude-subscription' && provider !== 'grok-subscription' && provider !== 'codex-subscription'
+  // A new connection has nothing to check until a credential is entered; a saved one validates its stored credential.
+  const hasCredentialToValidate = !!existing || apiKey.trim() !== '' || (provider === 'bedrock' && accessKey.trim() !== '' && secretKey.trim() !== '')
+  // null marks a removed variable (sent so the server deletes it); undefined is a saved value left unchanged.
+  const envEntries = Object.entries(runtimeEnv).filter(([, value]) => value !== null)
+  const addEnvVar = () => {
+    const key = envName.trim()
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return toast.error('Enter a valid environment variable name')
+    if (isReservedEnvVar(key)) return toast.error(`${key} is reserved for the runtime`)
+    if (Object.hasOwn(runtimeEnv, key) && runtimeEnv[key] !== null) return toast.error('That variable already exists')
+    setRuntimeEnv(previous => ({ ...previous, [key]: envValue }))
+    setEnvName('')
+    setEnvValue('')
+  }
   const [region, setRegion] = useState(existing?.region ?? 'us-east-1')
   const [overrides, setOverrides] = useState<CatalogOverrideEntry[]>(existing?.modelOverrides ?? [])
   const catalog = withGlobalModelPricing(mergeCatalog(catalogFor(provider), overrides), modelPricing)
@@ -279,109 +487,96 @@ function ConnectionEditor({
   return (
     <form
       data-testid="llm-connection-editor"
-      className="rounded-xl border p-4 space-y-4"
+      className="space-y-6"
       onSubmit={(e) => {
         e.preventDefault()
         void save()
       }}
     >
-      <h3 className="font-medium">{existing ? `Edit ${existing.name}` : 'Add connection'}</h3>
-      <label htmlFor={`${formId}-name`} className="block text-sm">
-        Name
+      <DialogHeader>
+        <DialogTitle>{existing ? `Edit ${existing.name}` : `Set up ${providers[provider as keyof typeof providers] ?? 'provider'} connection`}</DialogTitle>
+      </DialogHeader>
+      <label htmlFor={`${formId}-name`} className="grid gap-2 text-sm">
+        Connection name
         <Input
           id={`${formId}-name`}
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Connection name"
+          placeholder={`Name this connection, e.g. ${nameExamples[provider as keyof typeof providers] ?? 'Work account'}`}
         />
       </label>
-      {!existing && (
-        <div className="flex gap-3">
-          <label className="grid gap-1 text-sm">
-            Provider
-            <select
-              className={selectClass}
-              value={provider}
-              onChange={(e) => {
-                const next = e.target.value as LlmProviderId
-                setProvider(next)
-                setOAuthLoginId(undefined)
-                setAccountLabel(undefined)
-                setApiKey('')
-                setRuntimeEnv({})
-                setBrowserModel('')
-                setDashboardModel('')
-                setOverrides([])
-              }}
-            >
-              {Object.entries(providers).map(([id, label]) => (
-                <option value={id} key={id}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          {userId && admin && (
-            <label className="grid gap-1 text-sm">
-              Available to
-              <select
-                className={selectClass}
-                value={owner ?? ''}
-                onChange={(e) => { setOwner(e.target.value || null); setOAuthLoginId(undefined); setAccountLabel(undefined) }}
-              >
-                <option value="">Everyone</option>
-                <option value={userId}>Only me</option>
-              </select>
-            </label>
-          )}
-        </div>
+      {!existing && userId && admin && (
+        <FieldRow label="Available to" htmlFor={`${formId}-owner`}>
+          <Select
+            value={owner ?? EVERYONE}
+            onValueChange={(value) => { setOwner(value === EVERYONE ? null : value); setOAuthLoginId(undefined); setAccountLabel(undefined) }}
+          >
+            <SelectTrigger id={`${formId}-owner`}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={EVERYONE}>Everyone</SelectItem>
+              <SelectItem value={userId}>Only me</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldRow>
       )}
-      {provider === 'claude-subscription' && (
-        <div className="rounded-lg bg-muted p-3 text-sm space-y-2">
-          <p>In a terminal with Claude Code installed, run:</p>
-          <pre className="select-all rounded bg-background px-3 py-2"><code>claude setup-token</code></pre>
-          <p>Sign in with your Claude subscription in the browser, then paste the token printed in your terminal below.</p>
-          <p className="text-muted-foreground">Authentication is checked on your first agent message. To replace an expired or revoked token, run the command again and edit this provider.</p>
-          <p className="text-muted-foreground">App defaults using this provider need a separate API-capable summarizer. Displayed costs are API-equivalent estimates.</p>
-        </div>
-      )}
-      {(provider === 'grok-subscription' || provider === 'codex-subscription') && <SubscriptionSignIn provider={provider === 'codex-subscription' ? 'codex' : 'grok'} key={`${provider}:${owner ?? 'global'}`} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} onConnected={connected} />}
       {provider !== 'platform' && provider !== 'grok-subscription' && provider !== 'codex-subscription' && (
-        <label htmlFor={`${formId}-apiKey`} className="block text-sm">
-          {provider === 'claude-subscription' ? 'Subscription token' : 'API key'}
-          <Input
-            id={`${formId}-apiKey`}
-            type="password"
-            autoComplete="new-password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={existing ? 'Leave blank to keep current credential' : provider === 'claude-subscription' ? 'Paste setup-token output' : 'API key'}
-            required={provider === 'claude-subscription' && !existing}
-          />
-        </label>
+        <div className="grid gap-2 text-sm">
+          <label htmlFor={`${formId}-apiKey`}>{provider === 'claude-subscription' ? 'Subscription token' : 'API key'}</label>
+          <div className="flex gap-2">
+            <Input
+              id={`${formId}-apiKey`}
+              className="flex-1"
+              type="password"
+              autoComplete="new-password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={existing ? 'Leave blank to keep current credential' : provider === 'claude-subscription' ? 'Paste setup-token output' : 'API key'}
+              required={provider === 'claude-subscription' && !existing}
+            />
+            {canValidate && (
+              <Button type="button" variant="outline" disabled={mutation.isPending || !hasCredentialToValidate} onClick={() => void save(true)}>
+                Validate
+              </Button>
+            )}
+          </div>
+        </div>
       )}
+      {provider === 'claude-subscription' && <ClaudeSetupTokenSteps />}
+      {(provider === 'grok-subscription' || provider === 'codex-subscription') && <SubscriptionSignIn provider={provider === 'codex-subscription' ? 'codex' : 'grok'} key={`${provider}:${owner ?? 'global'}`} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} onConnected={connected} />}
       {provider === 'generic' && (
-        <label className="grid gap-1 text-sm">
-          API format
-          <select className={selectClass} value={apiFormat} onChange={e => setApiFormat(e.target.value as typeof apiFormat)}>
-            <option value="messages">Anthropic Messages</option>
-            <option value="chat-completions">OpenAI Chat Completions</option>
-            <option value="responses">OpenAI Responses</option>
-          </select>
-        </label>
+        <div className="grid gap-2 text-sm">
+          <label htmlFor={`${formId}-apiFormat`}>API format</label>
+          <Select value={apiFormat} onValueChange={value => setApiFormat(value as typeof apiFormat)}>
+            <SelectTrigger id={`${formId}-apiFormat`}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="messages">Anthropic Messages</SelectItem>
+              <SelectItem value="chat-completions">OpenAI Chat Completions</SelectItem>
+              <SelectItem value="responses">OpenAI Responses</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       )}
       {provider === 'generic' && apiFormat === 'chat-completions' && (
-        <label className="grid gap-1 text-sm">
-          Token limit parameter
-          <select className={selectClass} value={chatTokenLimitField} onChange={e => setChatTokenLimitField(e.target.value as typeof chatTokenLimitField)}>
-            <option value="max_completion_tokens">max_completion_tokens (OpenAI)</option>
-            <option value="max_tokens">max_tokens (legacy compatible endpoints)</option>
-          </select>
+        <div className="grid gap-2 text-sm">
+          <label htmlFor={`${formId}-tokenLimit`}>Token limit parameter</label>
+          <Select value={chatTokenLimitField} onValueChange={value => setChatTokenLimitField(value as typeof chatTokenLimitField)}>
+            <SelectTrigger id={`${formId}-tokenLimit`}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="max_completion_tokens">max_completion_tokens (OpenAI)</SelectItem>
+              <SelectItem value="max_tokens">max_tokens (legacy compatible endpoints)</SelectItem>
+            </SelectContent>
+          </Select>
           <span className="text-muted-foreground">Use max_tokens if your endpoint does not accept max_completion_tokens.</span>
-        </label>
+        </div>
       )}
       {provider === 'generic' && (
-        <label htmlFor={`${formId}-baseUrl`} className="block text-sm">
+        <label htmlFor={`${formId}-baseUrl`} className="grid gap-2 text-sm">
           Base URL
           <Input
             id={`${formId}-baseUrl`}
@@ -394,7 +589,7 @@ function ConnectionEditor({
       )}
       {provider === 'bedrock' && (
         <>
-          <label htmlFor={`${formId}-region`} className="block text-sm">
+          <label htmlFor={`${formId}-region`} className="grid gap-2 text-sm">
             AWS region
             <Input
               id={`${formId}-region`}
@@ -402,7 +597,7 @@ function ConnectionEditor({
               onChange={(e) => setRegion(e.target.value)}
             />
           </label>
-          <label htmlFor={`${formId}-accessKey`} className="block text-sm">
+          <label htmlFor={`${formId}-accessKey`} className="grid gap-2 text-sm">
             AWS access key (optional)
             <Input
               id={`${formId}-accessKey`}
@@ -410,7 +605,7 @@ function ConnectionEditor({
               onChange={(e) => setAccessKey(e.target.value)}
             />
           </label>
-          <label htmlFor={`${formId}-secretKey`} className="block text-sm">
+          <label htmlFor={`${formId}-secretKey`} className="grid gap-2 text-sm">
             AWS secret key
             <Input
               id={`${formId}-secretKey`}
@@ -421,95 +616,117 @@ function ConnectionEditor({
           </label>
         </>
       )}
-      <details className="rounded-lg border p-3" data-testid="connection-env-editor">
-        <summary className="cursor-pointer text-sm font-medium">Custom environment variables</summary>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Apply only when this connection is selected. Saved values are hidden; leave them unchanged to keep them.
-        </p>
-        <div className="mt-3 space-y-2">
-          {Object.entries(runtimeEnv).filter(([, value]) => value !== null).map(([key, value]) => (
-            <div key={key} className="flex items-center gap-2" data-testid="connection-env-row">
-              <span className="min-w-0 flex-1 truncate font-mono text-xs" title={key}>{key}</span>
-              <Input
-                aria-label={`Value for ${key}`}
-                type="password"
-                autoComplete="new-password"
-                className="flex-1 font-mono text-sm"
-                value={value ?? ''}
-                placeholder={value === undefined ? 'Saved value (unchanged)' : 'Value'}
-                onChange={e => setRuntimeEnv(previous => ({ ...previous, [key]: e.target.value }))}
+      <div className="grid gap-2 text-sm">
+        Model Defaults
+        <div className="overflow-hidden rounded-lg border divide-y divide-border/50" data-testid="connection-default-models">
+          {([
+            { label: 'Browser model', description: 'Runs web browsing for agents.', model: browserModel, onPick: setBrowserModel },
+            // Stored as the dashboard model; users know dashboards as agentic apps.
+            { label: 'Agentic app model', description: 'Builds and edits agentic apps.', model: dashboardModel, onPick: setDashboardModel },
+          ]).map(({ label, description, model, onPick }) => (
+            <div key={label} className="flex items-center justify-between gap-3 px-4 py-3">
+              <div className="min-w-0">
+                <div className="text-xs font-medium">{label}</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">{description}</div>
+              </div>
+              <ModelPickerPopover
+                catalog={catalog}
+                model={model}
+                onPick={onPick}
+                emptyLabel="Use session model"
               />
-              <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${key}`}
-                onClick={() => setRuntimeEnv(previous => ({ ...previous, [key]: null }))}>
-                <Trash2 className="h-4 w-4" />
-              </Button>
             </div>
           ))}
-          <div className="flex gap-2">
-            <Input aria-label="Variable name" placeholder="ANTHROPIC_BASE_URL" className="font-mono text-sm"
-              value={envName} onChange={e => setEnvName(e.target.value)} />
-            <Input aria-label="Variable value" type="password" autoComplete="new-password" placeholder="Value"
-              value={envValue} onChange={e => setEnvValue(e.target.value)} />
-            <Button type="button" variant="outline" onClick={() => {
-              const key = envName.trim()
-              if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return toast.error('Enter a valid environment variable name')
-              if (isReservedEnvVar(key)) return toast.error(`${key} is reserved for the runtime`)
-              if (Object.hasOwn(runtimeEnv, key) && runtimeEnv[key] !== null) return toast.error('That variable already exists')
-              setRuntimeEnv(previous => ({ ...previous, [key]: envValue }))
-              setEnvName('')
-              setEnvValue('')
-            }}>Add variable</Button>
+        </div>
+      </div>
+      <Collapsible className="grid gap-2 text-sm" data-testid="connection-advanced">
+        <CollapsibleTrigger
+          data-testid="connection-advanced-trigger"
+          className="flex w-fit items-center gap-1.5 text-left text-muted-foreground transition-colors hover:text-foreground"
+        >
+          Advanced Settings
+          <ChevronDown className="h-4 w-4 shrink-0 opacity-70 transition-transform [[data-state=closed]>&]:rotate-[-90deg]" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="overflow-hidden rounded-lg border divide-y divide-border/50">
+          <div data-testid="connection-env-editor">
+            <div className="flex flex-col px-4 py-3">
+              <span className="flex items-center gap-2 text-xs font-medium">
+                Environment variables
+                {envEntries.length > 0 && (
+                  <span className="rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground">{envEntries.length}</span>
+                )}
+              </span>
+              <span className="text-[11px] text-muted-foreground">Set only when this connection is used. Saved values stay hidden.</span>
+            </div>
+            <div className="space-y-3 px-4 pb-4">
+              {envEntries.length > 0 && (
+                <div className="divide-y divide-border/50 rounded-md border">
+                  {envEntries.map(([key, value]) => (
+                    <div key={key} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2 py-1.5 pl-3 pr-1.5" data-testid="connection-env-row">
+                      <span className="truncate font-mono text-xs" title={key}>{key}</span>
+                      <Input
+                        aria-label={`Value for ${key}`}
+                        type="password"
+                        autoComplete="new-password"
+                        className="h-8 font-mono text-xs"
+                        value={value ?? ''}
+                        placeholder={value === undefined ? 'Saved value (unchanged)' : 'Value'}
+                        onChange={e => setRuntimeEnv(previous => ({ ...previous, [key]: e.target.value }))}
+                      />
+                      <Button type="button" variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" aria-label={`Remove ${key}`}
+                        onClick={() => setRuntimeEnv(previous => ({ ...previous, [key]: null }))}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2">
+                <Input aria-label="Variable name" placeholder="NAME" className="h-8 font-mono text-xs"
+                  value={envName} onChange={e => setEnvName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addEnvVar() } }} />
+                <Input aria-label="Variable value" type="password" autoComplete="new-password" placeholder="Value" className="h-8 font-mono text-xs"
+                  value={envValue} onChange={e => setEnvValue(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addEnvVar() } }} />
+                <Button type="button" variant="outline" size="sm" className="h-8" aria-label="Add variable" onClick={addEnvVar}>
+                  <Plus className="h-3.5 w-3.5" />
+                  Add
+                </Button>
+              </div>
+            </div>
           </div>
-        </div>
-      </details>
-      {provider !== 'platform' && (
-        <CatalogEditor
-          providerId={provider}
-          llmProviderId={existing?.id}
-          supportsModelSearch={!!existing && (provider === 'openrouter' || provider === 'generic' || provider === 'grok-subscription' || provider === 'codex-subscription')}
-          builtinCatalog={catalogFor(provider)}
-          effectiveCatalog={catalog}
-          modelCatalog={{ [provider]: { overrides } }}
-          modelPricing={modelPricing}
-          canEditPricing={admin}
-          disabled={mutation.isPending || updateSettings.isPending}
-          onChange={({ modelCatalog, modelPricing: prices }) => {
-            if (modelCatalog) setOverrides(modelCatalog[provider]?.overrides ?? [])
-            if (admin && prices) updateSettings.mutate({ modelPricing: prices }, {
-              onError: (error) => toast.error(error.error ?? 'Could not update global model pricing'),
-            })
-          }}
-        />
-      )}
-      {(['Browser', 'Dashboard'] as const).map((label) => (
-        <div key={label} className="flex items-center justify-between gap-2 text-sm">
-          {label} model
-          <ModelPickerPopover
-            catalog={catalog}
-            model={label === 'Browser' ? browserModel : dashboardModel}
-            onPick={label === 'Browser' ? setBrowserModel : setDashboardModel}
-            emptyLabel="Use session model"
-          />
-        </div>
-      ))}
-      <div className="flex gap-2">
-        <Button type="submit" disabled={mutation.isPending || ((provider === 'grok-subscription' || provider === 'codex-subscription') && !oauthLoginId && !existing?.isConfigured)}>
-          Save
-        </Button>
-        {!existing?.managed && provider !== 'claude-subscription' && provider !== 'grok-subscription' && provider !== 'codex-subscription' && (
-          <Button
-            type="button"
-            variant="outline"
-            disabled={mutation.isPending}
-            onClick={() => void save(true)}
-          >
-            Validate
-          </Button>
-        )}
+          {provider !== 'platform' && (
+            <CatalogEditor
+              providerId={provider}
+              llmProviderId={existing?.id}
+              supportsModelSearch={!!existing && (provider === 'openrouter' || provider === 'generic' || provider === 'grok-subscription' || provider === 'codex-subscription')}
+              builtinCatalog={catalogFor(provider)}
+              effectiveCatalog={catalog}
+              modelCatalog={{ [provider]: { overrides } }}
+              modelPricing={modelPricing}
+              canEditPricing={admin}
+              disabled={mutation.isPending || updateSettings.isPending}
+              pricingNote={provider === 'claude-subscription' || provider === 'grok-subscription' || provider === 'codex-subscription'
+                ? 'Costs shown for this subscription are API-equivalent estimates, not what you are charged.'
+                : undefined}
+              onChange={({ modelCatalog, modelPricing: prices }) => {
+                if (modelCatalog) setOverrides(modelCatalog[provider]?.overrides ?? [])
+                if (admin && prices) updateSettings.mutate({ modelPricing: prices }, {
+                  onError: (error) => toast.error(error.error ?? 'Could not update global model pricing'),
+                })
+              }}
+            />
+          )}
+        </CollapsibleContent>
+      </Collapsible>
+      <DialogFooter className="pt-2">
         <Button type="button" variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-      </div>
+        <Button type="submit" disabled={mutation.isPending || ((provider === 'grok-subscription' || provider === 'codex-subscription') && !oauthLoginId && !existing?.isConfigured)}>
+          Save
+        </Button>
+      </DialogFooter>
     </form>
   )
 }

@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Copy, Loader2 } from 'lucide-react'
-import { toast } from 'sonner'
-import { copyTextToClipboard } from '@renderer/lib/clipboard'
+import { CheckCircle2, ExternalLink, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { apiFetch } from '@renderer/lib/api'
+import { CopyableValue, SetupPanel, SetupSteps } from './setup-steps'
 
 export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, accountLabel, onConnected }: {
   provider?: 'grok' | 'codex'
@@ -51,31 +50,68 @@ export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, ac
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not start sign-in') }
     finally { setBusy(false) }
   }
-  return <div className="rounded-lg bg-muted p-3 text-sm space-y-2">
-    <p>{provider === 'codex' ? 'Sign in with the ChatGPT account that has your Codex subscription. Device code authentication must be enabled in your ChatGPT settings.' : 'Use your eligible Grok subscription. Choose the X or xAI account that has your subscription.'}</p>
-    {provider === 'codex' && <p className="text-muted-foreground">App defaults using this provider need a separate API-capable summarizer. Fast mode uses more subscription credits.</p>}
-    {accountLabel && <p>Signed in as <strong>{accountLabel}</strong></p>}
-    {login && <div className="space-y-2">
-      <div className="flex items-center gap-1">
-        <p>Code: <strong className="font-mono select-all">{login.code}</strong></p>
-        <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label="Copy sign-in code" title="Copy sign-in code" onClick={() => {
-          void copyTextToClipboard(login.code)
-            .then(() => toast.success('Sign-in code copied'))
-            .catch(() => toast.error('Could not copy code. Select and copy it manually.'))
-        }}>
-          <Copy className="h-3.5 w-3.5" />
+  const account = provider === 'codex' ? 'ChatGPT account' : 'X or xAI account'
+  const notes = [
+    provider === 'codex' && 'Pick a separate API-capable summarizer if this becomes the app default. Fast mode uses more subscription credits.',
+  ]
+  const signInButton = (
+    <Button type="button" className="mt-2 w-fit" disabled={busy} onClick={() => void start()}>
+      {busy ? 'Starting sign-in…' : `Sign in with ${name}`}
+    </Button>
+  )
+  return <SetupPanel notes={notes}>
+    {login ? (
+      <SetupSteps steps={[
+        <>
+          <span>Copy your sign-in code:</span>
+          <CopyableValue value={login.code} label="Copy sign-in code" large />
+        </>,
+        <>
+          <span>Open the {name} sign-in page and enter the code.</span>
+          <a
+            className="mt-2 inline-flex w-fit items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent"
+            href={login.url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open {name} sign-in
+            <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+          </a>
+        </>,
+        <span key="status" className="flex flex-wrap items-center justify-between gap-2">
+          <span role="status" className="flex items-center gap-2 text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            Waiting for you to finish signing in…
+          </span>
+          <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void start()}>
+            {busy ? 'Starting sign-in…' : 'Get a new code'}
+          </Button>
+        </span>,
+      ]} />
+    ) : accountLabel ? (
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="flex min-w-0 items-center gap-2">
+          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-500" aria-hidden="true" />
+          <span className="truncate">Signed in as <span className="font-medium">{accountLabel}</span></span>
+        </span>
+        <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void start()}>
+          {busy ? 'Starting sign-in…' : `Reconnect ${name}`}
         </Button>
       </div>
-      <a className="underline" href={login.url} target="_blank" rel="noreferrer">Open {name} sign-in</a>
-      <p role="status" className="flex items-center gap-2 text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-        Waiting for sign-in…
-      </p>
-    </div>}
-    <Button type="button" variant="outline" disabled={busy} onClick={() => void start()}>
-      {busy ? 'Starting sign-in…' : accountLabel ? `Reconnect ${name}` : login ? 'Get a new code' : `Sign in with ${name}`}
-    </Button>
+    ) : provider === 'codex' ? (
+      <SetupSteps steps={[
+        'Turn on device code authentication in your ChatGPT settings.',
+        <>
+          <span>Sign in with the {account} that has your {name} subscription.</span>
+          {signInButton}
+        </>,
+      ]} />
+    ) : (
+      <div className="space-y-3">
+        <p>Sign in with the {account} that has your {name} subscription.</p>
+        {signInButton}
+      </div>
+    )}
     {error && <p role="alert" className="text-destructive">{error}</p>}
-    <p className="text-muted-foreground">Displayed costs are API-equivalent estimates, not subscription charges.</p>
-  </div>
+  </SetupPanel>
 }

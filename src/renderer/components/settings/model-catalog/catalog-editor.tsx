@@ -2,7 +2,8 @@ import { findGlobalPrice, withGlobalModelPricing } from '@shared/lib/llm-provide
 import { canonicalPricingId } from '@shared/lib/llm-provider/model-pricing-ids'
 import type { GlobalModelPricing, GlobalModelPricingPatch } from '@shared/lib/llm-provider/global-pricing-schema'
 import { useMemo, useState } from 'react'
-import { ChevronDown, Plus, Settings, Trash2 } from 'lucide-react'
+import { ChevronDown, Info, Plus, Settings, Trash2 } from 'lucide-react'
+import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import {
@@ -126,6 +127,8 @@ export interface CatalogEditorProps {
   canEditPricing?: boolean
   supportsModelSearch?: boolean
   disabled?: boolean
+  /** Callout at the top of the expanded catalog, e.g. how prices apply to a subscription. */
+  pricingNote?: string
   onChange: (change: CatalogChange) => void
 }
 
@@ -150,6 +153,7 @@ export function CatalogEditor({
   canEditPricing = true,
   supportsModelSearch = false,
   disabled,
+  pricingNote,
   onChange,
 }: CatalogEditorProps) {
   const overrides = useMemo(
@@ -267,7 +271,7 @@ export function CatalogEditor({
   }
 
   return (
-    <div className="-mx-4 -mb-6 border-t border-border/50" data-testid="model-catalog-editor">
+    <div data-testid="model-catalog-editor">
       <Collapsible>
         <CollapsibleTrigger
           data-testid="catalog-disclosure-trigger"
@@ -283,6 +287,14 @@ export function CatalogEditor({
         </CollapsibleTrigger>
 
         <CollapsibleContent>
+          {pricingNote && (
+            <div className="px-4 pb-3">
+              <Alert role="note" className="py-2 text-xs" data-testid="catalog-pricing-note">
+                <Info className="h-3.5 w-3.5" />
+                <AlertDescription className="text-xs text-muted-foreground">{pricingNote}</AlertDescription>
+              </Alert>
+            </div>
+          )}
           <div className="flex justify-end px-4 pb-2">
             <Button
               type="button"
