@@ -53,7 +53,7 @@ export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, ac
   }
   return <div className="rounded-lg bg-muted p-3 text-sm space-y-2">
     <p>{provider === 'codex' ? 'Sign in with the ChatGPT account that has your Codex subscription. Device code authentication must be enabled in your ChatGPT settings.' : 'Use your eligible Grok subscription. Choose the X or xAI account that has your subscription.'}</p>
-    {provider === 'codex' && <p className="text-muted-foreground">App defaults using this provider need a separate API-capable summarizer.</p>}
+    {provider === 'codex' && <p className="text-muted-foreground">App defaults using this provider need a separate API-capable summarizer. Fast mode uses more subscription credits.</p>}
     {accountLabel && <p>Signed in as <strong>{accountLabel}</strong></p>}
     {login && <div className="space-y-2">
       <div className="flex items-center gap-1">

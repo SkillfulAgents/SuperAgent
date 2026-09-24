@@ -3,10 +3,11 @@ import { Stream } from '@anthropic-ai/sdk/core/streaming'
 type Json = Record<string, unknown>
 
 /** Codex subscription serves Responses streams, with server-managed output limits. */
-export function normalizeCodexRequest(body: Json): Json {
+export function normalizeCodexRequest(body: Json, fastMode = false): Json {
   const result: Json = { ...body, store: false, stream: true, instructions: body.instructions ?? '' }
   delete result.max_output_tokens
-  delete result.service_tier
+  if (fastMode) result.service_tier = 'priority'
+  else delete result.service_tier
   return result
 }
 

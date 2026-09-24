@@ -1,6 +1,6 @@
 import { CODEX_DEFAULT_MODELS } from './model-catalog-defaults'
 export { CODEX_DEFAULT_MODELS } from './model-catalog-defaults'
-import type { EffortLevel } from '../container/types'
+import type { EffortLevel, SpeedLevel } from '../container/types'
 import type Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
 import { BaseLlmProvider } from './base-llm-provider'
@@ -11,6 +11,8 @@ import { inferErrorStatus, extractErrorMessage } from './error-presentation'
 export const CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex'
 export const CODEX_CLIENT_VERSION = '0.156.1'
 export const CODEX_HEADERS = { originator: 'codex_cli_rs', 'OpenAI-Beta': 'responses=experimental' }
+// Subscription speed choices exclude the API-only Flex tier.
+const CODEX_SPEEDS: SpeedLevel[] = ['normal', 'fast']
 // Subscription model availability/context differs from the public API catalog.
 const CODEX_MODELS = new Set(['gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra'])
 
@@ -36,7 +38,7 @@ export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
   }
   getBuiltinCatalog() {
     return PLATFORM_CATALOG.filter(model => CODEX_MODELS.has(model.id)).map(model => ({
-      ...model, supportedSpeeds: undefined, contextWindow: 272000,
+      ...model, supportedSpeeds: CODEX_SPEEDS, contextWindow: 272000,
       longContextPriceCliff: undefined, blurb: 'Uses your ChatGPT subscription', supportsWebSearch: true,
     }))
   }
@@ -63,11 +65,12 @@ export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
     let response = await send()
     if (response.status === 401) { await response.body?.cancel(); credential = await this.credential(credential.generation); response = await send() }
     if (!response.ok) throw new Error(`Codex model discovery failed (${response.status})`)
-    const schema = z.object({ models: z.array(z.object({ slug: z.string(), display_name: z.string().optional(), context_window: z.number().optional(), visibility: z.string(), supported_reasoning_levels: z.array(z.object({ effort: z.string() })).optional() })) })
+    const schema = z.object({ models: z.array(z.object({ slug: z.string(), display_name: z.string().optional(), context_window: z.number().optional(), visibility: z.string(), additional_speed_tiers: z.array(z.string()).optional(), service_tiers: z.array(z.object({ id: z.string() })).optional(), supported_reasoning_levels: z.array(z.object({ effort: z.string() })).optional() })) })
     return schema.parse(await response.json()).models.filter(model => model.visibility === 'list' && model.slug.toLowerCase().includes(query.toLowerCase())).map(model => ({
       id: model.slug, label: model.display_name ?? model.slug, contextWindow: model.context_window,
       supportedEfforts: (model.supported_reasoning_levels ?? []).flatMap<EffortLevel>(({ effort }) =>
         effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh' || effort === 'max' ? [effort] : []),
+      supportedSpeeds: model.additional_speed_tiers?.includes('fast') || model.service_tiers?.some(tier => tier.id === 'priority' || tier.id === 'fast') ? CODEX_SPEEDS : undefined,
       supportsWebSearch: true,
     }))
   }

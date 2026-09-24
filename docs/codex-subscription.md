@@ -30,7 +30,13 @@ the existing shared model prices.
 
 The built-in list derives from the code-driven GPT catalog, limited to Codex
 model IDs observed in discovery. It uses the subscription's 272,000-token context
-window and does not advertise API speed tiers. Model search filters hidden models.
+window and offers Normal/Fast (no API-only Flex tier). The existing session speed
+header selects `service_tier: "priority"` for Fast, matching the official Codex
+client; Normal omits the tier. Discovery offers Fast only when the model advertises
+it via `service_tiers` or `additional_speed_tiers`. Model search filters hidden models.
+Fast mode uses more subscription credits; displayed costs remain API-equivalent.
+The translator preserves the served tier and does not label default-tier usage as
+Fast merely because Fast was requested.
 Discovery currently sends `client_version=0.156.1`: the old 0.116.0 probe returned
 only a hidden review model. This version is a compatibility setting, not an
 installed CLI dependency. Keep it current as upstream model availability changes.
@@ -91,3 +97,20 @@ verified credential rotation without restarting the SDK query. Session
 `9db9cbb1-62fb-4f32-8474-59c48a5ad0ed` ran Bash, refreshed through the app-owned
 credential service, and recalled its marker on the next turn. The credential
 generation advanced from 1 to 2; the container logged no query restart.
+
+### Fast-mode follow-up validation
+
+With `superagent-container:codex-fast`, a real Gamut agent selected Fast on
+`gpt-5.6-sol`, ran Bash, read a PNG through the Read tool, identified its colored
+shapes, and continued with the remembered marker after switching to Normal.
+Request-level tests cover Normal → Fast → Normal on one proxy listener, streaming
+and JSON replies, and `priority`/`fast`/`default` served-tier echoes.
+
+**Upstream limitation:** live subscription probes accepted `service_tier: "priority"`
+with HTTP 200 but reported `service_tier: "default"` for GPT-5.6 Sol, GPT-5.5, and
+GPT-6 Astra. Matching the CLI routing/beta headers did not change this; the `fast`
+wire alias returned HTTP 400. Thus request routing and agent compatibility are
+validated, but actual priority processing/latency improvement is not confirmed for
+this account. No synthetic Fast usage or automatic retry is added. The native
+Codex client also maps its Fast setting to `priority`:
+https://github.com/openai/codex/blob/main/codex-rs/protocol/src/config_types.rs

@@ -222,6 +222,33 @@ describe('embedded provider proxy', () => {
     expect(seen).toEqual(['account-a', 'account-b'])
   })
 
+  it.each([
+    [false, 'priority'], [true, 'priority'], [false, 'fast'], [true, 'fast'], [false, 'default'], [true, 'default'],
+  ] as const)('switches Codex Normal/Fast and preserves the served tier (stream=%s, tier=%s)', async (stream, servedTier) => {
+    const tiers: unknown[] = []
+    const base = await upstream((body, _req, res) => {
+      tiers.push(body.service_tier)
+      const response = { id: 'r', model: 'test', status: 'completed', service_tier: body.service_tier ? servedTier : 'default',
+        output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }],
+        usage: { input_tokens: 3, output_tokens: 1 } }
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end(`data: ${JSON.stringify({ type: 'response.completed', response })}\n\n`)
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {},
+      credential: { accessToken: 'key', accountId: 'account', generation: 1 } } })
+    for (const speed of ['normal', 'fast', 'normal']) {
+      const options = { headers: speed === 'fast' ? { 'X-Superagent-Speed': speed } : undefined }
+      let servedSpeed: string | undefined
+      if (stream) {
+        for await (const event of await client(handle).messages.create({ ...prompt, stream: true }, options)) {
+          if (event.type === 'message_delta') servedSpeed = (event.usage as { speed?: string }).speed
+        }
+      } else servedSpeed = ((await client(handle).messages.create(prompt, options)).usage as { speed?: string }).speed
+      expect(servedSpeed).toBe(speed === 'fast' && servedTier !== 'default' ? 'fast' : undefined)
+    }
+    expect(tiers).toEqual([undefined, 'priority', undefined])
+  })
+
   it('preserves Codex model eligibility errors', async () => {
     const base = await upstream((_body, _req, res) => json(res, { detail: 'This model is not supported with a ChatGPT account' }, 400))
     const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', generation: 0 } } })

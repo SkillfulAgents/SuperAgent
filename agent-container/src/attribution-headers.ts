@@ -112,7 +112,8 @@ const SPEED_HEADER_LINE = /^\s*x-superagent-speed\s*:/i;
  * processing-speed tier. 'normal' (or unset) is the wire default and emits no
  * header — the absence of X-Superagent-Speed means standard processing. The
  * platform proxy maps the header to the provider's mechanism (OpenAI/xAI
- * `service_tier`, Anthropic fast mode); other upstreams ignore it harmlessly.
+ * `service_tier`, Anthropic fast mode), as does the in-container Codex proxy.
+ * Other upstreams ignore it harmlessly.
  * Values are a closed enum, so no encoding is needed.
  */
 export function withSpeedHeader(

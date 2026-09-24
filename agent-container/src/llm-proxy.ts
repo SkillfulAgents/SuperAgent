@@ -116,7 +116,7 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
               ...(config.omitReasoningEffort ? { mapReasoningEffort: () => undefined } : {}),
             }) : body
         upstreamBody = options.adapter?.upstreamRequest?.(upstreamBody) ?? upstreamBody
-        if (config.adapter === 'codex') upstreamBody = normalizeCodexRequest(upstreamBody)
+        if (config.adapter === 'codex') upstreamBody = normalizeCodexRequest(upstreamBody, req.headers['x-superagent-speed'] === 'fast')
         return fetch(`${config.baseUrl.replace(/\/$/, '')}${path}`, {
           method: 'POST', redirect: 'error', signal: abort.signal,
           headers: { 'content-type': 'application/json', ...(format === 'messages' ? { 'anthropic-version': '2023-06-01' } : {}),
