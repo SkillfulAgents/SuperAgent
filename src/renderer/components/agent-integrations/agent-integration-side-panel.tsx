@@ -1,3 +1,4 @@
+import { integrationSetupProviders } from './setup-providers'
 import { IntegrationStatusCard } from './integration-status-card'
 import { IntegrationSettingsCard } from './integration-settings-card'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
@@ -14,8 +15,10 @@ export interface AgentIntegrationSidePanelProps {
 }
 
 export function AgentIntegrationSidePanel({ integration, canManage, canManageAccess, connected }: AgentIntegrationSidePanelProps) {
+  const ConnectionSettings = integrationSetupProviders.find(provider => provider.slug === integration.provider)?.ConnectionSettings
   return (
     <div className="space-y-3">
+      {canManage && ConnectionSettings && <ConnectionSettings integration={integration} />}
       {canManage && <IntegrationStatusCard integration={integration} connected={connected} />}
       {canManage && <IntegrationSettingsCard integration={integration} canManageAccess={canManageAccess} />}
       {canManage && (

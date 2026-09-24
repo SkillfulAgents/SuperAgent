@@ -1,3 +1,6 @@
+import { HelperConfigurationError } from './helper-error'
+import { resolveHelperSelection } from './connections'
+import { getSettings } from '../config/settings'
 /**
  * LLM Provider Helpers
  *
@@ -13,12 +16,21 @@ import type Anthropic from '@anthropic-ai/sdk'
  * Get a configured Anthropic client from the active LLM provider.
  * Throws if the API key is not configured.
  */
-export function getConfiguredLlmClient(): Anthropic {
-  const provider = getActiveLlmProvider()
+const helperModels = new WeakMap<Anthropic, string>()
+export function configuredHelperModel(client: Anthropic): string | undefined {
+  return helperModels.get(client)
+}
+export async function getConfiguredLlmClient(): Promise<Anthropic> {
+  const selection = getSettings().llmDefault ? await resolveHelperSelection() : null
+  const provider = selection?.provider ?? getActiveLlmProvider()
   if (!provider.getApiKeyStatus().isConfigured) {
+    if (provider.id === 'platform') throw new HelperConfigurationError('Reconnect Platform or choose another summarizer in Settings → Model Providers')
     throw new Error('LLM API key not configured')
   }
-  return provider.createClient()
+  if (!selection && provider.supportsDirectApi === false) throw new HelperConfigurationError()
+  const client = provider.createClient()
+  if (selection) helperModels.set(client, selection.wireModel)
+  return client
 }
 
 /**
@@ -60,9 +72,11 @@ export function extractTextFromLlmResponse(
  */
 export async function createSummarizerText(
   client: Anthropic,
-  request: Omit<Anthropic.MessageCreateParamsNonStreaming, 'max_tokens'>,
+  request: Omit<Anthropic.MessageCreateParamsNonStreaming, 'max_tokens'> & { max_tokens?: number },
   signal?: AbortSignal,
 ): Promise<string | null> {
+  const maxTokens = request.max_tokens ?? SUMMARIZER_MAX_TOKENS
+  request = { ...request, model: helperModels.get(client) ?? request.model }
   const create = async (
     params: Anthropic.MessageCreateParamsNonStreaming,
   ): Promise<Anthropic.Message> => {
@@ -84,7 +98,7 @@ export async function createSummarizerText(
   }
 
   const response = await withRetry(() =>
-    create({ ...request, max_tokens: SUMMARIZER_MAX_TOKENS }),
+    create({ ...request, max_tokens: maxTokens }),
   )
   const text = extractTextFromLlmResponse(response)
   // Retry on ANY text-less response, not just stop_reason 'max_tokens' — some
@@ -97,7 +111,7 @@ export async function createSummarizerText(
     const retried = await withRetry(() =>
       create({
         ...request,
-        max_tokens: SUMMARIZER_MAX_TOKENS,
+        max_tokens: maxTokens,
         thinking: { type: 'enabled', budget_tokens: SUMMARIZER_THINKING_BUDGET },
       }),
     )

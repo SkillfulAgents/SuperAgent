@@ -5,7 +5,9 @@ import { useComposerOptions, type UseComposerOptionsArgs } from './composer-opti
 
 // Mutable settings the mocked useModelSettings reads at call time, so tests can
 // simulate the query resolving (undefined → loaded) and later refetches.
-const state = vi.hoisted(() => ({ settings: undefined as unknown }))
+const state = vi.hoisted(() => ({ settings: undefined as unknown, connections: undefined as unknown }))
+
+vi.mock('@renderer/hooks/use-llm-connections', () => ({ useLlmConnections: () => ({ data: state.connections }) }))
 
 vi.mock('@renderer/hooks/use-settings', () => ({
   useModelSettings: () => ({ data: state.settings }),
@@ -25,9 +27,19 @@ function render(initialProps: UseComposerOptionsArgs) {
   })
 }
 
+beforeEach(() => { state.connections = undefined })
+
 describe('useComposerOptions default adoption', () => {
   beforeEach(() => {
     state.settings = LOADED_SETTINGS
+  })
+
+  it('keeps model picks before a connection has been configured', () => {
+    state.connections = { connections: [], defaultSelection: null }
+    const { result } = render({})
+    act(() => result.current.setModel('claude-haiku-4-5'))
+    expect(result.current.model).toBe('claude-haiku-4-5')
+    expect(result.current.toRuntimeOptions()).toEqual({ model: 'claude-haiku-4-5' })
   })
 
   it('adopts the agent default over the global default as sources stream in', () => {
@@ -288,5 +300,69 @@ describe('useComposerOptions web provider', () => {
     state.settings = { ...LOADED_SETTINGS, webProvider: 'platform', webProviderIsDefault: true }
     const { result } = render({ agentKey: 'a', agentDefaultsReady: true })
     expect(result.current.webProvider).toBe('platform')
+  })
+})
+
+
+describe('connection/model selection', () => {
+  const model = (id: string) => ({ id, label: id, supportedEfforts: ['low', 'medium', 'high'] })
+  const first = { id: 'global', defaultModel: 'same', catalog: [model('same'), model('global-default')] }
+  const second = { id: 'personal', defaultModel: 'same', catalog: [model('same'), model('personal-other')] }
+  beforeEach(() => {
+    state.settings = LOADED_SETTINGS
+    state.connections = { connections: [first, second], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+  })
+  it('retains a model picked while the connection query is still pending', () => {
+    state.connections = undefined
+    const { result, rerender } = render({})
+    act(() => result.current.setModel('same'))
+    state.connections = { connections: [first, second], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+    rerender({})
+    expect(result.current.model).toBe('same')
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'same' })
+  })
+
+  it('binds a model pick to the inherited connection before the initial query has settled', () => {
+    state.connections = undefined
+    const { result, rerender } = render({ initialModel: 'same' })
+    state.connections = { connections: [first, second], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+    rerender({ initialModel: 'same' })
+    act(() => result.current.setModel('same'))
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'same' })
+  })
+
+  it('uses the server-resolved provider default instead of the first family default', () => {
+    const platform = { id: 'platform', defaultModel: 'grok', catalog: [
+      { ...model('opus-id'), family: 'opus', isDefault: true, isLatest: true },
+      { ...model('grok-id'), family: 'grok', isDefault: true, isLatest: true },
+    ] }
+    state.connections = { connections: [first, platform], defaultSelection: { llmProviderId: 'global', model: 'same' } }
+    const { result } = render({ initialLlmProviderId: 'global', initialModel: 'same' })
+    act(() => result.current.setConnection?.('platform'))
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'platform', model: 'grok' })
+  })
+
+  it('changes accounts even when both expose the same model ID', () => {
+    const { result } = render({ initialLlmProviderId: 'global', initialModel: 'same' })
+    act(() => result.current.setConnection?.('personal'))
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
+    expect(result.current.catalog).toEqual(second.catalog)
+  })
+  it('drops the whole deleted pair instead of charging another account for the orphaned model', () => {
+    const { result, rerender } = render({ initialLlmProviderId: 'personal', initialModel: 'same' })
+    state.connections = { connections: [first], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+    rerender({ initialLlmProviderId: 'personal', initialModel: 'same' })
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'global-default' })
+  })
+  it('drops a removed model before considering an agent default', () => {
+    const { result } = render({ initialLlmProviderId: 'personal', initialModel: 'removed', agentDefaultLlmProviderId: 'personal', agentDefaultModel: 'personal-other' })
+    expect(result.current.llmProviderId).toBe('personal')
+    expect(result.current.model).toBe('personal-other')
+  })
+  it('protects an unsent account change from an authoritative refetch', () => {
+    const { result, rerender } = render({ initialLlmProviderId: 'global', initialModel: 'same' })
+    act(() => result.current.setConnection?.('personal'))
+    rerender({ initialLlmProviderId: 'global', initialModel: 'global-default' })
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
   })
 })

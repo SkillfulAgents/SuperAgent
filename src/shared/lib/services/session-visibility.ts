@@ -3,7 +3,7 @@ import type { SessionMetadata } from '@shared/lib/types/agent'
 /**
  * True while nobody is watching the session: a cron / trigger / widget-repair
  * run that has not been promoted. This is the one flag behind the notify_user
- * tool and the unattended prompt section. Chat Integration and x-agent target
+ * tool and the unattended prompt section. Agent integration and x-agent target
  * sessions are never noninteractive — someone (the chat user, the calling
  * agent) reads their output.
  */
@@ -17,7 +17,7 @@ export function isNoninteractiveSession(meta: SessionMetadata | null | undefined
 
 /**
  * True when a session is excluded from every user-facing session list
- * (`excludeAutomated`): noninteractive sessions, plus chat-integration and
+ * (`excludeAutomated`): noninteractive sessions, plus agent-integration and
  * x-agent target sessions until a request promotes them. Per-session signals
  * derived elsewhere — unread-notification flags, badge dots — must skip these
  * too: a signal on a hidden session points at nothing the user can see or
@@ -27,5 +27,10 @@ export function isHiddenAutomatedSession(meta: SessionMetadata | null | undefine
   if (!meta) return false
   if (isNoninteractiveSession(meta)) return true
   if (meta.promotedToInteractive) return false
-  return !!(meta.isChatIntegrationSession || meta.invokedByAgentSlug)
+  return !!(isAgentIntegrationSession(meta) || meta.invokedByAgentSlug)
+}
+
+/** Legacy family flags remain readable so existing sessions need no migration. */
+export function isAgentIntegrationSession(meta: SessionMetadata | null | undefined): boolean {
+  return !!(meta?.isAgentIntegrationSession || meta?.agentIntegrationId || meta?.isChatIntegrationSession || meta?.chatIntegrationId)
 }

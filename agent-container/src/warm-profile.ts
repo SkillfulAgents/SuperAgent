@@ -1,3 +1,4 @@
+import { withoutProviderCredentials, runtimeFingerprint } from './connection-runtime';
 import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
@@ -23,6 +24,9 @@ export const warmProfileSchema = z.object({
   modelPromptHints: z.array(z.string()).optional(),
   availableEnvVars: z.array(z.string()).optional(),
   model: z.string().optional(),
+  llmProviderId: z.string().optional(),
+  credentialGeneration: z.number().optional(),
+  runtimeFingerprint: z.string().optional(),
   browserModel: z.string().optional(),
   dashboardBuilderModel: z.string().optional(),
   subagentModels: subagentModelCatalogSchema,
@@ -33,7 +37,7 @@ export const warmProfileSchema = z.object({
   maxThinkingTokens: z.number().optional(),
   maxTurns: z.number().optional(),
   maxBudgetUsd: z.number().optional(),
-  customEnvVars: z.record(z.string(), z.string()).optional(),
+  customEnvVars: z.record(z.string(), z.string()).transform(withoutProviderCredentials).optional(),
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   speed: speedLevelSchema,
   capabilityPolicies: agentCapabilityPoliciesSchema,
@@ -65,19 +69,23 @@ function buildProfile(
   request: CreateSessionRequest,
   defaults: CreateSessionRequest['prewarmDefaults']
 ): WarmProfile {
+  const runtime = defaults?.llmRuntime ?? request.llmRuntime;
   return warmProfileSchema.parse({
     workingDirectory: request.workingDirectory,
     // Warm for interactive when the host says what the NEXT session looks like
     // (only interactive callers send prewarmDefaults); otherwise this shape.
     noninteractive: defaults ? false : isNoninteractive(request.metadata),
     systemPrompt: request.systemPrompt,
-    modelPromptHints: defaults ? defaults.modelPromptHints : request.modelPromptHints,
+    modelPromptHints: runtime?.modelPromptHints ?? (defaults ? defaults.modelPromptHints : request.modelPromptHints),
     availableEnvVars: request.availableEnvVars,
-    model: defaults ? defaults.model : request.model,
-    browserModel: request.browserModel,
-    dashboardBuilderModel: request.dashboardBuilderModel,
-    subagentModels: request.subagentModels,
-    modelContextWindows: request.modelContextWindows,
+    llmProviderId: runtime?.llmProviderId ?? request.llmProviderId,
+    credentialGeneration: runtime?.generation,
+    runtimeFingerprint: runtime ? runtimeFingerprint(runtime) : undefined,
+    model: runtime?.model ?? (defaults ? defaults.model : request.model),
+    browserModel: runtime?.browserModel ?? request.browserModel,
+    dashboardBuilderModel: runtime?.dashboardBuilderModel ?? request.dashboardBuilderModel,
+    subagentModels: runtime?.subagentModels ?? request.subagentModels,
+    modelContextWindows: runtime?.modelContextWindows ?? request.modelContextWindows,
     webSearchProvider: request.webSearchProvider,
     webFetchProvider: request.webFetchProvider,
     maxOutputTokens: request.maxOutputTokens,

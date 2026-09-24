@@ -42,13 +42,11 @@ vi.mock('@shared/lib/composio/triggers', async (importOriginal) => {
 })
 
 const mockDisableEndpoint = vi.fn()
-vi.mock('@shared/lib/services/webhook-endpoints-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@shared/lib/services/webhook-endpoints-client')>()
-  return {
-    WebhookEndpointsApiError: actual.WebhookEndpointsApiError,
-    disablePlatformWebhookEndpoint: (...args: unknown[]) => mockDisableEndpoint(...args),
-  }
-})
+vi.mock('@shared/lib/webhook-relay', () => ({
+  getWebhookRelay: () => ({
+    disableEndpoint: (...args: unknown[]) => mockDisableEndpoint(...args),
+  }),
+}))
 
 const mockCaptureException = vi.fn()
 const mockCaptureMessage = vi.fn()
@@ -66,7 +64,7 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
 
 import { attribution } from '@shared/lib/platform-attribution'
 import { ComposioTriggerError } from '@shared/lib/composio/triggers'
-import { WebhookEndpointsApiError } from '@shared/lib/services/webhook-endpoints-client'
+import { WebhookEndpointsApiError } from '@shared/lib/webhook-relay/platform-endpoints-client'
 import {
   createWebhookTrigger,
   cancelWebhookTriggerWithCleanup,

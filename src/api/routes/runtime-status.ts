@@ -1,3 +1,4 @@
+import { resolveGlobalSelection } from '@shared/lib/llm-provider/connections'
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { containerHost } from '@shared/lib/agent-actor'
@@ -10,11 +11,12 @@ const runtimeStatus = new Hono()
 runtimeStatus.use('*', Authenticated())
 
 // GET /api/runtime-status - lightweight status check for all authenticated users
-runtimeStatus.get('/', (c) => {
+runtimeStatus.get('/', async (c) => {
+  const root = await resolveGlobalSelection()
   return c.json({
     runtimeReadiness: containerHost.getReadiness(),
     hasRunningAgents: containerHost.hasRunningAgents(),
-    apiKeyConfigured: getActiveLlmProvider().getApiKeyStatus().isConfigured,
+    apiKeyConfigured: (root?.provider ?? getActiveLlmProvider()).getApiKeyStatus().isConfigured,
     servicesInitError: getServicesInitError(),
     appVersion: APP_VERSION,
   })

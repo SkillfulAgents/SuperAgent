@@ -21,6 +21,7 @@ export type LoginWindowOutcome = 'waiting' | 'no-url' | 'stale'
  * `pending` is true from the click. `waiting` is true once the window has been
  * sent to the login page, which is when a completion listener should start.
  * `canCancel` turns true once an attempt has been pending for 10 s.
+ * `isLoginWindow` tells whether a message came from the open window.
  */
 export function useLoginWindow() {
   const [pending, setPending] = useState(false)
@@ -43,6 +44,11 @@ export function useLoginWindow() {
   }, [])
 
   useEffect(() => close, [close])
+
+  const isLoginWindow = useCallback(
+    (source: MessageEventSource | null) => popupRef.current?.isSource(source) ?? false,
+    [],
+  )
 
   const open = useCallback(async (
     requestLoginUrl: () => Promise<string | null | undefined>,
@@ -72,5 +78,5 @@ export function useLoginWindow() {
     }
   }, [close])
 
-  return { open, close, pending, waiting, canCancel }
+  return { open, close, pending, waiting, canCancel, isLoginWindow }
 }

@@ -1,3 +1,6 @@
+import { findGlobalPrice, withGlobalModelPricing } from '@shared/lib/llm-provider/global-pricing'
+import { canonicalPricingId } from '@shared/lib/llm-provider/model-pricing-ids'
+import type { GlobalModelPricing, GlobalModelPricingPatch } from '@shared/lib/llm-provider/global-pricing-schema'
 import { useMemo, useState } from 'react'
 import { ChevronDown, Plus, Settings, Trash2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
@@ -47,7 +50,7 @@ interface CatalogRowProps {
   enabled: boolean
   disabled?: boolean
   onToggle: (enabled: boolean) => void
-  onCustomize: () => void
+  onCustomize?: () => void
   onRemove?: () => void
 }
 
@@ -80,7 +83,7 @@ function CatalogRow({
       <div className="flex items-center justify-end gap-2">
         {/* Fixed-width slot so prices stay aligned whether a row has 1 or 2 actions. */}
         <div className="flex w-16 items-center justify-end gap-0.5">
-          <Button
+          {onCustomize && <Button
             type="button"
             variant="ghost"
             size="icon"
@@ -91,7 +94,7 @@ function CatalogRow({
             className="h-7 w-7 text-muted-foreground hover:text-foreground"
           >
             <Settings className="h-3.5 w-3.5" />
-          </Button>
+          </Button>}
           {onRemove && (
             <Button
               type="button"
@@ -118,14 +121,23 @@ export interface CatalogEditorProps {
   builtinCatalog: ModelDefinition[]
   effectiveCatalog: ModelDefinition[]
   modelCatalog: ModelCatalogSettings | undefined
+  llmProviderId?: string
+  modelPricing?: GlobalModelPricing
+  canEditPricing?: boolean
   supportsModelSearch?: boolean
   disabled?: boolean
-  onChange: (modelCatalog: ModelCatalogSettings) => void
+  onChange: (change: CatalogChange) => void
+}
+
+/** One settings patch: only the part that changed is sent, so a price edit never rewrites the catalog. */
+export interface CatalogChange {
+  modelCatalog?: ModelCatalogSettings
+  modelPricing?: GlobalModelPricingPatch
 }
 
 /**
- * Per-provider model catalog editor: disable built-ins, override their display
- * pricing, and add/edit custom models. Collapsed behind a disclosure so the
+ * Per-provider model catalog editor: disable built-ins and add/edit custom
+ * models. Price edits update the global rate for the model. Collapsed behind a disclosure so the
  * provider card stays light until a user opts into catalog management.
  */
 export function CatalogEditor({
@@ -133,6 +145,9 @@ export function CatalogEditor({
   builtinCatalog,
   effectiveCatalog,
   modelCatalog,
+  llmProviderId,
+  modelPricing = {},
+  canEditPricing = true,
   supportsModelSearch = false,
   disabled,
   onChange,
@@ -162,17 +177,17 @@ export function CatalogEditor({
       }
     }
 
-    return customIds
+    return withGlobalModelPricing(customIds
       .map((id) => effectiveById.get(id) ?? modelFromOverride(overrideById.get(id)!))
-      .filter((model): model is ModelDefinition => model !== null)
-  }, [builtinIds, effectiveCatalog, overrideById, overrides])
+      .filter((model): model is ModelDefinition => model !== null), modelPricing)
+  }, [builtinIds, effectiveCatalog, overrideById, overrides, modelPricing])
 
   const [customDialog, setCustomDialog] = useState<CustomDialogState>(null)
   const [editingBuiltin, setEditingBuiltin] = useState<ModelDefinition | null>(null)
   const [modelPendingDeletion, setModelPendingDeletion] = useState<ModelDefinition | null>(null)
 
   const persistOverrides = (nextOverrides: CatalogOverrideEntry[]) => {
-    onChange(setProviderOverrides(modelCatalog, providerId, nextOverrides))
+    onChange({ modelCatalog: setProviderOverrides(modelCatalog, providerId, nextOverrides) })
   }
 
   const upsertOverride = (entry: CatalogOverrideEntry | null, id: string) => {
@@ -206,23 +221,43 @@ export function CatalogEditor({
   // a custom model's disabled state across edits.
   const submitCustomModel = (entry: CatalogOverrideEntry) => {
     const wasDisabled = overrideById.get(entry.id)?.disabled === true
-    upsertOverride(cleanOverride({ ...entry, ...(wasDisabled ? { disabled: true } : {}) }), entry.id)
+    const { pricing, ...model } = entry
+    const key = canonicalPricingId(entry.id)
+    let modelPricingPatch: GlobalModelPricingPatch | undefined
+    if (canEditPricing && pricing) {
+      // Keep what this dialog does not edit (cache rates, speed tiers, a cliff
+      // another provider's entry contributed): the price is shared, and an
+      // edit here that never touched them must not change them for everyone.
+      const next = { ...modelPricing[key], ...pricing }
+      if (entry.longContextPriceCliff) next.longContextPriceCliff = entry.longContextPriceCliff
+      modelPricingPatch = { [key]: next }
+    } else if (canEditPricing && modelPricing[key]) {
+      modelPricingPatch = { [key]: null }
+    }
+    onChange({
+      modelCatalog: setProviderOverrides(
+        modelCatalog,
+        providerId,
+        replaceOverride(
+          overrides,
+          cleanOverride({ ...model, ...(wasDisabled ? { disabled: true } : {}) }),
+          entry.id,
+        ),
+      ),
+      ...(modelPricingPatch ? { modelPricing: modelPricingPatch } : {}),
+    })
   }
 
   const saveBuiltinPricing = (
     model: ModelDefinition,
     pricing: { inputPerMtok: number; outputPerMtok: number },
   ) => {
-    const current = overrideById.get(model.id)
-    upsertOverride(cleanOverride({ ...current, id: model.id, pricing }), model.id)
+    const key = canonicalPricingId(model.id)
+    onChange({ modelPricing: { [key]: { ...modelPricing[key], ...pricing } } })
   }
 
   const resetBuiltinPricing = (model: ModelDefinition) => {
-    const current = overrideById.get(model.id)
-    if (!current) return
-    const rest = { ...current }
-    delete rest.pricing
-    upsertOverride(cleanOverride(rest), model.id)
+    onChange({ modelPricing: { [canonicalPricingId(model.id)]: null } })
   }
 
   const confirmRemoveCustomModel = () => {
@@ -241,7 +276,7 @@ export function CatalogEditor({
           <span className="flex flex-col">
             <span className="text-xs font-medium">Model catalog</span>
             <span className="text-[11px] text-muted-foreground">
-              Customize pricing, disable models, or add your own
+              Disable models or add your own. Prices are shared across providers.
             </span>
           </span>
           <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform [[data-state=closed]>&]:rotate-[-90deg]" />
@@ -275,11 +310,11 @@ export function CatalogEditor({
                       <CatalogRow
                         key={model.id}
                         model={model}
-                        priceText={priceLabel(override?.pricing ?? model.pricing)}
+                        priceText={priceLabel(findGlobalPrice(model.id, modelPricing) ?? model.pricing)}
                         enabled={override?.disabled !== true}
                         disabled={disabled}
                         onToggle={(enabled) => updateBuiltinDisabled(model, enabled)}
-                        onCustomize={() => setEditingBuiltin(model)}
+                        onCustomize={canEditPricing ? () => setEditingBuiltin(model) : undefined}
                       />
                     )
                   })}
@@ -339,8 +374,10 @@ export function CatalogEditor({
       <CustomModelDialog
         open={customDialog !== null}
         mode={customDialog?.mode ?? 'add'}
+        canEditPricing={canEditPricing}
         initialModel={customDialog?.mode === 'edit' ? customDialog.model : null}
         providerId={providerId}
+        llmProviderId={llmProviderId}
         supportsModelSearch={supportsModelSearch}
         disabled={disabled}
         onOpenChange={(open) => !open && setCustomDialog(null)}
@@ -349,7 +386,7 @@ export function CatalogEditor({
 
       <BuiltinPricingDialog
         model={editingBuiltin}
-        overridePricing={editingBuiltin ? overrideById.get(editingBuiltin.id)?.pricing : undefined}
+        overridePricing={editingBuiltin ? modelPricing[canonicalPricingId(editingBuiltin.id)] : undefined}
         disabled={disabled}
         onOpenChange={(open) => !open && setEditingBuiltin(null)}
         onSave={(pricing) => editingBuiltin && saveBuiltinPricing(editingBuiltin, pricing)}

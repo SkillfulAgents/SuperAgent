@@ -1,3 +1,4 @@
+import { getSettings } from '@shared/lib/config/settings'
 /**
  * Webhook Trigger Service
  *
@@ -20,7 +21,7 @@ import { trackServerEvent } from '../analytics/server-analytics'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
-import { disablePlatformWebhookEndpoint } from '@shared/lib/services/webhook-endpoints-client'
+import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 
 const PLATFORM_PROVIDER_ID = 'platform'
@@ -138,6 +139,25 @@ export async function getSubscribedComposioTriggerIds(): Promise<string[]> {
 
 export type { WebhookTrigger, NewWebhookTrigger }
 
+/**
+ * Tell the trigger manager the set of subscribed endpoints may have changed,
+ * so it re-registers them with the webhook relay. Lazy import avoids the
+ * circular dep. Best-effort: catch so a late rejection can't reach the
+ * process-level unhandledRejection handler (fatal in Electron main) or outlive
+ * a test. The success log is the only positive signal this fire-and-forget
+ * path ran; webhook-trigger-service.coldstart.test.ts asserts on it.
+ */
+function notifyWebhookTriggersChanged(reason: string): void {
+  void import('@shared/lib/scheduler/trigger-manager')
+    .then(async ({ triggerManager }) => {
+      await triggerManager.syncRegistrations()
+      console.log(`[webhook-triggers] relay registrations synced (${reason})`)
+    })
+    .catch((err) => {
+      console.warn('[webhook-triggers] relay registration sync failed:', err)
+    })
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -158,6 +178,7 @@ export interface CreateWebhookTriggerParams {
   createdByUserId?: string
   /** Acting platform member the upstream subscription was minted under (SUP-765). */
   mintedByMemberId?: string
+  llmProviderId?: string | null
   model?: string
   effort?: string
   speed?: string
@@ -185,6 +206,7 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     createdBySessionId: params.createdBySessionId ?? null,
     createdByUserId: params.createdByUserId ?? null,
     mintedByMemberId: params.mintedByMemberId ?? null,
+    llmProviderId: params.model ? (params.llmProviderId === undefined ? getSettings().llmDefault?.llmProviderId : params.llmProviderId) : null,
     model: params.model ?? null,
     effort: params.effort ?? null,
     speed: params.speed ?? null,
@@ -198,22 +220,7 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     agentSlug: params.agentSlug,
   })
 
-  // Cold-start fix: a host that booted with 0 active triggers never
-  // subscribed Realtime. Lazy import avoids the circular dep.
-  // Best-effort: catch so a late rejection can't reach the process-level
-  // unhandledRejection handler (fatal in Electron main) or outlive a test.
-  // The success log is the only positive signal this fire-and-forget path ran;
-  // webhook-trigger-service.coldstart.test.ts asserts on it.
-  void import('@shared/lib/scheduler/trigger-manager')
-    .then(async ({ triggerManager }) => {
-      if (!triggerManager.isRealtimeActive()) {
-        await triggerManager.pollAndProcess()
-      }
-      console.log(`[webhook-triggers] cold-start nudge completed for trigger ${id}`)
-    })
-    .catch((err) => {
-      console.warn('[webhook-triggers] cold-start poll skipped:', err)
-    })
+  notifyWebhookTriggersChanged(`created ${id}`)
 
   return id
 }
@@ -374,7 +381,9 @@ export async function cancelWebhookTrigger(triggerId: string): Promise<boolean> 
       )
     )
 
-  return changesOf(result) > 0
+  const cancelled = changesOf(result) > 0
+  if (cancelled) notifyWebhookTriggersChanged(`cancelled ${triggerId}`)
+  return cancelled
 }
 
 /**
@@ -438,6 +447,7 @@ export async function markTriggerFailed(triggerId: string, _error: string): Prom
     .update(webhookTriggers)
     .set({ status: 'failed' })
     .where(eq(webhookTriggers.id, triggerId))
+  notifyWebhookTriggersChanged(`failed ${triggerId}`)
 }
 
 /**
@@ -490,20 +500,20 @@ export async function cancelWebhookTriggerWithCleanup(
   return true
 }
 
-// Custom endpoints live on the platform proxy regardless of Composio key mode,
+// Custom endpoints live on the webhook relay regardless of Composio key mode,
 // so gate on platform auth or a user-supplied Composio key leaves the URL live.
 function canReachUpstream(kind: WebhookTrigger['kind']): boolean {
   return kind === 'custom' ? Boolean(getPlatformAccessToken()) : isPlatformComposioActive()
 }
 
-// One place that speaks both upstream vocabularies (platform endpoint disable
+// One place that speaks both upstream vocabularies (relay endpoint disable
 // vs Composio subscription delete). Callers own attribution.
 async function deleteUpstream(
   kind: WebhookTrigger['kind'],
   memberId: string,
   upstreamId: string,
 ): Promise<void> {
-  if (kind === 'custom') await disablePlatformWebhookEndpoint(memberId, upstreamId)
+  if (kind === 'custom') await getWebhookRelay().disableEndpoint(memberId, upstreamId)
   else await deleteComposioTrigger(upstreamId)
 }
 
@@ -642,6 +652,7 @@ export async function updateComposioTriggerId(
     .update(webhookTriggers)
     .set({ composioTriggerId })
     .where(eq(webhookTriggers.id, triggerId))
+  notifyWebhookTriggersChanged(`re-pointed ${triggerId}`)
 }
 
 /**
@@ -684,13 +695,18 @@ export async function updateWebhookTriggerName(
  */
 export async function updateWebhookTriggerRuntimeOptions(
   triggerId: string,
-  options: { model?: string | null; effort?: string | null; speed?: string | null },
+  options: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null },
 ): Promise<boolean> {
   const trigger = await getWebhookTrigger(triggerId)
   if (!trigger || trigger.status === 'cancelled') return false
 
   const updates: Record<string, string | null> = {}
-  if ('model' in options) updates.model = options.model ?? null
+  if ('llmProviderId' in options) updates.llmProviderId = options.llmProviderId ?? null
+  if ('model' in options) {
+    updates.model = options.model ?? null
+    if (!options.model) updates.llmProviderId = null
+    else if (options.llmProviderId === undefined && getSettings().llmDefault) updates.llmProviderId = trigger.llmProviderId ?? getSettings().llmDefault!.llmProviderId
+  }
   if ('effort' in options) updates.effort = options.effort ?? null
   if ('speed' in options) updates.speed = options.speed ?? null
 

@@ -1,3 +1,6 @@
+import { LlmSelectionAccessError, assertConnectionSelectionAccess, withSessionSelection, sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember } from '@shared/lib/services/agent-members-service'
@@ -48,7 +51,7 @@ import {
   type SessionSortBy,
 } from '@shared/lib/agent-actor'
 import { copyHostFileIntoWorkspace, moveHostFileIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
-import { parseRuntimeOptions, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
+import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
 import {
   sessionDashboardDispatchSchema,
   type SessionDashboardDispatch,
@@ -56,8 +59,6 @@ import {
 import { getDashboardViewDispatchHostJs } from '../dashboard-view-dispatch-host'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
-import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
-import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
@@ -102,8 +103,8 @@ import {
   listPendingWakesByAgent,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
-import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
-import { eq, and, inArray, desc, count } from 'drizzle-orm'
+import { scheduledTasks, webhookTriggers, chatIntegrations, connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
+import { eq, and, inArray, isNotNull, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
@@ -142,6 +143,7 @@ import { widgetRefreshService } from '@shared/lib/services/widget-refresh-servic
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
+import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
@@ -186,7 +188,7 @@ import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSetti
 import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
 import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
-import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
+import { getActiveLlmProvider, getLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
@@ -203,7 +205,7 @@ import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { JsonlEntry, JsonlMessageEntry, SessionInfo, SessionMetadata, SessionMetadataMap } from '@shared/lib/types/agent'
-import { toPublicAgentIntegration } from '@shared/lib/agent-integrations/serialization'
+import { listAgentIntegrationsHandler } from './agent-integration-list'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
 import {
   toAgentConnectedAccountDto,
@@ -1151,7 +1153,7 @@ agents.post('/generate-name', zValidator('json', generateNameBodySchema), async 
     const { prompt } = c.req.valid('json')
     const truncatedPrompt = prompt.trim().substring(0, 10_000)
 
-    const anthropic = getLlmClient()
+    const anthropic = await getLlmClient()
     const rawName = (
       await createSummarizerText(anthropic, {
         model: getSummarizerModel(),
@@ -1236,8 +1238,8 @@ async function createOwnerAclOrRollback(c: Context, agentSlug: string) {
 }
 
 // Create LLM client using the active provider
-function getLlmClient(): Anthropic {
-  return getConfiguredLlmClient()
+async function getLlmClient(): Promise<Anthropic> {
+  return await getConfiguredLlmClient()
 }
 
 // Model used for generating session names (lightweight task).
@@ -1275,7 +1277,7 @@ async function generateAndUpdateSessionNameAsync(
   const skipProviderNaming = process.env.E2E_MOCK === 'true'
   if (!skipProviderNaming) {
     try {
-      const anthropic = getLlmClient()
+      const anthropic = await getLlmClient()
       sessionName = await createSummarizerText(anthropic, {
         model: getSummarizerModel(),
         messages: [
@@ -1539,9 +1541,11 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
       return c.json({ error: `Invalid preferences: ${field}: ${issue?.message ?? 'invalid value'}` }, 400)
     }
 
+    await assertConnectionSelectionAccess(parsed.data.defaultLlmProviderId, parsed.data.defaultLlmProviderId ? (await readAgentPreferences(slug)).defaultLlmProviderId : undefined)
     const merged = await updateAgentPreferences(slug, parsed.data)
     return c.json(merged)
   } catch (error) {
+    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     console.error('Failed to update agent preferences:', error)
     return c.json({ error: 'Failed to update agent preferences' }, 500)
   }
@@ -1921,6 +1925,33 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
   }
 })
 
+// Saved references are readable through the agent that owns them. This exposes
+// just the displayed binding, never unrelated personal accounts.
+agents.get('/:id/llm-connections', AgentRead(), async c => {
+  const slug = getAgentId(c)
+  const prefs = await readAgentPreferences(slug)
+  let currentId = prefs.defaultLlmProviderId ?? undefined
+  const reference = c.req.query('llmProviderId')
+  if (reference && reference !== currentId) {
+    for (const table of [scheduledTasks, webhookTriggers, chatIntegrations]) {
+      const attached = await db.select({ id: table.id }).from(table)
+        .where(and(eq(table.agentSlug, slug), eq(table.llmProviderId, reference))).get()
+      if (attached) { currentId = reference; break }
+    }
+  }
+  return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, currentId) })
+})
+
+agents.get('/:id/sessions/:sessionId/llm-connections', AgentUser(), async c => {
+  const slug = getAgentId(c)
+  const actor = agentRegistry.get(slug)
+  const sessionId = c.req.param('sessionId')
+  if (!await actor.sessions.isKnown(sessionId)) return c.json({ error: 'Session not found' }, 404)
+  const metadata = await actor.sessions.metadata(sessionId)
+  const effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(slug), getEffectiveModels())
+  return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, effective.llmProviderId ?? undefined) })
+})
+
 // POST /api/agents/:id/sessions - Create a new session with initial message
 agents.post('/:id/sessions', AgentUser(), async (c) => {
   try {
@@ -1973,14 +2004,16 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // Model/effort/speed preference order: explicit per-session pick > agent default > global default.
     const agentPrefs = await readAgentPreferences(slug)
     const models = getEffectiveModels()
-    const resolved = resolveRuntimeInherit(runtimeOptions, agentPrefs, models)
-    const prewarm = resolveRuntimeInherit({}, agentPrefs, models)
+    await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, agentPrefs.defaultLlmProviderId)
+    const resolved = await resolveConnectionRuntimeInherit(runtimeOptions, agentPrefs, models)
+    const prewarm = await resolveConnectionRuntimeInherit({}, agentPrefs, models)
 
     const containerSession = await actor.sessions.create({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
       initialMessageUuid,
       model: resolved.model,
+      llmProviderId: resolved.llmProviderId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       maxOutputTokens: agentLimits.maxOutputTokens,
@@ -1996,6 +2029,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       // wire when the user explicitly chooses one), so it is what the
       // container should pre-warm for.
       prewarmDefaults: {
+        llmProviderId: prewarm.llmProviderId ?? undefined,
         model: prewarm.model,
         effort: prewarm.effort,
         speed: prewarm.speed,
@@ -2009,6 +2043,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // an existing conversation's next turn or make the composer claim it will.
     const initialMetadata: Partial<SessionMetadata> = {
       model: resolved.model,
+      llmProviderId: resolved.llmProviderId,
       ...(resolved.effort ? { effort: resolved.effort } : {}),
       ...(resolved.speed ? { speed: resolved.speed } : {}),
       ...(dashboardDispatch
@@ -2087,6 +2122,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         messageCount: 0,
         isActive: true,
         model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
         ...(resolved.effort ? { effort: resolved.effort } : {}),
         ...(resolved.speed ? { speed: resolved.speed } : {}),
         initialMessageUuid,
@@ -2094,6 +2130,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       201
     )
   } catch (error) {
+    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     console.error('Failed to create session:', error)
     return c.json({ error: 'Failed to create session' }, 500)
   }
@@ -2115,12 +2152,40 @@ const messagesListQuerySchema = z
 
 // Presentation is derived fresh per response (not persisted), so provider copy
 // changes and provider switches apply to history retroactively.
-function attachProviderErrorPresentations(transformed: TransformedItem[]): void {
+async function attachProviderErrorPresentations(transformed: TransformedItem[], agentSlug: string, sessionId: string): Promise<void> {
+  if (!transformed.some(item => item?.type === 'assistant' && item.apiError)) return
+  const runtimeProvider = sessionRuntime(agentSlug, sessionId)?.provider
+  let provider = runtimeProvider ? getLlmProvider(runtimeProvider) : undefined
+  if (!provider) {
+    const metadata = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
+    // Resolve the saved account even if its selected model has since retired.
+    const id = storedSelection(metadata?.model, metadata?.llmProviderId)?.llmProviderId
+    const connection = id ? await getConnection(id) : null
+    provider = connection ? providerForConnection(connection) : (await resolveGlobalSelection())?.provider ?? getActiveLlmProvider()
+  }
   for (const item of transformed) {
     // Holes serialize as null (JSON.stringify / streamJsonArrayResponse); skip so this walk does not 500.
     if (!item || item.type !== 'assistant' || !item.apiError) continue
     item.errorPresentation =
-      getActiveLlmProvider().presentationForTurnError(undefined, item.content.text, item.apiError) ?? undefined
+      provider.presentationForTurnError(undefined, item.content.text, item.apiError) ?? undefined
+  }
+}
+
+/** Rows authored by a person; an integration's rows carry its card instead (see annotateIntegrationMessages). */
+function userAuthors(rows: { messageId: string; userId: string | null }[]): { messageId: string; userId: string }[] {
+  return rows.flatMap(row => row.userId ? [{ messageId: row.messageId, userId: row.userId }] : [])
+}
+
+// Integration cards are decoration: a lookup failure leaves the messages as text.
+async function annotateIntegrationMessagesBestEffort(
+  transformed: TransformedItem[],
+  agentSlug: string,
+  sessionId: string,
+): Promise<void> {
+  try {
+    await annotateIntegrationMessages(agentSlug, sessionId, transformed)
+  } catch (error) {
+    captureException(error, { tags: { component: 'agents', operation: 'annotate-integration-messages' }, level: 'warning' })
   }
 }
 
@@ -2129,7 +2194,7 @@ async function annotateAndRecoverMessages(
   agentSlug: string,
   sessionId: string,
 ): Promise<void> {
-  attachProviderErrorPresentations(transformed)
+  await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
   await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
 
   const settledRequests = agentRegistry.get(agentSlug).inputs.settled(sessionId)
@@ -2154,6 +2219,8 @@ async function annotateAndRecoverMessages(
     }
   }
 
+  await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
+
   if (!isAuthMode()) return
 
   const userMessageIds = transformed.filter((m) => m.type === 'user').map((m) => m.id)
@@ -2162,13 +2229,13 @@ async function annotateAndRecoverMessages(
   // Scope the lookup to the ids actually in this response — a delta window is
   // a handful of items, and loading the whole session's author history per
   // refetch would erase the bounded-memory benefit on auth deployments.
-  const authors = await db
+  const authors = userAuthors(await db
     .select({
       messageId: messageAuthor.id,
       userId: messageAuthor.userId,
     })
     .from(messageAuthor)
-    .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds)))
+    .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds), isNotNull(messageAuthor.userId))))
 
   const profiles = await getUserSummaries(authors.map(author => author.userId))
   const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
@@ -2296,7 +2363,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     c.req.raw.signal.throwIfAborted()
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
     const transformed = transformMessages(filtered)
-    attachProviderErrorPresentations(transformed)
+    await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
 
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
@@ -2332,6 +2399,8 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       }
     }
 
+    await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
+
     // In auth mode, annotate user messages with sender info
     if (isAuthMode()) {
       const userMessageIds = transformed
@@ -2339,13 +2408,13 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         .map((m) => m.id)
 
       if (userMessageIds.length > 0) {
-        const authors = await db
+        const authors = userAuthors(await db
           .select({
             messageId: messageAuthor.id,
             userId: messageAuthor.userId,
           })
           .from(messageAuthor)
-          .where(eq(messageAuthor.sessionId, sessionId))
+          .where(and(eq(messageAuthor.sessionId, sessionId), isNotNull(messageAuthor.userId))))
 
         const profiles = await getUserSummaries(authors.map(author => author.userId))
         const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
@@ -2504,7 +2573,7 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
       (e): e is JsonlMessageEntry => e.type === 'user' || e.type === 'assistant'
     )
     const transformed = transformMessages(messageEntries)
-    attachProviderErrorPresentations(transformed)
+    await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
     // Fanned out in parallel across all subagent ids by the activity log, so
     // stream the serialization instead of building one JSON string per request.
     return streamJsonArrayResponse(c, transformed, {
@@ -2564,8 +2633,7 @@ agents.get('/:id/sessions/:sessionId/usage', AgentRead(), async (c) => {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const providerId = getSettings().llmProvider ?? 'anthropic'
-    const totals = await actor.sessions.usage(sessionId, { providerId })
+    const totals = await actor.sessions.usage(sessionId)
     return c.json(totals)
   } catch (error) {
     console.error('Failed to calculate session usage:', error)
@@ -2679,87 +2747,104 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         content: text,
         queued: false,
       })
-      await actor.messages.send(sessionId, text, messageUuid, { shouldQuery: false })
+      await actor.messages.send(sessionId, text, messageUuid, { shouldQuery: false, preserveRuntime: true })
       // No stream frames follow an append, so the warm summary is told directly.
       actor.sessions.recordActivity(sessionId)
       return c.json({ success: true, uuid: messageUuid, queued: false }, 201)
     }
 
-    // If the session is awaiting user input (an open AskUserQuestion / secret / file
-    // request, etc.), cancel the pending request first so this message starts a fresh
-    // turn instead of deadlocking behind the blocked tool. No-op when not awaiting.
-    // Runs before the wasQueued capture so its state changes (interrupt for subagent
-    // requests) are reflected in the queue-vs-fresh-turn decision below.
-    await agentRegistry.get(agentSlug).inputs.cancelAwaiting(sessionId)
+    return await withSessionSelection(agentSlug, sessionId, async () => {
+      const currentSelection = await actor.sessions.metadata(sessionId)
+      // Authorize before mutating activity or persisting the user's message.
+      await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, currentSelection?.llmProviderId)
+      // If the session is awaiting user input (an open AskUserQuestion / secret / file
+      // request, etc.), cancel the pending request first so this message starts a fresh
+      // turn instead of deadlocking behind the blocked tool. No-op when not awaiting.
+      // Runs before the wasQueued capture so its state changes (interrupt for subagent
+      // requests) are reflected in the queue-vs-fresh-turn decision below.
+      await agentRegistry.get(agentSlug).inputs.cancelAwaiting(sessionId)
 
-    // Captured before markSessionActive: a message sent while the agent is
-    // mid-turn is queued by the agent loop rather than starting a new turn.
-    const wasQueued = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
+      // Captured before markSessionActive: a message sent while the agent is
+      // mid-turn is queued by the agent loop rather than starting a new turn.
+      const wasQueued = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
 
-    agentRegistry.get(agentSlug).sessions.markActive(sessionId)
+      agentRegistry.get(agentSlug).sessions.markActive(sessionId)
 
-    // A mid-turn send must not carry model/effort/speed: the container treats a
-    // parameter change as interrupt/restart of the in-flight query. The
-    // composer strips these client-side, but its view of "active" comes from
-    // SSE and can be stale (reconnect, second window, shared-session peer) —
-    // the server's check is authoritative.
-    if (wasQueued) {
-      delete runtimeOptions.effort
-      delete runtimeOptions.speed
-      delete runtimeOptions.model
-    }
-
-    await persistAndBroadcastUserMessage(c, {
-      messageUuid,
-      sessionId,
-      agentSlug,
-      content: text,
-      queued: wasQueued,
-    })
-
-    await actor.messages.send(sessionId, text, messageUuid, runtimeOptions)
-    nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
-    const updates: Partial<SessionMetadata> = {}
-    if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
-    if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
-    if (runtimeOptions.model) updates.model = runtimeOptions.model
-    if (isAuthMode()) {
-      // Alert claim: the device that spoke last in a session is the one
-      // awaiting its outcome, so visible pushes follow it. A send with no
-      // device identity (web/desktop) CLEARS the claim — the user moved to a
-      // surface where a phone alert for this session would be noise (web push
-      // covers them there). Explicit null ≠ absent: absent falls back to the
-      // creation stamp in ApnsRelayChannel. Awaited via the metadata write
-      // below so a fast turn can't complete ahead of its own claim.
-      updates.alertDeviceId = getRequestDeviceId(c)
-    }
-    if (Object.keys(updates).length > 0) {
-      try {
-        const previous = await actor.sessions.updateMetadata(sessionId, updates)
-        // The composer re-sends its whole selection on every fresh turn, so
-        // option presence alone doesn't mean anything changed. Compare against
-        // the previous metadata (captured under the update's lock) — otherwise
-        // every send would make every open window refetch the session list and
-        // detail for a no-op. A failed metadata write skips the broadcast too:
-        // peers would only refetch the stale values.
-        const runtimeSelectionChanged =
-          (updates.effort !== undefined && previous?.effort !== updates.effort) ||
-          (updates.speed !== undefined && previous?.speed !== updates.speed) ||
-          (updates.model !== undefined && previous?.model !== updates.model)
-        if (runtimeSelectionChanged) {
-          // Other windows/devices may already have seeded their composer from
-          // the previous session metadata. Tell both the local session stream
-          // and the global event stream to refresh before their next send.
-          agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
-          messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
-        }
-      } catch (error) {
-        console.error(error)
+      // A mid-turn send must not carry model/effort/speed: the container treats a
+      // parameter change as interrupt/restart of the in-flight query. The
+      // composer strips these client-side, but its view of "active" comes from
+      // SSE and can be stale (reconnect, second window, shared-session peer) —
+      // the server's check is authoritative.
+      if (wasQueued) {
+        delete runtimeOptions.effort
+        delete runtimeOptions.speed
+        delete runtimeOptions.model
+        delete runtimeOptions.llmProviderId
       }
-    }
 
-    return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
+      await persistAndBroadcastUserMessage(c, {
+        messageUuid,
+        sessionId,
+        agentSlug,
+        content: text,
+        queued: wasQueued,
+      })
+
+      await actor.messages.send(sessionId, text, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
+      const updates: Partial<SessionMetadata> = {}
+      if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
+      if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
+      // The container client stores the resolved pair, including inherited
+      // fallback after deletion. Do not overwrite it with a stale request pair.
+      const effectiveMetadata = getSettings().llmDefault ? await actor.sessions.metadata(sessionId) : null
+      if (!wasQueued && effectiveMetadata?.model) {
+        updates.model = effectiveMetadata.model
+        updates.llmProviderId = effectiveMetadata.llmProviderId
+      } else {
+        if (runtimeOptions.model) updates.model = runtimeOptions.model
+        if (runtimeOptions.llmProviderId !== undefined) updates.llmProviderId = runtimeOptions.llmProviderId
+      }
+      if (isAuthMode()) {
+        // Alert claim: the device that spoke last in a session is the one
+        // awaiting its outcome, so visible pushes follow it. A send with no
+        // device identity (web/desktop) CLEARS the claim — the user moved to a
+        // surface where a phone alert for this session would be noise (web push
+        // covers them there). Explicit null ≠ absent: absent falls back to the
+        // creation stamp in ApnsRelayChannel. Awaited via the metadata write
+        // below so a fast turn can't complete ahead of its own claim.
+        updates.alertDeviceId = getRequestDeviceId(c)
+      }
+      if (Object.keys(updates).length > 0) {
+        try {
+          const previous = await actor.sessions.updateMetadata(sessionId, updates)
+          // The composer re-sends its whole selection on every fresh turn, so
+          // option presence alone doesn't mean anything changed. Compare against
+          // the previous metadata (captured under the update's lock) — otherwise
+          // every send would make every open window refetch the session list and
+          // detail for a no-op. A failed metadata write skips the broadcast too:
+          // peers would only refetch the stale values.
+          const runtimeSelectionChanged =
+            (updates.effort !== undefined && previous?.effort !== updates.effort) ||
+            (updates.speed !== undefined && previous?.speed !== updates.speed) ||
+            (updates.model !== undefined && (getSettings().llmDefault ? currentSelection : previous)?.model !== updates.model) ||
+            (updates.llmProviderId !== undefined && (getSettings().llmDefault ? currentSelection : previous)?.llmProviderId !== updates.llmProviderId)
+          if (runtimeSelectionChanged) {
+            // Other windows/devices may already have seeded their composer from
+            // the previous session metadata. Tell both the local session stream
+            // and the global event stream to refresh before their next send.
+            agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
+            messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
+          }
+        } catch (error) {
+          console.error(error)
+        }
+      }
+
+      return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
+    })
   } catch (error) {
+    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     console.error('Failed to send message:', error)
     return c.json({ error: 'Failed to send message' }, 500)
   }
@@ -2829,6 +2914,16 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
 
     const isActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
     const metadata = await actor.sessions.metadata(sessionId)
+    let effective: Awaited<ReturnType<typeof resolveConnectionRuntimeInherit>> | null = null
+    if (getSettings().llmDefault) {
+      try {
+        effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(agentSlug), getEffectiveModels())
+      } catch (error) {
+        // History remains readable during provider/configuration outages.
+        // A new turn still resolves and validates its runtime before sending.
+        console.warn('Could not resolve session display defaults:', error)
+      }
+    }
     const pendingWake = await getPendingWakeForSession(agentSlug, sessionId)
     const invokingAgent = metadata?.invokedByAgentSlug
       ? await getAgent(metadata.invokedByAgentSlug)
@@ -2864,7 +2959,8 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
         : undefined,
       effort: metadata?.effort,
       speed: metadata?.speed,
-      model: metadata?.model,
+      model: effective?.model ?? metadata?.model,
+      llmProviderId: effective?.llmProviderId ?? metadata?.llmProviderId,
       ...(pendingWake
         ? {
             pendingWakeAt: pendingWake.nextExecutionAt.toISOString(),
@@ -3026,10 +3122,9 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
       console.error('Failed to cancel pending wake for deleted session:', error)
     })
 
-    // Clean up message author records for this session (auth mode only).
-    if (isAuthMode()) {
-      await db.delete(messageAuthor).where(eq(messageAuthor.sessionId, sessionId))
-    }
+    // Clean up message author records for this session: people (auth mode)
+    // and integrations (every mode).
+    await db.delete(messageAuthor).where(eq(messageAuthor.sessionId, sessionId))
 
     // Clean up notification rows for this session in BOTH modes (notifications
     // are stored regardless of auth mode; userId is nullable), so deleting a
@@ -4594,27 +4689,8 @@ agents.get('/:id/webhook-triggers', AgentRead(), async (c) => {
   }
 })
 
-// GET /api/agents/:id/chat-integrations - List chat integrations for an agent
-agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
-  try {
-    const slug = getAgentId(c)
-    const status = c.req.query('status')
-
-    const integrations = await listChatIntegrations(slug, status || undefined)
-    // Enrich each row with the live transport state (the same isIntegrationConnected
-    // the /status route reads) so the agent-home list derives "Listening" vs
-    // "Connecting…" from the same source of truth as the connector page, instead
-    // of guessing from persisted status alone.
-    const withConnection = integrations.map((integration) => ({
-      ...toPublicAgentIntegration(integration),
-      connected: agentIntegrationManager.isIntegrationConnected(integration.id),
-    }))
-    return c.json(withConnection)
-  } catch (error) {
-    console.error('Failed to fetch chat integrations:', error)
-    return c.json({ error: 'Failed to fetch chat integrations' }, 500)
-  }
-})
+// TODO(2026-12-01): Delete this legacy list route; use /api/agent-integrations/agents/:id.
+agents.get('/:id/chat-integrations', AgentRead(), listAgentIntegrationsHandler)
 
 function secretsErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof WorkspaceFileError && error.code === 'not-a-file') {

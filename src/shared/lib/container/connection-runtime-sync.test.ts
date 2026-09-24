@@ -1,3 +1,5 @@
+const integrations = vi.hoisted(() => ({ projection: vi.fn(async () => [] as unknown[]) }))
+vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: integrations.projection }))
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockWhere = vi.fn()
@@ -51,6 +53,7 @@ import {
 describe('connection runtime synchronization', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    integrations.projection.mockResolvedValue([])
     mockGetCachedInfo.mockReturnValue({ status: 'running', port: 8080 })
     mockGetHostApiBaseUrl.mockResolvedValue('http://10.20.30.40:3000')
     mockFetch.mockResolvedValue(new Response(null, { status: 200 }))
@@ -123,6 +126,18 @@ describe('connection runtime synchronization', () => {
         tools: [{ name: 'search' }],
       },
     ])
+  })
+
+  it('hot-adds and removes integration-owned MCPs alongside user connections', async () => {
+    mockWhere.mockResolvedValue([])
+    const owned = { id: 'integration:id', name: 'agent_integration_id', proxyUrl: 'http://host/api/mcp-proxy/agent-1/integration:id', status: 'active', tools: [], integration: { id: 'id', provider: 'Linear', name: 'Agent', workspace: 'Test' } }
+    integrations.projection.mockResolvedValue([owned])
+    await updateRemoteMcpEnvironment('agent-1', runtime.getClient())
+    expect(JSON.parse(JSON.parse(mockFetch.mock.calls[0][1].body).value)).toEqual([owned])
+    expect(integrations.projection).toHaveBeenCalledWith('agent-1', 'http://10.20.30.40:3000')
+    integrations.projection.mockResolvedValue([])
+    await updateRemoteMcpEnvironment('agent-1', runtime.getClient())
+    expect(JSON.parse(JSON.parse(mockFetch.mock.calls[1][1].body).value)).toEqual([])
   })
 
   it('writes active and reconnectable connected-account metadata grouped by toolkit', async () => {

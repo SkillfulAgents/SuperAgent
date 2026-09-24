@@ -53,7 +53,7 @@ import {
 } from './x-agent-tools'
 import {
   listChatProvidersRenderer,
-  listChatIntegrationsRenderer,
+  listAgentIntegrationsRenderer,
   addChatIntegrationRenderer,
   sendChatMessageRenderer,
 } from './chat-tools'
@@ -144,7 +144,9 @@ const toolRenderers: Record<string, ToolRenderer> = {
 
   // MCP tools - chat integrations
   'mcp__chat__list_available_chat_providers': listChatProvidersRenderer,
-  'mcp__chat__list_chat_integrations': listChatIntegrationsRenderer,
+  'mcp__chat__list_agent_integrations': listAgentIntegrationsRenderer,
+  // TODO(2026-12-01): Delete this legacy list_chat_integrations renderer alias.
+  'mcp__chat__list_chat_integrations': listAgentIntegrationsRenderer,
   'mcp__chat__add_chat_integration': addChatIntegrationRenderer,
   'mcp__chat__send_chat_message': sendChatMessageRenderer,
 }

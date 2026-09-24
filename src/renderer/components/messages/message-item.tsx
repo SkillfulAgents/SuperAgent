@@ -12,7 +12,7 @@ import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
 import { MessageContextMenu } from './message-context-menu'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { parseUserMessageParts } from '@shared/lib/utils/user-message-parts'
-import { classifyUserText } from './user-message-kinds'
+import { classifyUserMessage } from './user-message-kinds'
 import { SentAttachmentChip, imageSizeForCount } from './sent-attachment-chip'
 import { isPreviewableImage } from '@renderer/lib/file-types'
 import { Markdown, type MarkdownProps } from '@renderer/components/ui/markdown'
@@ -354,11 +354,14 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
       )
     : []
 
-  // Kinds with a custom bubble body (slash commands today) replace the
-  // Markdown rendering. Classified on the peeled text so a mirrored
-  // "\[sender]: /cmd" still draws as a command. They get the default body
-  // back as a callback so whatever they don't decorate renders as usual.
-  const userKind = isUser && hasText ? classifyUserText(text) : null
+  // Kinds with a custom bubble body (slash commands, integration cards)
+  // replace the Markdown rendering. Host metadata decides first; text kinds
+  // are classified on the peeled text so a mirrored "\[sender]: /cmd" still
+  // draws as a command. They get the default body back as a callback so
+  // whatever they don't decorate renders as usual.
+  const userKind = isUser ? classifyUserMessage(message, hasText ? text : '') : null
+  // An integration card names its own author and may carry only files.
+  const isIntegrationMessage = userKind?.kind === 'integration'
   const CustomUserRender = userKind?.Render
   const bareUserRender = CustomUserRender && userKind?.chrome === 'bare'
   const renderMarkdown = useCallback((markdown: string) => (
@@ -447,7 +450,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // - assistant provider errors routed to another placement
   // - user messages that only had attached files (text was fully stripped)
   const showMessageBubble = isUser
-    ? (hasText || attachedFiles.length === 0)
+    ? (hasText || attachedFiles.length === 0 || isIntegrationMessage)
     : (hasInlineText || isStreaming)
 
   return (
@@ -467,7 +470,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         )}
       >
         {/* Sender name: shared agent sessions, or lifted from a read-only mirror prefix. */}
-        {isUser && (message.sender?.name ?? senderFromPrefix) && (
+        {isUser && !isIntegrationMessage && (message.sender?.name ?? senderFromPrefix) && (
           <span className="text-xs text-muted-foreground">{message.sender?.name ?? senderFromPrefix}</span>
         )}
 

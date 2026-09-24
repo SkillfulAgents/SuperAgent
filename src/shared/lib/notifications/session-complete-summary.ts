@@ -152,7 +152,7 @@ async function summarizeResponse(
   if (process.env.E2E_MOCK === 'true') return null
 
   try {
-    const client = getConfiguredLlmClient()
+    const client = await getConfiguredLlmClient()
     const model = resolveActiveProviderModel(
       getEffectiveModels().summarizerModel,
       'summarizer',

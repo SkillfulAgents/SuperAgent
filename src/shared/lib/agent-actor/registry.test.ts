@@ -335,22 +335,20 @@ describe('createAgentRegistry', () => {
 
     it('usage.daily reads every transcript the CLI wrote for this agent', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
-      await actor.usage.daily({ since: '2026-09-01', providerId: 'anthropic' })
+      await actor.usage.daily({ since: '2026-09-01' })
       expect(fake.loadDailyUsageData).toHaveBeenCalledWith({
         files: actor.files,
         dir: '.claude/projects/-workspace',
         since: '2026-09-01',
-        providerId: 'anthropic',
       })
     })
 
     it('sessions.usage reads this session\'s transcript through the agent\'s files', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
-      await actor.sessions.usage('s1', { providerId: 'anthropic' })
+      await actor.sessions.usage('s1')
       expect(fake.loadSessionUsageTotals).toHaveBeenCalledWith({
         files: actor.files,
         transcript: '.claude/projects/-workspace/s1.jsonl',
-        providerId: 'anthropic',
       })
     })
 

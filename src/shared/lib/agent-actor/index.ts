@@ -1,5 +1,5 @@
 export { MemoryError, MAX_MEMORY_BYTES } from './memory-schema'
-export { agentRegistry } from './registry'
+export { agentRegistry, completeMcpReauth } from './registry'
 export { containerHost, type ContainerHost } from './host'
 export { agentCatalog } from './agent-catalog'
 export { identityFromInstructions } from './agent-directories'

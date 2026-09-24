@@ -87,7 +87,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new VoiceProviderError(this.messages().missingKey, 400)
     // Check the mapping dependency before creating a billable voice session.
-    getConfiguredLlmClient()
+    await getConfiguredLlmClient()
     const input = windowVoiceHistory(history).map((message) => ({
       role: message.role,
       content: [{ type: message.role === 'user' ? 'input_text' : 'text', text: message.content }],
@@ -134,7 +134,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
   async mapLiveConversation(input: LiveMappingInput, signal?: AbortSignal) {
     const deadline = AbortSignal.timeout(12_000)
     const bounded = input.kind === 'request' ? { ...input, history: windowVoiceHistory(input.history) } : input
-    const text = await createSummarizerText(getConfiguredLlmClient(), {
+    const text = await createSummarizerText(await getConfiguredLlmClient(), {
       model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
       system: input.kind === 'request' ? LIVE_REQUEST_PROMPT : LIVE_REPLY_PROMPT,
       messages: [{ role: 'user', content: JSON.stringify(bounded) }],

@@ -158,7 +158,7 @@ test.describe('Settings Page', () => {
 
     // Click LLM tab
     await goToTab(page, 'llm')
-    await expect(page.locator('[data-testid="llm-provider-card-anthropic"]')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Add connection', exact: true })).toBeVisible()
 
     // Click Runtime tab
     await goToTab(page, 'runtime')
@@ -173,14 +173,15 @@ test.describe('Settings Page', () => {
     await expect(page.locator('[data-testid="rerun-wizard-button"]')).toBeVisible()
   })
 
-  test('LLM tab shows provider selector and model options', async ({ page }) => {
+  test('LLM tab shows connections and global model defaults', async ({ page }) => {
     await openSettings(page)
     await goToTab(page, 'llm')
 
-    // Provider radio cards replace the old <select>; the active provider's card
-    // expands inline to show its three model selectors (default + summarizer + dashboard).
-    await expect(page.locator('[data-testid="llm-provider-card-anthropic"]')).toBeVisible()
-    await expect(page.locator('[data-testid="settings-model-trigger"]')).toHaveCount(3)
+    // Global defaults and the connection list are always available, including
+    // before the first connection is configured.
+    await expect(page.getByRole('button', { name: 'Add connection', exact: true })).toBeVisible()
+    await expect(page.getByText('App default', { exact: true })).toBeVisible()
+    await expect(page.getByText('Summarizer', { exact: true })).toBeVisible()
   })
 
   test('Runtime tab shows container config fields', async ({ page }) => {

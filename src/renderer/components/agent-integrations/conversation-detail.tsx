@@ -12,14 +12,14 @@ import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { formatSessionTimestamp } from '@shared/lib/agent-integrations/presentation'
 import { AccessActions } from './access-actions'
 import type { ChatRow } from './chat-inbox-model'
-import type { ChatIntegrationSession } from '@shared/lib/db/schema'
+import type { AgentIntegrationSession } from '@shared/lib/db/schema'
 
 // The thread hugs its content when short and scrolls internally once it grows past
 // this cap - we cap SessionThread's own scroller (data-message-content-area) and
 // let it auto-size, so the dialog stays a sensible height.
 const CONVERSATION_PANEL_SCROLL = '[&_[data-message-content-area]]:max-h-[65vh] [&_[data-message-content-area]]:!h-auto'
 
-const windowLabel = (w: ChatIntegrationSession) =>
+const windowLabel = (w: AgentIntegrationSession) =>
   `${formatSessionTimestamp(new Date(w.updatedAt))}${w.archivedAt ? ' (cleared)' : ''}`
 
 // Switcher value for the fresh, not-yet-created conversation.

@@ -1,4 +1,4 @@
-import type { AgentIntegrationRecord as ChatIntegration } from '../agent-integrations/types'
+import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import { isMultiPartyChatType, type ChatConnectorClass, type IncomingMessage } from './chat-agent-integration'
 import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
 import { sanitizeUploadFilename, withUploadTimestamp } from '../utils/path-safety'
@@ -15,9 +15,9 @@ function isTrustedSlackDownloadHost(u: URL): boolean {
 export class ChatInputBuilder {
   constructor(private readonly getConnectorClass: (provider: string) => Promise<ChatConnectorClass | undefined>) {}
   async buildMessageContent(
-    integration: ChatIntegration,
+    integration: AgentIntegrationRecord,
     message: IncomingMessage,
-  ): Promise<{ text: string; failedFiles: string[] }> {
+  ): Promise<{ text: string; failedFiles: string[]; request: string }> {
     // Attribution is best-effort metadata, so lookup failure falls back to no prefix.
     let connectorClass: ChatConnectorClass | undefined
     try {
@@ -29,9 +29,11 @@ export class ChatInputBuilder {
       ? `\\[${sender}]: `
       : ''
     const text = prefix + (message.text || '')
+    // What the person wrote, for display: no attribution prefix, injected context or file block.
+    let request = message.display?.requestText ?? (message.text || '')
 
     if (!message.files || message.files.length === 0) {
-      return { text, failedFiles: [] }
+      return { text, failedFiles: [], request }
     }
 
     const { appendAttachedFiles } = await import('@shared/lib/utils/attached-files')
@@ -52,11 +54,15 @@ export class ChatInputBuilder {
           if (integration.provider === 'imessage' && file.mimeType?.startsWith('audio/')) {
             const transcript = await this.tryTranscribeAudio(data, file.mimeType)
             if (transcript) {
-              transcribedText = (transcribedText ? transcribedText + '\n' : '') + `[Voice note: "${transcript}"]`
+              const note = `[Voice note: "${transcript}"]`
+              transcribedText = (transcribedText ? transcribedText + '\n' : '') + note
+              request = (request ? request + '\n' : '') + note
               continue
             }
             // Transcription unavailable — fall through to file attachment
-            transcribedText = (transcribedText ? transcribedText + '\n' : '') + '[Voice note — transcription unavailable]'
+            const note = '[Voice note — transcription unavailable]'
+            transcribedText = (transcribedText ? transcribedText + '\n' : '') + note
+            request = (request ? request + '\n' : '') + note
           }
           const path = await this.writeToWorkspace(integration.agentSlug, file.name, data)
           uploadedPaths.push(path)
@@ -69,11 +75,11 @@ export class ChatInputBuilder {
       }
     }
 
-    return { text: appendAttachedFiles(transcribedText, uploadedPaths), failedFiles }
+    return { text: appendAttachedFiles(transcribedText, uploadedPaths), failedFiles, request }
   }
 
   /** Download a file from the chat platform, returning a Buffer. */
-  private async downloadFileBuffer(integration: ChatIntegration, fileUrl: string): Promise<Buffer | null> {
+  private async downloadFileBuffer(integration: AgentIntegrationRecord, fileUrl: string): Promise<Buffer | null> {
     try {
       const config = parseChatIntegrationConfig(
         integration.provider as ChatProvider,

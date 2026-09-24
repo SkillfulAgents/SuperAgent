@@ -1,3 +1,7 @@
+import * as llmProviders from '@shared/lib/llm-provider'
+import { syncProviderSettings } from '@shared/lib/llm-provider/connection-settings'
+vi.mock('@shared/lib/llm-provider/connections', () => ({ listConnections: vi.fn(async () => []) }))
+vi.mock('@shared/lib/llm-provider/connection-settings', () => ({ syncProviderSettings: vi.fn(async () => {}) }))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
@@ -177,6 +181,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   auditLog: {},
   webhookTriggers: {},
   chatIntegrations: {},
+  llmConnections: {},
   chatIntegrationSessions: {},
   chatIntegrationAccess: {},
   slackThreadState: {},
@@ -1131,6 +1136,15 @@ describe('settings route', () => {
       expect(mockUpdateSettings).not.toHaveBeenCalled()
     })
 
+    it('directs global LLM overrides to the connection editor without storing them', async () => {
+      const res = await app.request('/api/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customEnvVars: { ANTHROPIC_BASE_URL: 'https://wrong-scope.example' } }),
+      })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('Edit connection')
+    })
+
     it('accepts customEnvVars with only non-reserved keys (200)', async () => {
       const res = await putSettings({
         customEnvVars: { MY_OK: 'fine', ANOTHER: 'x' },
@@ -1789,6 +1803,26 @@ describe('settings route', () => {
   // Settings merge — llmProvider
   // =========================================================================
   describe('llmProvider handling', () => {
+    it.each([false, true])('rejects an agent-only legacy choice before saving (existing default: %s)', async existingDefault => {
+      mockGetSettings.mockReturnValue({ ...defaultSettings(),
+        ...(existingDefault ? { llmDefault: { llmProviderId: 'existing', model: 'sonnet' } } : {}),
+      })
+      class AgentOnlyProvider extends llmProviders.GenericLlmProvider {
+        override readonly supportsDirectApi = false
+      }
+      const provider = vi.spyOn(llmProviders, 'getLlmProvider').mockReturnValueOnce(new AgentOnlyProvider())
+      try {
+        const res = await putSettings({ llmProvider: 'generic', apiKeys: { genericApiKey: 'test-key', genericBaseUrl: 'https://test.example' } })
+        expect(res.status).toBe(400)
+        expect((await res.json()).error).toContain('Settings → Model Providers')
+        expect(mockUpdateSettings).not.toHaveBeenCalled()
+        expect(mockMutateSettings).not.toHaveBeenCalled()
+        expect(syncProviderSettings).not.toHaveBeenCalled()
+      } finally {
+        provider.mockRestore()
+      }
+    })
+
     it('updates llmProvider when provided', async () => {
       const res = await putSettings({ llmProvider: 'openrouter' })
       expect(res.status).toBe(200)

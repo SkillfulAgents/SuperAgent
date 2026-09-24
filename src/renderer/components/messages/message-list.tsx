@@ -343,7 +343,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       // The server echoes user_message to the sender too; our own echo is
       // redundant with the local pending copy — drop it immediately so it
       // can't linger in stream state (it would suppress the typing indicator).
-      if (peer.sender.id === user?.id) {
+      if (peer.sender && peer.sender.id === user?.id) {
         removePeerUserMessage(sessionId, peer.uuid)
         continue
       }
@@ -942,7 +942,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     () =>
       peerUserMessages.filter(
         (p) =>
-          p.sender.id !== user?.id &&
+          (!p.sender || p.sender.id !== user?.id) &&
           !messages?.some(
             (m) =>
               m.type === 'user' &&
@@ -1025,6 +1025,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     sentAt: number
     queued?: boolean
     sender?: { id: string; name: string; email: string; image?: string | null }
+    integration?: ApiMessage['integration']
     testId?: string
     /** Set for own queued ghosts once the server uuid is known — enables Cancel. */
     onCancel?: () => void
@@ -1042,6 +1043,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             toolCalls: [],
             createdAt: new Date(ghost.sentAt),
             sender: ghost.sender,
+            integration: ghost.integration,
           }}
           agentSlug={agentSlug}
         />
@@ -1093,9 +1095,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       text: peer.content,
       sentAt: peer.receivedAt,
       queued: peer.queued,
-      sender: peer.sender.name
+      sender: peer.sender?.name
         ? { id: peer.sender.id, name: peer.sender.name, email: peer.sender.email || '', image: peer.sender.image }
         : undefined,
+      integration: peer.integration,
     })
 
   if (isLoading && !hasPendingMessages) {

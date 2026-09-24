@@ -1,3 +1,5 @@
+import { withSessionSendContext } from './session-send-context'
+import { sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 import { z } from 'zod'
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
 import { mergeCanonicalSlashCommands } from './slash-commands'
@@ -49,13 +51,7 @@ import {
   type ScheduledTaskUpdateInput,
   type WebhookTriggerUpdateInput,
 } from '@shared/lib/services/automation-update-schema'
-import {
-  createPlatformWebhookEndpoint,
-  updatePlatformWebhookEndpoint,
-  disablePlatformWebhookEndpoint,
-  listPlatformWebhookEvents,
-  testPlatformWebhookFilter,
-} from '@shared/lib/services/webhook-endpoints-client'
+import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import {
   createWebhookEndpointInputSchema,
   updateWebhookEndpointInputSchema,
@@ -84,13 +80,13 @@ import {
   revertSessionActivity,
   type SessionActivityMark,
 } from '@shared/lib/services/session-summary-cache'
-import { isHiddenAutomatedSession, isNoninteractiveSession } from '@shared/lib/services/session-visibility'
+import { isHiddenAutomatedSession, isAgentIntegrationSession, isNoninteractiveSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager, type NotificationOutcome } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
 import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capability-policy-schema'
-import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
+import { getLlmProvider, getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
@@ -736,7 +732,7 @@ class MessagePersister {
         // Promote wins: its marker is set synchronously, this read may be stale.
         if (current.promotedToInteractive) return
         current.releaseStreamWhenIdle = isHiddenAutomatedSession(meta)
-        current.retainStateOnStreamRelease = Boolean(meta?.isChatIntegrationSession)
+        current.retainStateOnStreamRelease = isAgentIntegrationSession(meta)
         this.maybeReleaseSessionTransport(current)
       })
       .catch((error) => {
@@ -845,7 +841,7 @@ class MessagePersister {
       const generation = marked.activityGeneration
       const activity = marked.provisionalActivity
       try {
-        return await send()
+        return await withSessionSendContext(agentSlug, sessionId, before.isActive, send)
       } catch (error) {
         const state = this.streamingStates.get(key)
         // A later send, interrupt, recovery, or new runtime turn owns its state.
@@ -964,6 +960,25 @@ class MessagePersister {
     }
     state.provisionalActivity = null
     this.finalizeIdle(agentSlug, sessionId, state)
+  }
+
+  /** Admit terminal replay during recovery, with an undo for a silent cold attach.
+   * The rollback owns only this optimistic mark: a new send, runtime turn, or
+   * output takes ownership even if the public (pending-inclusive) turn number
+   * happens to be unchanged.
+   */
+  markSessionProvisionallyActive(agentSlug: string, sessionId: string): () => void {
+    this.markSessionActive(agentSlug, sessionId)
+    const key = sessionKeyOf(agentSlug, sessionId)
+    const marked = this.streamingStates.get(key)!
+    const { activityGeneration, turnGeneration, outputGeneration, resultGeneration, provisionalActivity } = marked
+    return () => {
+      const state = this.streamingStates.get(key)
+      if (!state || state.provisionalActivity !== provisionalActivity || state.activityGeneration !== activityGeneration ||
+        state.turnGeneration !== turnGeneration || state.outputGeneration !== outputGeneration || state.resultGeneration !== resultGeneration ||
+        state.isInterrupted || state.isRecovering) return
+      this.markSessionIdle(agentSlug, sessionId)
+    }
   }
 
   // Check if a session is currently active (processing user request)
@@ -2023,7 +2038,7 @@ class MessagePersister {
     const meta = await getSessionMetadata(this.storeOf(agentSlug), sessionId)
     if (!isHiddenAutomatedSession(meta)) return
 
-    const hiddenByOwnFlag = !!(meta?.isChatIntegrationSession || meta?.invokedByAgentSlug)
+    const hiddenByOwnFlag = isAgentIntegrationSession(meta) || !!meta?.invokedByAgentSlug
     const wasNoninteractive = isNoninteractiveSession(meta)
     await updateSessionMetadata(this.storeOf(agentSlug), sessionId, {
       noninteractive: false,
@@ -2889,7 +2904,8 @@ class MessagePersister {
           // The active provider owns the copy for its own upstream errors
           // (severity, icon, markdown message + CTA link). Sent alongside the
           // raw error so the UI never re-derives provider-specific copy.
-          const errorPresentation = getActiveLlmProvider().presentationForTurnError(
+          const runtimeProvider = sessionRuntime(agentSlug, sessionId)?.provider
+          const errorPresentation = (runtimeProvider ? getLlmProvider(runtimeProvider) : getActiveLlmProvider()).presentationForTurnError(
             apiErrorStatus ?? undefined,
             errorMessage,
             apiErrorCode,
@@ -5173,11 +5189,11 @@ ${continuation}`
         const mintedByMemberId =
           (await attribution.current())?.actingMemberId() ?? (memberId === 'local' ? undefined : memberId)
 
-        // 1. Mint the endpoint on the platform proxy
-        const endpoint = await createPlatformWebhookEndpoint(memberId, {
+        // 1. Mint the endpoint on the webhook relay
+        const endpoint = await getWebhookRelay().createEndpoint(memberId, {
           name: input.name.trim(),
           ...(verification ? { verification } : {}),
-          ...(filterExp ? { filter_exp: filterExp } : {}),
+          ...(filterExp ? { filterExp } : {}),
         })
 
         // 2. Save the local trigger row (rollback the mint on failure)
@@ -5207,7 +5223,7 @@ ${continuation}`
             tags: { area: 'webhook-endpoints', op: 'create-local-save' },
             extra: { endpointId: endpoint.id, agentSlug, sessionId },
           })
-          await disablePlatformWebhookEndpoint(memberId, endpoint.id).catch((rollbackError) => {
+          await getWebhookRelay().disableEndpoint(memberId, endpoint.id).catch((rollbackError) => {
             // Mint succeeded, local save failed, and now the rollback failed too:
             // a live public URL is orphaned with no local row. Loudest signal.
             console.error('[MessagePersister] Endpoint rollback failed — endpoint orphaned live:', rollbackError)
@@ -5335,7 +5351,11 @@ ${continuation}`
           trigger.mintedByMemberId ??
           (await resolvePlatformMemberForCandidates([trigger.createdByUserId]))?.memberId ??
           (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
-        await updatePlatformWebhookEndpoint(memberId, trigger.composioTriggerId, patch)
+        await getWebhookRelay().updateEndpoint(memberId, trigger.composioTriggerId, {
+          ...(patch.name !== undefined ? { name: patch.name } : {}),
+          ...(patch.verification !== undefined ? { verification: patch.verification } : {}),
+          ...(patch.filter_exp !== undefined ? { filterExp: patch.filter_exp } : {}),
+        })
 
         // Keep the local row in sync so list_triggers/UI don't show a stale name.
         if (patch.name) {
@@ -5419,7 +5439,7 @@ ${continuation}`
           (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
 
         if (input.test_filter_exp) {
-          const result = await testPlatformWebhookFilter(
+          const result = await getWebhookRelay().testEndpointFilter(
             memberId, trigger.composioTriggerId, input.test_filter_exp, input.limit)
           const lines = result.results.map((r) => {
             const stored = r.stored_status ? ` (stored: ${r.stored_status})` : ''
@@ -5433,7 +5453,7 @@ ${continuation}`
             `${lines.length ? lines.join('\n') : 'No stored deliveries to evaluate yet — send a test event first.'}\n\n` +
             `Nothing was changed. When the verdicts look right, apply it with update_webhook_endpoint (filter_exp).`)
         } else {
-          const { filterExp, events } = await listPlatformWebhookEvents(
+          const { filterExp, events } = await getWebhookRelay().listEndpointEvents(
             memberId, trigger.composioTriggerId, input.limit)
           await this.resolveContainerInput(agentSlug, toolUseId,
             `Active filter: ${filterExp ? `\`${filterExp}\`` : 'none (every event delivers)'}\n\n` +
@@ -6169,7 +6189,7 @@ ${continuation}`
         const [modelId] = Object.keys(modelUsage)
         const firstModel = modelUsage[modelId] as { contextWindow?: number } | undefined
         const catalogWindow = modelId
-          ? getModelContextWindow(modelId, getActiveLlmProvider().id)
+          ? sessionRuntime(agentSlug, sessionId)?.modelContextWindows[modelId] ?? getModelContextWindow(modelId, getActiveLlmProvider().id)
           : undefined
         if (catalogWindow) {
           state.lastContextWindow = catalogWindow

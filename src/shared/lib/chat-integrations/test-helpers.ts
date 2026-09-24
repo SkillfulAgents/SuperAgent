@@ -1,5 +1,5 @@
-import { MockChatClientConnector } from './mock-connector'
-import type { IncomingMessage } from './base-connector'
+import { MockChatAgentIntegration } from './mock-connector'
+import type { IncomingMessage } from './chat-agent-integration'
 import type { IntegrationInputEvent } from '../agent-integrations/types'
 
 export function inputEvent(message: Partial<IncomingMessage> & Pick<IncomingMessage, 'chatId'>): IntegrationInputEvent {
@@ -8,5 +8,5 @@ export function inputEvent(message: Partial<IncomingMessage> & Pick<IncomingMess
 }
 
 export function mockChatIntegration<T extends object>(overrides: T) {
-  return Object.assign(new MockChatClientConnector(), overrides)
+  return Object.assign(new MockChatAgentIntegration(), overrides)
 }

@@ -1,3 +1,4 @@
+vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================================================

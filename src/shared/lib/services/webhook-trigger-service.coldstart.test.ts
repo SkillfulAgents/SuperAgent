@@ -1,12 +1,13 @@
 /**
- * Cold-start nudge coverage on the REAL module cycle.
+ * Registration-sync coverage on the REAL module cycle.
  *
  * webhook-trigger-service.test.ts mocks @shared/lib/db and never observes the
- * fire-and-forget import of trigger-manager that createWebhookTrigger launches,
- * so a broken dynamic import — or an incomplete namespace out of the
- * webhook-trigger-service ⇄ trigger-manager cycle — dies as an unhandled
- * rejection that no test attributes. This file deliberately uses the real db
- * and the real trigger-manager: the nudge must run to completion and say so.
+ * fire-and-forget import of trigger-manager that createWebhookTrigger launches
+ * to re-register endpoints with the webhook relay, so a broken dynamic import —
+ * or an incomplete namespace out of the webhook-trigger-service ⇄
+ * trigger-manager cycle — dies as an unhandled rejection that no test
+ * attributes. This file deliberately uses the real db and the real
+ * trigger-manager: the sync must run to completion and say so.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import * as fs from 'fs'
@@ -39,8 +40,8 @@ afterAll(async () => {
   await fs.promises.rm(tempDataDir, { recursive: true, force: true }).catch(() => {})
 })
 
-describe('createWebhookTrigger cold-start nudge (unmocked)', () => {
-  it('completes the fire-and-forget trigger-manager import and poll', async () => {
+describe('createWebhookTrigger registration sync (unmocked)', () => {
+  it('completes the fire-and-forget trigger-manager import and sync', async () => {
     const logSpy = vi.spyOn(console, 'log')
     const warnSpy = vi.spyOn(console, 'warn')
     const { createWebhookTrigger } = await import('./webhook-trigger-service')
@@ -57,17 +58,17 @@ describe('createWebhookTrigger cold-start nudge (unmocked)', () => {
     await vi.waitFor(
       () => {
         const completed = logSpy.mock.calls.some((c) =>
-          String(c[0]).includes(`cold-start nudge completed for trigger ${id}`)
+          String(c[0]).includes(`relay registrations synced (created ${id})`)
         )
         expect(completed).toBe(true)
       },
       { timeout: 15000, interval: 50 }
     )
 
-    const skipped = warnSpy.mock.calls.some((c) =>
-      String(c[0]).includes('cold-start poll skipped')
+    const failed = warnSpy.mock.calls.some((c) =>
+      String(c[0]).includes('relay registration sync failed')
     )
-    expect(skipped).toBe(false)
+    expect(failed).toBe(false)
 
     logSpy.mockRestore()
     warnSpy.mockRestore()

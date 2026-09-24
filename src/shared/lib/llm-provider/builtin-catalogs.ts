@@ -45,7 +45,7 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
  *   - OpenAI GPT-5.x: `service_tier` flex (0.5x price, slower) / priority
  *     (2x, 2.5x on gpt-5.5) → slow/normal/fast.
  *   - xAI grok: `service_tier` priority only (2x when granted) → normal/fast.
- *   - Anthropic: fast mode (research preview) on Opus 4.8 only → normal/fast.
+ *   - Anthropic: fast mode (research preview) on Opus 5.5 / 5 / 4.8 → normal/fast.
  *   - Z.AI GLM: no request-level tier → normal only.
  *   - Fireworks (kimi-k3): fast is a separate `-fast` router resource, not a
  *     request param — the proxy swaps the outbound model id → normal/fast.
@@ -53,22 +53,8 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 const FLEX_AND_PRIORITY_SPEEDS: SpeedLevel[] = ['slow', 'normal', 'fast']
 const PRIORITY_ONLY_SPEEDS: SpeedLevel[] = ['normal', 'fast']
 
-/**
- * Served-tier billing multipliers, mirroring the Platform proxy's pricing:
- * OpenAI flex bills 0.5x and priority 2x (2.5x on gpt-5.5); xAI priority and
- * Anthropic fast mode bill 2x. Standard tier (absent speed) is always 1x.
- * Claude entries get theirs from model-pricing.json via pricingFor().
- */
-const GPT_SPEED_MULTIPLIERS = { slow: 0.5, fast: 2 } as const
-const GPT_55_SPEED_MULTIPLIERS = { slow: 0.5, fast: 2.5 } as const
-const PRIORITY_2X_MULTIPLIERS = { fast: 2 } as const
-// Fireworks prices its fast routers as a separate SKU rather than a tier
-// surcharge; for kimi-k3 that SKU is a flat 1.5x on every rate ($4.50/$22.50
-// against $3/$15), so one multiplier covers it.
-const FIREWORKS_FAST_MULTIPLIERS = { fast: 1.5 } as const
-
-// Anthropic fast mode covers Opus 5 and 4.8 (4.7's was removed 2026-07-24).
-const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-4-8', 'claude-opus-5'])
+// Anthropic fast mode covers Opus 5.5, 5 and 4.8 (4.7's was removed 2026-07-24).
+const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5'])
 
 /** Claude entries with the speed tiers the Platform proxy can request. */
 function withPlatformClaudeSpeeds(catalog: ModelDefinition[]): ModelDefinition[] {
@@ -196,13 +182,25 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
   {
     id: 'claude-opus-5',
     label: 'Opus 5',
+    family: 'opus',
+    icon: ICON,
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-opus-5'),
+  },
+  {
+    // Opus 5.5 (2026-09-22): the CLI's bare `opus` alias resolves here from
+    // 2.1.280, at $4/$20 per Mtok against Opus 5's $5/$25. Thinking cannot be
+    // disabled (effort is the only depth control) and the API default effort
+    // is medium, one level below Opus 5's high.
+    id: 'claude-opus-5-5',
+    label: 'Opus 5.5',
     blurb: 'Most capable',
     family: 'opus',
     isLatest: true,
     isDefault: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
-    pricing: pricingFor('claude-opus-5'),
+    pricing: pricingFor('claude-opus-5-5'),
   },
   {
     id: 'claude-fable-5',
@@ -233,7 +231,7 @@ export const BEDROCK_CATALOG: ModelDefinition[] = [
     isLatest: true,
     icon: ICON,
     supportedEfforts: STANDARD_EFFORTS,
-    pricing: pricingFor('claude-haiku-4-5'),
+    pricing: pricingFor('us.anthropic.claude-haiku-4-5-20251001-v1:0'),
   },
   {
     id: 'us.anthropic.claude-sonnet-4-6',
@@ -241,7 +239,7 @@ export const BEDROCK_CATALOG: ModelDefinition[] = [
     family: 'sonnet',
     icon: ICON,
     supportedEfforts: STANDARD_EFFORTS,
-    pricing: pricingFor('claude-sonnet-4-6'),
+    pricing: pricingFor('us.anthropic.claude-sonnet-4-6'),
   },
   {
     id: 'us.anthropic.claude-sonnet-5',
@@ -251,7 +249,7 @@ export const BEDROCK_CATALOG: ModelDefinition[] = [
     isLatest: true,
     icon: ICON,
     supportedEfforts: STANDARD_EFFORTS,
-    pricing: pricingFor('claude-sonnet-5'),
+    pricing: pricingFor('us.anthropic.claude-sonnet-5'),
   },
   {
     id: 'us.anthropic.claude-opus-4-6-v1',
@@ -259,7 +257,7 @@ export const BEDROCK_CATALOG: ModelDefinition[] = [
     family: 'opus',
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
-    pricing: pricingFor('claude-opus-4-6'),
+    pricing: pricingFor('us.anthropic.claude-opus-4-6-v1'),
   },
   {
     id: 'us.anthropic.claude-opus-4-7',
@@ -267,7 +265,7 @@ export const BEDROCK_CATALOG: ModelDefinition[] = [
     family: 'opus',
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
-    pricing: pricingFor('claude-opus-4-7'),
+    pricing: pricingFor('us.anthropic.claude-opus-4-7'),
   },
   {
     id: 'us.anthropic.claude-opus-4-8',
@@ -278,7 +276,7 @@ export const BEDROCK_CATALOG: ModelDefinition[] = [
     isDefault: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
-    pricing: pricingFor('claude-opus-4-8'),
+    pricing: pricingFor('us.anthropic.claude-opus-4-8'),
   },
   {
     id: 'us.anthropic.claude-fable-5',
@@ -286,7 +284,7 @@ export const BEDROCK_CATALOG: ModelDefinition[] = [
     family: 'fable',
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
-    pricing: pricingFor('claude-fable-5'),
+    pricing: pricingFor('us.anthropic.claude-fable-5'),
   },
   {
     id: 'us.anthropic.claude-fable-5-1',
@@ -295,7 +293,7 @@ export const BEDROCK_CATALOG: ModelDefinition[] = [
     isLatest: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
-    pricing: pricingFor('claude-fable-5-1'),
+    pricing: pricingFor('us.anthropic.claude-fable-5-1'),
   },
 ]
 
@@ -314,7 +312,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
     // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-06-18.
-    pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
+    pricing: pricingFor('openai/gpt-5.4'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.4).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
@@ -332,9 +330,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     // The agent's web search/fetch are Anthropic-native server tools; they don't
     // work when OpenRouter routes to a non-Claude model. Flag so the picker warns.
     supportsWebSearch: false,
-    // Non-Claude ids aren't in model-pricing.json; baked from OpenRouter's live
-    // model list (per-Mtok USD), fetched 2026-06-18. Refresh if OpenRouter repricing.
-    pricing: { inputPerMtok: 5, outputPerMtok: 30 },
+    pricing: pricingFor('openai/gpt-5.5'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
@@ -351,12 +347,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
     // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-06-18.
-    pricing: {
-      inputPerMtok: 1.2,
-      outputPerMtok: 4.2,
-      cacheCreationPerMtok: 0,
-      cacheCreation1hPerMtok: 0,
-    },
+    pricing: pricingFor('z-ai/glm-5.2'),
   },
   {
     id: 'x-ai/grok-4.5',
@@ -367,7 +358,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
     // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-07-10.
-    pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+    pricing: pricingFor('x-ai/grok-4.5'),
     // OpenRouter-reported context length for x-ai/grok-4.5, fetched 2026-07-10.
     contextWindow: 500_000,
     longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
@@ -381,7 +372,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     icon: 'xai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
-    pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+    pricing: pricingFor('x-ai/grok-4.6'),
     contextWindow: 500_000,
     longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
@@ -397,7 +388,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     // OpenRouter's grok-4.7 card lists low/medium/high/xhigh (fetched 2026-09-21).
     supportedEfforts: XHIGH_EFFORTS,
     supportsWebSearch: false,
-    pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+    pricing: pricingFor('x-ai/grok-4.7'),
     contextWindow: 500_000,
     longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
@@ -418,7 +409,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     icon: 'kimi',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
-    pricing: { inputPerMtok: 3, outputPerMtok: 15 },
+    pricing: pricingFor('moonshotai/kimi-k3'),
     contextWindow: 1_048_576,
     supportsImageInput: true,
   },
@@ -430,7 +421,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     icon: 'kimi',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
-    pricing: { inputPerMtok: 0.73, outputPerMtok: 3.5 },
+    pricing: pricingFor('moonshotai/kimi-k2.7-code'),
     contextWindow: 262_144,
     supportsImageInput: true,
   },
@@ -442,7 +433,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     icon: 'kimi',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
-    pricing: { inputPerMtok: 0.646, outputPerMtok: 2.72 },
+    pricing: pricingFor('moonshotai/kimi-k2.6'),
     contextWindow: 262_144,
     supportsImageInput: true,
   },
@@ -497,7 +488,6 @@ const MUSE_SPARK_SHARED = {
 const MUSE_SPARK_STANDARD = {
   ...MUSE_SPARK_SHARED,
   family: 'muse',
-  pricing: { inputPerMtok: 1.25, outputPerMtok: 4.25 },
 } as const
 
 /**
@@ -510,7 +500,6 @@ const MUSE_SPARK_STANDARD = {
 const MUSE_SPARK_CONTRIBUTOR = {
   ...MUSE_SPARK_SHARED,
   family: 'muse-contributor',
-  pricing: { inputPerMtok: 0.1, outputPerMtok: 0.2 },
   dataUsedForProductImprovement: true,
 } as const
 
@@ -518,6 +507,7 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
   {
     ...MUSE_SPARK_STANDARD,
     id: 'muse-spark-1.1',
+    pricing: pricingFor('muse-spark-1.1'),
     label: 'Muse Spark 1.1',
     blurb: 'Meta, served via Platform',
   },
@@ -525,12 +515,14 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
     // Bare id matches the platform proxy's muse-spark-* → meta route.
     ...MUSE_SPARK_STANDARD,
     id: 'muse-spark-1.2',
+    pricing: pricingFor('muse-spark-1.2'),
     label: 'Muse Spark 1.2',
     blurb: 'Meta, served via Platform',
   },
   {
     ...MUSE_SPARK_STANDARD,
     id: 'muse-spark-1.3',
+    pricing: pricingFor('muse-spark-1.3'),
     label: 'Muse Spark 1.3',
     blurb: 'Meta flagship, served via Platform',
     isLatest: true,
@@ -542,12 +534,14 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
   {
     ...MUSE_SPARK_CONTRIBUTOR,
     id: 'muse-spark-1.2-contributor',
+    pricing: pricingFor('muse-spark-1.2-contributor'),
     label: 'Muse Spark Contributor 1.2',
     blurb: 'Meta contributor tier, served via Platform',
   },
   {
     ...MUSE_SPARK_CONTRIBUTOR,
     id: 'muse-spark-1.3-contributor',
+    pricing: pricingFor('muse-spark-1.3-contributor'),
     label: 'Muse Spark Contributor 1.3',
     blurb: 'Meta contributor tier, served via Platform',
     isLatest: true,
@@ -564,7 +558,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: XHIGH_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 2.5, outputPerMtok: 15, speedMultipliers: GPT_SPEED_MULTIPLIERS },
+    pricing: pricingFor('gpt-5.4'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.4).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
@@ -579,7 +573,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: XHIGH_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 5, outputPerMtok: 30, speedMultipliers: GPT_55_SPEED_MULTIPLIERS },
+    pricing: pricingFor('gpt-5.5'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
@@ -594,7 +588,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 1, outputPerMtok: 6, speedMultipliers: GPT_SPEED_MULTIPLIERS },
+    pricing: pricingFor('gpt-5.6-luna'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-luna).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
@@ -609,7 +603,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 2.5, outputPerMtok: 15, speedMultipliers: GPT_SPEED_MULTIPLIERS },
+    pricing: pricingFor('gpt-5.6-terra'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-terra).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
@@ -627,8 +621,38 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 5, outputPerMtok: 30, speedMultipliers: GPT_SPEED_MULTIPLIERS },
+    pricing: pricingFor('gpt-5.6-sol'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-sol).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
+    id: 'gpt-6-luna',
+    label: 'GPT-6 Luna',
+    blurb: 'OpenAI efficient tier, served via Platform',
+    family: 'gpt',
+    icon: 'openai',
+    supportedEfforts: ALL_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: pricingFor('gpt-6-luna'),
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6-luna).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
+    id: 'gpt-6-sol',
+    label: 'GPT-6 Sol',
+    blurb: 'OpenAI coding tier, served via Platform',
+    family: 'gpt',
+    icon: 'openai',
+    supportedEfforts: ALL_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: pricingFor('gpt-6-sol'),
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6-sol).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
@@ -643,7 +667,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 10, outputPerMtok: 50, speedMultipliers: GPT_SPEED_MULTIPLIERS },
+    pricing: pricingFor('gpt-6-astra'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6-astra).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
@@ -660,7 +684,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     // xAI offers priority but no flex tier — cost-sensitive work goes to their Batch API.
     supportedSpeeds: PRIORITY_ONLY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
+    pricing: pricingFor('grok-4.5'),
     contextWindow: 500_000,
     longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
@@ -674,7 +698,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: XHIGH_EFFORTS,
     supportedSpeeds: PRIORITY_ONLY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
+    pricing: pricingFor('grok-4.6'),
     contextWindow: 500_000,
     longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
@@ -690,7 +714,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: XHIGH_EFFORTS,
     supportedSpeeds: PRIORITY_ONLY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
+    pricing: pricingFor('grok-4.7'),
     contextWindow: 500_000,
     longContextPriceCliff: GROK_LONG_CONTEXT_CLIFF,
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
@@ -713,11 +737,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportsWebSearch: false,
     supportsWebFetch: false,
     // Fireworks serverless rates for kimi-k3, from its pricing table (2026-07-27).
-    pricing: {
-      inputPerMtok: 3,
-      outputPerMtok: 15,
-      speedMultipliers: FIREWORKS_FAST_MULTIPLIERS,
-    },
+    pricing: pricingFor('kimi-k3'),
     // Fireworks-reported `contextLength` for accounts/fireworks/models/kimi-k3.
     contextWindow: 1_048_576,
     supportsImageInput: true,
@@ -741,12 +761,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     contextWindow: 1_048_576,
     // Cloudflare Workers AI list rates (2026-08-26). Cache write is unpublished,
     // so cacheCreation mirrors input — same convention as Fireworks/Meta.
-    pricing: {
-      inputPerMtok: 0.15,
-      outputPerMtok: 0.5,
-      cacheCreationPerMtok: 0.15,
-      cacheReadPerMtok: 0.03,
-    },
+    pricing: pricingFor('glm-5.3-flash'),
   },
   {
     // Bare id matches the platform proxy's deepseek-* → fireworks route.
@@ -767,12 +782,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     contextWindow: 1_040_000,
     // Fireworks serverless rates (2026-09-11). Cache write is unpublished, so
     // cacheCreation mirrors input — same convention as Fireworks/Meta.
-    pricing: {
-      inputPerMtok: 0.22,
-      outputPerMtok: 0.66,
-      cacheCreationPerMtok: 0.22,
-      cacheReadPerMtok: 0.007,
-    },
+    pricing: pricingFor('deepseek-v4.1-flash'),
   },
 ]
 

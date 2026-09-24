@@ -36,10 +36,11 @@ vi.mock('@shared/lib/composio/triggers', () => ({
   deleteComposioTrigger: (...args: unknown[]) => mockDeleteComposioTrigger(...args),
 }))
 
-const mockDisablePlatformWebhookEndpoint = vi.fn().mockResolvedValue(undefined)
-vi.mock('@shared/lib/services/webhook-endpoints-client', () => ({
-  disablePlatformWebhookEndpoint: (...args: unknown[]) =>
-    mockDisablePlatformWebhookEndpoint(...args),
+const mockDisableRelayEndpoint = vi.fn().mockResolvedValue(undefined)
+vi.mock('@shared/lib/webhook-relay', () => ({
+  getWebhookRelay: () => ({
+    disableEndpoint: (...args: unknown[]) => mockDisableRelayEndpoint(...args),
+  }),
 }))
 
 const mockGetPlatformAccessToken = vi.fn()
@@ -87,7 +88,7 @@ describe('custom-endpoint teardown and poll scoping', () => {
     const cancelled = await cancelWebhookTriggerWithCleanup(triggerId)
 
     expect(cancelled).toBe(true)
-    expect(mockDisablePlatformWebhookEndpoint).toHaveBeenCalledWith(
+    expect(mockDisableRelayEndpoint).toHaveBeenCalledWith(
       'sub_stored',
       'whep_11111111-2222-4333-8444-555555555555',
     )
@@ -106,7 +107,7 @@ describe('custom-endpoint teardown and poll scoping', () => {
     const cancelled = await cancelWebhookTriggerWithCleanup(triggerId, 'agent-2')
 
     expect(cancelled).toBe(false)
-    expect(mockDisablePlatformWebhookEndpoint).not.toHaveBeenCalled()
+    expect(mockDisableRelayEndpoint).not.toHaveBeenCalled()
   })
 
   it('cancels when the scoping agent owns the trigger', async () => {
@@ -118,7 +119,7 @@ describe('custom-endpoint teardown and poll scoping', () => {
     const cancelled = await cancelWebhookTriggerWithCleanup(triggerId, 'agent-1')
 
     expect(cancelled).toBe(true)
-    expect(mockDisablePlatformWebhookEndpoint).toHaveBeenCalledWith(
+    expect(mockDisableRelayEndpoint).toHaveBeenCalledWith(
       'sub_stored',
       'whep_11111111-2222-4333-8444-555555555555',
     )
@@ -132,7 +133,7 @@ describe('custom-endpoint teardown and poll scoping', () => {
     const cancelled = await cancelWebhookTriggerWithCleanup(triggerId)
 
     expect(cancelled).toBe(true)
-    expect(mockDisablePlatformWebhookEndpoint).not.toHaveBeenCalled()
+    expect(mockDisableRelayEndpoint).not.toHaveBeenCalled()
   })
 
   it('still gates composio-kind teardown on isPlatformComposioActive', async () => {
@@ -149,7 +150,7 @@ describe('custom-endpoint teardown and poll scoping', () => {
     await cancelWebhookTriggerWithCleanup(triggerId)
 
     expect(mockDeleteComposioTrigger).not.toHaveBeenCalled()
-    expect(mockDisablePlatformWebhookEndpoint).not.toHaveBeenCalled()
+    expect(mockDisableRelayEndpoint).not.toHaveBeenCalled()
   })
 
   it('falls back to the stored member for triggers with no derivable member', async () => {

@@ -1,3 +1,4 @@
+import { isQueuedSessionSend } from './session-send-context'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ContainerClient, ContainerInfo, StreamMessage } from './types'
 import { WebSocketServer } from 'ws'
@@ -134,17 +135,19 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   resolvePlatformMemberForCandidates: (...args: unknown[]) => mockResolvePlatformMemberForCandidates(...args),
 }))
 
-const mockCreatePlatformWebhookEndpoint = vi.fn<MockFn>()
-const mockUpdatePlatformWebhookEndpoint = vi.fn<MockFn>(() => Promise.resolve({}))
-const mockDisablePlatformWebhookEndpoint = vi.fn<MockFn>(() => Promise.resolve())
-const mockListPlatformWebhookEvents = vi.fn<MockFn>(() => Promise.resolve({ filterExp: null, events: [] }))
-const mockTestPlatformWebhookFilter = vi.fn<MockFn>()
-vi.mock('@shared/lib/services/webhook-endpoints-client', () => ({
-  createPlatformWebhookEndpoint: (...args: unknown[]) => mockCreatePlatformWebhookEndpoint(...args),
-  updatePlatformWebhookEndpoint: (...args: unknown[]) => mockUpdatePlatformWebhookEndpoint(...args),
-  disablePlatformWebhookEndpoint: (...args: unknown[]) => mockDisablePlatformWebhookEndpoint(...args),
-  listPlatformWebhookEvents: (...args: unknown[]) => mockListPlatformWebhookEvents(...args),
-  testPlatformWebhookFilter: (...args: unknown[]) => mockTestPlatformWebhookFilter(...args),
+const mockCreateRelayEndpoint = vi.fn<MockFn>()
+const mockUpdateRelayEndpoint = vi.fn<MockFn>(() => Promise.resolve({}))
+const mockDisableRelayEndpoint = vi.fn<MockFn>(() => Promise.resolve())
+const mockListRelayEndpointEvents = vi.fn<MockFn>(() => Promise.resolve({ filterExp: null, events: [] }))
+const mockTestRelayEndpointFilter = vi.fn<MockFn>()
+vi.mock('@shared/lib/webhook-relay', () => ({
+  getWebhookRelay: () => ({
+    createEndpoint: (...args: unknown[]) => mockCreateRelayEndpoint(...args),
+    updateEndpoint: (...args: unknown[]) => mockUpdateRelayEndpoint(...args),
+    disableEndpoint: (...args: unknown[]) => mockDisableRelayEndpoint(...args),
+    listEndpointEvents: (...args: unknown[]) => mockListRelayEndpointEvents(...args),
+    testEndpointFilter: (...args: unknown[]) => mockTestRelayEndpointFilter(...args),
+  }),
 }))
 
 // Platform-authed by default: the create/update endpoint handlers gate on the
@@ -2874,6 +2877,18 @@ describe('MessagePersister', () => {
       mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'process-1' })
     })
 
+    it('keeps queued automation delivery on the running connection and isolates the context by session', async () => {
+      await send(async () => {
+        expect(isQueuedSessionSend(AGENT_SLUG, SESSION_ID)).toBe(false)
+      })
+      await send(async () => {
+        expect(isQueuedSessionSend(AGENT_SLUG, SESSION_ID)).toBe(true)
+        expect(isQueuedSessionSend(AGENT_SLUG, 'other-session')).toBe(false)
+        expect(isQueuedSessionSend('other-agent', SESSION_ID)).toBe(false)
+      })
+      expect(isQueuedSessionSend(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
     it.each(['before', 'after'] as const)('preserves an active turn when its final idle arrives %s a follow-up fails', async (timing) => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
@@ -3185,6 +3200,47 @@ describe('MessagePersister', () => {
       } finally {
         vi.mocked(getSessionMetadata).mockResolvedValue(null)
       }
+    })
+  })
+
+  describe('provisional recovery activity', () => {
+    it('reverts a silent cold attachment even when subscribing recreates the streaming state', async () => {
+      messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
+      const revert = messagePersister.markSessionProvisionallyActive(AGENT_SLUG, SESSION_ID)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+      await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'cold-process' })
+      revert()
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it('preserves a real running turn even if the pending-inclusive generation is unchanged', () => {
+      const revert = messagePersister.markSessionProvisionallyActive(AGENT_SLUG, SESSION_ID)
+      const before = messagePersister.getTurnGeneration(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      expect(messagePersister.getTurnGeneration(AGENT_SLUG, SESSION_ID)).toBe(before)
+      revert()
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it.each(['send', 'output', 'result'] as const)('preserves a new %s during attachment', kind => {
+      const revert = messagePersister.markSessionProvisionallyActive(AGENT_SLUG, SESSION_ID)
+      if (kind === 'send') messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      else if (kind === 'output') mockClient._sendMessage({ type: 'assistant', message: { role: 'assistant', content: 'still running' } })
+      else {
+        mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+        mockClient._sendMessage({ type: 'result', subtype: 'success', replayed: true, num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } })
+      }
+      revert()
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('does not emit a second completion after terminal replay', () => {
+      const revert = messagePersister.markSessionProvisionallyActive(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({ type: 'result', subtype: 'success', num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } })
+      revert()
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(sseEvents.filter(event => event.type === 'session_idle')).toHaveLength(1)
     })
   })
 
@@ -5581,8 +5637,8 @@ describe('MessagePersister', () => {
       mockClient._sendMessage({ type: 'system', subtype: 'process_evicted', process_instance: processInstance })
     }
 
-    it('releases only a chat transport when its turn settles', async () => {
-      await resubscribeWithMetadata({ isChatIntegrationSession: true })
+    it.each([{ isChatIntegrationSession: true }, { isAgentIntegrationSession: true }])('releases only an integration transport when its turn settles (%j)', async metadata => {
+      await resubscribeWithMetadata(metadata)
       announceProcess()
       const teardown = vi.spyOn(messagePersister, 'unsubscribeFromSession')
       const recovery = vi.fn()
@@ -6687,9 +6743,9 @@ describe('MessagePersister', () => {
       }
 
       beforeEach(() => {
-        mockCreatePlatformWebhookEndpoint.mockClear()
-        mockDisablePlatformWebhookEndpoint.mockClear()
-        mockCreatePlatformWebhookEndpoint.mockResolvedValue(ENDPOINT)
+        mockCreateRelayEndpoint.mockClear()
+        mockDisableRelayEndpoint.mockClear()
+        mockCreateRelayEndpoint.mockResolvedValue(ENDPOINT)
       })
 
       it('mints on the platform, saves a kind=custom trigger row, and resolves with the URL', async () => {
@@ -6703,8 +6759,8 @@ describe('MessagePersister', () => {
 
         const resolveCall = await flushHandlers('/inputs/tool-mint-1/resolve')
 
-        expect(mockCreatePlatformWebhookEndpoint).toHaveBeenCalledTimes(1)
-        expect(mockCreatePlatformWebhookEndpoint.mock.calls[0][1]).toEqual({ name: 'Deploy hook' })
+        expect(mockCreateRelayEndpoint).toHaveBeenCalledTimes(1)
+        expect(mockCreateRelayEndpoint.mock.calls[0][1]).toEqual({ name: 'Deploy hook' })
 
         expect(mockCreateWebhookTrigger).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -6749,7 +6805,7 @@ describe('MessagePersister', () => {
         })
 
         const resolveCall = await flushHandlers('/inputs/tool-mint-2/resolve')
-        expect(mockCreatePlatformWebhookEndpoint.mock.calls[0][1].verification.secret).toBe('shh')
+        expect(mockCreateRelayEndpoint.mock.calls[0][1].verification.secret).toBe('shh')
         const body = JSON.parse(resolveCall[1].body)
         expect(body.value).not.toContain('UNVERIFIED')
       })
@@ -6763,7 +6819,7 @@ describe('MessagePersister', () => {
 
         const rejectCall = await flushHandlers('/inputs/tool-mint-3/reject')
         expect(JSON.parse(rejectCall[1].body).reason).toContain('Invalid tool input: verification.')
-        expect(mockCreatePlatformWebhookEndpoint).not.toHaveBeenCalled()
+        expect(mockCreateRelayEndpoint).not.toHaveBeenCalled()
       })
 
       it('disables the platform endpoint when the local save fails (rollback)', async () => {
@@ -6776,7 +6832,7 @@ describe('MessagePersister', () => {
 
         const rejectCall = await flushHandlers('/inputs/tool-mint-4/reject')
         expect(JSON.parse(rejectCall[1].body).reason).toContain('Failed to save trigger locally')
-        expect(mockDisablePlatformWebhookEndpoint).toHaveBeenCalledWith(expect.any(String), ENDPOINT.id)
+        expect(mockDisableRelayEndpoint).toHaveBeenCalledWith(expect.any(String), ENDPOINT.id)
       })
 
       it('rejects when there is no platform auth', async () => {
@@ -6789,7 +6845,7 @@ describe('MessagePersister', () => {
 
         const rejectCall = await flushHandlers('/inputs/tool-mint-5/reject')
         expect(JSON.parse(rejectCall[1].body).reason).toContain('platform')
-        expect(mockCreatePlatformWebhookEndpoint).not.toHaveBeenCalled()
+        expect(mockCreateRelayEndpoint).not.toHaveBeenCalled()
       })
 
       it('mints with a personal Composio key as long as platform auth exists', async () => {
@@ -6803,10 +6859,10 @@ describe('MessagePersister', () => {
         })
 
         await flushHandlers('/inputs/tool-mint-6/resolve')
-        expect(mockCreatePlatformWebhookEndpoint).toHaveBeenCalled()
+        expect(mockCreateRelayEndpoint).toHaveBeenCalled()
       })
 
-      it('passes filter_exp through to the platform and confirms it in the result', async () => {
+      it('passes filter_exp through to the relay and confirms it in the result', async () => {
         simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-7', {
           name: 'Filtered hook',
           prompt: 'Handle assigned issues',
@@ -6814,7 +6870,7 @@ describe('MessagePersister', () => {
         })
 
         const resolveCall = await flushHandlers('/inputs/tool-mint-7/resolve')
-        expect(mockCreatePlatformWebhookEndpoint.mock.calls[0][1].filter_exp).toBe(
+        expect(mockCreateRelayEndpoint.mock.calls[0][1].filterExp).toBe(
           'headers["linear-event"] == "Issue" && has(body.updatedFrom.assigneeId)',
         )
         const body = JSON.parse(resolveCall[1].body)
@@ -6829,7 +6885,7 @@ describe('MessagePersister', () => {
         })
 
         const resolveCall = await flushHandlers('/inputs/tool-mint-8/resolve')
-        expect(mockCreatePlatformWebhookEndpoint.mock.calls[0][1].filter_exp).toBeUndefined()
+        expect(mockCreateRelayEndpoint.mock.calls[0][1].filterExp).toBeUndefined()
         const body = JSON.parse(resolveCall[1].body)
         // No filter → the result must make filtering an explicit decision
         // (compare subscription breadth vs the prompt) and point at
@@ -6849,7 +6905,7 @@ describe('MessagePersister', () => {
 
         const rejectCall = await flushHandlers('/inputs/tool-mint-9/reject')
         expect(JSON.parse(rejectCall[1].body).reason).toContain('filter_exp')
-        expect(mockCreatePlatformWebhookEndpoint).not.toHaveBeenCalled()
+        expect(mockCreateRelayEndpoint).not.toHaveBeenCalled()
       })
     })
 
@@ -6863,7 +6919,7 @@ describe('MessagePersister', () => {
       }
 
       beforeEach(() => {
-        mockUpdatePlatformWebhookEndpoint.mockClear()
+        mockUpdateRelayEndpoint.mockClear()
         mockGetWebhookTrigger.mockResolvedValue(customTrigger)
       })
 
@@ -6882,7 +6938,7 @@ describe('MessagePersister', () => {
         })
 
         const resolveCall = await flushHandlers('/inputs/tool-upd-1/resolve')
-        expect(mockUpdatePlatformWebhookEndpoint).toHaveBeenCalledWith(
+        expect(mockUpdateRelayEndpoint).toHaveBeenCalledWith(
           expect.any(String),
           customTrigger.composioTriggerId,
           expect.objectContaining({ verification: expect.objectContaining({ secret: 'whsec_abc' }) }),
@@ -6902,7 +6958,7 @@ describe('MessagePersister', () => {
         })
 
         await flushHandlers('/inputs/tool-upd-minted/resolve')
-        expect(mockUpdatePlatformWebhookEndpoint).toHaveBeenCalledWith(
+        expect(mockUpdateRelayEndpoint).toHaveBeenCalledWith(
           'sub_minted',
           customTrigger.composioTriggerId,
           { name: 'renamed' },
@@ -6918,7 +6974,7 @@ describe('MessagePersister', () => {
         })
 
         await flushHandlers('/inputs/tool-upd-precolumn/resolve')
-        expect(mockUpdatePlatformWebhookEndpoint).toHaveBeenCalledWith(
+        expect(mockUpdateRelayEndpoint).toHaveBeenCalledWith(
           'sub_creator',
           customTrigger.composioTriggerId,
           { name: 'renamed' },
@@ -6935,7 +6991,7 @@ describe('MessagePersister', () => {
 
         const rejectCall = await flushHandlers('/inputs/tool-upd-2/reject')
         expect(JSON.parse(rejectCall[1].body).reason).toContain('No custom webhook endpoint')
-        expect(mockUpdatePlatformWebhookEndpoint).not.toHaveBeenCalled()
+        expect(mockUpdateRelayEndpoint).not.toHaveBeenCalled()
       })
 
       it('rejects an unknown trigger id', async () => {
@@ -6947,7 +7003,7 @@ describe('MessagePersister', () => {
         })
 
         await flushHandlers('/inputs/tool-upd-3/reject')
-        expect(mockUpdatePlatformWebhookEndpoint).not.toHaveBeenCalled()
+        expect(mockUpdateRelayEndpoint).not.toHaveBeenCalled()
       })
 
       it('sets a filter_exp and explains the filtered-events semantics', async () => {
@@ -6957,10 +7013,10 @@ describe('MessagePersister', () => {
         })
 
         const resolveCall = await flushHandlers('/inputs/tool-upd-4/resolve')
-        expect(mockUpdatePlatformWebhookEndpoint).toHaveBeenCalledWith(
+        expect(mockUpdateRelayEndpoint).toHaveBeenCalledWith(
           expect.any(String),
           customTrigger.composioTriggerId,
-          { filter_exp: 'body.action == "update"' },
+          { filterExp: 'body.action == "update"' },
         )
         const value = JSON.parse(resolveCall[1].body).value
         expect(value).toContain('filter set')
@@ -6974,10 +7030,10 @@ describe('MessagePersister', () => {
         })
 
         const resolveCall = await flushHandlers('/inputs/tool-upd-5/resolve')
-        expect(mockUpdatePlatformWebhookEndpoint).toHaveBeenCalledWith(
+        expect(mockUpdateRelayEndpoint).toHaveBeenCalledWith(
           expect.any(String),
           customTrigger.composioTriggerId,
-          { filter_exp: null },
+          { filterExp: null },
         )
         const value = JSON.parse(resolveCall[1].body).value
         expect(value).toContain('filter removed')
@@ -6994,10 +7050,10 @@ describe('MessagePersister', () => {
       }
 
       beforeEach(() => {
-        mockListPlatformWebhookEvents.mockClear()
-        mockTestPlatformWebhookFilter.mockClear()
+        mockListRelayEndpointEvents.mockClear()
+        mockTestRelayEndpointFilter.mockClear()
         mockGetWebhookTrigger.mockResolvedValue(customTrigger)
-        mockListPlatformWebhookEvents.mockResolvedValue({ filterExp: null, events: [] })
+        mockListRelayEndpointEvents.mockResolvedValue({ filterExp: null, events: [] })
       })
 
       // SUP-765: same scoping as update/teardown — a read under the creator's
@@ -7011,7 +7067,7 @@ describe('MessagePersister', () => {
         })
 
         await flushHandlers('/inputs/tool-insp-minted/resolve')
-        expect(mockListPlatformWebhookEvents).toHaveBeenCalledWith(
+        expect(mockListRelayEndpointEvents).toHaveBeenCalledWith(
           'sub_minted',
           customTrigger.composioTriggerId,
           undefined,
@@ -7020,7 +7076,7 @@ describe('MessagePersister', () => {
 
       it('dry-runs a filter as the recorded minting member too', async () => {
         mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, mintedByMemberId: 'sub_minted' })
-        mockTestPlatformWebhookFilter.mockResolvedValue({
+        mockTestRelayEndpointFilter.mockResolvedValue({
           filter_exp: 'body.action == "update"',
           evaluated: 0,
           summary: { passed: 0, filtered: 0, error: 0, skipped: 0 },
@@ -7033,7 +7089,7 @@ describe('MessagePersister', () => {
         })
 
         await flushHandlers('/inputs/tool-insp-minted-filter/resolve')
-        expect(mockTestPlatformWebhookFilter).toHaveBeenCalledWith(
+        expect(mockTestRelayEndpointFilter).toHaveBeenCalledWith(
           'sub_minted',
           customTrigger.composioTriggerId,
           'body.action == "update"',
@@ -7042,7 +7098,7 @@ describe('MessagePersister', () => {
       })
 
       it('lists recent deliveries with filter verdicts and body previews', async () => {
-        mockListPlatformWebhookEvents.mockResolvedValue({
+        mockListRelayEndpointEvents.mockResolvedValue({
           filterExp: 'body.action == "update"',
           events: [
             {
@@ -7086,7 +7142,7 @@ describe('MessagePersister', () => {
         })
 
         const resolveCall = await flushHandlers('/inputs/tool-insp-1/resolve')
-        expect(mockListPlatformWebhookEvents).toHaveBeenCalledWith(
+        expect(mockListRelayEndpointEvents).toHaveBeenCalledWith(
           expect.any(String),
           customTrigger.composioTriggerId,
           undefined,
@@ -7112,7 +7168,7 @@ describe('MessagePersister', () => {
       })
 
       it('dry-runs a candidate filter and summarizes the verdicts', async () => {
-        mockTestPlatformWebhookFilter.mockResolvedValue({
+        mockTestRelayEndpointFilter.mockResolvedValue({
           filter_exp: 'body.action == "update"',
           evaluated: 3,
           summary: { passed: 1, filtered: 1, error: 1, skipped: 0 },
@@ -7130,13 +7186,13 @@ describe('MessagePersister', () => {
         })
 
         const resolveCall = await flushHandlers('/inputs/tool-insp-3/resolve')
-        expect(mockTestPlatformWebhookFilter).toHaveBeenCalledWith(
+        expect(mockTestRelayEndpointFilter).toHaveBeenCalledWith(
           expect.any(String),
           customTrigger.composioTriggerId,
           'body.action == "update"',
           10,
         )
-        expect(mockListPlatformWebhookEvents).not.toHaveBeenCalled()
+        expect(mockListRelayEndpointEvents).not.toHaveBeenCalled()
         const value = JSON.parse(resolveCall[1].body).value as string
         expect(value).toContain('1 would pass')
         expect(value).toContain('No such key: action')
@@ -7145,7 +7201,7 @@ describe('MessagePersister', () => {
       })
 
       it('surfaces the platform 400 (CEL parser message) for an invalid candidate', async () => {
-        mockTestPlatformWebhookFilter.mockRejectedValue(
+        mockTestRelayEndpointFilter.mockRejectedValue(
           new Error('Webhook endpoints API error 400: Invalid filter expression: invalid CEL expression: Unexpected token: EOF'),
         )
 
@@ -7164,7 +7220,7 @@ describe('MessagePersister', () => {
           trigger_id: 'trigger_custom_1',
         })
         await flushHandlers('/inputs/tool-insp-5/reject')
-        expect(mockListPlatformWebhookEvents).not.toHaveBeenCalled()
+        expect(mockListRelayEndpointEvents).not.toHaveBeenCalled()
 
         mockGetPlatformAccessToken.mockReturnValue(null)
         simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-6', {

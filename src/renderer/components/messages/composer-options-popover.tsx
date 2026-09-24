@@ -88,6 +88,12 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
         // it pops its name tooltip instantly. Keyboard users can Tab in.
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
+        {(state.connections?.length ?? 0) > 1 && <div className="relative mx-1 mb-1 text-xs">
+          <select aria-label="Connection" className="w-full cursor-pointer appearance-none rounded-sm border-0 bg-transparent py-1 pl-1 pr-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={state.llmProviderId ?? ''} onChange={e => state.setConnection?.(e.target.value)}>
+            {state.connections?.map(c => <option key={c.id} value={c.id}>{c.name}{c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}</option>)}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-1 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+        </div>}
         {selectedModel && (
           <>
             {/* Flat list, no "latest" — per-message picks a concrete version.

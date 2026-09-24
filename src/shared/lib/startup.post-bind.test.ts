@@ -13,6 +13,10 @@ const getSettings = vi.fn().mockReturnValue({})
 const getPlatformAccessToken = vi.fn().mockReturnValue(null)
 const isAuthMode = vi.fn().mockReturnValue(true)
 const clearPendingApprovalBans = vi.fn()
+const ensureManagedPlatformConnection = vi.fn(async () => {})
+vi.mock('./llm-provider/connection-settings', () => ({
+  ensureManagedPlatformConnection: () => ensureManagedPlatformConnection(),
+}))
 
 vi.mock('./services/skillset-reconcile', () => ({
   reconcileSkillsetConfigsForCurrentAuth: () => reconcile(),
@@ -198,8 +202,13 @@ describe('initializeServices post-bind critical path', () => {
   })
 
 
+  it('starts the trigger manager without a platform token, so a later connect can deliver', async () => {
+    const { initializeServices } = await import('./startup')
+    await initializeServices()
+    await vi.waitFor(() => expect(triggerManagerStart).toHaveBeenCalledTimes(1))
+  })
+
   it('bounds heavy startup I/O to three concurrent tasks', async () => {
-    getPlatformAccessToken.mockReturnValue('profile-token')
     let active = 0
     let peak = 0
     const releases: Array<() => void> = []
@@ -257,6 +266,7 @@ describe('initializeServices post-bind critical path', () => {
     await initializeServices()
     expect(reconcile).toHaveBeenCalledTimes(1)
     expect(validateAuth).not.toHaveBeenCalled()
+    expect(ensureManagedPlatformConnection).toHaveBeenCalledTimes(1)
   })
 
   it('afterBindInitialize marks bound, inits, then logs timing', async () => {

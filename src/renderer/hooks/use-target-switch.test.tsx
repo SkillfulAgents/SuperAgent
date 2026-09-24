@@ -17,11 +17,24 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: mockUsePlatformAuthStatus,
 }))
 
+const { mockRefetch, mockOpenSettings, mockOpenExternalUrl } = vi.hoisted(() => ({
+  mockRefetch: vi.fn(),
+  mockOpenSettings: vi.fn(),
+  mockOpenExternalUrl: vi.fn(),
+}))
+vi.mock('@renderer/context/dialog-context', () => ({
+  useDialogs: () => ({ openSettings: mockOpenSettings }),
+}))
+vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl: mockOpenExternalUrl }))
+
+const { mockIsOnline } = vi.hoisted(() => ({ mockIsOnline: vi.fn(() => true) }))
+vi.mock('@renderer/context/connectivity-context', () => ({ useIsOnline: mockIsOnline }))
+
 const { mockClear } = vi.hoisted(() => ({ mockClear: vi.fn() }))
 vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ clear: mockClear }) }))
 
-const { mockToastError } = vi.hoisted(() => ({ mockToastError: vi.fn() }))
-vi.mock('sonner', () => ({ toast: { error: mockToastError } }))
+const { mockToast, mockToastError } = vi.hoisted(() => ({ mockToast: vi.fn(), mockToastError: vi.fn() }))
+vi.mock('sonner', () => ({ toast: Object.assign(mockToast, { error: mockToastError }) }))
 
 vi.mock('@renderer/lib/api-target', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@renderer/lib/api-target')>()
@@ -31,14 +44,21 @@ vi.mock('@renderer/lib/api-target', async (importOriginal) => {
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 import { useTargetSwitch } from './use-target-switch'
 
-const CONNECTED = { connected: true, orgId: 'org_1' }
+const CONNECTED = { connected: true, orgId: 'org_1', platformBaseUrl: 'https://platform.test' }
 const WORKSPACE = { found: true, hasValidToken: true }
+
+/** The fresh check a Cloud press runs finds `data`. */
+function freshCheckFinds(data: object) {
+  mockRefetch.mockResolvedValue({ data })
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
   mockIsElectron.mockReturnValue(true)
+  mockIsOnline.mockReturnValue(true)
   mockUsePlatformAuthStatus.mockReturnValue({ data: CONNECTED })
-  mockUseCloudWorkspace.mockReturnValue({ data: WORKSPACE })
+  mockUseCloudWorkspace.mockReturnValue({ refetch: mockRefetch })
+  freshCheckFinds(WORKSPACE)
   _resetApiTargetForTest()
 })
 
@@ -54,19 +74,12 @@ describe('availability', () => {
     expect(result.current.current).toBe('local')
   })
 
-  it('hides the control when there is no cloud workspace', () => {
+  // Cloud is how a user without cloud agents finds them, so it never hides.
+  it('offers the control with no platform connection', () => {
     setActiveTarget('local', null)
-    mockUseCloudWorkspace.mockReturnValue({ data: { found: false, hasValidToken: false } })
+    mockUsePlatformAuthStatus.mockReturnValue({ data: { connected: false } })
     const { result } = renderHook(() => useTargetSwitch())
-    // A single-machine user should never see a control with one option.
-    expect(result.current.available).toBe(false)
-  })
-
-  it('hides the control when the workspace exists but has no live token', () => {
-    setActiveTarget('local', null)
-    mockUseCloudWorkspace.mockReturnValue({ data: { found: true, hasValidToken: false } })
-    const { result } = renderHook(() => useTargetSwitch())
-    expect(result.current.available).toBe(false)
+    expect(result.current.available).toBe(true)
   })
 
   it('hides the control outside Electron', () => {
@@ -76,34 +89,13 @@ describe('availability', () => {
     expect(result.current.available).toBe(false)
   })
 
-  it('stays available in cloud mode even when the endpoint denies a workspace', () => {
-    // The trap: in cloud mode this request goes through the proxy to the
-    // deployment, whose getCloudWorkspace self-gates off Electron and answers
-    // "no workspace" about itself. Believing it would strand the user in cloud
-    // mode with no way back.
-    setActiveTarget('cloud', null)
-    mockUseCloudWorkspace.mockReturnValue({
-      data: { available: false, found: false, hasValidToken: false },
-    })
-
-    const { result } = renderHook(() => useTargetSwitch())
-
-    expect(result.current.available).toBe(true)
-    expect(result.current.current).toBe('cloud')
-  })
-
-  it('does not even ask the deployment while in cloud mode', () => {
-    setActiveTarget('cloud', null)
+  // A check already running when Cloud is pressed would answer from before the
+  // press. Only the press asks.
+  it('does not ask about the workspace until Cloud is pressed', () => {
+    setActiveTarget('local', null)
     renderHook(() => useTargetSwitch())
     // First arg is `enabled`.
-    expect(mockUseCloudWorkspace).toHaveBeenCalledWith(false, expect.anything())
-  })
-
-  it('does not ask before the platform account is connected', () => {
-    setActiveTarget('local', null)
-    mockUsePlatformAuthStatus.mockReturnValue({ data: { connected: false } })
-    renderHook(() => useTargetSwitch())
-    expect(mockUseCloudWorkspace.mock.calls[0][0]).toBe(false)
+    expect(mockUseCloudWorkspace).toHaveBeenCalledWith(false, 'org_1')
   })
 })
 
@@ -140,6 +132,8 @@ describe('switching', () => {
 
     expect(mockSwitchTarget).not.toHaveBeenCalled()
     expect(mockClear).not.toHaveBeenCalled()
+    // In cloud mode the deployment would answer "no workspace" about itself.
+    expect(mockRefetch).not.toHaveBeenCalled()
   })
 
   it('ignores a second click while the first is still switching', async () => {
@@ -154,6 +148,105 @@ describe('switching', () => {
     })
 
     expect(mockSwitchTarget).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('pressing Cloud without a live workspace', () => {
+  beforeEach(() => {
+    setActiveTarget('local', null)
+  })
+
+  async function pressCloud() {
+    const { result } = renderHook(() => useTargetSwitch())
+    await act(async () => {
+      await result.current.switchTo('cloud')
+    })
+    return result
+  }
+
+  const PLATFORM_PAGE = 'https://platform.test/dashboard/organizations/org_1?tab=cloud'
+  const NOT_DEPLOYED = { found: false, hasValidToken: false, discoveryFailed: false }
+
+  // Nothing to explain yet: platform's page is where cloud agents are created.
+  it('opens platform’s Cloud Agents page when the org has no workspace', async () => {
+    freshCheckFinds({ ...NOT_DEPLOYED, status: null })
+    const result = await pressCloud()
+
+    expect(mockSwitchTarget).not.toHaveBeenCalled()
+    expect(mockToast).not.toHaveBeenCalled()
+    expect(mockOpenExternalUrl).toHaveBeenCalledWith(PLATFORM_PAGE)
+    expect(result.current.switching).toBe(false)
+  })
+
+  it.each([
+    ['pending', 'Your cloud workspace is setting up'],
+    ['deploying', 'Your cloud workspace is setting up'],
+    ['destroying', 'Your cloud workspace is going to sleep'],
+    ['destroyed', 'Your cloud workspace is asleep'],
+    ['error', 'Your cloud workspace ran into a problem'],
+  ])('says what a %s workspace is doing, with a link to platform', async (status, title) => {
+    freshCheckFinds({ ...NOT_DEPLOYED, status })
+    await pressCloud()
+
+    expect(mockOpenExternalUrl).not.toHaveBeenCalled()
+    const [shown, options] = mockToast.mock.calls[0]
+    expect(shown).toBe(title)
+    options.action.onClick()
+    expect(mockOpenExternalUrl).toHaveBeenCalledWith(PLATFORM_PAGE)
+  })
+
+  // Platform knows its own statuses; a banner would have to guess.
+  it('opens platform’s page for a status it does not know', async () => {
+    freshCheckFinds({ ...NOT_DEPLOYED, status: 'migrating' })
+    await pressCloud()
+
+    expect(mockToast).not.toHaveBeenCalled()
+    expect(mockOpenExternalUrl).toHaveBeenCalledWith(PLATFORM_PAGE)
+  })
+
+  // The cached answer can be minutes old: from before a pause, or before a setup.
+  it('decides on a fresh check, never the cached answer', async () => {
+    mockUseCloudWorkspace.mockReturnValue({ data: WORKSPACE, refetch: mockRefetch })
+    freshCheckFinds({ ...NOT_DEPLOYED, status: null })
+    await pressCloud()
+
+    expect(mockSwitchTarget).not.toHaveBeenCalled()
+  })
+
+  // Discovery failing is an answer, not an error: the backend degrades rather
+  // than throwing. Either way, never "there is none".
+  it.each([
+    ['the check fails', { ...NOT_DEPLOYED, discoveryFailed: true, status: null }],
+    ['it is running but this app could not sign in', { found: true, hasValidToken: false, discoveryFailed: false, status: 'deployed' }],
+    ['the check request itself fails', null],
+  ])('says it couldn’t connect when %s', async (_, workspace) => {
+    if (workspace) freshCheckFinds(workspace)
+    else mockRefetch.mockRejectedValue(new Error('local API unreachable'))
+    const result = await pressCloud()
+
+    expect(mockSwitchTarget).not.toHaveBeenCalled()
+    expect(mockToast).toHaveBeenCalledWith('Couldn’t connect to your cloud workspace', expect.anything())
+    expect(mockOpenExternalUrl).not.toHaveBeenCalled()
+    expect(result.current.switching).toBe(false)
+  })
+
+  // Offline, React Query holds the request until the connection returns, and
+  // the press would sit busy until then.
+  it('says it couldn’t connect when offline, without asking', async () => {
+    mockIsOnline.mockReturnValue(false)
+    const result = await pressCloud()
+
+    expect(mockRefetch).not.toHaveBeenCalled()
+    expect(mockToast).toHaveBeenCalledWith('Couldn’t connect to your cloud workspace', expect.anything())
+    expect(result.current.switching).toBe(false)
+  })
+
+  it('sends a user who is not connected to Account, where Connect is', async () => {
+    mockUsePlatformAuthStatus.mockReturnValue({ data: { connected: false } })
+    await pressCloud()
+
+    expect(mockOpenSettings).toHaveBeenCalledWith('platform')
+    expect(mockRefetch).not.toHaveBeenCalled()
   })
 })
 

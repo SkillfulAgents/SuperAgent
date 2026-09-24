@@ -135,6 +135,9 @@ test.describe('Thinking Display', () => {
   })
 
   test('thinking persists in the transcript across a reopen', async ({ page, request }, testInfo) => {
+    // Setup, a streamed thinking turn, and a second sidebar navigation exceed
+    // the default 30s budget on a loaded CI runner.
+    test.slow()
     const { appPage, sessionPage, agent, setupSession } = await setupThinkingTest(page, request, testInfo, 'Persist')
 
     await sessionPage.sendMessage('please think out loud about this')

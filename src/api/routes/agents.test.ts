@@ -357,7 +357,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   mcpAuditLog: { agentSlug: 'agent_slug', createdAt: 'created_at' },
   agentAcl: { id: 'id', userId: 'user_id', agentSlug: 'agent_slug', role: 'role' },
   user: { id: 'id', name: 'name', email: 'email' },
-  messageAuthor: { id: 'id', sessionId: 'session_id', agentSlug: 'agent_slug', userId: 'user_id' },
+  messageAuthor: { id: 'id', sessionId: 'session_id', agentSlug: 'agent_slug', userId: 'user_id', integrationId: 'integration_id', display: 'display' },
   apiScopePolicies: { accountId: 'account_id', scope: 'scope' },
   mcpToolPolicies: { mcpId: 'mcp_id', toolName: 'tool_name' },
 }))
@@ -366,6 +366,7 @@ vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
   and: (...args: unknown[]) => args,
   inArray: (col: string, vals: string[]) => ({ col, vals }),
+  isNotNull: (col: string) => ({ col, notNull: true }),
   desc: (col: string) => ({ col }),
   count: () => 'count_fn',
   like: (col: string, val: string) => ({ col, val }),
@@ -521,8 +522,8 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsAndWidgets: vi.fn(async () => ({ dashboards: [], widgets: [] })),
 }))
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  listChatIntegrations: vi.fn(() => []),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  listAgentIntegrations: vi.fn(() => []),
 }))
 
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
@@ -543,6 +544,11 @@ vi.mock('@shared/lib/services/session-unread-service', () => ({
   getSessionIdsMarkedUnread: vi.fn(() => Promise.resolve(new Set())),
   getSessionIdsMarkedUnreadByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteSessionUnreadMarks: vi.fn(() => Promise.resolve(0)),
+}))
+
+vi.mock('@shared/lib/services/agent-integration-message-service', () => ({
+  annotateIntegrationMessages: vi.fn(() => Promise.resolve()),
+  hasIntegrationMessages: vi.fn(() => Promise.resolve(false)),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -747,7 +753,7 @@ import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { writeFileAtomicStream, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { readJsonl, streamJsonl } from '@shared/lib/agent-actor/jsonl-files'
-import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
+import { listAgentIntegrations } from '@shared/lib/services/agent-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
 // ============================================================================
@@ -1171,6 +1177,7 @@ describe('GET /:id/webhook-triggers', () => {
     createdByUserId: 'owner-private-id',
     mintedByMemberId: 'sub_member-private-id',
     model: null,
+  llmProviderId: null,
     effort: null,
     speed: null,
     createdAt: new Date('2026-07-17T00:00:00Z'),
@@ -1216,7 +1223,7 @@ describe('GET /:id/webhook-triggers', () => {
 
 describe('GET /:id/chat-integrations', () => {
   it('redacts credentials from every list row', async () => {
-    vi.mocked(listChatIntegrations).mockResolvedValueOnce([{
+    vi.mocked(listAgentIntegrations).mockResolvedValueOnce([{
       id: 'integration-1',
       agentSlug: 'test-agent',
       provider: 'telegram',
@@ -1230,6 +1237,7 @@ describe('GET /:id/chat-integrations', () => {
       requireApproval: true,
       sessionTimeout: null,
       model: null,
+  llmProviderId: null,
       effort: null,
       speed: null,
       status: 'active',
@@ -1282,7 +1290,6 @@ describe('session usage — GET /:id/sessions/:sessionId/usage', () => {
     expect(mockLoadSessionUsageTotals).toHaveBeenCalledWith({
       files: expect.anything(),
       transcript: '.claude/projects/-workspace/session-1.jsonl',
-      providerId: 'anthropic',
     })
   })
 
@@ -3819,6 +3826,20 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
   // ---- Runtime options forwarding ----
 
+  it.each([null, { id: 'private-provider', userId: 'another-user' }])('returns 404 for an unavailable provider pick before recording or sending the message', async row => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const lookup = vi.spyOn(connections, 'getConnection').mockResolvedValue(row as never)
+    try {
+      const res = await postJson(app, URL, { content: 'hello', llmProviderId: 'private-provider' })
+      expect(res.status).toBe(404)
+      expect(await res.json()).toEqual({ error: 'LLM provider not found' })
+      expect(mockSendMessage).not.toHaveBeenCalled()
+      expect(mockDbInsertValues).not.toHaveBeenCalled()
+    } finally {
+      lookup.mockRestore()
+    }
+  })
+
   it('forwards effort to sendMessage when present in body', async () => {
     mockIsAuthMode.mockReturnValue(false)
 
@@ -3851,7 +3872,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body).toMatchObject({ success: true, queued: false })
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '[SYSTEM] note', body.uuid, { shouldQuery: false })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '[SYSTEM] note', body.uuid, { shouldQuery: false, preserveRuntime: true })
     // No turn starts, so the session must not be left looking busy, and an
     // append is never "queued" behind one: the agent reads it with its next turn.
     expect(messagePersister.isSessionActive).not.toHaveBeenCalled()
@@ -3980,7 +4001,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body.queued).toBe(true)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {})
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { preserveRuntime: true })
     expect(updateSessionMetadata).not.toHaveBeenCalled()
     expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
   })
@@ -4044,6 +4065,64 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
       const res = await getReq(app, `${URL}?limit=50`)
       expect(res.status).toBe(404)
     })
+  })
+
+  it.each([
+    ['', 'authentication_failed', 'Invalid credential'],
+    ['?limit=2', 'authentication_failed', 'Invalid credential'],
+    ['?after=previous', 'unknown', 'API Error: 401 Invalid token'],
+    ['/subagent/sub-1/messages', 'unknown', 'API Error: 401 Invalid token'],
+  ])('restores subscription authentication guidance from the session account (%s)', async (path, apiError, text) => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const lookup = vi.spyOn(connections, 'getConnection').mockResolvedValue({
+      id: 'subscription-account', provider: 'claude-subscription',
+      config: JSON.stringify({ apiKeys: { claudeSubscriptionToken: 'sk-ant-oat01-test' } }),
+    } as never)
+    try {
+      mockIsAuthMode.mockReturnValue(false)
+      if (path.startsWith('/subagent')) vi.mocked(readJsonl).mockResolvedValueOnce([])
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({ llmProviderId: 'subscription-account', model: 'retired-model' } as never)
+      const messages = [{ id: 'error-1', type: 'assistant', content: { text }, apiError, toolCalls: [], createdAt: new Date() }]
+      mockTransformMessages.mockReturnValue(messages)
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages, nextCursor: null } as never)
+      vi.mocked(getSessionMessagesDelta).mockResolvedValue({ messages, anchor: null } as never)
+      const url = path.startsWith('/subagent') ? URL.replace('/messages', path) : `${URL}${path}`
+      const res = await getReq(app, url)
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      const restored = Array.isArray(body) ? body : body.messages
+      expect(restored[0].errorPresentation.message).toContain('claude setup-token')
+      expect(lookup).toHaveBeenCalledExactlyOnceWith('subscription-account')
+    } finally {
+      lookup.mockRestore()
+    }
+  })
+
+  it.each([null, 'deleted-account'])('falls back from a cleared or deleted session binding (%s)', async llmProviderId => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const { getLlmProvider } = await import('@shared/lib/llm-provider')
+    const lookup = vi.spyOn(connections, 'getConnection').mockResolvedValue(null)
+    const fallback = vi.spyOn(connections, 'resolveGlobalSelection').mockResolvedValue({
+      provider: getLlmProvider('claude-subscription'),
+    } as never)
+    const settings = mockRuntimeSettings()
+    mockRuntimeSettings.mockReturnValue({ ...settings, llmLegacyProviderId: 'legacy-anthropic' } as never)
+    try {
+      mockIsAuthMode.mockReturnValue(false)
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({ llmProviderId } as never)
+      mockTransformMessages.mockReturnValue([
+        { id: 'error-1', type: 'assistant', content: { text: 'Invalid credential' }, apiError: 'authentication_failed', toolCalls: [] },
+      ])
+      const res = await getReq(app, URL)
+      expect(res.status).toBe(200)
+      expect((await res.json())[0].errorPresentation.message).toContain('claude setup-token')
+      expect(lookup).not.toHaveBeenCalledWith('legacy-anthropic')
+      expect(fallback).toHaveBeenCalledOnce()
+    } finally {
+      lookup.mockRestore()
+      fallback.mockRestore()
+      mockRuntimeSettings.mockReturnValue(settings)
+    }
   })
 
   it('does not query messageAuthor in non-auth mode', async () => {
@@ -8376,8 +8455,8 @@ describe('agent preferences — PUT /:id/preferences', () => {
     const res = await putJson(PREFS_URL, { defaultModel: null })
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ defaultEffort: 'high' })
-    expect(persistedPreferences()).toEqual({ defaultEffort: 'high' })
+    expect(await res.json()).toEqual({ defaultEffort: 'high', defaultLlmProviderId: null })
+    expect(persistedPreferences()).toEqual({ defaultEffort: 'high', defaultLlmProviderId: null })
   })
 
   it('trims surrounding whitespace before storing defaultModel', async () => {

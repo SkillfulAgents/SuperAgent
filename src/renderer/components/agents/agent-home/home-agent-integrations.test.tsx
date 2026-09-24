@@ -1,3 +1,5 @@
+const platformState = vi.hoisted(() => ({ connected: true }))
+vi.mock('@renderer/hooks/use-platform-auth', () => ({ usePlatformAuthStatus: () => ({ data: platformState }) }))
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
@@ -19,6 +21,7 @@ vi.mock('@renderer/hooks/use-agent-integrations', () => ({
   useAgentIntegrationAccess: (...args: unknown[]) => mockUseChatIntegrationAccess(...args),
 }))
 
+const mockCanManage = vi.fn(() => true)
 const mockNavigate = vi.fn()
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
@@ -27,8 +30,8 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({
-    canAdminAgent: () => true,
-    canUseAgent: () => true,
+    canAdminAgent: () => mockCanManage(),
+    canUseAgent: () => mockCanManage(),
   }),
   UserProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
@@ -51,6 +54,7 @@ const INTEGRATION: ListItem = {
   requireApproval: false,
   sessionTimeout: null,
   model: null,
+  llmProviderId: null,
   effort: null,
   speed: null,
   status: 'active',
@@ -64,10 +68,28 @@ const INTEGRATION: ListItem = {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('HomeAgentIntegrations', () => {
+  it('puts Linear and chat providers in the same list with the same navigation', async () => {
+    mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION, { ...INTEGRATION, id: 'linear-1', name: 'Linear Agent', provider: 'linear' }] })
+    renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+    expect(screen.getByText('External Integrations')).toBeInTheDocument()
+    expect(screen.getByText('Test Bot')).toBeInTheDocument()
+    expect(screen.queryByText('Task Platforms')).toBeNull()
+    await userEvent.setup().click(screen.getByText('Linear Agent'))
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/agents/$slug/chat/$integrationId', params: { slug: 'test-agent', integrationId: 'linear-1' } })
+  })
+
   beforeEach(() => {
+  platformState.connected = true
     vi.clearAllMocks()
+    mockCanManage.mockReturnValue(true)
     mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION] })
     mockUseChatIntegrationAccess.mockReturnValue({ data: [] })
+  })
+
+  it('shows reconnect needed on the shared home card', () => {
+    mockUseChatIntegrations.mockReturnValue({ data: [{ ...INTEGRATION, provider: 'linear', status: 'disconnected', connected: false, reconnectRequired: true }] })
+    renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+    expect(screen.getByText('Reconnect needed')).toBeInTheDocument()
   })
 
   it('does NOT render a per-row settings/actions kebab', () => {
@@ -133,4 +155,29 @@ describe('HomeAgentIntegrations', () => {
     renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
     expect(screen.getByText(label)).toBeInTheDocument()
   })
+})
+
+it('does not invite viewers to configure providers or render an empty setup grid', () => {
+  mockCanManage.mockReturnValue(false)
+  mockUseChatIntegrations.mockReturnValue({ data: [] })
+  const { container } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.getByText('No external integrations have been configured for this agent.')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /connect via/i })).not.toBeInTheDocument()
+  expect(container.querySelector('.grid')).toBeNull()
+})
+
+it('only offers Email on Platform-connected deployments', async () => {
+  mockCanManage.mockReturnValue(true)
+  platformState.connected = false
+  mockUseChatIntegrations.mockReturnValue({ data: [] })
+  renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.queryByRole('button', { name: 'Connect via Email' })).not.toBeInTheDocument()
+})
+
+it('offers Email to connected Platform owners', () => {
+  platformState.connected = true
+  mockCanManage.mockReturnValue(true)
+  mockUseChatIntegrations.mockReturnValue({ data: [] })
+  renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.getByRole('button', { name: 'Connect via Email' })).toBeInTheDocument()
 })

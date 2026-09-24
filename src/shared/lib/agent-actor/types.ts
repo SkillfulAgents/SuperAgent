@@ -292,7 +292,7 @@ export interface SessionOps {
   /** `sessionFileRealPathWithinAgent` — the transcript's real location is inside the workspace, links followed. */
   fileRealPathWithinAgent(sessionId: string): Promise<boolean>
   /** `loadSessionUsageTotals` (usage-service) over this session's transcript and the files beside it. */
-  usage(sessionId: string, options?: Pick<CommonLoadOptions, 'providerId'>): Promise<SessionUsageTotals>
+  usage(sessionId: string): Promise<SessionUsageTotals>
   /** `getSessionsByScheduledTask` */
   byScheduledTask(scheduledTaskId: string): Promise<SessionInfo[]>
   /** `getSessionsByWebhookTrigger` */
@@ -342,6 +342,8 @@ export interface SessionOps {
   isAwaitingInput(sessionId: string): boolean
   /** `messagePersister.markSessionActive` */
   markActive(sessionId: string): void
+  /** Mark active for stream recovery; undo only if no new send, turn, or output took ownership. */
+  markProvisionalActive(sessionId: string): () => void
   /** `messagePersister.markSessionIdle` */
   markIdle(sessionId: string): void
   /** `messagePersister.markSessionInterrupted` */

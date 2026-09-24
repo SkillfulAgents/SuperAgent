@@ -3,8 +3,8 @@
  * POST /:integrationId/access/:accessId/{approve,deny,revoke}.
  *
  * Uses the real access service against an in-memory test DB.
- * Mocks: auth middleware, chat-integration-service, session-service,
- * chat-integration-manager, config-schema, auth/config, audit-log-service,
+ * Mocks: auth middleware, agent-integration-service, session-service,
+ * agent-integration-manager, config-schema, auth/config, audit-log-service,
  * error-reporting. Does NOT mock the access service.
  */
 
@@ -35,8 +35,11 @@ const mockAuthRole: { current: 'viewer' | 'user' | 'owner' } = { current: 'owner
 vi.mock('../middleware/auth', () => {
   const RANK: Record<string, number> = { viewer: 0, user: 1, owner: 2 }
   return {
+  getAuthorizedAgentRole: () => mockAuthRole.current,
+  hasMinRole: (role: string, minimum: string) => ({ viewer: 0, user: 1, owner: 2 }[role]! >= { viewer: 0, user: 1, owner: 2 }[minimum]!),
     Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
-    AgentUser: () => async (c: any, next: () => Promise<void>) => {
+    AgentRead: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  AgentUser: () => async (c: any, next: () => Promise<void>) => {
       if (RANK[mockAuthRole.current] < RANK.user) return c.json({ error: 'Forbidden' }, 403)
       c.set('user', mockAuthUser); return next()
     },
@@ -58,27 +61,31 @@ vi.mock('../middleware/auth', () => {
 const INTEGRATION_A = 'integration-a'
 const INTEGRATION_B = 'integration-b'
 
-const integrations: Record<string, { id: string; agentSlug: string }> = {
-  [INTEGRATION_A]: { id: INTEGRATION_A, agentSlug: 'agent-a' },
-  [INTEGRATION_B]: { id: INTEGRATION_B, agentSlug: 'agent-b' },
+const integrations: Record<string, { id: string; agentSlug: string; provider: 'telegram' }> = {
+  [INTEGRATION_A]: { id: INTEGRATION_A, agentSlug: 'agent-a', provider: 'telegram' },
+  [INTEGRATION_B]: { id: INTEGRATION_B, agentSlug: 'agent-b', provider: 'telegram' },
 }
 const mockGetChatIntegration = vi.fn((id: string) => integrations[id] ?? null)
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  getChatIntegration: (id: string) => mockGetChatIntegration(id),
-  createChatIntegration: vi.fn(),
-  updateChatIntegration: vi.fn(() => true),
-  updateChatIntegrationStatus: vi.fn(),
-  deleteChatIntegration: vi.fn(),
-  DuplicateBotTokenError: class DuplicateBotTokenError extends Error {},
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  getAgentIntegration: (id: string) => mockGetChatIntegration(id),
+  createAgentIntegration: vi.fn(),
+  updateAgentIntegration: vi.fn(() => true),
+  updateAgentIntegrationStatus: vi.fn(),
+  deleteAgentIntegration: vi.fn(() => {
+    expect(mockPauseIntegration).toHaveBeenCalledOnce()
+    return true
+  }),
+  DuplicateIntegrationIdentityError: class DuplicateIntegrationIdentityError extends Error {},
+  IntegrationConfigurationUnsupportedError: class IntegrationConfigurationUnsupportedError extends Error {},
 }))
 
 // ── Session service: mocked ─────────────────────────────────────────────
-vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
-  getChatIntegrationSessionById: vi.fn(),
-  archiveChatIntegrationSession: vi.fn(),
-  listChatIntegrationSessions: vi.fn(() => []),
-  deleteChatIntegrationSessionsByIntegration: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
+  getAgentIntegrationSessionById: vi.fn(),
+  archiveAgentIntegrationSession: vi.fn(),
+  listAgentIntegrationSessions: vi.fn(() => []),
+  deleteAgentIntegrationSessionsByIntegration: vi.fn(),
 }))
 
 // ── Manager: mocked with spies on the new helpers ───────────────────────
@@ -86,6 +93,7 @@ const mockNotifyChatApproved = vi.fn().mockResolvedValue(undefined)
 const mockTearDownChatSession = vi.fn().mockResolvedValue(undefined)
 const mockReconcileAccess = vi.fn().mockResolvedValue(undefined)
 const mockClearChatSessionById = vi.fn()
+const mockPauseIntegration = vi.fn().mockResolvedValue(undefined)
 const mockRemoveIntegration = vi.fn().mockResolvedValue(undefined)
 const mockSendContactCard = vi.fn().mockResolvedValue(undefined)
 
@@ -99,12 +107,13 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
     addIntegration: vi.fn(),
     integrationCreated: (...args: unknown[]) => mockSendContactCard(...args),
     removeIntegration: (...args: unknown[]) => mockRemoveIntegration(...args),
-    pauseIntegration: vi.fn(),
+    pauseIntegration: (...args: unknown[]) => mockPauseIntegration(...args),
     resumeIntegration: vi.fn(),
   },
 }))
 
-vi.mock('@shared/lib/chat-integrations/config-schema', () => ({
+vi.mock('@shared/lib/chat-integrations/config-schema', async importOriginal => ({
+  ...await importOriginal<typeof import('@shared/lib/chat-integrations/config-schema')>(),
   validateChatIntegrationConfig: vi.fn(),
   parseChatIntegrationConfig: vi.fn((_provider, config) => JSON.parse(config)),
   CHAT_PROVIDERS: ['telegram', 'slack', 'imessage'],
@@ -125,8 +134,14 @@ vi.mock('@shared/lib/error-reporting', () => ({
   addErrorBreadcrumb: vi.fn(),
 }))
 
+vi.mock('@shared/lib/agent-integrations/registry', async importOriginal => {
+  const actual = await importOriginal<typeof import('@shared/lib/agent-integrations/registry')>()
+  actual.agentIntegrationRegistry.cleanup = vi.fn()
+  return actual
+})
+
 import chatIntegrationsRouter from './chat-integrations'
-import { createChatIntegration, updateChatIntegration } from '@shared/lib/services/chat-integration-service'
+import { createAgentIntegration, updateAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 
 function app() {
@@ -177,6 +192,36 @@ describe('chat-integrations access routes', () => {
     testSqlite?.close()
   })
 
+  it('pauses and refreshes the running identity before deleting an integration', async () => {
+    const response = await app().request(`/api/chat-integrations/${INTEGRATION_A}`, { method: 'DELETE' })
+    expect(response.status).toBe(204)
+    expect(mockPauseIntegration).toHaveBeenCalledWith(INTEGRATION_A)
+    expect(mockRemoveIntegration).not.toHaveBeenCalled()
+  })
+
+
+  it.each([42, {}, [], ''])( 'rejects malformed llmProviderId %j before creating or updating a chat integration', async value => {
+    for (const method of ['POST', 'PATCH']) {
+      const res = await app().request(`/api/chat-integrations/${method === 'POST' ? 'agent-a' : INTEGRATION_A}`, {
+        method, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'telegram', config: { botToken: 't' }, llmProviderId: value }),
+      })
+      expect(res.status).toBe(400)
+    }
+    expect(createAgentIntegration).not.toHaveBeenCalled()
+    expect(updateAgentIntegration).not.toHaveBeenCalled()
+  })
+
+  it('returns 404 for a missing LLM provider without updating the integration', async () => {
+    const res = await app().request(`/api/chat-integrations/${INTEGRATION_A}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ llmProviderId: 'deleted-provider' }),
+    })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'LLM provider not found' })
+    expect(updateAgentIntegration).not.toHaveBeenCalled()
+  })
+
   // ── GET /:integrationId/access ─────────────────────────────────────────
 
   describe('GET /:integrationId', () => {
@@ -216,7 +261,7 @@ describe('chat-integrations access routes', () => {
 
   describe('PATCH /:integrationId', () => {
     it('maps config validation failures from the service to 400', async () => {
-      vi.mocked(updateChatIntegration).mockImplementationOnce(async () => {
+      vi.mocked(updateAgentIntegration).mockImplementationOnce(async () => {
         z.object({ botToken: z.string() }).parse({})
         return true
       })
@@ -251,7 +296,7 @@ describe('chat-integrations access routes', () => {
       )
 
       expect(res.status).toBe(500)
-      expect(await res.json()).toEqual({ error: 'Failed to update chat integration' })
+      expect(await res.json()).toEqual({ error: 'Failed to update agent integration' })
       consoleError.mockRestore()
     })
   })
@@ -540,14 +585,14 @@ describe('chat-integrations access routes', () => {
     })
 
     it('accepts a boolean requireApproval and persists it', async () => {
-      const { updateChatIntegration } = await import('@shared/lib/services/chat-integration-service')
+      const { updateAgentIntegration } = await import('@shared/lib/services/agent-integration-service')
       const res = await app().request(`http://localhost/api/chat-integrations/${INTEGRATION_A}/require-approval`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ requireApproval: false }),
       })
       expect(res.status).toBe(200)
-      expect(updateChatIntegration).toHaveBeenCalledWith(
+      expect(updateAgentIntegration).toHaveBeenCalledWith(
         INTEGRATION_A,
         expect.objectContaining({ requireApproval: false }),
       )
@@ -616,9 +661,9 @@ describe('chat-integrations access routes', () => {
 
   describe('POST /:id create — requireApproval not settable at create', () => {
     it('ignores requireApproval in the body so the public flip cannot bypass the owner gate', async () => {
-      vi.mocked(createChatIntegration).mockResolvedValue('new-int')
+      vi.mocked(createAgentIntegration).mockResolvedValue('new-int')
       mockGetChatIntegration.mockImplementation((id: string) =>
-        id === 'new-int' ? { id: 'new-int', agentSlug: 'agent-a' } : (integrations[id] ?? null),
+        id === 'new-int' ? { id: 'new-int', agentSlug: 'agent-a', provider: 'telegram' as const } : (integrations[id] ?? null),
       )
 
       const res = await app().request('http://localhost/api/chat-integrations/agent-a', {
@@ -630,13 +675,13 @@ describe('chat-integrations access routes', () => {
       expect(res.status).toBe(201)
       // The route must NOT forward requireApproval — the service applies its secure
       // default (true). Making a bot public is owner-only via PATCH /require-approval.
-      expect(vi.mocked(createChatIntegration)).toHaveBeenCalledTimes(1)
-      expect(vi.mocked(createChatIntegration).mock.calls[0][0]).not.toHaveProperty('requireApproval')
+      expect(vi.mocked(createAgentIntegration)).toHaveBeenCalledTimes(1)
+      expect(vi.mocked(createAgentIntegration).mock.calls[0][0]).not.toHaveProperty('requireApproval')
       expect(mockSendContactCard).toHaveBeenCalledWith('new-int')
     })
 
     it('returns 500 instead of a null success body when the created row cannot be read back', async () => {
-      vi.mocked(createChatIntegration).mockResolvedValue('missing-int')
+      vi.mocked(createAgentIntegration).mockResolvedValue('missing-int')
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
 
       const res = await app().request('http://localhost/api/chat-integrations/agent-a', {
@@ -646,7 +691,7 @@ describe('chat-integrations access routes', () => {
       })
 
       expect(res.status).toBe(500)
-      expect(await res.json()).toEqual({ error: 'Failed to create chat integration' })
+      expect(await res.json()).toEqual({ error: 'Failed to create agent integration' })
       consoleError.mockRestore()
     })
   })

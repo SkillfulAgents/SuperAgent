@@ -1,3 +1,6 @@
+import { testDeliveryAttempt } from '../agent-integrations/testing/delivery-attempt'
+import type { IntegrationRoute } from '../agent-integrations/types'
+import type { DeliveryAttempt } from '../agent-integrations/delivery-queue'
 import { inputEvent, mockChatIntegration } from './test-helpers'
 import type { IntegrationInputEvent, IntegrationResponseEvent } from '../agent-integrations/types'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -47,7 +50,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: vi.fn(),
 }))
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import {
@@ -56,7 +59,7 @@ import {
   denyChatAccess,
   revokeChatAccess,
 } from '@shared/lib/services/chat-integration-access-service'
-import type { IncomingMessage } from './base-connector'
+import type { IncomingMessage } from './chat-agent-integration'
 
 const INT = 'int-tg'
 
@@ -68,6 +71,8 @@ interface ManagerInternals {
     integrationId: string,
     message: IntegrationInputEvent,
     integration: unknown,
+    route: IntegrationRoute,
+    attempt: DeliveryAttempt,
   ) => Promise<void>
   handleInteractiveResponse: (
     integrationId: string,
@@ -75,7 +80,7 @@ interface ManagerInternals {
   ) => Promise<void>
 }
 
-const mgr = chatIntegrationManager as unknown as ManagerInternals
+const mgr = agentIntegrationManager as unknown as ManagerInternals
 
 const integration = {
   id: INT,
@@ -138,7 +143,7 @@ function injectConn(): void {
 }
 
 function deliver(message: IncomingMessage): Promise<void> {
-  return mgr.handleIncomingMessageInner(INT, inputEvent(message), integration)
+  return mgr.handleIncomingMessageInner(INT, inputEvent(message), integration, mockChatIntegration({}).resolveRoute(inputEvent(message)), testDeliveryAttempt).catch(error => { if (error.message !== 'stop-after-spend') throw error })
 }
 
 describe('chat-integration inbound access gate', () => {
@@ -260,7 +265,7 @@ describe('chat-integration inbound access gate', () => {
       eventUnsubscribe: null,
     })
 
-    await mgr.handleIncomingMessageInner(SLACK, inputEvent(msg({ chatId: 'sc1', chatType: 'private', text: '/start' })), slackIntegration)
+    await mgr.handleIncomingMessageInner(SLACK, inputEvent(msg({ chatId: 'sc1', chatType: 'private', text: '/start' })), slackIntegration, { externalId: 'sc1', action: 'run' }, testDeliveryAttempt).catch(error => { if (error.message !== 'stop-after-spend') throw error })
 
     // Not intercepted with the greeting; reached the spend path (agent lookup +
     // container start) instead.

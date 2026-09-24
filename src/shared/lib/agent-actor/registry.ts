@@ -211,3 +211,8 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
     return loadSessionUsageTotals
   },
 }, { states: agentActorStates })
+
+/** A refreshed shared MCP credential resumes waiters in every owning actor. */
+export function completeMcpReauth(mcpId: string): number {
+  return mcpReauthManager.completeMcp(mcpId)
+}

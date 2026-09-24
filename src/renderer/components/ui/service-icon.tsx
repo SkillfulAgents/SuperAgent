@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ExternalLink, Plug, Link2, Blocks, type LucideIcon } from 'lucide-react'
+import { ExternalLink, Plug, Link2, Blocks, Mail, type LucideIcon } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 
 type FallbackType = 'oauth' | 'mcp' | 'blocks' | 'request'
@@ -26,6 +26,7 @@ interface ServiceIconProps {
  */
 export function ServiceIcon({ slug, fallback = 'oauth', className }: ServiceIconProps) {
   const [failed, setFailed] = useState(false)
+  if (slug === 'platform-email') return <Mail className={className} aria-hidden="true" />
 
   if (!slug || failed) {
     const Icon = FALLBACK_ICONS[fallback]

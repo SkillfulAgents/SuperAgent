@@ -1,9 +1,14 @@
-import type { ZodType } from 'zod'
+import { chatProviderSetup } from './setup'
+import { chatIntegrationAccess, chatIntegrationSessions, slackThreadState } from '../db/schema'
+import { z, type ZodType } from 'zod'
 import type { IntegrationProvider } from '../agent-integrations/registry'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { ChatAgentIntegration, ChatConnectorClass } from './chat-agent-integration'
 import { telegramConfigSchema, slackConfigSchema, imessageConfigSchema, type ChatProvider } from './config-schema'
 import { resolveAppLinkContext, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
+import { toPublicChatIntegration } from './public'
+import { mergeChatIntegrationConfig } from './config-schema'
+import type { ChatIntegration } from '../db/schema'
 import { chatDefinitions } from './definitions'
 import { chatIntegrationPolicy } from './chat-policy'
 
@@ -23,9 +28,23 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
     record: AgentIntegrationRecord,
   ) => ChatAgentIntegration | Promise<ChatAgentIntegration>,
 ): IntegrationProvider {
+  const identityField = provider === 'imessage' ? 'phoneNumber' : 'botToken'
+  const identitySchema = z.object({ [identityField]: z.string().min(1) })
   return {
     definition: chatDefinitions[provider],
     policy: chatIntegrationPolicy,
+    setup: chatProviderSetup(provider, schema),
+    storage: () => [chatIntegrationAccess, chatIntegrationSessions, ...(provider === 'slack' ? [slackThreadState] : [])],
+    serialize: record => toPublicChatIntegration(record as ChatIntegration),
+    configuration: {
+      identityLabel: provider === 'imessage' ? 'Phone number' : 'Bot token',
+      identityPaths: [`$.${identityField}`],
+      uniqueKey(input) {
+        const parsed = identitySchema.safeParse(input)
+        return parsed.success ? parsed.data[identityField] : null
+      },
+      merge: (stored, patch) => mergeChatIntegrationConfig(provider, stored, patch),
+    },
     async create(record) {
       let config: Config
       try {

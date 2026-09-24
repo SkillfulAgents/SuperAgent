@@ -4,14 +4,14 @@
  * React Query hooks for managing external agent integrations.
  */
 
-import type { ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
-import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import type { AgentIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
+import { integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/setup-schema'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 import { isSettling } from '@shared/lib/agent-integrations/presentation'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
-export type { ChatIntegrationSession, ChatIntegrationAccess }
+export type { AgentIntegrationSession, ChatIntegrationAccess }
 export type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 
 /** A list row plus the live transport state the list route computes, so the
@@ -36,6 +36,7 @@ export class AgentIntegrationApiError extends Error {
 
 export const agentIntegrationKeys = {
   all: ['chat-integrations'] as const,
+  setup: (agentSlug: string, provider: string, name?: string) => ['agent-integration-setup', agentSlug, provider, name] as const,
   lists: (agentSlug: string | null) => [...agentIntegrationKeys.all, agentSlug] as const,
   list: (agentSlug: string | null, status?: string) => [...agentIntegrationKeys.lists(agentSlug), status] as const,
   detail: (id: string | null) => ['chat-integration', id] as const,
@@ -51,10 +52,10 @@ export function useAgentIntegrations(agentSlug: string | null, status?: string) 
     queryKey: agentIntegrationKeys.list(agentSlug, status),
     queryFn: async () => {
       const url = status
-        ? `/api/agents/${agentSlug}/chat-integrations?status=${status}`
-        : `/api/agents/${agentSlug}/chat-integrations`
+        ? `/api/agent-integrations/agents/${agentSlug}?status=${status}`
+        : `/api/agent-integrations/agents/${agentSlug}`
       const res = await apiFetch(url)
-      if (!res.ok) throw new Error('Failed to fetch chat integrations')
+      if (!res.ok) throw new Error('Failed to fetch agent integrations')
       return res.json()
     },
     enabled: !!agentSlug,
@@ -74,11 +75,15 @@ export function useAgentIntegration(id: string | null) {
   return useQuery<PublicAgentIntegration>({
     queryKey: agentIntegrationKeys.detail(id),
     queryFn: async () => {
-      const res = await apiFetch(`/api/chat-integrations/${id}`)
-      if (!res.ok) throw new Error('Failed to fetch chat integration')
+      const res = await apiFetch(`/api/agent-integrations/${id}`)
+      if (!res.ok) throw new Error('Failed to fetch agent integration')
       return res.json()
     },
     enabled: !!id,
+    // OAuth completes in another window. Poll quickly only during its live
+    // authorization window; providers opt in to any settled health polling.
+    refetchInterval: query => (query.state.data?.authorizationPendingUntil ?? 0) > Date.now() ? 2500 : query.state.data?.refreshIntervalMs ?? false,
+    refetchIntervalInBackground: false,
   })
 }
 
@@ -92,7 +97,7 @@ export function useAgentIntegrationStatus(id: string | null) {
   }>({
     queryKey: agentIntegrationKeys.status(id),
     queryFn: async () => {
-      const res = await apiFetch(`/api/chat-integrations/${id}/status`)
+      const res = await apiFetch(`/api/agent-integrations/${id}/status`)
       if (!res.ok) throw new Error('Failed to fetch status')
       return res.json()
     },
@@ -114,11 +119,11 @@ export function useAgentIntegrationStatus(id: string | null) {
 // ── Sessions hook ──────────────────────────────────────────────────────
 
 export function useAgentIntegrationSessions(integrationId: string | null) {
-  return useQuery<ChatIntegrationSession[]>({
+  return useQuery<AgentIntegrationSession[]>({
     queryKey: agentIntegrationKeys.sessions(integrationId),
     queryFn: async () => {
-      const res = await apiFetch(`/api/chat-integrations/${integrationId}/sessions`)
-      if (!res.ok) throw new Error('Failed to fetch chat integration sessions')
+      const res = await apiFetch(`/api/agent-integrations/${integrationId}/sessions`)
+      if (!res.ok) throw new Error('Failed to fetch agent integration sessions')
       return res.json()
     },
     enabled: !!integrationId,
@@ -137,8 +142,8 @@ export function useAgentIntegrationAccess(integrationId: string | null, enabled 
   return useQuery<ChatIntegrationAccess[]>({
     queryKey: agentIntegrationKeys.access(integrationId ?? ''),
     queryFn: async () => {
-      const res = await apiFetch(`/api/chat-integrations/${integrationId}/access`)
-      if (!res.ok) throw new Error('Failed to fetch chat integration access')
+      const res = await apiFetch(`/api/agent-integrations/${integrationId}/access`)
+      if (!res.ok) throw new Error('Failed to fetch agent integration access')
       return res.json()
     },
     // The /access route is owner-gated; callers pass enabled=false for non-owners
@@ -159,17 +164,17 @@ export function useCreateAgentIntegration() {
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (params: {
       agentSlug: string
-      provider: ChatProvider
+      provider: string
       name?: string
       config: Record<string, unknown>
       showToolCalls?: boolean
       sessionTimeout?: number | null
-      model?: string | null
+      llmProviderId?: string | null; model?: string | null
       effort?: string | null
       speed?: string | null
     }) => {
       const { agentSlug, ...body } = params
-      const res = await apiFetch(`/api/chat-integrations/${agentSlug}`, {
+      const res = await apiFetch(`/api/agent-integrations/agents/${agentSlug}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -210,27 +215,30 @@ export function useUpdateAgentIntegration() {
     }: {
       id: string
       name?: string
+      settings?: Record<string, unknown>
       config?: Record<string, unknown>
       showToolCalls?: boolean
       sessionTimeout?: number | null
-      model?: string | null
+      llmProviderId?: string | null; model?: string | null
       effort?: string | null
       speed?: string | null
       status?: 'active' | 'paused'
     }) => {
-      const res = await apiFetch(`/api/chat-integrations/${id}`, {
+      const res = await apiFetch(`/api/agent-integrations/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
       })
-      if (!res.ok) throw new Error('Failed to update chat integration')
+      if (!res.ok) throw new Error('Failed to update agent integration')
       return res.json() as Promise<PublicAgentIntegration>
     },
     onSuccess: (data) => {
       queryClient.setQueryData(agentIntegrationKeys.detail(data.id), data)
-      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(data.agentSlug) })
-      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(data.id) })
-      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.status(data.id) })
+      return Promise.all([
+        queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(data.agentSlug) }),
+        queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(data.id) }),
+        queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.status(data.id) }),
+      ])
     },
   })
 }
@@ -242,8 +250,8 @@ export function useDeleteAgentIntegration() {
 
   return useMutation({
     mutationFn: async ({ id, agentSlug }: { id: string; agentSlug: string }) => {
-      const res = await apiFetch(`/api/chat-integrations/${id}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('Failed to delete chat integration')
+      const res = await apiFetch(`/api/agent-integrations/${id}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('Failed to delete agent integration')
       return { id, agentSlug }
     },
     onSuccess: (_, variables) => {
@@ -267,7 +275,7 @@ function useChatAccessAction(verb: ChatAccessVerb) {
 
   return useMutation({
     mutationFn: async ({ integrationId, accessId }: { integrationId: string; accessId: string }) => {
-      const res = await apiFetch(`/api/chat-integrations/${integrationId}/access/${accessId}/${verb}`, {
+      const res = await apiFetch(`/api/agent-integrations/${integrationId}/access/${accessId}/${verb}`, {
         method: 'POST',
       })
       if (!res.ok) throw new Error(`Failed to ${verb} access`)
@@ -291,7 +299,7 @@ export function useSetRequireApproval() {
   return useMutation({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ id, requireApproval }: { id: string; requireApproval: boolean }) => {
-      const res = await apiFetch(`/api/chat-integrations/${id}/require-approval`, {
+      const res = await apiFetch(`/api/agent-integrations/${id}/require-approval`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ requireApproval }),
@@ -316,7 +324,7 @@ export function useClearChatSession() {
   return useMutation({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ integrationId, sessionId }: { integrationId: string; sessionId: string }) => {
-      const res = await apiFetch(`/api/chat-integrations/${integrationId}/sessions/${sessionId}`, {
+      const res = await apiFetch(`/api/agent-integrations/${integrationId}/sessions/${sessionId}`, {
         method: 'DELETE',
       })
       if (!res.ok) throw new Error('Failed to clear session')
@@ -331,14 +339,14 @@ export function useClearChatSession() {
 
 // ── Test credentials mutation ───────────────────────────────────────────
 
-export function useTestChatIntegrationCredentials() {
+export function useTestAgentIntegrationCredentials() {
   return useMutation({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (params: {
-      provider: ChatProvider
+      provider: string
       config: Record<string, unknown>
     }) => {
-      const res = await apiFetch('/api/chat-integrations/test-credentials', {
+      const res = await apiFetch('/api/agent-integrations/test-credentials', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
@@ -349,5 +357,42 @@ export function useTestChatIntegrationCredentials() {
       }
       return data as { valid: boolean; botName?: string; botUsername?: string; team?: string; user?: string; phoneNumber?: string; token?: string }
     },
+  })
+}
+
+/** Provider-supplied links before an account exists; no installation is created. */
+export function useAgentIntegrationSetup(agentSlug: string, provider: string, name?: string, enabled = true) {
+  return useQuery({
+    queryKey: agentIntegrationKeys.setup(agentSlug, provider, name),
+    queryFn: async ({ signal }) => {
+      const query = new URLSearchParams(name ? { name } : {})
+      const response = await apiFetch(`/api/agent-integrations/agents/${encodeURIComponent(agentSlug)}/providers/${encodeURIComponent(provider)}/setup?${query}`, { signal })
+      if (!response.ok) throw new Error('Could not load integration setup')
+      return integrationSetupMetadataSchema.parse(await response.json())
+    },
+    staleTime: 60_000,
+    enabled,
+  })
+}
+
+export function useAuthorizeAgentIntegration() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ id, config }: { id: string; agentSlug: string; config: Record<string, unknown> }) => {
+      const response = await apiFetch(`/api/agent-integrations/${id}/authorize`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config),
+      })
+      if (!response.ok) {
+        const result = await response.json().catch(() => null)
+        throw new Error(typeof result?.error === 'string' && result.error ? result.error : 'Could not authorize integration')
+      }
+      return await response.json() as { url: string }
+    },
+    onSuccess: (_, { id, agentSlug }) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(id) }),
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.status(id) }),
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(agentSlug) }),
+    ]),
   })
 }

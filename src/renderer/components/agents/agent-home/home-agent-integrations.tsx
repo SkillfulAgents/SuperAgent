@@ -1,3 +1,4 @@
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { isPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { useState } from 'react'
 import { Plus } from 'lucide-react'
@@ -32,7 +33,7 @@ function IntegrationNameBadges({ integration, showPending }: { integration: Agen
   const pending = enabled ? (access?.filter((a) => a.status === 'pending').length ?? 0) : 0
   return (
     <span className="inline-flex items-center gap-1">
-      <AgentIntegrationPill state={deriveAgentIntegrationState(integration.status, integration.connected)} size="xs" />
+      <AgentIntegrationPill state={deriveAgentIntegrationState(integration.status, integration.connected, integration.reconnectRequired, !!integration.healthMessage)} size="xs" />
       {pending > 0 && (
         <span className="text-2xs px-1.5 py-0 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400">
           {pending} pending
@@ -45,15 +46,17 @@ function IntegrationNameBadges({ integration, showPending }: { integration: Agen
 export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegrationsProps) {
   const { data: integrations } = useAgentIntegrations(agentSlug)
   const navigate = useNavigate()
-  const { canAdminAgent } = useUser()
+  const { canAdminAgent, canUseAgent } = useUser()
   const canManageApproval = canAdminAgent(agentSlug)
+  const { data: platform } = usePlatformAuthStatus()
+  const providers = integrationSetupProviders.filter(provider => !provider.platformOnly || platform?.connected).filter(provider => provider.managementAccess === 'owner' ? canManageApproval : canUseAgent(agentSlug))
   const { data: agent } = useAgent(agentSlug)
   const agentName = agent?.name ?? agentSlug
   const rows = Array.isArray(integrations) ? integrations : []
   const [setupProvider, setSetupProvider] = useState<IntegrationSetupProvider | null>(null)
 
   return (
-    <HomeCollapsible title="Remote Chat" className={className}>
+    <HomeCollapsible title="External Integrations" className={className}>
       {rows.length > 0 ? (
         <div className="mt-2 divide-y divide-border/50">
           {rows.map((integration) => {
@@ -87,29 +90,29 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">Not configured yet</p>
           <p className="text-xs mt-1">
-            Connect messaging to chat with this agent from anywhere.
+            {providers.length > 0 ? 'Bring this agent into the places you work.' : 'No external integrations have been configured for this agent.'}
           </p>
-          <div className="mt-3 grid grid-cols-3 gap-1.5">
-            {integrationSetupProviders.map((tile) => (
+          {providers.length > 0 && <div className={`mt-3 grid ${providers.length === 3 ? 'grid-cols-3' : 'grid-cols-2'} gap-1.5`}>
+            {providers.map((tile) => (
               <button
                 key={tile.slug}
                 onClick={() => setSetupProvider(tile)}
-                aria-label={`Chat via ${tile.label}`}
+                aria-label={`Connect via ${tile.label}`}
                 className="flex items-center gap-2 rounded-lg border border-border bg-background p-2 shadow-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-background dark:bg-zinc-200 shadow-sm">
                   <ServiceIcon slug={tile.slug} fallback="mcp" className="h-4 w-4" />
                 </div>
                 <div className="flex flex-col items-start">
-                  <span className="text-2xs font-normal text-muted-foreground">Chat via</span>
+                  <span className="text-2xs font-normal text-muted-foreground">Connect via</span>
                   <span className="text-xs font-normal text-foreground">{tile.label}</span>
                 </div>
               </button>
             ))}
-          </div>
+          </div>}
         </div>
       )}
-      {rows.length > 0 && (
+      {rows.length > 0 && providers.length > 0 && (
         <div className="flex items-center justify-between mt-1 px-4 pb-1">
           <div className="ml-auto">
             <Popover>
@@ -119,7 +122,7 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-1">
-                {integrationSetupProviders.map((tile) => (
+                {providers.map((tile) => (
                   <button
                     key={tile.slug}
                     className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"

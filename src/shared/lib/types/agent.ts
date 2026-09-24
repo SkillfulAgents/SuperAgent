@@ -103,6 +103,9 @@ export interface SessionMetadata {
   automationStatus?: 'running' | 'succeeded' | 'failed'
   // One webhook session can represent a batch of several claimed deliveries.
   webhookInvocationCount?: number
+  // Common provenance for every external integration; set by the integration manager.
+  isAgentIntegrationSession?: boolean
+  agentIntegrationId?: string
   // Chat integration fields - present when session was created from an external chat
   isChatIntegrationSession?: boolean
   chatIntegrationId?: string
@@ -130,6 +133,7 @@ export interface SessionMetadata {
   // Last model used by the user on this session (seeds the composer on reload).
   // Stored as the provider's pinned ID, not the family.
   model?: string
+  llmProviderId?: string | null
   // X-Agent: present when this session was created by another agent invoking this one.
   // Such sessions are hidden as automated until promoted for human input.
   invokedByAgentSlug?: string
@@ -181,6 +185,7 @@ export interface JsonlMessageEntry {
     role: string
     content: string | ContentBlock[]
     model?: string
+  llmProviderId?: string | null
     id?: string
     usage?: {
       input_tokens: number
@@ -255,9 +260,9 @@ export interface JsonlSystemEntry {
 /**
  * Attachment entry from Claude's JSONL format. The CLI records user messages
  * that arrive mid-turn (queued/steering input) as `queued_command` attachments
- * instead of regular user entries; `source_uuid` is the queue entry's id (NOT
- * the uuid the client sent with the message — the CLI regenerates it when the
- * message is enqueued mid-turn).
+ * instead of regular user entries; `source_uuid` is the queue entry's id, which
+ * for SDK input is the uuid the message was sent with (verified live on SDK
+ * 0.3.280; a fork leaves it unchanged). The line's own `uuid` is unrelated.
  */
 export interface JsonlAttachmentEntry {
   uuid: string

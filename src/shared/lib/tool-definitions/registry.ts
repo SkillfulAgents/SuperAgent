@@ -2,7 +2,7 @@
  * Tool definition registry.
  *
  * Maps tool names to their definitions. Usable from both backend
- * (MessagePersister, ChatIntegrationManager) and renderer.
+ * (MessagePersister, AgentIntegrationManager) and renderer.
  */
 
 import type { ToolDefinition } from './types'
@@ -65,7 +65,7 @@ import {
 } from './task-management'
 import {
   listAvailableChatProvidersDef,
-  listChatIntegrationsDef,
+  listAgentIntegrationsDef,
   addChatIntegrationDef,
   sendChatMessageDef,
 } from './chat-tools'
@@ -145,7 +145,9 @@ const definitions: Record<string, ToolDefinition> = {
 
   // MCP tools - chat integrations
   'mcp__chat__list_available_chat_providers': listAvailableChatProvidersDef,
-  'mcp__chat__list_chat_integrations': listChatIntegrationsDef,
+  'mcp__chat__list_agent_integrations': listAgentIntegrationsDef,
+  // Historical transcripts retain the original tool name.
+  'mcp__chat__list_chat_integrations': listAgentIntegrationsDef,
   'mcp__chat__add_chat_integration': addChatIntegrationDef,
   'mcp__chat__send_chat_message': sendChatMessageDef,
 }

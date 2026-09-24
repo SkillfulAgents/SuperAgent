@@ -1,46 +1,58 @@
+vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testing/memory-delivery-store')).memoryDeliveryStore() }))
 import * as integrationStore from './store'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { InterruptSessionResult } from '../container/types'
 import { AgentIntegration } from './agent-integration'
 import { AgentIntegrationManager } from './agent-integration-manager'
 import { AgentIntegrationRegistry } from './registry'
 import { captureException } from '../error-reporting'
-import { updateChatIntegrationStatus } from '../services/chat-integration-service'
-import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationOutput, IntegrationSessionContext } from './types'
+import { updateAgentIntegrationStatus } from '../services/agent-integration-service'
+import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationOutput, IntegrationSessionContext, PreparedIntegrationInput } from './types'
 
 const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
   mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
   streams: new Map<string, (event: unknown) => void>(),
+  global: undefined as ((event: unknown) => void) | undefined, interrupt: vi.fn<(sessionId: string) => Promise<InterruptSessionResult>>(),
+  authorizationLost: undefined as ((change: { integrationId: string }) => void) | undefined,
+  syncMcp: vi.fn(async () => true),
   claim: vi.fn(), notify: vi.fn().mockResolvedValue(undefined),
-  create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), register: vi.fn(), metadata: vi.fn(),
+  markActive: vi.fn(), markIdle: vi.fn(), markProvisionalActive: vi.fn(), open: vi.fn(() => []),
+  activity: vi.fn(() => 'idle'), recovery: [] as Array<{ externalId: string; sessionId?: string }>,
+  create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), isStreamSubscribed: vi.fn(() => false), register: vi.fn(), metadata: vi.fn(),
+  broadcast: vi.fn(), isActive: vi.fn(() => false),
+  recordMessage: vi.fn(async (record: { display: unknown }) => record.display),
 }))
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  listStartupChatIntegrations: () => state.rows,
-  getChatIntegration: (id: string) => state.rows.find(row => row.id === id),
-  updateChatIntegrationStatus: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-message-service', () => ({ recordIntegrationMessage: state.recordMessage }))
+vi.mock('./lifecycle', () => ({ onIntegrationAuthorizationLost: (callback: typeof state.authorizationLost) => { state.authorizationLost = callback; return () => { state.authorizationLost = undefined } } }))
+vi.mock('@shared/lib/services/connection-sync-service', () => ({ syncRemoteMcpAgents: state.syncMcp }))
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  listStartupAgentIntegrations: () => state.rows,
+  getAgentIntegration: (id: string) => state.rows.find(row => row.id === id),
+  updateAgentIntegrationStatus: vi.fn(),
 }))
-vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
+vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
   resolveActiveSession: (id: string, externalId: string) => state.mappings.get(`${id}:${externalId}`),
-  createChatIntegrationSession: (mapping: { integrationId: string; externalChatId: string; sessionId: string }) => {
+  createAgentIntegrationSession: (mapping: { integrationId: string; externalChatId: string; sessionId: string }) => {
     state.mappings.set(`${mapping.integrationId}:${mapping.externalChatId}`, { id: `mapping-${mapping.sessionId}`, ...mapping })
   },
-  listActiveChatIntegrationSessions: (id: string) => [...state.mappings.values()].filter(mapping => mapping.integrationId === id),
-  getChatIntegrationSession: (id: string, externalId: string) => state.mappings.get(`${id}:${externalId}`),
-  getChatIntegrationSessionBySessionId: vi.fn(),
-  listChatIntegrationSessions: vi.fn(() => []),
-  archiveChatIntegrationSession: vi.fn(), updateChatIntegrationSessionName: vi.fn(), touchChatIntegrationSession: vi.fn(), getLastDisplayName: vi.fn(),
+  listActiveAgentIntegrationSessions: (id: string) => [...state.mappings.values()].filter(mapping => mapping.integrationId === id),
+  getAgentIntegrationSession: (id: string, externalId: string) => state.mappings.get(`${id}:${externalId}`),
+  getAgentIntegrationSessionBySessionId: (_agent: string, id: string) => [...state.mappings.values()].find(mapping => mapping.sessionId === id),
+  listAgentIntegrationSessions: vi.fn(() => []),
+  archiveAgentIntegrationSession: vi.fn(), updateAgentIntegrationSessionName: vi.fn(), touchAgentIntegrationSession: vi.fn(), getLastDisplayName: vi.fn(),
 }))
 vi.mock('@shared/lib/agent-actor', () => ({
   agentCatalog: { exists: async () => true },
   agentRegistry: { get: () => ({
     container: { start: state.start },
-    inputs: { claim: state.claim },
+    inputs: { claim: state.claim, open: state.open },
     sessions: {
       create: state.create, register: state.register, updateMetadata: state.metadata,
-      markActive: vi.fn(), subscribeStream: state.subscribeStream, isStreamSubscribed: () => false,
+      activity: state.activity, isActive: state.isActive, activeIds: () => ['session-1'], markActive: state.markActive, markIdle: state.markIdle, markProvisionalActive: state.markProvisionalActive, subscribeStream: state.subscribeStream, isStreamSubscribed: state.isStreamSubscribed,
     },
     messages: {
-      send: state.send,
+      send: state.send, interrupt: state.interrupt, broadcastEvent: state.broadcast,
       withSend: (_session: string, callback: () => Promise<void>) => callback(),
       subscribe: (session: string, callback: (event: unknown) => void) => {
         state.streams.set(session, callback)
@@ -50,10 +62,11 @@ vi.mock('@shared/lib/agent-actor', () => ({
   }) },
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({ agentExists: async () => true }))
-vi.mock('@shared/lib/config/settings', () => ({ getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
+vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('@shared/lib/services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
-vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: { addGlobalNotificationClient: () => () => {} } }))
+vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: { addGlobalNotificationClient: (callback: (event: unknown) => void) => { state.global = callback; return () => { state.global = undefined } } } }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: state.notify } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 
@@ -65,7 +78,9 @@ class ObjectIntegration extends AgentIntegration {
   allowed = true
   outputs: Array<{ context: IntegrationSessionContext; output: IntegrationOutput }> = []
   released: IntegrationSessionContext[] = []
-  prepareInput = vi.fn(async (event: IntegrationInputEvent) => ({ text: `Object context: ${(event.payload as { text: string }).text}` }))
+  prepareInput = vi.fn(async (event: IntegrationInputEvent): Promise<PreparedIntegrationInput> => ({ text: `Object context: ${(event.payload as { text: string }).text}` }))
+  sessionsToRecover = async () => state.recovery
+  session(externalId: string) { return this.host.session(externalId) }
   async connect() { this.connected = true }
   async disconnect() { this.connected = false }
   isConnected() { return this.connected }
@@ -81,6 +96,7 @@ class ObjectIntegration extends AgentIntegration {
     return this.emitEvent({ type: 'response', externalId: 'object-7', requestId: 'input-1', requestKind: 'input', value: 'yes' })
       .catch(error => this.emitError(error))
   }
+  cancel(onInterrupted: () => void) { return this.emitEvent({ type: 'cancel', externalId: 'object-7', onInterrupted }) }
   fail(error: Error) { this.emitError(error) }
   input(comment: string, text = 'hello') {
     return this.emitEvent({ type: 'input', externalId: comment, id: comment, timestamp: new Date(), payload: { objectId: 'object-7', text } })
@@ -89,7 +105,7 @@ class ObjectIntegration extends AgentIntegration {
 
 function record(id: string): AgentIntegrationRecord {
   return { id, agentSlug: id, provider: 'test-objects', name: null, config: '{}', status: 'active', errorMessage: null,
-    model: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() }
+    model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() }
 }
 
 let manager: AgentIntegrationManager
@@ -98,10 +114,23 @@ let registry: AgentIntegrationRegistry
 beforeEach(async () => {
   vi.clearAllMocks()
   state.rows = [record('installation-a')]
+  state.recovery = []
+  state.activity.mockReturnValue('idle')
+  state.markProvisionalActive.mockImplementation((id: string) => {
+    state.markActive(id)
+    state.activity.mockReturnValue('working')
+    state.streams.get(id)?.({ type: 'session_active' })
+    return () => {
+      state.markIdle(id)
+      state.activity.mockReturnValue('idle')
+      state.streams.get(id)?.({ type: 'session_idle' })
+    }
+  })
   state.mappings.clear()
   state.streams.clear()
   state.create.mockImplementation(async () => ({ id: `session-${state.create.mock.calls.length}` }))
   state.subscribeStream.mockResolvedValue(undefined)
+  state.isStreamSubscribed.mockReturnValue(false)
   state.start.mockResolvedValue(undefined)
   state.send.mockResolvedValue(undefined)
   adapter = new ObjectIntegration()
@@ -116,12 +145,69 @@ describe('AgentIntegration host contract', () => {
     await adapter.input('comment-one')
     await vi.waitFor(() => expect(state.mappings.size).toBe(1))
     await adapter.input('comment-two', 'follow-up')
-    await vi.waitFor(() => expect(state.send).toHaveBeenCalledWith('session-1', 'Object context: follow-up'))
+    await vi.waitFor(() => expect(state.send).toHaveBeenCalledWith('session-1', 'Object context: follow-up', expect.any(String)))
     expect(state.create).toHaveBeenCalledOnce()
     expect(state.mappings.get('installation-a:object-7')?.sessionId).toBe('session-1')
-    expect(state.metadata).toHaveBeenCalledWith('session-1', {})
+    expect(state.metadata).toHaveBeenCalledWith('session-1', { isAgentIntegrationSession: true, agentIntegrationId: 'installation-a' })
     expect('sendMessage' in adapter).toBe(false)
     expect(adapter.prepareInput).toHaveBeenCalledTimes(2)
+  })
+
+  describe('message display', () => {
+    const presentation = { event: { type: 'comment', label: 'New comment' }, request: { text: 'Please look' }, source: { kind: 'task' as const, identifier: 'OBJ-7' } }
+    const withDisplay = async (event: IntegrationInputEvent): Promise<PreparedIntegrationInput> =>
+      ({ text: `Object context: ${(event.payload as { text: string }).text}`, display: presentation })
+    const stored = {
+      ...presentation, version: 1,
+      integration: { id: 'installation-a', name: 'Objects', provider: 'test-objects', family: 'objects' },
+    }
+
+    it('records the card under the uuid the message is sent with and shows it live', async () => {
+      adapter.prepareInput.mockImplementation(withDisplay)
+      state.isActive.mockReturnValue(true)
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+      const initialMessageUuid = state.create.mock.calls[0][0].initialMessageUuid
+      expect(initialMessageUuid).toEqual(expect.any(String))
+      expect(state.recordMessage).toHaveBeenCalledWith({ id: initialMessageUuid, sessionId: 'session-1', agentSlug: 'installation-a', display: stored })
+
+      await adapter.input('comment-two', 'follow-up')
+      await vi.waitFor(() => expect(state.send).toHaveBeenCalledOnce())
+      const [, text, uuid] = state.send.mock.calls[0]
+      expect(text).toBe('Object context: follow-up')
+      expect(state.recordMessage).toHaveBeenLastCalledWith({ id: uuid, sessionId: 'session-1', agentSlug: 'installation-a', display: stored })
+      expect(state.broadcast).toHaveBeenCalledExactlyOnceWith('session-1', { type: 'user_message', uuid, content: text, queued: true, integration: stored })
+    })
+
+    it('records the card before the handoff, keyed by the delivery, so an uncertain send keeps it', async () => {
+      adapter.prepareInput.mockImplementation(withDisplay)
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+      state.send.mockImplementationOnce(async () => {
+        expect(state.recordMessage).toHaveBeenCalledTimes(2)
+        throw new Error('socket hang up')
+      })
+      await adapter.input('comment-two', 'follow-up')
+      await vi.waitFor(() => expect(state.send).toHaveBeenCalledOnce())
+      expect(state.recordMessage).toHaveBeenLastCalledWith(expect.objectContaining({ id: state.send.mock.calls[0][2], sessionId: 'session-1' }))
+    })
+
+    it('sends without a card or broadcast when the provider describes none, or the card is rejected', async () => {
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+      await adapter.input('comment-two', 'follow-up')
+      await vi.waitFor(() => expect(state.send).toHaveBeenCalledOnce())
+      expect(state.recordMessage).not.toHaveBeenCalled()
+
+      adapter.prepareInput.mockImplementation(withDisplay)
+      state.recordMessage.mockResolvedValueOnce(null)
+      await adapter.input('comment-three', 'again')
+      await vi.waitFor(() => expect(state.send).toHaveBeenCalledTimes(2))
+      expect(state.broadcast).not.toHaveBeenCalled()
+    })
   })
 
   it('delivers fast replay with the reply target, distinguishing a segment from turn completion', async () => {
@@ -270,7 +356,7 @@ describe('AgentIntegration host contract', () => {
       tags: { component: 'agent-integration', operation: 'event-handler' },
       extra: expect.objectContaining({ eventType: 'response' }),
     }))
-    expect(updateChatIntegrationStatus).not.toHaveBeenCalled()
+    expect(updateAgentIntegrationStatus).not.toHaveBeenCalled()
     expect(state.notify).not.toHaveBeenCalled()
     expect(adapter.isConnected()).toBe(true)
   })
@@ -282,14 +368,14 @@ describe('AgentIntegration host contract', () => {
     const failure = new Error('Invalid route')
     vi.spyOn(adapter, 'resolveRoute').mockImplementationOnce(() => { throw failure })
 
-    await expect(adapter.input('bad-comment')).resolves.toBeUndefined()
+    await expect(adapter.input('bad-comment')).rejects.toThrow('Invalid route')
     await vi.dynamicImportSettled()
 
     expect(captureException).toHaveBeenCalledWith(failure, expect.objectContaining({
       tags: { component: 'agent-integration', operation: 'event-handler' },
       extra: expect.objectContaining({ eventType: 'input' }),
     }))
-    expect(updateChatIntegrationStatus).not.toHaveBeenCalled()
+    expect(updateAgentIntegrationStatus).not.toHaveBeenCalled()
     expect(state.notify).not.toHaveBeenCalled()
     expect(state.create).not.toHaveBeenCalled()
     await adapter.input('good-comment')
@@ -302,7 +388,7 @@ describe('AgentIntegration host contract', () => {
     adapter.fail(new Error('Connection lost'))
     await vi.dynamicImportSettled()
 
-    expect(updateChatIntegrationStatus).toHaveBeenCalledWith('installation-a', 'error', 'Connection lost')
+    expect(updateAgentIntegrationStatus).toHaveBeenCalledWith('installation-a', 'error', 'Connection lost')
     await vi.waitFor(() => expect(state.notify).toHaveBeenCalledWith(
       'installation-a', 'installation-a', 'test-objects bot', 'error', 'Connection lost',
     ))
@@ -315,7 +401,7 @@ describe('AgentIntegration host contract', () => {
 
     const sessionId = await manager.ensureSession('installation-a', 'object-7')
     expect(state.register).toHaveBeenCalledWith(sessionId, 'Object session')
-    expect(state.metadata).toHaveBeenCalledWith(sessionId, {})
+    expect(state.metadata).toHaveBeenCalledWith(sessionId, { isAgentIntegrationSession: true, agentIntegrationId: 'installation-a' })
     expect(await manager.ensureSession('installation-a', 'object-7')).toBe(sessionId)
     expect(state.register).toHaveBeenCalledOnce()
     expect(create).not.toHaveBeenCalled()
@@ -333,6 +419,47 @@ describe('AgentIntegration host contract', () => {
     expect(create).not.toHaveBeenCalled()
     expect(() => metadataOnly.register({ definition: adapter.definition, policy: adapter, create })).toThrow('Duplicate integration provider')
   })
+  it('acknowledges cancellation only after the mapped runtime confirms interruption', async () => {
+    await manager.start()
+    const acknowledged = vi.fn()
+    await adapter.cancel(acknowledged)
+    expect(state.interrupt).not.toHaveBeenCalled()
+    expect(acknowledged).not.toHaveBeenCalled()
+    await adapter.input('comment')
+    await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+    state.interrupt.mockResolvedValue({ interrupted: false, processKept: true })
+    await adapter.cancel(acknowledged)
+    expect(acknowledged).not.toHaveBeenCalled()
+    state.interrupt.mockResolvedValue({ interrupted: true, processKept: false })
+    await adapter.cancel(acknowledged)
+    expect(state.interrupt).toHaveBeenCalledWith('session-1')
+    expect(acknowledged).toHaveBeenCalledOnce()
+  })
+  it.each(['global-first', 'session-first'])('routes reviews once when resolution arrives %s', async order => {
+    await manager.start()
+    await adapter.input('comment')
+    await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+    adapter.outputs = []
+    const request = { id: 'review', kind: 'proxy_review', blocking: true, autoApproved: false,
+      scope: { agentSlug: 'installation-a', sessionId: 'another-session' }, payload: {} }
+    state.global?.({ type: 'user_request_resolved', kind: 'proxy_review', outcome: 'answered', requestId: 'unrelated', scope: { agentSlug: 'installation-a' } })
+    state.global?.({ type: 'user_request_created', request })
+    state.global?.({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a' } } })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(adapter.outputs).toEqual([])
+    state.streams.get('session-1')?.({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a', sessionId: 'session-1' } } })
+    await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
+    expect(adapter.outputs[0].output.type).toBe('request-opened')
+    const resolution = { type: 'user_request_resolved', kind: 'proxy_review', outcome: 'answered', requestId: 'review', scope: { agentSlug: 'installation-a', sessionId: 'session-1' } }
+    if (order === 'global-first') state.global?.(resolution)
+    state.streams.get('session-1')?.(resolution)
+    if (order === 'session-first') state.global?.(resolution)
+    await vi.waitFor(() => expect(adapter.outputs).toHaveLength(2))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(adapter.outputs).toHaveLength(2)
+    expect(adapter.outputs[1]).toMatchObject({ context: { sessionId: 'session-1' }, output: { type: 'request-resolved', requestId: 'review' } })
+  })
+
 })
 
 it('review: a health check does not re-observe a session cleared during its access check', async () => {
@@ -369,6 +496,8 @@ it('review: reconnect must not restore a session cleared during its access read'
   await checking
   // Match the clear route: stop live state, then archive the stored mapping.
   await manager.clearSessionById('mapping-session-1')
+  state.recovery = []
+  state.activity.mockReturnValue('idle')
   state.mappings.clear()
   expect(state.streams.has('session-1')).toBe(false)
   release(true)
@@ -446,7 +575,9 @@ it('review: clearing during the final restoration lookup must prevent stale outp
     await reading
     // Match the API route: clear live state, then archive the stored mapping.
     await manager.clearSessionById('mapping-session-1')
-    state.mappings.clear()
+    state.recovery = []
+  state.activity.mockReturnValue('idle')
+  state.mappings.clear()
     expect(state.streams.has('session-1')).toBe(false)
     release()
     await reconnecting
@@ -524,4 +655,330 @@ it('review: a restoration retry cannot outlive a clear that is still in progress
     releaseFirst.release(); releaseRetry.release(); releaseClear.release()
     lookup.mockRestore()
   }
+})
+
+describe('integration-owned MCP lifecycle', () => {
+  it('refreshes the owning runtime on connect, pause and resume', async () => {
+    (adapter.definition.capabilities as string[]).push('mcp')
+    await manager.start()
+    expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a'])
+    await manager.pauseIntegration('installation-a')
+    expect(state.syncMcp).toHaveBeenCalledTimes(2)
+    expect(updateAgentIntegrationStatus).toHaveBeenCalledWith('installation-a', 'paused', undefined)
+    await manager.resumeIntegration('installation-a')
+    expect(state.syncMcp).toHaveBeenCalledTimes(3)
+  })
+
+  it('leaves runtime MCP state alone for providers without the capability', async () => {
+    await manager.start()
+    await manager.pauseIntegration('installation-a')
+    expect(state.syncMcp).not.toHaveBeenCalled()
+  })
+})
+
+
+it.each(['active', 'error'] as const)('pause wins an already executing %s status write', async delayedStatus => {
+  await manager.start()
+  let release!: () => void
+  let reached!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  const writing = new Promise<void>(resolve => { reached = resolve })
+  const status = vi.mocked(updateAgentIntegrationStatus)
+  status.mockImplementation(async (id, next) => {
+    if (next === delayedStatus) { reached(); await blocked }
+    state.rows.find(row => row.id === id)!.status = next
+    return true
+  })
+  try {
+    const resuming = delayedStatus === 'active' ? manager.resumeIntegration('installation-a') : Promise.resolve(adapter.fail(new Error('transport failed')))
+    await writing
+    const pausing = manager.pauseIntegration('installation-a')
+    release()
+    await Promise.all([resuming, pausing])
+    expect(state.rows[0].status).toBe('paused')
+    expect(manager.isIntegrationConnected('installation-a')).toBe(false)
+  } finally { release(); status.mockReset() }
+})
+
+it('a later resume wins a pause whose database write is still executing', async () => {
+  await manager.start()
+  let release!: () => void
+  let reached!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  const writing = new Promise<void>(resolve => { reached = resolve })
+  const status = vi.mocked(updateAgentIntegrationStatus)
+  status.mockImplementation(async (id, next) => {
+    if (next === 'paused') { reached(); await blocked }
+    state.rows.find(row => row.id === id)!.status = next
+    return true
+  })
+  try {
+    const pausing = manager.pauseIntegration('installation-a')
+    await writing
+    const resuming = manager.resumeIntegration('installation-a')
+    release()
+    await Promise.all([pausing, resuming])
+    expect(state.rows[0].status).toBe('active')
+    expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+  } finally { release(); status.mockReset() }
+})
+
+
+it('allows explicit setup activation after pausing without reconnecting a still-paused row', async () => {
+  await manager.start()
+  await manager.pauseIntegration('installation-a')
+  state.rows[0].status = 'paused'
+  await manager.addIntegration('installation-a')
+  expect(manager.isIntegrationConnected('installation-a')).toBe(false)
+  // OAuth completion persists active before addIntegration; it need not resume
+  // a provider using the previous authorization first.
+  state.rows[0].status = 'active'
+  await manager.addIntegration('installation-a')
+  expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+})
+
+
+it('auto-pause refreshes the MCP environment after the paused status is persisted', async () => {
+  (adapter.definition.capabilities as string[]).push('mcp')
+  const connecting = vi.spyOn(adapter, 'connect').mockRejectedValue(new Error('upstream unavailable'))
+  const status = vi.mocked(updateAgentIntegrationStatus)
+  status.mockImplementation(async (id, next) => {
+    state.rows.find(row => row.id === id)!.status = next
+    return true
+  })
+  const projectedStatuses: string[] = []
+  state.syncMcp.mockImplementation(async () => {
+    projectedStatuses.push(state.rows[0].status)
+    return true
+  })
+  const health = manager as unknown as { runHealthChecks(): Promise<void> }
+  try {
+    await manager.start()
+    for (let attempt = 0; attempt < 14; attempt++) await health.runHealthChecks()
+    expect(projectedStatuses).toEqual([])
+    await health.runHealthChecks()
+    expect(state.rows[0].status).toBe('paused')
+    expect(projectedStatuses).toEqual(['paused'])
+    expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a'])
+    const attempts = connecting.mock.calls.length
+    await health.runHealthChecks()
+    expect(connecting).toHaveBeenCalledTimes(attempts)
+    expect(projectedStatuses).toEqual(['paused'])
+  } finally {
+    connecting.mockRestore()
+    status.mockReset()
+    state.syncMcp.mockReset().mockResolvedValue(true)
+  }
+})
+
+it('rejects cancellation when the external target loses access', async () => {
+  await manager.start()
+  await adapter.input('comment')
+  await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+  adapter.allowed = false
+  const acknowledged = vi.fn()
+  state.interrupt.mockResolvedValue({ interrupted: true, processKept: false })
+  await adapter.cancel(acknowledged)
+  expect(state.interrupt).not.toHaveBeenCalled()
+  expect(acknowledged).not.toHaveBeenCalled()
+})
+
+it('contains a failed review-resolution delivery without poisoning later deliveries', async () => {
+  await manager.start()
+  await adapter.input('comment')
+  await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+  adapter.outputs = []
+  vi.spyOn(adapter, 'deliver').mockRejectedValueOnce(new Error('Delivery unavailable'))
+  const resolution = { type: 'user_request_resolved', kind: 'proxy_review', outcome: 'answered', requestId: 'review', scope: { agentSlug: 'installation-a', sessionId: 'session-1' } }
+  state.streams.get('session-1')?.(resolution)
+  await vi.waitFor(() => expect(captureException).toHaveBeenCalled())
+  state.streams.get('session-1')?.(resolution)
+  await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
+})
+
+
+describe('manager-owned runtime recovery', () => {
+  function mapping(externalId: string, sessionId: string) {
+    state.mappings.set(`installation-a:${externalId}`, { id: `mapping-${sessionId}`, integrationId: 'installation-a', externalChatId: externalId, sessionId })
+  }
+  it('reattaches only declared unfinished work and consumes completion replay before any new input', async () => {
+    mapping('unfinished', 'old-session'); mapping('completed', 'settled-session')
+    state.recovery = [{ externalId: 'unfinished', sessionId: 'old-session' }]
+    state.subscribeStream.mockImplementation(async (id: string) => {
+      // This fixture explicitly represents a settled runtime with a terminal
+      // result to replay; a cold resume is covered separately with no frames.
+      expect(state.activity()).toBe('working')
+      state.activity.mockReturnValue('idle')
+      state.streams.get(id)?.({ type: 'session_idle' })
+    })
+    await manager.start()
+    await vi.waitFor(() => expect(adapter.outputs.some(x => x.output.type === 'turn-completed')).toBe(true))
+    expect(state.subscribeStream).toHaveBeenCalledExactlyOnceWith('old-session', 'old-session')
+    expect(state.create).not.toHaveBeenCalled()
+    expect(state.send).not.toHaveBeenCalled()
+  })
+  it('undoes a silent cold attach without claiming that a turn completed', async () => {
+    mapping('object-7', 'old-session')
+    await manager.start()
+    const context = await adapter.session('object-7')
+    expect(state.markProvisionalActive).toHaveBeenCalledWith('old-session')
+    expect(state.markIdle).toHaveBeenCalledWith('old-session')
+    expect(context?.activity).toBe('idle')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(adapter.outputs).toEqual([])
+    await adapter.input('follow-up')
+    await vi.waitFor(() => expect(state.send).toHaveBeenCalled())
+  })
+  it('reads recovered idle activity without querying mappings or parsing provider access again', async () => {
+    mapping('unfinished', 'old-session')
+    await manager.start()
+    const context = await adapter.session('unfinished')
+    const mappingRead = vi.spyOn(integrationStore, 'getIntegrationSession').mockClear()
+    const installationRead = vi.spyOn(integrationStore, 'getIntegration').mockClear()
+    const accessCheck = vi.spyOn(adapter, 'isAllowed')
+    expect(await adapter.session('unfinished')).toBe(context)
+    expect(await adapter.session('unfinished')).toBe(context)
+    expect(mappingRead).not.toHaveBeenCalled()
+    expect(installationRead).not.toHaveBeenCalled()
+    expect(accessCheck).not.toHaveBeenCalled()
+    await manager.clearSessionById('mapping-old-session')
+    expect(await adapter.session('unfinished')).toBeUndefined()
+    expect(mappingRead).toHaveBeenCalled()
+  })
+  it('coalesces recovery and exposes live activity without giving the provider an actor', async () => {
+    mapping('unfinished', 'old-session')
+    let ready!: () => void
+    state.subscribeStream.mockImplementation(() => new Promise<void>(resolve => { ready = resolve }))
+    await manager.start()
+    const one = adapter.session('unfinished'); const two = adapter.session('unfinished')
+    await vi.waitFor(() => expect(state.subscribeStream).toHaveBeenCalledOnce())
+    expect(adapter.outputs).toEqual([])
+    ready()
+    const [a, b] = await Promise.all([one, two])
+    expect(a).toBe(b)
+    expect(a?.activity).toBe('idle')
+    state.activity.mockReturnValue('working')
+    expect(a?.activity).toBe('working')
+  })
+  it('uses the fast path after a normal turn, but reattaches if its busy stream disappears', async () => {
+    await manager.start(); await adapter.input('comment')
+    await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+    state.isStreamSubscribed.mockReturnValue(true)
+    state.activity.mockReturnValue('working')
+    const context = await adapter.session('object-7')
+    const mappingRead = vi.spyOn(integrationStore, 'getIntegrationSession').mockClear()
+    expect(await adapter.session('object-7')).toBe(context)
+    expect(mappingRead).not.toHaveBeenCalled()
+    state.subscribeStream.mockClear()
+    state.isStreamSubscribed.mockReturnValue(false)
+    await adapter.session('object-7')
+    expect(mappingRead).toHaveBeenCalled()
+    expect(state.subscribeStream).toHaveBeenCalledExactlyOnceWith('session-1', 'session-1')
+  })
+  it('does not attach a replacement mapping for an older work item', async () => {
+    mapping('unfinished', 'replacement')
+    state.recovery = [{ externalId: 'unfinished', sessionId: 'old-session' }]
+    await manager.start()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(state.start).not.toHaveBeenCalled()
+    expect(state.subscribeStream).not.toHaveBeenCalled()
+  })
+  it('does not subscribe after a pause interrupts container startup', async () => {
+    mapping('unfinished', 'old-session')
+    let started!: () => void
+    state.start.mockImplementation(() => new Promise<void>(resolve => { started = resolve }))
+    await manager.start()
+    const recovery = adapter.session('unfinished')
+    await vi.waitFor(() => expect(state.start).toHaveBeenCalledOnce())
+    await manager.pauseIntegration('installation-a')
+    started()
+    expect(await recovery).toBeUndefined()
+    expect(state.subscribeStream).not.toHaveBeenCalled()
+  })
+  it('retains unknown activity after a failed attachment and retries locally accepted work', async () => {
+    mapping('unfinished', 'old-session')
+    state.subscribeStream.mockRejectedValueOnce(new Error('Container temporarily unavailable'))
+    await manager.start()
+    const context = await adapter.session('unfinished')
+    expect(context?.activity).toBe('unknown')
+    await adapter.session('unfinished')
+    expect(context?.activity).toBe('idle')
+    expect(state.subscribeStream).toHaveBeenCalledTimes(2)
+  })
+  it('reports a missing runtime session as a terminal failure', async () => {
+    mapping('unfinished', 'old-session')
+    state.subscribeStream.mockRejectedValue(new Error('Session not found'))
+    await manager.start()
+    await adapter.session('unfinished')
+    await vi.waitFor(() => expect(adapter.outputs.some(x => x.output.type === 'turn-failed')).toBe(true))
+  })
+})
+
+
+it('stops a revoked connector and refreshes its MCP projection without classifying revocation as an outage', async () => {
+  (adapter.definition.capabilities as string[]).push('mcp')
+  await manager.start()
+  state.syncMcp.mockClear(); vi.mocked(captureException).mockClear()
+  state.rows[0].status = 'disconnected'; state.rows[0].config = '{"revoked":true}'
+  state.authorizationLost?.({ integrationId: 'installation-a' })
+  await vi.waitFor(() => expect(adapter.connected).toBe(false))
+  await vi.waitFor(() => expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a']))
+  expect(captureException).not.toHaveBeenCalled()
+})
+it('does not tear down replacement authorization on a late revocation notification', async () => {
+  await manager.start()
+  state.rows[0].config = '{"replacement":true}'
+  state.authorizationLost?.({ integrationId: 'installation-a' })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(adapter.connected).toBe(true)
+})
+
+
+it('restores a known busy session even when its runtime transport was lost', async () => {
+  state.activity.mockReturnValue('working')
+  state.mappings.set('installation-a:object-7', { id: 'mapping-old', integrationId: 'installation-a', externalChatId: 'object-7', sessionId: 'old' })
+  state.recovery = [{ externalId: 'object-7', sessionId: 'old' }]
+  await manager.start()
+  await vi.waitFor(() => expect(state.subscribeStream).toHaveBeenCalledExactlyOnceWith('old', 'old'))
+})
+it('ignores mismatched and malformed session request frames', async () => {
+  await manager.start(); await adapter.input('comment')
+  await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+  adapter.outputs = []
+  state.streams.get('session-1')?.({ type: 'user_request_created', request: { id: 'bad' } })
+  state.streams.get('session-1')?.({ type: 'user_request_resolved', requestId: 'other', kind: 'question', outcome: 'answered', scope: { agentSlug: 'installation-a', sessionId: 'other-session' } })
+  state.streams.get('session-1')?.({ type: 'session_idle' })
+  await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
+  expect(adapter.outputs[0].output.type).toBe('turn-completed')
+})
+
+
+it('does not connect when the activation credential revision was invalidated during resume', async () => {
+  state.rows[0].status = 'paused'
+  const activate = vi.mocked(updateAgentIntegrationStatus).mockResolvedValueOnce(false)
+  const connecting = vi.spyOn(adapter, 'connect')
+  await manager.resumeIntegration('installation-a')
+  expect(activate).toHaveBeenCalledWith('installation-a', 'active', null, { config: state.rows[0].config })
+  expect(connecting).not.toHaveBeenCalled()
+})
+
+
+it('keeps activity and pending requests lazy during stream delivery', async () => {
+  await manager.start(); await adapter.input('comment')
+  await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+  state.open.mockClear(); state.activity.mockClear(); adapter.outputs = []
+  state.streams.get('session-1')?.({ type: 'text_delta', text: 'hello' })
+  await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
+  expect(state.open).not.toHaveBeenCalled()
+  expect(state.activity).not.toHaveBeenCalled()
+  expect(adapter.outputs[0].context.pendingRequests).toEqual([])
+  expect(state.open).toHaveBeenCalledExactlyOnceWith('session-1')
+})
+
+it('tears down revoked authorization even if an unrelated config write followed the revocation', async () => {
+  await manager.start()
+  state.rows[0].status = 'disconnected'
+  state.rows[0].config = '{"revoked":true,"transportHealth":"offline"}'
+  state.authorizationLost?.({ integrationId: 'installation-a' })
+  await vi.waitFor(() => expect(adapter.connected).toBe(false))
 })

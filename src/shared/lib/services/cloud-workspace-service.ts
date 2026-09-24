@@ -53,6 +53,12 @@ export interface CloudWorkspaceStatus {
    * may well already have.
    */
   discoveryFailed: boolean
+  /**
+   * Platform's status for the org's workspace (`deployed`, `deploying`,
+   * `destroyed`, …), or null when it has none. How the Local/Cloud switch says
+   * why a workspace that exists isn't running.
+   */
+  status: string | null
 }
 
 // Frozen: these are returned directly to callers, so they must not become a
@@ -64,6 +70,7 @@ const NOT_AVAILABLE: CloudWorkspaceStatus = Object.freeze({
   orgId: null,
   hasValidToken: false,
   discoveryFailed: false,
+  status: null,
 })
 
 const NOT_FOUND: CloudWorkspaceStatus = Object.freeze({ ...NOT_AVAILABLE, available: true })
@@ -385,15 +392,16 @@ export async function getCloudWorkspace(
   // Only the org we're acting as is ours to show or mint against — another org's
   // workspace would render an "Open" link the account can't use and a grant the
   // platform would refuse. Unknown org ⇒ don't filter.
-  const deployed = deployments.find(
-    (d) =>
-      d.status === DEPLOYED_STATUS &&
-      d.deployment_url.length > 0 &&
-      (!account.orgId || d.org_id === account.orgId),
+  const orgWorkspaces = deployments.filter(
+    (d) => d.deployment_url.length > 0 && (!account.orgId || d.org_id === account.orgId),
   )
+  const deployed = orgWorkspaces.find((d) => d.status === DEPLOYED_STATUS)
   if (!deployed) {
     clearCloudWorkspaceRecord()
-    return NOT_FOUND
+    // Not running: report what the org's workspace is doing instead (setting
+    // up, going to sleep, asleep, failed), if it has one. Status only — nothing
+    // here is minted against or linked to.
+    return orgWorkspaces[0] ? { ...NOT_FOUND, status: orgWorkspaces[0].status } : NOT_FOUND
   }
 
   if (!(await isDeploymentTargetSafe(deployed))) {
@@ -421,6 +429,7 @@ export async function getCloudWorkspace(
     orgId: deployed.org_id,
     hasValidToken,
     discoveryFailed: false,
+    status: deployed.status,
   }
 }
 

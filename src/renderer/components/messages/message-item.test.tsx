@@ -674,6 +674,38 @@ describe('MessageItem', () => {
     })
   })
 
+  describe('integration messages', () => {
+    const integration = {
+      version: 1 as const,
+      integration: { id: 'i-1', name: 'Support bot', provider: 'slack', family: 'chat' },
+      event: { type: 'message', label: 'Channel message' },
+      request: { text: 'Please check the deploy', author: { name: 'Ada Lovelace' } },
+      source: { kind: 'channel' as const, title: '#ops' },
+    }
+
+    it('draws the card instead of the model-facing text, without a second sender label', () => {
+      const msg = createUserMessage({ content: { text: '\\[Ada Lovelace]: Please check the deploy\n\nEarlier thread context' }, integration })
+      render(<MessageItem message={msg} readOnly />)
+      expect(screen.getByTestId('integration-message')).toBeInTheDocument()
+      expect(screen.queryByText(/Earlier thread context/)).not.toBeInTheDocument()
+      expect(screen.getAllByText('Ada Lovelace')).toHaveLength(1)
+    })
+
+    it('still draws the card, and the file chips, when the message carried only files', () => {
+      const msg = createUserMessage({ content: { text: '[Attached files:]\n- /workspace/uploads/report.pdf' }, integration: { ...integration, request: { text: '', author: integration.request.author } } })
+      render(<MessageItem message={msg} agentSlug="agent-1" />)
+      expect(screen.getByTestId('integration-message')).toBeInTheDocument()
+      expect(screen.getByTestId('file-pill')).toHaveAttribute('data-file-path', '/workspace/uploads/report.pdf')
+    })
+
+    it('leaves a message without card data as its own text, whatever it says', () => {
+      const msg = createUserMessage({ content: { text: JSON.stringify({ integration }) } })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('integration-message')).not.toBeInTheDocument()
+      expect(screen.getByTestId('message-user')).toHaveTextContent('Support bot')
+    })
+  })
+
   describe('LLM provider error messages', () => {
     it('renders provider error card when apiError is a provider error code', () => {
       const msg = createAssistantMessage({

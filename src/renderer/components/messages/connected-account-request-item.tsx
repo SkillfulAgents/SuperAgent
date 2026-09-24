@@ -1,5 +1,4 @@
 import { apiFetch } from '@renderer/lib/api'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 import { warnIfLiveRefreshFailed } from '@renderer/lib/connection-live-refresh'
 import { useQueryClient } from '@tanstack/react-query'
 import { formatDistanceToNow } from 'date-fns'
@@ -12,7 +11,6 @@ import {
   Plus,
   Pencil,
   MoreVertical,
-  RefreshCw,
   Trash2,
 } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
@@ -46,6 +44,8 @@ import {
 } from '@renderer/hooks/use-connected-accounts'
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
 import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
+import { useLoginWindow } from '@renderer/hooks/use-login-window'
+import { LoginButton, RowReconnectButton, type RowReconnect } from '@renderer/components/connections/login-button'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 
 interface ConnectedAccountRequestItemProps {
@@ -62,7 +62,7 @@ type ConnectedAccountRequestProps = ConnectedAccountRequestItemProps & (
   | { sessionId?: string; replacement: { requestId: string; onCancel: () => void } }
 )
 
-type RequestStatus = 'pending' | 'submitting' | 'provided' | 'declined' | 'connecting'
+type RequestStatus = 'pending' | 'submitting' | 'provided' | 'declined'
 
 export function ConnectedAccountRequestItem({
   toolUseId,
@@ -92,9 +92,20 @@ export function ConnectedAccountRequestItem({
   const accountIdsBeforeOAuth = useRef<Set<string>>(new Set())
   // Track whether this component instance initiated the OAuth flow
   const isOAuthInitiator = useRef(false)
+  // The provider connection this attempt opened. On the desktop, Cancel cannot
+  // close the external browser, so a cancelled attempt can still finish; only
+  // a callback for this connection counts as this attempt.
+  const launchedConnectionIdRef = useRef<string | null>(null)
+  // Bumped by every sign-in started here, a row reconnect included. A claimed
+  // sign-in whose completion outlives a newer one only refreshes; it must not
+  // overwrite that one's choice or report its failure over it.
+  const attemptRef = useRef(0)
 
   const { track } = useAnalyticsTracking()
-  const { reconnect: oauthReconnect } = useOAuthReconnect()
+  const { reconnect: oauthReconnect, pendingAccountId, canCancelPendingReconnect, cancelReconnect } = useOAuthReconnect()
+  const { open: openLoginWindow, close: closeLoginWindow, pending: connecting, canCancel: canCancelConnect, isLoginWindow } = useLoginWindow()
+  // Every control the card gates waits for the whole sign-in, not only the request for its URL.
+  const busy = status !== 'pending' || connecting || pendingAccountId !== null
   const provider = getProvider(toolkit)
   const accounts = useMemo(() => data?.accounts ?? [], [data])
 
@@ -111,40 +122,48 @@ export function ConnectedAccountRequestItem({
 
   // Listen for OAuth callback messages (both IPC in Electron and postMessage in web)
   useEffect(() => {
-    // Handle OAuth completion
-    const handleOAuthComplete = async (success: boolean, errorMessage?: string, newAccountId?: string) => {
-      if (success) {
-        // Refresh the accounts list
-        invalidateConnectedAccounts()
-        const result = await refetch()
-        setStatus('pending')
+    // Only this card's own sign-in closes the window and auto-selects the
+    // account. Cancel clears the marker, so a sign-in finished after Cancel
+    // only refreshes the list. Claimed the moment the callback arrives, before
+    // any completion request, so a retry started meanwhile is not mistaken
+    // for the attempt that finished.
+    const claimAttempt = () => {
+      if (!isOAuthInitiator.current) return null
+      isOAuthInitiator.current = false
+      closeLoginWindow()
+      return attemptRef.current
+    }
 
-        // Only auto-select the new account if this component initiated the OAuth flow
-        if (isOAuthInitiator.current) {
-          isOAuthInitiator.current = false
-          let detectedNewAccountId = newAccountId
-          if (newAccountId) {
-            // We have the new account ID directly
-            setSelectedAccountIds((prev) => new Set(replacement ? [] : prev).add(newAccountId))
-          } else if (result.data?.accounts) {
-            // Find the new account by comparing with accounts before OAuth
-            const newAccount = result.data.accounts.find(
-              (acc) => !accountIdsBeforeOAuth.current.has(acc.id)
-            )
-            if (newAccount) {
-              setSelectedAccountIds((prev) => new Set(replacement ? [] : prev).add(newAccount.id))
-              detectedNewAccountId = newAccount.id
-            }
-          }
-          // Open policy editor for the newly connected account
-          if (detectedNewAccountId) {
-            setPolicyEditorIsNewAccount(true)
-            setPolicyEditorAccountId(detectedNewAccountId)
-          }
+    // Handle OAuth completion
+    const handleOAuthComplete = async (attempt: number | null, success: boolean, errorMessage?: string, newAccountId?: string) => {
+      const isCurrent = () => attempt !== null && attempt === attemptRef.current
+      if (!success) {
+        if (isCurrent()) setError(errorMessage || 'OAuth connection failed')
+        return
+      }
+      // Refresh the accounts list
+      invalidateConnectedAccounts()
+      const result = await refetch()
+      if (!isCurrent()) return
+
+      let detectedNewAccountId = newAccountId
+      if (newAccountId) {
+        // We have the new account ID directly
+        setSelectedAccountIds((prev) => new Set(replacement ? [] : prev).add(newAccountId))
+      } else if (result.data?.accounts) {
+        // Find the new account by comparing with accounts before OAuth
+        const newAccount = result.data.accounts.find(
+          (acc) => !accountIdsBeforeOAuth.current.has(acc.id)
+        )
+        if (newAccount) {
+          setSelectedAccountIds((prev) => new Set(replacement ? [] : prev).add(newAccount.id))
+          detectedNewAccountId = newAccount.id
         }
-      } else {
-        setError(errorMessage || 'OAuth connection failed')
-        setStatus('pending')
+      }
+      // Open policy editor for the newly connected account
+      if (detectedNewAccountId) {
+        setPolicyEditorIsNewAccount(true)
+        setPolicyEditorAccountId(detectedNewAccountId)
       }
     }
 
@@ -153,9 +172,11 @@ export function ConnectedAccountRequestItem({
       const unsubscribe = window.electronAPI.onOAuthCallback(async (params) => {
         // Only handle callbacks for this toolkit
         if (params.toolkit && params.toolkit !== toolkit) return
+        const mine = !params.connectionId || params.connectionId === launchedConnectionIdRef.current
+        const attempt = mine ? claimAttempt() : null
 
         if (params.error || params.status === 'failed') {
-          handleOAuthComplete(false, params.error || undefined)
+          handleOAuthComplete(attempt, false, params.error || undefined)
           return
         }
 
@@ -172,16 +193,16 @@ export function ConnectedAccountRequestItem({
             })
             if (res.ok) {
               const data = await res.json()
-              handleOAuthComplete(true, undefined, data.account?.id)
+              handleOAuthComplete(attempt, true, undefined, data.account?.id)
             } else {
               const data = await res.json()
-              handleOAuthComplete(false, data.error)
+              handleOAuthComplete(attempt, false, data.error)
             }
           } catch (error: unknown) {
-            handleOAuthComplete(false, error instanceof Error ? error.message : 'OAuth completion failed')
+            handleOAuthComplete(attempt, false, error instanceof Error ? error.message : 'OAuth completion failed')
           }
         } else {
-          handleOAuthComplete(false, 'Missing OAuth callback parameters')
+          handleOAuthComplete(attempt, false, 'Missing OAuth callback parameters')
         }
       })
       // Remove only this component's listener so concurrent OAuth subscribers
@@ -195,13 +216,15 @@ export function ConnectedAccountRequestItem({
     const handleMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return
       if (event.data?.type === 'oauth-callback') {
-        handleOAuthComplete(event.data.success, event.data.error, event.data.accountId)
+        // Only this card's own window finishes this card's sign-in.
+        const attempt = isLoginWindow(event.source) ? claimAttempt() : null
+        handleOAuthComplete(attempt, event.data.success, event.data.error, event.data.accountId)
       }
     }
 
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [invalidateConnectedAccounts, refetch, toolkit, replacement])
+  }, [invalidateConnectedAccounts, refetch, toolkit, replacement, closeLoginWindow, isLoginWindow])
 
   const toggleAccount = useCallback((accountId: string) => {
     const account = accounts.find((a) => a.id === accountId)
@@ -219,37 +242,44 @@ export function ConnectedAccountRequestItem({
   }, [accounts, replacement])
 
   const handleConnectNew = async () => {
-    setStatus('connecting')
     setError(null)
     track('account_added', { slug: toolkit, location: 'session' })
 
     // Track current account IDs before OAuth to detect new account later
     accountIdsBeforeOAuth.current = new Set(accounts.map((a) => a.id))
     isOAuthInitiator.current = true
+    attemptRef.current++
+    launchedConnectionIdRef.current = null
+    // A sign-in started here is the only thing allowed to select what it adds.
+    hasAutoSelected.current = true
 
-    const popup = prepareOAuthPopup()
-
+    let connectionId: string | null = null
     try {
-      const isElectronApp = !!window.electronAPI
-      const response = await apiFetch('/api/connected-accounts/initiate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerSlug: toolkit, electron: isElectronApp }),
-      })
+      const outcome = await openLoginWindow(async () => {
+        const response = await apiFetch('/api/connected-accounts/initiate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ providerSlug: toolkit, electron: !!window.electronAPI }),
+        })
 
-      if (!response.ok) {
+        if (!response.ok) {
+          const data = await response.json()
+          throw new Error(data.error || 'Failed to initiate connection')
+        }
+
         const data = await response.json()
-        throw new Error(data.error || 'Failed to initiate connection')
-      }
-
-      const { redirectUrl } = await response.json()
-      await popup.navigate(redirectUrl)
-      setStatus('pending')
+        connectionId = data.connectionId ?? null
+        return data.redirectUrl
+      })
+      if (outcome === 'waiting') launchedConnectionIdRef.current = connectionId
     } catch (err: unknown) {
-      popup.close()
       setError(err instanceof Error ? err.message : 'Failed to connect account')
-      setStatus('pending')
     }
+  }
+
+  const handleCancelConnect = () => {
+    isOAuthInitiator.current = false
+    closeLoginWindow()
   }
 
   const handleProvide = async () => {
@@ -406,7 +436,7 @@ export function ConnectedAccountRequestItem({
                 account={account}
                 selected={selectedAccountIds.has(account.id)}
                 onToggle={() => toggleAccount(account.id)}
-                disabled={status !== 'pending' || account.status !== 'active'}
+                disabled={busy}
                 isEditing={editingAccount === account.id}
                 editName={editName}
                 onStartEdit={() => {
@@ -440,8 +470,16 @@ export function ConnectedAccountRequestItem({
                   setDeleteError(null)
                   setDeletingAccountId(account.id)
                 }}
-                onReconnect={account.status !== 'active'
-                  ? () => oauthReconnect(account.id, account.toolkitSlug)
+                reconnect={account.status !== 'active'
+                  ? {
+                      start: () => {
+                        attemptRef.current++
+                        void oauthReconnect(account.id, account.toolkitSlug)
+                      },
+                      pending: pendingAccountId === account.id,
+                      canCancel: pendingAccountId === account.id && canCancelPendingReconnect,
+                      onCancel: cancelReconnect,
+                    }
                   : undefined}
               />
             ))}
@@ -456,16 +494,19 @@ export function ConnectedAccountRequestItem({
               </div>
               <p>{(provider?.displayName || toolkit).replace(/\b\w/g, (char) => char.toUpperCase())}</p>
             </div>
-            <Button
+            <LoginButton
               onClick={handleConnectNew}
-              loading={status === 'connecting'}
-              disabled={status !== 'pending'}
+              icon={<Plus />}
+              label="Connect"
+              pendingLabel="Connecting…"
+              pending={connecting}
+              canCancel={canCancelConnect}
+              onCancel={handleCancelConnect}
+              cancelSide="left"
+              disabled={busy}
               size="xs"
               className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
-            >
-              <Plus className="h-4 w-4" />
-              Connect
-            </Button>
+            />
           </div>
         </div>
       )}
@@ -473,17 +514,20 @@ export function ConnectedAccountRequestItem({
       {/* Connect New button */}
       {accounts.length > 0 && (
         <div className="mt-1 ml-2">
-          <Button
+          <LoginButton
             onClick={handleConnectNew}
-            loading={status === 'connecting'}
-            disabled={status !== 'pending'}
+            icon={<Plus />}
+            label="Add New Account"
+            pendingLabel="Connecting…"
+            pending={connecting}
+            canCancel={canCancelConnect}
+            onCancel={handleCancelConnect}
+            cancelSide="right"
+            disabled={busy}
             variant="ghost"
             size="xs"
             className="text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <Plus className="mr-1 h-4 w-4" />
-            Add New Account
-          </Button>
+          />
         </div>
       )}
 
@@ -497,7 +541,7 @@ export function ConnectedAccountRequestItem({
           ) : (
             <DeclineButton
               onDecline={handleDecline}
-              disabled={status !== 'pending'}
+              disabled={busy}
               label="Deny"
               showIcon={false}
               className="border-border text-foreground hover:bg-muted"
@@ -507,7 +551,7 @@ export function ConnectedAccountRequestItem({
           <Button
             onClick={handleProvide}
             loading={status === 'submitting'}
-            disabled={selectedAccountIds.size === 0 || status !== 'pending'}
+            disabled={selectedAccountIds.size === 0 || busy}
             size="xs"
             className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
           >
@@ -526,7 +570,7 @@ export function ConnectedAccountRequestItem({
           ) : (
             <DeclineButton
               onDecline={handleDecline}
-              disabled={status !== 'pending' && status !== 'connecting'}
+              disabled={busy}
               label="Deny"
               showIcon={false}
               className="border-border text-foreground hover:bg-muted"
@@ -609,7 +653,7 @@ interface AccountOptionProps {
   onSaveEdit: () => void
   onEditNameChange: (value: string) => void
   isSavingRename: boolean
-  onReconnect?: () => void
+  reconnect?: RowReconnect
   onOpenPolicies: () => void
   onDelete: () => void
 }
@@ -628,11 +672,12 @@ function AccountOption({
   isSavingRename,
   onOpenPolicies,
   onDelete,
-  onReconnect,
+  reconnect,
 }: AccountOptionProps) {
   const connectedDate = new Date(account.createdAt)
   const connectedAgo = formatDistanceToNow(connectedDate, { addSuffix: true })
   const [menuOpen, setMenuOpen] = useState(false)
+  const selectable = !disabled && account.status === 'active'
 
   if (isEditing) {
     return (
@@ -685,34 +730,26 @@ function AccountOption({
         selected
           ? 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40'
           : 'border-border bg-white hover:bg-muted/40 dark:bg-background',
-        disabled && account.status !== 'active' ? 'cursor-default' : disabled && 'opacity-50 cursor-not-allowed'
+        account.status !== 'active' ? 'cursor-default' : disabled && 'opacity-50 cursor-not-allowed'
       )}
       role="button"
       tabIndex={0}
-      onClick={() => !disabled && onToggle()}
+      onClick={() => selectable && onToggle()}
       onKeyDown={(e) => {
-        if ((e.key === 'Enter' || e.key === ' ') && !disabled) {
+        if ((e.key === 'Enter' || e.key === ' ') && selectable) {
           e.preventDefault()
           onToggle()
         }
       }}
     >
-      {account.status !== 'active' && onReconnect ? (
-        <Button
-          size="xs"
-          variant="outline"
-          className="mx-1 shrink-0 h-6 px-2 text-xs gap-1"
-          onClick={(e) => { e.stopPropagation(); onReconnect() }}
-        >
-          <RefreshCw className="h-3 w-3" />
-          Reconnect
-        </Button>
+      {account.status !== 'active' && reconnect ? (
+        <RowReconnectButton reconnect={reconnect} disabled={disabled} />
       ) : (
         <input
           type="checkbox"
           checked={selected}
-          disabled={disabled}
-          onChange={() => !disabled && onToggle()}
+          disabled={!selectable}
+          onChange={() => selectable && onToggle()}
           onClick={(e) => e.stopPropagation()}
           className="mx-1 shrink-0"
         />

@@ -1,4 +1,4 @@
-import type { ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
+import type { AgentIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 
 export type ChatAccessStatus = 'allowed' | 'pending' | 'denied'
 
@@ -21,7 +21,7 @@ export interface ChatRow {
   approvalSource?: ChatIntegrationAccess['approvalSource']
   firstMessagePreview?: string | null
   /** Conversation windows for this chat, newest-first. Empty for pending/denied. */
-  windows: ChatIntegrationSession[]
+  windows: AgentIntegrationSession[]
   /** Newest window's claude session id, for opening the thread (null when none). */
   latestSessionId: string | null
   /** Sort key: newest window activity, else the access request (first-contact) time. */
@@ -36,7 +36,7 @@ export const chatFallbackTitle = (externalChatId: string) => `Chat ${externalCha
  * (pending + denied - both show the "Blocked" tag) sink to the bottom.
  */
 export function buildChatRows(
-  sessions: ChatIntegrationSession[] | undefined,
+  sessions: AgentIntegrationSession[] | undefined,
   access: ChatIntegrationAccess[] | undefined,
 ): ChatRow[] {
   const byChat = new Map<string, ChatRow>()
@@ -107,6 +107,6 @@ export function isBrowsable(row: ChatRow): boolean {
  * The newest non-archived window - the live conversation. Null when every window
  * has been cleared (or there are none yet), i.e. the chat is awaiting a fresh one.
  */
-export function activeWindow(row: ChatRow): ChatIntegrationSession | null {
+export function activeWindow(row: ChatRow): AgentIntegrationSession | null {
   return row.windows.find((w) => w.archivedAt == null) ?? null
 }

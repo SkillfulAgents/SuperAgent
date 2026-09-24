@@ -20,7 +20,7 @@ beforeEach(() => {
 describe('getSubagentModelCatalog', () => {
   it('projects only latest models from the active provider in deterministic order', () => {
     const effective = getEffectiveCatalog('openrouter')
-    const catalog = getSubagentModelCatalog('openrouter')
+    const catalog = getSubagentModelCatalog(getEffectiveCatalog('openrouter'))
 
     expect(catalog.map((model) => model.id)).toEqual(
       effective
@@ -35,11 +35,13 @@ describe('getSubagentModelCatalog', () => {
 
   it('does not create separate subagents for older versions in a model family', () => {
     const effective = getEffectiveCatalog('anthropic')
-    const catalog = getSubagentModelCatalog('anthropic')
+    const catalog = getSubagentModelCatalog(getEffectiveCatalog('anthropic'))
 
     expect(effective.some((model) => model.id === 'claude-opus-4-8')).toBe(true)
+    expect(effective.some((model) => model.id === 'claude-opus-5')).toBe(true)
     expect(catalog.some((model) => model.id === 'claude-opus-4-8')).toBe(false)
-    expect(catalog.some((model) => model.id === 'claude-opus-5')).toBe(true)
+    expect(catalog.some((model) => model.id === 'claude-opus-5')).toBe(false)
+    expect(catalog.some((model) => model.id === 'claude-opus-5-5')).toBe(true)
   })
 
   it('does not pass disabled catalog entries to the container', () => {
@@ -52,7 +54,7 @@ describe('getSubagentModelCatalog', () => {
       },
     })
 
-    expect(getSubagentModelCatalog('openrouter').some((model) => model.id === 'openai/gpt-5.5')).toBe(false)
+    expect(getSubagentModelCatalog(getEffectiveCatalog('openrouter')).some((model) => model.id === 'openai/gpt-5.5')).toBe(false)
   })
 
   it('warns when the effective catalog exceeds the subagent cap', () => {
@@ -72,7 +74,7 @@ describe('getSubagentModelCatalog', () => {
       },
     })
 
-    expect(getSubagentModelCatalog('openrouter')).toHaveLength(MAX_SUBAGENT_MODELS)
+    expect(getSubagentModelCatalog(getEffectiveCatalog('openrouter'))).toHaveLength(MAX_SUBAGENT_MODELS)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('only the first 32'))
     warn.mockRestore()
   })

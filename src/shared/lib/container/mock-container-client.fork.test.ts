@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -15,6 +15,7 @@ describe('MockContainerClient.forkSession', () => {
     process.env.SUPERAGENT_DATA_DIR = dir
   })
   afterEach(async () => {
+    vi.clearAllTimers(); vi.useRealTimers()
     if (prev) process.env.SUPERAGENT_DATA_DIR = prev
     else delete process.env.SUPERAGENT_DATA_DIR
     await fs.promises.rm(dir, { recursive: true, force: true })
@@ -22,7 +23,8 @@ describe('MockContainerClient.forkSession', () => {
 
   it('copies the transcript with fresh uuids, remapped parents, and forkedFrom backlinks', async () => {
     const client = new MockContainerClient({ agentId: 'agent-a' })
-    const src = await client.createSession({ initialMessage: '' })
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    const src = await client.createSession({ initialMessage: 'hi' })
     client.writeJsonlEntry(src.id, { type: 'user', uuid: 'u1', parentUuid: null, message: { role: 'user', content: 'hi' }, timestamp: '2026-01-01T00:00:00.000Z' })
     client.writeJsonlEntry(src.id, { type: 'assistant', uuid: 'a1', parentUuid: 'u1', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] }, timestamp: '2026-01-01T00:00:01.000Z' })
 
