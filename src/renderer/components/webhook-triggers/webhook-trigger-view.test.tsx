@@ -142,12 +142,12 @@ describe('WebhookTriggerView relay notices', () => {
     expect(screen.getByTestId('webhook-relay-notice')).toHaveTextContent('require a platform connection')
   })
 
-  it('says events are held while the relay is unreachable', () => {
+  it('says claiming is failing while the relay is unreachable', () => {
     relayState.status = { available: true, unavailableReason: null, transport: 'unreachable', lastClaimAt: null }
 
     render(<WebhookTriggerView triggerId="trigger-1" agentSlug="agent-1" />)
 
-    expect(screen.getByTestId('webhook-relay-notice')).toHaveTextContent('cannot be reached')
+    expect(screen.getByTestId('webhook-relay-notice')).toHaveTextContent('Claiming webhook events from the relay is failing')
   })
 
   it('warns about a personal Composio key only on Composio triggers', () => {

@@ -60,7 +60,7 @@ function webhookRelayNotice(relay: WebhookRelayStatus): string | null {
       return 'The webhook relay is not running, so this trigger is not receiving events right now.'
     case null:
       return relay.transport === 'unreachable'
-        ? 'The webhook relay cannot be reached right now. Events are held until it can, then delivered.'
+        ? 'Claiming webhook events from the relay is failing right now.'
         : null
   }
 }

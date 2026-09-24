@@ -12,13 +12,15 @@ const available: WebhookRelaySnapshot = {
 }
 
 describe('watchWebhookRelay', () => {
-  it('reconciles agents with the current availability, then on every change', () => {
+  it('publishes and reconciles where things stand, then every change', () => {
     const relay = createFakeWebhookRelay()
-    relay.setSnapshot({ ...available, available: false, unavailableReason: 'stopped', transport: 'idle' })
+    relay.setSnapshot({ ...available, available: false, unavailableReason: 'platform_disconnected', transport: 'idle' })
     const broadcast = vi.fn()
     const reconcileAgents = vi.fn()
 
     watchWebhookRelay(relay, { broadcast, reconcileAgents })
+    // Earlier changes went unobserved; the renderer may hold a stale status.
+    expect(broadcast).toHaveBeenLastCalledWith(expect.objectContaining({ available: false, unavailableReason: 'platform_disconnected' }))
     expect(reconcileAgents).toHaveBeenLastCalledWith(false)
 
     relay.setSnapshot(available)
@@ -37,6 +39,7 @@ describe('watchWebhookRelay', () => {
 
     const stop = watchWebhookRelay(relay, { broadcast, reconcileAgents: vi.fn() })
     stop()
+    broadcast.mockClear()
     relay.setSnapshot({ ...available, transport: 'polling' })
 
     expect(broadcast).not.toHaveBeenCalled()
