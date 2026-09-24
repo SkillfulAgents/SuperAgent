@@ -292,15 +292,14 @@ describe('embedded provider proxy', () => {
     expect(attempts).toBe(1)
   })
 
-  it('sends a MiniMax token as x-api-key and not as Authorization', async () => {
+  it('replaces a configured x-api-key with the current credential', async () => {
     const base = await upstream((_body, req, res) => {
       expect(req.headers['x-api-key']).toBe('upstream-key')
-      expect(req.headers.authorization).toBeUndefined()
-      expect(req.url).toBe('/v1/messages')
+      expect(req.headers.authorization).toBe('Bearer upstream-key')
       json(res, reply)
     })
     const handle = await proxy(base, 'messages', {
-      config: { adapter: 'minimax', baseUrl: base, format: 'messages', headers: {}, credential: { accessToken: 'upstream-key', generation: 1 } },
+      config: { baseUrl: base, format: 'messages', headers: { 'x-api-key': 'stale' }, credential: { accessToken: 'upstream-key', generation: 1 } },
     })
     await expect(client(handle).messages.create(prompt)).resolves.toMatchObject({ content: [{ type: 'text', text: 'OK' }] })
   })

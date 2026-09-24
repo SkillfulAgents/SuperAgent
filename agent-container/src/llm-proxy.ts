@@ -124,8 +124,9 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
           method: 'POST', redirect: 'error', signal: abort.signal,
           headers: { 'content-type': 'application/json', ...(format === 'messages' ? { 'anthropic-version': '2023-06-01' } : {}),
             ...config.headers, ...(config.adapter === 'codex' && credential.accountId ? { 'ChatGPT-Account-ID': credential.accountId } : {}),
-            // MiniMax Messages rejects Authorization and reads the token from x-api-key.
-            ...(config.adapter === 'minimax' ? { 'x-api-key': credential.accessToken } : { authorization: `Bearer ${credential.accessToken}` }) },
+            // A configured x-api-key follows the live credential, including after refresh.
+            ...(config.headers['x-api-key'] ? { 'x-api-key': credential.accessToken } : {}),
+            authorization: `Bearer ${credential.accessToken}` },
           body: JSON.stringify(upstreamBody),
         })
       }
@@ -204,6 +205,8 @@ function sendError(res: ServerResponse, status: number, message: string): void {
 /** SDK process identity excludes rotating secrets, but includes account switches. */
 export function llmProxyBinding(llmProviderId: string, proxy?: LlmProxyConfig): string | undefined {
   if (!proxy) return undefined
-  const { credential, ...configuration } = proxy
-  return JSON.stringify([llmProviderId, configuration, credential.accountId])
+  const { credential, headers, ...configuration } = proxy
+  // The key rotates with the credential. Including it would restart the query on refresh.
+  const { 'x-api-key': _apiKey, ...stableHeaders } = headers ?? {}
+  return JSON.stringify([llmProviderId, { ...configuration, headers: stableHeaders }, credential.accountId])
 }

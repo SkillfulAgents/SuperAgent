@@ -49,7 +49,10 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
   override async getContainerProxyConfig(): Promise<LlmProxyConfig> {
     const { accessToken, expiresAt, generation, accountId } = await this.credential()
     return {
-      adapter: 'minimax', format: 'messages', baseUrl: `${this.apiBase}/anthropic/v1`, headers: MINIMAX_HEADERS,
+      format: 'messages', baseUrl: `${this.apiBase}/anthropic/v1`,
+      // The published container only accepts grok/codex/kimi adapters and always adds Authorization.
+      // It forwards this header as-is; MiniMax reads the token from x-api-key.
+      headers: { ...MINIMAX_HEADERS, 'x-api-key': accessToken },
       credential: { accessToken, expiresAt, generation, accountId },
     }
   }
