@@ -4,6 +4,7 @@ const reconcile = vi.fn()
 const validateAuth = vi.fn().mockResolvedValue(undefined)
 const listAgents = vi.fn().mockResolvedValue([])
 const initializeAgents = vi.fn().mockResolvedValue(undefined)
+const watchWebhookRelay = vi.fn((_relay: { snapshot(): { available: boolean } }) => () => {})
 const ensureImageReady = vi.fn().mockResolvedValue(undefined)
 const taskSchedulerStart = vi.fn().mockResolvedValue(undefined)
 const triggerManagerStart = vi.fn().mockResolvedValue(undefined)
@@ -48,6 +49,7 @@ vi.mock('./container/container-host', async () => {
   return {
     containerHost: hostFromManagerMock({
       initializeAgents: (...args: unknown[]) => initializeAgents(...args),
+      watchWebhookRelay: (relay: { snapshot(): { available: boolean } }) => watchWebhookRelay(relay),
       ensureImageReady: () => ensureImageReady(),
       startStatusSync: vi.fn(),
       startHealthMonitor: vi.fn(),
@@ -137,6 +139,7 @@ describe('initializeServices post-bind critical path', () => {
     validateAuth.mockReset().mockResolvedValue(undefined)
     listAgents.mockReset().mockResolvedValue([])
     initializeAgents.mockReset().mockResolvedValue(undefined)
+    watchWebhookRelay.mockReset().mockReturnValue(() => {})
     ensureImageReady.mockReset().mockResolvedValue(undefined)
     taskSchedulerStart.mockReset().mockResolvedValue(undefined)
     triggerManagerStart.mockReset().mockResolvedValue(undefined)
@@ -174,6 +177,24 @@ describe('initializeServices post-bind critical path', () => {
     expect(reconcile).toHaveBeenCalledTimes(1)
     expect(validateAuth).toHaveBeenCalledTimes(1)
     expect(markBoot).toHaveBeenCalledWith('dbReady')
+  })
+
+  // A container started before the relay would be built with webhooks off.
+  it('starts the webhook relay before agent init, and watches it from the container host', async () => {
+    const order: string[] = []
+    watchWebhookRelay.mockImplementation((relay) => {
+      order.push(`relay:${relay.snapshot().available}`)
+      return () => {}
+    })
+    initializeAgents.mockImplementation(async () => {
+      order.push('initializeAgents')
+    })
+
+    const { initializeServices } = await import('./startup')
+    await initializeServices()
+
+    // No platform token in this suite, so the started relay reports unavailable.
+    expect(order).toEqual(['relay:false', 'initializeAgents'])
   })
 
   it('overlaps auth validation with agent discovery, then gates container init on both', async () => {

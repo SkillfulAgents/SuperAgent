@@ -72,12 +72,12 @@ export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTar
   const hostPlatform = process.env.HOST_PLATFORM
   const includeScriptRun = hostPlatform === 'darwin' || hostPlatform === 'win32'
 
-  // Composio-catalog trigger tools need platform Composio; custom webhook
-  // endpoints only need platform auth (they live on the platform proxy, so a
-  // personal Composio key must not hide them). list/cancel work on local
-  // trigger rows and are useful in either mode.
-  const includeComposioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true'
-  const includeWebhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true'
+  // Every webhook tool needs the host's webhook relay. Composio-catalog
+  // triggers also need platform Composio; custom webhook endpoints don't (they
+  // live on the relay, so a personal Composio key must not hide them).
+  // list/cancel work on local trigger rows and are useful in either mode.
+  const includeWebhookEndpoints = process.env.WEBHOOK_RELAY_AVAILABLE === 'true'
+  const includeComposioTriggers = includeWebhookEndpoints && process.env.COMPOSIO_PLATFORM_MODE === 'true'
 
   return createSdkMcpServer({
     name: 'user-input',
