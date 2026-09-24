@@ -29,7 +29,7 @@ interface TextDocSpec {
   shared: boolean
   /** File mode a filesystem implementation applies on write (the container must read `.env`). */
   mode?: number
-  /** Read and written instead of `path` when only this file exists. */
+  /** Read and written instead of `path` whenever `path` does not exist. */
   fallbackPath?: string
 }
 
@@ -44,7 +44,7 @@ export type ConfigDocSpec = TextDocSpec | JsonDocSpec<unknown>
 
 export const CONFIG_DOCS = {
   /**
-   * The agent's `CLAUDE.md`, or its `AGENTS.md` when it has no `CLAUDE.md` (the
+   * The agent's `AGENTS.md`, or its `CLAUDE.md` while it still has one (the
    * CLI's own precedence): frontmatter (name, description, createdAt) plus instructions.
    */
   instructions: { kind: 'text', path: 'CLAUDE.md', fallbackPath: 'AGENTS.md', shared: false },

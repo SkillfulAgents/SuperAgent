@@ -68,7 +68,7 @@ export function createConfigOps(files: FileOps, hooks: ConfigOpsHooks = {}): Con
   const pathOf = async (id: ConfigDocId): Promise<string> => {
     const spec = configDocSpec(id)
     if (spec.kind !== 'text' || spec.fallbackPath === undefined || await files.stat(spec.path)) return spec.path
-    return await files.stat(spec.fallbackPath) ? spec.fallbackPath : spec.path
+    return spec.fallbackPath
   }
 
   const get = async <K extends ConfigDocId>(id: K): Promise<ConfigDoc<K> | null> => {

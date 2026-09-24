@@ -5,7 +5,8 @@
  * it while the database is being opened.
  */
 import * as fs from 'fs'
-import { getAgentClaudeMdPath, getAgentDir, getAgentsDir, parseMarkdownWithFrontmatter } from '@shared/lib/utils/file-storage'
+import * as path from 'path'
+import { getAgentClaudeMdPath, getAgentDir, getAgentsDir, getAgentWorkspaceDir, parseMarkdownWithFrontmatter } from '@shared/lib/utils/file-storage'
 import type { AgentSlug } from './types'
 
 /** The runtime of an agent whose workspace is a directory under the agents data directory. */
@@ -90,4 +91,19 @@ export function readAgentDirectoriesSync(): AgentDirectoryIdentity[] {
     })
   }
   return found
+}
+
+/**
+ * Rename a local agent's `CLAUDE.md` to `AGENTS.md`. Returns whether it did: an
+ * agent with no `CLAUDE.md`, or one that already has an `AGENTS.md`, is left
+ * as it is, since the CLI reads `CLAUDE.md` first and moving it over the other
+ * would change the instructions the agent runs with.
+ */
+export function renameClaudeMdToAgentsMdSync(slug: AgentSlug): boolean {
+  const claudeMd = getAgentClaudeMdPath(slug)
+  const agentsMd = path.join(getAgentWorkspaceDir(slug), 'AGENTS.md')
+  if (!fs.lstatSync(claudeMd, { throwIfNoEntry: false })?.isFile()) return false
+  if (fs.lstatSync(agentsMd, { throwIfNoEntry: false })) return false
+  fs.renameSync(claudeMd, agentsMd)
+  return true
 }

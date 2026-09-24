@@ -409,7 +409,7 @@ const ZIP_APPEND_WINDOW = 4
 // open at once.
 function createWorkspaceZipStream(
   files: FileOps,
-  addFiles: (add: (workspacePath: string) => Promise<void>) => Promise<void>,
+  addFiles: (add: (workspacePath: string, entryName?: string) => Promise<void>) => Promise<void>,
   signal: AbortSignal | undefined,
   zlibLevel: number,
 ): Readable {
@@ -493,7 +493,7 @@ function createWorkspaceZipStream(
     stopSources()
   })
 
-  const add = async (workspacePath: string): Promise<void> => {
+  const add = async (workspacePath: string, entryName = workspacePath): Promise<void> => {
     while (inFlight >= ZIP_APPEND_WINDOW && !stopped) {
       await new Promise<void>((resolve) => {
         wake = resolve
@@ -523,7 +523,7 @@ function createWorkspaceZipStream(
     })
     inFlight += 1
     archive.append(source, {
-      name: workspacePath,
+      name: entryName,
       date: new Date(stat.mtimeMs),
       // With its mode: a script that is executable in the workspace is
       // executable where the zip is extracted.
@@ -573,7 +573,7 @@ export async function exportAgentTemplate(agentSlug: string, signal?: AbortSigna
     return createWorkspaceZipStream(actor.files, async (add) => {
       for (const workspacePath of templateFiles) {
         if (signal?.aborted) return
-        await add(workspacePath)
+        await add(workspacePath, templatePathOf(workspacePath, templateFiles))
       }
     }, signal, 9) // shareable .agent — size over host CPU
   })
@@ -656,12 +656,7 @@ export function validateTemplateEntries(
     }
   }
 
-  const claudeMdEntry = realEntries.find((e) => {
-    const name = stripPrefix ? e.fileName.replace(stripPrefix, '') : e.fileName
-    const normalized = name.replace(/^\.\//, '')
-    return normalized === 'CLAUDE.md'
-  })
-  if (!claudeMdEntry) {
+  if (!findInstructionsEntry(realEntries, stripPrefix)) {
     return { valid: false, error: 'CLAUDE.md not found in template', fileCount: realEntries.length, stripPrefix }
   }
 
@@ -682,10 +677,7 @@ export async function validateAgentTemplate(zip: TemplateZipSource, mode: 'templ
     const result = validateTemplateEntries(reader.entries, mode)
     if (!result.valid) return { ...result, agentName: undefined }
 
-    const claudeMdFileName = reader.entries.find((e) => {
-      const name = result.stripPrefix ? e.fileName.replace(result.stripPrefix, '') : e.fileName
-      return name.replace(/^\.\//, '') === 'CLAUDE.md'
-    })!.fileName
+    const claudeMdFileName = findInstructionsEntry(reader.entries, result.stripPrefix)!.fileName
 
     const claudeMdBuf = await reader.readEntry(claudeMdFileName)
     const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdBuf.toString('utf-8'))
@@ -726,10 +718,7 @@ export async function importAgentFromTemplate(
     }
 
     // Read CLAUDE.md to extract agent name
-    const claudeMdFileName = reader.entries.find((e) => {
-      const name = validation.stripPrefix ? e.fileName.replace(validation.stripPrefix, '') : e.fileName
-      return name.replace(/^\.\//, '') === 'CLAUDE.md'
-    })!.fileName
+    const claudeMdFileName = findInstructionsEntry(reader.entries, validation.stripPrefix)!.fileName
     const claudeMdBuf = await reader.readEntry(claudeMdFileName)
     const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdBuf.toString('utf-8'))
     const agentName = frontmatter.name || undefined
@@ -774,6 +763,7 @@ export async function importAgentFromTemplate(
       totalExtracted += size
     }
 
+    await moveTemplateInstructionsToAgentsMd(actor.files)
     // The template's CLAUDE.md replaced the one the agent was created with:
     // take the name (unless overridden) and description it carries, and
     // write the identity back into it.
@@ -834,6 +824,7 @@ export async function installAgentFromSkillset(
 
   // Copy template files from repo to workspace
   await copyHostDirIntoWorkspace(actor.files, agentDirInRepo, '', { followSymlinks: true })
+  await moveTemplateInstructionsToAgentsMd(actor.files)
 
   // The template's CLAUDE.md overwrites the one createAgentFromExistingWorkspace
   // wrote: keep the chosen name and the install time, take the description
@@ -924,7 +915,30 @@ export async function updateAgentFromSkillset(
 
 /** Copy a template directory of the skillset cache into the workspace, leaving the agent's own metadata alone. */
 async function copyTemplateFiles(src: string, files: FileOps): Promise<void> {
-  return copyHostDirIntoWorkspace(files, src, '', { exclude: [SKILLSET_METADATA_PATH], followSymlinks: true })
+  await copyHostDirIntoWorkspace(files, src, '', { exclude: [SKILLSET_METADATA_PATH], followSymlinks: true })
+  await moveTemplateInstructionsToAgentsMd(files)
+}
+
+/** Templates ship `CLAUDE.md`; an agent's workspace keeps it as `AGENTS.md`. */
+async function moveTemplateInstructionsToAgentsMd(files: FileOps): Promise<void> {
+  const bytes = await files.getDoc('CLAUDE.md')
+  if (bytes === null) return
+  await files.putDoc('AGENTS.md', bytes)
+  await files.delete('CLAUDE.md')
+}
+
+/** Where a workspace file goes in a template: `AGENTS.md` goes out as `CLAUDE.md` unless the workspace has both. */
+function templatePathOf(workspacePath: string, workspaceFiles: string[]): string {
+  return workspacePath === 'AGENTS.md' && !workspaceFiles.includes('CLAUDE.md') ? 'CLAUDE.md' : workspacePath
+}
+
+/** The archive entry holding the agent's instructions: `CLAUDE.md`, else `AGENTS.md`, at the template root. */
+function findInstructionsEntry<T extends { fileName: string }>(entries: T[], stripPrefix: string): T | undefined {
+  const at = (file: string) => entries.find((e) => {
+    const name = stripPrefix ? e.fileName.replace(stripPrefix, '') : e.fileName
+    return name.replace(/^\.\//, '') === file
+  })
+  return at('CLAUDE.md') ?? at('AGENTS.md')
 }
 
 // ============================================================================
@@ -1132,7 +1146,8 @@ async function computeTemplateHash(tree: TemplateTree): Promise<string> {
   for (const relativePath of files) {
     const content = contents.get(relativePath)
     if (content === undefined) continue
-    hash.update(relativePath)
+    // The same instructions hash alike as a template's CLAUDE.md and a workspace's AGENTS.md.
+    hash.update(templatePathOf(relativePath, files))
     hash.update(content)
   }
 
@@ -1156,8 +1171,9 @@ async function collectAgentFilesForPlatform(
   const normalizedRoot = agentPathInRepo.replace(/\/$/, '')
 
   return await Promise.all(templateFiles.map(async (workspacePath) => {
-    const repoPath = `${normalizedRoot}/${workspacePath}`
-    if (workspacePath === 'CLAUDE.md' && options?.claudeMdContent !== undefined) {
+    const templatePath = templatePathOf(workspacePath, templateFiles)
+    const repoPath = `${normalizedRoot}/${templatePath}`
+    if (templatePath === 'CLAUDE.md' && options?.claudeMdContent !== undefined) {
       return { path: repoPath, content: options.claudeMdContent }
     }
 

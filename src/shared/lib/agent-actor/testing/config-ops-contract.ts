@@ -38,13 +38,13 @@ export function describeConfigOpsContract(name: string, make: () => Promise<Conf
     it('text documents round-trip verbatim at their workspace path', async () => {
       await config.put('instructions', '---\nname: A\n---\nBe kind.\n')
       expect(await config.get('instructions')).toBe('---\nname: A\n---\nBe kind.\n')
-      expect(decode(await files.getDoc('CLAUDE.md'))).toBe('---\nname: A\n---\nBe kind.\n')
+      expect(decode(await files.getDoc('AGENTS.md'))).toBe('---\nname: A\n---\nBe kind.\n')
 
       await config.put('secrets', 'API_KEY=x\n')
       expect(decode(await files.getDoc('.env'))).toBe('API_KEY=x\n')
     })
 
-    it('instructions use AGENTS.md only when there is no CLAUDE.md', async () => {
+    it('instructions use CLAUDE.md while it exists, AGENTS.md otherwise', async () => {
       await files.putDoc('AGENTS.md', 'from agents\n')
       expect(await config.get('instructions')).toBe('from agents\n')
       await config.put('instructions', 'edited\n')

@@ -74,7 +74,7 @@ Gamut is built around a small set of concepts that compose together. Understandi
 
 An agent is the central unit in Gamut. Each agent has a name, a description, and a set of **instructions** that define its behavior -- essentially a system prompt written in Markdown.
 
-On disk, every agent is stored as a directory containing a `CLAUDE.md` file. This file holds YAML frontmatter (name, creation date, description) followed by the agent's instructions in the body. The agent learns and evolves over time by appending preferences and project notes to this file.
+On disk, every agent is stored as a directory containing an `AGENTS.md` file (older agents may still have a `CLAUDE.md`). This file holds YAML frontmatter (name, creation date, description) followed by the agent's instructions in the body. The agent learns and evolves over time by appending preferences and project notes to this file.
 
 ```markdown
 ---
