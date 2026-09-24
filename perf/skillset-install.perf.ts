@@ -103,8 +103,9 @@ describe('skillset install', () => {
       // for the cycle guard on the source tree, and the one file the copy
       // replaces: the skillset's CLAUDE.md lands on the one the agent was
       // created with, and a copy that refuses to write through an existing
-      // entry unlinks it and copies again.
-      totalOps: 108,
+      // entry unlinks it and copies again. Each of the three instructions
+      // writes first stats CLAUDE.md to choose it over AGENTS.md.
+      totalOps: 111,
       // Recorded 430–490 ms on an idle machine; ~2× that, as the home
       // profiles are budgeted, so runner load cannot trip it while a
       // serialised copy path still would.

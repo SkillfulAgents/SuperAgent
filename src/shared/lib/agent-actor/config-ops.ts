@@ -73,7 +73,9 @@ export function createConfigOps(files: FileOps, hooks: ConfigOpsHooks = {}): Con
 
   const get = async <K extends ConfigDocId>(id: K): Promise<ConfigDoc<K> | null> => {
     await hooks.beforeGet?.(id)
-    const bytes = await files.getDoc(await pathOf(id))
+    const spec = configDocSpec(id)
+    let bytes = await files.getDoc(spec.path)
+    if (bytes === null && spec.kind === 'text' && spec.fallbackPath !== undefined) bytes = await files.getDoc(spec.fallbackPath)
     return bytes === null ? null : decode(id, bytes)
   }
 
