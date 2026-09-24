@@ -141,4 +141,8 @@ export class IntegrationRelays {
   }
 }
 
-export const integrationRelays = new IntegrationRelays()
+// Persists across hot reloads like the relay itself: a fresh copy would hold
+// no registrations and collide with the relay's on the next attach.
+const globalForIntegrationRelays = globalThis as unknown as { integrationRelays: IntegrationRelays | undefined }
+globalForIntegrationRelays.integrationRelays ??= new IntegrationRelays()
+export const integrationRelays = globalForIntegrationRelays.integrationRelays
