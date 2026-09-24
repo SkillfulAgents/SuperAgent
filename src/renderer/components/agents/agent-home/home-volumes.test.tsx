@@ -3,7 +3,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const volumes = vi.hoisted(() => ({
-  mounts: [] as { id: string; folderName: string; hostPath: string; health?: unknown }[],
+  mounts: [] as { id: string; folderName: string; hostPath: string; containerPath?: string; health?: unknown }[],
+  sharedVolumes: undefined as string[] | undefined,
   isLoading: false,
   pendingRestart: false,
   isRestarting: false,
@@ -12,6 +13,7 @@ const volumes = vi.hoisted(() => ({
   isRemovingMount: false,
   canAddMount: true,
   handleAddMount: vi.fn(),
+  handleAddSharedVolume: vi.fn(),
   handleRemove: vi.fn(),
   handleRestart: vi.fn(),
 }))
@@ -39,6 +41,7 @@ beforeEach(() => {
   volumes.mounts = [MOUNT]
   volumes.canAddMount = true
   volumes.pendingRestart = false
+  volumes.sharedVolumes = undefined
   mockCanUseHostFeatures.mockReturnValue(true)
   window.electronAPI = { platform: 'darwin', showInFolder: vi.fn() } as never
 })
@@ -106,5 +109,59 @@ describe('driving a cloud workspace', () => {
     // Otherwise: an empty box inviting you to "mount a folder from your
     // computer", with no button to do it.
     expect(container).toBeEmptyDOMElement()
+  })
+})
+
+describe('on a server that mounts shared volumes', () => {
+  const VOLUME = { id: 'v1', folderName: 'team-brain', hostPath: '/data/volumes/team-brain', containerPath: '/mounts/team-brain' }
+
+  beforeEach(() => {
+    // The picker lists the workspace disk, so it works from any window.
+    mockCanUseHostFeatures.mockReturnValue(false)
+    volumes.canAddMount = true
+    volumes.sharedVolumes = ['research', 'team-brain']
+    volumes.mounts = [VOLUME]
+  })
+
+  it('offers the volumes this agent does not have yet and mounts the one picked', async () => {
+    render(<HomeVolumes agentSlug="a1" />)
+
+    await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
+    expect(screen.queryByRole('button', { name: 'team-brain' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'research' }))
+
+    expect(volumes.handleAddSharedVolume).toHaveBeenCalledWith('research')
+  })
+
+  it('creates a new volume under the name the typed text converts to', async () => {
+    render(<HomeVolumes agentSlug="a1" />)
+
+    await userEvent.click(screen.getByRole('button', { name: /add mount/i }))
+    await userEvent.click(screen.getByRole('button', { name: /new shared volume/i }))
+    await userEvent.type(screen.getByRole('textbox', { name: /volume name/i }), 'Q3 Planning')
+    expect(screen.getByText('/mounts/q3-planning')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    expect(volumes.handleAddSharedVolume).toHaveBeenCalledWith('q3-planning')
+  })
+
+  it('shows and copies the path the agent sees, not the workspace disk path', async () => {
+    const writeText = vi.fn(async () => {})
+    Object.assign(navigator, { clipboard: { writeText } })
+    render(<HomeVolumes agentSlug="a1" />)
+
+    expect(screen.getByText('/mounts/team-brain')).toBeInTheDocument()
+    expect(screen.queryByText('/data/volumes/team-brain')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Mount actions' }))
+    await userEvent.click(screen.getByRole('button', { name: /copy path/i }))
+    expect(writeText).toHaveBeenCalledWith('/mounts/team-brain')
+  })
+
+  it('invites a shared volume, not a folder from your computer, when nothing is mounted', () => {
+    volumes.mounts = []
+    render(<HomeVolumes agentSlug="a1" />)
+
+    expect(screen.getByText(/add a shared volume/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /add mount/i })).toBeInTheDocument()
   })
 })

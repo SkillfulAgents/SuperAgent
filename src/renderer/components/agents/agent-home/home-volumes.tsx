@@ -1,5 +1,7 @@
-import { useState } from 'react'
+import { forwardRef, useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
+import { Input } from '@renderer/components/ui/input'
+import { Separator } from '@renderer/components/ui/separator'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import {
   AlertDialog,
@@ -20,11 +22,13 @@ import {
   Plus,
   Loader2,
   RefreshCw,
+  ChevronLeft,
 } from 'lucide-react'
 import { HomeCollapsible } from './home-collapsible'
 import { useVolumesManager } from '@renderer/hooks/use-mounts'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { VolumeStatusBadge } from '../volume-status-badge'
+import { toSharedVolumeName } from '@shared/lib/utils/shared-volume-name'
 import type { AgentMountWithHealth } from '@shared/lib/types/mount'
 
 interface HomeVolumesProps {
@@ -35,9 +39,9 @@ interface HomeVolumesProps {
 export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
   const volumes = useVolumesManager(agentSlug)
 
-  // Nothing mounted and no way to mount anything (a cloud workspace, where the
-  // picker would browse the wrong machine): the section would be an empty box
-  // inviting you to do something this window cannot do.
+  // Nothing mounted and no way to mount anything (a window on another machine,
+  // where the folder picker would browse the wrong computer): the section would
+  // be an empty box inviting you to do something this window cannot do.
   if (!volumes.canAddMount && volumes.mounts.length === 0) return null
 
   return (
@@ -48,6 +52,9 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
             <VolumeRow
               key={mount.id}
               mount={mount}
+              // A shared volume's host path is on the workspace disk; the agent's
+              // path is the one worth showing and copying.
+              path={volumes.sharedVolumes ? mount.containerPath : mount.hostPath}
               onRemove={() => volumes.handleRemove(mount.id)}
               isRemovingMount={volumes.isRemovingMount}
             />
@@ -56,7 +63,11 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
       ) : (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">No volumes yet</p>
-          <p className="text-xs mt-1">Mount a folder from your computer to give your agents direct read/write access to the files in it.</p>
+          <p className="text-xs mt-1">
+            {volumes.sharedVolumes
+              ? 'Add a shared volume to give this agent read/write access to a folder other agents can use too.'
+              : 'Mount a folder from your computer to give your agents direct read/write access to the files in it.'}
+          </p>
         </div>
       )}
 
@@ -84,25 +95,140 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
               </span>
             )}
           </div>
+        ) : volumes.sharedVolumes ? (
+          <div className="flex justify-end">
+            <AddSharedVolume
+              sharedVolumes={volumes.sharedVolumes}
+              mountedPaths={volumes.mounts.map((m) => m.containerPath)}
+              isAdding={volumes.isAddingMount}
+              onAdd={volumes.handleAddSharedVolume}
+            />
+          </div>
         ) : volumes.canAddMount ? (
           <div className="flex justify-end">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={volumes.handleAddMount}
-              disabled={volumes.isAddingMount}
-            >
-              {volumes.isAddingMount ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Plus />
-              )}
-              Add Mount
-            </Button>
+            <AddMountButton isAdding={volumes.isAddingMount} onClick={volumes.handleAddMount} />
           </div>
         ) : null}
       </div>
     </HomeCollapsible>
+  )
+}
+
+/** The card's one add action: opens the folder picker locally, the volume menu on cloud. */
+const AddMountButton = forwardRef<
+  HTMLButtonElement,
+  React.ComponentProps<typeof Button> & { isAdding: boolean }
+>(({ isAdding, ...props }, ref) => (
+  <Button ref={ref} variant="ghost" size="sm" disabled={isAdding} {...props}>
+    {isAdding ? <Loader2 className="animate-spin" /> : <Plus />}
+    Add Mount
+  </Button>
+))
+AddMountButton.displayName = 'AddMountButton'
+
+const MENU_ITEM = 'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors'
+
+interface AddSharedVolumeProps {
+  sharedVolumes: string[]
+  mountedPaths: string[]
+  isAdding: boolean
+  onAdd: (name: string) => Promise<void>
+}
+
+/**
+ * The cloud stand-in for the folder picker: the workspace's shared volumes this
+ * agent does not have yet, and a way to name a new one.
+ */
+function AddSharedVolume({ sharedVolumes, mountedPaths, isAdding, onAdd }: AddSharedVolumeProps) {
+  const [open, setOpen] = useState(false)
+  const [naming, setNaming] = useState(false)
+  const [input, setInput] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  const isMounted = (name: string) => mountedPaths.includes(`/mounts/${name}`)
+  const available = sharedVolumes.filter((name) => !isMounted(name))
+  const name = toSharedVolumeName(input)
+  const exists = sharedVolumes.includes(name)
+  const canSubmit = name !== '' && !isMounted(name) && !isAdding
+  const hint = !name
+    ? 'Lowercase letters, numbers, and dashes'
+    : isMounted(name) ? `Already mounted at /mounts/${name}` : `/mounts/${name}`
+
+  const reset = () => {
+    setNaming(false)
+    setInput('')
+    setError(null)
+  }
+
+  const handleOpenChange = (next: boolean) => {
+    setOpen(next)
+    if (!next) reset()
+  }
+
+  const add = async (volume: string) => {
+    setError(null)
+    try {
+      await onAdd(volume)
+      handleOpenChange(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add volume')
+    }
+  }
+
+  return (
+    <Popover open={open} onOpenChange={handleOpenChange}>
+      <PopoverTrigger asChild>
+        <AddMountButton isAdding={isAdding} />
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-60 p-1">
+        {naming ? (
+          <form
+            className="flex flex-col gap-2 p-1.5"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (canSubmit) void add(name)
+            }}
+          >
+            <Input
+              autoFocus
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Team brain"
+              aria-label="Volume name"
+              className="h-8 text-xs md:text-xs"
+            />
+            <p className="text-2xs font-mono text-muted-foreground break-words">{hint}</p>
+            <div className="flex justify-between">
+              <Button type="button" variant="ghost" size="sm" onClick={reset}>
+                <ChevronLeft />
+                Back
+              </Button>
+              <Button type="submit" size="sm" disabled={!canSubmit}>
+                {exists ? 'Mount' : 'Create'}
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <>
+            {/* Scrolls on its own so "New shared volume" stays in reach. */}
+            <div className="max-h-60 overflow-y-auto overscroll-contain">
+              {available.map((volume) => (
+                <button key={volume} className={MENU_ITEM} disabled={isAdding} onClick={() => void add(volume)}>
+                  <Folder className="h-3.5 w-3.5" />
+                  <span className="truncate">{volume}</span>
+                </button>
+              ))}
+            </div>
+            {available.length > 0 && <Separator className="-mx-1 my-1 w-auto" />}
+            <button className={MENU_ITEM} onClick={() => setNaming(true)}>
+              <Plus className="h-3.5 w-3.5" />
+              New shared volume
+            </button>
+          </>
+        )}
+        {error && <p role="alert" className="px-2 py-1.5 text-xs text-destructive">{error}</p>}
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -115,11 +241,13 @@ function getFileManagerLabel(): string {
 
 interface VolumeRowProps {
   mount: AgentMountWithHealth
+  /** The path the row shows and copies. */
+  path: string
   onRemove: () => void
   isRemovingMount: boolean
 }
 
-function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
+function VolumeRow({ mount, path, onRemove, isRemovingMount }: VolumeRowProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const fileManagerLabel = getFileManagerLabel()
@@ -134,7 +262,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
   }
 
   const handleCopyPath = () => {
-    void navigator.clipboard.writeText(mount.hostPath)
+    void navigator.clipboard.writeText(path)
   }
 
   const handleDelete = () => {
@@ -169,8 +297,8 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
           <span className="text-xs font-medium truncate">{mount.folderName}</span>
           <VolumeStatusBadge health={mount.health} />
         </div>
-        <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={mount.hostPath}>
-          {mount.hostPath}
+        <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={path}>
+          {path}
         </div>
         <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
           <Popover open={menuOpen} onOpenChange={setMenuOpen}>
@@ -189,7 +317,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
             <PopoverContent align="end" className="w-40 p-1">
               {canOpenInFileManager && (
                 <button
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  className={MENU_ITEM}
                   onClick={(e) => {
                     e.stopPropagation()
                     handleOpenInFinder()
@@ -201,7 +329,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
                 </button>
               )}
               <button
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                className={MENU_ITEM}
                 onClick={(e) => {
                   e.stopPropagation()
                   handleCopyPath()

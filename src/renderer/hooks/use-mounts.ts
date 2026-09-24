@@ -30,14 +30,15 @@ export function useAddMount() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: { agentSlug: string; hostPath: string; restart?: boolean }) => {
-      if (!data.hostPath) {
+    // A folder path, or the name of a shared volume on a server that takes those.
+    mutationFn: async (data: { agentSlug: string; hostPath?: string; name?: string; restart?: boolean }) => {
+      if (!data.name && !data.hostPath) {
         throw new Error('Could not determine the folder’s location on disk. Try dragging the folder in, or attach it as an upload.')
       }
       const res = await apiFetch(`/api/agents/${data.agentSlug}/mounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hostPath: data.hostPath, restart: data.restart }),
+        body: JSON.stringify({ hostPath: data.hostPath, name: data.name, restart: data.restart }),
       })
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add mount'))
       return res.json() as Promise<AgentMount>
@@ -71,6 +72,8 @@ export function useVolumesManager(agentSlug: string) {
   const { data: mountsData, isLoading, refetch } = useAgentMounts(agentSlug)
   // A cloud server not yet on this version still answers with a bare array.
   const mounts = Array.isArray(mountsData) ? mountsData : mountsData?.mounts ?? []
+  // Present only where the server mounts shared volumes instead of folders.
+  const sharedVolumes = Array.isArray(mountsData) ? undefined : mountsData?.sharedVolumes
   const { data: agent } = useAgent(agentSlug)
   const isAgentRunning = agent?.status === 'running'
   const addMount = useAddMount()
@@ -87,12 +90,18 @@ export function useVolumesManager(agentSlug: string) {
     }
   }, [isAgentRunning, pendingRestart])
 
+  const add = async (input: { hostPath: string } | { name: string }) => {
+    await addMount.mutateAsync({ agentSlug, ...input })
+    if (isAgentRunning) setPendingRestart(true)
+  }
+
   const handleAddMount = async () => {
     const dirPath = await window.electronAPI?.openDirectory()
     if (!dirPath) return
-    await addMount.mutateAsync({ agentSlug, hostPath: dirPath })
-    if (isAgentRunning) setPendingRestart(true)
+    await add({ hostPath: dirPath })
   }
+
+  const handleAddSharedVolume = (name: string) => add({ name })
 
   const handleRemove = async (mountId: string) => {
     try {
@@ -131,12 +140,15 @@ export function useVolumesManager(agentSlug: string) {
     restartError,
     isAddingMount: addMount.isPending,
     isRemovingMount: removeMount.isPending,
-    // A mount is a path on the machine that runs the agent. Picking one here
-    // opens *this* computer's directory picker, so it only means something when
-    // this computer is also the one running them. Existing mounts still list —
-    // they are real on whichever Superagent is being driven.
-    canAddMount: canUseHostFeatures(),
+    sharedVolumes,
+    // A server that mounts shared volumes takes a name, from any window. Otherwise
+    // a mount is a path on the machine that runs the agent, and picking one opens
+    // *this* computer's directory picker, so it only means something when this
+    // computer is also the one running them. Existing mounts still list — they are
+    // real on whichever Superagent is being driven.
+    canAddMount: sharedVolumes !== undefined || canUseHostFeatures(),
     handleAddMount,
+    handleAddSharedVolume,
     handleRemove,
     handleRestart,
   }
