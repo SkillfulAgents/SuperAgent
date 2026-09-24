@@ -49,6 +49,8 @@ function settingsWith(web: { webProvider: string; webProviderIsDefault?: boolean
 }
 
 beforeEach(() => {
+  HTMLElement.prototype.hasPointerCapture = () => false
+  HTMLElement.prototype.scrollIntoView = () => {}
   useSettingsMock.mockReturnValue({
     data: {
       llmProvider: 'anthropic',
@@ -104,7 +106,8 @@ describe('SettingsModelSelect (flat picker)', () => {
     const props = { model: 'sonnet', llmProviderId: 'old', onSelectionChange, onModelChange: vi.fn() }
     const { rerender } = render(<SettingsModelSelect {...props} />)
     await userEvent.click(screen.getByTestId('settings-model-trigger'))
-    await userEvent.selectOptions(screen.getByLabelText('Connection'), 'new')
+    await userEvent.click(screen.getByLabelText('Connection'))
+    await userEvent.click(screen.getByRole('option', { name: 'New' }))
     expect(onSelectionChange).toHaveBeenLastCalledWith({ llmProviderId: 'new', model: 'haiku' })
     rerender(<SettingsModelSelect {...props} disabled />)
     expect(screen.getByLabelText('Connection')).toBeDisabled()
@@ -180,6 +183,8 @@ describe('SettingsModelSelect (flat picker)', () => {
 
   describe('App Default footer', () => {
     beforeEach(() => {
+  HTMLElement.prototype.hasPointerCapture = () => false
+  HTMLElement.prototype.scrollIntoView = () => {}
       useUserMock.mockReturnValue({ isAuthMode: false, isAdmin: false })
       useSettingsMock.mockReturnValue({
         data: {
@@ -319,8 +324,9 @@ describe('SettingsModelSelect (flat picker)', () => {
     await userEvent.click(screen.getByTestId('settings-model-trigger'))
     await userEvent.click(screen.getByTestId('model-latest-haiku'))
     expect(choose).toHaveBeenCalledWith({ llmProviderId: 'api-0', model: 'haiku' })
-    expect(screen.getByRole('combobox')).toHaveValue('api-0')
-    expect(screen.getByRole('option', { name: 'Subscription' })).toBeDisabled()
+    expect(screen.getByRole('combobox')).toHaveTextContent('API 0')
+    await userEvent.click(screen.getByRole('combobox'))
+    expect(screen.getByRole('option', { name: 'Subscription' })).toHaveAttribute('aria-disabled', 'true')
   })
 })
 

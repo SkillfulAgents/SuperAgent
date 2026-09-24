@@ -1,3 +1,4 @@
+import { parseGrokUsage } from './usage-schema'
 import type { EffortLevel } from '../container/types'
 import { GROK_DEFAULT_MODELS } from './model-catalog-defaults'
 export { GROK_DEFAULT_MODELS } from './model-catalog-defaults'
@@ -69,6 +70,13 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
         return this.fetch(input, { ...init, ...(body ? { body: JSON.stringify(normalizeGrokMessages(body)) } : {}) })
       },
     })
+  }
+  override readonly supportsUsage = true
+
+  override async getUsage() {
+    const response = await this.fetch(`${GROK_SUBSCRIPTION_BASE_URL}/v1/billing?format=credits`, { signal: AbortSignal.timeout(10_000) })
+    if (!response.ok) { await response.body?.cancel(); throw new Error('Could not load Grok usage') }
+    return parseGrokUsage(await response.json())
   }
   async validateKey() {
     try { await this.searchModels(''); return { valid: true } }

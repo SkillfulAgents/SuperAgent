@@ -57,6 +57,7 @@ export function useConnectionMutation() {
     },
     onSuccess: () => Promise.all([
       queryClient.invalidateQueries({ queryKey: ['settings'] }),
+      queryClient.invalidateQueries({ queryKey: ['llm-provider-usage'] }),
       queryClient.invalidateQueries({ queryKey: ['runtime-status'] }),
     ]),
   })

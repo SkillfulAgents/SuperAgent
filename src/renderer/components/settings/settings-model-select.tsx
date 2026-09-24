@@ -1,3 +1,4 @@
+import { ProviderSelect } from './provider-select'
 import { resolveSelection, type ModelSelection } from '@shared/lib/llm-provider/connection-schema'
 import { memo, useContext, useMemo, type ReactNode } from 'react'
 import { Check, ChevronDown, RotateCcw, Settings } from 'lucide-react'
@@ -109,13 +110,10 @@ function SettingsModelSelectImpl({
       model={selectedModel}
       onPick={m => onSelectionChange && selectedConnection ? onSelectionChange({ llmProviderId: selectedConnection.id, model: m }) : onModelChange(m)}
       webProvider={settings?.webProvider}
-      header={onSelectionChange && providers.length > 1 && <div className="relative mx-1 mb-1 text-xs">
-        <select aria-label="Connection" className="w-full cursor-pointer appearance-none rounded-sm border-0 bg-transparent py-1 pl-1 pr-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={selectedConnection?.id ?? ''} onChange={e => {
-          const next = choices.find(c => c.id === e.target.value)
-          if (next?.defaultModel) onSelectionChange({ llmProviderId: next.id, model: next.defaultModel })
-        }}>{providers.map(c => <option key={c.id} value={c.id} disabled={directApiOnly && c.supportsDirectApi === false}>{c.name}{c.userId ? ` · ${c.ownerName ?? 'Personal'}` : ''}</option>)}</select>
-        <ChevronDown className="pointer-events-none absolute right-1 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-      </div>}
+      header={onSelectionChange && <ProviderSelect connections={providers} value={selectedConnection?.id} directApiOnly={directApiOnly} disabled={pickerProps.disabled} onChange={id => {
+        const next = choices.find(c => c.id === id)
+        if (next?.defaultModel) onSelectionChange({ llmProviderId: next.id, model: next.defaultModel })
+      }} />}
     />
   )
 }

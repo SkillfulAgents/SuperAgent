@@ -1,3 +1,6 @@
+import { PlatformLlmProvider } from '@shared/lib/llm-provider/platform-provider'
+import { getRequestUserId } from '@shared/lib/platform-attribution/request-context'
+import { BaseLlmProvider } from '@shared/lib/llm-provider/base-llm-provider'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { Hono, type MiddlewareHandler } from 'hono'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
@@ -91,6 +94,7 @@ afterEach(async () => {
   await database.close()
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe('connection API ownership and root protection', () => {
@@ -428,4 +432,37 @@ it('binds Codex grants to their provider and keeps dashboard helpers on the API 
   const publicData = JSON.stringify(await (await request('', 'GET')).json())
   expect(publicData).toContain('Alice Codex')
   expect(publicData).not.toContain('private-codex')
+})
+
+describe('connection allowance access', () => {
+  it('does not share Platform snapshots across members', async () => {
+    const id = await saveConnection(draft(), { userId: 'admin', admin: true })
+    await database.db.update(llmConnections).set({ provider: 'platform' }).where(eq(llmConnections.id, id)).run()
+    const fetchUsage = vi.spyOn(PlatformLlmProvider.prototype, 'getUsage').mockImplementation(async () => ({
+      status: 'available', observedAt: new Date().toISOString(), limits: [{ kind: 'balance', id: 'seat', label: 'Seat credits', unit: 'USD', remaining: getRequestUserId() === 'alice' ? 10 : 20 }],
+    }))
+    const responses = await Promise.all(['alice', 'bob'].map(async caller => (await request(`/${id}/usage`, 'GET', undefined, caller)).json()))
+    expect(responses.map(r => r.limits[0].remaining)).toEqual([10, 20])
+    expect(fetchUsage).toHaveBeenCalledTimes(2)
+  })
+  it('hides failed reads and raw provider errors without changing model configuration', async () => {
+    const id = await saveConnection(draft(), { userId: 'admin', admin: true })
+    const before = await getConnection(id)
+    vi.spyOn(BaseLlmProvider.prototype, 'getUsage').mockRejectedValue(new Error('secret-upstream-body'))
+    const response = await request(`/${id}/usage`)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: 'unavailable', limits: [] })
+    expect(await getConnection(id)).toEqual(before)
+  })
+  it('allows own/global usage but does not expose another member account even to an admin', async () => {
+    const personal = await saveConnection(draft('alice'), { userId: 'alice', admin: false })
+    const global = await saveConnection(draft(), { userId: 'admin', admin: true })
+    for (const caller of ['alice', 'bob', 'admin']) {
+      expect((await request(`/${global}/usage`, 'GET', undefined, caller)).status).toBe(200)
+      const res = await request(`/${personal}/usage`, 'GET', undefined, caller)
+      expect(res.status).toBe(caller === 'alice' ? 200 : 404)
+      expect(res.headers.get('cache-control')).toBe('no-store')
+      if (caller === 'alice') expect(await res.json()).toMatchObject({ status: 'unsupported', limits: [] })
+    }
+  })
 })

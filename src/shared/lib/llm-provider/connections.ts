@@ -113,6 +113,7 @@ export async function listConnections(
       managed: row.managed,
       isConfigured: provider.getApiKeyStatus().isConfigured,
       supportsDirectApi: provider.supportsDirectApi,
+      supportsUsage: provider.supportsUsage,
       catalog: connectionCatalog(row),
       defaultModel: defaultSelectionForConnection(row)?.model ?? null,
       modelOverrides: connectionModelOverrides(row),

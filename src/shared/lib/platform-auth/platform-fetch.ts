@@ -17,6 +17,7 @@ export class PlatformRequestError extends Error {
 interface FetchPlatformJsonOptions<T> {
   /** Proxy path, e.g. `/v1/account`. */
   path: string
+  signal?: AbortSignal
   /** Bearer token to send. In a request scope the fetch interceptor overrides it. */
   token: string | null
   /** Zod schema validated at the boundary before the value is returned. */
@@ -47,6 +48,7 @@ export async function fetchPlatformJson<T>(opts: FetchPlatformJsonOptions<T>): P
   try {
     res = await fetch(`${proxyBase}${opts.path}`, {
       headers: { Authorization: `Bearer ${opts.token}` },
+      ...(opts.signal ? { signal: opts.signal } : {}),
     })
   } catch (error) {
     captureException(error, { tags: { area: opts.area, op: 'fetch' } })

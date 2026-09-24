@@ -133,6 +133,7 @@ export const connectionInfoSchema = z.object({
   managed: z.boolean(),
   isConfigured: z.boolean(),
   supportsDirectApi: z.boolean().optional(),
+  supportsUsage: z.boolean().optional(),
   catalog: modelCatalogSchema,
   modelOverrides: connectionModelOverridesSchema,
   defaultModel: z.string().nullable(),

@@ -1,3 +1,4 @@
+import { parseCodexUsage } from './usage-schema'
 import { CODEX_DEFAULT_MODELS } from './model-catalog-defaults'
 export { CODEX_DEFAULT_MODELS } from './model-catalog-defaults'
 import type { EffortLevel, SpeedLevel } from '../container/types'
@@ -51,6 +52,20 @@ export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
     if (!accountId) throw new Error('Reconnect Codex to select a subscription account')
     return { adapter: 'codex', format: 'responses', baseUrl: CODEX_BASE_URL,
       headers: CODEX_HEADERS, credential: { accessToken, expiresAt, generation, accountId } }
+  }
+  override readonly supportsUsage = true
+
+  override async getUsage() {
+    let credential = await this.credential()
+    if (!credential.accountId) throw new Error('Reconnect Codex to select a subscription account')
+    const send = () => fetch('https://chatgpt.com/backend-api/wham/usage', {
+      headers: { ...CODEX_HEADERS, authorization: `Bearer ${credential.accessToken}`, 'ChatGPT-Account-ID': credential.accountId ?? '' },
+      signal: AbortSignal.timeout(10_000), redirect: 'error',
+    })
+    let response = await send()
+    if (response.status === 401) { await response.body?.cancel(); credential = await this.credential(credential.generation); response = await send() }
+    if (!response.ok) { await response.body?.cancel(); throw new Error('Could not load Codex usage') }
+    return parseCodexUsage(await response.json())
   }
   async validateKey() {
     try { await this.searchModels(''); return { valid: true } }
