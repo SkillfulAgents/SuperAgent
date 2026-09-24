@@ -32,6 +32,7 @@ type CustomModelExtras = Partial<
     | 'blurb'
     | 'contextWindow'
     | 'isDefault'
+    | 'supportedSpeeds'
     | 'supportsWebSearch'
     | 'supportsImageInput'
     | 'promptHints'
@@ -64,6 +65,7 @@ function extrasFromModel(model: ModelDefinition): CustomModelExtras {
     blurb: model.blurb,
     contextWindow: model.contextWindow,
     isDefault: model.isDefault,
+    supportedSpeeds: model.supportedSpeeds,
     supportsWebSearch: model.supportsWebSearch,
     supportsImageInput: model.supportsImageInput,
     promptHints: model.promptHints,
@@ -221,6 +223,7 @@ function CustomModelDialogBody({
       ...(includeExtras && extras.isDefault !== undefined
         ? { isDefault: extras.isDefault }
         : {}),
+      ...(includeExtras && extras.supportedSpeeds ? { supportedSpeeds: extras.supportedSpeeds } : {}),
       ...(includeExtras && extras.supportsWebSearch !== undefined
         ? { supportsWebSearch: extras.supportsWebSearch }
         : {}),

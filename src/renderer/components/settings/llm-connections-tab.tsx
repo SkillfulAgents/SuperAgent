@@ -1,7 +1,8 @@
+import { SubscriptionSignIn } from './subscription-sign-in'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import { withGlobalModelPricing } from '@shared/lib/llm-provider/global-pricing'
 import type { GlobalModelPricing } from '@shared/lib/llm-provider/global-pricing-schema'
-import { useId, useState } from 'react'
+import { useCallback, useId, useState } from 'react'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
@@ -26,6 +27,8 @@ const selectClass = 'h-9 rounded-md border bg-background px-3 text-sm'
 const providers = {
   anthropic: 'Anthropic',
   'claude-subscription': 'Claude Subscription',
+  'grok-subscription': 'Grok Subscription',
+  'codex-subscription': 'Codex Subscription',
   openrouter: 'OpenRouter',
   bedrock: 'AWS Bedrock',
   generic: 'Generic',
@@ -123,6 +126,7 @@ export function LlmConnectionsTab() {
             <div className="font-medium text-sm">{connection.name}</div>
             <div className="text-xs text-muted-foreground">
               {connection.userId ? (connection.ownerName ?? 'Personal') : 'Global'}
+              {connection.accountLabel ? ` · ${connection.accountLabel}` : ''}
               {connection.managed ? ' · Managed by your Platform login' : ''}
               {!connection.isConfigured ? ' · Not configured' : ''}
             </div>
@@ -202,6 +206,15 @@ function ConnectionEditor({
   const [name, setName] = useState(existing?.name ?? '')
   const [owner, setOwner] = useState<string | null>(existing?.userId ?? (admin ? null : userId))
   const [apiKey, setApiKey] = useState('')
+  const [oauthLoginId, setOAuthLoginId] = useState<string>()
+  const [accountLabel, setAccountLabel] = useState(existing?.accountLabel)
+  const connected = useCallback((id: string, label: string) => {
+    setOAuthLoginId(id)
+    setAccountLabel(label)
+    setName(current => current.trim() ? current : `${provider === 'codex-subscription' ? 'Codex' : 'Grok'} - ${label}`)
+  }, [provider])
+  const [apiFormat, setApiFormat] = useState<NonNullable<ConnectionConfig['apiFormat']>>(existing?.apiFormat ?? 'messages')
+  const [chatTokenLimitField, setChatTokenLimitField] = useState<NonNullable<ConnectionConfig['chatTokenLimitField']>>(existing?.chatTokenLimitField ?? 'max_completion_tokens')
   const [baseUrl, setBaseUrl] = useState(existing?.baseUrl ?? '')
   const [accessKey, setAccessKey] = useState('')
   const [secretKey, setSecretKey] = useState('')
@@ -236,7 +249,8 @@ function ConnectionEditor({
         name: name || providers[provider as keyof typeof providers],
         provider,
         userId: owner,
-        config: { apiKeys, runtimeEnv: Object.fromEntries(Object.entries(runtimeEnv).filter(([, value]) => value !== undefined)) },
+        oauthLoginId,
+        config: { apiKeys, ...(provider === 'generic' ? { apiFormat, chatTokenLimitField } : {}), runtimeEnv: Object.fromEntries(Object.entries(runtimeEnv).filter(([, value]) => value !== undefined)) },
         modelOverrides: overrides,
         browserModel: browserModel || null,
         dashboardModel: dashboardModel || null,
@@ -289,6 +303,8 @@ function ConnectionEditor({
               onChange={(e) => {
                 const next = e.target.value as LlmProviderId
                 setProvider(next)
+                setOAuthLoginId(undefined)
+                setAccountLabel(undefined)
                 setApiKey('')
                 setRuntimeEnv({})
                 setBrowserModel('')
@@ -309,7 +325,7 @@ function ConnectionEditor({
               <select
                 className={selectClass}
                 value={owner ?? ''}
-                onChange={(e) => setOwner(e.target.value || null)}
+                onChange={(e) => { setOwner(e.target.value || null); setOAuthLoginId(undefined); setAccountLabel(undefined) }}
               >
                 <option value="">Everyone</option>
                 <option value={userId}>Only me</option>
@@ -327,7 +343,8 @@ function ConnectionEditor({
           <p className="text-muted-foreground">App defaults using this provider need a separate API-capable summarizer. Displayed costs are API-equivalent estimates.</p>
         </div>
       )}
-      {provider !== 'platform' && (
+      {(provider === 'grok-subscription' || provider === 'codex-subscription') && <SubscriptionSignIn provider={provider === 'codex-subscription' ? 'codex' : 'grok'} key={`${provider}:${owner ?? 'global'}`} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} onConnected={connected} />}
+      {provider !== 'platform' && provider !== 'grok-subscription' && provider !== 'codex-subscription' && (
         <label htmlFor={`${formId}-apiKey`} className="block text-sm">
           {provider === 'claude-subscription' ? 'Subscription token' : 'API key'}
           <Input
@@ -339,6 +356,26 @@ function ConnectionEditor({
             placeholder={existing ? 'Leave blank to keep current credential' : provider === 'claude-subscription' ? 'Paste setup-token output' : 'API key'}
             required={provider === 'claude-subscription' && !existing}
           />
+        </label>
+      )}
+      {provider === 'generic' && (
+        <label className="grid gap-1 text-sm">
+          API format
+          <select className={selectClass} value={apiFormat} onChange={e => setApiFormat(e.target.value as typeof apiFormat)}>
+            <option value="messages">Anthropic Messages</option>
+            <option value="chat-completions">OpenAI Chat Completions</option>
+            <option value="responses">OpenAI Responses</option>
+          </select>
+        </label>
+      )}
+      {provider === 'generic' && apiFormat === 'chat-completions' && (
+        <label className="grid gap-1 text-sm">
+          Token limit parameter
+          <select className={selectClass} value={chatTokenLimitField} onChange={e => setChatTokenLimitField(e.target.value as typeof chatTokenLimitField)}>
+            <option value="max_completion_tokens">max_completion_tokens (OpenAI)</option>
+            <option value="max_tokens">max_tokens (legacy compatible endpoints)</option>
+          </select>
+          <span className="text-muted-foreground">Use max_tokens if your endpoint does not accept max_completion_tokens.</span>
         </label>
       )}
       {provider === 'generic' && (
@@ -427,7 +464,7 @@ function ConnectionEditor({
         <CatalogEditor
           providerId={provider}
           llmProviderId={existing?.id}
-          supportsModelSearch={!!existing && (provider === 'openrouter' || provider === 'generic')}
+          supportsModelSearch={!!existing && (provider === 'openrouter' || provider === 'generic' || provider === 'grok-subscription' || provider === 'codex-subscription')}
           builtinCatalog={catalogFor(provider)}
           effectiveCatalog={catalog}
           modelCatalog={{ [provider]: { overrides } }}
@@ -454,10 +491,10 @@ function ConnectionEditor({
         </div>
       ))}
       <div className="flex gap-2">
-        <Button type="submit" disabled={mutation.isPending}>
+        <Button type="submit" disabled={mutation.isPending || ((provider === 'grok-subscription' || provider === 'codex-subscription') && !oauthLoginId && !existing?.isConfigured)}>
           Save
         </Button>
-        {!existing?.managed && provider !== 'claude-subscription' && (
+        {!existing?.managed && provider !== 'claude-subscription' && provider !== 'grok-subscription' && provider !== 'codex-subscription' && (
           <Button
             type="button"
             variant="outline"

@@ -34,9 +34,10 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 /**
  * Processing-speed tiers, normalized to slow/normal/fast. `supportedSpeeds`
  * reflects what OUR serving path can honor, not the vendor's raw feature list:
- * the agent signals speed via the X-Superagent-Speed custom header, which only
+ * the agent signals speed via the X-Superagent-Speed custom header, which
  * the Platform proxy consumes (mapping it to OpenAI/xAI `service_tier` or
- * Anthropic fast mode). Direct Anthropic (body param + gated beta on the
+ * Anthropic fast mode). The in-container Codex proxy also consumes it for
+ * subscription fast mode. Direct Anthropic (body param + gated beta on the
  * user's own key), OpenRouter (ignores our header; Anthropic fast exists there
  * only as separate `-fast` model slugs), and Bedrock (no fast mode) can't
  * honor a pick, so their entries omit speeds entirely.

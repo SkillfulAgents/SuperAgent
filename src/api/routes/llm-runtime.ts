@@ -1,3 +1,5 @@
+import { CredentialRefreshError } from '../../../agent-container/src/credential-refresh-error'
+import { resolveConnectionCredential } from '@shared/lib/llm-provider/connection-credentials'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { IsAgent } from '../middleware/auth'
@@ -10,9 +12,15 @@ import {
 
 const routes = new Hono()
 routes.use('*', IsAgent())
+routes.onError((error, c) => {
+  if (!(error instanceof CredentialRefreshError)) throw error
+  if (error.status === 503) c.header('Retry-After', '30')
+  return c.json({ error: error.message, code: error.status === 401 ? 'provider_reconnect_required' : 'provider_refresh_unavailable' }, error.status)
+})
 const requestSchema = z.object({
   sessionId: z.string().min(1),
   llmProviderId: z.string().optional(),
+  rejectedGeneration: z.number().int().optional(),
 })
 routes.post('/resolve', async (c) => {
   const parsed = requestSchema.safeParse(await c.req.json())
@@ -33,6 +41,7 @@ routes.post('/resolve', async (c) => {
   c.header('Cache-Control', 'no-store')
   if (input.llmProviderId && input.llmProviderId !== selected.llmProviderId)
     return c.json({ error: 'Session connection changed' }, 409)
+  if (input.rejectedGeneration !== undefined) await resolveConnectionCredential(selected.llmProviderId, input.rejectedGeneration)
   const runtime = await connectionRuntime(selected, slug)
   rememberSessionRuntime(slug, input.sessionId, runtime)
   return c.json(runtime)

@@ -243,6 +243,43 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     expect(JSON.stringify(calls[1].options)).not.toContain('bedrock-secret')
   })
 
+  it('rebuilds proxy-backed queries when helper models or prompt hints change', async () => {
+    const runtime = { llmProviderId: 'a', generation: 0, provider: 'generic', model: 'model',
+      browserModel: 'model', dashboardBuilderModel: 'model', modelPromptHints: [], subagentModels: [], modelContextWindows: {}, env: {},
+      proxy: { format: 'responses' as const, baseUrl: 'https://upstream.example/v1', headers: {}, credential: { accessToken: 'key', generation: 0 } } }
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'proxy-settings', workingDirectory: '/tmp', llmRuntime: runtime })
+    await claudeProcess.start()
+    await claudeProcess.sendMessage('new helper', undefined, { llmRuntime: { ...runtime, generation: 1, browserModel: 'browser-v2' } })
+    expect(calls).toHaveLength(2)
+    await claudeProcess.sendMessage('new hints', undefined, { llmRuntime: { ...runtime, generation: 2, browserModel: 'browser-v2', modelPromptHints: ['New model guidance'] } })
+    expect(calls).toHaveLength(3)
+  })
+
+  it('replaces proxy credentials on account switches and restores the direct path', async () => {
+    const base = { llmProviderId: 'a', generation: 0, provider: 'generic', model: 'model',
+      browserModel: 'model', dashboardBuilderModel: 'model', modelPromptHints: [], subagentModels: [], modelContextWindows: {},
+      env: { ANTHROPIC_API_KEY: 'direct-key', ANTHROPIC_BASE_URL: 'https://direct.example' } }
+    const proxy = { format: 'responses' as const, baseUrl: 'https://upstream.example/v1', headers: {},
+      credential: { accessToken: 'private-upstream-token', generation: 0 } }
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'proxy-switch', workingDirectory: '/tmp', llmRuntime: { ...base, proxy } })
+    await claudeProcess.start()
+    const first = calls[0].options.env as Record<string, string>
+    expect(first.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:/)
+    expect(JSON.stringify(calls[0].options)).not.toContain('private-upstream-token')
+    await claudeProcess.sendMessage('rotated credential', undefined, { llmRuntime: { ...base, generation: 1,
+      proxy: { ...proxy, credential: { accessToken: 'rotated', generation: 1 } } } })
+    expect(calls).toHaveLength(1)
+    expect((calls[0].options.abortController as AbortController).signal.aborted).toBe(false)
+    expect((await fetch(first.ANTHROPIC_BASE_URL)).status).toBe(401)
+    await claudeProcess.sendMessage('switch', undefined, { llmRuntime: { ...base, llmProviderId: 'b', proxy } })
+    const second = calls[1].options.env as Record<string, string>
+    expect(second.ANTHROPIC_API_KEY).not.toBe(first.ANTHROPIC_API_KEY)
+    await expect(fetch(first.ANTHROPIC_BASE_URL)).rejects.toThrow()
+    await claudeProcess.sendMessage('direct', undefined, { llmRuntime: base })
+    expect(calls[2].options.env).toMatchObject(base.env)
+    await expect(fetch(second.ANTHROPIC_BASE_URL)).rejects.toThrow()
+  })
+
   it('rebuilds LLM credentials and capabilities while preserving Platform service credentials', async () => {
     vi.stubEnv('PLATFORM_BASE_URL', 'https://platform-services.example')
     vi.stubEnv('PLATFORM_AUTH_TOKEN', 'platform-services-token::owner')

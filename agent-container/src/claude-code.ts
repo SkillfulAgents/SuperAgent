@@ -1,3 +1,4 @@
+import { startLlmProxy, llmProxyBinding, type LlmProxyHandle } from './llm-proxy';
 import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
 import {
   query,
@@ -564,6 +565,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   private maxTurns: number | undefined;
   private maxBudgetUsd: number | undefined;
   private llmRuntime: ConnectionRuntime | undefined;
+  private llmProxy: LlmProxyHandle | undefined;
+  private llmProxyBinding: string | undefined;
   private readonly requiresConnectionRuntime: boolean;
   private customEnvVars: Record<string, string> | undefined;
   private effort: EffortLevel | undefined;
@@ -929,6 +932,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     // Baked into the warm subprocess's options, so initializeQuery must not
     // replace it on claim or the warm process would be unstoppable.
     this.abortController = new AbortController();
+    await this.prepareLlmProxy();
     this.warmHandle = await startup({ options: this.buildQueryOptions() });
   }
 
@@ -962,6 +966,41 @@ export class ClaudeCodeProcess extends EventEmitter {
     };
     this.sdkMcpServerConfigs = servers;
     return servers;
+  }
+
+  private async prepareLlmProxy(): Promise<void> {
+    const binding = this.llmRuntime && llmProxyBinding(this.llmRuntime.llmProviderId, this.llmRuntime.proxy);
+    if (this.llmProxy && this.llmProxyBinding === binding && this.llmRuntime?.proxy) {
+      this.llmProxy.updateCredential(this.llmRuntime.proxy.credential);
+      return;
+    }
+    await this.llmProxy?.close();
+    this.llmProxy = undefined;
+    this.llmProxyBinding = undefined;
+    if (!this.llmRuntime?.proxy) return;
+    const runtime = this.llmRuntime;
+    const handle = await startLlmProxy({
+      llmProviderId: runtime.llmProviderId,
+      config: runtime.proxy!,
+      ...(runtime.proxy!.credential.expiresAt !== undefined ? {
+        refreshCredential: async (current, rejected) => {
+          const updated = await resolveSessionRuntime(this.sessionId, {
+            llmProviderId: runtime.llmProviderId,
+            ...(rejected ? { rejectedGeneration: current.generation } : {}),
+          });
+          if (updated.llmProviderId !== runtime.llmProviderId || !updated.proxy) {
+            throw new Error('Session provider changed');
+          }
+          return updated.proxy.credential;
+        },
+      } : {}),
+    });
+    if (this.disposed || this.stopping) {
+      await handle.close();
+      throw new Error('Session stopped while preparing its provider');
+    }
+    this.llmProxy = handle;
+    this.llmProxyBinding = binding;
   }
 
   private buildQueryOptions(): Options {
@@ -1087,7 +1126,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         // vars, and anything else set on the container.
         ...(this.llmRuntime ? withoutProviderCredentials(process.env) : process.env),
         ...(this.llmRuntime ? withoutProviderCredentials(this.customEnvVars ?? {}) : this.customEnvVars),
-        ...Object.fromEntries(Object.entries(this.llmRuntime?.env ?? {}).map(([key, value]) => [key, value || undefined])),
+        ...Object.fromEntries(Object.entries({ ...this.llmRuntime?.env, ...this.llmProxy?.env }).map(([key, value]) => [key, value || undefined])),
         // Platform services use the host-injected credentials across every
         // session, regardless of its LLM provider or custom env overrides.
         PLATFORM_BASE_URL: process.env.PLATFORM_BASE_URL,
@@ -1446,7 +1485,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   /**
    * Initializes the abort controller and message queue, then creates a new query.
    */
-  private initializeQuery(): void {
+  private async initializeQuery(): Promise<void> {
+    if (this.llmRuntime?.proxy || this.llmProxy) await this.prepareLlmProxy();
     // New query generation: a stale processMessages loop from a previous
     // query must not clobber this one's state when it finally unwinds.
     this.queryGeneration++;
@@ -1491,7 +1531,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     console.log(`[Session ${this.sessionId}] Working directory:`, this.workingDirectory);
     console.log(`[Session ${this.sessionId}] Resuming:`, isResuming, this.claudeSessionId);
 
-    this.initializeQuery();
+    await this.initializeQuery();
     this.emit('ready');
 
     // Start processing messages in the background
@@ -1636,11 +1676,16 @@ export class ClaudeCodeProcess extends EventEmitter {
     const connectionChanged = nextRuntime !== undefined && (
       nextRuntime.llmProviderId !== this.llmRuntime?.llmProviderId ||
       nextRuntime.model !== this.llmRuntime?.model ||
-      nextRuntime.generation !== this.llmRuntime?.generation ||
-      JSON.stringify(nextRuntime.env) !== JSON.stringify(this.llmRuntime?.env)
+      (!nextRuntime.proxy && nextRuntime.generation !== this.llmRuntime?.generation) ||
+      JSON.stringify(nextRuntime.env) !== JSON.stringify(this.llmRuntime?.env) ||
+      JSON.stringify([nextRuntime.browserModel, nextRuntime.dashboardBuilderModel, nextRuntime.subagentModels, nextRuntime.modelPromptHints, nextRuntime.modelContextWindows]) !==
+        JSON.stringify([this.llmRuntime?.browserModel, this.llmRuntime?.dashboardBuilderModel, this.llmRuntime?.subagentModels, this.llmRuntime?.modelPromptHints, this.llmRuntime?.modelContextWindows]) ||
+      llmProxyBinding(nextRuntime.llmProviderId, nextRuntime.proxy) !==
+        llmProxyBinding(this.llmRuntime?.llmProviderId ?? '', this.llmRuntime?.proxy)
     );
     if (nextRuntime) {
       this.llmRuntime = nextRuntime;
+      if (!connectionChanged && nextRuntime.proxy) this.llmProxy?.updateCredential(nextRuntime.proxy.credential);
       this.browserModel = nextRuntime.browserModel;
       this.dashboardBuilderModel = nextRuntime.dashboardBuilderModel;
       this.subagentModels = nextRuntime.subagentModels;
@@ -1744,6 +1789,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       // creation — and so does a connected-accounts change, which reaches the
       // model through the prompt alone.
       const reasons: string[] = [];
+      if (connectionChanged) reasons.push('LLM provider configuration changed');
       if (effortChanged) reasons.push(`effort ${currentEffort} -> ${effort}`);
       if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');
@@ -1899,7 +1945,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     console.log(`[Session ${this.sessionId}] Restarting session`);
     this.stopping = false;
     await this.queryInstance?.return(undefined);
-    this.initializeQuery();
+    await this.initializeQuery();
     this.processingDone = this.processMessages();
   }
 
@@ -1982,6 +2028,9 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.queryInstance = null;
     this.messageQueue = null;
     this.abortController = null;
+    await this.llmProxy?.close();
+    this.llmProxy = undefined;
+    this.llmProxyBinding = undefined;
   }
 
   isRunning(): boolean {
@@ -2278,7 +2327,7 @@ export class ClaudeCodeProcess extends EventEmitter {
 
     // Restart the query with resume to continue the session
     console.log(`[Session ${this.sessionId}] Restarting query after interrupt`);
-    this.initializeQuery();
+    await this.initializeQuery();
     this.processingDone = this.processMessages();
 
     return { interrupted: true, discardedUuids, processKept: false };

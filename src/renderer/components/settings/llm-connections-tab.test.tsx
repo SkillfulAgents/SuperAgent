@@ -10,16 +10,17 @@ const state = vi.hoisted(() => ({
 }))
 vi.mock('@renderer/hooks/use-llm-connections', () => ({
   useLlmConnections: () => ({ data: state.data }),
-  useConnectionMutation: () => ({ mutate: state.mutate, isPending: false }),
+  useConnectionMutation: () => ({ mutate: state.mutate, mutateAsync: state.mutate, isPending: false }),
 }))
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useModelSettings: () => ({ data: {} }),
+  useModelSettings: () => ({ data: { llmProviderStatus: [] } }),
   useUpdateSettings: () => ({ mutate: vi.fn() }),
 }))
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({ isAdmin: true, isAuthMode: false }),
 }))
 vi.mock('./settings-model-select', () => ({
+  ModelPickerPopover: () => null,
   SettingsModelSelect: ({ directApiOnly, model, llmProviderId }: { directApiOnly?: boolean; model?: string; llmProviderId?: string }) =>
     <div data-testid={directApiOnly ? 'summarizer-selection' : 'default-selection'}>{llmProviderId}:{model}</div>,
 }))
@@ -88,5 +89,23 @@ describe('global helper settings', () => {
     render(<LlmConnectionsTab />)
     await userEvent.click(screen.getByRole('button', { name: 'Use app default' }))
     expect(state.mutate).toHaveBeenCalledWith({ path: '/defaults/summarizer', method: 'PUT', body: null }, expect.anything())
+  })
+})
+
+
+describe('generic API formats', () => {
+  it('defaults to Messages and saves an explicitly selected OpenAI format', async () => {
+    const user = userEvent.setup()
+    render(<LlmConnectionsTab />)
+    await user.click(screen.getByRole('button', { name: 'Add connection' }))
+    await user.selectOptions(screen.getByLabelText('Provider'), 'generic')
+    expect(screen.getByLabelText('API format')).toHaveValue('messages')
+    await user.selectOptions(screen.getByLabelText('API format'), 'responses')
+    await user.type(screen.getByLabelText('Base URL'), 'https://api.example.com/v1')
+    await user.type(screen.getByLabelText('API key'), 'temporary-key')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(state.mutate).toHaveBeenCalledWith(expect.objectContaining({ body: expect.objectContaining({
+      provider: 'generic', config: expect.objectContaining({ apiFormat: 'responses' }),
+    }) }))
   })
 })

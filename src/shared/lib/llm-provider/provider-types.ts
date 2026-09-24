@@ -1,6 +1,8 @@
 export const LLM_PROVIDER_IDS = [
   'anthropic',
   'claude-subscription',
+  'grok-subscription',
+  'codex-subscription',
   'openrouter',
   'bedrock',
   'platform',

@@ -1,5 +1,7 @@
+import { CredentialRefreshError } from './credential-refresh-error'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
+import { llmProxyConfigSchema } from './llm-proxy-schema'
 import { subagentModelCatalogSchema, modelContextWindowsSchema } from './subagent-model-catalog'
 
 export const connectionRuntimeSchema = z.object({
@@ -13,6 +15,7 @@ export const connectionRuntimeSchema = z.object({
   subagentModels: subagentModelCatalogSchema,
   modelContextWindows: modelContextWindowsSchema,
   env: z.record(z.string(), z.string()),
+  proxy: llmProxyConfigSchema.optional(),
 })
 export type ConnectionRuntime = z.infer<typeof connectionRuntimeSchema>
 
@@ -31,7 +34,8 @@ export function rememberConnectionRuntime(runtime: ConnectionRuntime): void {
     if (
       cached.llmProviderId === runtime.llmProviderId &&
       (cached.generation !== runtime.generation ||
-        JSON.stringify(cached.env) !== JSON.stringify(runtime.env))
+        JSON.stringify(cached.env) !== JSON.stringify(runtime.env) ||
+        JSON.stringify(cached.proxy) !== JSON.stringify(runtime.proxy))
     )
       runtimes.delete(key)
   }
@@ -51,8 +55,8 @@ export function cachedConnectionRuntime(
     ? runtime
     : undefined
 }
-export async function resolveSessionRuntime(sessionId: string): Promise<ConnectionRuntime> {
-  return requestRuntime('resolve', { sessionId })
+export async function resolveSessionRuntime(sessionId: string, credentialRequest?: { llmProviderId: string; rejectedGeneration?: number }): Promise<ConnectionRuntime> {
+  return requestRuntime('resolve', { sessionId, ...credentialRequest })
 }
 
 export async function resolvePrewarmRuntime(): Promise<ConnectionRuntime> {
@@ -67,9 +71,14 @@ async function requestRuntime(path: string, body: object): Promise<ConnectionRun
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(75_000),
   })
-  if (!response.ok) throw new Error(`Cannot resolve LLM provider (${response.status})`)
+  if (!response.ok) {
+    const error = await response.json().catch(() => null) as { code?: string } | null
+    if (error?.code === 'provider_reconnect_required') throw new CredentialRefreshError(401)
+    if (error?.code === 'provider_refresh_unavailable') throw new CredentialRefreshError(503)
+    throw new Error(`Cannot resolve LLM provider (${response.status})`)
+  }
   const runtime = connectionRuntimeSchema.parse(await response.json())
   rememberConnectionRuntime(runtime)
   return runtime
