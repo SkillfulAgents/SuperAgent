@@ -831,13 +831,14 @@ describe('PlatformWebhookRelayService', () => {
       })
     })
 
-    it('never claims the local scope with an org token', async () => {
+    it('never claims the local scope with an org token, and reports idle rather than connecting', async () => {
       orgToken = true
       startRelay()
       relay.register(consumer(['whep_one'], undefined, LOCAL_RELAY_SCOPE))
       await settle()
 
       expect(platform.claim).not.toHaveBeenCalled()
+      expect(relay.snapshot()).toMatchObject({ available: true, transport: 'idle' })
     })
   })
 
@@ -913,6 +914,18 @@ describe('PlatformWebhookRelayService', () => {
       startRelay()
 
       await expect(relay.createEndpoint('sub_a', { name: 'x' })).rejects.toBeInstanceOf(WebhookRelayUnavailableError)
+      await expect(relay.createEndpoint('sub_a', { name: 'x' })).rejects.toMatchObject({ reason: 'platform_disconnected' })
+      expect(endpoints.create).not.toHaveBeenCalled()
+    })
+
+    it('rejects provisioning while stopped, as the snapshot reports', async () => {
+      createRelay()
+      expect(relay.snapshot()).toMatchObject({ available: false, unavailableReason: 'stopped' })
+      await expect(relay.createEndpoint('sub_a', { name: 'x' })).rejects.toMatchObject({ reason: 'stopped' })
+
+      relay.start()
+      relay.stop()
+      await expect(relay.createEndpoint('sub_a', { name: 'x' })).rejects.toMatchObject({ reason: 'stopped' })
       expect(endpoints.create).not.toHaveBeenCalled()
     })
 
