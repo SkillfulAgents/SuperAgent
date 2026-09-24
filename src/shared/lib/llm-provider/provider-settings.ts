@@ -10,6 +10,8 @@ export const legacyLlmProviderId = (provider: LlmProviderId) => `legacy-${provid
 export const providerCredentialFields: Record<LlmProviderId, (keyof ApiKeySettings)[]> = {
   anthropic: ['anthropicApiKey'],
   'claude-subscription': [],
+  'grok-subscription': [],
+  'codex-subscription': [],
   openrouter: ['openrouterApiKey'],
   generic: ['genericApiKey', 'genericBaseUrl'],
   bedrock: ['bedrockApiKey', 'bedrockAccessKeyId', 'bedrockSecretAccessKey', 'bedrockRegion'],
@@ -18,6 +20,8 @@ export const providerCredentialFields: Record<LlmProviderId, (keyof ApiKeySettin
 const envNames: Record<LlmProviderId, string[]> = {
   anthropic: ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'],
   'claude-subscription': [],
+  'grok-subscription': [],
+  'codex-subscription': [],
   openrouter: ['OPENROUTER_API_KEY'],
   generic: ['GENERIC_API_KEY', 'GENERIC_BASE_URL'],
   bedrock: ['AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_REGION'],

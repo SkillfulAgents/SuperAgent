@@ -1,3 +1,6 @@
+import { CredentialRefreshError } from './credential-refresh-error'
+import { normalizeCodexRequest, collectCodexResponse, normalizeCodexError, CodexResponseError } from './llm-proxy-codex'
+import { normalizeGrokMessages, grokWireFormat } from './llm-proxy-grok'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
@@ -41,14 +44,21 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
   const config = llmProxyConfigSchema.parse(options.config)
   let credential = config.credential
   let refreshing: Promise<ProxyCredential> | undefined
+  let refreshFailure: { error: CredentialRefreshError; generation: number; retryAt: number } | undefined
   const key = randomBytes(32).toString('hex')
   const active = new Set<AbortController>()
   async function refresh(previous: ProxyCredential, rejected: boolean): Promise<void> {
     if (!options.refreshCredential) return
     if (credential !== previous) return
+    if (refreshFailure?.generation === previous.generation && refreshFailure.retryAt > Date.now()) throw refreshFailure.error
     refreshing ??= options.refreshCredential(previous, rejected).then(value => {
       if (credential === previous) credential = proxyCredentialSchema.parse(value)
       return credential
+    }).catch(error => {
+      if (credential !== previous) return credential
+      const safe = error instanceof CredentialRefreshError ? error : new CredentialRefreshError()
+      refreshFailure = { error: safe, generation: previous.generation, retryAt: safe.status === 401 ? Infinity : Date.now() + 30_000 }
+      throw safe
     }).finally(() => { refreshing = undefined })
     await refreshing
   }
@@ -78,36 +88,39 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       const validated = requestSchema.safeParse(parsed)
       if (!validated.success) { sendError(res, 400, 'Invalid Messages request'); return }
       let body: Json = expandDeferredTools(validated.data)
+      const format = config.adapter === 'grok' ? grokWireFormat(body) : config.format
+      if (config.adapter === 'grok') body = normalizeGrokMessages(body)
       body = options.adapter?.request?.(body) ?? body
       const tools = Array.isArray(body.tools) ? body.tools as Json[] : []
       // Never silently drop hosted capabilities that the selected wire cannot execute.
-      if (config.format !== 'messages' && tools.some(tool =>
-        !tool.input_schema && !(config.format === 'responses' && String(tool.type).startsWith('web_search')))) {
+      if (format !== 'messages' && tools.some(tool =>
+        !tool.input_schema && !(format === 'responses' && String(tool.type).startsWith('web_search')))) {
         sendError(res, 400, 'This provider does not support the requested hosted tool; use an MCP tool instead'); return
       }
       if (config.maxOutputTokens && typeof body.max_tokens === 'number') {
         body = { ...body, max_tokens: Math.min(body.max_tokens, config.maxOutputTokens) }
       }
       const replyOptions = { model: validated.data.model, toolNames: toolNameRestoreMap(body), reasoningReplayScope: '' }
-      const path = config.format === 'responses' ? '/responses' : config.format === 'chat-completions' ? '/chat/completions' : '/messages'
+      const path = format === 'responses' ? '/responses' : format === 'chat-completions' ? '/chat/completions' : '/messages'
       const request = () => {
         const account = credential.accountId ?? createHash('sha256').update(credential.accessToken).digest('hex')
         // The codec reserves colons; rebuild the account-bound scope on auth retry.
         const scope = createHash('sha256').update(JSON.stringify([options.llmProviderId, account, config.baseUrl, body.model])).digest('hex')
         replyOptions.reasoningReplayScope = scope
-        let upstreamBody = config.format === 'responses'
+        let upstreamBody = format === 'responses'
           ? messagesRequestToResponses(body, { reasoningReplayScope: scope,
             ...(config.omitReasoningEffort ? { mapReasoningEffort: () => undefined } : {}) }).body
-          : config.format === 'chat-completions'
+          : format === 'chat-completions'
             ? messagesRequestToChatCompletions(body, {
               tokenLimitField: config.chatTokenLimitField,
               ...(config.omitReasoningEffort ? { mapReasoningEffort: () => undefined } : {}),
             }) : body
         upstreamBody = options.adapter?.upstreamRequest?.(upstreamBody) ?? upstreamBody
+        if (config.adapter === 'codex') upstreamBody = normalizeCodexRequest(upstreamBody, req.headers['x-superagent-speed'] === 'fast')
         return fetch(`${config.baseUrl.replace(/\/$/, '')}${path}`, {
           method: 'POST', redirect: 'error', signal: abort.signal,
-          headers: { 'content-type': 'application/json', ...(config.format === 'messages' ? { 'anthropic-version': '2023-06-01' } : {}),
-            ...config.headers, authorization: `Bearer ${credential.accessToken}` },
+          headers: { 'content-type': 'application/json', ...(format === 'messages' ? { 'anthropic-version': '2023-06-01' } : {}),
+            ...config.headers, ...(config.adapter === 'codex' && credential.accountId ? { 'ChatGPT-Account-ID': credential.accountId } : {}), authorization: `Bearer ${credential.accessToken}` },
           body: JSON.stringify(upstreamBody),
         })
       }
@@ -123,24 +136,28 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       }
       if (!upstream.ok) {
         const error = await upstream.json().catch(() => ({}))
-        sendJson(res, upstream.status, responsesErrorToMessagesError(error, upstream.status)); return
+        sendJson(res, upstream.status, responsesErrorToMessagesError(config.adapter === 'codex' ? normalizeCodexError(error) : error, upstream.status)); return
       }
       if (validated.data.stream) {
         if (!upstream.body) throw new Error('Missing upstream stream')
-        const stream = config.format === 'responses' ? responsesStreamToMessagesStream(upstream.body, replyOptions)
-          : config.format === 'chat-completions' ? chatCompletionsStreamToMessagesStream(upstream.body, replyOptions) : upstream.body
+        const stream = format === 'responses' ? responsesStreamToMessagesStream(upstream.body, replyOptions)
+          : format === 'chat-completions' ? chatCompletionsStreamToMessagesStream(upstream.body, replyOptions) : upstream.body
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
         await pipeline(Readable.fromWeb(stream as import('node:stream/web').ReadableStream<Uint8Array>), res)
       } else {
-        const json = await upstream.json() as Json
-        sendJson(res, 200, config.format === 'responses' ? responsesResponseToMessages(json, replyOptions)
-          : config.format === 'chat-completions' ? chatCompletionsResponseToMessages(json, replyOptions) : json)
+        const json = config.adapter === 'codex' ? await collectCodexResponse(upstream, abort) : await upstream.json() as Json
+        sendJson(res, 200, format === 'responses' ? responsesResponseToMessages(json, replyOptions)
+          : format === 'chat-completions' ? chatCompletionsResponseToMessages(json, replyOptions) : json)
       }
-    } catch {
+    } catch (error) {
       // Do not log bodies, URLs with credentials, headers, or upstream exceptions.
       abort.abort()
       if (res.headersSent) res.destroy()
-      else if (!res.destroyed) sendError(res, 502, 'Provider proxy request failed')
+      else if (!res.destroyed && error instanceof CodexResponseError) {
+        if (!error.retryable) res.setHeader('x-should-retry', 'false')
+        sendJson(res, error.status, responsesErrorToMessagesError(error.body, error.status))
+      } else if (!res.destroyed) sendError(res, error instanceof CredentialRefreshError ? error.status : 502,
+        error instanceof CredentialRefreshError ? error.message : 'Provider proxy request failed')
     } finally { active.delete(abort) }
   }
   await new Promise<void>((resolve, reject) => {

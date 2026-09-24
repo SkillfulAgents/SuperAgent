@@ -1,3 +1,4 @@
+import { CredentialRefreshError } from './credential-refresh-error'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import Anthropic from '@anthropic-ai/sdk'
@@ -170,6 +171,99 @@ describe('embedded provider proxy', () => {
     expect(seen).toEqual(['Bearer reconnected'])
   })
 
+  it('does not retry a revoked refresh token and recovers after reconnect', async () => {
+    let exchanges = 0
+    const base = await upstream((_body, req, res) => {
+      if (req.headers.authorization === 'Bearer reconnected') json(res, reply)
+      else json(res, { error: { message: 'expired' } }, 401)
+    })
+    const handle = await proxy(base, 'messages', { refreshCredential: async () => { exchanges++; throw new CredentialRefreshError(401) } })
+    const retrying = new Anthropic({ baseURL: handle.env.ANTHROPIC_BASE_URL, apiKey: handle.env.ANTHROPIC_API_KEY, maxRetries: 2 })
+    for (let i = 0; i < 3; i++) await expect(retrying.messages.create(prompt)).rejects.toMatchObject({ status: 401 })
+    expect(exchanges).toBe(1)
+    handle.updateCredential({ accessToken: 'reconnected', generation: 2 })
+    await retrying.messages.create(prompt)
+  })
+  it('backs off transient refresh failures without exposing host exception details', async () => {
+    let exchanges = 0
+    const base = await upstream((_body, _req, res) => json(res, { error: { message: 'expired' } }, 401))
+    const handle = await proxy(base, 'messages', { refreshCredential: async () => { exchanges++; throw new Error('private credential details') } })
+    for (let i = 0; i < 3; i++) {
+      const error = await client(handle).messages.create(prompt).catch(error => error)
+      expect(error.status).toBe(503)
+      expect(error.message).toContain('temporarily unavailable')
+      expect(error.message).not.toContain('private credential details')
+    }
+    expect(exchanges).toBe(1)
+  })
+
+  it('adapts Codex requests and collects streams for non-streaming callers', async () => {
+    const seen: string[] = []
+    const base = await upstream((body, req, res) => {
+      seen.push(String(req.headers['chatgpt-account-id']))
+      expect(body.store).toBe(false)
+      expect(body.stream).toBe(true)
+      expect(body.instructions).toBe('')
+      expect(body.max_output_tokens).toBeUndefined()
+      if (req.headers.authorization === 'Bearer old') { json(res, { error: { message: 'expired' } }, 401); return }
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: {
+        id: 'r', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }],
+        usage: { input_tokens: 3, output_tokens: 1 },
+      } })}\n\n`)
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {},
+      credential: { accessToken: 'old', accountId: 'account-a', generation: 1 } },
+      refreshCredential: async () => ({ accessToken: 'new', accountId: 'account-b', generation: 2 }),
+    })
+    const message = await client(handle).messages.create(prompt)
+    expect(message.content).toContainEqual({ type: 'text', text: 'OK' })
+    expect(message.usage.input_tokens).toBe(3)
+    expect(seen).toEqual(['account-a', 'account-b'])
+  })
+
+  it.each([
+    [false, 'priority'], [true, 'priority'], [false, 'fast'], [true, 'fast'], [false, 'default'], [true, 'default'],
+  ] as const)('switches Codex Normal/Fast and preserves the served tier (stream=%s, tier=%s)', async (stream, servedTier) => {
+    const tiers: unknown[] = []
+    const base = await upstream((body, _req, res) => {
+      tiers.push(body.service_tier)
+      const response = { id: 'r', model: 'test', status: 'completed', service_tier: body.service_tier ? servedTier : 'default',
+        output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }],
+        usage: { input_tokens: 3, output_tokens: 1 } }
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end(`data: ${JSON.stringify({ type: 'response.completed', response })}\n\n`)
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {},
+      credential: { accessToken: 'key', accountId: 'account', generation: 1 } } })
+    for (const speed of ['normal', 'fast', 'normal']) {
+      const options = { headers: speed === 'fast' ? { 'X-Superagent-Speed': speed } : undefined }
+      let servedSpeed: string | undefined
+      if (stream) {
+        for await (const event of await client(handle).messages.create({ ...prompt, stream: true }, options)) {
+          if (event.type === 'message_delta') servedSpeed = (event.usage as { speed?: string }).speed
+        }
+      } else servedSpeed = ((await client(handle).messages.create(prompt, options)).usage as { speed?: string }).speed
+      expect(servedSpeed).toBe(speed === 'fast' && servedTier !== 'default' ? 'fast' : undefined)
+    }
+    expect(tiers).toEqual([undefined, 'priority', undefined])
+  })
+
+  it('preserves Codex model eligibility errors', async () => {
+    const base = await upstream((_body, _req, res) => json(res, { detail: 'This model is not supported with a ChatGPT account' }, 400))
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', generation: 0 } } })
+    await expect(client(handle).messages.create(prompt)).rejects.toThrow('not supported with a ChatGPT account')
+  })
+
+  it('rejects truncated non-streaming Codex responses', async () => {
+    const base = await upstream((_body, _req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end('event: response.created\ndata: {"type":"response.created","response":{"id":"r"}}\n\n')
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', accountId: 'a', generation: 0 } } })
+    await expect(client(handle).messages.create(prompt)).rejects.toThrow('Provider proxy request failed')
+  })
+
   it('does not refresh quota errors and preserves the error message', async () => {
     let refreshed = false
     const base = await upstream((_body, _req, res) => json(res, { error: { message: 'Quota used' } }, 429))
@@ -247,5 +341,33 @@ describe('deferred tool compatibility', () => {
     ] }) as Json
     expect(out.tools).toEqual([{ name: 'used' }])
     expect(out.messages[1].content[0].text).toContain('compacted')
+  })
+})
+
+describe('Codex completed error events', () => {
+  it.each([
+    ['response.failed', 'usage_limit_reached', 429],
+    ['error', 'unsupported_model', 400],
+    ['error', 'authentication_error', 401],
+  ] as const)('preserves %s / %s and suppresses futile SDK retries', async (type, code, status) => {
+    let attempts = 0
+    const base = await upstream((_body, _req, res) => {
+      attempts++
+      const error = { code, message: 'Upstream actionable detail' }
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end(`data: ${JSON.stringify(type === 'response.failed' ? { type, response: { error } } : { type, ...error })}\n\n`)
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', generation: 0 } } })
+    const retrying = new Anthropic({ baseURL: handle.env.ANTHROPIC_BASE_URL, apiKey: handle.env.ANTHROPIC_API_KEY, maxRetries: 2 })
+    await expect(retrying.messages.create(prompt)).rejects.toMatchObject({ status, message: expect.stringContaining('Upstream actionable detail') })
+    expect(attempts).toBe(1)
+  })
+  it('retains upstream server failures as server errors', async () => {
+    const base = await upstream((_body, _req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end('data: {"type":"response.failed","response":{"error":{"code":"server_error","message":"Service temporarily unavailable"}}}\n\n')
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', generation: 0 } } })
+    await expect(client(handle).messages.create(prompt)).rejects.toMatchObject({ status: 502, message: expect.stringContaining('Service temporarily unavailable') })
   })
 })

@@ -29,3 +29,53 @@ Client disconnects abort upstream work. Broken translated streams fail rather th
 - A cold container Node process with `node:http` and Zod already loaded measured 3,981,312 bytes additional RSS, 1,817,408 bytes heap, and 22.6 ms to import/start one proxy (GC before/after). This is one cold-start observation, not a load benchmark or a budget guarantee. The shared library's [bench report](https://github.com/SkillfulAgents/llm-endpoint-translation/blob/main/bench/README.md) contains its separate concurrency measurements.
 
 The controlled upstream confirms runtime wiring, not provider compatibility. Each provider follow-up must run real inference, tool calls, images, continuation, search and auth lifecycle tests with that provider's credentials before it is considered complete.
+
+## Generic OpenAI-compatible endpoints
+
+A Generic connection can select Anthropic Messages (the unchanged default),
+OpenAI Chat Completions, or OpenAI Responses. The latter two use the container
+proxy and enable deferred ToolSearch adaptation. Host-side summaries and dashboard
+LLM calls use the same shared translation package through the Anthropic client's
+fetch hook. No extra host listener is needed.
+
+For OpenAI formats, a bare origin receives `/v1`; an explicit path such as `/v1`
+or `/gateway/api` is used as supplied. Model listing appends `/models` to that same
+path. Native Messages keeps its existing URL convention. Catalogs remain custom
+and connection-local. Chat Completions sends `max_completion_tokens`; Responses
+sends `max_output_tokens`. Model and endpoint capabilities still determine which
+reasoning settings, images and hosted tools are accepted.
+
+Local tests cover both formats with the real Anthropic client against a controlled
+upstream: tool responses, streaming, usage, quota errors, model discovery, URL
+handling, runtime selection and backward compatibility.
+
+Live validation against `https://api.openai.com/v1` passed using a newly built
+Gamut container with the bundled Claude SDK, Gamut prompts and real browser service:
+
+| Case | Chat Completions (`gpt-5.1`) | Responses (`gpt-5.4-mini`) |
+| --- | --- | --- |
+| Question and session continuation | 17 × 23 = 391; +9 = 400 | Same |
+| Bash + Read | Wrote and read a file; correct content and SHA-256 | Same |
+| Deferred ToolSearch | Loaded browser tools, opened example.com, read Example Domain | Same |
+| Image in Read result | COPPER; two blue circles, red triangle, green square | Same |
+| Hosted WebSearch | Not supported by this translation route | Python TaskGroup documentation and introduction in 3.11 |
+| Host helper + forced tool call | 72; report_result(value=72) | Same |
+| Model listing and key validation | Passed through GenericLlmProvider | Same |
+
+Both routes returned nonzero input, output and cache usage. The test image was
+`superagent-container:sup908-openai`; session IDs were
+`cf8e3ca8-3c23-4120-bcf9-e1a61364a1b1` (Responses) and
+`53628a81-8ce1-4437-8740-0905a1fbe113` (Chat Completions). Throwaway scripts and credentials are outside the repo.
+
+An initial Chat Completions run with `gpt-5.4-mini` returned an upstream 400:
+function tools with reasoning effort require Responses (or effort `none`) for
+that model. Use Responses for that combination; the adapter preserves the error
+and does not silently change the selected API or reasoning effort. Successful
+Chat Completions coverage uses `gpt-5.1`. These tests establish the exercised
+models and capabilities, not universal support across every compatible service.
+
+For Chat Completions, each generic connection can choose its token-limit field:
+`max_completion_tokens` (the existing default) or `max_tokens` for endpoints that
+require it. Agent and host helper requests use the same setting. Translated base
+URLs must not include query strings or fragments, and the host adapter rejects
+SDK endpoints other than Messages instead of translating them as completions.

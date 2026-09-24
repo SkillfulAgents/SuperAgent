@@ -1,3 +1,4 @@
+import { oauthCredentialSchema } from './oauth-schema'
 import { isReservedEnvVar } from '../container/reserved-env-vars'
 import { z } from 'zod'
 import { LLM_PROVIDER_IDS } from './provider-types'
@@ -9,7 +10,12 @@ export const modelSelectionSchema = z.object({
 })
 export type ModelSelection = z.infer<typeof modelSelectionSchema>
 
+export const apiFormatSchema = z.enum(['messages', 'chat-completions', 'responses'])
+
 export const connectionConfigSchema = z.object({
+  apiFormat: apiFormatSchema.optional(),
+  chatTokenLimitField: z.enum(['max_tokens', 'max_completion_tokens']).optional(),
+  oauth: oauthCredentialSchema.optional(),
   apiKeys: z
     .object({
       anthropicApiKey: z.string().optional(),
@@ -54,7 +60,8 @@ export const connectionInputSchema = z
     name: z.string().trim().min(1).max(120),
     provider: z.enum(LLM_PROVIDER_IDS),
     userId: z.string().min(1).nullable().default(null),
-    config: connectionConfigSchema.extend({
+    oauthLoginId: z.string().optional(),
+    config: connectionConfigSchema.omit({ oauth: true }).extend({
       // Omitted values are unchanged; null explicitly removes a saved value.
       runtimeEnv: z.record(
         z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'Invalid environment variable name'),
@@ -77,6 +84,9 @@ export function mergeConnectionConfig(
   input: z.infer<typeof connectionInputSchema>['config'],
 ): ConnectionConfig {
   const config = connectionConfigSchema.parse({
+    oauth: previous?.oauth ? { ...previous.oauth, refreshLease: undefined } : undefined,
+    apiFormat: input.apiFormat ?? previous?.apiFormat,
+    chatTokenLimitField: input.chatTokenLimitField ?? previous?.chatTokenLimitField,
     apiKeys: { ...previous?.apiKeys, ...input.apiKeys },
     runtimeEnv: previous?.runtimeEnv ?? {},
     env: previous?.env ?? {}, // Host bindings come only from migration.
@@ -119,6 +129,7 @@ export const connectionInfoSchema = z.object({
   provider: z.enum(LLM_PROVIDER_IDS),
   userId: z.string().nullable(),
   ownerName: z.string().nullable(),
+  accountLabel: z.string().optional(),
   managed: z.boolean(),
   isConfigured: z.boolean(),
   supportsDirectApi: z.boolean().optional(),
@@ -128,6 +139,8 @@ export const connectionInfoSchema = z.object({
   browserModel: z.string().nullable(),
   dashboardModel: z.string().nullable(),
   baseUrl: z.string().optional(),
+  apiFormat: apiFormatSchema.optional(),
+  chatTokenLimitField: z.enum(['max_tokens', 'max_completion_tokens']).optional(),
   region: z.string().optional(),
   customEnvVarKeys: z.array(z.string()).optional(),
   canManage: z.boolean(),
