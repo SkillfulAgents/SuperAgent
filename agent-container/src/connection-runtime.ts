@@ -2,7 +2,7 @@ import { CredentialRefreshError } from './credential-refresh-error'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { llmProxyConfigSchema } from './llm-proxy-schema'
-import { subagentModelCatalogSchema, modelContextWindowsSchema } from './subagent-model-catalog'
+import { subagentModelCatalogSchema, modelContextWindowsSchema } from './subagent-model-catalog-schema'
 
 export const connectionRuntimeSchema = z.object({
   llmProviderId: z.string().min(1),

@@ -1,6 +1,6 @@
 import { CredentialRefreshError } from './credential-refresh-error'
 import { normalizeCodexRequest, collectCodexResponse, normalizeCodexError, CodexResponseError } from './llm-proxy-codex'
-import { grokWireFormat } from './llm-proxy-grok'
+import { normalizeGrokResponses } from './llm-proxy-grok'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
@@ -17,7 +17,6 @@ export interface LlmProxyAdapter {
   // Provider-specific compatibility stays outside the shared wire codecs.
   request?(body: Json): Json
   upstreamRequest?(body: Json): Json
-  messagesStream?(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array>
 }
 export interface LlmProxyOptions {
   llmProviderId: string
@@ -89,7 +88,9 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       const validated = requestSchema.safeParse(parsed)
       if (!validated.success) { sendError(res, 400, 'Invalid Messages request'); return }
       let body: Json = expandDeferredTools(validated.data)
-      const format = config.adapter === 'grok' ? grokWireFormat(body) : config.format
+      // Also upgrade already-issued Grok runtime descriptors that still say
+      // Messages: that endpoint loses call boundaries in parallel tool streams.
+      const format = config.adapter === 'grok' ? 'responses' : config.format
       body = options.adapter?.request?.(body) ?? body
       const tools = Array.isArray(body.tools) ? body.tools as Json[] : []
       // Never silently drop hosted capabilities that the selected wire cannot execute.
@@ -116,6 +117,7 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
               ...(config.omitReasoningEffort ? { mapReasoningEffort: () => undefined } : {}),
             }) : body
         upstreamBody = options.adapter?.upstreamRequest?.(upstreamBody) ?? upstreamBody
+        if (config.adapter === 'grok') upstreamBody = normalizeGrokResponses(upstreamBody)
         if (config.adapter === 'codex') upstreamBody = normalizeCodexRequest(upstreamBody, req.headers['x-superagent-speed'] === 'fast')
         return fetch(`${config.baseUrl.replace(/\/$/, '')}${path}`, {
           method: 'POST', redirect: 'error', signal: abort.signal,
@@ -140,9 +142,8 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       }
       if (validated.data.stream) {
         if (!upstream.body) throw new Error('Missing upstream stream')
-        const raw = format === 'responses' ? responsesStreamToMessagesStream(upstream.body, replyOptions)
+        const stream = format === 'responses' ? responsesStreamToMessagesStream(upstream.body, replyOptions)
           : format === 'chat-completions' ? chatCompletionsStreamToMessagesStream(upstream.body, replyOptions) : upstream.body
-        const stream = format === 'messages' ? options.adapter?.messagesStream?.(raw) ?? raw : raw
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
         await pipeline(Readable.fromWeb(stream as import('node:stream/web').ReadableStream<Uint8Array>), res)
       } else {
