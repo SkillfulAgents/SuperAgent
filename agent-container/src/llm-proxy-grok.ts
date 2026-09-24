@@ -92,6 +92,7 @@ function rewriteSseEvent(event: string, indexes: GrokBlockIndexes): string {
     } catch { return line }
   }).join('\n')
 }
+export const grokProxyAdapter = { messagesStream: normalizeGrokMessagesStream }
 export function grokWireFormat(body: Json): 'messages' | 'responses' {
   // Claude Code's native WebSearch makes a separate hosted-tool request. Grok
   // exposes that tool on Responses, while ordinary agent turns stay Messages.

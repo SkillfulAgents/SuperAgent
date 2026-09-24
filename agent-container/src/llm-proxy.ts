@@ -1,6 +1,6 @@
 import { CredentialRefreshError } from './credential-refresh-error'
 import { normalizeCodexRequest, collectCodexResponse, normalizeCodexError, CodexResponseError } from './llm-proxy-codex'
-import { normalizeGrokMessages, normalizeGrokMessagesStream, grokWireFormat } from './llm-proxy-grok'
+import { normalizeGrokMessages, grokProxyAdapter, grokWireFormat } from './llm-proxy-grok'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
@@ -17,6 +17,10 @@ export interface LlmProxyAdapter {
   // Provider-specific compatibility stays outside the shared wire codecs.
   request?(body: Json): Json
   upstreamRequest?(body: Json): Json
+  messagesStream?(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array>
+}
+const builtinAdapters: Partial<Record<NonNullable<LlmProxyConfig['adapter']>, LlmProxyAdapter>> = {
+  grok: grokProxyAdapter,
 }
 export interface LlmProxyOptions {
   llmProviderId: string
@@ -42,6 +46,7 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
     responsesErrorToMessagesError, toolNameRestoreMap,
   } = await import('llm-endpoint-translation')
   const config = llmProxyConfigSchema.parse(options.config)
+  const builtin = config.adapter ? builtinAdapters[config.adapter] : undefined
   let credential = config.credential
   let refreshing: Promise<ProxyCredential> | undefined
   let refreshFailure: { error: CredentialRefreshError; generation: number; retryAt: number } | undefined
@@ -140,9 +145,9 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       }
       if (validated.data.stream) {
         if (!upstream.body) throw new Error('Missing upstream stream')
-        const stream = format === 'responses' ? responsesStreamToMessagesStream(upstream.body, replyOptions)
-          : format === 'chat-completions' ? chatCompletionsStreamToMessagesStream(upstream.body, replyOptions)
-          : config.adapter === 'grok' ? normalizeGrokMessagesStream(upstream.body) : upstream.body
+        const raw = format === 'responses' ? responsesStreamToMessagesStream(upstream.body, replyOptions)
+          : format === 'chat-completions' ? chatCompletionsStreamToMessagesStream(upstream.body, replyOptions) : upstream.body
+        const stream = format === 'messages' ? builtin?.messagesStream?.(raw) ?? options.adapter?.messagesStream?.(raw) ?? raw : raw
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
         await pipeline(Readable.fromWeb(stream as import('node:stream/web').ReadableStream<Uint8Array>), res)
       } else {
