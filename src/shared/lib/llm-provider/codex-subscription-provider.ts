@@ -56,14 +56,13 @@ export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
   override readonly supportsUsage = true
 
   override async getUsage() {
-    let credential = await this.credential()
-    if (!credential.accountId) throw new Error('Reconnect Codex to select a subscription account')
-    const send = () => fetch('https://chatgpt.com/backend-api/wham/usage', {
-      headers: { ...CODEX_HEADERS, authorization: `Bearer ${credential.accessToken}`, 'ChatGPT-Account-ID': credential.accountId ?? '' },
+    // Allowance reads must not acquire a refresh lease or mutate failure state.
+    const credential = this.configuration?.oauth
+    if (!credential?.accessToken || !credential.accountId) throw new Error('Codex usage credentials unavailable')
+    const response = await fetch('https://chatgpt.com/backend-api/wham/usage', {
+      headers: { ...CODEX_HEADERS, authorization: `Bearer ${credential.accessToken}`, 'ChatGPT-Account-ID': credential.accountId },
       signal: AbortSignal.timeout(10_000), redirect: 'error',
     })
-    let response = await send()
-    if (response.status === 401) { await response.body?.cancel(); credential = await this.credential(credential.generation); response = await send() }
     if (!response.ok) { await response.body?.cancel(); throw new Error('Could not load Codex usage') }
     return parseCodexUsage(await response.json())
   }

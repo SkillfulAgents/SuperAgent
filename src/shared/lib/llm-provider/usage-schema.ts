@@ -24,7 +24,7 @@ export const codexUsageSchema = z.object({
   rate_limit: codexRateLimit,
   code_review_rate_limit: codexRateLimit,
   additional_rate_limits: z.array(z.object({ limit_name: z.string().optional(), metered_feature: z.string().optional(), rate_limit: codexRateLimit })).nullish().catch(undefined),
-  credits: z.object({ balance: optionalNumber, unlimited: z.boolean().optional() }).nullish().catch(undefined),
+  credits: z.object({ balance: optionalNumber, has_credits: z.boolean().optional(), unlimited: z.boolean().optional() }).nullish().catch(undefined),
 })
 export function parseCodexUsage(raw: unknown): ProviderUsage {
   const data = codexUsageSchema.parse(raw)
@@ -38,21 +38,30 @@ export function parseCodexUsage(raw: unknown): ProviderUsage {
     for (const [slot, window] of [['primary', group.rate?.primary_window], ['secondary', group.rate?.secondary_window]] as const) {
       if (window?.used_percent == null) continue
       const seconds = window.limit_window_seconds
-      const duration = seconds === 604800 ? 'Weekly' : seconds === 86400 ? 'Daily' : seconds && seconds > 0 ? seconds % 3600 === 0 ? `${seconds / 3600}h` : `${Math.round(seconds / 60)}m` : slot === 'primary' ? 'Usage' : 'Secondary'
+      const duration = seconds && seconds > 0 ? usageWindowLabel(seconds) : slot === 'primary' ? 'Usage' : 'Secondary'
       const reset = window.reset_at == null ? undefined : new Date(window.reset_at * 1000)
       limits.push({ kind: 'window', id: `${group.id}-${slot}`, label: [group.label, duration].filter(Boolean).join(' · '), usedPercent: window.used_percent,
         ...(reset && Number.isFinite(reset.getTime()) ? { resetsAt: reset.toISOString() } : {}) })
     }
   }
-  if (!data.credits?.unlimited && data.credits?.balance != null) limits.push({ kind: 'balance', id: 'credits', label: 'Credits', remaining: data.credits.balance, unit: 'credits' })
+  if (data.credits?.has_credits !== false && !data.credits?.unlimited && data.credits?.balance != null) limits.push({ kind: 'balance', id: 'credits', label: 'Credits', remaining: data.credits.balance, unit: 'credits' })
   return usageSnapshot(limits)
+}
+
+function usageWindowLabel(seconds: number): string {
+  if (seconds === 604800) return 'Weekly'
+  if (seconds === 86400) return 'Daily'
+  if (seconds === 2592000) return 'Monthly'
+  if (seconds % 86400 === 0) return `${seconds / 86400} days`
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`
+  return `${Math.max(1, Math.round(seconds / 60))}m`
 }
 
 const cents = z.object({ val: optionalNumber }).nullish().catch(undefined)
 export const grokUsageSchema = z.object({ config: z.object({
   creditUsagePercent: percent, credit_usage_percent: percent,
-  currentPeriod: z.object({ type: z.string().optional(), end: timestamp }).nullish(),
-  current_period: z.object({ type: z.string().optional(), end: timestamp }).nullish(),
+  currentPeriod: z.object({ type: z.string().optional().catch(undefined), end: timestamp }).nullish().catch(undefined),
+  current_period: z.object({ type: z.string().optional().catch(undefined), end: timestamp }).nullish().catch(undefined),
   billingPeriodEnd: timestamp, billing_period_end: timestamp,
   used: cents, monthlyLimit: cents, monthly_limit: cents,
   prepaidBalance: cents, prepaid_balance: cents,

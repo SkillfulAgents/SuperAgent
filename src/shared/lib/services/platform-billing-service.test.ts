@@ -1,3 +1,5 @@
+import { captureException } from '@shared/lib/error-reporting'
+vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@shared/lib/platform-auth/config', () => ({
@@ -104,4 +106,16 @@ describe('fetchPlatformBillingInfo', () => {
     vi.spyOn(global, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'))
     await expect(fetchPlatformBillingInfo()).rejects.toMatchObject({ status: 502 })
   })
+})
+
+
+it('lets optional allowance reads use throttled diagnostics without changing normal billing reporting', async () => {
+  const reporting = vi.mocked(captureException)
+  reporting.mockClear()
+  vi.spyOn(global, 'fetch').mockRejectedValue(new Error('timeout'))
+  await expect(fetchPlatformBillingInfo({ reportErrors: false })).rejects.toThrow('Could not reach')
+  expect(reporting).not.toHaveBeenCalled()
+  await expect(fetchPlatformBillingInfo()).rejects.toThrow('Could not reach')
+  expect(reporting).toHaveBeenCalledTimes(1)
+  vi.restoreAllMocks()
 })

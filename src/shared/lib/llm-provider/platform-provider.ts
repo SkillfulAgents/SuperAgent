@@ -57,7 +57,7 @@ export class PlatformLlmProvider extends BaseLlmProvider {
 
   override async getUsage() {
     // Fetch within the request's member attribution scope. Never cache globally.
-    const billing = await fetchPlatformBillingInfo(AbortSignal.timeout(10_000))
+    const billing = await fetchPlatformBillingInfo({ signal: AbortSignal.timeout(10_000), reportErrors: false })
     if (!billing.configured) return usageSnapshot([])
     const limits: UsageLimit[] = []
     if (billing.seat) {

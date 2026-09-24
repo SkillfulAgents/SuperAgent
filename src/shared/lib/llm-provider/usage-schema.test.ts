@@ -41,3 +41,22 @@ describe('provider allowance normalization', () => {
     expect(parseGrokUsage({ config: { monthlyLimit: { val: 100 } } }).limits).toEqual([])
   })
 })
+
+
+describe('partial allowance payloads', () => {
+  it('omits Codex credits explicitly marked unavailable but preserves an actual exhausted balance', () => {
+    expect(parseCodexUsage({ credits: { has_credits: false, balance: '0' } }).limits).toEqual([])
+    expect(parseCodexUsage({ credits: { has_credits: true, balance: '0' } }).limits).toEqual([
+      { kind: 'balance', id: 'credits', label: 'Credits', remaining: 0, unit: 'credits' },
+    ])
+  })
+  it.each([null, 42, 'weekly', { type: 12 }, { end: 'bad date' }])('retains Grok values with unexpected period metadata (%j)', currentPeriod => {
+    const result = parseGrokUsage({ config: { currentPeriod, creditUsagePercent: 85, prepaidBalance: { val: 2500 } } })
+    expect(result.limits).toHaveLength(2)
+    expect(result.limits[0]).toMatchObject({ usedPercent: 85 })
+    expect(result.limits[1]).toMatchObject({ remaining: 25 })
+  })
+  it.each([[30, 'Monthly'], [14, '14 days']])('labels a %i-day Codex window as %s', (days, label) => {
+    expect(parseCodexUsage({ rate_limit: { primary_window: { used_percent: 85, limit_window_seconds: Number(days) * 86400 } } }).limits[0].label).toBe(label)
+  })
+})

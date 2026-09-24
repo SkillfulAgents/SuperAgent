@@ -8,25 +8,47 @@ afterEach(() => vi.restoreAllMocks())
 
 describe('subscription allowance reads', () => {
   for (const Provider of [CodexSubscriptionLlmProvider, GrokSubscriptionLlmProvider]) {
-    it(`${Provider.name} retries one 401 using the app credential resolver`, async () => {
-      const resolveCredential = vi.fn().mockResolvedValueOnce({ accessToken: 'old', accountId: 'account', generation: 1 }).mockResolvedValue({ accessToken: 'new', accountId: 'account', generation: 2 })
-      const provider = new Provider({ apiKeys: {}, env: {}, resolveCredential })
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('', { status: 401 })).mockResolvedValue(new Response(JSON.stringify({ config: {}, credits: { balance: '0' } })))
+    const oauth = { accessToken: 'saved', refreshToken: 'private', accountId: 'account', expiresAt: 0 }
+    it(`${Provider.name} uses the saved token without waiting on refresh`, async () => {
+      const resolveCredential = vi.fn(() => new Promise<never>(() => {}))
+      const provider = new Provider({ apiKeys: {}, env: {}, oauth, resolveCredential })
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ config: {}, credits: { balance: '0' } })))
       await provider.getUsage()
-      expect(resolveCredential.mock.calls).toEqual([[undefined], [1]])
-      expect(fetchSpy).toHaveBeenCalledTimes(2)
-      const headers = new Headers(fetchSpy.mock.calls[1][1]?.headers)
-      expect(headers.get('authorization')).toBe('Bearer new')
+      expect(resolveCredential).not.toHaveBeenCalled()
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      const headers = new Headers(fetchSpy.mock.calls[0][1]?.headers)
+      expect(headers.get('authorization')).toBe('Bearer saved')
       if (provider.id === 'codex-subscription') expect(headers.get('ChatGPT-Account-ID')).toBe('account')
       expect(fetchSpy.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal)
       expect(fetchSpy.mock.calls[0][1]?.redirect).toBe('error')
     })
-    it(`${Provider.name} does not refresh on quota/network errors or leak upstream details`, async () => {
-      const resolveCredential = vi.fn().mockResolvedValue({ accessToken: 'access', accountId: 'account', generation: 1 })
-      const provider = new Provider({ apiKeys: {}, env: {}, resolveCredential })
-      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('private billing account', { status: 429 }))
+    it.each([401, 403, 429])(`${Provider.name} never refreshes or writes failure state on HTTP %i`, async status => {
+      const resolveCredential = vi.fn().mockRejectedValue(new Error('refresh failed'))
+      const provider = new Provider({ apiKeys: {}, env: {}, oauth, resolveCredential })
+      const before = JSON.stringify(oauth)
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('private billing account', { status }))
       await expect(provider.getUsage()).rejects.toThrow('Could not load')
-      expect(resolveCredential).toHaveBeenCalledTimes(1)
+      expect(resolveCredential).not.toHaveBeenCalled()
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expect(JSON.stringify(oauth)).toBe(before)
+    })
+    it(`${Provider.name} aborts the sole upstream request after ten seconds`, async () => {
+      vi.useFakeTimers()
+      const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
+        const controller = new AbortController()
+        setTimeout(() => controller.abort(new Error('timeout')), ms)
+        return controller.signal
+      })
+      const provider = new Provider({ apiKeys: {}, env: {}, oauth, resolveCredential: vi.fn() })
+      vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('timeout')), { once: true })
+      }))
+      try {
+        const pending = expect(provider.getUsage()).rejects.toThrow('timeout')
+        await vi.advanceTimersByTimeAsync(10_000)
+        await pending
+        expect(timeout).toHaveBeenCalledWith(10_000)
+      } finally { vi.useRealTimers() }
     })
   }
   it('reports Platform seat consumption and distinct balances, including exhausted/negative credit', async () => {

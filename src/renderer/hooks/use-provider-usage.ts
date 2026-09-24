@@ -11,17 +11,17 @@ export function useProviderUsage(connection: ConnectionInfo) {
   const { user } = useUser()
   const enabled = supportsUsage(connection) && connection.isConfigured && (!connection.userId || connection.userId === user?.id)
   const query = useQuery({
-    queryKey: ['llm-provider-usage', user?.id ?? null, connection.id, connection.isConfigured],
+    queryKey: ['llm-provider-usage', connection.id, user?.id ?? null, connection.isConfigured],
     queryFn: async () => {
       const response = await apiFetch(`/api/llm-connections/${encodeURIComponent(connection.id)}/usage`)
       if (!response.ok) throw new Error('Could not load provider usage')
       return providerUsageSchema.parse(await response.json())
     },
     enabled,
-    staleTime: 30_000,
-    refetchInterval: 60_000,
-    refetchIntervalInBackground: false,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: false,
   })
-  return { ...query, data: enabled ? query.data : undefined }
+  return { data: enabled ? query.data : undefined, isError: query.isError }
 }

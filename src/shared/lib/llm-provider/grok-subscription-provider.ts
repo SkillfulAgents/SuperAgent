@@ -74,7 +74,13 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
   override readonly supportsUsage = true
 
   override async getUsage() {
-    const response = await this.fetch(`${GROK_SUBSCRIPTION_BASE_URL}/v1/billing?format=credits`, { signal: AbortSignal.timeout(10_000) })
+    // Optional usage reporting must never drive OAuth refresh or block sessions.
+    const accessToken = this.configuration?.oauth?.accessToken
+    if (!accessToken) throw new Error('Grok usage credentials unavailable')
+    const response = await fetch(`${GROK_SUBSCRIPTION_BASE_URL}/v1/billing?format=credits`, {
+      headers: { ...GROK_CLIENT_HEADERS, authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(10_000), redirect: 'error',
+    })
     if (!response.ok) { await response.body?.cancel(); throw new Error('Could not load Grok usage') }
     return parseGrokUsage(await response.json())
   }

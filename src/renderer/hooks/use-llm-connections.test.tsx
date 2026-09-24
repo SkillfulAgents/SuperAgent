@@ -55,3 +55,16 @@ describe('provider credential status refresh', () => {
     },
   )
 })
+
+
+it('only invalidates usage for the connection being edited', async () => {
+  apiFetchMock.mockResolvedValue({ ok: true, json: async () => ({ id: 'edited' }) })
+  const client = new QueryClient()
+  client.setQueryData(['llm-provider-usage', 'edited', 'alice'], {})
+  client.setQueryData(['llm-provider-usage', 'other', 'alice'], {})
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  const { result } = renderHook(() => useConnectionMutation(), { wrapper })
+  await act(async () => { await result.current.mutateAsync({ path: '/edited', method: 'PUT', body: {} }) })
+  expect(client.getQueryState(['llm-provider-usage', 'edited', 'alice'])?.isInvalidated).toBe(true)
+  expect(client.getQueryState(['llm-provider-usage', 'other', 'alice'])?.isInvalidated).toBe(false)
+})

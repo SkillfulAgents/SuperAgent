@@ -1,4 +1,4 @@
-import { providerUsageSchema, usageSnapshot } from '@shared/lib/llm-provider/usage-schema'
+import { readConnectionUsage } from '@shared/lib/llm-provider/connection-usage'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { startOAuthLogin, pollOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
 import { Hono } from 'hono'
@@ -118,14 +118,7 @@ routes.get('/:id/usage', async c => {
   const actor = viewer(c)
   // Being able to use another member's saved session does not expose their billing.
   if (!row || !canSelectConnection(row, actor)) return c.json({ error: 'Connection not found' }, 404)
-  try {
-    const snapshot = await runWithOptionalUser(actor.userId, () => providerForConnection(row).getUsage())
-    return c.json(providerUsageSchema.parse(snapshot))
-  } catch {
-    // No upstream error bodies or account details reach the browser. A failed
-    // read hides the meter and cannot affect the connection's usability.
-    return c.json(usageSnapshot([]))
-  }
+  return c.json(await runWithOptionalUser(actor.userId, () => readConnectionUsage(row)))
 })
 routes.get('/:id/models/search', async (c) => {
   const row = await getConnection(c.req.param('id'))
