@@ -14,7 +14,7 @@ import { syncRemoteMcpAgents } from '../services/connection-sync-service'
 import { onIntegrationAuthorizationLost, type IntegrationAuthorizationLost } from './lifecycle'
 import { integrationRequestEventSchema } from './runtime-schema'
 import type { AgentIntegration } from './agent-integration'
-import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
+import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
 import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './registry'
 import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
 import {
@@ -587,14 +587,18 @@ export class AgentIntegrationManager {
       errorUnsubscribe: null,
     }
 
-    conn.eventUnsubscribe = connector.onEvent(async event => {
+    conn.eventUnsubscribe = connector.onEvent(async (event): Promise<IntegrationInputResult | void> => {
       try {
-        if (this.connections.get(id) !== conn || this.generationOf(id) !== generation) return
+        // A replaced connection's events belong to its successor.
+        if (this.connections.get(id) !== conn || this.generationOf(id) !== generation) return event.type === 'input' ? 'retry' : undefined
         if (event.type === 'input') {
           const route = connector.resolveRoute(event)
-          if (route.externalId && await this.deliveries.accept(id, event, route) && this.connections.get(id) === conn && this.generationOf(id) === generation) {
+          if (!route.externalId) return 'rejected'
+          const result = await this.deliveries.accept(id, event, route)
+          if (result === 'accepted' && this.connections.get(id) === conn && this.generationOf(id) === generation) {
             void connector.acknowledgeInput(event).catch(error => reportError(error, 'acknowledge-input', { integrationId: id }))
           }
+          return result
         }
         else if (event.type === 'cancel') {
           if (!(await this.isAllowed(integration.id, event.externalId))) return
