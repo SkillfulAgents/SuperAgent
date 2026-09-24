@@ -26,6 +26,11 @@ balances. Built-in adapters:
   supports the legacy included-used/monthly-limit pair. Prepaid cents become USD.
   On-demand spend is not treated as subscription quota. Missing scalars do not
   imply zero usage/balance.
+- Kimi: `GET https://api.kimi.ai/coding/v1/usages` or `https://api.kimi.com/coding/v1/usages`,
+  OAuth bearer and the same client headers as inference. Ratio windows are the
+  5-hour, weekly, and monthly totals. When those ratios are absent, the count-based
+  `usage` summary and `limits` rows are shown instead. `limit_month_code` is not a
+  second total. A row that reports only `limit` and `remaining` still shows zero use.
 - Platform: existing `/v1/billing` service, with the requesting member's
   attribution. Shows seat consumption when its initial allowance is known,
   remaining seat credits, and separately labeled organization credits. No seat

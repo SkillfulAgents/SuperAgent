@@ -85,9 +85,70 @@ const kimiWindow = z.object({ used_ratio: z.number().finite().min(0).nullish().c
 export const kimiUsageSchema = z.object({ usages: z.object({
   limit_5h: kimiWindow, limit_7d: kimiWindow, limit_month_total: kimiWindow,
 }).nullish().catch(undefined) })
+
+function finite(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value)
+  return undefined
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+function resetAt(record: Record<string, unknown>): string | undefined {
+  for (const key of ['reset_time', 'resetTime', 'reset_at', 'resetAt']) {
+    const value = record[key]
+    if (typeof value === 'string' && Number.isFinite(Date.parse(value))) return value
+    if (typeof value === 'number' && value > 1e9) return new Date(value * 1000).toISOString()
+  }
+  return undefined
+}
+function usedPercentFromCounts(record: Record<string, unknown>): number | undefined {
+  const limit = finite(record.limit)
+  let used = finite(record.used)
+  const remaining = finite(record.remaining)
+  if (used == null && remaining != null && limit != null) used = limit - remaining
+  if (used == null || used < 0 || limit == null || limit <= 0) return undefined
+  return used / limit * 100
+}
+function kimiWindowLabel(window: Record<string, unknown> | undefined): string | undefined {
+  const duration = finite(window?.duration)
+  const unit = String(window?.timeUnit ?? window?.time_unit ?? '').toUpperCase()
+  if (duration == null || duration <= 0) return undefined
+  if (unit.includes('MINUTE')) {
+    if (duration === 300) return '5-hour'
+    if (duration % 1440 === 0) return duration === 10080 ? 'Weekly' : `${duration / 1440} days`
+    if (duration % 60 === 0) return `${duration / 60}h`
+    return `${duration}m`
+  }
+  if (unit.includes('HOUR')) return duration === 5 ? '5-hour' : `${duration}h`
+  if (unit.includes('DAY')) return duration === 7 ? 'Weekly' : `${duration} days`
+  if (unit.includes('WEEK')) return 'Weekly'
+  return undefined
+}
+
 export function parseKimiUsage(raw: unknown): ProviderUsage {
   const usages = kimiUsageSchema.parse(raw).usages
   const windows = [['5h', '5-hour', usages?.limit_5h], ['7d', 'Weekly', usages?.limit_7d], ['month', 'Monthly', usages?.limit_month_total]] as const
-  return usageSnapshot(windows.flatMap(([id, label, window]): UsageLimit[] => window?.used_ratio == null ? []
-    : [{ kind: 'window', id, label, usedPercent: window.used_ratio * 100, resetsAt: window.reset_time ?? undefined }]))
+  const limits: UsageLimit[] = windows.flatMap(([id, label, window]): UsageLimit[] => window?.used_ratio == null ? []
+    : [{ kind: 'window', id, label, usedPercent: window.used_ratio * 100, resetsAt: window.reset_time ?? undefined }])
+  const seen = new Set(limits.map(limit => limit.label))
+  const body = isRecord(raw) ? raw : {}
+  const rows: Array<{ id: string; label: string; record: Record<string, unknown> }> = []
+  if (isRecord(body.usage)) rows.push({ id: 'summary', label: typeof body.usage.name === 'string' && body.usage.name ? body.usage.name : 'Weekly', record: body.usage })
+  if (Array.isArray(body.limits)) body.limits.forEach((item, index) => {
+    if (!isRecord(item)) return
+    const detail = isRecord(item.detail) ? item.detail : item
+    const window = isRecord(item.window) ? item.window : undefined
+    const named = typeof detail.name === 'string' && detail.name ? detail.name : typeof item.name === 'string' ? item.name : ''
+    rows.push({ id: `limit-${index}`, label: named || kimiWindowLabel(window) || `Limit ${index + 1}`, record: detail })
+  })
+  for (const row of rows) {
+    if (seen.has(row.label)) continue
+    const usedPercent = usedPercentFromCounts(row.record)
+    if (usedPercent == null) continue
+    const resetsAt = resetAt(row.record)
+    limits.push({ kind: 'window', id: row.id, label: row.label, usedPercent, ...(resetsAt ? { resetsAt } : {}) })
+    seen.add(row.label)
+  }
+  return usageSnapshot(limits)
 }
