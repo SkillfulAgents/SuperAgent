@@ -83,6 +83,7 @@ function fakeConnector(): ChatAgentIntegration {
     disconnect: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn(),
     onError: vi.fn().mockReturnValue(() => {}),
+    onRecovered: vi.fn().mockReturnValue(() => {}),
   }) as unknown as ChatAgentIntegration
 }
 

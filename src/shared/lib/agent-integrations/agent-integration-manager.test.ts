@@ -98,6 +98,7 @@ class ObjectIntegration extends AgentIntegration {
   }
   cancel(onInterrupted: () => void) { return this.emitEvent({ type: 'cancel', externalId: 'object-7', onInterrupted }) }
   fail(error: Error) { this.emitError(error) }
+  recover() { this.emitRecovered() }
   input(comment: string, text = 'hello') {
     return this.emitEvent({ type: 'input', externalId: comment, id: comment, timestamp: new Date(), payload: { objectId: 'object-7', text } })
   }
@@ -392,6 +393,15 @@ describe('AgentIntegration host contract', () => {
     await vi.waitFor(() => expect(state.notify).toHaveBeenCalledWith(
       'installation-a', 'installation-a', 'test-objects bot', 'error', 'Connection lost',
     ))
+  })
+
+  it('clears the error status as soon as the connector recovers', async () => {
+    await manager.start()
+    await vi.dynamicImportSettled()
+    adapter.fail(new Error('Connection lost'))
+    adapter.recover()
+    await vi.waitFor(() => expect(updateAgentIntegrationStatus).toHaveBeenLastCalledWith('installation-a', 'active', null, { unlessDisconnected: true }))
+    expect(updateAgentIntegrationStatus).toHaveBeenCalledWith('installation-a', 'error', 'Connection lost')
   })
 
   it('creates and reuses an outbound object session without constructing a connector', async () => {

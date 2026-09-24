@@ -76,10 +76,12 @@ describe('Linear live event lifecycle', () => {
   })
   it('uses subscription readiness for health and reports an outage once', async () => {
     const errors = vi.fn(); integration.onError(errors)
+    const recovered = vi.fn(); integration.onRecovered(recovered)
     integration.bindHost({ session: async () => undefined }); await integration.connect()
     expect(integration.isConnected()).toBe(false)
     transport.ready = true; await transport.connected()
     expect(integration.isConnected()).toBe(true)
+    expect(recovered).not.toHaveBeenCalled()
     transport.ready = false
     transport.error(new Error('Socket closed')); transport.error(new Error('Retry failed'))
     expect(errors).toHaveBeenCalledOnce()
@@ -88,6 +90,7 @@ describe('Linear live event lifecycle', () => {
     expect(fetchMock).toHaveBeenCalledOnce()
     transport.ready = true; await transport.connected()
     expect(integration.isConnected()).toBe(true)
+    expect(recovered).toHaveBeenCalledOnce()
   })
   it('accepts a live assignment and deduplicates mention/comment deliveries and eyes reactions', async () => {
     await connect()

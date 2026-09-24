@@ -43,8 +43,9 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
     this.subscriptions = new LinearSubscriptions({ client: this.client,
       onEvent: event => this.receive(event, generation, config.authorizationVersion, identity.appUserId),
       onReady: () => {
-        if (!this.connected || generation !== this.generation) return
+        if (!this.connected || generation !== this.generation || !this.subscriptionFailed) return
         this.subscriptionFailed = false
+        this.emitRecovered()
       },
       onError: error => {
         if (!this.connected || generation !== this.generation || this.subscriptionFailed) return
