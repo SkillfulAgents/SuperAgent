@@ -623,6 +623,15 @@ const mockRuntimeSettings = vi.hoisted(() => vi.fn(() => ({
   skillsets: [],
   app: { configuredPasswordManagers: ['apple-passwords'] },
 })))
+const mockMountService = vi.hoisted(() => ({
+  getMountsWithHealth: vi.fn(async () => [] as unknown[]),
+  addMount: vi.fn(),
+  addSharedVolume: vi.fn(),
+  listSharedVolumes: vi.fn(async () => [] as string[]),
+  removeMount: vi.fn(),
+  usesSharedVolumes: vi.fn(() => false),
+}))
+vi.mock('@shared/lib/services/mount-service', () => mockMountService)
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAnthropicApiKey: () => 'test-key',
   getEffectiveModels: () => mockGetEffectiveModels(),
@@ -9787,5 +9796,53 @@ describe('cross-agent session scoping', () => {
       expect(messagePersister.unsubscribeFromSession).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
       expect(deleteSession).toHaveBeenCalledWith(expect.objectContaining({ slug: ATTACKER }), OWN_SESSION)
     })
+  })
+})
+
+describe('mounts — a cloud runtime takes shared volume names, never folder paths', () => {
+  const volumeRow = { id: 'm1', hostPath: '/data/volumes/team-brain', containerPath: '/mounts/team-brain', folderName: 'team-brain', addedAt: '2026-01-01T00:00:00.000Z' }
+  const onRunner = (runner: 'lambda-microvm' | 'docker') =>
+    mockMountService.usesSharedVolumes.mockReturnValue(runner === 'lambda-microvm')
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    mockMountService.getMountsWithHealth.mockResolvedValue([])
+    mockMountService.listSharedVolumes.mockResolvedValue(['research', 'team-brain'])
+    mockMountService.addSharedVolume.mockResolvedValue(volumeRow)
+  })
+
+  it('lists the workspace shared volumes only where they can be mounted', async () => {
+    onRunner('lambda-microvm')
+    expect(await (await getReq(createApp(), '/api/agents/test-agent/mounts')).json())
+      .toEqual({ mounts: [], sharedVolumes: ['research', 'team-brain'] })
+
+    onRunner('docker')
+    expect(await (await getReq(createApp(), '/api/agents/test-agent/mounts')).json()).toEqual({ mounts: [] })
+  })
+
+  it('mounts a shared volume by name and refuses a folder path, which would probe this server’s disk', async () => {
+    onRunner('lambda-microvm')
+
+    const refused = await postJson(createApp(), '/api/agents/test-agent/mounts', { hostPath: '/data/agents/other/workspace' })
+    expect(refused.status).toBe(400)
+    expect(mockMountService.addMount).not.toHaveBeenCalled()
+
+    // An array would pass the name rule by coercion to 'team-brain'.
+    const notAString = await postJson(createApp(), '/api/agents/test-agent/mounts', { name: ['team-brain'] })
+    expect(notAString.status).toBe(400)
+    expect(mockMountService.addSharedVolume).not.toHaveBeenCalled()
+
+    const res = await postJson(createApp(), '/api/agents/test-agent/mounts', { name: 'team-brain' })
+    expect(res.status).toBe(201)
+    expect(mockMountService.addSharedVolume).toHaveBeenCalledWith('test-agent', 'team-brain')
+  })
+
+  it('keeps taking folder paths on a local runtime and refuses a name', async () => {
+    onRunner('docker')
+
+    const res = await postJson(createApp(), '/api/agents/test-agent/mounts', { name: 'team-brain' })
+    expect(res.status).toBe(400)
+    expect(mockMountService.addSharedVolume).not.toHaveBeenCalled()
   })
 })

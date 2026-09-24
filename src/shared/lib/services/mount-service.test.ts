@@ -135,6 +135,60 @@ describe('mount-service', () => {
     })
   })
 
+  describe('addSharedVolume', () => {
+    it('creates the volume folder and mounts it at /mounts/<name>', async () => {
+      const { addSharedVolume } = await importService()
+      const mount = await addSharedVolume('test-agent', 'team-brain')
+
+      const folder = path.join(tmpDir, 'volumes', 'team-brain')
+      expect(fs.statSync(folder).isDirectory()).toBe(true)
+      expect(mount).toMatchObject({ hostPath: folder, containerPath: '/mounts/team-brain', folderName: 'team-brain' })
+    })
+
+    it('returns the existing row rather than a -2 copy, which a cloud runtime would not mount', async () => {
+      const { addSharedVolume, getMounts } = await importService()
+      const first = await addSharedVolume('test-agent', 'team-brain')
+      const again = await addSharedVolume('test-agent', 'team-brain')
+
+      expect(again.id).toBe(first.id)
+      expect(await getMounts('test-agent')).toHaveLength(1)
+    })
+
+    it('reports a volume whose folder is gone as missing, so start skips it with the banner', async () => {
+      const { addSharedVolume, getMountsWithHealth } = await importService()
+      await addSharedVolume('test-agent', 'team-brain')
+      expect((await getMountsWithHealth('test-agent'))[0].health).toBe('ok')
+
+      fs.rmSync(path.join(tmpDir, 'volumes', 'team-brain'), { recursive: true })
+      expect((await getMountsWithHealth('test-agent'))[0].health).toBe('missing')
+    })
+
+    it('refuses a name off the rule without creating anything', async () => {
+      const { addSharedVolume } = await importService()
+      await expect(addSharedVolume('test-agent', '../agents')).rejects.toThrow(/volume name/)
+      expect(fs.existsSync(path.join(tmpDir, 'volumes'))).toBe(false)
+    })
+
+    it('refuses a name whose /mounts path already holds a different folder', async () => {
+      const { addMount, addSharedVolume } = await importService()
+      await addMount('test-agent', makeHostDir('team-brain'))
+      await expect(addSharedVolume('test-agent', 'team-brain')).rejects.toThrow(/different folder/)
+    })
+  })
+
+  describe('listSharedVolumes', () => {
+    it('lists the volume folders whose names pass the rule', async () => {
+      const { listSharedVolumes } = await importService()
+      expect(await listSharedVolumes()).toEqual([])
+
+      const volumes = path.join(tmpDir, 'volumes')
+      for (const name of ['team-brain', 'research', 'Not A Volume']) fs.mkdirSync(path.join(volumes, name), { recursive: true })
+      fs.writeFileSync(path.join(volumes, 'stray-file'), '')
+
+      expect(await listSharedVolumes()).toEqual(['research', 'team-brain'])
+    })
+  })
+
   describe('removeMount', () => {
     it('removes entry by id, preserving others', async () => {
       const { addMount, removeMount, getMounts } = await importService()

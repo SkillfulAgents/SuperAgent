@@ -3,7 +3,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
-import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
+import type { AgentMount, AgentMountsResponse, AgentMountWithHealth } from '@shared/lib/types/mount'
 
 async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
   try {
@@ -15,7 +15,7 @@ async function parseErrorMessage(res: Response, fallback: string): Promise<strin
 }
 
 export function useAgentMounts(agentSlug: string) {
-  return useQuery<AgentMountWithHealth[]>({
+  return useQuery<AgentMountsResponse | AgentMountWithHealth[]>({
     queryKey: ['mounts', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/mounts`)
@@ -69,7 +69,8 @@ export function useRemoveMount() {
 
 export function useVolumesManager(agentSlug: string) {
   const { data: mountsData, isLoading, refetch } = useAgentMounts(agentSlug)
-  const mounts = Array.isArray(mountsData) ? mountsData : []
+  // A cloud server not yet on this version still answers with a bare array.
+  const mounts = Array.isArray(mountsData) ? mountsData : mountsData?.mounts ?? []
   const { data: agent } = useAgent(agentSlug)
   const isAgentRunning = agent?.status === 'running'
   const addMount = useAddMount()

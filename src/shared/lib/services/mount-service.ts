@@ -12,8 +12,11 @@ import {
 import { containerHost } from '@shared/lib/agent-actor'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { captureException } from '@shared/lib/error-reporting'
+import { getVolumesDir } from '@shared/lib/config/data-dir'
+import { getSettings } from '@shared/lib/config/settings'
 import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
 import { agentMountsSchema } from './mount-schema'
+import { SHARED_VOLUME_NAME_RE } from '@shared/lib/utils/shared-volume-name'
 
 // Mounts are host folders bind-mounted into the container — a host-only feature,
 // so the file sits at the agent's host path (from the container host, not the actor).
@@ -138,6 +141,72 @@ export async function addMount(slug: string, hostPath: string): Promise<AgentMou
       addedAt: new Date().toISOString(),
     }
 
+    mounts.push(mount)
+    await writeMounts(slug, mounts)
+    return mount
+  })
+}
+
+/**
+ * Whether this server's agents take shared volumes instead of host folders: a
+ * MicroVM cannot bind a folder from this machine, only a volume on the
+ * workspace disk. The mounts API takes a name here and a folder path elsewhere.
+ */
+export function usesSharedVolumes(): boolean {
+  return getSettings().container.containerRunner === 'lambda-microvm'
+}
+
+/**
+ * The shared volumes in the workspace: the folders under the volumes directory
+ * whose names pass the rule. An unreadable directory lists none (logged +
+ * captured) rather than failing the mounts response, which also carries the
+ * agent's existing rows — the same trade as {@link getMounts}.
+ */
+export async function listSharedVolumes(): Promise<string[]> {
+  let entries: fs.Dirent[]
+  try {
+    entries = await fs.promises.readdir(getVolumesDir(), { withFileTypes: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    console.error('Failed to list shared volumes; listing none', error)
+    captureException(error, { tags: { area: 'mounts', op: 'list-volumes' } })
+    return []
+  }
+  return entries
+    .filter((e) => e.isDirectory() && SHARED_VOLUME_NAME_RE.test(e.name))
+    .map((e) => e.name)
+    .sort()
+}
+
+/**
+ * Mount the shared volume `name` into the agent, creating its folder if this is
+ * a new volume. The row mounts `volumes/<name>` at `/mounts/<name>`, never with a
+ * `-2` suffix: a cloud runtime only mounts a row whose path matches its name.
+ * Mounting a volume the agent already has returns the existing row.
+ */
+export async function addSharedVolume(slug: string, name: string): Promise<AgentMount> {
+  if (!SHARED_VOLUME_NAME_RE.test(name)) {
+    throw new Error('A volume name uses lowercase letters, numbers, and dashes, starts with a letter or number, and is at most 50 characters.')
+  }
+  const hostPath = path.join(getVolumesDir(), name)
+  const containerPath = `/mounts/${name}`
+
+  return withFileLock(getMountsFilePath(slug), async () => {
+    const mounts = await readMountsStrict(slug)
+    const existing = mounts.find((m) => m.containerPath === containerPath)
+    if (existing) {
+      if (existing.hostPath === hostPath) return existing
+      throw new Error(`This agent already has a different folder at ${containerPath}.`)
+    }
+
+    await fs.promises.mkdir(hostPath, { recursive: true })
+    const mount: AgentMount = {
+      id: crypto.randomUUID(),
+      hostPath,
+      containerPath,
+      folderName: name,
+      addedAt: new Date().toISOString(),
+    }
     mounts.push(mount)
     await writeMounts(slug, mounts)
     return mount

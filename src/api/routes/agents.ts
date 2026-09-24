@@ -80,7 +80,8 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
-import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
+import { getMountsWithHealth, addMount, addSharedVolume, listSharedVolumes, removeMount, usesSharedVolumes } from '@shared/lib/services/mount-service'
+import type { AgentMountsResponse } from '@shared/lib/types/mount'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
 import {
@@ -6268,7 +6269,10 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const mounts = await getMountsWithHealth(agentSlug)
-    return c.json(mounts)
+    const body: AgentMountsResponse = usesSharedVolumes()
+      ? { mounts, sharedVolumes: await listSharedVolumes() }
+      : { mounts }
+    return c.json(body)
   } catch (error) {
     console.error('Failed to list mounts:', error)
     return c.json({ error: 'Failed to list mounts' }, 500)
@@ -6279,12 +6283,20 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
 agents.post('/:id/mounts', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const { hostPath, restart } = await c.req.json<{ hostPath: string; restart?: boolean }>()
-    if (!hostPath) return c.json({ error: 'hostPath is required' }, 400)
+    const { hostPath, name, restart } = await c.req.json<{ hostPath?: string; name?: string; restart?: boolean }>()
+    // A cloud runtime mounts shared volumes by name, never a folder path: checking
+    // a path here would probe this server's own disk. Elsewhere, a folder path.
+    const sharedVolumes = usesSharedVolumes()
 
     let mount
     try {
-      mount = await addMount(agentSlug, hostPath)
+      if (sharedVolumes) {
+        if (typeof name !== 'string' || !name) return c.json({ error: 'name is required' }, 400)
+        mount = await addSharedVolume(agentSlug, name)
+      } else {
+        if (!hostPath) return c.json({ error: 'hostPath is required' }, 400)
+        mount = await addMount(agentSlug, hostPath)
+      }
     } catch (err: any) {
       return c.json({ error: err.message || 'Invalid path' }, 400)
     }
@@ -6296,7 +6308,7 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
       }
     }
 
-    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { hostPath } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: sharedVolumes ? { name } : { hostPath } })
     return c.json(mount, 201)
   } catch (error) {
     console.error('Failed to add mount:', error)

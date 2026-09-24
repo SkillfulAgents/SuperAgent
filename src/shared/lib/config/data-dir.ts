@@ -54,6 +54,14 @@ export function getAgentsDataDir(): string {
 }
 
 /**
+ * Get the shared volumes directory: one folder per shared volume, a sibling of
+ * agents/ on the same disk, so a cloud agent can mount it from there.
+ */
+export function getVolumesDir(): string {
+  return path.join(getDataDir(), 'volumes')
+}
+
+/**
  * Get the workspace directory for a specific agent.
  */
 export function getAgentWorkspaceDir(agentId: string): string {

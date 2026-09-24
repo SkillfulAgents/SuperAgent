@@ -346,6 +346,19 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(JSON.parse(input.runHookPayload).bootstrap.token).toBe('synth_abc')
   })
 
+  it('hands the VM its shared volumes through the downloaded env, never the run payload', async () => {
+    // The supervisor mounts volumes/<name> for each /mounts/<name> it finds here.
+    const mounts = JSON.stringify(['/mounts/team-brain'])
+    await newClient().start({
+      envVars: { SUPERAGENT_MOUNTS: mounts },
+      additionalVolumes: ['/data/volumes/team-brain:/mounts/team-brain'],
+    })
+
+    expect(readBootstrapEnv('agent-xyz')).toMatchObject({ SUPERAGENT_MOUNTS: mounts })
+    const runCall = sendMock.mock.calls.find((c) => c[0].type === 'Run')
+    expect(runCall![0].input.runHookPayload).not.toContain('team-brain')
+  })
+
   it('uses a unique clientToken per start (fixed tokens collide on idempotency → InternalFailure)', async () => {
     await new LambdaMicroVmRuntimeClient({ agentId: 'a' }).start()
     resetMicrovmRuntimeForTests()

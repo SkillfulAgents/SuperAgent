@@ -9,3 +9,9 @@ export interface AgentMount {
 export interface AgentMountWithHealth extends AgentMount {
   health: 'ok' | 'missing'
 }
+
+/** GET /api/agents/:id/mounts. `sharedVolumes` is present only where the server takes shared volumes. */
+export interface AgentMountsResponse {
+  mounts: AgentMountWithHealth[]
+  sharedVolumes?: string[]
+}
