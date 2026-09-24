@@ -401,6 +401,22 @@ describe('useVoiceMode', () => {
     expect(replacement.setMuted).toHaveBeenLastCalledWith(false)
   })
 
+  it('leaving voice mode clears both mutes, so the next entry starts listening and audible', () => {
+    const { result, rerender } = setup()
+    act(() => {
+      result.current.setMicMuted(true)
+      result.current.setOutputMuted(true)
+    })
+    rerender({ active: false })
+    expect(result.current.micMuted).toBe(false)
+    expect(result.current.outputMuted).toBe(false)
+
+    rerender({ active: true })
+    const listener = h.listeners[h.listeners.length - 1]
+    expect(listener.setMuted).not.toHaveBeenCalledWith(true)
+    expect(reader.setMuted).toHaveBeenLastCalledWith(false)
+  })
+
   it('the mic button sends while listening and interrupts while the agent has the floor', async () => {
     const { result, listener, send, setStream } = setup()
     act(() => listener.hear('send this'))

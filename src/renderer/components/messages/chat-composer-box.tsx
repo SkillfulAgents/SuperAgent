@@ -15,15 +15,15 @@ import { MarkdownComposerEditor } from './markdown-composer-editor'
 const EMPTY_POTENTIAL_SECRETS: PotentialSecret[] = []
 const EMPTY_SECURED_SECRETS: SecuredSecret[] = []
 
+/** The composer box: the frame the text editor and its action row sit in. Voice mode draws its own contents in the same frame. */
+export const COMPOSER_BOX_CLASS =
+  'group relative mx-auto w-full rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80'
+
 /**
  * The floating translucent treatment for a composer that sits over content —
  * the session composer's look, shared so the wizard's create-agent composer
  * matches it instead of drifting on its own copy of the recipe.
  */
-/** The composer box: the frame the text editor and its action row sit in. Voice mode draws its own contents in the same frame. */
-export const COMPOSER_BOX_CLASS =
-  'group relative mx-auto w-full rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80'
-
 export const FLOATING_COMPOSER_CLASS =
   'relative z-10 border-border/70 bg-background/85 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]'
 

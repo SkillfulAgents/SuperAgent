@@ -1,11 +1,11 @@
 import type { ReactNode } from 'react'
 import { Mic, MicOff, Volume2, VolumeOff, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { COMPOSER_BOX_CLASS, FLOATING_COMPOSER_CLASS } from './chat-composer-box'
 import { AttachmentPreview, type Attachment } from './attachment-preview'
 import { VoiceConversationPreview } from './voice-conversation-preview'
+import { VoiceToggleButton } from './voice-mode-controls'
 import type { VoiceTranscriptEntry } from '@shared/lib/voice/conversation-types'
 import { cn } from '@shared/lib/utils'
 import type { VoiceModePhase } from '@renderer/hooks/use-voice-mode'
@@ -14,12 +14,12 @@ import type { DotOrbState } from '@renderer/lib/voice/orb/dot-orb'
 
 interface VoiceModeComposerProps {
   phase: VoiceModePhase
-  /** The voice connection is up; until then the orb assembles. */
-  ready?: boolean
+  /** The voice connection is up; until then the orb assembles, grey, over "Initializing…". */
+  ready: boolean
   /** The agent's display name, labelling its lines in the transcript. */
   agentName?: string
   /** The person is talking now (the mic's turn or over the agent). */
-  userSpeaking?: boolean
+  userSpeaking: boolean
   /** What the person has said so far; shown while they are talking. */
   utterance: string
   /** Spoken conversation subtitles for providers with separate voice output. */
@@ -28,15 +28,15 @@ interface VoiceModeComposerProps {
   onClearError: () => void
   onPressMic: () => void
   /** The person's microphone mute. */
-  micMuted?: boolean
-  onToggleMicMuted?: () => void
+  micMuted: boolean
+  onToggleMicMuted: () => void
   /** The speaker mute for the agent's voice. */
-  outputMuted?: boolean
-  onToggleOutputMuted?: () => void
+  outputMuted: boolean
+  onToggleOutputMuted: () => void
   /** The mic's analyser, for the level while the person talks. Null until the mic is open. */
   getAnalyser: () => AnalyserNode | null
   /** The reply's output analyser, for the level while the agent speaks; engines without one get a synthetic envelope. */
-  getOutputAnalyser?: () => AnalyserNode | null
+  getOutputAnalyser: () => AnalyserNode | null
   onExit: () => void
   attachments: Attachment[]
   onRemoveAttachment: (id: string) => void
@@ -66,17 +66,17 @@ const MIC_LABEL: Record<VoiceModePhase, string> = {
  */
 export function VoiceModeComposer({
   phase,
-  ready = true,
+  ready,
   agentName = 'Agent',
-  userSpeaking = false,
+  userSpeaking,
   utterance,
   transcript,
   error,
   onClearError,
   onPressMic,
-  micMuted = false,
+  micMuted,
   onToggleMicMuted,
-  outputMuted = false,
+  outputMuted,
   onToggleOutputMuted,
   getAnalyser,
   getOutputAnalyser,
@@ -89,9 +89,6 @@ export function VoiceModeComposer({
   voiceControls,
   footer,
 }: VoiceModeComposerProps) {
-  // Live subtitles: until the agent has said anything. Chained speech has no
-  // subtitles, so only until the connection is up.
-  const initializing = transcript ? transcript.length === 0 : !ready
   return (
     <div
       className="relative"
@@ -104,8 +101,8 @@ export function VoiceModeComposer({
       <div className={cn(COMPOSER_BOX_CLASS, FLOATING_COMPOSER_CLASS, 'composer-enter-contents')}>
         <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} onRetry={onRetryAttachment} />
         {/* The orb takes the editor's place. While the voice connection comes
-            up it sits centred with "Initializing…" beneath it; the first words
-            grow the transcript column from nothing, which slides the orb to
+            up it sits centred with "Initializing…" beneath it; once it is up
+            the transcript column grows from nothing, which slides the orb to
             the right where it stays. */}
         <div className={cn('flex items-center justify-center gap-3', attachments.length > 0 && 'mt-2')}>
           {/* The row's height is the orb's alone. The strip is taken out of
@@ -113,9 +110,9 @@ export function VoiceModeComposer({
               frame instead of growing it, and its fades sit at the frame's edges. */}
           <div
             className="relative min-w-0 basis-0 self-stretch transition-[flex-grow] duration-[600ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
-            style={{ flexGrow: initializing ? 0 : 1 }}
+            style={{ flexGrow: ready ? 1 : 0 }}
           >
-            {!initializing && (
+            {ready && (
               <div className="voice-strip-enter absolute inset-0 flex flex-col justify-center pl-3">
                 {transcript ? <VoiceConversationPreview transcript={transcript} agentName={agentName} /> : (
                   <div
@@ -133,7 +130,6 @@ export function VoiceModeComposer({
             <VoiceMicButton
               phase={phase}
               ready={ready}
-              monochrome={initializing}
               userSpeaking={userSpeaking}
               getAnalyser={getAnalyser}
               getOutputAnalyser={getOutputAnalyser}
@@ -144,13 +140,13 @@ export function VoiceModeComposer({
             <div
               className={cn(
                 'pointer-events-none absolute inset-x-0 -bottom-3 text-center text-sm leading-5 transition-all duration-300 ease-out',
-                initializing ? 'opacity-100' : 'translate-y-1 opacity-0',
+                ready ? 'translate-y-1 opacity-0' : 'opacity-100',
               )}
               data-testid="voice-mode-initializing"
               aria-live="polite"
-              aria-hidden={!initializing}
+              aria-hidden={ready}
             >
-              <span className={cn('text-foreground/70', initializing && 'status-title-shimmer')}>Initializing…</span>
+              <span className={cn('text-foreground/70', !ready && 'status-title-shimmer')}>Initializing…</span>
             </div>
           </div>
         </div>
@@ -162,51 +158,22 @@ export function VoiceModeComposer({
           {/* Voice's own controls sit right, where the text composer keeps its voice
               buttons: the mic mutes, and the exit is filled like the send it replaces. */}
           <div className="flex shrink-0 items-center gap-2">
-            {/* The same tooltip as the hold-sound toggle beside them: instant, below the button. */}
-            <TooltipProvider delayDuration={0}>
-              {onToggleOutputMuted && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="outline"
-                      className="h-[34px] w-[34px]"
-                      onClick={onToggleOutputMuted}
-                      aria-pressed={outputMuted}
-                      aria-label={outputMuted ? 'Unmute agent speech' : 'Mute agent speech'}
-                      data-testid="voice-mode-mute-output"
-                    >
-                      {outputMuted ? <VolumeOff className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">
-                    {outputMuted ? 'Unmute agent speech' : 'Mute agent speech'}
-                  </TooltipContent>
-                </Tooltip>
-              )}
-              {onToggleMicMuted && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="outline"
-                      className="h-[34px] w-[34px]"
-                      onClick={onToggleMicMuted}
-                      aria-pressed={micMuted}
-                      aria-label={micMuted ? 'Unmute microphone' : 'Mute microphone'}
-                      data-testid="voice-mode-mute"
-                    >
-                      {micMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">
-                    {micMuted ? 'Unmute microphone' : 'Mute microphone'}
-                  </TooltipContent>
-                </Tooltip>
-              )}
-            </TooltipProvider>
+            <VoiceToggleButton
+              label={outputMuted ? 'Unmute agent speech' : 'Mute agent speech'}
+              pressed={outputMuted}
+              onClick={onToggleOutputMuted}
+              testId="voice-mode-mute-output"
+            >
+              {outputMuted ? <VolumeOff className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+            </VoiceToggleButton>
+            <VoiceToggleButton
+              label={micMuted ? 'Unmute microphone' : 'Mute microphone'}
+              pressed={micMuted}
+              onClick={onToggleMicMuted}
+              testId="voice-mode-mute"
+            >
+              {micMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+            </VoiceToggleButton>
             {voiceControls}
             <Button
               type="button"
@@ -232,7 +199,7 @@ export function VoiceModeComposer({
 const MIC_SIZE = 152
 
 /** Which of the orb's designed states the composer's phase is. */
-export function orbStateFor(phase: VoiceModePhase, ready: boolean, userSpeaking: boolean): DotOrbState {
+function orbStateFor(phase: VoiceModePhase, ready: boolean, userSpeaking: boolean): DotOrbState {
   if (!ready) return 'boot'
   if (phase === 'speaking') return 'agent'
   if (phase === 'thinking') return 'thinking'
@@ -245,18 +212,16 @@ export function orbStateFor(phase: VoiceModePhase, ready: boolean, userSpeaking:
  * level it moves to comes from the mic while the person talks and from the
  * reply's output while the agent does.
  */
-function VoiceMicButton({ phase, ready, monochrome, userSpeaking, getAnalyser, getOutputAnalyser, onClick }: {
+function VoiceMicButton({ phase, ready, userSpeaking, getAnalyser, getOutputAnalyser, onClick }: {
   phase: VoiceModePhase
   ready: boolean
-  /** Greyscale until the conversation is under way. */
-  monochrome: boolean
   userSpeaking: boolean
   getAnalyser: () => AnalyserNode | null
-  getOutputAnalyser?: () => AnalyserNode | null
+  getOutputAnalyser: () => AnalyserNode | null
   onClick: () => void
 }) {
   const orbState = orbStateFor(phase, ready, userSpeaking)
-  const levelSource = phase === 'speaking' ? () => getOutputAnalyser?.() ?? null : getAnalyser
+  const levelSource = phase === 'speaking' ? getOutputAnalyser : getAnalyser
   return (
     <button
       type="button"
@@ -267,12 +232,13 @@ function VoiceMicButton({ phase, ready, monochrome, userSpeaking, getAnalyser, g
       data-phase={phase}
       data-orb-state={orbState}
       className={cn(
-        // The canvas already carries ~23px of clear space around the sphere; the margins top it up so the orb floats evenly.
-        'voice-mic relative mx-1 mb-3 flex h-[152px] w-[152px] shrink-0 items-center justify-center overflow-hidden rounded-full',
+        // Sized by the canvas, which already carries ~23px of clear space around the sphere; the margins top it up so the orb floats evenly.
+        'voice-mic relative mx-1 mb-3 flex shrink-0 items-center justify-center overflow-hidden rounded-full',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
       )}
     >
-      <VoiceOrb state={orbState} monochrome={monochrome} size={MIC_SIZE} getAnalyser={levelSource} />
+      {/* Greyscale until the connection is up. */}
+      <VoiceOrb state={orbState} monochrome={!ready} size={MIC_SIZE} getAnalyser={levelSource} />
     </button>
   )
 }

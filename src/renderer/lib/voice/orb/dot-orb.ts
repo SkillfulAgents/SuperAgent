@@ -358,7 +358,8 @@ export class DotOrb {
     }
 
     // The tumble and the hue cycle run in every state; the stir and the
-    // rings ride on top of them rather than replacing them.
+    // rings ride on top of them rather than replacing them. A settled boot
+    // above may have switched state, so the tuning is read again.
     const tuning = STATES[this.state]
     let spin = tuning.spin
     if (this.state === 'boot') spin = tuning.spin * Math.min(1, this.bootT / BOOT_DURATION_S)

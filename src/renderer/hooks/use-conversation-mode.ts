@@ -26,7 +26,7 @@ export interface VoiceModeResult extends VoiceConversationSnapshot {
   pressMic(): void
   getAnalyser(): AnalyserNode | null
   getOutputAnalyser(): AnalyserNode | null
-  /** The person's microphone mute, kept across engine restarts within the session view. */
+  /** The person's microphone mute, kept across engine restarts and cleared when voice mode ends. */
   micMuted: boolean
   setMicMuted(muted: boolean): void
   /** The speaker mute for the agent's voice, kept the same way. */
@@ -132,6 +132,16 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
       if (coordinator.current === turns) coordinator.current = null
     }
   }, [active, engine, sessionId, agentSlug])
+
+  // The mutes last as long as voice mode: leaving it clears them, so the
+  // next entry starts listening and audible.
+  useEffect(() => {
+    if (active) return
+    micMutedRef.current = false
+    setMicMutedState(false)
+    outputMutedRef.current = false
+    setOutputMutedState(false)
+  }, [active])
 
   useEffect(() => {
     // Pause the adapter first so nothing new reaches a paused coordinator;

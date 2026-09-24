@@ -199,10 +199,34 @@ describe('MessageInput', () => {
         ;(document.activeElement as HTMLElement | null)?.blur()
         await userEvent.keyboard(' ')
         expect(pressMic).toHaveBeenCalledTimes(1)
+        // Focus elsewhere in the app keeps Space: a scrollable list, a drawer row, or a
+        // handler (the live browser) that already took the key.
+        const list = document.body.appendChild(Object.assign(document.createElement('div'), { tabIndex: 0 }))
+        const row = document.body.appendChild(Object.assign(document.createElement('div'), { tabIndex: 0 }))
+        row.setAttribute('role', 'button')
+        try {
+          for (const element of [list, row]) {
+            element.focus()
+            await userEvent.keyboard(' ')
+          }
+          list.addEventListener('keydown', (event) => event.preventDefault())
+          list.focus()
+          await userEvent.keyboard(' ')
+          expect(pressMic).toHaveBeenCalledTimes(1)
+          // The voice composer's own surface is voice mode's.
+          const surface = screen.getByTestId('voice-mode-composer')
+          surface.tabIndex = -1
+          surface.focus()
+          await userEvent.keyboard(' ')
+          expect(pressMic).toHaveBeenCalledTimes(2)
+        } finally {
+          list.remove()
+          row.remove()
+        }
         // While it is the person's turn there is nothing to interrupt.
         voiceState.phase = 'listening'
         await userEvent.keyboard(' ')
-        expect(pressMic).toHaveBeenCalledTimes(1)
+        expect(pressMic).toHaveBeenCalledTimes(2)
 
         await userEvent.keyboard('{Meta>}{Shift>}m{/Shift}{/Meta}')
         expect(setMicMuted).toHaveBeenCalledWith(true)

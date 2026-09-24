@@ -277,10 +277,10 @@ export class ChainedConversationAdapter implements VoiceConversationAdapter {
   }
 
   close() {
-    // The reader is shared with read-aloud elsewhere: leave it audible.
-    readAloud.setMuted(false)
     if (this.closed) return
     this.closed = true
+    // The reader is shared with read-aloud elsewhere: leave it audible.
+    readAloud.setMuted(false)
     this.held = null
     this.unsubscribe?.()
     clearInterval(this.audioMeter)
