@@ -123,7 +123,9 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
         return fetch(`${config.baseUrl.replace(/\/$/, '')}${path}`, {
           method: 'POST', redirect: 'error', signal: abort.signal,
           headers: { 'content-type': 'application/json', ...(format === 'messages' ? { 'anthropic-version': '2023-06-01' } : {}),
-            ...config.headers, ...(config.adapter === 'codex' && credential.accountId ? { 'ChatGPT-Account-ID': credential.accountId } : {}), authorization: `Bearer ${credential.accessToken}` },
+            ...config.headers, ...(config.adapter === 'codex' && credential.accountId ? { 'ChatGPT-Account-ID': credential.accountId } : {}),
+            // MiniMax Messages rejects Authorization and reads the token from x-api-key.
+            ...(config.adapter === 'minimax' ? { 'x-api-key': credential.accessToken } : { authorization: `Bearer ${credential.accessToken}` }) },
           body: JSON.stringify(upstreamBody),
         })
       }

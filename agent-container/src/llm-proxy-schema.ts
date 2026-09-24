@@ -8,7 +8,7 @@ export const proxyCredentialSchema = z.object({
   expiresAt: z.number().optional(),
 })
 export const llmProxyConfigSchema = z.object({
-  adapter: z.enum(['grok', 'codex', 'kimi']).optional(),
+  adapter: z.enum(['grok', 'codex', 'kimi', 'minimax']).optional(),
   format: z.enum(['messages', 'chat-completions', 'responses']),
   baseUrl: z.url({ protocol: /^https?$/ }),
   credential: proxyCredentialSchema,

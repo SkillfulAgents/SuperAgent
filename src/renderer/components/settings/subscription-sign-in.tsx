@@ -5,7 +5,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
 import { CopyableValue, SetupPanel, SetupSteps } from './setup-steps'
 
-export type SubscriptionSignInProvider = 'grok' | 'codex' | 'kimi'
+export type SubscriptionSignInProvider = 'grok' | 'codex' | 'kimi' | 'minimax'
 type Region = { value: string; label: string }
 export const SIGN_IN: Record<SubscriptionSignInProvider, { name: string; account: string; note?: string; regions?: Region[] }> = {
   grok: { name: 'Grok', account: 'X or xAI account' },
@@ -13,6 +13,8 @@ export const SIGN_IN: Record<SubscriptionSignInProvider, { name: string; account
     note: 'Pick a separate API-capable summarizer if this becomes the app default. Fast mode uses more subscription credits.' },
   kimi: { name: 'Kimi', account: 'Kimi account',
     regions: [{ value: 'us', label: 'US (kimi.ai)' }, { value: 'cn', label: 'China (kimi.com)' }] },
+  minimax: { name: 'MiniMax', account: 'MiniMax account',
+    regions: [{ value: 'global', label: 'Global (minimax.io)' }, { value: 'cn', label: 'China (minimaxi.com)' }] },
 }
 
 export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, accountLabel, region: savedRegion, onConnected }: {
