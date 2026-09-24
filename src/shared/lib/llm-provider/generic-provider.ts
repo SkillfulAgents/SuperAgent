@@ -1,4 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
+import type { LlmProxyConfig } from '../../../../agent-container/src/llm-proxy-schema'
+import { translatedMessagesFetch } from './translated-messages-fetch'
 import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { EffortLevel } from '../container/types'
@@ -11,6 +13,16 @@ import {
 
 const BASE_URL_ENV = 'GENERIC_BASE_URL'
 
+/** OpenAI-style base URLs may include /v1 or a gateway's custom API path. */
+export function openAiBaseUrl(value: string): string {
+  try {
+    const url = new URL(value)
+    if (!/^https?:$/.test(url.protocol) || url.search || url.hash) throw new Error('Query strings and fragments are not supported')
+    if (!url.pathname.replace(/\/+$/, '')) url.pathname = '/v1'
+    return url.toString().replace(/\/+$/, '')
+  } catch { throw new Error('Generic provider base URL must be an HTTP URL without a query string or fragment') }
+}
+
 /**
  * Ultimate fallback model id when the user has added no models and set no
  * GENERIC_DEFAULT_MODEL. A placeholder — the generic provider is only usable
@@ -18,16 +30,8 @@ const BASE_URL_ENV = 'GENERIC_BASE_URL'
  */
 export { GENERIC_FALLBACK_MODEL } from './model-catalog-defaults'
 
-/**
- * A user-pointed provider for any Anthropic-wire-compatible endpoint: a
- * self-hosted gateway, a LiteLLM/proxy in Anthropic mode, or a localhost ollama
- * fronted by such a proxy. Ships an EMPTY built-in catalog — users add their
- * own models (SUP-276) — and takes a user-supplied baseURL + key.
- *
- * Wire format: Anthropic (same env shape as OpenRouter/Platform —
- * ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN). ollama's native OpenAI-compatible
- * API is NOT spoken directly; point at an Anthropic-compatible proxy.
- */
+/** User-supplied endpoint and catalog. Existing connections keep native Messages;
+ * OpenAI formats opt into translation for both agent and helper calls. */
 const DISCOVERED_MODEL_LIMIT = 50
 const DISCOVERED_MODEL_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 const REQUEST_TIMEOUT_MS = 15_000
@@ -37,8 +41,8 @@ const REQUEST_TIMEOUT_MS = 15_000
  * the raw Response for the caller to interpret. Both Anthropic's `/v1/models`
  * and OpenAI-compat endpoints (ollama, LiteLLM) speak this shape.
  */
-async function fetchModelsList(baseURL: string, apiKey: string): Promise<Response> {
-  const url = `${baseURL.replace(/\/+$/, '')}/v1/models`
+async function fetchModelsList(baseURL: string, apiKey: string, translated = false): Promise<Response> {
+  const url = translated ? `${openAiBaseUrl(baseURL)}/models` : `${baseURL.replace(/\/+$/, '')}/v1/models`
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   try {
@@ -87,8 +91,9 @@ export class GenericLlmProvider extends BaseLlmProvider {
   readonly defaultModelOptions = []
   readonly catalogDefaultModels = GENERIC_CATALOG_DEFAULT_MODELS
   override readonly supportsModelSearch = true
-  // Left unset (see BaseLlmProvider.toolSearchEnv): the endpoint is whatever
-  // the user pointed us at, so the CLI's own guard decides.
+  override readonly toolSearchEnv = this.configuration?.apiFormat && this.configuration.apiFormat !== 'messages' ? 'true' as const : undefined
+
+  private get apiFormat() { return this.configuration?.apiFormat ?? 'messages' }
   protected readonly settingsKeyField = 'genericApiKey' as const
   protected readonly envVarName = 'GENERIC_API_KEY'
 
@@ -118,7 +123,18 @@ export class GenericLlmProvider extends BaseLlmProvider {
     if (!apiKey) throw new Error('Generic provider API key not configured')
     // Anthropic-wire endpoint with Bearer auth (same shape as OpenRouter/Platform):
     // apiKey '' suppresses the x-api-key header; authToken sends Authorization: Bearer.
-    return new Anthropic({ apiKey: '', baseURL, authToken: apiKey })
+    return new Anthropic({ apiKey: '', baseURL, authToken: apiKey,
+      ...(this.apiFormat !== 'messages' ? { fetch: translatedMessagesFetch(openAiBaseUrl(baseURL), apiKey, this.apiFormat, this.configuration?.chatTokenLimitField) } : {}),
+    })
+  }
+
+  override async getContainerProxyConfig(): Promise<LlmProxyConfig | undefined> {
+    if (this.apiFormat === 'messages') return undefined
+    const baseUrl = this.getEffectiveBaseUrl()
+    const accessToken = this.getEffectiveApiKey()
+    if (!baseUrl || !accessToken) throw new Error('Generic provider URL and API key are required')
+    return { format: this.apiFormat, baseUrl: rewriteLoopbackForContainer(openAiBaseUrl(baseUrl))!,
+      credential: { accessToken, generation: 0 }, headers: {}, chatTokenLimitField: this.configuration?.chatTokenLimitField ?? 'max_completion_tokens' }
   }
 
   getBuiltinCatalog(): ModelDefinition[] {
@@ -186,7 +202,7 @@ export class GenericLlmProvider extends BaseLlmProvider {
     }
     let response: Response
     try {
-      response = await fetchModelsList(baseURL, effectiveKey)
+      response = await fetchModelsList(baseURL, effectiveKey, this.apiFormat !== 'messages')
     } catch (error) {
       const message = error instanceof Error && error.name === 'AbortError'
         ? `Timed out after ${REQUEST_TIMEOUT_MS / 1000}s — check the base URL is reachable.`
@@ -204,7 +220,7 @@ export class GenericLlmProvider extends BaseLlmProvider {
       // instead of soft-passing a config that can never serve a request.
       const trimmed = baseURL.replace(/\/+$/, '')
       const stripped = trimmed.replace(/\/v1$/i, '')
-      if (stripped !== trimmed) {
+      if (this.apiFormat === 'messages' && stripped !== trimmed) {
         try {
           const retry = await fetchModelsList(stripped, effectiveKey)
           if (retry.ok) {
@@ -236,7 +252,7 @@ export class GenericLlmProvider extends BaseLlmProvider {
 
     let response: Response
     try {
-      response = await fetchModelsList(baseURL, apiKey)
+      response = await fetchModelsList(baseURL, apiKey, this.apiFormat !== 'messages')
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         throw new Error(`Generic provider model listing timed out after ${REQUEST_TIMEOUT_MS / 1000}s`)

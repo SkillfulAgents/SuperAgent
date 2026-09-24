@@ -45,6 +45,8 @@ export function providerForConnection(
   const apiKeys = { ...config.apiKeys }
   return createLlmProvider(providerSchema.parse(row.provider), {
     apiKeys,
+    apiFormat: config.apiFormat,
+    chatTokenLimitField: config.chatTokenLimitField,
     oauth: config.oauth,
     resolveCredential: row.id ? (generation) => resolveConnectionCredential(row.id!, generation) : undefined,
     env: Object.fromEntries(
@@ -117,6 +119,8 @@ export async function listConnections(
       browserModel: row.browserModel,
       dashboardModel: row.dashboardModel,
       baseUrl: config.apiKeys.genericBaseUrl,
+      apiFormat: config.apiFormat,
+      chatTokenLimitField: config.chatTokenLimitField,
       region: config.apiKeys.bedrockRegion,
       customEnvVarKeys: canManage ? Object.keys(config.runtimeEnv) : [],
       canManage,
@@ -162,13 +166,13 @@ export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, 
   }
   const config = mergeConnectionConfig(oldConfig, input.config)
   if (input.oauthLoginId) {
-    if (input.provider !== 'grok-subscription') throw new Error('Invalid subscription sign-in')
-    config.oauth = credentialsFromLogin(input.oauthLoginId, viewer, input.userId, id)
+    if (input.provider !== 'grok-subscription' && input.provider !== 'codex-subscription') throw new Error('Invalid subscription sign-in')
+    config.oauth = credentialsFromLogin(input.oauthLoginId, viewer, input.userId, id, input.provider)
   }
-  if (input.provider === 'grok-subscription') {
-    if (!config.oauth) throw new Error('Sign in to Grok before saving this connection')
+  if (input.provider === 'grok-subscription' || input.provider === 'codex-subscription') {
+    if (!config.oauth) throw new Error('Sign in before saving this subscription connection')
     const conflicting = Object.keys(config.runtimeEnv).filter(key => isProviderEnvVar(key) || key === 'CLAUDE_CONFIG_DIR')
-    if (conflicting.length) throw new Error('Grok manages its own authentication. Remove provider authentication environment variables.')
+    if (conflicting.length) throw new Error('This subscription manages its own authentication. Remove provider authentication environment variables.')
   }
   if (!viewer.admin) {
     // Check the merged config for saves and validation alike. Omitted saved
