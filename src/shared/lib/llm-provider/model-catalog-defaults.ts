@@ -51,12 +51,15 @@ export const CODEX_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'gpt', s
 
 export const KIMI_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'kimi', summarizerModel: 'kimi', browserModel: 'kimi', dashboardBuilderModel: 'kimi' }
 
+export const MINIMAX_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'minimax', summarizerModel: 'minimax', browserModel: 'minimax', dashboardBuilderModel: 'minimax' }
+
 const BUILTIN_DEFAULTS: Record<LlmProviderId, CatalogDefaultModels> = {
   anthropic: ANTHROPIC_CATALOG_DEFAULT_MODELS,
   'claude-subscription': ANTHROPIC_CATALOG_DEFAULT_MODELS,
   'grok-subscription': GROK_DEFAULT_MODELS,
   'codex-subscription': CODEX_DEFAULT_MODELS,
   'kimi-subscription': KIMI_DEFAULT_MODELS,
+  'minimax-subscription': MINIMAX_DEFAULT_MODELS,
   openrouter: OPENROUTER_CATALOG_DEFAULT_MODELS,
   bedrock: BEDROCK_CATALOG_DEFAULT_MODELS,
   platform: PLATFORM_CATALOG_DEFAULT_MODELS,

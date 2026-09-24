@@ -292,6 +292,19 @@ describe('embedded provider proxy', () => {
     expect(attempts).toBe(1)
   })
 
+  it('sends a MiniMax token as x-api-key and not as Authorization', async () => {
+    const base = await upstream((_body, req, res) => {
+      expect(req.headers['x-api-key']).toBe('upstream-key')
+      expect(req.headers.authorization).toBeUndefined()
+      expect(req.url).toBe('/v1/messages')
+      json(res, reply)
+    })
+    const handle = await proxy(base, 'messages', {
+      config: { adapter: 'minimax', baseUrl: base, format: 'messages', headers: {}, credential: { accessToken: 'upstream-key', generation: 1 } },
+    })
+    await expect(client(handle).messages.create(prompt)).resolves.toMatchObject({ content: [{ type: 'text', text: 'OK' }] })
+  })
+
   it('refreshes near expiry before sending and does not forward client auth or routing headers', async () => {
     const base = await upstream((_body, req, res) => {
       expect(req.headers.authorization).toBe('Bearer fresh')
