@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 // ============================================================================
 // Mocks
@@ -58,10 +58,12 @@ const mockGetWebhookTriggersByComposioId = vi.fn()
 const mockMarkTriggerFired = vi.fn().mockResolvedValue(undefined)
 const mockMarkTriggerFailed = vi.fn().mockResolvedValue(undefined)
 const mockGetDistinctMemberIds = vi.fn(() => ['sub_test_member'])
+const mockGetSubscribedIds = vi.fn(() => ['ti_abc'])
 const mockResolveTriggerPrincipal =
   vi.fn<(trigger: unknown) => { userId: string; memberId: string } | null>(() => null)
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   getDistinctPlatformMemberIdsForActiveTriggers: () => mockGetDistinctMemberIds(),
+  getSubscribedComposioTriggerIds: () => mockGetSubscribedIds(),
   getWebhookTriggersByComposioId: (...args: unknown[]) => mockGetWebhookTriggersByComposioId(...args),
   markTriggerFired: (...args: unknown[]) => mockMarkTriggerFired(...args),
   markTriggerFailed: (...args: unknown[]) => mockMarkTriggerFailed(...args),
@@ -89,12 +91,11 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: (...args: unknown[]) => mockAgentExists(...args),
 }))
 
-const mockPollAndClaimEvents = vi.fn()
-const mockAcknowledgeEvents = vi.fn().mockResolvedValue(undefined)
-vi.mock('@shared/lib/services/webhook-events-client', () => ({
-  pollAndClaimEvents: (...args: unknown[]) => mockPollAndClaimEvents(...args),
-  acknowledgeEvents: (...args: unknown[]) => mockAcknowledgeEvents(...args),
-}))
+vi.mock('@shared/lib/webhook-relay', async () => {
+  const { createFakeWebhookRelay } = await import('@shared/lib/webhook-relay/testing/fake-webhook-relay')
+  const relay = createFakeWebhookRelay()
+  return { getWebhookRelay: () => relay, LOCAL_RELAY_SCOPE: 'local' }
+})
 
 const mockGetPlatformAccessToken = vi.fn<() => string | null>(() => 'opaque_test_token')
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
@@ -133,21 +134,28 @@ vi.mock('@shared/lib/db/schema', () => ({
   connectedAccounts: {},
 }))
 
-vi.mock('@shared/lib/services/supabase-realtime-client', () => ({
-  SupabaseRealtimeClient: vi.fn().mockImplementation(() => ({
-    connect: vi.fn().mockResolvedValue(undefined),
-    disconnect: vi.fn(),
-    isActive: () => false,
-    updateToken: vi.fn(),
-  })),
-}))
-
 // Import after mocks
+import { getWebhookRelay, type RelayEvent } from '@shared/lib/webhook-relay'
+import type { FakeWebhookRelay } from '@shared/lib/webhook-relay/testing/fake-webhook-relay'
 import { triggerManager } from './trigger-manager'
+
+const relay = getWebhookRelay() as FakeWebhookRelay
+
+function event(id: string, endpointId: string, type: string, payload: unknown = {}): RelayEvent {
+  return { id, endpointId, type, payload, createdAt: '' }
+}
+
+/** Start the manager and deliver events to the member's consumer, as a claim would. */
+async function startAndDeliver(events: RelayEvent[], memberId = 'sub_test_member') {
+  await triggerManager.start()
+  return relay.deliver(`webhook-triggers:${memberId}`, events)
+}
 
 describe('TriggerManager', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    relay.reset()
+    mockGetSubscribedIds.mockReturnValue(['ti_abc'])
     mockCreateSession.mockResolvedValue({ id: 'session_123' })
     mockReadAgentPreferences.mockResolvedValue({})
     mockGetDistinctMemberIds.mockReturnValue(['sub_test_member'])
@@ -156,20 +164,143 @@ describe('TriggerManager', () => {
     mockResolveTriggerPrincipal.mockReturnValue(null)
   })
 
-  describe('start', () => {
-    it('polls for events on startup', async () => {
-      mockPollAndClaimEvents.mockResolvedValue({
-        events: [],
-        realtime: null,
+  // Stop even when an assertion throws mid-test — the singleton's isRunning
+  // guard would otherwise no-op every later start().
+  afterEach(() => {
+    triggerManager.stop()
+  })
+
+  describe('relay registration', () => {
+    it("registers each trigger owner's subscribed endpoints on start", async () => {
+      mockGetSubscribedIds.mockReturnValue(['whep_b', 'ti_a'])
+      mockGetDistinctMemberIds.mockReturnValue(['sub_one', 'sub_two'])
+
+      await triggerManager.start()
+
+      expect([...relay.consumers.values()].map(({ id, scope, endpointIds }) => ({ id, scope, endpointIds }))).toEqual([
+        { id: 'webhook-triggers:sub_one', scope: 'sub_one', endpointIds: ['ti_a', 'whep_b'] },
+        { id: 'webhook-triggers:sub_two', scope: 'sub_two', endpointIds: ['ti_a', 'whep_b'] },
+      ])
+    })
+
+    it('registers nothing when no trigger is subscribed', async () => {
+      mockGetSubscribedIds.mockReturnValue([])
+
+      await triggerManager.start()
+
+      expect(relay.consumers.size).toBe(0)
+    })
+
+    it('updates endpoints, and drops members that no longer own triggers, on sync', async () => {
+      mockGetDistinctMemberIds.mockReturnValue(['sub_one', 'sub_two'])
+      await triggerManager.start()
+
+      mockGetSubscribedIds.mockReturnValue(['ti_abc', 'whep_new'])
+      mockGetDistinctMemberIds.mockReturnValue(['sub_one'])
+      await triggerManager.syncRegistrations()
+
+      expect([...relay.consumers.keys()]).toEqual(['webhook-triggers:sub_one'])
+      expect(relay.consumers.get('webhook-triggers:sub_one')?.endpointIds).toEqual(['ti_abc', 'whep_new'])
+      expect(relay.log.filter((entry) => entry.op !== 'register')).toEqual([
+        { op: 'dispose', id: 'webhook-triggers:sub_two' },
+        { op: 'update', id: 'webhook-triggers:sub_one' },
+      ])
+    })
+
+    it('leaves an unchanged registration alone on sync', async () => {
+      await triggerManager.start()
+      await triggerManager.syncRegistrations()
+
+      expect(relay.log).toEqual([{ op: 'register', id: 'webhook-triggers:sub_test_member' }])
+    })
+
+    it('does nothing on sync while stopped, and disposes on stop', async () => {
+      await triggerManager.syncRegistrations()
+      expect(relay.consumers.size).toBe(0)
+
+      await triggerManager.start()
+      triggerManager.stop()
+      expect(relay.consumers.size).toBe(0)
+    })
+
+    it('opaque key with no known member: registers under the local scope', async () => {
+      mockGetDistinctMemberIds.mockReturnValue([])
+
+      await triggerManager.start()
+
+      expect(relay.consumers.get('webhook-triggers:local')?.scope).toBe('local')
+    })
+
+    it('no platform token yet: still registers, under the local scope', async () => {
+      mockGetDistinctMemberIds.mockReturnValue([])
+      mockGetPlatformAccessToken.mockReturnValue(null)
+
+      await triggerManager.start()
+
+      expect([...relay.consumers.keys()]).toEqual(['webhook-triggers:local'])
+    })
+
+    it('org token with no known member: registers nothing rather than a bogus `::local` bearer', async () => {
+      mockGetDistinctMemberIds.mockReturnValue([])
+      mockGetPlatformAccessToken.mockReturnValue('org_jwt_token')
+      mockDecodeOrgIdFromToken.mockReturnValue('org_123')
+
+      await triggerManager.start()
+
+      expect(relay.consumers.size).toBe(0)
+    })
+  })
+
+  describe('registration upkeep', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('retries a failed sync with backoff', async () => {
+      vi.useFakeTimers()
+      mockGetSubscribedIds.mockImplementationOnce(() => {
+        throw new Error('database is locked')
       })
 
       await triggerManager.start()
-      expect(mockPollAndClaimEvents).toHaveBeenCalledTimes(1)
+      expect(relay.consumers.size).toBe(0)
 
-      triggerManager.stop()
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect([...relay.consumers.keys()]).toEqual(['webhook-triggers:sub_test_member'])
     })
 
-    it('processes pending events from poll', async () => {
+    it('re-syncs periodically, picking up changes it was not told about', async () => {
+      vi.useFakeTimers()
+      await triggerManager.start()
+
+      mockGetSubscribedIds.mockReturnValue(['ti_abc', 'whep_new'])
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+
+      expect(relay.consumers.get('webhook-triggers:sub_test_member')?.endpointIds).toEqual(['ti_abc', 'whep_new'])
+    })
+
+    it('leaves no re-sync timer behind once stopped', async () => {
+      vi.useFakeTimers()
+      await triggerManager.start()
+      expect(vi.getTimerCount()).toBe(1)
+
+      triggerManager.stop()
+
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('leaves handed-over events for the relay to retry once stopped, instead of starting sessions', async () => {
+      await triggerManager.start()
+      const { accept } = relay.consumers.get('webhook-triggers:sub_test_member')!
+      triggerManager.stop()
+
+      await expect(accept([event('whe_1', 'ti_abc', 'X')])).resolves.toBe('retry')
+      expect(mockCreateSession).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('delivery', () => {
+    it('starts a session for a delivered event and accepts it', async () => {
       const trigger = {
         id: 'trigger_1',
         agentSlug: 'test-agent',
@@ -181,32 +312,15 @@ describe('TriggerManager', () => {
         status: 'active',
         fireCount: 0,
       }
-
-      mockPollAndClaimEvents.mockResolvedValue({
-        events: [
-          {
-            id: 'whe_1',
-            composio_trigger_id: 'ti_abc',
-            trigger_type: 'GMAIL_NEW_EMAIL',
-            payload: { subject: 'Hello' },
-            created_at: '2026-04-01T00:00:00Z',
-          },
-        ],
-        realtime: null,
-      })
-
       mockGetWebhookTriggersByComposioId.mockResolvedValue([trigger])
 
-      await triggerManager.start()
+      const results = await startAndDeliver([event('whe_1', 'ti_abc', 'GMAIL_NEW_EMAIL', { subject: 'Hello' })])
 
-      // Verify session was created
       expect(mockEnsureRunning).toHaveBeenCalledWith('test-agent')
       expect(mockCreateSession).toHaveBeenCalledTimes(1)
       const createArgs = mockCreateSession.mock.calls[0][0]
       expect(createArgs.initialMessage).toContain('Handle this email')
       expect(createArgs.initialMessage).toContain('"subject": "Hello"')
-
-      // Verify trigger was marked as fired
       expect(mockMarkTriggerFired).toHaveBeenCalledWith('trigger_1', 'session_123')
       expect(mockRegisterSession).toHaveBeenCalledWith(
         expect.objectContaining({ slug: 'test-agent' }),
@@ -219,15 +333,11 @@ describe('TriggerManager', () => {
           automationStatus: 'running',
         }),
       )
-
-      // Verify events were acknowledged
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
-
-      triggerManager.stop()
+      expect(results).toEqual(new Map([['whe_1', 'accepted']]))
     })
 
     it('batches multiple events for the same trigger', async () => {
-      const trigger = {
+      mockGetWebhookTriggersByComposioId.mockResolvedValue([{
         id: 'trigger_1',
         agentSlug: 'test-agent',
         composioTriggerId: 'ti_abc',
@@ -235,20 +345,13 @@ describe('TriggerManager', () => {
         name: 'Batch Test',
         status: 'active',
         fireCount: 0,
-      }
+      }])
 
-      mockPollAndClaimEvents.mockResolvedValue({
-        events: [
-          { id: 'whe_1', composio_trigger_id: 'ti_abc', trigger_type: 'GMAIL', payload: { subject: 'A' }, created_at: '' },
-          { id: 'whe_2', composio_trigger_id: 'ti_abc', trigger_type: 'GMAIL', payload: { subject: 'B' }, created_at: '' },
-          { id: 'whe_3', composio_trigger_id: 'ti_abc', trigger_type: 'GMAIL', payload: { subject: 'C' }, created_at: '' },
-        ],
-        realtime: null,
-      })
-
-      mockGetWebhookTriggersByComposioId.mockResolvedValue([trigger])
-
-      await triggerManager.start()
+      const results = await startAndDeliver([
+        event('whe_1', 'ti_abc', 'GMAIL', { subject: 'A' }),
+        event('whe_2', 'ti_abc', 'GMAIL', { subject: 'B' }),
+        event('whe_3', 'ti_abc', 'GMAIL', { subject: 'C' }),
+      ])
 
       // Only one session for all 3 events
       expect(mockCreateSession).toHaveBeenCalledTimes(1)
@@ -266,39 +369,19 @@ describe('TriggerManager', () => {
           automationStatus: 'running',
         }),
       )
-
-      // All 3 events acknowledged
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1', 'whe_2', 'whe_3'], 'sub_test_member')
-
-      triggerManager.stop()
+      expect([...results.values()]).toEqual(['accepted', 'accepted', 'accepted'])
     })
 
-    it('acks events when trigger is not found in SQLite', async () => {
-      mockPollAndClaimEvents.mockResolvedValue({
-        events: [
-          { id: 'whe_orphan', composio_trigger_id: 'ti_gone', trigger_type: 'X', payload: {}, created_at: '' },
-        ],
-        realtime: null,
-      })
-
+    it('discards events with no active local trigger (e.g. paused)', async () => {
       mockGetWebhookTriggersByComposioId.mockResolvedValue([])
 
-      await triggerManager.start()
+      const results = await startAndDeliver([event('whe_orphan', 'ti_abc', 'X')])
 
       expect(mockCreateSession).not.toHaveBeenCalled()
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_orphan'], 'sub_test_member')
-
-      triggerManager.stop()
+      expect(results).toEqual(new Map([['whe_orphan', 'discard']]))
     })
 
-    it('marks trigger as failed when agent does not exist', async () => {
-      mockPollAndClaimEvents.mockResolvedValue({
-        events: [
-          { id: 'whe_1', composio_trigger_id: 'ti_abc', trigger_type: 'X', payload: {}, created_at: '' },
-        ],
-        realtime: null,
-      })
-
+    it('marks trigger as failed when agent does not exist, and still settles the event', async () => {
       mockGetWebhookTriggersByComposioId.mockResolvedValue([{
         id: 'trigger_1',
         agentSlug: 'deleted-agent',
@@ -307,23 +390,48 @@ describe('TriggerManager', () => {
         status: 'active',
         fireCount: 0,
       }])
-
       mockAgentExists.mockResolvedValue(false)
 
-      await triggerManager.start()
+      const results = await startAndDeliver([event('whe_1', 'ti_abc', 'X')])
 
       expect(mockMarkTriggerFailed).toHaveBeenCalledWith('trigger_1', 'Agent no longer exists')
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
+      expect(results).toEqual(new Map([['whe_1', 'accepted']]))
       expect(mockCreateSession).not.toHaveBeenCalled()
       expect(mockRegisterSession).not.toHaveBeenCalled()
-
-      triggerManager.stop()
       mockAgentExists.mockResolvedValue(true) // restore for other tests
     })
 
-    // SUP-226: runtime attribution must select the same user the poller claimed
-    // under — the connected-account owner when the creator has no platform
-    // member — so the session's proxy calls carry the correct acting member.
+    it('settles events even when starting the session fails (no retry until SUP-934)', async () => {
+      mockGetWebhookTriggersByComposioId.mockResolvedValue([{
+        id: 'trigger_1',
+        agentSlug: 'test-agent',
+        composioTriggerId: 'ti_abc',
+        prompt: 'Test',
+        status: 'active',
+        fireCount: 0,
+      }])
+      mockCreateSession.mockRejectedValue(new Error('container failed to start'))
+
+      const results = await startAndDeliver([event('whe_1', 'ti_abc', 'X')])
+
+      expect(results).toEqual(new Map([['whe_1', 'accepted']]))
+    })
+
+    it('settles each trigger group separately', async () => {
+      mockGetWebhookTriggersByComposioId.mockImplementation(async (id: string) =>
+        id === 'ti_abc'
+          ? [{ id: 'trigger_1', agentSlug: 'test-agent', composioTriggerId: 'ti_abc', prompt: 'P', status: 'active', fireCount: 0 }]
+          : [],
+      )
+
+      const results = await startAndDeliver([event('whe_1', 'ti_abc', 'X'), event('whe_2', 'ti_gone', 'X')])
+
+      expect(results).toEqual(new Map([['whe_1', 'accepted'], ['whe_2', 'discard']]))
+    })
+
+    // SUP-226: runtime attribution must select the same user the events were
+    // claimed under — the connected-account owner when the creator has no
+    // platform member — so the session's proxy calls carry the correct acting member.
     it('attributes the session to the connected-account owner when the creator lacks a platform member', async () => {
       const trigger = {
         id: 'trigger_1',
@@ -336,13 +444,6 @@ describe('TriggerManager', () => {
         fireCount: 0,
         createdByUserId: 'creator_user',
       }
-
-      mockPollAndClaimEvents.mockResolvedValue({
-        events: [
-          { id: 'whe_1', composio_trigger_id: 'ti_abc', trigger_type: 'GMAIL', payload: {}, created_at: '' },
-        ],
-        realtime: null,
-      })
       mockGetWebhookTriggersByComposioId.mockResolvedValue([trigger])
       // Creator has no platform member; resolution falls back to the owner.
       mockResolveTriggerPrincipal.mockReturnValue({
@@ -350,7 +451,7 @@ describe('TriggerManager', () => {
         memberId: 'sub_owner_member',
       })
 
-      await triggerManager.start()
+      await startAndDeliver([event('whe_1', 'ti_abc', 'GMAIL')])
 
       expect(mockResolveTriggerPrincipal).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -360,20 +461,12 @@ describe('TriggerManager', () => {
       )
       expect(mockRunWithOptionalUser).toHaveBeenCalledWith('owner_user', expect.any(Function))
       expect(mockCreateSession).toHaveBeenCalledTimes(1)
-
-      triggerManager.stop()
     })
   })
 
   describe('model, effort, and speed resolution', () => {
     // Preference order: trigger override > agent default > global default.
     async function fireTrigger(overrides: Record<string, unknown> = {}) {
-      mockPollAndClaimEvents.mockResolvedValue({
-        events: [
-          { id: 'whe_1', composio_trigger_id: 'ti_abc', trigger_type: 'GMAIL', payload: {}, created_at: '' },
-        ],
-        realtime: null,
-      })
       mockGetWebhookTriggersByComposioId.mockResolvedValue([{
         id: 'trigger_1',
         agentSlug: 'test-agent',
@@ -386,8 +479,7 @@ describe('TriggerManager', () => {
         speed: null,
         ...overrides,
       }])
-      await triggerManager.start()
-      triggerManager.stop()
+      await startAndDeliver([event('whe_1', 'ti_abc', 'GMAIL')])
       expect(mockCreateSession).toHaveBeenCalledTimes(1)
       return mockCreateSession.mock.calls[0][0]
     }
@@ -420,47 +512,6 @@ describe('TriggerManager', () => {
       mockReadAgentPreferences.mockResolvedValue({ defaultSpeed: 'fast' })
       const args = await fireTrigger({ speed: 'normal' })
       expect(args.speed).toBe('normal')
-    })
-  })
-
-  describe('pollAndProcess fallback when memberIds is empty', () => {
-    it('opaque key mode: polls with "local" placeholder', async () => {
-      mockGetDistinctMemberIds.mockReturnValue([])
-      mockGetPlatformAccessToken.mockReturnValue('opaque_test_token')
-      mockDecodeOrgIdFromToken.mockReturnValue(null)
-      mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
-
-      await triggerManager.start()
-
-      expect(mockPollAndClaimEvents).toHaveBeenCalledTimes(1)
-      expect(mockPollAndClaimEvents).toHaveBeenCalledWith('local')
-
-      triggerManager.stop()
-    })
-
-    it('org JWT mode: skips poll to avoid bogus `::local` bearer', async () => {
-      mockGetDistinctMemberIds.mockReturnValue([])
-      mockGetPlatformAccessToken.mockReturnValue('org_jwt_token')
-      mockDecodeOrgIdFromToken.mockReturnValue('org_123')
-      mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
-
-      await triggerManager.start()
-
-      expect(mockPollAndClaimEvents).not.toHaveBeenCalled()
-
-      triggerManager.stop()
-    })
-
-    it('no platform token: skips poll', async () => {
-      mockGetDistinctMemberIds.mockReturnValue([])
-      mockGetPlatformAccessToken.mockReturnValue(null)
-      mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
-
-      await triggerManager.start()
-
-      expect(mockPollAndClaimEvents).not.toHaveBeenCalled()
-
-      triggerManager.stop()
     })
   })
 })

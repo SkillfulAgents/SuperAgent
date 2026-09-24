@@ -272,6 +272,13 @@ function notifyPlatformServiceAuthChanged(connected: boolean): void {
     .catch((error) =>
       captureException(error, { tags: { area: 'platform-auth', op: 'notify-webhook-relay' } }),
     )
+  // Which members claim trigger events depends on the connection: an org
+  // token claims per member, an opaque key as itself.
+  void import('../scheduler/trigger-manager')
+    .then((mod) => mod.triggerManager.syncRegistrations())
+    .catch((error) =>
+      captureException(error, { tags: { area: 'platform-auth', op: 'notify-trigger-manager' } }),
+    )
 }
 
 function getEnvManagedStatus(): PlatformAuthStatus | null {
