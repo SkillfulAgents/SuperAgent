@@ -62,7 +62,8 @@ export function sessionProfileFromRequest(request: CreateSessionRequest): WarmPr
  * session's own shape.
  */
 export function nextWarmProfileFromRequest(request: CreateSessionRequest): WarmProfile {
-  return buildProfile(request, request.prewarmDefaults);
+  // Always warm interactive: unattended runs tolerate a cold start, people don't.
+  return { ...buildProfile(request, request.prewarmDefaults), noninteractive: false };
 }
 
 function buildProfile(
@@ -72,9 +73,7 @@ function buildProfile(
   const runtime = defaults?.llmRuntime ?? request.llmRuntime;
   return warmProfileSchema.parse({
     workingDirectory: request.workingDirectory,
-    // Warm for interactive when the host says what the NEXT session looks like
-    // (only interactive callers send prewarmDefaults); otherwise this shape.
-    noninteractive: defaults ? false : isNoninteractive(request.metadata),
+    noninteractive: isNoninteractive(request.metadata),
     systemPrompt: request.systemPrompt,
     modelPromptHints: runtime?.modelPromptHints ?? (defaults ? defaults.modelPromptHints : request.modelPromptHints),
     availableEnvVars: request.availableEnvVars,

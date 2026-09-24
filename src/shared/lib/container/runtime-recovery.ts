@@ -306,7 +306,7 @@ async function resumeSessions(
       if (!deps.isSubscribed(sessionId)) {
         await deps.subscribeToSession(sessionId, client, sessionId)
       }
-      await client.sendMessage(sessionId, plan.resumePrompt, randomUUID(), { shouldQuery: true })
+      await client.sendMessage(sessionId, plan.resumePrompt, randomUUID(), { shouldQuery: true, noninteractive: true })
       const coalesced = deps.takeCoalescedUserMessages(sessionId)
       deps.markRecovered([sessionId])
       await deliverCoalescedMessages(deps, client, sessionId, coalesced)

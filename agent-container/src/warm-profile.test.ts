@@ -105,8 +105,8 @@ describe('profiles from a create-session request', () => {
     expect(sessionProfileFromRequest({ initialMessage: 'hi' }).noninteractive).toBe(false)
   })
 
-  it('the next-warm profile follows prewarmDefaults (interactive) when the host sends them', () => {
-    expect(nextWarmProfileFromRequest(request).noninteractive).toBe(true)
+  it('the next-warm profile is always interactive', () => {
+    expect(nextWarmProfileFromRequest(request).noninteractive).toBe(false)
     expect(
       nextWarmProfileFromRequest({ ...request, prewarmDefaults: { model: 'm' } }).noninteractive,
     ).toBe(false)

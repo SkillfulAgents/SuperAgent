@@ -305,8 +305,10 @@ export class SessionManager extends EventEmitter {
     };
     const sessionProfile = sessionProfileFromRequest(normalized);
     const nextProfile = nextWarmProfileFromRequest(normalized);
+    // The pool only holds interactive processes; a noninteractive session
+    // spawns cold and leaves the parked one for the next human session.
     const process =
-      (await this.claimPrewarmed(sessionProfile)) ??
+      (noninteractive ? null : await this.claimPrewarmed(sessionProfile)) ??
       new ClaudeCodeProcess({
         sessionId: tempSessionId,
         workingDirectory,

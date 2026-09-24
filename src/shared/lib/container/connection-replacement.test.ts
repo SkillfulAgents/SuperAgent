@@ -70,7 +70,7 @@ describe('connection replacement notification', () => {
       expect(mocks.order.indexOf(`send:${sessionId}`)).toBeGreaterThan(mocks.order.indexOf('release'))
       expect(mocks.send).toHaveBeenCalledWith(sessionId,
         expect.stringMatching(/^\[SYSTEM\] Connection to "Slack" was replaced\./),
-        expect.any(String), { shouldQuery: true })
+        expect.any(String), { shouldQuery: true, noninteractive: true })
     }
     const message = mocks.send.mock.calls[0][1] as string
     expect(message).toContain(kind === 'connected-accounts' ? 'Previous account ID: old. New account ID: new.' : 'Previous MCP ID: old. New MCP ID: new.')
@@ -117,7 +117,7 @@ describe('connection replacement notification', () => {
     if (failure === 'unacknowledged') mocks.interrupt.mockResolvedValueOnce({ interrupted: false, processKept: false })
     if (failure === 'send') mocks.send.mockRejectedValueOnce(new Error('send failed'))
     expect(await finishConnectionReplacement(change, release)).toEqual({ liveRefresh: true, sessionNotification: false })
-    expect(mocks.send).toHaveBeenCalledWith('session-2', expect.any(String), expect.any(String), { shouldQuery: true })
+    expect(mocks.send).toHaveBeenCalledWith('session-2', expect.any(String), expect.any(String), { shouldQuery: true, noninteractive: true })
     expect(release).toHaveBeenCalledOnce()
   })
 })
