@@ -24,7 +24,7 @@ export async function collectCodexResponse(response: Response, abort: AbortContr
       if (!data.response || typeof data.response !== 'object') throw new Error('Invalid completed response')
       return data.response as Json
     }
-    if (data.type === 'response.failed' || data.type === 'error') throw new Error('Codex response failed')
+    if (data.type === 'response.failed' || data.type === 'error') throw new CodexResponseError(data)
   }
   throw new Error('Codex stream ended without a completed response')
 }
@@ -35,4 +35,30 @@ export function normalizeCodexError(body: unknown): unknown {
     return { error: { message: body.detail } }
   }
   return body
+}
+
+const record = (value: unknown): Json => value !== null && typeof value === 'object' ? value as Json : {}
+
+/** Preserve completed SSE failures for callers expecting a JSON Messages reply. */
+export class CodexResponseError extends Error {
+  readonly status: number
+  readonly body: Json
+  readonly retryable: boolean
+  constructor(event: Json) {
+    const error = record(event.type === 'response.failed' ? record(event.response).error : event.error ?? event)
+    const message = typeof error.message === 'string' ? error.message : 'Codex response failed'
+    super(message)
+    const code = String(error.code ?? error.type ?? '')
+    const quota = ['usage_limit_reached', 'insufficient_quota', 'billing_hard_limit_reached'].includes(code)
+    const knownStatus: Record<string, number> = {
+      authentication_error: 401, invalid_api_key: 401, invalid_token: 401,
+      permission_denied: 403, model_not_found: 404, unsupported_model: 400,
+      invalid_request_error: 400, invalid_request: 400, rate_limit_exceeded: 429,
+      rate_limit_error: 429, server_error: 502,
+    }
+    const explicit = error.status_code ?? error.status
+    this.status = quota ? 429 : knownStatus[code] ?? (typeof explicit === 'number' && explicit >= 400 && explicit <= 599 ? explicit : 502)
+    this.retryable = !quota && (this.status === 408 || this.status === 409 || this.status === 429 || this.status >= 500)
+    this.body = { error: { ...error, message } }
+  }
 }

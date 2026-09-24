@@ -1,5 +1,5 @@
 import { CredentialRefreshError } from './credential-refresh-error'
-import { normalizeCodexRequest, collectCodexResponse, normalizeCodexError } from './llm-proxy-codex'
+import { normalizeCodexRequest, collectCodexResponse, normalizeCodexError, CodexResponseError } from './llm-proxy-codex'
 import { normalizeGrokMessages, grokWireFormat } from './llm-proxy-grok'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, createHash } from 'node:crypto'
@@ -153,7 +153,10 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       // Do not log bodies, URLs with credentials, headers, or upstream exceptions.
       abort.abort()
       if (res.headersSent) res.destroy()
-      else if (!res.destroyed) sendError(res, error instanceof CredentialRefreshError ? error.status : 502,
+      else if (!res.destroyed && error instanceof CodexResponseError) {
+        if (!error.retryable) res.setHeader('x-should-retry', 'false')
+        sendJson(res, error.status, responsesErrorToMessagesError(error.body, error.status))
+      } else if (!res.destroyed) sendError(res, error instanceof CredentialRefreshError ? error.status : 502,
         error instanceof CredentialRefreshError ? error.message : 'Provider proxy request failed')
     } finally { active.delete(abort) }
   }

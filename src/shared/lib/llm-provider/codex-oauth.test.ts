@@ -45,6 +45,17 @@ describe('Codex device OAuth', () => {
 
   it('reports reconnect guidance without disclosing upstream error bodies', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ error: 'private-provider-details' }, { status: 401 })))
-    await expect(refreshCodexCredential(previous)).rejects.toThrow('Reconnect in Settings')
+    await expect(refreshCodexCredential(previous)).rejects.toThrow('reconnect in Settings')
   })
+})
+
+it('gives actionable guidance when initial sign-in omits a refresh token', async () => {
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce(Response.json({ authorization_code: 'grant', code_verifier: 'verifier' }))
+    .mockResolvedValueOnce(Response.json({ access_token: token() })))
+  await expect(pollCodexLogin('id', 'code')).rejects.toThrow('Codex did not issue a refresh token. Please sign in again.')
+})
+it('keeps temporary OAuth service failures retryable', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 503 })))
+  await expect(refreshCodexCredential(previous)).rejects.toMatchObject({ status: 503 })
 })

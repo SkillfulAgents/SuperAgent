@@ -1,3 +1,5 @@
+import { CODEX_DEFAULT_MODELS } from './model-catalog-defaults'
+export { CODEX_DEFAULT_MODELS } from './model-catalog-defaults'
 import type { EffortLevel } from '../container/types'
 import type Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
@@ -9,7 +11,6 @@ import { inferErrorStatus, extractErrorMessage } from './error-presentation'
 export const CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex'
 export const CODEX_CLIENT_VERSION = '0.156.1'
 export const CODEX_HEADERS = { originator: 'codex_cli_rs', 'OpenAI-Beta': 'responses=experimental' }
-export const CODEX_DEFAULT_MODELS = { agentModel: 'gpt', summarizerModel: 'gpt', browserModel: 'gpt', dashboardBuilderModel: 'gpt' }
 // Subscription model availability/context differs from the public API catalog.
 const CODEX_MODELS = new Set(['gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra'])
 

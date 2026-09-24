@@ -79,3 +79,9 @@ DB tests also passed with libsql. The full container suite passed 1,284 tests wi
 10 skips, followed by the 20-test proxy suite after adding the Codex error-envelope
 regression. Typecheck and lint passed (existing lint warnings only). Screenshots
 were captured in light/dark mode from scratch mock data.
+
+Completed error events on the forced-streaming, non-streaming SDK path retain
+upstream messages and status classification. Known subscription-quota failures
+suppress SDK retries; transient server failures remain retryable. An initial
+OAuth exchange without a refresh token asks the user to sign in again. Device
+polling still treats 403/404 as pending, matching the official CLI protocol.

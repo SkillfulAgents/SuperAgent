@@ -1,3 +1,4 @@
+import { CredentialRefreshError } from '../../../../agent-container/src/credential-refresh-error'
 import { z } from 'zod'
 import { oauthCredentialSchema, type OAuthCredential } from './oauth-schema'
 
@@ -15,12 +16,14 @@ function claims(token: string) {
 }
 function credentials(data: unknown, previous?: OAuthCredential): OAuthCredential {
   const token = z.object({ access_token: z.string().min(1), refresh_token: z.string().optional(), id_token: z.string().optional(), expires_in: z.number().optional() }).parse(data)
+  const refreshToken = token.refresh_token || previous?.refreshToken
+  if (!refreshToken) throw new Error('Codex did not issue a refresh token. Please sign in again.')
   const access = claims(token.access_token)
   const identity = token.id_token ? claims(token.id_token) : access
   const accountId = access['https://api.openai.com/auth']?.chatgpt_account_id ?? identity['https://api.openai.com/auth']?.chatgpt_account_id ?? previous?.accountId
   if (!accountId) throw new Error('Codex did not return a subscription account. Sign in again.')
   return oauthCredentialSchema.parse({ accessToken: token.access_token,
-    refreshToken: token.refresh_token ?? previous?.refreshToken,
+    refreshToken,
     expiresAt: access.exp ? access.exp * 1000 : Date.now() + (token.expires_in ?? 3600) * 1000,
     accountId, accountLabel: identity.email ?? access.email ?? previous?.accountLabel ?? 'ChatGPT account',
   })
@@ -32,7 +35,7 @@ async function post(path: string, body: unknown) {
 async function exchange(fields: Record<string, string>) {
   const response = await fetch(`${ISSUER}/oauth/token`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20_000),
     headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: CODEX_OAUTH_CLIENT_ID, ...fields }) })
-  if (!response.ok) throw new Error('Codex sign-in expired or was revoked. Reconnect in Settings → Model Providers.')
+  if (!response.ok) throw new CredentialRefreshError(response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429 ? 401 : 503)
   return response.json() as Promise<unknown>
 }
 export async function startCodexLogin() {

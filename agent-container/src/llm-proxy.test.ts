@@ -316,3 +316,31 @@ describe('deferred tool compatibility', () => {
     expect(out.messages[1].content[0].text).toContain('compacted')
   })
 })
+
+describe('Codex completed error events', () => {
+  it.each([
+    ['response.failed', 'usage_limit_reached', 429],
+    ['error', 'unsupported_model', 400],
+    ['error', 'authentication_error', 401],
+  ] as const)('preserves %s / %s and suppresses futile SDK retries', async (type, code, status) => {
+    let attempts = 0
+    const base = await upstream((_body, _req, res) => {
+      attempts++
+      const error = { code, message: 'Upstream actionable detail' }
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end(`data: ${JSON.stringify(type === 'response.failed' ? { type, response: { error } } : { type, ...error })}\n\n`)
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', generation: 0 } } })
+    const retrying = new Anthropic({ baseURL: handle.env.ANTHROPIC_BASE_URL, apiKey: handle.env.ANTHROPIC_API_KEY, maxRetries: 2 })
+    await expect(retrying.messages.create(prompt)).rejects.toMatchObject({ status, message: expect.stringContaining('Upstream actionable detail') })
+    expect(attempts).toBe(1)
+  })
+  it('retains upstream server failures as server errors', async () => {
+    const base = await upstream((_body, _req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end('data: {"type":"response.failed","response":{"error":{"code":"server_error","message":"Service temporarily unavailable"}}}\n\n')
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', generation: 0 } } })
+    await expect(client(handle).messages.create(prompt)).rejects.toMatchObject({ status: 502, message: expect.stringContaining('Service temporarily unavailable') })
+  })
+})
