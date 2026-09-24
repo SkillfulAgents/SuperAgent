@@ -104,6 +104,8 @@ describe('input handoff results', () => {
     expect(await tasks.context('edit')).toBe('rejected')
     await tasks.disconnect()
     expect(await tasks.input('second')).toBe('retry')
+    // Context is never input, connected or not.
+    expect(await tasks.context('edit-while-down')).toBe('rejected')
   })
 })
 
