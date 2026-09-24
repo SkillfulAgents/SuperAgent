@@ -1,3 +1,4 @@
+import { getSettings } from '@shared/lib/config/settings'
 /**
  * Webhook Trigger Service
  *
@@ -20,13 +21,13 @@ import { trackServerEvent } from '../analytics/server-analytics'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
-import { disablePlatformWebhookEndpoint } from '@shared/lib/services/webhook-endpoints-client'
+import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 
 const PLATFORM_PROVIDER_ID = 'platform'
 
-function lookupPlatformMemberId(userId: string): string | null {
-  const rows = db
+async function lookupPlatformMemberId(userId: string): Promise<string | null> {
+  const rows = await db
     .select({ accountId: authAccount.accountId })
     .from(authAccount)
     .where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, PLATFORM_PROVIDER_ID)))
@@ -47,22 +48,22 @@ function lookupPlatformMemberId(userId: string): string | null {
  * trigger creator is preferred, but the connected-account owner is a fallback
  * when the creator has no platform member (SUP-226).
  */
-export function resolvePlatformMemberForCandidates(
+export async function resolvePlatformMemberForCandidates(
   candidates: Array<string | null | undefined>,
-): { userId: string; memberId: string } | null {
+): Promise<{ userId: string; memberId: string } | null> {
   const seen = new Set<string>()
   for (const userId of candidates) {
     if (!userId || seen.has(userId)) continue
     seen.add(userId)
-    const memberId = lookupPlatformMemberId(userId)
+    const memberId = await lookupPlatformMemberId(userId)
     if (memberId) return { userId, memberId }
   }
   return null
 }
 
 /** Distinct member IDs of active/paused trigger owners; used by TriggerManager to poll per-member. */
-export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
-  const rows = db
+export async function getDistinctPlatformMemberIdsForActiveTriggers(): Promise<string[]> {
+  const rows = await db
     .select({
       mintedByMemberId: webhookTriggers.mintedByMemberId,
       createdByUserId: webhookTriggers.createdByUserId,
@@ -84,7 +85,7 @@ export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
     // Prefer the creator, but fall back to the connected-account owner when the
     // creator has no platform member — otherwise the trigger is silently dropped
     // from the poll set even though the owner could claim its events (SUP-226).
-    const resolved = resolvePlatformMemberForCandidates([row.createdByUserId, row.ownerUserId])
+    const resolved = await resolvePlatformMemberForCandidates([row.createdByUserId, row.ownerUserId])
     if (resolved) {
       ids.add(resolved.memberId)
       continue
@@ -100,8 +101,8 @@ export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
 }
 
 // Active composio trigger IDs registered on this host (no per-member filter — the access key / acting member is the auth boundary at the proxy).
-export function getActiveComposioTriggerIds(): string[] {
-  return db
+export async function getActiveComposioTriggerIds(): Promise<string[]> {
+  const rows = await db
     .select({ composioTriggerId: webhookTriggers.composioTriggerId })
     .from(webhookTriggers)
     .where(
@@ -111,7 +112,7 @@ export function getActiveComposioTriggerIds(): string[] {
       ),
     )
     .all()
-    .map((r) => r.composioTriggerId!)
+  return rows.map((r) => r.composioTriggerId!)
 }
 
 /**
@@ -122,8 +123,8 @@ export function getActiveComposioTriggerIds(): string[] {
  * acks/discards them, instead of letting them accumulate pending and fire a
  * session on resume (SUP-225).
  */
-export function getSubscribedComposioTriggerIds(): string[] {
-  const ids = db
+export async function getSubscribedComposioTriggerIds(): Promise<string[]> {
+  const rows = await db
     .selectDistinct({ composioTriggerId: webhookTriggers.composioTriggerId })
     .from(webhookTriggers)
     .where(
@@ -133,11 +134,29 @@ export function getSubscribedComposioTriggerIds(): string[] {
       ),
     )
     .all()
-    .map((r) => r.composioTriggerId!)
-  return ids
+  return rows.map((r) => r.composioTriggerId!)
 }
 
 export type { WebhookTrigger, NewWebhookTrigger }
+
+/**
+ * Tell the trigger manager the set of subscribed endpoints may have changed,
+ * so it re-registers them with the webhook relay. Lazy import avoids the
+ * circular dep. Best-effort: catch so a late rejection can't reach the
+ * process-level unhandledRejection handler (fatal in Electron main) or outlive
+ * a test. The success log is the only positive signal this fire-and-forget
+ * path ran; webhook-trigger-service.coldstart.test.ts asserts on it.
+ */
+function notifyWebhookTriggersChanged(reason: string): void {
+  void import('@shared/lib/scheduler/trigger-manager')
+    .then(async ({ triggerManager }) => {
+      await triggerManager.syncRegistrations()
+      console.log(`[webhook-triggers] relay registrations synced (${reason})`)
+    })
+    .catch((err) => {
+      console.warn('[webhook-triggers] relay registration sync failed:', err)
+    })
+}
 
 // ============================================================================
 // Types
@@ -159,6 +178,7 @@ export interface CreateWebhookTriggerParams {
   createdByUserId?: string
   /** Acting platform member the upstream subscription was minted under (SUP-765). */
   mintedByMemberId?: string
+  llmProviderId?: string | null
   model?: string
   effort?: string
   speed?: string
@@ -186,6 +206,7 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     createdBySessionId: params.createdBySessionId ?? null,
     createdByUserId: params.createdByUserId ?? null,
     mintedByMemberId: params.mintedByMemberId ?? null,
+    llmProviderId: params.model ? (params.llmProviderId === undefined ? getSettings().llmDefault?.llmProviderId : params.llmProviderId) : null,
     model: params.model ?? null,
     effort: params.effort ?? null,
     speed: params.speed ?? null,
@@ -199,22 +220,7 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     agentSlug: params.agentSlug,
   })
 
-  // Cold-start fix: a host that booted with 0 active triggers never
-  // subscribed Realtime. Lazy import avoids the circular dep.
-  // Best-effort: catch so a late rejection can't reach the process-level
-  // unhandledRejection handler (fatal in Electron main) or outlive a test.
-  // The success log is the only positive signal this fire-and-forget path ran;
-  // webhook-trigger-service.coldstart.test.ts asserts on it.
-  void import('@shared/lib/scheduler/trigger-manager')
-    .then(async ({ triggerManager }) => {
-      if (!triggerManager.isRealtimeActive()) {
-        await triggerManager.pollAndProcess()
-      }
-      console.log(`[webhook-triggers] cold-start nudge completed for trigger ${id}`)
-    })
-    .catch((err) => {
-      console.warn('[webhook-triggers] cold-start poll skipped:', err)
-    })
+  notifyWebhookTriggersChanged(`created ${id}`)
 
   return id
 }
@@ -375,7 +381,9 @@ export async function cancelWebhookTrigger(triggerId: string): Promise<boolean> 
       )
     )
 
-  return changesOf(result) > 0
+  const cancelled = changesOf(result) > 0
+  if (cancelled) notifyWebhookTriggersChanged(`cancelled ${triggerId}`)
+  return cancelled
 }
 
 /**
@@ -439,6 +447,7 @@ export async function markTriggerFailed(triggerId: string, _error: string): Prom
     .update(webhookTriggers)
     .set({ status: 'failed' })
     .where(eq(webhookTriggers.id, triggerId))
+  notifyWebhookTriggersChanged(`failed ${triggerId}`)
 }
 
 /**
@@ -491,20 +500,20 @@ export async function cancelWebhookTriggerWithCleanup(
   return true
 }
 
-// Custom endpoints live on the platform proxy regardless of Composio key mode,
+// Custom endpoints live on the webhook relay regardless of Composio key mode,
 // so gate on platform auth or a user-supplied Composio key leaves the URL live.
 function canReachUpstream(kind: WebhookTrigger['kind']): boolean {
   return kind === 'custom' ? Boolean(getPlatformAccessToken()) : isPlatformComposioActive()
 }
 
-// One place that speaks both upstream vocabularies (platform endpoint disable
+// One place that speaks both upstream vocabularies (relay endpoint disable
 // vs Composio subscription delete). Callers own attribution.
 async function deleteUpstream(
   kind: WebhookTrigger['kind'],
   memberId: string,
   upstreamId: string,
 ): Promise<void> {
-  if (kind === 'custom') await disablePlatformWebhookEndpoint(memberId, upstreamId)
+  if (kind === 'custom') await getWebhookRelay().disableEndpoint(memberId, upstreamId)
   else await deleteComposioTrigger(upstreamId)
 }
 
@@ -536,12 +545,12 @@ export interface TeardownMembers {
 
 // Minting member when recorded (the only guaranteed principal); pre-column rows
 // guess via the SUP-226 chain (creator, owner) then the stored member.
-export function resolveTeardownMembers(trigger: WebhookTrigger): TeardownMembers {
+export async function resolveTeardownMembers(trigger: WebhookTrigger): Promise<TeardownMembers> {
   if (!attribution.requiresActingMember()) return { memberIds: [], known: true }
   if (trigger.mintedByMemberId) return { memberIds: [trigger.mintedByMemberId], known: true }
   const candidates = [
-    resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId,
-    resolvePlatformMemberForCandidates([getConnectedAccountOwnerUserId(trigger.connectedAccountId)])?.memberId,
+    (await resolvePlatformMemberForCandidates([trigger.createdByUserId]))?.memberId,
+    (await resolvePlatformMemberForCandidates([await getConnectedAccountOwnerUserId(trigger.connectedAccountId)]))?.memberId,
     getStoredPlatformMemberId(),
   ]
   return { memberIds: [...new Set(candidates.filter((m): m is string => Boolean(m)))], known: false }
@@ -550,7 +559,7 @@ export function resolveTeardownMembers(trigger: WebhookTrigger): TeardownMembers
 // Delete as the minting member via ALS (the interceptor overrides explicit auth).
 // 404 = gone only for a known member; guessed members are tried in turn, all-404 throws.
 async function tearDownUpstream(trigger: WebhookTrigger, upstreamId: string): Promise<void> {
-  const { memberIds, known } = resolveTeardownMembers(trigger)
+  const { memberIds, known } = await resolveTeardownMembers(trigger)
   const attempts: Array<string | null> = memberIds.length > 0 ? memberIds : [null]
   for (const memberId of attempts) {
     try {
@@ -585,18 +594,18 @@ async function tearDownUpstream(trigger: WebhookTrigger, upstreamId: string): Pr
 
 // SUP-226 candidate order (creator, then connected-account owner), shared by
 // polling and session attribution so the two chains cannot drift.
-export function resolveTriggerPrincipal(
+export async function resolveTriggerPrincipal(
   trigger: Pick<WebhookTrigger, 'createdByUserId' | 'connectedAccountId'>,
-): { userId: string; memberId: string } | null {
+): Promise<{ userId: string; memberId: string } | null> {
   return resolvePlatformMemberForCandidates([
     trigger.createdByUserId,
-    getConnectedAccountOwnerUserId(trigger.connectedAccountId),
+    await getConnectedAccountOwnerUserId(trigger.connectedAccountId),
   ])
 }
 
-export function getConnectedAccountOwnerUserId(connectedAccountId: string | null): string | null {
+export async function getConnectedAccountOwnerUserId(connectedAccountId: string | null): Promise<string | null> {
   if (!connectedAccountId) return null
-  const rows = db
+  const rows = await db
     .select({ userId: connectedAccounts.userId })
     .from(connectedAccounts)
     .where(eq(connectedAccounts.id, connectedAccountId))
@@ -643,6 +652,7 @@ export async function updateComposioTriggerId(
     .update(webhookTriggers)
     .set({ composioTriggerId })
     .where(eq(webhookTriggers.id, triggerId))
+  notifyWebhookTriggersChanged(`re-pointed ${triggerId}`)
 }
 
 /**
@@ -685,13 +695,18 @@ export async function updateWebhookTriggerName(
  */
 export async function updateWebhookTriggerRuntimeOptions(
   triggerId: string,
-  options: { model?: string | null; effort?: string | null; speed?: string | null },
+  options: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null },
 ): Promise<boolean> {
   const trigger = await getWebhookTrigger(triggerId)
   if (!trigger || trigger.status === 'cancelled') return false
 
   const updates: Record<string, string | null> = {}
-  if ('model' in options) updates.model = options.model ?? null
+  if ('llmProviderId' in options) updates.llmProviderId = options.llmProviderId ?? null
+  if ('model' in options) {
+    updates.model = options.model ?? null
+    if (!options.model) updates.llmProviderId = null
+    else if (options.llmProviderId === undefined && getSettings().llmDefault) updates.llmProviderId = trigger.llmProviderId ?? getSettings().llmDefault!.llmProviderId
+  }
   if ('effort' in options) updates.effort = options.effort ?? null
   if ('speed' in options) updates.speed = options.speed ?? null
 

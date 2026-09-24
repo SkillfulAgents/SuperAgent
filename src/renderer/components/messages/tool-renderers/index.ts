@@ -48,10 +48,11 @@ import {
   invokeAgentRenderer,
   getAgentSessionsRenderer,
   getAgentSessionTranscriptRenderer,
+  downloadAgentFileRenderer,
 } from './x-agent-tools'
 import {
   listChatProvidersRenderer,
-  listChatIntegrationsRenderer,
+  listAgentIntegrationsRenderer,
   addChatIntegrationRenderer,
   sendChatMessageRenderer,
 } from './chat-tools'
@@ -137,10 +138,13 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__agents__invoke_agent': invokeAgentRenderer,
   'mcp__agents__get_agent_sessions': getAgentSessionsRenderer,
   'mcp__agents__get_agent_session_transcript': getAgentSessionTranscriptRenderer,
+  'mcp__agents__download_agent_file': downloadAgentFileRenderer,
 
   // MCP tools - chat integrations
   'mcp__chat__list_available_chat_providers': listChatProvidersRenderer,
-  'mcp__chat__list_chat_integrations': listChatIntegrationsRenderer,
+  'mcp__chat__list_agent_integrations': listAgentIntegrationsRenderer,
+  // TODO(2026-12-01): Delete this legacy list_chat_integrations renderer alias.
+  'mcp__chat__list_chat_integrations': listAgentIntegrationsRenderer,
   'mcp__chat__add_chat_integration': addChatIntegrationRenderer,
   'mcp__chat__send_chat_message': sendChatMessageRenderer,
 }

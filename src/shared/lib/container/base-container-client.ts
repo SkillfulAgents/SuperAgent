@@ -1,3 +1,8 @@
+import { MessageNotAcceptedError, requestWasNotDispatched } from './message-dispatch-error'
+import { isProviderEnvVar } from '../llm-provider/provider-env'
+import { isQueuedSessionSend } from './session-send-context'
+import { connectionRuntime, rememberSessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { resolveExecutionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { exec, execSync, spawn } from 'child_process'
 import path from 'path'
 import { promisify } from 'util'
@@ -31,13 +36,14 @@ import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { z } from 'zod'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
-import { getActiveLlmProvider, getModelContextWindowMap } from '@shared/lib/llm-provider'
+import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
-import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { getOrCreateHostToken } from './host-token-store'
-import { getSubagentModelCatalog } from './subagent-model-catalog'
+import { getPlatformContainerToken } from '../platform-attribution/container-token'
+import { getPlatformProxyBaseUrl } from '../platform-auth/config'
+import { rewriteLoopbackForContainer } from '../llm-provider/container-url'
 
 const execAsync = promisify(exec)
 
@@ -741,7 +747,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       let port = await this.findAvailablePort()
 
       // Write env vars to a temp file (avoids command length limits on Windows)
-      const { flag: envFileFlag, cleanup: cleanupEnvFile } = this.buildEnvFile(options?.envVars, options?.agentName)
+      const { flag: envFileFlag, cleanup: cleanupEnvFile } = await this.buildEnvFile(options?.envVars, options?.agentName)
       const containerName = this.getContainerName()
 
       // Build resource limit flags
@@ -1235,49 +1241,59 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
-    const port = await this.getPortOrThrow()
+    const port = await this.getPortOrThrow().catch(error => {
+      throw new MessageNotAcceptedError('unavailable', error instanceof Error ? error.message : 'Container unavailable', { cause: error })
+    })
     const timeoutMs = 60000 // 60 second timeout
 
-    // Resolve stored selections (bare aliases or concrete ids) to the active
-    // provider's concrete wire id before the container ever sees them.
-    const resolvedModel = resolveContainerModel(options.model, 'agent')
-    // Resolved on the same path as the session's own model, so the prompt
-    // hints the container pre-warms with match what a default session would
-    // actually be built with.
-    const resolvedPrewarmModel = resolveContainerModel(options.prewarmDefaults?.model, 'agent')
-    const prewarmPromptHints = getContainerModelPromptHints(resolvedPrewarmModel)
-    const resolvedBrowserModel = resolveContainerModel(options.browserModel, 'browser')
-    const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
-    const modelPromptHints = getContainerModelPromptHints(resolvedModel)
-    const subagentModels = getSubagentModelCatalog(getActiveLlmProvider().id)
-    // Catalog windows for ALL models (not just isLatest like subagentModels):
-    // the container passes the session model's window to the Claude Agent SDK
-    // via CLAUDE_CODE_MAX_CONTEXT_TOKENS, else non-Claude models compact at
-    // the SDK's 200k default (grok: 500k real, gpt-5.x: 1.05M real).
-    const modelContextWindows = getModelContextWindowMap(getActiveLlmProvider().id)
-    // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
-    // Resolved once here from global settings so every session-creation caller inherits it. One
-    // stored vendor backs both tools; the two ids sent to the container are the per-tool enablement
-    // signals, each derived from whether the vendor supports that operation (undefined -> native,
-    // the container keeps its built-in WebSearch/WebFetch for that tool).
-    const activeWebProvider = getActiveWebProvider()
-    const webSearchProvider = activeWebProvider?.search ? activeWebProvider.id : undefined
-    const webFetchProvider = activeWebProvider?.fetch ? activeWebProvider.id : undefined
-    // Host-authoritative launch policies (allow/review/block for subagents and
-    // workflows), resolved from global settings here so every session-creation
-    // caller inherits them. Never taken from the request — a caller (or the
-    // agent itself) must not be able to loosen its own policy.
-    const capabilityPolicies = getAgentCapabilitySettings()
-
+    let requestStarted = false
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
     try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+      // Resolve stored selections (bare aliases or concrete ids) to the active
+      // provider's concrete wire id before the container ever sees them.
+      const selected = await resolveExecutionSelection(storedSelection(options.model, options.llmProviderId))
+      const llmRuntime = await connectionRuntime(selected, this.config.agentId)
+      const warmSelection = options.prewarmDefaults
+        ? await resolveExecutionSelection(storedSelection(options.prewarmDefaults.model, options.prewarmDefaults.llmProviderId))
+        : null
+      const warmRuntime = warmSelection
+        ? await connectionRuntime(warmSelection, this.config.agentId)
+        : undefined
+      const resolvedModel = llmRuntime.model
+      const resolvedBrowserModel = llmRuntime.browserModel
+      const resolvedDashboardBuilderModel = llmRuntime.dashboardBuilderModel
+      const modelPromptHints = llmRuntime.modelPromptHints
+      const subagentModels = llmRuntime.subagentModels
+      // Catalog windows for ALL models (not just isLatest like subagentModels):
+      // the container passes the session model's window to the Claude Agent SDK
+      // via CLAUDE_CODE_MAX_CONTEXT_TOKENS, else non-Claude models compact at
+      // the SDK's 200k default (grok: 500k real, gpt-5.x: 1.05M real).
+      const modelContextWindows = llmRuntime.modelContextWindows
+      // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
+      // Resolved once here from global settings so every session-creation caller inherits it. One
+      // stored vendor backs both tools; the two ids sent to the container are the per-tool enablement
+      // signals, each derived from whether the vendor supports that operation (undefined -> native,
+      // the container keeps its built-in WebSearch/WebFetch for that tool).
+      const activeWebProvider = getActiveWebProvider()
+      const webSearchProvider = activeWebProvider?.search ? activeWebProvider.id : undefined
+      const webFetchProvider = activeWebProvider?.fetch ? activeWebProvider.id : undefined
+      // Host-authoritative launch policies (allow/review/block for subagents and
+      // workflows), resolved from global settings here so every session-creation
+      // caller inherits them. Never taken from the request — a caller (or the
+      // agent itself) must not be able to loosen its own policy.
+      const capabilityPolicies = getAgentCapabilitySettings()
 
-      const response = await fetch(`${this.getBaseUrl(port)}/sessions`, {
+      const controller = new AbortController()
+      timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+
+      const url = `${this.getBaseUrl(port)}/sessions`
+      const request: RequestInit = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...this.getHostAuthHeaders() },
         body: JSON.stringify({
           metadata: options.metadata,
+          llmProviderId: selected.llmProviderId,
+          llmRuntime,
           systemPrompt: options.systemPrompt,
           modelPromptHints: modelPromptHints.length > 0 ? modelPromptHints : undefined,
           availableEnvVars: options.availableEnvVars,
@@ -1299,15 +1315,19 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           effort: options.effort,
           speed: options.speed,
           capabilityPolicies,
-          prewarmDefaults: options.prewarmDefaults && {
-            model: resolvedPrewarmModel,
-            modelPromptHints: prewarmPromptHints.length > 0 ? prewarmPromptHints : undefined,
+          prewarmDefaults: options.prewarmDefaults && warmRuntime ? {
+            llmRuntime: warmRuntime,
+            llmProviderId: warmRuntime.llmProviderId,
+            model: warmRuntime.model,
+            modelPromptHints: warmRuntime.modelPromptHints,
             effort: options.prewarmDefaults.effort,
             speed: options.prewarmDefaults.speed,
-          },
+          } : undefined,
         }),
         signal: controller.signal,
-      })
+      }
+      requestStarted = true
+      const response = await fetch(url, request)
 
       clearTimeout(timeoutId)
 
@@ -1316,6 +1336,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         let errorDetail = ''
         let containerErrorCode: string | undefined
         let containerErrorClass: string | undefined
+        let inputRejected = false
         try {
           const errorBody = await response.text()
           if (errorBody) {
@@ -1327,12 +1348,21 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
               // CLI launch failures (see the POST /sessions handler).
               if (typeof parsed.code === 'string') containerErrorCode = parsed.code
               if (typeof parsed.errorClass === 'string') containerErrorClass = parsed.errorClass
+              // Older containers already forward the SDK's explicit spawn
+              // failure class, which also proves the agent never launched.
+              inputRejected = parsed.inputAccepted === false ||
+                (parsed.inputAccepted === undefined && parsed.errorClass === 'executable_launch_failed')
             } catch {
               errorDetail = errorBody
             }
           }
         } catch {
           errorDetail = response.statusText
+        }
+
+        if (inputRejected) {
+          throw Object.assign(new MessageNotAcceptedError('rejected', `Failed to create session: ${errorDetail || response.statusText}`),
+            { status: response.status, containerErrorCode, containerErrorClass })
         }
 
         // Check for known error patterns and provide user-friendly messages
@@ -1354,9 +1384,17 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         )
       }
 
-      return response.json()
+      const session = await response.json()
+      rememberSessionRuntime(this.config.agentId, session.id, llmRuntime)
+      return session
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error))
+
+      if (err instanceof MessageNotAcceptedError) throw err
+      if (!requestStarted || requestWasNotDispatched(err)) {
+        if (requestStarted) this.handleConnectionError()
+        throw new MessageNotAcceptedError('unavailable', err.message, { cause: err })
+      }
 
       // Handle abort/timeout
       if (err.name === 'AbortError') {
@@ -1378,6 +1416,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       // Re-throw if already a user-friendly message
       throw err
+    } finally {
+      clearTimeout(timeoutId)
     }
   }
 
@@ -1405,11 +1445,39 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
-    const port = await this.getPortOrThrow()
+    const port = await this.getPortOrThrow().catch(error => {
+      throw new MessageNotAcceptedError('unavailable', error instanceof Error ? error.message : 'Container unavailable', { cause: error })
+    })
     const timeoutMs = 30000 // 30 second timeout
     const effort = options?.effort
     const speed = options?.speed
-    const model = resolveContainerModel(options?.model, 'agent')
+    // A queued follow-up belongs to the running turn. It must not resolve a
+    // deleted connection, rotate credentials, or rebuild the active query.
+    const preserveRuntime = options?.preserveRuntime || isQueuedSessionSend(this.config.agentId, sessionId)
+    let llmRuntime: Awaited<ReturnType<typeof connectionRuntime>> | undefined
+    if (!preserveRuntime) {
+      try {
+        const { agentRegistry } = await import('@shared/lib/agent-actor')
+        const actor = agentRegistry.get(this.config.agentId)
+        const metadata = await actor.sessions.metadata(sessionId)
+        const prefs = await actor.config.get('preferences')
+        const selected = await resolveExecutionSelection(
+          options?.model || options?.llmProviderId !== undefined
+            ? storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId)
+            : null,
+          storedSelection(metadata?.model, metadata?.llmProviderId),
+          storedSelection(prefs?.defaultModel, prefs?.defaultLlmProviderId),
+        )
+        llmRuntime = await connectionRuntime(selected, this.config.agentId)
+        rememberSessionRuntime(this.config.agentId, sessionId, llmRuntime)
+        await actor.sessions.updateMetadata(sessionId, { llmProviderId: selected.llmProviderId, model: selected.model })
+      } catch (error) {
+        // Provider preparation happens before HTTP, so durable delivery can
+        // retry it without risking a second copy of the user's message.
+        throw new MessageNotAcceptedError('unavailable', error instanceof Error ? error.message : 'Provider unavailable', { cause: error })
+      }
+    }
+    const model = llmRuntime?.model
     const shouldQuery = options?.shouldQuery
     const isAutomated = options?.isAutomated
     // Refreshed on every message so a long-lived session tracks settings
@@ -1427,10 +1495,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           headers: { 'Content-Type': 'application/json', ...this.getHostAuthHeaders() },
           body: JSON.stringify({
             content,
+            ...(llmRuntime ? { llmProviderId: llmRuntime.llmProviderId, llmRuntime } : {}),
             ...(uuid ? { uuid } : {}),
             ...(effort ? { effort } : {}),
             ...(speed ? { speed } : {}),
-            ...(model ? { model } : {}),
+            ...(model && !preserveRuntime ? { model } : {}),
             ...(shouldQuery !== undefined ? { shouldQuery } : {}),
             ...(isAutomated !== undefined ? { isAutomated } : {}),
             capabilityPolicies,
@@ -1456,6 +1525,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         } catch {
           errorDetail = response.statusText
         }
+        if (response.status === 404) throw new MessageNotAcceptedError('session-gone', `Failed to send message: ${errorDetail || response.statusText}`)
         throw new Error(`Failed to send message: ${errorDetail || response.statusText}`)
       }
     } catch (error) {
@@ -1870,11 +1940,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   // The final agent env, transport-agnostic; subclasses only serialize it.
   // Merge order: provider defaults < runtime constants < config.envVars < extra.
-  protected buildAgentEnv(extra?: Record<string, string>, agentName?: string): Record<string, string> {
+  protected async buildAgentEnv(extra?: Record<string, string>, agentName?: string): Promise<Record<string, string>> {
     const settings = getSettings()
     const provider = getActiveLlmProvider()
+    const platformToken = await getPlatformContainerToken(this.config.agentId)
     const merged: Record<string, string | undefined> = {
-      ...provider.getContainerEnvVars(this.agentIdentityForEnv(agentName)),
+      ...(settings.llmDefault ? {} : await provider.getContainerEnvVars(this.agentIdentityForEnv(agentName))),
+      SUPERAGENT_AGENT_ID: this.config.agentId,
+      ...(agentName ? { SUPERAGENT_AGENT_NAME: agentName } : {}),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       // The setting only switches tool search OFF; whether it may be on is the
       // provider's call, because it depends on the endpoint expanding deferred
@@ -1883,17 +1956,21 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       ENABLE_TOOL_SEARCH: settings.enableToolSearch === false ? 'false' : provider.toolSearchEnv,
       ...this.config.envVars,
       ...extra,
+      // Platform services stay available with any LLM provider. Pin these after
+      // custom config, including clearing stale overrides when disconnected.
+      PLATFORM_BASE_URL: platformToken ? rewriteLoopbackForContainer(getPlatformProxyBaseUrl()) : undefined,
+      PLATFORM_AUTH_TOKEN: platformToken,
     }
     const out: Record<string, string> = {}
     for (const [key, value] of Object.entries(merged)) {
-      if (value !== undefined) out[key] = value
+      if (value !== undefined && !(settings.llmDefault && isProviderEnvVar(key))) out[key] = value
     }
     return out
   }
 
   // Serialize the agent env to a temp --env-file (avoids shell-quoting + Windows
   // command-length limits). Caller cleans up the file after start.
-  protected buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): { flag: string; cleanup: () => void } {
-    return writeEnvFile(this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId)
+  protected async buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): Promise<{ flag: string; cleanup: () => void }> {
+    return writeEnvFile(await this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId)
   }
 }

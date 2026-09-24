@@ -155,7 +155,7 @@ async function runUpdateCheckBody() {
   }
   try {
     const autoUpdater = await getAutoUpdater()
-    const wantPrerelease = !!getUserSettings('local').allowPrereleaseUpdates
+    const wantPrerelease = !!(await getUserSettings('local')).allowPrereleaseUpdates
 
     autoUpdater.allowPrerelease = wantPrerelease
     // electron-updater's `channel` setter has a side effect: it flips
@@ -275,7 +275,7 @@ function scheduleAutomaticUpdateChecks() {
 
   const tick = async () => {
     // Re-read setting each tick so toggling it takes effect on the next interval.
-    const autoCheck = getUserSettings('local').autoCheckUpdates
+    const autoCheck = (await getUserSettings('local')).autoCheckUpdates
     if (autoCheck === false) return
     await runUpdateCheck({ silent: true })
   }
@@ -372,7 +372,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
     // Don't auto-download — let the user choose
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = true
-    autoUpdater.allowPrerelease = !!getUserSettings('local').allowPrereleaseUpdates
+    autoUpdater.allowPrerelease = !!(await getUserSettings('local')).allowPrereleaseUpdates
 
     autoUpdater.on('checking-for-update', () => {
       setStatus({ state: 'checking' })

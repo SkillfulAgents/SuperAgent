@@ -22,5 +22,9 @@ export function prepareOAuthPopup() {
     close() {
       popup?.close()
     },
+    /** Whether a message came from this popup. */
+    isSource(source: MessageEventSource | null) {
+      return popup !== null && source === popup
+    },
   }
 }

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { providerEnvVarsError } from '../llm-provider/provider-env'
 
 /**
  * Reserved environment variable keys that ContainerManager.doStartContainer()
@@ -18,6 +19,9 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   // Proxy authentication
   'PROXY_BASE_URL',
   'PROXY_TOKEN',
+  // Platform services (independent of the selected LLM provider)
+  'PLATFORM_BASE_URL',
+  'PLATFORM_AUTH_TOKEN',
   // Cross-agent / host API wiring
   'SUPERAGENT_HOST_API_URL',
   'SUPERAGENT_AGENT_SLUG',
@@ -92,6 +96,8 @@ export function findReservedEnvVarKeys(
 export const customEnvVarsSchema = z
   .record(z.string(), z.string())
   .superRefine((vars, ctx) => {
+    const providerError = providerEnvVarsError(vars)
+    if (providerError) ctx.addIssue({ code: 'custom', message: providerError })
     const reserved = findReservedEnvVarKeys(vars)
     if (reserved.length > 0) {
       ctx.addIssue({

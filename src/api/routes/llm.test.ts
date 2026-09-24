@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Hono } from 'hono'
+import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-error'
 
 // ---------------------------------------------------------------------------
 // Mock dependencies
@@ -7,10 +8,13 @@ import { Hono } from 'hono'
 
 const state = vi.hoisted(() => ({
   providerId: 'anthropic',
+  helperError: null as Error | null,
+  hasDefault: false,
   configured: true,
   browserModel: 'sonnet',
   resolvedModel: 'claude-sonnet-5',
   resolveModel: vi.fn(),
+  helperModel: undefined as string | undefined,
 }))
 
 const mockCreate = vi.fn()
@@ -20,9 +24,11 @@ vi.mock('../middleware/auth', () => ({
 }))
 
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
-  getConfiguredLlmClient: () => ({
-    messages: { create: mockCreate },
-  }),
+  configuredHelperModel: () => state.helperModel,
+  getConfiguredLlmClient: async () => {
+    if (state.helperError) throw state.helperError
+    return { messages: { create: mockCreate } }
+  },
 }))
 
 vi.mock('@shared/lib/llm-provider', () => ({
@@ -38,6 +44,11 @@ vi.mock('@shared/lib/llm-provider', () => ({
 
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: () => ({ browserModel: state.browserModel }),
+  getSettings: () => state.hasDefault ? { llmDefault: { llmProviderId: 'sub', model: 'sonnet' } } : {},
+}))
+
+vi.mock('@shared/lib/llm-provider/connections', () => ({
+  resolveHelperSelection: async () => { throw state.helperError },
 }))
 
 import llm from './llm'
@@ -72,10 +83,31 @@ async function get(app: ReturnType<typeof createApp>, path: string) {
 describe('LLM proxy endpoint', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    state.helperError = null
+    state.hasDefault = false
     state.providerId = 'anthropic'
     state.configured = true
+    state.helperModel = undefined
     state.browserModel = 'sonnet'
     state.resolvedModel = 'claude-sonnet-5'
+  })
+
+  it.each(['config', 'v1/messages'])('reports unavailable helpers on %s', async path => {
+    state.hasDefault = true
+    state.helperError = new HelperConfigurationError()
+    const app = createApp()
+    const res = path === 'config' ? await get(app, '/api/llm/config')
+      : await post(app, '/api/llm/v1/messages', { messages: [{ role: 'user', content: 'hi' }] })
+    expect(res.status).toBe(path === 'config' ? 200 : 503)
+    expect(await res.json()).toMatchObject({ error: state.helperError.message })
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it('does not expose unexpected client initialization errors', async () => {
+    state.helperError = new Error('private credential details')
+    const res = await post(createApp(), '/api/llm/v1/messages', { messages: [] })
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ error: 'LLM provider not configured. Check Gamut settings.' })
   })
 
   describe('GET /api/llm/config', () => {
@@ -91,7 +123,7 @@ describe('LLM proxy endpoint', () => {
     })
 
     it.each([
-      ['platform', 'grok', 'grok-4.6'],
+      ['platform', 'grok', 'grok-4.7'],
       ['bedrock', 'sonnet', 'us.anthropic.claude-sonnet-5'],
       ['generic', 'custom/qwen3', 'custom/qwen3'],
     ])('returns the resolved %s catalog default', async (providerId, browserModel, resolvedModel) => {
@@ -154,7 +186,18 @@ describe('LLM proxy endpoint', () => {
       )
     })
 
-    it('uses specified model over default', async () => {
+    it('uses the global helper model when no explicit model is requested', async () => {
+      state.helperModel = 'global-helper-model'
+      mockCreate.mockResolvedValue({ content: [] })
+      const res = await post(createApp(), '/api/llm/v1/messages', {
+        messages: [{ role: 'user', content: 'hi' }], max_tokens: 10,
+      })
+      expect(res.status).toBe(200)
+      expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'global-helper-model' }))
+    })
+
+    it('preserves an explicit model even when the helper has another default', async () => {
+      state.helperModel = 'global-helper-model'
       mockCreate.mockResolvedValue({ content: [] })
 
       const app = createApp()

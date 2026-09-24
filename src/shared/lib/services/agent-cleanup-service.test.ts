@@ -35,6 +35,10 @@ vi.mock('../analytics/server-analytics', () => ({
   trackServerEvent: vi.fn(),
 }))
 
+const pauseIntegration = vi.hoisted(() => vi.fn())
+vi.mock('../agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: { pauseIntegration } }))
+vi.mock('../error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
+import { createAgentIntegration, getAgentIntegration } from './agent-integration-service'
 import { cleanupAgentData } from './agent-cleanup-service'
 
 const AGENT_SLUG = 'test-agent'
@@ -113,7 +117,7 @@ describe('agent-cleanup-service', () => {
   }
 
   let sessionSeq = 0
-  function insertChatIntegrationSession(integrationId: string): void {
+  function insertAgentIntegrationSession(integrationId: string): void {
     sessionSeq++
     testDb.insert(schema.chatIntegrationSessions).values({
       id: `cis-${integrationId}-${sessionSeq}`,
@@ -328,10 +332,10 @@ describe('agent-cleanup-service', () => {
 
     it('deletes chat integrations and cascades to sessions', async () => {
       const intId = insertChatIntegration('ci-1', AGENT_SLUG)
-      insertChatIntegrationSession(intId)
-      insertChatIntegrationSession(intId)
+      insertAgentIntegrationSession(intId)
+      insertAgentIntegrationSession(intId)
       const otherIntId = insertChatIntegration('ci-other', OTHER_AGENT_SLUG)
-      insertChatIntegrationSession(otherIntId)
+      insertAgentIntegrationSession(otherIntId)
 
       await cleanupAgentData(AGENT_SLUG)
 
@@ -437,7 +441,7 @@ describe('agent-cleanup-service', () => {
       insertConnectedAccount('acct-1')
       insertWebhookTrigger('wt-1', AGENT_SLUG, { composioTriggerId: 'ti_fail' })
       const intId = insertChatIntegration('ci-1', AGENT_SLUG)
-      insertChatIntegrationSession(intId)
+      insertAgentIntegrationSession(intId)
       insertScheduledTask('st-1', AGENT_SLUG)
       insertNotification('n-1', AGENT_SLUG)
       insertRemoteMcpServer('mcp-1')
@@ -466,7 +470,7 @@ describe('agent-cleanup-service', () => {
       insertAgentConnectedAccount(AGENT_SLUG, 'acct-1')
       insertWebhookTrigger('wt-1', AGENT_SLUG, { composioTriggerId: 'ti_abc' })
       const intId = insertChatIntegration('ci-1', AGENT_SLUG)
-      insertChatIntegrationSession(intId)
+      insertAgentIntegrationSession(intId)
       insertScheduledTask('st-1', AGENT_SLUG)
       insertNotification('n-1', AGENT_SLUG)
       insertRemoteMcpServer('mcp-1')
@@ -497,4 +501,12 @@ describe('agent-cleanup-service', () => {
       await expect(cleanupAgentData(AGENT_SLUG)).resolves.not.toThrow()
     })
   })
+  it('disconnects an agent’s live integration before removing corrupt local credentials', async () => {
+    const id = await createAgentIntegration({ agentSlug: AGENT_SLUG, provider: 'telegram', config: {} })
+    pauseIntegration.mockImplementationOnce(async () => { expect(await getAgentIntegration(id)).not.toBeNull() })
+    await cleanupAgentData(AGENT_SLUG)
+    expect(pauseIntegration).toHaveBeenCalledWith(id)
+    expect(await getAgentIntegration(id)).toBeNull()
+  })
+
 })

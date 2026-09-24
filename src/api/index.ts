@@ -3,6 +3,7 @@ import { cors } from 'hono/cors'
 import agents from './routes/agents'
 import xAgent from './routes/x-agent'
 import xAgentChat from './routes/x-agent-chat'
+import xAgentIntegrations from './routes/x-agent-integrations'
 import webSearch from './routes/web-search'
 import webFetch from './routes/web-fetch'
 import connectedAccounts from './routes/connected-accounts'
@@ -10,7 +11,7 @@ import settings from './routes/settings'
 import providers from './routes/providers'
 import scheduledTasks from './routes/scheduled-tasks'
 import webhookTriggers from './routes/webhook-triggers'
-import chatIntegrationsRouter from './routes/chat-integrations'
+import agentIntegrationsRouter from './routes/agent-integrations'
 import notifications from './routes/notifications'
 import pushRouter from './routes/push'
 import platformNotifications from './routes/platform-notifications'
@@ -31,6 +32,8 @@ import runtimeStatusRouter from './routes/runtime-status'
 import firewallRouter from './routes/firewall'
 import voiceRouter from './routes/voice'
 import llmRouter from './routes/llm'
+import llmRuntimeRouter from './routes/llm-runtime'
+import llmConnectionsRouter from './routes/llm-connections'
 import faviconRouter from './routes/favicon'
 import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
@@ -173,14 +176,14 @@ if (isAuthMode()) {
 // Public auth config endpoint (no auth required) — exposes non-sensitive
 // settings so the auth page can adapt (hide signup tab, show password policy, etc.)
 if (isAuthMode()) {
-  app.get('/api/auth-config', (c) => {
+  app.get('/api/auth-config', async (c) => {
     const authSettings = getAuthSettings()
     const publicProviders = getPublicAuthProviders()
 
     // Check if any users exist (first-user signup bypass)
     let hasUsers = true
     try {
-      const result = db.select({ count: sql<number>`count(*)` }).from(userTable).get()
+      const result = await db.select({ count: sql<number>`count(*)` }).from(userTable).get()
       hasUsers = !!result && result.count > 0
     } catch {
       hasUsers = false
@@ -228,6 +231,7 @@ app.route('/api/agents', agents)
 app.route('/api/activity', activityRouter)
 app.route('/api/x-agent', xAgent)
 app.route('/api/x-agent/chat', xAgentChat)
+app.route('/api/x-agent/integrations', xAgentIntegrations)
 app.route('/api/web-search', webSearch)
 app.route('/api/web-fetch', webFetch)
 app.route('/api/connected-accounts', connectedAccounts)
@@ -235,7 +239,9 @@ app.route('/api/settings', settings)
 app.route('/api/providers', providers)
 app.route('/api/scheduled-tasks', scheduledTasks)
 app.route('/api/webhook-triggers', webhookTriggers)
-app.route('/api/chat-integrations', chatIntegrationsRouter)
+// TODO(2026-12-01): Delete this legacy alias; use /api/agent-integrations.
+app.route('/api/chat-integrations', agentIntegrationsRouter)
+app.route('/api/agent-integrations', agentIntegrationsRouter)
 app.route('/api/notifications', notifications)
 app.route('/api/push', pushRouter)
 app.route('/api/platform-notifications', platformNotifications)
@@ -269,6 +275,8 @@ app.route('/api/voice', voiceRouter)
 // may have the old paths baked in. Same router, same handlers.
 app.route('/api/stt', voiceRouter)
 app.route('/api/llm', llmRouter)
+app.route('/api/llm-runtime', llmRuntimeRouter)
+app.route('/api/llm-connections', llmConnectionsRouter)
 app.route('/api/favicon', faviconRouter)
 app.route('/api/debug', debugRouter)
 

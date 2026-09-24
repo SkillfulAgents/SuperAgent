@@ -1,3 +1,4 @@
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Task Scheduler
  *
@@ -6,6 +7,7 @@
  */
 
 import { agentRegistry } from '@shared/lib/agent-actor'
+import type { AgentActor } from '@shared/lib/agent-actor'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
@@ -14,10 +16,11 @@ import {
   getDueTasks,
   markTaskExecuted,
   markTaskFailed,
+  recordTaskSkip,
+  rescheduleAfterFailure,
   updateNextExecution,
 } from '@shared/lib/services/scheduled-task-service'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
-import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
@@ -31,6 +34,16 @@ import { deliverSessionWake } from './wake-delivery'
  * machine waking from sleep) must not permanently kill it.
  */
 const WAKE_RETRY_WINDOW_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Whether a recurring task's previous run still occupies its slot: busy and not
+ * parked on user input. A parked run has nobody to answer it, so it frees the
+ * slot; a run whose turn ended with background work still going stays active
+ * and keeps it.
+ */
+function isRunBusy(actor: AgentActor, sessionId: string): boolean {
+  return actor.sessions.isActive(sessionId) && !actor.sessions.isAwaitingInput(sessionId)
+}
 
 class TaskScheduler {
   private intervalId: NodeJS.Timeout | null = null
@@ -133,8 +146,9 @@ class TaskScheduler {
             tags: { component: 'task-scheduler', phase: 'execute-task' },
             extra: { taskId: task.id, agentSlug: task.agentSlug, isRecurring: task.isRecurring },
           })
-          // For recurring tasks, schedule next execution even on failure
-          // For one-time tasks, mark as failed
+          // For recurring tasks, schedule the next attempt without recording an
+          // execution: lastSessionId keeps pointing at the previous run so the
+          // overlap guard stays armed. For one-time tasks, mark as failed.
           if (!task.isRecurring && task.resumeSessionId &&
               Date.now() - task.nextExecutionAt.getTime() < WAKE_RETRY_WINDOW_MS) {
             // Session wakes stay pending on transient failure so the poll loop
@@ -145,7 +159,7 @@ class TaskScheduler {
           } else if (task.isRecurring) {
             try {
               const nextTime = getNextCronTime(task.scheduleExpression, task.timezone || undefined)
-              await updateNextExecution(task.id, nextTime, '')
+              await rescheduleAfterFailure(task.id, nextTime)
               console.log(
                 `[TaskScheduler] Recurring task ${task.id} failed but scheduled next: ${nextTime.toISOString()}`
               )
@@ -196,6 +210,27 @@ class TaskScheduler {
       return
     }
 
+    // Overlap guard: while the previous run of this recurring task is still
+    // busy, hold this fire rather than start a second concurrent session.
+    // Holding leaves nextExecutionAt alone: the task stays due, each poll
+    // re-checks, and the first free poll fires once and re-anchors to the next
+    // cron boundary. One scalar means at most one pending fire per task.
+    if (task.isRecurring && task.lastSessionId && isRunBusy(actor, task.lastSessionId)) {
+      console.log(
+        `[TaskScheduler] Task ${task.id} held: previous run ${task.lastSessionId} is still busy`
+      )
+      // A hold is not a failure: a failed skip write must not reach the failure
+      // path, which would advance the schedule and drop the held fire.
+      await recordTaskSkip(task.id).catch((error) => {
+        console.error(`[TaskScheduler] Failed to record skip for task ${task.id}:`, error)
+        captureException(error, {
+          tags: { component: 'task-scheduler', phase: 'record-skip' },
+          extra: { taskId: task.id, agentSlug: task.agentSlug },
+        })
+      })
+      return
+    }
+
     // Verify agent still exists
     if (!(await agentExists(task.agentSlug))) {
       console.error(
@@ -215,8 +250,9 @@ class TaskScheduler {
     // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(task.agentSlug)
-    const resolved = resolveRuntimeInherit(
-      { model: task.model, effort: task.effort, speed: task.speed },
+    const resolved = await resolveConnectionRuntimeInherit(
+      { model: task.model,
+      llmProviderId: task.llmProviderId, effort: task.effort, speed: task.speed },
       agentPrefs,
       models,
     )
@@ -225,6 +261,7 @@ class TaskScheduler {
         availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
       model: resolved.model,
+      llmProviderId: resolved.llmProviderId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },

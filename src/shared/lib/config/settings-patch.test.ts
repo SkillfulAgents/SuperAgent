@@ -154,6 +154,26 @@ describe('applySettingsPatch', () => {
     expect(before.apiKeys).toEqual({ anthropicApiKey: 'sk-old', openrouterApiKey: 'or-old' })
   })
 
+  it('patches canonical global prices, resets one model, and preserves unrelated rates', () => {
+    const price = { inputPerMtok: 7, outputPerMtok: 21 }
+    const before = { ...currentSettings(), modelPricing: { custom: price } }
+    const after = applySettingsPatch(before, parsePatch({ modelPricing: { 'openai/gpt-5.5': price } }), applyContext)
+    expect(after.modelPricing).toEqual({ custom: price, 'gpt-5.5': price })
+    const reset = applySettingsPatch(after, parsePatch({ modelPricing: { 'gpt-5.5': null } }), applyContext)
+    expect(reset.modelPricing).toEqual({ custom: price })
+    expect(before.modelPricing).toEqual({ custom: price })
+  })
+
+  it('moves prices from older catalog clients into the global map', () => {
+    const after = applySettingsPatch(currentSettings(), parsePatch({
+      modelCatalog: { openrouter: { overrides: [{ id: 'openai/gpt-5.5', disabled: true, pricing: { inputPerMtok: 7, outputPerMtok: 21 } }] } },
+      modelPricing: { 'gpt-5.5': { inputPerMtok: 8, outputPerMtok: 24 } },
+    }), applyContext)
+    expect(after.modelCatalog?.openrouter.overrides).toEqual([{ id: 'openai/gpt-5.5', disabled: true }])
+    expect(after.modelPricing).toEqual({ 'gpt-5.5': { inputPerMtok: 8, outputPerMtok: 24 } })
+    expect(settingsPatchSchema.safeParse({ modelPricing: { custom: { inputPerMtok: -1, outputPerMtok: 2 } } }).success).toBe(false)
+  })
+
   it('resets models to provider defaults unless the patch supplies models explicitly', () => {
     const before = currentSettings()
     const defaults = applySettingsPatch(

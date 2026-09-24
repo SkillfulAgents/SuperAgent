@@ -23,7 +23,7 @@ adminUsersRouter.post('/invite', async (c) => {
   const trimmedName = name.trim()
 
   // Check if email already exists
-  const existing = db.select({ id: user.id }).from(user).where(eq(user.email, trimmedEmail)).get()
+  const existing = await db.select({ id: user.id }).from(user).where(eq(user.email, trimmedEmail)).get()
   if (existing) {
     return c.json({ error: 'A user with this email already exists' }, 400)
   }
@@ -34,7 +34,7 @@ adminUsersRouter.post('/invite', async (c) => {
     const now = new Date()
 
     // Create user with mustChangePassword flag
-    db.insert(user).values({
+    await db.insert(user).values({
       id: userId,
       name: trimmedName,
       email: trimmedEmail,
@@ -45,7 +45,7 @@ adminUsersRouter.post('/invite', async (c) => {
     }).run()
 
     // Create credential account with hashed password
-    db.insert(authAccount).values({
+    await db.insert(authAccount).values({
       id: crypto.randomUUID(),
       accountId: userId,
       providerId: 'credential',
@@ -55,7 +55,7 @@ adminUsersRouter.post('/invite', async (c) => {
       updatedAt: now,
     }).run()
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'user', objectId: userId, action: 'invited', details: { email: trimmedEmail, role: role || 'user' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'user', objectId: userId, action: 'invited', details: { email: trimmedEmail, role: role || 'user' } })
     return c.json({ user: { id: userId, name: trimmedName, email: trimmedEmail } })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Failed to create user'
@@ -73,13 +73,13 @@ adminUsersRouter.post('/reset-password', async (c) => {
   }
 
   // Verify the target user exists
-  const targetUser = db.select({ id: user.id }).from(user).where(eq(user.id, userId)).get()
+  const targetUser = await db.select({ id: user.id }).from(user).where(eq(user.id, userId)).get()
   if (!targetUser) {
     return c.json({ error: 'User not found' }, 404)
   }
 
   // Verify the target user has a credential account
-  const credentialAccount = db
+  const credentialAccount = await db
     .select({ id: authAccount.id })
     .from(authAccount)
     .where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, 'credential')))
@@ -91,17 +91,17 @@ adminUsersRouter.post('/reset-password', async (c) => {
   try {
     const hashedPassword = await hashPassword(password)
 
-    db.update(authAccount)
+    await db.update(authAccount)
       .set({ password: hashedPassword })
       .where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, 'credential')))
       .run()
 
-    db.update(user)
+    await db.update(user)
       .set({ mustChangePassword: true })
       .where(eq(user.id, userId))
       .run()
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'user', objectId: userId, action: 'reset_password' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'user', objectId: userId, action: 'reset_password' })
     return c.json({ success: true })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Failed to reset password'

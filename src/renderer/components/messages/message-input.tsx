@@ -19,6 +19,7 @@ import { useHoldSound } from '@renderer/hooks/use-hold-sound'
 import { readAloud } from '@renderer/lib/voice/services/read-aloud'
 import { clearVoiceModeRequest, isVoiceModeRequested, registerVoiceModeExit, setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
+import { boundVoiceHistoryTransport } from '@shared/lib/voice/voice-history-transport'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { ComposerActionButton } from './composer-action-button'
 import { SlashCommandMenu } from './slash-command-menu'
@@ -49,6 +50,7 @@ interface MessageInputProps {
   /** Speed last used on this session; seeds the composer selector. Defaults to 'normal' when absent. */
   initialSpeed?: SpeedLevel
   /** Model last used on this session; seeds the composer selector. Defaults to provider's agent default. */
+  initialLlmProviderId?: string | null
   initialModel?: string
   /** Registers a getter so the stale-session prompt can move the live draft. */
   registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
@@ -67,7 +69,7 @@ function isInteractive(target: EventTarget | null): boolean {
   return target.closest('button, input, textarea, select, a[href], [contenteditable=""], [contenteditable="true"], [role="menuitem"], [role="option"], [role="combobox"], [role="dialog"]') !== null
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, registerSnapshot, suspended = false }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, initialLlmProviderId, registerSnapshot, suspended = false }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -79,6 +81,9 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     initialEffort,
     initialSpeed,
     initialModel,
+    initialLlmProviderId,
+    sessionId,
+    agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
     agentDefaultModel: agentPrefs?.defaultModel,
     agentDefaultEffort: agentPrefs?.defaultEffort,
     agentDefaultSpeed: agentPrefs?.defaultSpeed,
@@ -354,11 +359,12 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     exitTimerRef.current = null
   }, [voiceModeOn])
   const { submitMessage } = composer
-  const voiceHistory = useMemo(() => (messages ?? []).slice(-24).flatMap((message) =>
+  // Transport bound only; the host trims to the voice model's token budget.
+  const voiceHistory = useMemo(() => boundVoiceHistoryTransport((messages ?? []).flatMap((message) =>
       (message.type === 'user' || message.type === 'assistant') && message.content.text.trim()
-        ? [{ role: message.type, content: message.content.text.slice(-4000) }]
+        ? [{ role: message.type, content: message.content.text }]
         : [],
-    ).slice(-24), [messages])
+    )), [messages])
   // The agent's name labels its lines in the voice transcript.
   const { data: voiceAgent } = useAgent(agentSlug)
   const voice = useVoiceMode({

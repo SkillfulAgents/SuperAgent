@@ -1,3 +1,7 @@
+import { MessageNotAcceptedError } from './message-dispatch-error'
+import { getSettings } from '../config/settings'
+import { resolveSelectionHierarchy, storedSelection } from '../llm-provider/connections'
+import { isQueuedSessionSend } from './session-send-context'
 import { EventEmitter } from 'events'
 import { createHash, randomUUID } from 'crypto'
 import * as fs from 'fs'
@@ -1890,7 +1894,7 @@ let cleanupBrowserSessionFn: ((sessionId: string) => void) | null = null
 
 // Register browser scenario only when E2E_CHROMIUM_PATH is available
 if (process.env.E2E_MOCK === 'true' && process.env.E2E_CHROMIUM_PATH) {
-  import('./mock-browser-scenario').then(({ BrowserScenario, cleanupBrowserSession }) => {
+  void import('./mock-browser-scenario').then(({ BrowserScenario, cleanupBrowserSession }) => {
     MockContainerClient.scenarios.set('browse ', new BrowserScenario())
     cleanupBrowserSessionFn = cleanupBrowserSession
     console.log('[MockContainerClient] Registered BrowserScenario (E2E_CHROMIUM_PATH available)')
@@ -3089,6 +3093,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   // Session management
 
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
+    // Match POST /sessions and SessionManager: the first message creates the
+    // runtime's canonical session ID. An empty idle session is not supported.
+    if (!options.initialMessage) throw new Error('initialMessage is required')
     // Resolve the selection exactly as the real container client does, so E2E
     // assertions see the concrete wire id the SDK would receive.
     const model = resolveContainerModel(options.model, 'agent')
@@ -3250,7 +3257,20 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
     // Resolve like the real container client so E2E sees the concrete wire id.
-    const model = resolveContainerModel(options?.model, 'agent')
+    let model = resolveContainerModel(options?.model, 'agent')
+    if (getSettings().llmDefault && !options?.preserveRuntime && !isQueuedSessionSend(this.config.agentId, sessionId)) {
+      const { agentRegistry } = await import('../agent-actor')
+      const actor = agentRegistry.get(this.config.agentId)
+      const metadata = await actor.sessions.metadata(sessionId)
+      const preferences = await actor.config.get('preferences')
+      const selected = await resolveSelectionHierarchy(
+        storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId),
+        storedSelection(metadata?.model, metadata?.llmProviderId),
+        storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId),
+      )
+      model = selected.wireModel
+      await actor.sessions.updateMetadata(sessionId, { model: selected.model, llmProviderId: selected.llmProviderId })
+    }
     // Record for E2E test assertions
     MockContainerClient.lastSendMessageCall = {
       sessionId,
@@ -3278,7 +3298,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     })
     const session = this.sessions.get(sessionId)
     if (!session) {
-      throw new Error(`Session ${sessionId} not found`)
+      throw new MessageNotAcceptedError('session-gone', `Session ${sessionId} not found`)
     }
 
     // Update last activity

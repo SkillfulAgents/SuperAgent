@@ -77,8 +77,8 @@ accountReauth.post('/:id/reauth-request/:requestId/replace-account', AgentUser()
     }
     const result = { accountId, previousAccountId, toolkit: request.payload.toolkit }
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: result.previousAccountId, action: 'unassigned', details: { agentSlug: slug } })
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: result.accountId, action: 'assigned', details: { agentSlug: slug } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: result.previousAccountId, action: 'unassigned', details: { agentSlug: slug } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: result.accountId, action: 'assigned', details: { agentSlug: slug } })
     const recovery = await finishConnectionReplacement({
       agentSlug: slug,
       kind: 'connected-accounts',

@@ -4,6 +4,8 @@ import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { RemoteMcpRequestItem } from './remote-mcp-request-item'
 import { renderWithProviders } from '@renderer/test/test-utils'
+import { LOGIN_WINDOW_CANCEL_DELAY_MS } from '@renderer/hooks/use-login-window'
+import { fakeLoginWindow } from '@renderer/test/fake-login-window'
 
 const mockApiFetch = vi.fn()
 const mockInitiateOAuthMutateAsync = vi.hoisted(() => vi.fn())
@@ -13,12 +15,7 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
-vi.mock('@renderer/lib/oauth-popup', () => ({
-  prepareOAuthPopup: () => ({
-    navigate: vi.fn(),
-    close: vi.fn(),
-  }),
-}))
+vi.mock('@renderer/lib/oauth-popup', () => import('@renderer/test/fake-login-window'))
 
 vi.mock('@renderer/hooks/use-remote-mcps', () => ({
   useInitiateMcpOAuth: () => ({
@@ -356,6 +353,67 @@ describe('RemoteMcpRequestItem', () => {
     })
   })
 
+  it('closes the window on completion and stays busy until the list is refreshed', async () => {
+    const user = userEvent.setup()
+    mockServerListResponse([])
+    mockInitiateOAuthMutateAsync.mockResolvedValue({ state: 'flow-state', redirectUrl: 'https://auth.example.com/oauth' })
+    renderWithProviders(
+      <RemoteMcpRequestItem {...defaultProps} url="https://new-server.example.com/sse" authHint="oauth" />
+    )
+    await user.click(await screen.findByRole('button', { name: /Connect/i }))
+    await waitFor(() => expect(mockUseMcpOAuthListener).toHaveBeenCalledWith(true, expect.any(Function), 'flow-state'))
+    const onOAuthComplete = mockUseMcpOAuthListener.mock.calls.find(([active]) => active === true)?.[1] as (r: { success: boolean }) => void
+
+    // The refresh after completion hangs: a retry started meanwhile must be impossible.
+    let finishRefresh!: () => void
+    mockApiFetch.mockImplementation((path: string) => path === '/api/remote-mcps'
+      ? new Promise((resolve) => { finishRefresh = () => resolve({ ok: true, json: () => Promise.resolve({ servers: [] }) }) })
+      : Promise.resolve({ ok: true, json: () => Promise.resolve({}) }))
+    fakeLoginWindow.close.mockClear()
+    act(() => onOAuthComplete({ success: true }))
+    expect(fakeLoginWindow.close).toHaveBeenCalled()
+    expect(await screen.findByRole('button', { name: /Connect/i })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Cancel sign-in' })).toBeNull()
+
+    await act(async () => finishRefresh())
+    await waitFor(() => expect(screen.getByRole('button', { name: /Connect/i })).toBeEnabled())
+  })
+
+  it('never arms the listener without this attempt\'s state, and Cancel disarms it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      mockServerListResponse([])
+      mockInitiateOAuthMutateAsync.mockResolvedValue({ state: 'flow-state', redirectUrl: 'https://auth.example.com/oauth' })
+
+      // Navigation is held open: the window is "waiting" before this attempt's
+      // state value has been applied, and the listener must stay disarmed.
+      let landOnSignIn!: () => void
+      fakeLoginWindow.navigate.mockImplementationOnce(() => new Promise((resolve) => { landOnSignIn = () => resolve() }))
+      renderWithProviders(
+        <RemoteMcpRequestItem {...defaultProps} url="https://new-server.example.com/sse" authHint="oauth" />
+      )
+      await user.click(await screen.findByRole('button', { name: /Connect/i }))
+      await waitFor(() => expect(screen.getByText('Waiting for authorization...')).toBeInTheDocument())
+      expect(mockUseMcpOAuthListener.mock.calls.some(([active]) => active)).toBe(false)
+      await act(async () => landOnSignIn())
+      expect(mockUseMcpOAuthListener.mock.lastCall?.[0]).toBe(true)
+      expect(mockUseMcpOAuthListener.mock.calls.every(([active, , state]) => !active || state === 'flow-state')).toBe(true)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(LOGIN_WINDOW_CANCEL_DELAY_MS) })
+      await user.click(screen.getByRole('button', { name: 'Cancel sign-in' }))
+
+      expect(await screen.findByRole('button', { name: /Connect/i })).toBeEnabled()
+      // The waiting block and its Cancel are gone; focus stays in the card.
+      expect(document.activeElement).not.toBe(document.body)
+      expect(screen.getByTestId('remote-mcp-request').contains(document.activeElement)).toBe(true)
+      expect(mockUseMcpOAuthListener.mock.lastCall?.[0]).toBe(false)
+      expect(screen.queryByText(/Error:/)).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows error with prefix when provide fails', async () => {
     const user = userEvent.setup()
 
@@ -448,6 +506,15 @@ describe('RemoteMcpRequestItem', () => {
       expect(screen.getByRole('button', { name: /Allow Access/i })).toBeDisabled()
     })
 
+    it('holds the single server row while a new server is being added', async () => {
+      const user = userEvent.setup()
+      mockInitiateOAuthMutateAsync.mockImplementation(() => new Promise(() => {}))
+      renderWithProviders(<RemoteMcpRequestItem {...defaultProps} authHint="oauth" />)
+      expect(await screen.findByRole('button', { name: 'Reconnect' })).toBeEnabled()
+      await user.click(screen.getByRole('button', { name: 'Add New Account' }))
+      expect(screen.getByRole('button', { name: 'Reconnect' })).toBeDisabled()
+    })
+
     it('starts re-auth OAuth for the existing server on Reconnect', async () => {
       const user = userEvent.setup()
       mockInitiateOAuthMutateAsync.mockResolvedValue({ state: 'flow-state', redirectUrl: 'https://auth.example.com/oauth' })
@@ -467,7 +534,7 @@ describe('RemoteMcpRequestItem', () => {
       )
 
       await waitFor(() => {
-        expect(screen.getByText(/Waiting for authorization/i)).toBeInTheDocument()
+        expect(screen.getByText('Waiting for authorization...')).toBeInTheDocument()
       })
     })
 

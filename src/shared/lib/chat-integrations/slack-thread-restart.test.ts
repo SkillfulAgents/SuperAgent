@@ -46,8 +46,8 @@ vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 function memoryStore() {
   let saved: string[] = []
   return {
-    load: vi.fn((_botUserId: string) => [...saved]),
-    save: vi.fn((_botUserId: string, threads: readonly string[]) => { saved = [...threads] }),
+    load: vi.fn(async (_botUserId: string) => [...saved]),
+    save: vi.fn(async (_botUserId: string, threads: readonly string[]) => { saved = [...threads] }),
   }
 }
 
@@ -73,7 +73,7 @@ async function observe<T extends AgentIntegration>(connector: T) {
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   slack.listeners.length = 0
   slack.onStart = undefined
   vi.clearAllMocks()
@@ -90,7 +90,7 @@ describe('Slack thread participation across connector recreation (SUP-861)', () 
     const record: AgentIntegrationRecord = {
       id: 'first', agentSlug: 'test-agent', provider: 'slack', name: null, status: 'active',
       config: JSON.stringify({ botToken: 'xoxb-test', appToken: 'xapp-test', onlyMentioned: true, answerInThread: true }),
-      errorMessage: null, createdByUserId: null, model: null, effort: null, speed: null,
+      errorMessage: null, createdByUserId: null, model: null, llmProviderId: null, effort: null, speed: null,
       createdAt: new Date(), updatedAt: new Date(),
     }
     try {
@@ -112,7 +112,7 @@ describe('Slack thread participation across connector recreation (SUP-861)', () 
 
   it('restores participation before Socket Mode delivers its first event', async () => {
     const store = memoryStore()
-    store.save('U_BOT', ['C123|1000.001'])
+    await store.save('U_BOT', ['C123|1000.001'])
     slack.onStart = async () => slack.listeners.at(-1)!({ message: {
       channel: 'C123', channel_type: 'channel', user: 'U_PERSON',
       text: 'first event during startup', ts: '1000.002', thread_ts: '1000.001',
@@ -190,7 +190,7 @@ describe('Slack thread participation across connector recreation (SUP-861)', () 
     await first.receive({ text: '<@U_BOT> late event', ts: '2000.001' })
     expect(first.received).not.toHaveBeenCalled()
     expect(store.save).not.toHaveBeenCalled()
-    expect(store.load('U_BOT')).toEqual(['C123|1000.001'])
+    expect((await store.load('U_BOT'))).toEqual(['C123|1000.001'])
   })
 
   it('keeps delivering if a state write fails, and retries persistence on the next message', async () => {
@@ -202,7 +202,7 @@ describe('Slack thread participation across connector recreation (SUP-861)', () 
       await first.receive({ text: '<@U_BOT> start a thread', ts: '1000.001' })
       await first.receive({ text: 'follow-up', ts: '1000.002', thread_ts: '1000.001' })
       expect(first.received).toHaveBeenCalledTimes(2)
-      expect(store.load('U_BOT')).toEqual(['C123|1000.001'])
+      expect((await store.load('U_BOT'))).toEqual(['C123|1000.001'])
     } finally {
       errorLog.mockRestore()
     }

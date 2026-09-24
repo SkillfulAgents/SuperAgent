@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useLocation, useNavigate, useRouter } from '@tanstack/react-router'
-import ReactMarkdown, { type Components } from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import type { Components } from 'react-markdown'
+import { Markdown } from '@renderer/components/ui/markdown'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import {
@@ -15,7 +15,7 @@ import { SettingsPageContainer, PageTitle } from '@renderer/components/layout/se
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
 import { slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
 import { useCompleteTemplateInstall } from '@renderer/hooks/use-complete-template-install'
-import { markdownUrlTransform, safeHref } from '@renderer/lib/markdown-url-transform'
+import { safeHref } from '@renderer/lib/markdown-url-transform'
 import { TemplateAvatar } from './explore-template-card'
 import { NoTemplatesEmptyState, useExploreTemplates } from './explore-templates'
 import {
@@ -32,8 +32,6 @@ import {
 } from './template-meta'
 import { ArrowUp } from 'lucide-react'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
-
-const DETAILS_REMARK_PLUGINS = [remarkGfm]
 
 /**
  * Whether a details-body href may be rendered as a link at all.
@@ -285,13 +283,7 @@ export function TemplateDetailView({
                 </TooltipProvider>
               ) : (
                 <div className="prose prose-sm max-w-none break-words text-sm text-muted-foreground dark:prose-invert prose-headings:mt-5 prose-headings:mb-1.5 prose-headings:text-sm prose-headings:font-medium prose-headings:text-foreground prose-p:my-2 prose-p:leading-relaxed prose-li:my-0.5 prose-a:text-foreground prose-strong:text-foreground prose-code:text-foreground">
-                  <ReactMarkdown
-                    remarkPlugins={DETAILS_REMARK_PLUGINS}
-                    components={DETAILS_MARKDOWN_COMPONENTS}
-                    urlTransform={markdownUrlTransform}
-                  >
-                    {section.body}
-                  </ReactMarkdown>
+                  <Markdown components={DETAILS_MARKDOWN_COMPONENTS}>{section.body}</Markdown>
                 </div>
               )}
             </Section>

@@ -174,6 +174,29 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
   let claudeProcess: ClaudeCodeProcess | undefined
   useRuntimeEnv()
 
+  it.each([true, false])('pins Platform credentials with Platform connected=%s', async (connected) => {
+    vi.stubEnv('PLATFORM_BASE_URL', connected ? 'https://platform.example' : undefined)
+    vi.stubEnv('PLATFORM_AUTH_TOKEN', connected ? 'platform-token::owner' : undefined)
+    try {
+      claudeProcess = new ClaudeCodeProcess({
+        sessionId: 'platform-services', workingDirectory: '/tmp',
+        customEnvVars: {
+          ANTHROPIC_BASE_URL: 'https://other-llm.example', ANTHROPIC_AUTH_TOKEN: 'llm-token',
+          PLATFORM_BASE_URL: 'https://wrong.example', PLATFORM_AUTH_TOKEN: 'wrong-token',
+        },
+      })
+      await claudeProcess.start()
+      expect(calls[0].options.env).toMatchObject({
+        ANTHROPIC_BASE_URL: 'https://other-llm.example', ANTHROPIC_AUTH_TOKEN: 'llm-token',
+        PLATFORM_BASE_URL: connected ? 'https://platform.example' : undefined,
+        PLATFORM_AUTH_TOKEN: connected ? 'platform-token::owner' : undefined,
+      })
+    } finally {
+      vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+    }
+  })
+
   async function startProcess(sessionId: string): Promise<ClaudeCodeProcess> {
     claudeProcess = new ClaudeCodeProcess({ sessionId, workingDirectory: '/tmp' })
     await claudeProcess.start()
@@ -183,6 +206,125 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
   afterEach(async () => {
     await claudeProcess?.stop()
     claudeProcess = undefined
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+  })
+
+  it('recovers a deferred session after credential resolution fails without using ambient auth', async () => {
+    vi.stubEnv('SUPERAGENT_HOST_API_URL', 'http://host.test/api')
+    vi.stubEnv('PROXY_TOKEN', 'agent-token')
+    vi.stubEnv('ANTHROPIC_API_KEY', 'must-not-use-ambient-key')
+    const runtime = { llmProviderId: 'account', generation: 0, provider: 'anthropic', model: 'resolved-model',
+      browserModel: 'resolved-model', dashboardBuilderModel: 'resolved-model', modelPromptHints: [],
+      subagentModels: [], modelContextWindows: {}, env: { ANTHROPIC_API_KEY: 'resolved-key' } }
+    const fetchRuntime = vi.fn().mockResolvedValueOnce(new Response('unavailable', { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(runtime)))
+    vi.stubGlobal('fetch', fetchRuntime)
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'deferred', claudeSessionId: 'old-cli-id', workingDirectory: '/tmp', requiresConnectionRuntime: true })
+    expect(calls).toHaveLength(0)
+    await expect(claudeProcess.sendMessage('retry later')).rejects.toThrow('503')
+    expect(calls).toHaveLength(0)
+    await claudeProcess.sendMessage('host recovered')
+    expect(calls).toHaveLength(1)
+    expect(calls[0].options.env).toMatchObject({ ANTHROPIC_API_KEY: 'resolved-key' })
+    expect(JSON.stringify(calls)).not.toContain('must-not-use-ambient-key')
+  })
+
+  it('restores the agent AWS tool environment when switching away from Bedrock', async () => {
+    const base = { llmProviderId: 'bedrock', generation: 0, provider: 'bedrock', model: 'model',
+      browserModel: 'model', dashboardBuilderModel: 'model', modelPromptHints: [], subagentModels: [], modelContextWindows: {} }
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'aws-tool-env', workingDirectory: '/tmp',
+      customEnvVars: { AWS_ACCESS_KEY_ID: 'tool-key', AWS_SECRET_ACCESS_KEY: 'tool-secret', AWS_REGION: 'eu-west-1', AWS_SESSION_TOKEN: 'tool-session' },
+      llmRuntime: { ...base, env: { AWS_ACCESS_KEY_ID: 'bedrock-key', AWS_SECRET_ACCESS_KEY: 'bedrock-secret', AWS_REGION: 'us-east-1', CLAUDE_CODE_USE_BEDROCK: '1' } } })
+    await claudeProcess.start()
+    expect(calls[0].options.env).toMatchObject({ AWS_ACCESS_KEY_ID: 'bedrock-key' })
+    await claudeProcess.sendMessage('use Anthropic', undefined, { llmRuntime: { ...base, llmProviderId: 'anthropic', provider: 'anthropic', env: { ANTHROPIC_API_KEY: 'anthropic-key', CLAUDE_CODE_USE_BEDROCK: '' } } })
+    expect(calls[1].options.env).toMatchObject({ AWS_ACCESS_KEY_ID: 'tool-key', AWS_SECRET_ACCESS_KEY: 'tool-secret', AWS_REGION: 'eu-west-1', AWS_SESSION_TOKEN: 'tool-session' })
+    expect(JSON.stringify(calls[1].options)).not.toContain('bedrock-secret')
+  })
+
+  it('rebuilds proxy-backed queries when helper models or prompt hints change', async () => {
+    const runtime = { llmProviderId: 'a', generation: 0, provider: 'generic', model: 'model',
+      browserModel: 'model', dashboardBuilderModel: 'model', modelPromptHints: [], subagentModels: [], modelContextWindows: {}, env: {},
+      proxy: { format: 'responses' as const, baseUrl: 'https://upstream.example/v1', headers: {}, credential: { accessToken: 'key', generation: 0 } } }
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'proxy-settings', workingDirectory: '/tmp', llmRuntime: runtime })
+    await claudeProcess.start()
+    await claudeProcess.sendMessage('new helper', undefined, { llmRuntime: { ...runtime, generation: 1, browserModel: 'browser-v2' } })
+    expect(calls).toHaveLength(2)
+    await claudeProcess.sendMessage('new hints', undefined, { llmRuntime: { ...runtime, generation: 2, browserModel: 'browser-v2', modelPromptHints: ['New model guidance'] } })
+    expect(calls).toHaveLength(3)
+  })
+
+  it('replaces proxy credentials on account switches and restores the direct path', async () => {
+    const base = { llmProviderId: 'a', generation: 0, provider: 'generic', model: 'model',
+      browserModel: 'model', dashboardBuilderModel: 'model', modelPromptHints: [], subagentModels: [], modelContextWindows: {},
+      env: { ANTHROPIC_API_KEY: 'direct-key', ANTHROPIC_BASE_URL: 'https://direct.example' } }
+    const proxy = { format: 'responses' as const, baseUrl: 'https://upstream.example/v1', headers: {},
+      credential: { accessToken: 'private-upstream-token', generation: 0 } }
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'proxy-switch', workingDirectory: '/tmp', llmRuntime: { ...base, proxy } })
+    await claudeProcess.start()
+    const first = calls[0].options.env as Record<string, string>
+    expect(first.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:/)
+    expect(JSON.stringify(calls[0].options)).not.toContain('private-upstream-token')
+    await claudeProcess.sendMessage('rotated credential', undefined, { llmRuntime: { ...base, generation: 1,
+      proxy: { ...proxy, credential: { accessToken: 'rotated', generation: 1 } } } })
+    expect(calls).toHaveLength(1)
+    expect((calls[0].options.abortController as AbortController).signal.aborted).toBe(false)
+    expect((await fetch(first.ANTHROPIC_BASE_URL)).status).toBe(401)
+    await claudeProcess.sendMessage('switch', undefined, { llmRuntime: { ...base, llmProviderId: 'b', proxy } })
+    const second = calls[1].options.env as Record<string, string>
+    expect(second.ANTHROPIC_API_KEY).not.toBe(first.ANTHROPIC_API_KEY)
+    await expect(fetch(first.ANTHROPIC_BASE_URL)).rejects.toThrow()
+    await claudeProcess.sendMessage('direct', undefined, { llmRuntime: base })
+    expect(calls[2].options.env).toMatchObject(base.env)
+    await expect(fetch(second.ANTHROPIC_BASE_URL)).rejects.toThrow()
+  })
+
+  it('rebuilds LLM credentials and capabilities while preserving Platform service credentials', async () => {
+    vi.stubEnv('PLATFORM_BASE_URL', 'https://platform-services.example')
+    vi.stubEnv('PLATFORM_AUTH_TOKEN', 'platform-services-token::owner')
+    const runtime = (llmProviderId: string, model: string, generation = 0) => ({
+      llmProviderId, generation, provider: 'generic', model,
+      browserModel: model, dashboardBuilderModel: model, modelPromptHints: [], subagentModels: [],
+      modelContextWindows: { [model]: llmProviderId === 'first' ? 500000 : 100000 },
+      env: { ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: `secret-${llmProviderId}-${generation}`, ANTHROPIC_BASE_URL: `https://${llmProviderId}.example`, CLAUDE_CODE_USE_BEDROCK: '', ...(llmProviderId === 'first' ? { PROVIDER_CUSTOM_SECRET: 'first-only', CLAUDE_CODE_MAX_CONTEXT_TOKENS: '600000' } : {}) },
+    })
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'llm-switch', workingDirectory: '/tmp', llmRuntime: runtime('first', 'shared-model'), customEnvVars: { ANTHROPIC_AUTH_TOKEN: 'must-not-win' } })
+    await claudeProcess.start()
+    expect(calls[0].options.env).toMatchObject({ PROVIDER_CUSTOM_SECRET: 'first-only', ANTHROPIC_AUTH_TOKEN: 'secret-first-0', CLAUDE_CODE_MAX_CONTEXT_TOKENS: '600000' })
+    await claudeProcess.sendMessage('continue on second account', undefined, { llmRuntime: runtime('second', 'shared-model') })
+    expect(calls).toHaveLength(2)
+    expect(calls[1].options.env).toMatchObject({ ANTHROPIC_AUTH_TOKEN: 'secret-second-0', ANTHROPIC_BASE_URL: 'https://second.example', CLAUDE_CODE_MAX_CONTEXT_TOKENS: '100000' })
+    expect(JSON.stringify(calls[1].options)).not.toContain('secret-first')
+    expect(calls[1].options.env).not.toHaveProperty('PROVIDER_CUSTOM_SECRET')
+    await claudeProcess.sendMessage('credentials rotated', undefined, { llmRuntime: runtime('second', 'shared-model', 1) })
+    expect(calls).toHaveLength(3)
+    expect(calls[2].options.env).toMatchObject({ ANTHROPIC_AUTH_TOKEN: 'secret-second-1' })
+    await claudeProcess.sendMessage('another model', undefined, { llmRuntime: runtime('second', 'different-model', 1) })
+    expect(calls).toHaveLength(4)
+    expect(calls[3].options.model).toBe('different-model')
+    expect(JSON.stringify(calls[3].options.agents)).toContain('different-model')
+    for (const call of calls) {
+      expect(call.options.env).toMatchObject({
+        PLATFORM_BASE_URL: 'https://platform-services.example',
+        PLATFORM_AUTH_TOKEN: 'platform-services-token::owner',
+      })
+    }
+  })
+
+  it('keeps an integration identity separate from a user MCP with the same name', async () => {
+    const claude = await startProcess('test-integration-name-collision')
+    const owned = { id: 'integration:one', name: 'agent_integration_one', status: 'active', proxyUrl: 'http://host/owned', tools: [], integration: { id: 'one', provider: 'Test', name: 'Bot', workspace: 'Test' } }
+    process.env.REMOTE_MCPS = JSON.stringify([owned, { id: 'user', name: owned.name, proxyUrl: 'http://host/user', tools: [] }])
+    await claude.sendMessage('Use my connections')
+    expect(setMcpServersCalls.at(-1)).toMatchObject({
+      agent_integration_one: { url: 'http://host/owned' },
+      remote_agent_integration_one: { url: 'http://host/user' },
+    })
+    process.env.REMOTE_MCPS = JSON.stringify([{ id: 'user', name: owned.name, proxyUrl: 'http://host/user', tools: [] }])
+    await claude.sendMessage('The integration has been deleted')
+    expect(setMcpServersCalls.at(-1)).not.toHaveProperty('agent_integration_one')
+    expect(setMcpServersCalls.at(-1)).toHaveProperty('remote_agent_integration_one')
   })
 
   it('applies a remote MCP change to the live query in place, without a re-query', async () => {

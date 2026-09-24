@@ -1,3 +1,6 @@
+import { testDeliveryAttempt } from '../agent-integrations/testing/delivery-attempt'
+import type { IntegrationRoute } from '../agent-integrations/types'
+import type { DeliveryAttempt } from '../agent-integrations/delivery-queue'
 import { inputEvent, mockChatIntegration } from './test-helpers'
 import type { IntegrationInputEvent, IntegrationResponseEvent } from '../agent-integrations/types'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -47,7 +50,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: vi.fn(),
 }))
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import {
@@ -56,7 +59,7 @@ import {
   denyChatAccess,
   revokeChatAccess,
 } from '@shared/lib/services/chat-integration-access-service'
-import type { IncomingMessage } from './base-connector'
+import type { IncomingMessage } from './chat-agent-integration'
 
 const INT = 'int-tg'
 
@@ -68,6 +71,8 @@ interface ManagerInternals {
     integrationId: string,
     message: IntegrationInputEvent,
     integration: unknown,
+    route: IntegrationRoute,
+    attempt: DeliveryAttempt,
   ) => Promise<void>
   handleInteractiveResponse: (
     integrationId: string,
@@ -75,7 +80,7 @@ interface ManagerInternals {
   ) => Promise<void>
 }
 
-const mgr = chatIntegrationManager as unknown as ManagerInternals
+const mgr = agentIntegrationManager as unknown as ManagerInternals
 
 const integration = {
   id: INT,
@@ -138,11 +143,11 @@ function injectConn(): void {
 }
 
 function deliver(message: IncomingMessage): Promise<void> {
-  return mgr.handleIncomingMessageInner(INT, inputEvent(message), integration)
+  return mgr.handleIncomingMessageInner(INT, inputEvent(message), integration, mockChatIntegration({}).resolveRoute(inputEvent(message)), testDeliveryAttempt).catch(error => { if (error.message !== 'stop-after-spend') throw error })
 }
 
 describe('chat-integration inbound access gate', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
@@ -163,7 +168,7 @@ describe('chat-integration inbound access gate', () => {
     injectConn()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     testSqlite?.close()
     mgr.connections.clear()
     mgr.messageQueues.clear()
@@ -173,7 +178,7 @@ describe('chat-integration inbound access gate', () => {
 
   it('allowed chat → reaches the spend path (container start)', async () => {
     const id = insertAccess('c1', 'pending')
-    approveChatAccess(id, 'owner')
+    await approveChatAccess(id, 'owner')
 
     await deliver(msg({ chatId: 'c1' }))
 
@@ -183,7 +188,7 @@ describe('chat-integration inbound access gate', () => {
   it('private first contact → bootstraps to allowed and forwards', async () => {
     await deliver(msg({ chatId: 'c1', chatType: 'private' }))
 
-    const row = getChatAccess(INT, 'c1')
+    const row = (await getChatAccess(INT, 'c1'))
     expect(row?.status).toBe('allowed')
     expect(row?.approvalSource).toBe('auto_first_contact')
     expect(containerManager.ensureRunning).toHaveBeenCalledTimes(1)
@@ -198,7 +203,7 @@ describe('chat-integration inbound access gate', () => {
 
     await deliver(msg({ chatId: 'g1', chatType: 'group', text: 'hi from group' }))
 
-    const row = getChatAccess(INT, 'g1')
+    const row = (await getChatAccess(INT, 'g1'))
     expect(row?.status).toBe('pending')
     expect(row?.requestNoticeSentAt).not.toBeNull()
     expect(sendMessage).toHaveBeenCalledTimes(1)
@@ -220,7 +225,7 @@ describe('chat-integration inbound access gate', () => {
 
   it('denied chat → silent drop, no notice, no spend', async () => {
     const id = insertAccess('c9', 'pending')
-    denyChatAccess(id, 'owner')
+    await denyChatAccess(id, 'owner')
 
     await deliver(msg({ chatId: 'c9' }))
 
@@ -231,7 +236,7 @@ describe('chat-integration inbound access gate', () => {
   it('/start from a new private chat → bootstraps, greets once, agent not invoked', async () => {
     await deliver(msg({ chatId: 'c1', chatType: 'private', text: '/start' }))
 
-    expect(getChatAccess(INT, 'c1')?.status).toBe('allowed')
+    expect((await getChatAccess(INT, 'c1'))?.status).toBe('allowed')
     expect(sendMessage).toHaveBeenCalledTimes(1)
     expect(sendMessage).toHaveBeenCalledWith('c1', {
       text: "You're connected. Send a message to start.",
@@ -260,7 +265,7 @@ describe('chat-integration inbound access gate', () => {
       eventUnsubscribe: null,
     })
 
-    await mgr.handleIncomingMessageInner(SLACK, inputEvent(msg({ chatId: 'sc1', chatType: 'private', text: '/start' })), slackIntegration)
+    await mgr.handleIncomingMessageInner(SLACK, inputEvent(msg({ chatId: 'sc1', chatType: 'private', text: '/start' })), slackIntegration, { externalId: 'sc1', action: 'run' }, testDeliveryAttempt).catch(error => { if (error.message !== 'stop-after-spend') throw error })
 
     // Not intercepted with the greeting; reached the spend path (agent lookup +
     // container start) instead.
@@ -271,12 +276,12 @@ describe('chat-integration inbound access gate', () => {
 
   it('revoke between two sends → second is dropped at the gate before spend', async () => {
     const id = insertAccess('c1', 'pending')
-    approveChatAccess(id, 'owner')
+    await approveChatAccess(id, 'owner')
 
     await deliver(msg({ chatId: 'c1', text: 'first' }))
     expect(containerManager.ensureRunning).toHaveBeenCalledTimes(1)
 
-    revokeChatAccess(id, 'owner')
+    await revokeChatAccess(id, 'owner')
 
     await deliver(msg({ chatId: 'c1', text: 'second' }))
     expect(containerManager.ensureRunning).toHaveBeenCalledTimes(1)
@@ -284,12 +289,12 @@ describe('chat-integration inbound access gate', () => {
 
   it('revoke mid-flight (after the gate, before container start) → spend re-check drops it', async () => {
     const id = insertAccess('c1', 'pending')
-    approveChatAccess(id, 'owner')
+    await approveChatAccess(id, 'owner')
 
     // Revoke lands during the agentExists await — after the gate has passed but
     // before the container starts. The re-check guarding ensureRunning must catch it.
     vi.mocked(agentExists).mockImplementationOnce(async () => {
-      revokeChatAccess(id, 'owner')
+      await revokeChatAccess(id, 'owner')
       return true
     })
 
@@ -316,7 +321,7 @@ describe('chat-integration callback access gate', () => {
     return mgr.handleInteractiveResponse(INT, { type: 'response', externalId: chatId ?? '', requestId: 'test-review', requestKind: 'review', value: 'allow' })
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
@@ -331,7 +336,7 @@ describe('chat-integration callback access gate', () => {
     injectConn()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     testSqlite?.close()
     mgr.connections.clear()
     mgr.messageQueues.clear()
@@ -341,7 +346,7 @@ describe('chat-integration callback access gate', () => {
 
   it('allowed chat → reaches the review/resolve path', async () => {
     const id = insertAccess('c1', 'pending')
-    approveChatAccess(id, 'owner')
+    await approveChatAccess(id, 'owner')
 
     await callback('c1')
 
@@ -353,8 +358,8 @@ describe('chat-integration callback access gate', () => {
 
   it('revoked chat → silently dropped before review/resolve', async () => {
     const id = insertAccess('c1', 'pending')
-    approveChatAccess(id, 'owner')
-    revokeChatAccess(id, 'owner')
+    await approveChatAccess(id, 'owner')
+    await revokeChatAccess(id, 'owner')
 
     await callback('c1')
 

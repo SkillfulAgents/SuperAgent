@@ -1,7 +1,7 @@
 import type { SessionMetadata } from '@shared/lib/types/agent'
 
 /**
- * True when a session is automated (scheduled / webhook / chat integration /
+ * True when a session is automated (scheduled / webhook / agent integration /
  * x-agent invocation / widget repair) and has not been promoted to
  * interactive. These sessions
  * are excluded from every user-facing session list (`excludeAutomated`), so
@@ -14,8 +14,13 @@ export function isHiddenAutomatedSession(meta: SessionMetadata | null | undefine
   return !!(
     meta.isScheduledExecution ||
     meta.isWebhookExecution ||
-    meta.isChatIntegrationSession ||
+    isAgentIntegrationSession(meta) ||
     meta.invokedByAgentSlug ||
     meta.isWidgetRepair
   )
+}
+
+/** Legacy family flags remain readable so existing sessions need no migration. */
+export function isAgentIntegrationSession(meta: SessionMetadata | null | undefined): boolean {
+  return !!(meta?.isAgentIntegrationSession || meta?.agentIntegrationId || meta?.isChatIntegrationSession || meta?.chatIntegrationId)
 }

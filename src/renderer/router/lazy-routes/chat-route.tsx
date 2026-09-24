@@ -1,5 +1,5 @@
 import { useParams, useSearch } from '@tanstack/react-router'
-import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
+import { AgentIntegrationView } from '@renderer/components/agent-integrations/agent-integration-view'
 import { useAgentSlug } from './use-agent-slug'
 
 export function ChatRoute() {
@@ -10,7 +10,7 @@ export function ChatRoute() {
   const chatNewConvId = typeof search.newchat === 'string' ? search.newchat : null
   if (!slug || !integrationId) return null
   return (
-    <ChatIntegrationView
+    <AgentIntegrationView
       integrationId={integrationId}
       agentSlug={slug}
       chatSessionId={chatSessionId}

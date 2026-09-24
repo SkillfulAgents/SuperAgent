@@ -1,5 +1,4 @@
 import { apiFetch } from '@renderer/lib/api'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
@@ -38,12 +37,12 @@ import {
   useMcpOAuthRedirectUris,
 } from '@renderer/hooks/use-remote-mcps'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
-import { useDelayedOAuthAbort } from '@renderer/hooks/use-delayed-oauth-abort'
+import { useLoginWindow } from '@renderer/hooks/use-login-window'
 import type { Provider } from '@shared/lib/account-providers/service-catalog'
 import { COMMON_MCP_SERVERS, type CommonMcpServer } from '@shared/lib/mcp/common-servers'
 import { McpSetupGuide } from './mcp-setup-guide'
 import { McpAdvancedClientFields } from './mcp-advanced-client-fields'
-import { OAuthFlowCancel } from './oauth-flow-cancel'
+import { LoginButton } from './login-button'
 
 export type DirectoryTab = 'all' | 'apis' | 'mcps'
 
@@ -291,33 +290,25 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
   const initiateConnection = useInitiateConnection()
   const invalidateAccounts = useInvalidateConnectedAccounts()
 
-  const [connecting, setConnecting] = useState<string | null>(null)
+  const loginWindow = useLoginWindow()
+  const closeLoginWindow = loginWindow.close
+  const [launchedSlug, setLaunchedSlug] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const connecting = loginWindow.pending ? launchedSlug : null
   const connectingRef = useRef(connecting)
-  const popupRef = useRef<ReturnType<typeof prepareOAuthPopup> | null>(null)
   connectingRef.current = connecting
-  const showOAuthCancel = useDelayedOAuthAbort(connecting !== null)
 
   const cancelOAuthFlow = useCallback(() => {
-    popupRef.current?.close()
-    popupRef.current = null
-    setConnecting(null)
+    closeLoginWindow()
     setError(null)
-  }, [])
-
-  useEffect(() => () => {
-    popupRef.current?.close()
-    popupRef.current = null
-  }, [])
+  }, [closeLoginWindow])
 
   useEffect(() => {
     if (!connecting) return
 
     const handleComplete = (success: boolean, accountId?: string, toolkit?: string) => {
       const resolvedToolkit = toolkit || connectingRef.current
-      popupRef.current?.close()
-      popupRef.current = null
-      setConnecting(null)
+      closeLoginWindow()
       if (success) {
         invalidateAccounts()
         if (accountId && resolvedToolkit) {
@@ -369,29 +360,25 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
     }
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [connecting, invalidateAccounts, onConnected, fallbackClose])
+  }, [connecting, closeLoginWindow, invalidateAccounts, onConnected, fallbackClose])
 
   const filtered = useMemo(() => filterProviders(providersData?.providers, filter), [providersData, filter])
   const mcpMatchCount = useMemo(() => filterMcpServers(filter).length, [filter])
 
   const handleConnect = async (slug: string) => {
-    setConnecting(slug)
+    setLaunchedSlug(slug)
     setError(null)
-    const popup = prepareOAuthPopup()
-    popupRef.current = popup
     try {
-      const isElectron = !!window.electronAPI
-      const result = await initiateConnection.mutateAsync({
-        providerSlug: slug,
-        electron: isElectron,
-        location: 'connections_tab',
+      await loginWindow.open(async () => {
+        const result = await initiateConnection.mutateAsync({
+          providerSlug: slug,
+          electron: !!window.electronAPI,
+          location: 'connections_tab',
+        })
+        return result.redirectUrl
       })
-      await popup.navigate(result.redirectUrl)
     } catch (err) {
-      popup.close()
-      popupRef.current = null
       setError(err instanceof Error ? err.message : 'Failed to connect')
-      setConnecting(null)
     }
   }
 
@@ -437,28 +424,23 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
                   name={provider.displayName}
                   subtitle={provider.description}
                   right={
-                    <div className="flex items-center gap-2">
-                      <OAuthFlowCancel
-                        visible={pending && showOAuthCancel}
-                        onCancel={cancelOAuthFlow}
-                        testId={`directory-cancel-api-${provider.slug}`}
-                      />
-                      <Button
-                        size="icon"
-                        variant="outline"
-                        className="h-7 w-7"
-                        onClick={() => handleConnect(provider.slug)}
-                        disabled={connecting !== null}
-                        aria-label={`Connect ${provider.displayName}`}
-                        data-testid={`directory-connect-api-${provider.slug}`}
-                      >
-                        {pending ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Plus className="h-3.5 w-3.5" />
-                        )}
-                      </Button>
-                    </div>
+                    <LoginButton
+                      size="icon"
+                      variant="outline"
+                      className="h-7 w-7"
+                      onClick={() => handleConnect(provider.slug)}
+                      disabled={connecting !== null}
+                      aria-label={`Connect ${provider.displayName}`}
+                      data-testid={`directory-connect-api-${provider.slug}`}
+                      icon={<Plus className="h-3.5 w-3.5" />}
+                      // Icon-only, so the announcement carries the pending text.
+                      pendingLabel={<span className="sr-only">{`Connecting ${provider.displayName}…`}</span>}
+                      pending={pending}
+                      canCancel={pending && loginWindow.canCancel}
+                      onCancel={cancelOAuthFlow}
+                      cancelSide="left"
+                      cancelTestId={`directory-cancel-api-${provider.slug}`}
+                    />
                   }
                 />
               )
@@ -494,24 +476,16 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const [oauthPending, setOauthPending] = useState(false)
+  const loginWindow = useLoginWindow()
+  const closeLoginWindow = loginWindow.close
+  const oauthPending = loginWindow.waiting
   const draftRef = useRef(draft)
-  const mcpOAuthPopupRef = useRef<ReturnType<typeof prepareOAuthPopup> | null>(null)
   draftRef.current = draft
-  const showMcpOAuthCancel = useDelayedOAuthAbort(oauthPending)
 
   const cancelMcpOAuth = useCallback(() => {
-    mcpOAuthPopupRef.current?.close()
-    mcpOAuthPopupRef.current = null
-    setOauthPending(false)
-    setSubmitting(false)
+    closeLoginWindow()
     setError(null)
-  }, [])
-
-  useEffect(() => () => {
-    mcpOAuthPopupRef.current?.close()
-    mcpOAuthPopupRef.current = null
-  }, [])
+  }, [closeLoginWindow])
 
   const handleMcpReady = useCallback((server: RemoteMcpServer) => {
     invalidateRemoteMcps()
@@ -520,10 +494,7 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
   }, [invalidateRemoteMcps, onConnected])
 
   useMcpOAuthListener(oauthPending, ({ success, error: oauthError }) => {
-    mcpOAuthPopupRef.current?.close()
-    mcpOAuthPopupRef.current = null
-    setOauthPending(false)
-    setSubmitting(false)
+    closeLoginWindow()
     if (success) {
       const draftUrl = draftRef.current?.url?.trim()
       setDraft(null)
@@ -586,47 +557,30 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
     }
     const valid = parsed.data
 
-    setSubmitting(true)
-    let waitingForOAuth = false
     try {
       if (valid.authType === 'oauth') {
-        const popup = prepareOAuthPopup()
-        mcpOAuthPopupRef.current = popup
-        try {
-          const isElectron = !!window.electronAPI
+        // The login window's own pending flag keeps the form busy, through
+        // the wait for useMcpOAuthListener.
+        const outcome = await loginWindow.open(async () => {
           const clientNameOverride = valid.clientName.trim()
           const clientIdOverride = valid.clientId.trim()
           const clientSecretOverride = valid.clientSecret.trim()
           const result = await initiateOAuth.mutateAsync({
             name: valid.name,
             url: valid.url,
-            electron: isElectron,
+            electron: !!window.electronAPI,
             clientName: clientNameOverride.length > 0 ? clientNameOverride : undefined,
             clientId: clientIdOverride.length > 0 ? clientIdOverride : undefined,
             clientSecret: clientSecretOverride.length > 0 ? clientSecretOverride : undefined,
           })
-          if (result.redirectUrl) {
-            setOauthPending(true)
-            try {
-              await popup.navigate(result.redirectUrl)
-              waitingForOAuth = true
-            } catch (err) {
-              setOauthPending(false)
-              throw err
-            }
-            // Keep dialog open and spinner running until useMcpOAuthListener fires.
-            return
-          }
-          popup.close()
-          mcpOAuthPopupRef.current = null
+          return result.redirectUrl
+        })
+        if (outcome === 'no-url') {
           setDraft(null)
           fallbackClose()
-        } catch (err) {
-          popup.close()
-          mcpOAuthPopupRef.current = null
-          throw err
         }
       } else {
+        setSubmitting(true)
         const result = await addMcp.mutateAsync({
           name: valid.name,
           url: valid.url,
@@ -639,16 +593,14 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add MCP server')
     } finally {
-      // Only clear submitting if we're not waiting on OAuth — the listener
-      // clears both states itself.
-      if (!waitingForOAuth) setSubmitting(false)
+      if (valid.authType !== 'oauth') setSubmitting(false)
     }
   }
 
   const renderDraftBody = () => {
     if (!draft) return null
     const canSubmit = mcpDraftSchema.safeParse(draft).success
-    const busy = submitting || oauthPending
+    const busy = submitting || loginWindow.pending
     // Provider-side setup for the picked catalog row, if it has any.
     const setup = COMMON_MCP_SERVERS.find((s) => s.slug === draft.sourceSlug)?.setup
     return (
@@ -720,27 +672,21 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
             {error}
           </div>
         )}
-        <div className="flex items-center justify-end gap-3 pt-2">
-          <OAuthFlowCancel
-            visible={showMcpOAuthCancel}
+        <div className="flex justify-end pt-2">
+          <LoginButton
+            size="sm"
+            onClick={submitDraft}
+            disabled={!canSubmit}
+            data-testid="mcp-form-submit"
+            icon={<Plus className="h-3.5 w-3.5" />}
+            label="Connect Server"
+            pendingLabel={oauthPending ? 'Waiting for OAuth…' : draft.authType === 'oauth' ? 'Connecting…' : 'Adding…'}
+            pending={busy}
+            canCancel={loginWindow.canCancel}
             onCancel={cancelMcpOAuth}
-            testId="directory-cancel-mcp-oauth"
+            cancelSide="left"
+            cancelTestId="directory-cancel-mcp-oauth"
           />
-          <Button size="sm" onClick={submitDraft} disabled={!canSubmit || busy} data-testid="mcp-form-submit">
-            {busy ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                {oauthPending
-                  ? 'Waiting for OAuth...'
-                  : draft.authType === 'oauth' ? 'Connecting...' : 'Adding...'}
-              </>
-            ) : (
-              <>
-                <Plus className="h-3.5 w-3.5 mr-1.5" />
-                Connect Server
-              </>
-            )}
-          </Button>
         </div>
       </div>
     )

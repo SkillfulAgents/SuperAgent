@@ -23,8 +23,8 @@ Exa account or API key.
 Use:
 
 ```text
-Base: $ANTHROPIC_BASE_URL/v1/exa
-Authorization: Bearer $ANTHROPIC_AUTH_TOKEN
+Base: $PLATFORM_BASE_URL/v1/exa
+Authorization: Bearer $PLATFORM_AUTH_TOKEN
 Content-Type: application/json
 ```
 
@@ -49,8 +49,8 @@ through this proxy. Do not infer support from Exa's public API or SDK.
 ## Search from a Script
 
 ```bash
-curl --fail-with-body -sS "$ANTHROPIC_BASE_URL/v1/exa/search" \
-  -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" \
+curl --fail-with-body -sS "$PLATFORM_BASE_URL/v1/exa/search" \
+  -H "Authorization: Bearer $PLATFORM_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "PostgreSQL logical replication documentation",
@@ -84,8 +84,8 @@ Create a JSON request file using real URLs from the user or search results:
 Then submit it:
 
 ```bash
-curl --fail-with-body -sS "$ANTHROPIC_BASE_URL/v1/exa/contents" \
-  -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" \
+curl --fail-with-body -sS "$PLATFORM_BASE_URL/v1/exa/contents" \
+  -H "Authorization: Bearer $PLATFORM_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   --data-binary @/workspace/contents-request.json \
   -o /workspace/page-contents.json

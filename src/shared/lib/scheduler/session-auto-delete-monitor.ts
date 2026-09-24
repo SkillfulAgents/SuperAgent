@@ -5,7 +5,6 @@ import { deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-se
 import { listSessionIdsWithPendingWakes } from '@shared/lib/services/scheduled-task-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
-import { isAuthMode } from '@shared/lib/auth/mode'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import { inArray } from 'drizzle-orm'
@@ -117,7 +116,8 @@ class SessionAutoDeleteMonitor {
       actor.sessions.unsubscribeStream(sessionId)
     }
 
-    if (isAuthMode() && deletedIds.length > 0) {
+    // People (auth mode) and integrations (every mode) author messages.
+    if (deletedIds.length > 0) {
       try {
         await db
           .delete(messageAuthor)

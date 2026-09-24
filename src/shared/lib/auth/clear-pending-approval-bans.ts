@@ -7,9 +7,9 @@ import { isPlatformControlledAuth } from './auth-settings'
 export const PENDING_APPROVAL_BAN_REASON = 'Pending admin approval'
 
 /** One-time upgrade clear: platform-controlled deployments have no local approve UI. */
-export function clearPendingApprovalBans(): number {
+export async function clearPendingApprovalBans(): Promise<number> {
   if (!isPlatformControlledAuth()) return 0
-  const result = db
+  const result = await db
     .update(schema.user)
     .set({ banned: false, banReason: null })
     .where(

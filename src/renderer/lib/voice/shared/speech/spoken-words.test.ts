@@ -48,6 +48,12 @@ describe('markdownToSpokenWords', () => {
       .toBe('Bold and italic with a link and code.|')
   })
 
+  it('runs the renderer plugin list, so a bare URL glued to fullwidth punctuation splits the same way', () => {
+    // The ** is a delimiter here, not spoken text; without the source reaching the
+    // remark plugin it would be read aloud as part of the URL.
+    expect(spokenText('Pushed to **https://example.com/kit**（public）。')).toBe('Pushed to https://example.com/kit（public）。|')
+  })
+
   it('never speaks fenced code blocks', () => {
     expect(spokenText('Run this:\n\n```sh\nnpm test\n```\n\nThen done.')).toBe('Run this:| Then done.|')
   })

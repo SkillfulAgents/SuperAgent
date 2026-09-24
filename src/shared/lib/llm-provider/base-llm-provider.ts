@@ -1,5 +1,8 @@
+import type { LlmProxyConfig } from '../../../../agent-container/src/llm-proxy-schema'
+import type { OAuthCredential } from './oauth-schema'
 import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
+import type { ConnectionConfig } from './connection-schema'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
@@ -40,18 +43,41 @@ export interface AgentIdentity {
   name?: string
 }
 
+export interface ProviderConfiguration {
+  apiFormat?: ConnectionConfig['apiFormat']
+  chatTokenLimitField?: ConnectionConfig['chatTokenLimitField']
+  oauth?: OAuthCredential
+  resolveCredential?: (rejectedGeneration?: number) => Promise<OAuthCredential & { generation: number }>
+  runtimeEnv?: Record<string, string>
+  apiKeys: ApiKeySettings & ConnectionConfig['apiKeys']
+  env: Record<string, string | undefined>
+}
+
 export abstract class BaseLlmProvider {
+  constructor(protected readonly configuration?: ProviderConfiguration) {}
+
+  protected configuredKeys(): ProviderConfiguration['apiKeys'] {
+    return this.configuration?.apiKeys ?? getSettings().apiKeys ?? {}
+  }
+
+  protected envValue(name: string): string | undefined {
+    return this.configuration ? this.configuration.runtimeEnv?.[name] ?? this.configuration.env[name] : process.env[name]
+  }
+
   abstract readonly id: LlmProviderId
   abstract readonly name: string
   abstract readonly defaultModelOptions: readonly ProviderDefaultModelOption[]
   abstract readonly catalogDefaultModels: CatalogDefaultModels
 
-  /** Which field in ApiKeySettings stores this provider's key. */
-  protected abstract readonly settingsKeyField: keyof ApiKeySettings
+  /** Which field in the provider credentials stores this provider's key. */
+  protected abstract readonly settingsKeyField: keyof ProviderConfiguration['apiKeys'] | undefined
   /** Environment variable name for this provider's key. */
   protected abstract readonly envVarName: string
   /** Whether this provider can discover remote catalog models by search query. */
   readonly supportsModelSearch: boolean = false
+
+  /** Whether this provider supports host-side Messages API calls (including summaries). */
+  readonly supportsDirectApi: boolean = true
 
   /**
    * Value of `ENABLE_TOOL_SEARCH` for containers on this provider, or
@@ -71,11 +97,11 @@ export abstract class BaseLlmProvider {
 
   /** Check whether an API key is configured and its source. */
   getApiKeyStatus(): ApiKeyStatus {
-    const settings = getSettings()
-    if (settings.apiKeys?.[this.settingsKeyField]) {
+    const settings = { apiKeys: this.configuredKeys() }
+    if ((this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined)) {
       return { isConfigured: true, source: 'settings' }
     }
-    if (process.env[this.envVarName]) {
+    if (this.envValue(this.envVarName)) {
       return { isConfigured: true, source: 'env' }
     }
     return { isConfigured: false, source: 'none' }
@@ -83,10 +109,10 @@ export abstract class BaseLlmProvider {
 
   /** Get the effective API key (settings take precedence over env var). */
   getEffectiveApiKey(): string | undefined {
-    const settings = getSettings()
-    const fromSettings = settings.apiKeys?.[this.settingsKeyField]
+    const settings = { apiKeys: this.configuredKeys() }
+    const fromSettings = (this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined)
     if (fromSettings) return fromSettings
-    return process.env[this.envVarName]
+    return this.envValue(this.envVarName)
   }
 
   /** Create an Anthropic-compatible SDK client configured for this provider. */
@@ -137,8 +163,10 @@ export abstract class BaseLlmProvider {
     }
   }
 
+  async getContainerProxyConfig(): Promise<LlmProxyConfig | undefined> { return undefined }
+
   /** Get env vars to inject into agent containers. */
-  abstract getContainerEnvVars(agent?: AgentIdentity): Record<string, string | undefined>
+  abstract getContainerEnvVars(agent?: AgentIdentity): Promise<Record<string, string | undefined>>
 
   /**
    * Validate an API key. `opts.baseUrl` is only meaningful for providers whose
@@ -168,7 +196,7 @@ export abstract class BaseLlmProvider {
     apiErrorCode: string | null | undefined,
   ): ProviderErrorPresentation | null {
     if (!isUpstreamApiErrorCode(apiErrorCode)) return null
-    const specialized = this.parseErrorResponseOverride(status, body)
+    const specialized = this.parseErrorResponseOverride(status, body, apiErrorCode)
     if (specialized) return specialized
     return PROVIDER_ERROR_CODES.has(apiErrorCode) ? defaultParseErrorResponse(status, body) : null
   }
@@ -181,6 +209,7 @@ export abstract class BaseLlmProvider {
   protected parseErrorResponseOverride(
     _status: number | undefined,
     _body: unknown,
+    _apiErrorCode?: string,
   ): ProviderErrorPresentation | null {
     return null
   }

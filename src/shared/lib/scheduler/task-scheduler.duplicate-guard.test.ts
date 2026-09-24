@@ -5,6 +5,7 @@ const mockGetDueTasks = vi.fn()
 const mockMarkTaskExecuted = vi.fn()
 const mockMarkTaskFailed = vi.fn()
 const mockUpdateNextExecution = vi.fn()
+const mockRescheduleAfterFailure = vi.fn()
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   getDueTasks: (...args: unknown[]) => mockGetDueTasks(...args),
@@ -12,6 +13,8 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   markTaskExecuted: (...args: unknown[]) => mockMarkTaskExecuted(...args),
   markTaskFailed: (...args: unknown[]) => mockMarkTaskFailed(...args),
   updateNextExecution: (...args: unknown[]) => mockUpdateNextExecution(...args),
+  rescheduleAfterFailure: (...args: unknown[]) => mockRescheduleAfterFailure(...args),
+  recordTaskSkip: vi.fn(() => Promise.resolve()),
 }))
 
 const mockCreateSession = vi.fn()
@@ -34,6 +37,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
 })
 
 vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: () => ({}),
   getEffectiveModels: () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-sonnet-4-20250514',
@@ -123,11 +127,14 @@ function createTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     lastExecutedAt: null,
     isRecurring: false,
     executionCount: 0,
+    consecutiveSkips: 0,
+    lastSkippedAt: null,
     lastSessionId: null,
     createdBySessionId: null,
     createdByUserId: 'user-1',
     timezone: 'America/Los_Angeles',
     model: null,
+  llmProviderId: null,
     effort: null,
     speed: null,
     resumeSessionId: null,
@@ -170,6 +177,7 @@ describe('TaskScheduler duplicate execution guard', () => {
     mockMarkTaskExecuted.mockResolvedValue(undefined)
     mockMarkTaskFailed.mockResolvedValue(undefined)
     mockUpdateNextExecution.mockResolvedValue(undefined)
+    mockRescheduleAfterFailure.mockResolvedValue(undefined)
     mockGetNextCronTime.mockReturnValue(nextExecutionAt)
   })
 
@@ -235,8 +243,8 @@ describe('TaskScheduler duplicate execution guard', () => {
       .mockResolvedValueOnce(existingScheduledSession())
     mockUpdateNextExecution
       .mockRejectedValueOnce(new Error('lost durable advance'))
-      .mockRejectedValueOnce(new Error('same SQLite outage'))
       .mockResolvedValueOnce(undefined)
+    mockRescheduleAfterFailure.mockRejectedValue(new Error('same SQLite outage'))
     mockMarkTaskFailed.mockRejectedValue(new Error('same SQLite outage'))
 
     await taskScheduler.triggerExecution()
@@ -249,9 +257,11 @@ describe('TaskScheduler duplicate execution guard', () => {
       nextExecutionAt,
       'container-session-1',
     )
-    expect(mockUpdateNextExecution).toHaveBeenNthCalledWith(2, 'task-1', nextExecutionAt, '')
+    // The failure path only advances the schedule; it never records a fire
+    // with a blank session id.
+    expect(mockRescheduleAfterFailure).toHaveBeenCalledWith('task-1', nextExecutionAt)
     expect(mockUpdateNextExecution).toHaveBeenNthCalledWith(
-      3,
+      2,
       'task-1',
       nextExecutionAt,
       'container-session-1',

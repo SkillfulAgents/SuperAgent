@@ -32,6 +32,7 @@ type CustomModelExtras = Partial<
     | 'blurb'
     | 'contextWindow'
     | 'isDefault'
+    | 'supportedSpeeds'
     | 'supportsWebSearch'
     | 'supportsImageInput'
     | 'promptHints'
@@ -64,6 +65,7 @@ function extrasFromModel(model: ModelDefinition): CustomModelExtras {
     blurb: model.blurb,
     contextWindow: model.contextWindow,
     isDefault: model.isDefault,
+    supportedSpeeds: model.supportedSpeeds,
     supportsWebSearch: model.supportsWebSearch,
     supportsImageInput: model.supportsImageInput,
     promptHints: model.promptHints,
@@ -89,7 +91,9 @@ export interface CustomModelDialogProps {
   /** The model being edited (edit mode) — prefills the form and supplies carried-through extras. */
   initialModel?: ModelDefinition | null
   providerId: LlmProviderId
+  llmProviderId?: string
   supportsModelSearch?: boolean
+  canEditPricing?: boolean
   disabled?: boolean
   onOpenChange: (open: boolean) => void
   onSubmit: (entry: CatalogOverrideEntry) => void
@@ -108,7 +112,9 @@ function CustomModelDialogBody({
   mode,
   initialModel,
   providerId,
+  llmProviderId,
   supportsModelSearch = false,
+  canEditPricing = true,
   disabled,
   onOpenChange,
   onSubmit,
@@ -135,6 +141,7 @@ function CustomModelDialogBody({
   const searchEnabled = supportsModelSearch && mode === 'add' && !disabled
   const providerModelSearch = useProviderModelSearch(providerId, debouncedQuery, {
     enabled: searchEnabled,
+    llmProviderId,
   })
 
   useEffect(() => {
@@ -216,6 +223,7 @@ function CustomModelDialogBody({
       ...(includeExtras && extras.isDefault !== undefined
         ? { isDefault: extras.isDefault }
         : {}),
+      ...(includeExtras && extras.supportedSpeeds ? { supportedSpeeds: extras.supportedSpeeds } : {}),
       ...(includeExtras && extras.supportsWebSearch !== undefined
         ? { supportsWebSearch: extras.supportsWebSearch }
         : {}),
@@ -382,17 +390,18 @@ function CustomModelDialogBody({
           label="Input price"
           value={form.inputPrice}
           onChange={(value) => patch({ inputPrice: value })}
-          disabled={disabled}
+          disabled={disabled || !canEditPricing}
         />
         <CurrencyPriceInput
           id="custom-model-output-price"
           label="Output price"
           value={form.outputPrice}
           onChange={(value) => patch({ outputPrice: value })}
-          disabled={disabled}
+          disabled={disabled || !canEditPricing}
         />
       </div>
 
+      <p className="text-xs text-muted-foreground">Prices are shared by model ID across all providers.</p>
       <fieldset className="space-y-2">
         <legend className="text-xs font-medium text-foreground">Supported efforts</legend>
         <div className="flex flex-wrap items-center gap-3">

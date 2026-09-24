@@ -39,7 +39,7 @@ import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
 import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
-import { HomeChatIntegrations } from './home-chat-integrations'
+import { HomeAgentIntegrations } from './home-agent-integrations'
 import { HomeVolumes } from './home-volumes'
 import { HomeHooks } from './home-hooks'
 import { HomeBookmarks } from './home-bookmarks'
@@ -117,6 +117,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     initialEffort: carryover?.effort,
     initialSpeed: carryover?.speed,
     agentDefaultModel: agentPrefs?.defaultModel,
+    agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
     agentDefaultEffort: agentPrefs?.defaultEffort,
     agentDefaultSpeed: agentPrefs?.defaultSpeed,
     agentKey: agent.slug,
@@ -692,7 +693,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 }
               }, 0)
             }} />
-            <HomeChatIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
+            <HomeAgentIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
             <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
             <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
             <HomeHooks className="intro-step intro-step-9" agentSlug={agent.slug} isOwner={isOwner} />

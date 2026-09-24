@@ -12,17 +12,16 @@ import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
 import { MessageContextMenu } from './message-context-menu'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { parseUserMessageParts } from '@shared/lib/utils/user-message-parts'
-import { classifyUserText } from './user-message-kinds'
+import { classifyUserMessage } from './user-message-kinds'
 import { SentAttachmentChip, imageSizeForCount } from './sent-attachment-chip'
 import { isPreviewableImage } from '@renderer/lib/file-types'
-import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { Markdown, type MarkdownProps } from '@renderer/components/ui/markdown'
+import type { Components } from 'react-markdown'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
 import { isProviderFacingError } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { useRenderTracker } from '@renderer/lib/perf'
-import { createMarkdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 import { countSpokenWords, rehypeSpokenWords } from '@renderer/lib/voice/shared/speech/spoken-words'
@@ -73,8 +72,6 @@ function extractText(node: ReactNode): string {
   if (typeof node === 'object' && 'props' in node) return extractText(node.props.children)
   return ''
 }
-
-const REMARK_PLUGINS = [remarkGfm]
 
 // Side breathing room kept between an expanded table and the chat edges.
 const TABLE_BREAKOUT_GUTTER = 16
@@ -185,20 +182,6 @@ const MARKDOWN_COMPONENTS: Components = {
       <div className="max-w-[32rem]">{children}</div>
     </td>
   ),
-  // Ensure links open in new tab
-  a: ({ children, href }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={cn(
-        'hover:underline',
-        'text-blue-500'
-      )}
-    >
-      {children}
-    </a>
-  ),
   img: ({ alt, src }) => (
     <img
       src={src}
@@ -225,25 +208,21 @@ interface MarkdownBlockProps {
   spokenOffset?: number
 }
 
-function spokenPlugins(spoken: boolean | undefined, offset: number | undefined): ReactMarkdownOptions['rehypePlugins'] {
+function spokenPlugins(spoken: boolean | undefined, offset: number | undefined): MarkdownProps['rehypePlugins'] {
   return spoken ? [[rehypeSpokenWords, { offset: offset ?? 0 }]] : undefined
 }
 
 export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset }: MarkdownBlockProps) {
-  const urlTransform = useMemo(
-    () => createMarkdownUrlTransform({ aliases: embeddedImageAliases, agentSlug }),
-    [embeddedImageAliases, agentSlug]
-  )
   const rehypePlugins = useMemo(() => spokenPlugins(spoken, spokenOffset), [spoken, spokenOffset])
   return (
-    <ReactMarkdown
-      remarkPlugins={REMARK_PLUGINS}
+    <Markdown
       rehypePlugins={rehypePlugins}
       components={MARKDOWN_COMPONENTS}
-      urlTransform={urlTransform}
+      imageAliases={embeddedImageAliases}
+      agentSlug={agentSlug}
     >
       {text}
-    </ReactMarkdown>
+    </Markdown>
   )
 })
 
@@ -267,24 +246,20 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embe
   // The plugin keeps each batch's delays stable across subsequent renders, so
   // existing words do not restart while newly appended words get their own
   // compact stagger sequence.
-  const rehypePlugins: ReactMarkdownOptions['rehypePlugins'] = [
+  const rehypePlugins: MarkdownProps['rehypePlugins'] = [
     [rehypeStreamingWordReveal, { batchStarts: batchStartsRef.current }],
     ...(spokenPlugins(spoken, spokenOffset) ?? []),
   ]
-  const urlTransform = useMemo(
-    () => createMarkdownUrlTransform({ aliases: embeddedImageAliases, agentSlug }),
-    [embeddedImageAliases, agentSlug]
-  )
 
   return (
-    <ReactMarkdown
-      remarkPlugins={REMARK_PLUGINS}
+    <Markdown
       rehypePlugins={rehypePlugins}
       components={MARKDOWN_COMPONENTS}
-      urlTransform={urlTransform}
+      imageAliases={embeddedImageAliases}
+      agentSlug={agentSlug}
     >
       {text}
-    </ReactMarkdown>
+    </Markdown>
   )
 })
 
@@ -379,11 +354,14 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
       )
     : []
 
-  // Kinds with a custom bubble body (slash commands today) replace the
-  // Markdown rendering. Classified on the peeled text so a mirrored
-  // "\[sender]: /cmd" still draws as a command. They get the default body
-  // back as a callback so whatever they don't decorate renders as usual.
-  const userKind = isUser && hasText ? classifyUserText(text) : null
+  // Kinds with a custom bubble body (slash commands, integration cards)
+  // replace the Markdown rendering. Host metadata decides first; text kinds
+  // are classified on the peeled text so a mirrored "\[sender]: /cmd" still
+  // draws as a command. They get the default body back as a callback so
+  // whatever they don't decorate renders as usual.
+  const userKind = isUser ? classifyUserMessage(message, hasText ? text : '') : null
+  // An integration card names its own author and may carry only files.
+  const isIntegrationMessage = userKind?.kind === 'integration'
   const CustomUserRender = userKind?.Render
   const bareUserRender = CustomUserRender && userKind?.chrome === 'bare'
   const renderMarkdown = useCallback((markdown: string) => (
@@ -472,7 +450,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // - assistant provider errors routed to another placement
   // - user messages that only had attached files (text was fully stripped)
   const showMessageBubble = isUser
-    ? (hasText || attachedFiles.length === 0)
+    ? (hasText || attachedFiles.length === 0 || isIntegrationMessage)
     : (hasInlineText || isStreaming)
 
   return (
@@ -492,7 +470,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         )}
       >
         {/* Sender name: shared agent sessions, or lifted from a read-only mirror prefix. */}
-        {isUser && (message.sender?.name ?? senderFromPrefix) && (
+        {isUser && !isIntegrationMessage && (message.sender?.name ?? senderFromPrefix) && (
           <span className="text-xs text-muted-foreground">{message.sender?.name ?? senderFromPrefix}</span>
         )}
 

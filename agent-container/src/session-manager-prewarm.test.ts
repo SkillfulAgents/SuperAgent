@@ -30,6 +30,7 @@ vi.mock('./session-persistence', () => ({
       return Array.from(persistedSessions.values())
     }
     updateSession() {}
+    updateLastActivity() {}
     deleteSession(id: string) {
       persistedSessions.delete(id)
     }
@@ -103,6 +104,7 @@ vi.mock('./claude-code', () => ({
   },
 }))
 
+import { SessionInputNotAcceptedError, sessionCreationFailure } from './session-creation-error'
 import { SessionManager } from './session-manager'
 import { nextWarmProfileFromRequest } from './warm-profile'
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies'
@@ -138,8 +140,100 @@ describe('SessionManager pre-warm pool', () => {
   })
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     await manager.stopAll()
     fs.rmSync(workDir, { recursive: true, force: true })
+  })
+
+  it('reports validation and process-start failures as rejected before any input submission', async () => {
+    const invalid = await manager.createSession({ initialMessage: '' }).catch(error => error)
+    expect(invalid).toBeInstanceOf(SessionInputNotAcceptedError)
+    expect(sessionCreationFailure(invalid)).toMatchObject({ inputAccepted: false })
+    expect(MockClaudeProcess.spawned).toHaveLength(0)
+
+    const failure = Object.assign(new Error('spawn failed'), { code: 'EAGAIN', errorClass: 'executable_launch_failed' })
+    vi.spyOn(MockClaudeProcess.prototype, 'start').mockRejectedValueOnce(failure)
+    const send = vi.spyOn(MockClaudeProcess.prototype, 'sendMessage')
+    const error = await manager.createSession(baseRequest).catch(error => error)
+    expect(error).toBeInstanceOf(SessionInputNotAcceptedError)
+    expect(sessionCreationFailure(error)).toEqual({ error: 'spawn failed', inputAccepted: false, code: 'EAGAIN', errorClass: 'executable_launch_failed' })
+    expect(send).not.toHaveBeenCalled()
+    expect(MockClaudeProcess.spawned[0].disposeCalls).toBe(1)
+  })
+
+  it('recognizes a deferred SDK spawn failure even after stdin was queued', async () => {
+    vi.spyOn(MockClaudeProcess.prototype, 'sendMessage').mockImplementationOnce(async function (this: MockClaudeProcess) {
+      this.emit('error', Object.assign(new Error('spawn failed asynchronously'), { errorClass: 'executable_launch_failed', code: 'ENOENT' }))
+    })
+    const error = await manager.createSession(baseRequest).catch(error => error)
+    expect(sessionCreationFailure(error)).toMatchObject({ inputAccepted: false, errorClass: 'executable_launch_failed', code: 'ENOENT' })
+  })
+
+  it('does not claim rejection when init fails after the initial input was submitted', async () => {
+    vi.spyOn(MockClaudeProcess.prototype, 'sendMessage').mockImplementationOnce(async function (this: MockClaudeProcess) {
+      this.emit('error', new Error('init response lost'))
+    })
+    const error = await manager.createSession(baseRequest).catch(error => error)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(SessionInputNotAcceptedError)
+    expect(sessionCreationFailure(error)).toEqual({ error: 'init response lost' })
+    expect(MockClaudeProcess.spawned[0].disposeCalls).toBe(1)
+  })
+
+  it('keeps a persisted session readable while the host credential service is unavailable', async () => {
+    const fetchCredential = vi.fn(async () => { throw new Error('host unavailable') })
+    vi.stubEnv('SUPERAGENT_HOST_API_URL', 'http://host.test/api')
+    vi.stubEnv('PROXY_TOKEN', 'agent-test-token')
+    vi.stubGlobal('fetch', fetchCredential)
+    try {
+      persistedSessions.set('old-session', { sessionId: 'old-session', claudeSessionId: 'old-claude-id',
+        workingDirectory: workDir, model: 'legacy-model', createdAt: new Date().toISOString() })
+      expect(await manager.getSession('old-session')).not.toBeNull()
+      expect(fetchCredential).not.toHaveBeenCalled()
+      expect(MockClaudeProcess.spawned.at(-1)?.options).toMatchObject({ requiresConnectionRuntime: true, model: 'legacy-model' })
+    } finally {
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('warms the agent default provider after a one-off provider selection', async () => {
+    const runtime = (id: string, model: string) => ({ llmProviderId: id, generation: 0, provider: 'generic', model,
+      browserModel: model, dashboardBuilderModel: model, modelPromptHints: [], subagentModels: [], modelContextWindows: {},
+      env: { ANTHROPIC_AUTH_TOKEN: `secret-${id}` } })
+    const defaults = runtime('agent-default', 'default-model')
+    await manager.createSession({ ...baseRequest, model: 'one-off-model', llmProviderId: 'one-off', llmRuntime: runtime('one-off', 'one-off-model'),
+      prewarmDefaults: { llmRuntime: defaults, model: defaults.model, effort: 'high' } })
+    const warm = MockClaudeProcess.spawned.at(-1)!
+    expect(warm.options.llmRuntime).toEqual(defaults)
+    expect(warm.prewarmCalls).toBe(1)
+    const count = MockClaudeProcess.spawned.length
+    await manager.createSession({ ...baseRequest, model: defaults.model, llmProviderId: defaults.llmProviderId, llmRuntime: defaults })
+    expect(MockClaudeProcess.spawned).toHaveLength(count + 1) // Refill only; the session claimed the warm process.
+    const file = fs.readFileSync(path.join(workDir, '.superagent-warm-profile.json'), 'utf8')
+    expect(file).not.toContain('secret-agent-default')
+  })
+
+  it('refreshes a persisted provider profile on boot before warming it', async () => {
+    const runtime = { llmProviderId: 'boot-default', generation: 7, provider: 'anthropic', model: 'current-model',
+      browserModel: 'browser', dashboardBuilderModel: 'dashboard', modelPromptHints: [], subagentModels: [],
+      modelContextWindows: {}, env: { ANTHROPIC_API_KEY: 'fresh-boot-key' } }
+    const profile = { ...profileFor('old-model'), llmProviderId: 'old-default', credentialGeneration: 1, runtimeFingerprint: 'unavailable-after-restart' }
+    fs.writeFileSync(path.join(workDir, '.superagent-warm-profile.json'), JSON.stringify(profile))
+    const fetchRuntime = vi.fn(async () => new Response(JSON.stringify(runtime)))
+    vi.stubEnv('SUPERAGENT_HOST_API_URL', 'http://host.test/api')
+    vi.stubEnv('PROXY_TOKEN', 'agent-token')
+    vi.stubGlobal('fetch', fetchRuntime)
+    try {
+      manager.prewarmFromLastProfile()
+      await vi.waitFor(() => expect(MockClaudeProcess.spawned.at(-1)?.prewarmCalls).toBe(1))
+      expect(fetchRuntime).toHaveBeenCalledWith('http://host.test/api/llm-runtime/prewarm', expect.anything())
+      expect(MockClaudeProcess.spawned.at(-1)?.options).toMatchObject({ llmRuntime: runtime, model: 'current-model' })
+      expect(fs.readFileSync(path.join(workDir, '.superagent-warm-profile.json'), 'utf8')).not.toContain('fresh-boot-key')
+    } finally {
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+    }
   })
 
   // The whole point: the second session skips the boot the first one paid for.

@@ -34,18 +34,18 @@ afterAll(async () => {
 })
 
 describe('user profile reads', () => {
-  it('resolves distinct requested users with effective images and no internal fields', () => {
-    const result = profiles.getUserSummaries(['ada', 'ada', 'missing', 'maya', 'percent'])
+  it('resolves distinct requested users with effective images and no internal fields', async () => {
+    const result = await profiles.getUserSummaries(['ada', 'ada', 'missing', 'maya', 'percent'])
     expect(result.size).toBe(3)
     expect(result.get('ada')).toEqual({ id: 'ada', name: 'Ada Lovelace', email: 'ada@example.test', image: override })
     expect(result.get('maya')?.image).toBe('https://example.test/maya.png')
     expect(result.get('percent')?.image).toBeNull()
-    expect(profiles.getUserSummaries([]).size).toBe(0)
-    expect(profiles.userExists('ada')).toBe(true)
-    expect(profiles.userExists('missing')).toBe(false)
+    expect((await profiles.getUserSummaries([])).size).toBe(0)
+    expect(await profiles.userExists('ada')).toBe(true)
+    expect(await profiles.userExists('missing')).toBe(false)
   })
 
-  it('keeps live sender summaries limited to the existing event fields', () => {
+  it('keeps live sender summaries limited to the existing event fields', async () => {
     const user = { id: 'ada', name: 'Ada Lovelace', email: 'ada@example.test', image: 'https://example.test/ada.png', avatarOverride: override, role: 'admin' }
     expect(profiles.toUserSender(user)).toEqual({ id: 'ada', name: 'Ada Lovelace', image: override })
   })
@@ -56,16 +56,16 @@ describe('user profile reads', () => {
     ['%', 'percent'],
     ['_', 'underscore'],
     ['\\', 'backslash'],
-  ])('searches names and emails literally for %s', (query, expectedId) => {
-    expect(profiles.searchUserSummaries(query, []).map(profile => profile.id)).toEqual([expectedId])
+  ])('searches names and emails literally for %s', async (query, expectedId) => {
+    expect((await profiles.searchUserSummaries(query, [])).map(profile => profile.id)).toEqual([expectedId])
   })
 
-  it('excludes current members before applying the invitation result limit', () => {
-    const existing = profiles.searchUserSummaries('Team Person', [])
+  it('excludes current members before applying the invitation result limit', async () => {
+    const existing = await profiles.searchUserSummaries('Team Person', [])
     expect(existing).toHaveLength(50)
-    const remaining = profiles.searchUserSummaries('Team Person', existing.map(profile => profile.id))
+    const remaining = await profiles.searchUserSummaries('Team Person', existing.map(profile => profile.id))
     expect(remaining).toHaveLength(5)
     expect(remaining.every(profile => !existing.some(member => member.id === profile.id))).toBe(true)
-    expect(profiles.searchUserSummaries(undefined, [])).toHaveLength(50)
+    expect(await profiles.searchUserSummaries(undefined, [])).toHaveLength(50)
   })
 })

@@ -45,8 +45,15 @@ export const GENERIC_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
   dashboardBuilderModel: GENERIC_FALLBACK_MODEL,
 }
 
+export const GROK_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'grok', summarizerModel: 'grok', browserModel: 'grok', dashboardBuilderModel: 'grok' }
+
+export const CODEX_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'gpt', summarizerModel: 'gpt', browserModel: 'gpt', dashboardBuilderModel: 'gpt' }
+
 const BUILTIN_DEFAULTS: Record<LlmProviderId, CatalogDefaultModels> = {
   anthropic: ANTHROPIC_CATALOG_DEFAULT_MODELS,
+  'claude-subscription': ANTHROPIC_CATALOG_DEFAULT_MODELS,
+  'grok-subscription': GROK_DEFAULT_MODELS,
+  'codex-subscription': CODEX_DEFAULT_MODELS,
   openrouter: OPENROUTER_CATALOG_DEFAULT_MODELS,
   bedrock: BEDROCK_CATALOG_DEFAULT_MODELS,
   platform: PLATFORM_CATALOG_DEFAULT_MODELS,

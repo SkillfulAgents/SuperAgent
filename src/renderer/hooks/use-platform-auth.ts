@@ -3,8 +3,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 
 import { apiFetch } from '@renderer/lib/api'
 import { useUpdateSettings } from '@renderer/hooks/use-settings'
-import { useDelayedOAuthAbort } from '@renderer/hooks/use-delayed-oauth-abort'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { useLoginWindow } from '@renderer/hooks/use-login-window'
 import type {
   PlatformAuthSource,
   PlatformAuthStatus as SharedPlatformAuthStatus,
@@ -78,24 +77,6 @@ function useInitiatePlatformLogin() {
       if (!res.ok) {
         const error = await res.json().catch(() => ({}))
         throw new Error(error.error || 'Failed to start platform login')
-      }
-      return res.json()
-    },
-  })
-}
-
-function useRevokePlatformToken() {
-  return useMutation<{ success: boolean }, Error, { clearLocal?: boolean } | undefined>({
-    meta: { skipGlobalErrorToast: true },
-    mutationFn: async (options) => {
-      const res = await apiFetch('/api/platform-auth/revoke', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(options ?? {}),
-      })
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({}))
-        throw new Error(error.error || 'Failed to revoke platform token')
       }
       return res.json()
     },
@@ -272,20 +253,10 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   const platformAuth = platformAuthQuery.data
   const applyPlatformDefaults = useApplyPlatformDefaults()
   const initiateLogin = useInitiatePlatformLogin()
-  const revokePlatformToken = useRevokePlatformToken()
-  const [isLaunching, setIsLaunching] = useState(false)
+  const { open, close, pending, canCancel } = useLoginWindow()
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const wasConnected = !!platformAuth?.connected
-  // Each launch gets an attempt number; a request that settles after a newer
-  // attempt started (or after Cancel) is stale and must not touch state.
-  const attemptRef = useRef(0)
-  const abortConnectRef = useRef<(() => void) | null>(null)
-  const canCancel = useDelayedOAuthAbort(isLaunching)
-
-  const cancelConnect = useCallback(() => {
-    abortConnectRef.current?.()
-  }, [])
 
   const onSuccessRef = useRef(options?.onSuccess)
   onSuccessRef.current = options?.onSuccess
@@ -302,11 +273,11 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
     seenUpdatedAtRef.current = updatedAt
     // On desktop the callback owns the launch; a metadata refresh mid-login must not end it.
     if (window.electronAPI?.onPlatformAuthCallback) return
-    setIsLaunching(false)
-  }, [updatedAt])
+    close()
+  }, [updatedAt, close])
 
   usePlatformAuthCallbackListener((params) => {
-    setIsLaunching(false)
+    close()
     if (params.success) {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       setError(null)
@@ -332,39 +303,25 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   })
 
   const handleConnect = useCallback(async () => {
-    const popup = prepareOAuthPopup()
-    const attempt = ++attemptRef.current
-    const stale = () => attempt !== attemptRef.current
-    abortConnectRef.current = () => {
-      attemptRef.current++
-      popup.close()
-      setIsLaunching(false)
-    }
     setError(null)
     setMessage(null)
-    setIsLaunching(true)
 
     try {
-      if (wasConnected) {
-        await revokePlatformToken.mutateAsync({ clearLocal: false }).catch(() => ({ success: false }))
-      }
-      if (stale()) return
-      const result = await initiateLogin.mutateAsync()
-      if (stale()) return
-      await popup.navigate(result.loginUrl)
+      await open(async () => {
+        // Starting or cancelling login must not revoke the working key.
+        // The platform cleans up prior keys for this client instance during issuance.
+        return (await initiateLogin.mutateAsync()).loginUrl
+      })
     } catch (err) {
-      if (stale()) return
-      popup.close()
-      setIsLaunching(false)
       setError(err instanceof Error ? err.message : 'Failed to open platform login.')
     }
-  }, [initiateLogin, revokePlatformToken, wasConnected])
+  }, [open, initiateLogin])
 
   return {
     handleConnect,
-    cancelConnect,
+    cancelConnect: close,
     canCancel,
-    isLaunching,
+    isLaunching: pending,
     error,
     message,
     isConnected: !!platformAuth?.connected,

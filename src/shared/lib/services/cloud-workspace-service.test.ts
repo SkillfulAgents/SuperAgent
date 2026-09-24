@@ -174,6 +174,7 @@ describe('getCloudWorkspace', () => {
       orgId: null,
       hasValidToken: false,
       discoveryFailed: false,
+      status: null,
     })
     expect(mockFetchDeployments).not.toHaveBeenCalled()
   })
@@ -268,7 +269,7 @@ describe('getCloudWorkspace', () => {
 
     const status = await getCloudWorkspace()
 
-    expect(status).toMatchObject({ available: true, found: false, deploymentUrl: null })
+    expect(status).toMatchObject({ available: true, found: false, deploymentUrl: null, status: null })
     expect(mockRequestGrant).not.toHaveBeenCalled()
   })
 
@@ -285,13 +286,20 @@ describe('getCloudWorkspace', () => {
     expect(status).toMatchObject({ found: true, deploymentUrl: DEPLOYED.deployment_url })
   })
 
-  it('clears the record and reports confirmed not-found when discovery lists none', async () => {
+  // The switch tells the user why (setting up, asleep, …) instead of offering
+  // to create a workspace they already have.
+  it('clears the record and reports the status of a workspace that is not deployed', async () => {
     mockFetchDeployments.mockResolvedValue([
       { ...DEPLOYED, status: 'deploying' },
       { ...DEPLOYED, deployment_url: '', status: 'deployed' },
     ])
     const status = await getCloudWorkspace()
-    expect(status).toMatchObject({ found: false, deploymentUrl: null, discoveryFailed: false })
+    expect(status).toMatchObject({
+      found: false,
+      deploymentUrl: null,
+      discoveryFailed: false,
+      status: 'deploying',
+    })
     expect(mockClearRecord).toHaveBeenCalledOnce()
     expect(mockRequestGrant).not.toHaveBeenCalled()
   })

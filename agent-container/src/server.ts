@@ -1,9 +1,11 @@
+import { connectionRuntimeSchema } from './connection-runtime';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 // Captures SUPERAGENT_HOST_TOKEN and strips it from process.env — import early
 // so no later module can snapshot an environment that still contains it.
 import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
 import { SessionManager, SessionBusyError, isSdkSessionNotFound } from './session-manager';
+import { sessionCreationFailure } from './session-creation-error';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import type { UUID } from 'crypto';
@@ -41,6 +43,7 @@ import {
   type DeleteWorkspaceEntryRequest,
   type RenameWorkspaceEntryRequest,
 } from './workspace-entry-operations';
+import { registerLegacyFileRoutes } from './legacy-file-routes';
 
 import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
@@ -99,7 +102,7 @@ app.post('/sessions', async (c) => {
     const body = await c.req.json<CreateSessionRequest>();
 
     if (!body.initialMessage) {
-      return c.json({ error: 'initialMessage is required' }, 400);
+      return c.json({ error: 'initialMessage is required', inputAccepted: false }, 400);
     }
 
     if (body.maxBrowserTabs) {
@@ -113,11 +116,7 @@ app.post('/sessions', async (c) => {
     // (`errorClass`, e.g. 'executable_launch_failed') to CLI launch errors.
     // Forward both: the message alone hides the errno behind the SDK's canned
     // libc-mismatch guess, and the host keys auto-recovery off errorClass.
-    return c.json({
-      error: error.message || 'Failed to create session',
-      ...(typeof error.code === 'string' && { code: error.code }),
-      ...(typeof error.errorClass === 'string' && { errorClass: error.errorClass }),
-    }, 500);
+    return c.json(sessionCreationFailure(error), 500);
   }
 });
 
@@ -246,6 +245,7 @@ app.post('/sessions/:id/messages', async (c) => {
       effort: body.effort,
       speed: speedLevelSchema.parse(body.speed),
       model: body.model,
+      llmRuntime: body.llmRuntime ? connectionRuntimeSchema.parse(body.llmRuntime) : undefined,
       shouldQuery: body.shouldQuery,
       isAutomated: body.isAutomated,
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
@@ -326,77 +326,7 @@ app.delete('/workspace/entries', async (c) => {
   }
 });
 
-app.get('/files/*', async (c) => {
-  const filePath = c.req.param('*') || '';
-  const fullPath = path.join('/workspace', filePath);
-
-  try {
-    const stats = await fs.promises.stat(fullPath);
-
-    if (stats.isDirectory()) {
-      const files = await fs.promises.readdir(fullPath);
-      const fileInfos = await Promise.all(
-        files.map(async (file) => {
-          const fileFullPath = path.join(fullPath, file);
-          const fileStats = await fs.promises.stat(fileFullPath);
-          return {
-            name: file,
-            path: path.join(filePath, file),
-            type: fileStats.isDirectory() ? 'directory' : 'file',
-            size: fileStats.isFile() ? fileStats.size : undefined,
-            modifiedAt: fileStats.mtime,
-          };
-        })
-      );
-      return c.json(fileInfos);
-    } else {
-      return c.json({
-        name: path.basename(filePath),
-        path: filePath,
-        type: 'file',
-        size: stats.size,
-        modifiedAt: stats.mtime,
-      });
-    }
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      return c.json({ error: 'File or directory not found' }, 404);
-    }
-    console.error('Error accessing file:', error);
-    return c.json({ error: error.message || 'Failed to access file' }, 500);
-  }
-});
-
-app.get('/files/*/content', async (c) => {
-  const filePath = (c.req.param('*') || '').replace('/content', '');
-  const fullPath = path.join('/workspace', filePath);
-
-  try {
-    const content = await fs.promises.readFile(fullPath, 'utf-8');
-    return c.text(content);
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      return c.json({ error: 'File not found' }, 404);
-    }
-    console.error('Error reading file:', error);
-    return c.json({ error: error.message || 'Failed to read file' }, 500);
-  }
-});
-
-app.post('/files/*/upload', async (c) => {
-  const filePath = (c.req.param('*') || '').replace('/upload', '');
-  const fullPath = path.join('/workspace', filePath);
-
-  try {
-    const body = await c.req.text();
-    await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
-    await fs.promises.writeFile(fullPath, body);
-    return c.json({ success: true, path: filePath });
-  } catch (error: any) {
-    console.error('Error uploading file:', error);
-    return c.json({ error: error.message || 'Failed to upload file' }, 500);
-  }
-});
+registerLegacyFileRoutes(app);
 
 app.delete('/files/*', async (c) => {
   const filePath = c.req.param('*') || '';
@@ -526,11 +456,9 @@ app.post('/env', async (c) => {
       return c.json({ error: 'Invalid environment variable name' }, 400);
     }
 
-    // The boot-time agent identity must stay immutable — header composition
-    // reads a boot snapshot anyway, but reject the write outright so the env
-    // never lies about which agent this container is.
-    if (isAgentIdentityEnvKey(body.key)) {
-      console.error(`[ENV] Rejected write to reserved identity env var: ${body.key}`);
+    // Identity and Platform service credentials belong to the host runtime.
+    if (isAgentIdentityEnvKey(body.key) || body.key === 'PLATFORM_BASE_URL' || body.key === 'PLATFORM_AUTH_TOKEN') {
+      console.error(`[ENV] Rejected write to reserved runtime env var: ${body.key}`);
       return c.json({ error: `${body.key} is reserved and cannot be modified` }, 403);
     }
 

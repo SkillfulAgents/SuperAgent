@@ -1,8 +1,6 @@
 import { useMemo } from 'react'
 import { Globe } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { Markdown } from '@renderer/components/ui/markdown'
 import { SiteFavicon } from '@renderer/components/ui/site-favicon'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { webFetchDef } from '@shared/lib/tool-definitions/web-fetch'
@@ -97,13 +95,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       </div>
       {/* pr-3 keeps the prose out from under the thumb, which overlays the content edge. */}
       <div className="prose prose-sm max-w-none dark:prose-invert text-xs prose-p:text-xs prose-li:text-xs prose-headings:text-xs max-h-64 overflow-y-auto card-scrollbar pr-3">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          urlTransform={markdownUrlTransform}
-          components={NO_MARKDOWN_IMAGES}
-        >
-          {parsed.body}
-        </ReactMarkdown>
+        <Markdown components={NO_MARKDOWN_IMAGES}>{parsed.body}</Markdown>
       </div>
       {parsed.note && <div className="text-xs text-muted-foreground">{parsed.note}</div>}
     </div>

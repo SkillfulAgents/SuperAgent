@@ -1,6 +1,5 @@
 import { z } from 'zod'
-import type { LlmProviderId } from '../llm-provider'
-import { getEffectiveCatalog } from '../llm-provider'
+import type { ModelDefinition } from '../llm-provider/model-catalog-schema'
 
 // Keep in sync with agent-container/src/subagent-model-catalog.ts. The
 // container is a standalone package and cannot import host @shared modules.
@@ -31,11 +30,11 @@ export const subagentModelCatalogSchema = z
 
 export type SubagentModelDefinition = z.infer<typeof subagentModelDefinitionSchema>
 
-export function getSubagentModelCatalog(providerId: LlmProviderId): SubagentModelDefinition[] {
-  const latestModels = getEffectiveCatalog(providerId).filter((model) => model.isLatest === true)
+export function getSubagentModelCatalog(catalog: readonly ModelDefinition[]): SubagentModelDefinition[] {
+  const latestModels = catalog.filter((model) => model.isLatest === true)
   if (latestModels.length > MAX_SUBAGENT_MODELS) {
     console.warn(
-      `[SubagentModels] Provider "${providerId}" exposes ${latestModels.length} latest models; only the first ${MAX_SUBAGENT_MODELS} are available to subagents.`,
+      `[SubagentModels] Catalog exposes ${latestModels.length} latest models; only the first ${MAX_SUBAGENT_MODELS} are available to subagents.`,
     )
   }
 

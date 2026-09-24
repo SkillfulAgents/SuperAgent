@@ -76,6 +76,8 @@ async function gracefulShutdown(signal: string) {
     console.log('Server closed.')
     process.exit(0)
   })
+  // close() waits for keep-alive / streaming sockets; drop them so it can call back.
+  ;(server as { closeAllConnections?: () => void } | undefined)?.closeAllConnections?.()
 
   // Force exit after timeout
   setTimeout(() => {

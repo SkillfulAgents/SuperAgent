@@ -80,7 +80,8 @@ test.describe('Auth Flow', () => {
     await settingsPage.open()
     await settingsPage.expectTabNotVisible('users')
     await settingsPage.expectTabNotVisible('auth')
-    await settingsPage.expectTabNotVisible('llm')
+    // Members manage their own LLM connections; global settings stay admin-only.
+    await expect(user2Page.locator('[data-testid="settings-nav-llm"]')).toBeVisible()
     await settingsPage.expectTabNotVisible('runtime')
     await settingsPage.close()
   })

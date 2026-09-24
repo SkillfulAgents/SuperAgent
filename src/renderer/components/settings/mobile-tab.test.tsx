@@ -3,9 +3,12 @@ import { act, fireEvent, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { apiFetch } from '@renderer/lib/api'
+import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
+import { openExternalUrl } from '@renderer/lib/open-external'
 import { MobileTab } from './mobile-tab'
 
 vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn() }))
+vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl: vi.fn() }))
 vi.mock('react-qr-code', () => ({
   default: ({ value }: { value: string }) => <div data-testid="qr-code">{value}</div>,
 }))
@@ -79,5 +82,33 @@ describe('MobileTab pairing QR', () => {
       )
       await Promise.resolve()
     })
+  })
+})
+
+describe('MobileTab in a cloud workspace', () => {
+  beforeEach(() => {
+    mockApiFetch.mockReset()
+    mockApiFetch.mockImplementation(async (path) => {
+      if (path === '/api/auth/mobile/devices') return jsonResponse({ devices: [] })
+      throw new Error(`Unexpected path: ${path}`)
+    })
+    _resetApiTargetForTest()
+    setActiveTarget('cloud', null, 'https://acme.gamut.example')
+  })
+
+  it('sends pairing to the workspace in a browser instead of minting', async () => {
+    // The desktop's session on the workspace is a token exchange, which the
+    // deployment refuses to mint pairing tokens for — offering the button
+    // would only ever produce a 403.
+    renderWithProviders(<MobileTab />)
+
+    expect(screen.queryByTestId('mobile-pairing-mint')).toBeNull()
+    expect(screen.queryByTestId('mobile-connect-app-button')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('mobile-pairing-open-browser'))
+    expect(openExternalUrl).toHaveBeenCalledWith('https://acme.gamut.example/settings/mobile')
+    expect(mockApiFetch).not.toHaveBeenCalledWith('/api/auth/mobile/pairing-token', expect.anything())
+    // Devices paired elsewhere are still listed and revocable from here.
+    expect(await screen.findByTestId('mobile-devices-empty')).toBeTruthy()
   })
 })

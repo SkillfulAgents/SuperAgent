@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
+import { fakeLoginWindow } from '@renderer/test/fake-login-window'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { NewIntegrationButton } from './connections-list'
-import { OAUTH_ABORT_DELAY_MS } from '@renderer/hooks/use-delayed-oauth-abort'
+import { LOGIN_WINDOW_CANCEL_DELAY_MS } from '@renderer/hooks/use-login-window'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 
 const MOCK_ACCOUNT_ID = 'new-account-123'
@@ -15,14 +16,7 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
-const popupMocks = vi.hoisted(() => ({
-  navigate: vi.fn(),
-  close: vi.fn(),
-}))
-
-vi.mock('@renderer/lib/oauth-popup', () => ({
-  prepareOAuthPopup: () => ({ navigate: popupMocks.navigate, close: popupMocks.close }),
-}))
+vi.mock('@renderer/lib/oauth-popup', () => import('@renderer/test/fake-login-window'))
 
 vi.mock('@shared/lib/account-providers', () => ({
   getProvider: (slug: string) => ({
@@ -118,8 +112,8 @@ function mockFetchResponses() {
 beforeEach(() => {
   originalElectronAPI = window.electronAPI
   vi.clearAllMocks()
-  popupMocks.navigate.mockReset()
-  popupMocks.close.mockReset()
+  fakeLoginWindow.navigate.mockReset()
+  fakeLoginWindow.close.mockReset()
   capturedMcpOAuthCallback = null
   lastToolPoliciesPutBody = null
   mockFetchResponses()
@@ -337,19 +331,21 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
     })
     expect(capturedOAuthCallback).not.toBeNull()
     expect(screen.queryByTestId('directory-cancel-api-slack')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(/^Connecting Slack…$/)
 
     act(() => {
-      vi.advanceTimersByTime(OAUTH_ABORT_DELAY_MS)
+      vi.advanceTimersByTime(LOGIN_WINDOW_CANCEL_DELAY_MS)
     })
 
     expect(screen.getByTestId('directory-cancel-api-slack')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Connecting Slack…, Cancel available')
 
     await act(async () => {
       fireEvent.click(screen.getByTestId('directory-cancel-api-slack'))
       await Promise.resolve()
     })
     expect(unsubscribe).toHaveBeenCalledTimes(1)
-    expect(popupMocks.close).toHaveBeenCalledTimes(1)
+    expect(fakeLoginWindow.close).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('directory-connect-api-slack')).not.toBeDisabled()
   })
 

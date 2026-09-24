@@ -52,7 +52,7 @@ import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-
 import { useAgents, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useSettings, useModelSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
@@ -774,10 +774,14 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { isAuthMode, isAdmin } = useUser()
   const showAdminInfo = !isAuthMode || isAdmin
   const { data: settings } = useSettings({ enabled: showAdminInfo })
+  const { data: modelSettings } = useModelSettings()
+  const selectedConnection = modelSettings?.connections?.find(
+    connection => connection.id === modelSettings.defaultSelection?.llmProviderId
+  )
 
   const activeProviderId = settings?.llmProvider ?? 'anthropic'
-  const activeKeyStatus = settings?.apiKeyStatus?.[activeProviderId as keyof typeof settings.apiKeyStatus]
-  if (!activeKeyStatus || activeKeyStatus.isConfigured) return null
+  const activeKeyStatus = selectedConnection ?? settings?.apiKeyStatus?.[activeProviderId as keyof typeof settings.apiKeyStatus]
+  if (!showAdminInfo || !activeKeyStatus || activeKeyStatus.isConfigured) return null
 
   return (
     <div className="px-2 pb-2">

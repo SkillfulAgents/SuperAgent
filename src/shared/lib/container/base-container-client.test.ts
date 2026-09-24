@@ -1,3 +1,4 @@
+vi.mock('./host-token-store', () => ({ getOrCreateHostToken: () => 'host-test-token' }))
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -9,7 +10,14 @@ const enableToolSearch = vi.fn((): boolean | undefined => true)
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ enableToolSearch: enableToolSearch() }),
 }))
-const getContainerEnvVars = vi.fn(() => ({ ANTHROPIC_API_KEY: 'provider-key' }))
+const getContainerEnvVars = vi.fn((): Record<string, string> => ({ ANTHROPIC_API_KEY: 'provider-key' }))
+const platformToken = vi.fn(async (_agentId: string): Promise<string | undefined> => undefined)
+vi.mock('../platform-attribution/container-token', () => ({
+  getPlatformContainerToken: (agentId: string) => platformToken(agentId),
+}))
+vi.mock('../platform-auth/config', () => ({
+  getPlatformProxyBaseUrl: () => 'http://localhost:8080',
+}))
 const toolSearchEnv = vi.fn((): 'true' | undefined => 'true')
 vi.mock('@shared/lib/llm-provider', () => ({
   getActiveLlmProvider: () => ({ getContainerEnvVars, toolSearchEnv: toolSearchEnv() }),
@@ -27,7 +35,7 @@ class TestContainerClient extends BaseContainerClient {
   public testExtractInaccessibleMountPath(error: unknown): string | null {
     return this.extractInaccessibleMountPath(error)
   }
-  public testBuildAgentEnv(extra?: Record<string, string>): Record<string, string> {
+  public testBuildAgentEnv(extra?: Record<string, string>): Promise<Record<string, string>> {
     return this.buildAgentEnv(extra)
   }
 }
@@ -36,14 +44,16 @@ describe('buildAgentEnv', () => {
   afterEach(() => {
     enableToolSearch.mockReturnValue(true)
     toolSearchEnv.mockReturnValue('true')
+    platformToken.mockReset().mockResolvedValue(undefined)
+    getContainerEnvVars.mockReset().mockReturnValue({ ANTHROPIC_API_KEY: 'provider-key' })
   })
 
-  it('merges provider env, constants, config.envVars and per-start extra (later wins)', () => {
+  it('merges provider env, constants, config.envVars and per-start extra (later wins)', async () => {
     const client = new TestContainerClient({
       agentId: 'a',
       envVars: { FROM_CONFIG: 'c', ANTHROPIC_API_KEY: 'from-config' }, // config beats provider
     })
-    const env = client.testBuildAgentEnv({ FROM_EXTRA: 'e', FROM_CONFIG: 'from-extra' }) // extra beats config
+    const env = await client.testBuildAgentEnv({ FROM_EXTRA: 'e', FROM_CONFIG: 'from-extra' }) // extra beats config
     expect(env.ANTHROPIC_API_KEY).toBe('from-config')
     expect(env.FROM_CONFIG).toBe('from-extra')
     expect(env.FROM_EXTRA).toBe('e')
@@ -51,29 +61,55 @@ describe('buildAgentEnv', () => {
     expect(env.ENABLE_TOOL_SEARCH).toBe('true')
   })
 
-  it('sets ENABLE_TOOL_SEARCH=false only when the setting is explicitly false', () => {
+  it.each([
+    { ANTHROPIC_API_KEY: 'direct-key' },
+    { ANTHROPIC_BASE_URL: 'https://other-provider.example', ANTHROPIC_AUTH_TOKEN: 'other-token' },
+    { CLAUDE_CODE_USE_BEDROCK: '1', AWS_BEARER_TOKEN_BEDROCK: 'bedrock-key' },
+  ] as Record<string, string>[])('supplies independent Platform service credentials with LLM env %j', async (llmEnv) => {
+    platformToken.mockResolvedValue('platform-token::agent-owner')
+    getContainerEnvVars.mockReturnValue(llmEnv)
+    const client = new TestContainerClient({
+      agentId: 'my-agent',
+      envVars: { PLATFORM_BASE_URL: 'https://wrong.example' },
+    })
+    const env = await client.testBuildAgentEnv({ PLATFORM_AUTH_TOKEN: 'wrong-token' })
+    expect(env).toMatchObject(llmEnv)
+    expect(env.PLATFORM_BASE_URL).toBe('http://host.docker.internal:8080')
+    expect(env.PLATFORM_AUTH_TOKEN).toBe('platform-token::agent-owner')
+    expect(platformToken).toHaveBeenCalledWith('my-agent')
+  })
+
+  it('omits Platform service credentials when disconnected, including old custom overrides', async () => {
+    const client = new TestContainerClient({ agentId: 'a', envVars: { PLATFORM_AUTH_TOKEN: 'stale' } })
+    const env = await client.testBuildAgentEnv({ PLATFORM_BASE_URL: 'https://stale.example' })
+    expect(env).not.toHaveProperty('PLATFORM_BASE_URL')
+    expect(env).not.toHaveProperty('PLATFORM_AUTH_TOKEN')
+    expect(env.ANTHROPIC_API_KEY).toBe('provider-key')
+  })
+
+  it('sets ENABLE_TOOL_SEARCH=false only when the setting is explicitly false', async () => {
     enableToolSearch.mockReturnValue(false)
-    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
 
-  it('leaves ENABLE_TOOL_SEARCH unset when the provider does not declare one', () => {
+  it('leaves ENABLE_TOOL_SEARCH unset when the provider does not declare one', async () => {
     toolSearchEnv.mockReturnValue(undefined)
-    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect('ENABLE_TOOL_SEARCH' in env).toBe(false)
   })
 
   // The setting is a master switch, not a way to force tool search onto an
   // endpoint that rejects deferred tools.
-  it('keeps ENABLE_TOOL_SEARCH=false over the provider value when the setting is off', () => {
+  it('keeps ENABLE_TOOL_SEARCH=false over the provider value when the setting is off', async () => {
     enableToolSearch.mockReturnValue(false)
     toolSearchEnv.mockReturnValue(undefined)
-    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
 
-  it('passes the agent identity to the provider so it can attribute LLM usage', () => {
-    new TestContainerClient({ agentId: 'my-agent', envVars: {} }).testBuildAgentEnv()
+  it('passes the agent identity to the provider so it can attribute LLM usage', async () => {
+    await new TestContainerClient({ agentId: 'my-agent', envVars: {} }).testBuildAgentEnv()
     expect(getContainerEnvVars).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'my-agent' })
     )

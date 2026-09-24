@@ -11,9 +11,6 @@
   "src/api/routes/connected-accounts.ts": [
     "@shared/lib/proxy/account-reauth-manager"
   ],
-  "src/api/routes/mcp-proxy.ts": [
-    "@shared/lib/proxy/mcp-reauth-manager"
-  ],
   "src/api/routes/notifications.ts": [
     "@shared/lib/container/message-persister"
   ],

@@ -1,3 +1,4 @@
+vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
@@ -244,9 +245,9 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   listCancelledWebhookTriggers: vi.fn(),
 }))
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  listChatIntegrations: vi.fn(),
-  listChatIntegrationsByAgents: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  listAgentIntegrations: vi.fn(),
+  listAgentIntegrationsByAgents: vi.fn(),
 }))
 
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({

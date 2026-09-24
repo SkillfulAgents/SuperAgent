@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { modelPricingSchema } from './global-pricing-schema'
 import { EFFORT_LEVELS, SPEED_LEVELS } from '../container/types'
 
 /**
@@ -68,33 +69,10 @@ export const modelDefinitionSchema = z.object({
   /** Extra system-prompt guidance needed by model families with weaker tool priors. */
   promptHints: z.array(z.string().min(1)).optional(),
   /**
-   * Optional display and accounting pricing (per-million-token). Built-ins seed
-   * this from model-pricing.json; provider/user catalog overrides are honored.
+   * Display pricing (per-million-token), resolved from the global model price list.
+   * Discovery may suggest a rate; provider catalogs do not own accounting prices.
    */
-  pricing: z
-    .object({
-      inputPerMtok: z.number().nonnegative(),
-      outputPerMtok: z.number().nonnegative(),
-      /** Five-minute prompt-cache write price per million tokens. */
-      cacheCreationPerMtok: z.number().nonnegative().optional(),
-      /** One-hour prompt-cache write price per million tokens. */
-      cacheCreation1hPerMtok: z.number().nonnegative().optional(),
-      /** Prompt-cache hit price per million tokens. */
-      cacheReadPerMtok: z.number().nonnegative().optional(),
-      /**
-       * Served-tier billing multipliers for the slow/fast speed tiers (e.g.
-       * OpenAI flex 0.5x / priority 2x, Anthropic fast mode 2x). Applied on
-       * top of whichever rate set (base or long-context) a request lands on.
-       * An absent tier bills standard (1x).
-       */
-      speedMultipliers: z
-        .object({
-          slow: z.number().positive().optional(),
-          fast: z.number().positive().optional(),
-        })
-        .optional(),
-    })
-    .optional(),
+  pricing: modelPricingSchema.optional(),
   // Static context window (tokens) for non-Claude models. The SDK reports a
   // generic 200K default for these, so the host prefers this over the SDK value
   // (see handleResultUsage). Claude entries omit it and use the SDK's real window.

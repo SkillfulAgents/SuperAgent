@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { ArrowUpRight, BadgeX, Check, ChevronsUpDown, Loader2, RefreshCw } from 'lucide-react'
 
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
@@ -8,7 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Progress } from '@renderer/components/ui/progress'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { RequestError } from '@renderer/components/messages/request-error'
-import { OAuthFlowCancel } from '@renderer/components/connections/oauth-flow-cancel'
+import { LoginButton } from '@renderer/components/connections/login-button'
 import { ProfileSection } from './profile-section'
 import { StaleAgentsNotice } from './stale-agents-notice'
 import { useUser } from '@renderer/context/user-context'
@@ -415,18 +415,21 @@ function NotConnectedEmptyState({ readOnly, isLaunching, canCancel, onConnect, o
               <AccessKeyInput onClose={() => setShowKeyInput(false)} />
             ) : (
               <div className="flex items-center justify-center gap-2">
-                <Button size="sm" onClick={onConnect} disabled={isLaunching} className="group gap-0">
-                  {isLaunching ? 'Opening browser…' : 'Connect Account'}
-                  {isLaunching ? (
-                    <Loader2 className="ml-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <HoverArrow />
-                  )}
-                </Button>
+                <LoginButton
+                  size="sm"
+                  onClick={onConnect}
+                  className="group"
+                  label={<span className="inline-flex items-center">Connect Account<HoverArrow /></span>}
+                  pendingLabel="Opening browser…"
+                  pending={isLaunching}
+                  canCancel={canCancel}
+                  onCancel={onCancel}
+                  cancelSide="right"
+                  cancelTestId="platform-cancel-connect"
+                />
                 <Button size="sm" variant="outline" onClick={() => setShowKeyInput(true)}>
                   Add access key
                 </Button>
-                <OAuthFlowCancel visible={canCancel} onCancel={onCancel} testId="platform-cancel-connect" />
               </div>
             )}
           </div>
@@ -466,26 +469,25 @@ function ReconnectRow({ readOnly, isLaunching, canCancel, connectLabel, onReconn
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <Button
+          <LoginButton
             size="sm"
             variant="outline"
             onClick={onReconnect}
-            disabled={readOnly || isLaunching}
-            className="group gap-0"
-          >
-            {connectLabel}
-            {isLaunching ? (
-              <Loader2 className="ml-2 h-4 w-4 animate-spin" />
-            ) : (
-              <HoverArrow />
-            )}
-          </Button>
+            disabled={readOnly}
+            className="group"
+            label={<span className="inline-flex items-center">{connectLabel}<HoverArrow /></span>}
+            pendingLabel="Opening browser…"
+            pending={isLaunching}
+            canCancel={canCancel}
+            onCancel={onCancel}
+            cancelSide="left"
+            cancelTestId="platform-cancel-reconnect"
+          />
           {!readOnly && (
             <Button size="sm" variant="outline" onClick={() => setShowInput(true)}>
               Add key
             </Button>
           )}
-          <OAuthFlowCancel visible={canCancel} onCancel={onCancel} testId="platform-cancel-reconnect" />
         </div>
       </div>
     </div>
@@ -520,10 +522,7 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
   // its own. Only auth mode has a user to edit, so local installs skip it.
   const { isAuthMode } = useUser()
 
-  const connectLabel = useMemo(() => {
-    if (isLaunching) return 'Opening browser…'
-    return isConnected ? 'Reconnect' : 'Connect'
-  }, [isConnected, isLaunching])
+  const connectLabel = isConnected ? 'Reconnect' : 'Connect'
 
   async function handleOpenPlatform() {
     if (!data?.platformBaseUrl) return

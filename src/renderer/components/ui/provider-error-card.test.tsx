@@ -81,13 +81,8 @@ describe('ProviderErrorCard', () => {
   })
 
   it('shows Dismiss when dismissible and removes the card on click', () => {
-    render(
-      <ProviderErrorCard message={SPEND_CAP} dismissible>
-        <div data-testid="composer">composer</div>
-      </ProviderErrorCard>,
-    )
+    render(<ProviderErrorCard message={SPEND_CAP} dismissible />)
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
-    expect(screen.getByTestId('composer')).toBeInTheDocument()
   })
 })

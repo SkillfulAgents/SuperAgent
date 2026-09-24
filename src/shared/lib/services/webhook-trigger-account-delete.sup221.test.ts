@@ -137,7 +137,7 @@ describe('SUP-221: cancelTriggersForConnectedAccount', () => {
 
     // Sanity: before cleanup the trigger is active and feeds the live subscription.
     expect(stillSubscribedFor(ACCOUNT_ID)).toHaveLength(1)
-    expect(getActiveComposioTriggerIds()).toContain('ti_orphan')
+    expect((await getActiveComposioTriggerIds())).toContain('ti_orphan')
 
     await cancelTriggersForConnectedAccount(ACCOUNT_ID)
 
@@ -158,7 +158,7 @@ describe('SUP-221: cancelTriggersForConnectedAccount', () => {
     expect(deleteComposioTrigger).toHaveBeenCalledWith('ti_orphan')
 
     // The trigger no longer counts toward the live subscription.
-    expect(getActiveComposioTriggerIds()).not.toContain('ti_orphan')
+    expect((await getActiveComposioTriggerIds())).not.toContain('ti_orphan')
   })
 
   it('also cancels paused triggers for the account', async () => {
@@ -243,7 +243,7 @@ describe('SUP-221: cancelTriggersForConnectedAccount', () => {
     expect(stillSubscribedFor(ACCOUNT_ID)).toHaveLength(0)
     // A sibling active trigger still references ti_shared → do NOT delete upstream.
     expect(deleteComposioTrigger).not.toHaveBeenCalled()
-    expect(getActiveComposioTriggerIds()).toContain('ti_shared')
+    expect((await getActiveComposioTriggerIds())).toContain('ti_shared')
   })
 
   it('is a no-op for an account with no triggers', async () => {

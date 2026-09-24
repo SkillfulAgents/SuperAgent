@@ -9,6 +9,7 @@ import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { applySessionActivityStatus } from '@renderer/lib/agent-cache'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
+import { integrationMessageDisplaySchema, type IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import {
   providerErrorPresentationSchema,
   type ProviderErrorPresentation,
@@ -42,7 +43,10 @@ interface ApiRetryInfo {
 export interface PeerUserMessage {
   uuid: string
   content: string
-  sender: { id: string; name?: string; email?: string; image?: string | null }
+  /** Absent when an integration, not a person in the app, sent it. */
+  sender?: { id: string; name?: string; email?: string; image?: string | null }
+  /** Card data for a message an integration delivered. */
+  integration?: IntegrationMessageDisplay
   /** Sent while the agent was mid-turn — rendered as a queued ghost. */
   queued?: boolean
   /** Local arrival time — bounds the text-fallback match so an old identical-text message can't claim this ghost. */
@@ -939,7 +943,11 @@ function getOrCreateEventSource(
             ...current,
             peerUserMessages: existing.some((p) => p.uuid === data.uuid)
               ? existing
-              : [...existing, { uuid: data.uuid, content: data.content, sender: data.sender, queued: data.queued, receivedAt: Date.now() }],
+              : [...existing, {
+                  uuid: data.uuid, content: data.content, sender: data.sender, queued: data.queued, receivedAt: Date.now(),
+                  // Host-written, but a malformed card must fall back to text, not break the list.
+                  integration: integrationMessageDisplaySchema.safeParse(data.integration).data,
+                }],
             typingUser: null, // Clear typing since they sent
           })
         }

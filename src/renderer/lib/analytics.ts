@@ -22,11 +22,7 @@ function buildPlugins(shareAnalytics: boolean, targets?: AnalyticsTarget[]) {
       switch (target.type) {
         case 'amplitude':
           if (target.config.apiKey) {
-            plugins.push(amplitudePlugin({
-              apiKey: target.config.apiKey,
-              // Namespace to avoid collision with the Datawizz instance
-              ...(shareAnalytics && __AMPLITUDE_API_KEY__ ? { pluginName: 'amplitude-custom' } : {}),
-            }))
+            plugins.push(amplitudePlugin({ apiKey: target.config.apiKey }))
           }
           break
         case 'google-analytics':
@@ -43,7 +39,21 @@ function buildPlugins(shareAnalytics: boolean, targets?: AnalyticsTarget[]) {
     }
   }
 
-  return plugins
+  return dedupeByName(plugins)
+}
+
+// Analytics() throws `<name>AlreadyLoaded` on a repeated plugin name, and these
+// plugins drive one page-global SDK each, so a second copy could never load anyway.
+function dedupeByName<T extends { name: string }>(plugins: T[]): T[] {
+  const seen = new Set<string>()
+  return plugins.filter((plugin) => {
+    if (seen.has(plugin.name)) {
+      console.warn(`[Analytics] Ignoring duplicate "${plugin.name}" target; only the first one is used.`)
+      return false
+    }
+    seen.add(plugin.name)
+    return true
+  })
 }
 
 export function getAnalyticsMetadata() {

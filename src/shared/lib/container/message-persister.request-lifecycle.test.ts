@@ -117,12 +117,14 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   getWebhookTrigger: vi.fn(() => Promise.resolve(null)),
   resolvePlatformMemberForCandidates: () => null,
 }))
-vi.mock('@shared/lib/services/webhook-endpoints-client', () => ({
-  createPlatformWebhookEndpoint: vi.fn(),
-  updatePlatformWebhookEndpoint: vi.fn(() => Promise.resolve({})),
-  disablePlatformWebhookEndpoint: vi.fn(() => Promise.resolve()),
-  listPlatformWebhookEvents: vi.fn(() => Promise.resolve({ filterExp: null, events: [] })),
-  testPlatformWebhookFilter: vi.fn(),
+vi.mock('@shared/lib/webhook-relay', () => ({
+  getWebhookRelay: () => ({
+    createEndpoint: vi.fn(),
+    updateEndpoint: vi.fn(() => Promise.resolve({})),
+    disableEndpoint: vi.fn(() => Promise.resolve()),
+    listEndpointEvents: vi.fn(() => Promise.resolve({ filterExp: null, events: [] })),
+    testEndpointFilter: vi.fn(),
+  }),
 }))
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getStoredPlatformMemberId: () => null,

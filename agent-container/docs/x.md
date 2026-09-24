@@ -23,8 +23,8 @@ platform's X-compatible proxy and does not require the user to have an X
 account or an X API key.
 
 ```text
-Base: $ANTHROPIC_BASE_URL/v1/x
-Authorization: Bearer $ANTHROPIC_AUTH_TOKEN
+Base: $PLATFORM_BASE_URL/v1/x
+Authorization: Bearer $PLATFORM_AUTH_TOKEN
 ```
 
 Never print either environment variable.
@@ -45,8 +45,8 @@ outside this list works; the platform returns `404` before contacting X.
 Example:
 
 ```bash
-curl -sS "$ANTHROPIC_BASE_URL/v1/x/2/tweets/search/recent?query=gamut%20agents&max_results=10&tweet.fields=created_at,public_metrics" \
-  -H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN"
+curl -sS "$PLATFORM_BASE_URL/v1/x/2/tweets/search/recent?query=gamut%20agents&max_results=10&tweet.fields=created_at,public_metrics" \
+  -H "Authorization: Bearer $PLATFORM_AUTH_TOKEN"
 ```
 
 Search covers the last 7 days only. There is no full-archive search.

@@ -1,5 +1,5 @@
-import type { ChatAgentIntegration as ChatClientConnector, IncomingMessage } from './chat-agent-integration'
-import type { AgentIntegrationRecord as ChatIntegration } from '../agent-integrations/types'
+import type { ChatAgentIntegration, IncomingMessage } from './chat-agent-integration'
+import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { SessionActivity } from '../types/agent'
 import type { PendingUserInputRequest } from '../user-input/request-schema'
 import { agentRegistry, WorkspaceFileError, workspaceBasename } from '../agent-actor'
@@ -7,13 +7,12 @@ import { getToolDefinition } from '../tool-definitions/registry'
 import { formatToolName } from '../tool-definitions/types'
 import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
-export { buildSessionName } from './chat-policy'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
 
 export interface ManagedConnector {
-  connector: ChatClientConnector
-  integration: ChatIntegration
+  connector: ChatAgentIntegration
+  integration: AgentIntegrationRecord
   chatId: string
   streamingState: {
     currentMessageId: string | null
@@ -508,18 +507,4 @@ export function deriveDisplayName(message: Pick<IncomingMessage, 'chatName' | 'u
 /** Check if a display name looks like the raw-ID fallback (e.g. "User U08G59..."). */
 export function isDisplayNameFallback(name: string | null | undefined): boolean {
   return !name || name.startsWith('User ')
-}
-
-export { formatSessionTimestamp } from './utils'
-
-/** Decide whether a chat session should be rotated based on the configured timeout. */
-export function shouldRotateSession(
-  session: { updatedAt: Date | null; createdAt: Date },
-  timeoutHours: number | null | undefined,
-  now: Date = new Date(),
-): boolean {
-  if (!timeoutHours || timeoutHours <= 0) return false
-  const lastActivity = session.updatedAt?.getTime?.() ?? session.createdAt.getTime()
-  const timeoutMs = timeoutHours * 60 * 60 * 1000
-  return now.getTime() - lastActivity > timeoutMs
 }

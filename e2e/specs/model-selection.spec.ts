@@ -180,7 +180,7 @@ test.describe('Model selection', () => {
     expect(record.model).not.toBe('opus')
   })
 
-  test('Extra High and Max effort options are hidden for non-Opus families', async ({ page }) => {
+  test('Sonnet 4.6 offers Max effort but hides Extra High', async ({ page }) => {
     await agentPage.clickCreateAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
@@ -189,13 +189,13 @@ test.describe('Model selection', () => {
     await expect(page.locator('[data-testid="effort-option-xhigh"]')).toBeVisible()
     await expect(page.locator('[data-testid="effort-option-max"]')).toBeVisible()
 
-    // Switch to Sonnet — the pick keeps the popover open, so the effort ticks
-    // swap in place: xhigh/max disappear immediately.
+    // Switch to Sonnet 4.6 — the pick keeps the popover open, so the effort
+    // ticks swap in place: xhigh disappears while max remains available.
     await page.locator(`[data-testid="model-pinned-${SONNET}"]`).click()
     await expect(page.locator('[data-testid="effort-option-low"]')).toBeVisible()
     await expect(page.locator('[data-testid="effort-option-medium"]')).toBeVisible()
     await expect(page.locator('[data-testid="effort-option-high"]')).toBeVisible()
     await expect(page.locator('[data-testid="effort-option-xhigh"]')).toHaveCount(0)
-    await expect(page.locator('[data-testid="effort-option-max"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="effort-option-max"]')).toBeVisible()
   })
 })

@@ -357,7 +357,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   mcpAuditLog: { agentSlug: 'agent_slug', createdAt: 'created_at' },
   agentAcl: { id: 'id', userId: 'user_id', agentSlug: 'agent_slug', role: 'role' },
   user: { id: 'id', name: 'name', email: 'email' },
-  messageAuthor: { id: 'id', sessionId: 'session_id', agentSlug: 'agent_slug', userId: 'user_id' },
+  messageAuthor: { id: 'id', sessionId: 'session_id', agentSlug: 'agent_slug', userId: 'user_id', integrationId: 'integration_id', display: 'display' },
   apiScopePolicies: { accountId: 'account_id', scope: 'scope' },
   mcpToolPolicies: { mcpId: 'mcp_id', toolName: 'tool_name' },
 }))
@@ -366,6 +366,7 @@ vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
   and: (...args: unknown[]) => args,
   inArray: (col: string, vals: string[]) => ({ col, vals }),
+  isNotNull: (col: string) => ({ col, notNull: true }),
   desc: (col: string) => ({ col }),
   count: () => 'count_fn',
   like: (col: string, val: string) => ({ col, val }),
@@ -521,8 +522,8 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsAndWidgets: vi.fn(async () => ({ dashboards: [], widgets: [] })),
 }))
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  listChatIntegrations: vi.fn(() => []),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  listAgentIntegrations: vi.fn(() => []),
 }))
 
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
@@ -543,6 +544,11 @@ vi.mock('@shared/lib/services/session-unread-service', () => ({
   getSessionIdsMarkedUnread: vi.fn(() => Promise.resolve(new Set())),
   getSessionIdsMarkedUnreadByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteSessionUnreadMarks: vi.fn(() => Promise.resolve(0)),
+}))
+
+vi.mock('@shared/lib/services/agent-integration-message-service', () => ({
+  annotateIntegrationMessages: vi.fn(() => Promise.resolve()),
+  hasIntegrationMessages: vi.fn(() => Promise.resolve(false)),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -747,7 +753,7 @@ import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { writeFileAtomicStream, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { readJsonl, streamJsonl } from '@shared/lib/agent-actor/jsonl-files'
-import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
+import { listAgentIntegrations } from '@shared/lib/services/agent-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
 // ============================================================================
@@ -760,12 +766,12 @@ function createApp() {
   return app
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   // Fresh actor handles: the file operations cache the workspace root's real
   // path per handle, and these tests script realpath answers per test.
   agentRegistry.evictAll()
-  vi.mocked(getUserSummaries).mockReturnValue(new Map())
-  vi.mocked(userExists).mockReturnValue(true)
+  vi.mocked(getUserSummaries).mockResolvedValue(new Map())
+  vi.mocked(userExists).mockResolvedValue(true)
   mockAuthorizedAgentRole = 'owner'
   vi.mocked(sessionIsKnown).mockResolvedValue(true)
 })
@@ -810,7 +816,7 @@ async function postFormData(app: Hono, url: string, body: FormData): Promise<Res
 // ============================================================================
 
 describe('GET /:id/artifacts/:artifactSlug/view', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     mockAgentExists.mockResolvedValue(true)
   })
@@ -1046,13 +1052,13 @@ describe('shared-agent connection projections', () => {
     remoteMcpId: foreignMcp.id,
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     mockAgentExists.mockResolvedValue(true)
     mockIsAuthMode.mockReturnValue(true)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     mockIsAuthMode.mockReturnValue(false)
   })
 
@@ -1171,6 +1177,7 @@ describe('GET /:id/webhook-triggers', () => {
     createdByUserId: 'owner-private-id',
     mintedByMemberId: 'sub_member-private-id',
     model: null,
+  llmProviderId: null,
     effort: null,
     speed: null,
     createdAt: new Date('2026-07-17T00:00:00Z'),
@@ -1216,7 +1223,7 @@ describe('GET /:id/webhook-triggers', () => {
 
 describe('GET /:id/chat-integrations', () => {
   it('redacts credentials from every list row', async () => {
-    vi.mocked(listChatIntegrations).mockReturnValueOnce([{
+    vi.mocked(listAgentIntegrations).mockResolvedValueOnce([{
       id: 'integration-1',
       agentSlug: 'test-agent',
       provider: 'telegram',
@@ -1230,6 +1237,7 @@ describe('GET /:id/chat-integrations', () => {
       requireApproval: true,
       sessionTimeout: null,
       model: null,
+  llmProviderId: null,
       effort: null,
       speed: null,
       status: 'active',
@@ -1257,7 +1265,7 @@ describe('GET /:id/chat-integrations', () => {
 describe('session usage — GET /:id/sessions/:sessionId/usage', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
   })
@@ -1282,7 +1290,6 @@ describe('session usage — GET /:id/sessions/:sessionId/usage', () => {
     expect(mockLoadSessionUsageTotals).toHaveBeenCalledWith({
       files: expect.anything(),
       transcript: '.claude/projects/-workspace/session-1.jsonl',
-      providerId: 'anthropic',
     })
   })
 
@@ -1409,7 +1416,7 @@ describe('session raw log — GET /:id/sessions/:sessionId/raw-log', () => {
 describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
   })
@@ -1449,13 +1456,13 @@ describe('agent startup — POST /:id/start', () => {
     containerPort: 3456,
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     mockAgentExists.mockResolvedValue(true)
     vi.mocked(getAgentWithStatus).mockResolvedValue(runningAgent)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     // Restore the file-level default so a pending/rejected mock from these
     // tests doesn't leak into later describe blocks.
     mockEnsureRunning.mockReset()
@@ -1513,7 +1520,7 @@ describe('agent startup — POST /:id/start', () => {
 describe('POST /api/agents/generate-name', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockLlmMessagesCreate.mockResolvedValue({
@@ -1536,7 +1543,7 @@ describe('POST /api/agents/generate-name', () => {
 describe('POST /api/agents/import-template', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(importAgentFromTemplate).mockResolvedValue({
@@ -1589,7 +1596,7 @@ describe('POST /api/agents/import-template', () => {
 describe('POST /api/agents/import-template (chunked)', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(importAgentFromTemplate).mockResolvedValue({
@@ -1854,7 +1861,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
 describe('ACL role management — PATCH /:id/access/:userId', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockChangeMemberRole.mockResolvedValue('done')
@@ -1929,7 +1936,7 @@ describe('ACL role management — PATCH /:id/access/:userId', () => {
 describe('ACL role management — DELETE /:id/access/:userId', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockRemoveMember.mockResolvedValue('done')
@@ -1972,7 +1979,7 @@ describe('ACL role management — DELETE /:id/access/:userId', () => {
 describe('ACL — POST /:id/leave', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockRemoveMember.mockResolvedValue('done')
@@ -2013,7 +2020,7 @@ describe('ACL — POST /:id/leave', () => {
 describe('ACL — POST /:id/access (invite user)', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
   })
@@ -2047,7 +2054,7 @@ describe('ACL — POST /:id/access (invite user)', () => {
   })
 
   it('returns 404 when target user does not exist', async () => {
-    vi.mocked(userExists).mockReturnValue(false)
+    vi.mocked(userExists).mockResolvedValue(false)
 
     const res = await postJson(app, INVITE_URL, { userId: 'nonexistent', role: 'user' })
     expect(res.status).toBe(404)
@@ -2106,13 +2113,13 @@ describe('path traversal security — GET /:id/files/*', () => {
   // A missing target: realpath resolves the workspace root, then fails on the file.
   const fileMissing = () => mockFsRealpath.mockResolvedValueOnce('/mock/workspace').mockRejectedValueOnce(enoent())
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     // Neither the per-test stat nor an unconsumed once-value for the read
     // stream (a 500 before the stream opens leaves it queued) may leak onward.
     mockFsStat.mockReset()
@@ -2249,13 +2256,13 @@ describe('path traversal security — GET /:id/files/*', () => {
 describe('bookmarked workspace folder listing', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     // A once-value a failing test left unconsumed must not feed a later describe,
     // and realpath goes back to identity (mockReset restores the vi.fn(impl) original).
     mockFsStat.mockReset()
@@ -2423,7 +2430,7 @@ describe('bookmarked workspace folder listing', () => {
 describe('bookmarked workspace folder file actions', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
@@ -2447,7 +2454,7 @@ describe('bookmarked workspace folder file actions', () => {
     })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     mockFsStat.mockReset()
     // Back to identity realpath (mockReset restores the vi.fn(impl) original).
     mockFsRealpath.mockReset()
@@ -2594,7 +2601,7 @@ describe('bookmarked workspace folder file actions', () => {
 describe('workspace folder directory actions and native reveal', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
@@ -2619,7 +2626,7 @@ describe('workspace folder directory actions and native reveal', () => {
     })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     mockFsStat.mockReset()
   })
 
@@ -2716,14 +2723,14 @@ describe('workspace folder directory actions and native reveal', () => {
 })
 
 describe('bookmark validation', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     mockFsReadFile.mockReset()
     mockFsWriteFile.mockClear()
     mockFsRename.mockClear()
     answerLstatForWorkspaceWrites()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     mockFsLstat.mockReset()
   })
 
@@ -2783,14 +2790,14 @@ describe('bookmark validation', () => {
 describe('path traversal security — skill file endpoints', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
     answerLstatForWorkspaceWrites()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     mockFsLstat.mockReset()
     mockFsStat.mockReset()
     mockFsReaddir.mockReset()
@@ -2993,7 +3000,7 @@ describe('path traversal security — skill file endpoints', () => {
 describe('audit log — GET /:id/audit-log', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
   })
@@ -3357,7 +3364,7 @@ describe('audit log — GET /:id/audit-log', () => {
 describe('skill dir validation edge cases', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
@@ -3401,7 +3408,7 @@ describe('skill dir validation edge cases', () => {
 describe('agent existence middleware — /:id/*', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
   })
@@ -3423,7 +3430,7 @@ describe('agent existence middleware — /:id/*', () => {
 describe('file upload with relativePath — POST /:id/upload-file', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockFsMkdir.mockResolvedValue(undefined)
@@ -3434,7 +3441,7 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     answerLstatForWorkspaceWrites()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     mockFsLstat.mockReset()
     mockCreateReadStream.mockReset()
   })
@@ -3648,7 +3655,7 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
 describe('folder upload — POST /:id/upload-folder', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockFsMkdir.mockResolvedValue(undefined)
@@ -3659,7 +3666,7 @@ describe('folder upload — POST /:id/upload-folder', () => {
     answerLstatForWorkspaceWrites()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     mockFsLstat.mockReset()
     mockFsReaddir.mockReset()
     mockCreateReadStream.mockReset()
@@ -3740,7 +3747,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
   let app: ReturnType<typeof createApp>
   const URL = '/api/agents/test-agent/sessions/sess-1/messages'
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
@@ -3819,6 +3826,20 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
   // ---- Runtime options forwarding ----
 
+  it.each([null, { id: 'private-provider', userId: 'another-user' }])('returns 404 for an unavailable provider pick before recording or sending the message', async row => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const lookup = vi.spyOn(connections, 'getConnection').mockResolvedValue(row as never)
+    try {
+      const res = await postJson(app, URL, { content: 'hello', llmProviderId: 'private-provider' })
+      expect(res.status).toBe(404)
+      expect(await res.json()).toEqual({ error: 'LLM provider not found' })
+      expect(mockSendMessage).not.toHaveBeenCalled()
+      expect(mockDbInsertValues).not.toHaveBeenCalled()
+    } finally {
+      lookup.mockRestore()
+    }
+  })
+
   it('forwards effort to sendMessage when present in body', async () => {
     mockIsAuthMode.mockReturnValue(false)
 
@@ -3851,7 +3872,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body).toMatchObject({ success: true, queued: false })
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '[SYSTEM] note', body.uuid, { shouldQuery: false })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '[SYSTEM] note', body.uuid, { shouldQuery: false, preserveRuntime: true })
     // No turn starts, so the session must not be left looking busy, and an
     // append is never "queued" behind one: the agent reads it with its next turn.
     expect(messagePersister.isSessionActive).not.toHaveBeenCalled()
@@ -3980,7 +4001,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body.queued).toBe(true)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {})
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { preserveRuntime: true })
     expect(updateSessionMetadata).not.toHaveBeenCalled()
     expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
   })
@@ -3990,7 +4011,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
   let app: ReturnType<typeof createApp>
   const URL = '/api/agents/test-agent/sessions/sess-1/messages'
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
@@ -4013,7 +4034,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
   // no file yet is EMPTY, not gone: answer the empty page, never the 404 that
   // renders "Session transcript not found" over a running turn.
   describe('live session whose first turn has not written its transcript yet', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       vi.mocked(sessionExists).mockResolvedValue(false)
       vi.mocked(sessionIsKnown).mockResolvedValue(true)
       vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
@@ -4046,6 +4067,64 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     })
   })
 
+  it.each([
+    ['', 'authentication_failed', 'Invalid credential'],
+    ['?limit=2', 'authentication_failed', 'Invalid credential'],
+    ['?after=previous', 'unknown', 'API Error: 401 Invalid token'],
+    ['/subagent/sub-1/messages', 'unknown', 'API Error: 401 Invalid token'],
+  ])('restores subscription authentication guidance from the session account (%s)', async (path, apiError, text) => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const lookup = vi.spyOn(connections, 'getConnection').mockResolvedValue({
+      id: 'subscription-account', provider: 'claude-subscription',
+      config: JSON.stringify({ apiKeys: { claudeSubscriptionToken: 'sk-ant-oat01-test' } }),
+    } as never)
+    try {
+      mockIsAuthMode.mockReturnValue(false)
+      if (path.startsWith('/subagent')) vi.mocked(readJsonl).mockResolvedValueOnce([])
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({ llmProviderId: 'subscription-account', model: 'retired-model' } as never)
+      const messages = [{ id: 'error-1', type: 'assistant', content: { text }, apiError, toolCalls: [], createdAt: new Date() }]
+      mockTransformMessages.mockReturnValue(messages)
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages, nextCursor: null } as never)
+      vi.mocked(getSessionMessagesDelta).mockResolvedValue({ messages, anchor: null } as never)
+      const url = path.startsWith('/subagent') ? URL.replace('/messages', path) : `${URL}${path}`
+      const res = await getReq(app, url)
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      const restored = Array.isArray(body) ? body : body.messages
+      expect(restored[0].errorPresentation.message).toContain('claude setup-token')
+      expect(lookup).toHaveBeenCalledExactlyOnceWith('subscription-account')
+    } finally {
+      lookup.mockRestore()
+    }
+  })
+
+  it.each([null, 'deleted-account'])('falls back from a cleared or deleted session binding (%s)', async llmProviderId => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const { getLlmProvider } = await import('@shared/lib/llm-provider')
+    const lookup = vi.spyOn(connections, 'getConnection').mockResolvedValue(null)
+    const fallback = vi.spyOn(connections, 'resolveGlobalSelection').mockResolvedValue({
+      provider: getLlmProvider('claude-subscription'),
+    } as never)
+    const settings = mockRuntimeSettings()
+    mockRuntimeSettings.mockReturnValue({ ...settings, llmLegacyProviderId: 'legacy-anthropic' } as never)
+    try {
+      mockIsAuthMode.mockReturnValue(false)
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({ llmProviderId } as never)
+      mockTransformMessages.mockReturnValue([
+        { id: 'error-1', type: 'assistant', content: { text: 'Invalid credential' }, apiError: 'authentication_failed', toolCalls: [] },
+      ])
+      const res = await getReq(app, URL)
+      expect(res.status).toBe(200)
+      expect((await res.json())[0].errorPresentation.message).toContain('claude setup-token')
+      expect(lookup).not.toHaveBeenCalledWith('legacy-anthropic')
+      expect(fallback).toHaveBeenCalledOnce()
+    } finally {
+      lookup.mockRestore()
+      fallback.mockRestore()
+      mockRuntimeSettings.mockReturnValue(settings)
+    }
+  })
+
   it('does not query messageAuthor in non-auth mode', async () => {
     mockIsAuthMode.mockReturnValue(false)
     mockTransformMessages.mockReturnValue([
@@ -4076,7 +4155,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
       mockDbSelectFrom.mockReturnValue({
         where: () => Promise.resolve([{ messageId: 'msg-1', userId: 'user-1' }]),
       })
-      vi.mocked(getUserSummaries).mockReturnValue(new Map([['user-1', {
+      vi.mocked(getUserSummaries).mockResolvedValue(new Map([['user-1', {
         id: 'user-1', name: 'Alice', email: 'alice@example.com', image: 'https://example.com/alice.png',
       }]]))
 
@@ -4132,13 +4211,13 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
   let app: ReturnType<typeof createApp>
   const URL = '/api/agents/test-agent/sessions/sess-1/messages'
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(sessionExists).mockResolvedValue(true)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     delete process.env.MESSAGES_PAGE_LIMIT
     delete process.env.MESSAGES_PAGE_OLDER_LIMIT
   })
@@ -4446,7 +4525,7 @@ describe('GET /:id/sessions/:sessionId/messages forward delta (?after=)', () => 
   let app: ReturnType<typeof createApp>
   const URL = '/api/agents/test-agent/sessions/sess-1/messages'
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(sessionExists).mockResolvedValue(true)
@@ -4546,7 +4625,7 @@ describe('GET /:id/sessions/:sessionId/media/:ref', () => {
   ])
   const REF = 'encoded-ref'
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(sessionExists).mockResolvedValue(true)
@@ -4612,7 +4691,7 @@ describe('GET /:id/sessions/:sessionId/subagent/:agentId/messages', () => {
   let app: ReturnType<typeof createApp>
   const URL = '/api/agents/test-agent/sessions/sess-1/subagent/sub-1/messages'
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(readJsonl).mockResolvedValue([])
@@ -4688,7 +4767,7 @@ describe('DELETE /:id/sessions/:sessionId', () => {
   let app: ReturnType<typeof createApp>
   const URL = '/api/agents/test-agent/sessions/sess-1'
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
@@ -4754,7 +4833,7 @@ describe('DELETE /:id/sessions/:sessionId', () => {
 describe('browser credential broker routes', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     mockContainerFetch.mockReset()
     app = createApp()
@@ -4776,7 +4855,7 @@ describe('browser credential broker routes', () => {
     })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     userInputRequestManager.reset()
     mockContainerFetch.mockReset()
     mockGlobalAdmin.allowed = true
@@ -5126,7 +5205,7 @@ describe('decision routes settle their request immediately', () => {
   // and the stale card can act on a request that was already declined.
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
@@ -5136,7 +5215,7 @@ describe('decision routes settle their request immediately', () => {
     )
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     userInputRequestManager.reset()
   })
 
@@ -5256,7 +5335,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
   // handles; anything else gets a stable, side-effect-free answer.
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
@@ -5266,7 +5345,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     )
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     userInputRequestManager.reset()
   })
 
@@ -5543,14 +5622,14 @@ describe('decision routes refuse to re-run side effects — the already-settled 
 describe('pending-requests snapshot — GET /:id/pending-requests', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
     userInputRequestManager.reset()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     userInputRequestManager.reset()
   })
 
@@ -5620,7 +5699,7 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
   let app: ReturnType<typeof createApp>
   const URL = '/api/agents/test-agent/sessions/sess-1/messages'
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
@@ -5754,10 +5833,10 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
         nextCursor: null,
       } as unknown as Awaited<ReturnType<typeof getSessionMessagesPage>>)
 
-    beforeEach(() => {
+    beforeEach(async () => {
     })
 
-    afterEach(() => {
+    afterEach(async () => {
       // vi.clearAllMocks clears calls but keeps return values, so whatever
       // these are left as carries into the describes below. Put the session
       // back to idle with nothing settled rather than leaking this block's
@@ -5904,7 +5983,7 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
   let app: ReturnType<typeof createApp>
   const URL = '/api/agents/test-agent/sessions/sess-1/messages'
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
@@ -5983,7 +6062,7 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
   const UUID = '123e4567-e89b-12d3-a456-426614174000'
   const URL = `/api/agents/test-agent/sessions/sess-1/queued-messages/${UUID}`
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
   })
@@ -6026,7 +6105,7 @@ describe('typing indicator — POST /:id/sessions/:sessionId/typing', () => {
   let app: ReturnType<typeof createApp>
   const URL = '/api/agents/test-agent/sessions/sess-1/typing'
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
   })
@@ -6058,7 +6137,7 @@ describe('typing indicator — POST /:id/sessions/:sessionId/typing', () => {
 // ============================================================================
 
 describe('GET /api/agents/:id/inbound-x-agent', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     mockIsAuthMode.mockReturnValue(false)
     mockAgentExists.mockResolvedValue(true)
@@ -6107,7 +6186,7 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
 describe('GET /api/agents/:id/scheduled-tasks/completed-sessions', () => {
   const URL = '/api/agents/test-agent/scheduled-tasks/completed-sessions'
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     mockIsAuthMode.mockReturnValue(false)
     mockAgentExists.mockResolvedValue(true)
@@ -6194,7 +6273,7 @@ describe('GET /api/agents (enriched summary)', () => {
     messageCount: 2,
   })
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
@@ -7191,7 +7270,7 @@ describe('GET /api/agents (enriched summary)', () => {
 describe('artifact proxy — subPath uses the raw display-slug URL', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
@@ -7202,7 +7281,7 @@ describe('artifact proxy — subPath uses the raw display-slug URL', () => {
     mockResolveSlug = (slug: string) => slug.slice(slug.lastIndexOf('-') + 1)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     mockResolveSlug = (slug: string) => slug // restore identity for other suites
   })
 
@@ -7277,7 +7356,7 @@ describe('artifact proxy — subPath uses the raw display-slug URL', () => {
 describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
   const app = createApp()
 
-  beforeEach(() => {
+  beforeEach(async () => {
     mockDbInsertValues.mockReset()
     mockDbInsertTable.mockReset()
     mockDbOnConflictDoUpdate.mockReset()
@@ -7292,8 +7371,26 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
     mockIsAuthMode.mockReturnValue(false)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     mockIsAuthMode.mockReturnValue(false)
+  })
+
+  it.each([
+    { operation: 'invoke', fileTransfer: { kind: 'send', paths: ['/workspace/report.pdf'] } },
+    { operation: 'read', fileTransfer: { kind: 'download', filename: 'report.pdf' } },
+    { operation: 'invoke', attachments: ['/workspace/legacy.pdf'] },
+  ])('rejects persistent allow for a one-time file review: %j', async (details) => {
+    mockGetPendingReviewsForAgent.mockReturnValueOnce([{
+      id: 'review-1', agentSlug: 'my-agent', accountId: 'target', toolkit: 'agents',
+      method: details.operation, targetPath: `agents:${details.operation}:target`, matchedScopes: [`${details.operation}:target`],
+      xAgent: { targetAgentSlug: 'target', targetAgentName: 'Target', ...details },
+    }])
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow', scope: `${details.operation}:target`, accountId: 'target', reviewType: 'xagent',
+      xAgent: { operation: details.operation, targetSlug: 'target' },
+    })
+    expect(res.status).toBe(400)
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
   })
 
   it('saves to mcpToolPolicies when reviewType is mcp', async () => {
@@ -7547,7 +7644,7 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
 describe('GET /:id/artifacts/:slug/screenshot.png', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
@@ -7616,7 +7713,7 @@ describe('GET /:id/artifacts/:slug/screenshot.png', () => {
 describe('POST /api/agents/:id/keep-alive', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
   })
@@ -7638,7 +7735,7 @@ describe('POST /api/agents/:id/keep-alive', () => {
 describe('POST /api/agents/:id/export-full', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     mockAgentExists.mockResolvedValue(true)
     app = createApp()
@@ -7725,7 +7822,7 @@ describe('POST /api/agents/:id/export-full', () => {
 describe('POST /api/agents/:id/export-template', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     mockAgentExists.mockResolvedValue(true)
     app = createApp()
@@ -7799,7 +7896,7 @@ describe('POST /api/agents/:id/export-template', () => {
 describe('GET /api/agents/export-status', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     vi.mocked(isHostExportBusy).mockReturnValue(false)
     app = createApp()
@@ -7826,7 +7923,7 @@ describe('GET /api/agents/export-status', () => {
 describe('POST /api/agents/:id/skills/:dir/export', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
   })
@@ -7874,7 +7971,7 @@ describe('POST /api/agents/:id/skills/:dir/export', () => {
 describe('DELETE /api/agents/:id/skills/:dir', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
   })
@@ -7906,7 +8003,7 @@ describe('DELETE /api/agents/:id/skills/:dir', () => {
 describe('POST /api/agents/:id/skills/import-zip', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
   })
@@ -7975,7 +8072,7 @@ describe('POST /api/agents/:id/skills/import-zip', () => {
 describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
   })
@@ -8253,7 +8350,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     })
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     // The real agent-preferences-service runs through the actor on the mocked
@@ -8263,7 +8360,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     storePreferences(null)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     mockFsReadFile.mockReset()
   })
 
@@ -8358,8 +8455,8 @@ describe('agent preferences — PUT /:id/preferences', () => {
     const res = await putJson(PREFS_URL, { defaultModel: null })
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ defaultEffort: 'high' })
-    expect(persistedPreferences()).toEqual({ defaultEffort: 'high' })
+    expect(await res.json()).toEqual({ defaultEffort: 'high', defaultLlmProviderId: null })
+    expect(persistedPreferences()).toEqual({ defaultEffort: 'high', defaultLlmProviderId: null })
   })
 
   it('trims surrounding whitespace before storing defaultModel', async () => {
@@ -8390,7 +8487,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
   const SESSIONS_URL = '/api/agents/test-agent/sessions'
   const mockCreateSession = mockClientCreateSession
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     // Agent prefs come from the real service reading the actor's document off
@@ -8414,7 +8511,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     mockFsReadFile.mockReset()
   })
 
@@ -8539,7 +8636,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     messageCount: 0,
   })
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(listSessionsFromSummary).mockResolvedValue([])
@@ -8679,7 +8776,7 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
     messageCount: 0,
   })
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(listSessionsByIds).mockResolvedValue([])
@@ -8819,7 +8916,7 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
 describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(sessionIsKnown).mockResolvedValue(true)
@@ -8951,7 +9048,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
 describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
   let app: ReturnType<typeof createApp>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(sessionIsKnown).mockResolvedValue(true)
@@ -9091,7 +9188,7 @@ describe('session existence guards read metadata, not the transcript', () => {
     messageCount: 7,
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(sessionIsKnown).mockResolvedValue(true)
@@ -9256,7 +9353,7 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
     })
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
@@ -9274,7 +9371,7 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
     })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     computerUsePermissionManager.revokeAllForAgent('test-agent')
     userInputRequestManager.reset()
   })
@@ -9332,7 +9429,7 @@ describe('cross-agent session scoping', () => {
 
   let app: Hono
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
     mockAgentExists.mockResolvedValue(true)
@@ -9361,7 +9458,7 @@ describe('cross-agent session scoping', () => {
     vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Attacker' } } as any)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     mockIsAuthMode.mockReturnValue(false)
     mockGetCachedInfo.mockReturnValue({ status: 'running', port: 8080 })
   })
@@ -9521,7 +9618,7 @@ describe('cross-agent session scoping', () => {
   })
 
   describe('POST /sessions/:sessionId/tasks/:taskId/stop', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       mockStopTask.mockResolvedValue(true)
     })
 

@@ -7,6 +7,7 @@ const forAgentAttribution = vi.fn()
 const requiresActingMember = vi.fn(() => false)
 const captureMessage = vi.fn()
 const platformAuthStatus = vi.fn()
+const platformAccessToken = vi.fn((): string | null => 'platform-token')
 vi.mock('@shared/lib/platform-attribution', () => ({
   attribution: {
     current: () => currentAttribution(),
@@ -18,7 +19,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
   captureMessage: (...args: unknown[]) => captureMessage(...args),
 }))
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: () => 'platform-token',
+  getPlatformAccessToken: () => platformAccessToken(),
   getPlatformAuthStatus: () => platformAuthStatus(),
 }))
 vi.mock('@shared/lib/platform-auth/config', () => ({
@@ -31,6 +32,7 @@ vi.mock('../config/settings', () => ({
 vi.mock('@anthropic-ai/sdk', () => ({ default: class {} }))
 
 import { PlatformLlmProvider, sanitizeAgentName } from './platform-provider'
+import { getPlatformContainerToken } from '../platform-attribution/container-token'
 
 const provider = new PlatformLlmProvider()
 
@@ -39,26 +41,35 @@ beforeEach(() => {
   forAgentAttribution.mockReset().mockReturnValue(null)
   requiresActingMember.mockReset().mockReturnValue(false)
   captureMessage.mockReset()
+  platformAccessToken.mockReset().mockReturnValue('platform-token')
   platformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_123' })
 })
 
 describe('getContainerEnvVars auth token (cold start)', () => {
-  it('bakes the agent-resolved attribution token when an identity is provided', () => {
+  it('does not carry an ambient token into a disconnected container', async () => {
+    platformAccessToken.mockReturnValue(null)
+    currentAttribution.mockReturnValue({ bearerToken: () => 'old-token::member' })
+    expect(await getPlatformContainerToken('abc123')).toBeUndefined()
+    expect(forAgentAttribution).not.toHaveBeenCalled()
+    expect(currentAttribution).not.toHaveBeenCalled()
+  })
+
+  it('bakes the agent-resolved attribution token when an identity is provided', async () => {
     forAgentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_owner' })
-    const env = provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' })
+    const env = (await provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' }))
     expect(forAgentAttribution).toHaveBeenCalledWith('abc123')
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe('org-jwt::sub_owner')
   })
 
-  it('uses the ambient attribution when no identity is provided', () => {
+  it('uses the ambient attribution when no identity is provided', async () => {
     currentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_ambient' })
-    expect(provider.getContainerEnvVars().ANTHROPIC_AUTH_TOKEN).toBe('org-jwt::sub_ambient')
+    expect((await provider.getContainerEnvVars()).ANTHROPIC_AUTH_TOKEN).toBe('org-jwt::sub_ambient')
     expect(forAgentAttribution).not.toHaveBeenCalled()
   })
 
-  it('reports and falls back to the bare token when an org JWT resolves no member', () => {
+  it('reports and falls back to the bare token when an org JWT resolves no member', async () => {
     requiresActingMember.mockReturnValue(true)
-    const env = provider.getContainerEnvVars({ id: 'abc123' })
+    const env = (await provider.getContainerEnvVars({ id: 'abc123' }))
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
     expect(captureMessage).toHaveBeenCalledWith(
       'platform container env built without acting member',
@@ -66,43 +77,43 @@ describe('getContainerEnvVars auth token (cold start)', () => {
     )
   })
 
-  it('does not report the fallback for an opaque access key', () => {
+  it('does not report the fallback for an opaque access key', async () => {
     requiresActingMember.mockReturnValue(false)
-    expect(provider.getContainerEnvVars({ id: 'abc123' }).ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
+    expect((await provider.getContainerEnvVars({ id: 'abc123' })).ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
     expect(captureMessage).not.toHaveBeenCalled()
   })
 })
 
 describe('PlatformLlmProvider — tool search', () => {
   // The proxy expands the CLI's deferred tools for every model it serves.
-  it('turns ENABLE_TOOL_SEARCH on', () => {
+  it('turns ENABLE_TOOL_SEARCH on', async () => {
     expect(new PlatformLlmProvider().toolSearchEnv).toBe('true')
   })
 })
 
 describe('getContainerEnvVars agent identity', () => {
-  it('injects agent id and name env vars when identity is provided', () => {
-    const env = provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' })
+  it('injects agent id and name env vars when identity is provided', async () => {
+    const env = (await provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' }))
     expect(env.SUPERAGENT_AGENT_ID).toBe('abc123')
     expect(env.SUPERAGENT_AGENT_NAME).toBe('My Agent')
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
   })
 
-  it('omits identity env vars when no identity is provided', () => {
-    const env = provider.getContainerEnvVars()
+  it('omits identity env vars when no identity is provided', async () => {
+    const env = (await provider.getContainerEnvVars())
     expect(env).not.toHaveProperty('SUPERAGENT_AGENT_ID')
     expect(env).not.toHaveProperty('SUPERAGENT_AGENT_NAME')
   })
 
-  it('omits the name var when the name is missing or sanitizes to empty', () => {
-    expect(provider.getContainerEnvVars({ id: 'abc123' })).not.toHaveProperty('SUPERAGENT_AGENT_NAME')
-    expect(provider.getContainerEnvVars({ id: 'abc123', name: '\n\t ' })).not.toHaveProperty(
+  it('omits the name var when the name is missing or sanitizes to empty', async () => {
+    expect((await provider.getContainerEnvVars({ id: 'abc123' }))).not.toHaveProperty('SUPERAGENT_AGENT_NAME')
+    expect((await provider.getContainerEnvVars({ id: 'abc123', name: '\n\t ' }))).not.toHaveProperty(
       'SUPERAGENT_AGENT_NAME'
     )
   })
 
-  it('flattens control characters out of the name', () => {
-    const env = provider.getContainerEnvVars({ id: 'abc123', name: 'Multi\nLine\tBot' })
+  it('flattens control characters out of the name', async () => {
+    const env = (await provider.getContainerEnvVars({ id: 'abc123', name: 'Multi\nLine\tBot' }))
     expect(env.SUPERAGENT_AGENT_NAME).toBe('Multi Line Bot')
   })
 })
@@ -111,7 +122,7 @@ describe('presentationForTurnError', () => {
   const SPEND_CAP = 'A spend cap for this workspace was reached. It resets within 30 days.'
   const INSUFFICIENT = 'API Error: 402 insufficient balance — top up to continue.'
 
-  it('returns warning markdown for a workspace spend cap, linking the connected org billing page', () => {
+  it('returns warning markdown for a workspace spend cap, linking the connected org billing page', async () => {
     const parsed = provider.presentationForTurnError(
       429,
       'A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.',
@@ -125,55 +136,55 @@ describe('presentationForTurnError', () => {
     })
   })
 
-  it('drops the billing link and paywall href when the platform is disconnected', () => {
+  it('drops the billing link and paywall href when the platform is disconnected', async () => {
     platformAuthStatus.mockReturnValue({ connected: false, orgId: null })
     expect(provider.presentationForTurnError(429, SPEND_CAP, 'rate_limit')?.message).not.toContain('](')
     expect(provider.presentationForTurnError(402, INSUFFICIENT, 'unknown')).not.toHaveProperty('href')
   })
 
-  it('attaches the org billing page as the paywall href', () => {
+  it('attaches the org billing page as the paywall href', async () => {
     expect(provider.presentationForTurnError(402, INSUFFICIENT, 'unknown')?.href).toBe(
       'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
     )
   })
 
-  it('falls back to the generic banner for a non-spend 429', () => {
+  it('falls back to the generic banner for a non-spend 429', async () => {
     const parsed = provider.presentationForTurnError(429, 'Rate limit exceeded. Slow down and retry shortly.', 'rate_limit')
     expect(parsed?.severity).toBe('error')
     expect(parsed?.message).toContain('**LLM Provider Error:**')
   })
 
-  it('attaches a recognized class even when the SDK code is generic', () => {
+  it('attaches a recognized class even when the SDK code is generic', async () => {
     const parsed = provider.presentationForTurnError(429, SPEND_CAP, 'unknown')
     expect(parsed?.message).toContain('**Spend Limit Reached:**')
   })
 
-  it('attaches the generic banner when the SDK code marks a provider error', () => {
+  it('attaches the generic banner when the SDK code marks a provider error', async () => {
     const parsed = provider.presentationForTurnError(500, 'Overloaded', 'server_error')
     expect(parsed?.message).toContain('**LLM Provider Error:**')
   })
 
-  it('returns null for an unrecognized error with a non-provider SDK code', () => {
+  it('returns null for an unrecognized error with a non-provider SDK code', async () => {
     expect(provider.presentationForTurnError(undefined, 'Output too long', 'max_output_tokens')).toBeNull()
     expect(provider.presentationForTurnError(undefined, 'Output too long', null)).toBeNull()
   })
 
-  it('does not let a recognized class claim a max_output_tokens failure', () => {
+  it('does not let a recognized class claim a max_output_tokens failure', async () => {
     expect(provider.presentationForTurnError(undefined, SPEND_CAP, 'max_output_tokens')).toBeNull()
   })
 
-  it('does not let a recognized class claim a turn that failed without an API error', () => {
+  it('does not let a recognized class claim a turn that failed without an API error', async () => {
     expect(provider.presentationForTurnError(undefined, INSUFFICIENT, null)).toBeNull()
     expect(provider.presentationForTurnError(undefined, INSUFFICIENT, undefined)).toBeNull()
   })
 })
 
 describe('sanitizeAgentName', () => {
-  it('collapses runs of control chars and spaces to a single space', () => {
+  it('collapses runs of control chars and spaces to a single space', async () => {
     expect(sanitizeAgentName('a\r\n\r\nb   c')).toBe('a b c')
   })
 
-  it('caps at 200 code points without splitting surrogate pairs', () => {
+  it('caps at 200 code points without splitting surrogate pairs', async () => {
     const out = sanitizeAgentName('\u{1F680}'.repeat(300))
     expect(out).toBe('\u{1F680}'.repeat(200))
   })

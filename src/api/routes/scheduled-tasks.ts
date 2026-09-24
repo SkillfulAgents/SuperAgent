@@ -1,3 +1,5 @@
+import { LlmSelectionAccessError, assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Scheduled Tasks API Routes
  *
@@ -29,7 +31,7 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
-import { RuntimeOptionsPatchSchema, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
+import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { deliverSessionWake } from '@shared/lib/scheduler/wake-delivery'
@@ -84,7 +86,7 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
       return c.json({ error: 'Scheduled task not found or already cancelled' }, 404)
     }
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'deleted' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'deleted' })
 
     // Cancelling a session wake changes that session's list/badge state.
     if (task!.resumeSessionId) {
@@ -115,7 +117,7 @@ scheduledTasksRouter.post('/:taskId/pause', TaskAgentRole('user'), async (c) => 
       return c.json({ error: 'Task is not pending' }, 400)
     }
     const updated = await getScheduledTask(task.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'paused' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'paused' })
     return c.json(updated)
   } catch (error) {
     console.error('Failed to pause scheduled task:', error)
@@ -135,7 +137,7 @@ scheduledTasksRouter.post('/:taskId/resume', TaskAgentRole('user'), async (c) =>
       return c.json({ error: 'Task is not paused' }, 400)
     }
     const updated = await getScheduledTask(task.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'resumed' })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'resumed' })
     return c.json(updated)
   } catch (error) {
     console.error('Failed to resume scheduled task:', error)
@@ -177,7 +179,7 @@ scheduledTasksRouter.patch('/:taskId/prompt', TaskAgentRole('user'), async (c) =
     }
 
     const refreshed = await getScheduledTask(task!.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'prompt' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'prompt' } })
     return c.json(refreshed)
   } catch (error) {
     console.error('Failed to update scheduled task prompt:', error)
@@ -202,7 +204,7 @@ scheduledTasksRouter.patch('/:taskId/name', TaskAgentRole('user'), async (c) => 
     }
 
     const refreshed = await getScheduledTask(task!.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'name' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'name' } })
     return c.json(refreshed)
   } catch (error) {
     console.error('Failed to update scheduled task name:', error)
@@ -250,20 +252,23 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { model?: string | null; effort?: string | null; speed?: string | null } = {}
+    const updates: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
+    if ('llmProviderId' in body) updates.llmProviderId = parsed.data.llmProviderId ?? null
     if ('model' in body) updates.model = parsed.data.model ?? null
     if ('effort' in body) updates.effort = parsed.data.effort ?? null
     if ('speed' in body) updates.speed = parsed.data.speed ?? null
 
+    await assertConnectionSelectionAccess(parsed.data.llmProviderId, task?.llmProviderId)
     const updated = await updateTaskRuntimeOptions(task!.id, updates)
     if (!updated) {
       return c.json({ error: 'Task not found or not editable' }, 404)
     }
 
     const refreshed = await getScheduledTask(task!.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'runtime-options' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'runtime-options' } })
     return c.json(refreshed)
   } catch (error) {
+    if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
     console.error('Failed to update scheduled task runtime options:', error)
     return c.json({ error: 'Failed to update runtime options' }, 500)
   }
@@ -306,8 +311,9 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(task.agentSlug)
-    const resolved = resolveRuntimeInherit(
-      { model: task.model, effort: task.effort, speed: task.speed },
+    const resolved = await resolveConnectionRuntimeInherit(
+      { model: task.model,
+      llmProviderId: task.llmProviderId, effort: task.effort, speed: task.speed },
       agentPrefs,
       models,
     )
@@ -316,6 +322,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
       model: resolved.model,
+      llmProviderId: resolved.llmProviderId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       effort: resolved.effort,
@@ -364,7 +371,7 @@ scheduledTasksRouter.post('/:taskId/describe-schedule', TaskAgentRole('viewer'),
       return c.json({ error: 'Task is not a recurring cron task' }, 400)
     }
 
-    const client = getConfiguredLlmClient()
+    const client = await getConfiguredLlmClient()
     const description = await createSummarizerText(client, {
       model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
       messages: [
@@ -406,7 +413,7 @@ scheduledTasksRouter.post('/:taskId/parse-schedule', TaskAgentRole('user'), asyn
       return c.json({ error: 'description is required' }, 400)
     }
 
-    const client = getConfiguredLlmClient()
+    const client = await getConfiguredLlmClient()
     const expression = await createSummarizerText(client, {
       model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
       messages: [
@@ -473,7 +480,7 @@ scheduledTasksRouter.patch('/:taskId/schedule', TaskAgentRole('user'), async (c)
     }
 
     const refreshed = await getScheduledTask(task.id)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'schedule' } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'schedule' } })
 
     // Surface the same too-frequent-interval warning as the agent path. The edit
     // still succeeds — the warning is advisory.

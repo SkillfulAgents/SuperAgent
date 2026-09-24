@@ -16,7 +16,7 @@ import { Hono } from 'hono'
 //   integration B (agentSlug 'agent-b')  -> attacker has NO role
 //   sessionOfB.integrationId === B
 // Request: DELETE /chat-integrations/<A>/sessions/<sessionOfB> must be rejected
-// (404) and must NOT call clearSessionById / archiveChatIntegrationSession.
+// (404) and must NOT call clearSessionById / archiveAgentIntegrationSession.
 // ---------------------------------------------------------------------------
 
 const INTEGRATION_A = 'integration-a'
@@ -30,7 +30,10 @@ const mockAuthUser = { id: 'attacker-user', name: 'Attacker', email: 'attacker@e
 // integration only (attacker has 'user' on agent-a), exactly mirroring how the
 // real middleware scopes auth to :integrationId and never sees the session.
 vi.mock('../middleware/auth', () => ({
+  getAuthorizedAgentRole: () => 'user',
+  hasMinRole: (role: string, minimum: string) => ({ viewer: 0, user: 1, owner: 2 }[role]! >= { viewer: 0, user: 1, owner: 2 }[minimum]!),
   Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  AgentRead: () => async (_c: unknown, next: () => Promise<void>) => next(),
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
   getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
@@ -45,29 +48,30 @@ vi.mock('../middleware/auth', () => ({
 }))
 
 // Two integrations: A (agent-a) and B (agent-b).
-const integrations: Record<string, { id: string; agentSlug: string }> = {
-  [INTEGRATION_A]: { id: INTEGRATION_A, agentSlug: 'agent-a' },
-  [INTEGRATION_B]: { id: INTEGRATION_B, agentSlug: 'agent-b' },
+const integrations: Record<string, { id: string; agentSlug: string; provider: 'telegram' }> = {
+  [INTEGRATION_A]: { id: INTEGRATION_A, agentSlug: 'agent-a', provider: 'telegram' },
+  [INTEGRATION_B]: { id: INTEGRATION_B, agentSlug: 'agent-b', provider: 'telegram' },
 }
 const mockGetChatIntegration = vi.fn(async (id: string) => integrations[id] ?? null)
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  getChatIntegration: (id: string) => mockGetChatIntegration(id),
-  createChatIntegration: vi.fn(),
-  updateChatIntegration: vi.fn(),
-  updateChatIntegrationStatus: vi.fn(),
-  deleteChatIntegration: vi.fn(),
-  DuplicateBotTokenError: class DuplicateBotTokenError extends Error {},
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  getAgentIntegration: (id: string) => mockGetChatIntegration(id),
+  createAgentIntegration: vi.fn(),
+  updateAgentIntegration: vi.fn(),
+  updateAgentIntegrationStatus: vi.fn(),
+  deleteAgentIntegration: vi.fn(),
+  DuplicateIntegrationIdentityError: class DuplicateIntegrationIdentityError extends Error {},
+  IntegrationConfigurationUnsupportedError: class IntegrationConfigurationUnsupportedError extends Error {},
 }))
 
-const mockGetChatIntegrationSessionById = vi.fn()
-const mockArchiveChatIntegrationSession = vi.fn()
+const mockGetAgentIntegrationSessionById = vi.fn()
+const mockArchiveAgentIntegrationSession = vi.fn()
 
-vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
-  getChatIntegrationSessionById: (id: string) => mockGetChatIntegrationSessionById(id),
-  archiveChatIntegrationSession: (id: string) => mockArchiveChatIntegrationSession(id),
-  listChatIntegrationSessions: vi.fn(() => []),
-  deleteChatIntegrationSessionsByIntegration: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
+  getAgentIntegrationSessionById: (id: string) => mockGetAgentIntegrationSessionById(id),
+  archiveAgentIntegrationSession: (id: string) => mockArchiveAgentIntegrationSession(id),
+  listAgentIntegrationSessions: vi.fn(() => []),
+  deleteAgentIntegrationSessionsByIntegration: vi.fn(),
 }))
 
 const mockClearChatSessionById = vi.fn()
@@ -82,7 +86,8 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
   },
 }))
 
-vi.mock('@shared/lib/chat-integrations/config-schema', () => ({
+vi.mock('@shared/lib/chat-integrations/config-schema', async importOriginal => ({
+  ...await importOriginal<typeof import('@shared/lib/chat-integrations/config-schema')>(),
   validateChatIntegrationConfig: vi.fn(),
   CHAT_PROVIDERS: ['telegram', 'slack', 'imessage'],
   IMESSAGE_GATEWAY_URL: 'https://imessage.example.com',
@@ -101,6 +106,12 @@ vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
 
+vi.mock('@shared/lib/agent-integrations/registry', async importOriginal => {
+  const actual = await importOriginal<typeof import('@shared/lib/agent-integrations/registry')>()
+  actual.agentIntegrationRegistry.cleanup = vi.fn()
+  return actual
+})
+
 import chatIntegrationsRouter from './chat-integrations'
 
 function app() {
@@ -117,7 +128,7 @@ describe('SUP-229: chat session clear must not archive sessions from another int
 
   it('rejects clearing a chat session that belongs to a different integration', async () => {
     // Session row belongs to integration B; the request authorizes A.
-    mockGetChatIntegrationSessionById.mockReturnValue({
+    mockGetAgentIntegrationSessionById.mockReturnValue({
       id: SESSION_OF_B,
       integrationId: INTEGRATION_B,
       sessionId: 'b-agent-session',
@@ -131,11 +142,11 @@ describe('SUP-229: chat session clear must not archive sessions from another int
 
     expect(res.status).toBe(404)
     expect(mockClearChatSessionById).not.toHaveBeenCalled()
-    expect(mockArchiveChatIntegrationSession).not.toHaveBeenCalled()
+    expect(mockArchiveAgentIntegrationSession).not.toHaveBeenCalled()
   })
 
   it('clears a chat session that belongs to the authorized integration', async () => {
-    mockGetChatIntegrationSessionById.mockReturnValue({
+    mockGetAgentIntegrationSessionById.mockReturnValue({
       id: SESSION_OF_A,
       integrationId: INTEGRATION_A,
       sessionId: 'a-agent-session',
@@ -149,6 +160,6 @@ describe('SUP-229: chat session clear must not archive sessions from another int
 
     expect(res.status).toBe(200)
     expect(mockClearChatSessionById).toHaveBeenCalledWith(SESSION_OF_A)
-    expect(mockArchiveChatIntegrationSession).toHaveBeenCalledWith(SESSION_OF_A)
+    expect(mockArchiveAgentIntegrationSession).toHaveBeenCalledWith(SESSION_OF_A)
   })
 })

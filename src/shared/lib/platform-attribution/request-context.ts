@@ -18,3 +18,8 @@ export function runWithOptionalUser<T>(
 export function getRequestUserId(): string | undefined {
   return userContext.getStore()?.userId
 }
+
+// fn, and everything it schedules, runs with no request user.
+export function runOutsideRequestUser<T>(fn: () => T): T {
+  return userContext.exit(fn)
+}

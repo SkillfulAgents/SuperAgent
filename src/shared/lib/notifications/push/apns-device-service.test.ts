@@ -1,13 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import * as path from 'path'
 import { eq } from 'drizzle-orm'
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '../../db/schema'
+import type { AppDatabase } from '../../db/drivers/types'
+import { createTestDatabase, type TestDatabase } from '../../db/testing/create-test-database'
 
-let testDb: ReturnType<typeof drizzle>
-let testSqlite: InstanceType<typeof Database>
+let testDb: AppDatabase
+let handle: TestDatabase
 
 vi.mock('../../db', () => ({
   get db() {
@@ -39,21 +37,19 @@ function tokenFor(i: number): string {
 }
 
 describe('apns-device-service', () => {
-  beforeEach(() => {
-    testSqlite = new Database(':memory:')
-    testDb = drizzle(testSqlite, { schema })
-    const migrationsFolder = path.join(process.cwd(), 'src/shared/lib/db/migrations')
-    migrate(testDb, { migrationsFolder })
+  beforeEach(async () => {
+    handle = await createTestDatabase()
+    testDb = handle.db
   })
 
-  afterEach(() => {
-    testSqlite?.close()
+  afterEach(async () => {
+    await handle.close()
   })
 
   it('inserts a new device with defaults applied', async () => {
     await upsertApnsDevice({ ...BASE_DEVICE, deviceName: 'iPhone 17', workspaceTag: 'ws-1' })
 
-    const rows = listApnsDevices()
+    const rows = await listApnsDevices()
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({
       token: TOKEN_A,
@@ -75,7 +71,7 @@ describe('apns-device-service', () => {
       workspaceTag: 'ws-2',
     })
 
-    const rows = listApnsDevices()
+    const rows = await listApnsDevices()
     expect(rows).toHaveLength(1)
     expect(rows[0].environment).toBe('sandbox')
     expect(rows[0].deviceName).toBe('Renamed Phone')
@@ -84,17 +80,17 @@ describe('apns-device-service', () => {
 
   it('deletes by id', async () => {
     await upsertApnsDevice(BASE_DEVICE)
-    const [row] = listApnsDevices()
+    const [row] = await listApnsDevices()
 
-    deleteApnsDeviceById(row.id)
+    await deleteApnsDeviceById(row.id)
 
-    expect(listApnsDevices()).toHaveLength(0)
+    expect(await listApnsDevices()).toHaveLength(0)
   })
 
   describe('mobileDeviceId token-rotation eviction', () => {
-    function seedMobileDevices(...ids: string[]) {
+    async function seedMobileDevices(...ids: string[]) {
       const now = new Date()
-      testDb
+      await testDb
         .insert(schema.user)
         .values({
           id: 'user-a',
@@ -106,7 +102,7 @@ describe('apns-device-service', () => {
         } as never)
         .run()
       for (const id of ids) {
-        testDb
+        await testDb
           .insert(schema.mobileDevice)
           .values({
             id,
@@ -121,7 +117,7 @@ describe('apns-device-service', () => {
     }
 
     it('a new token for the same physical device evicts the rotated-away one', async () => {
-      seedMobileDevices('dev-1')
+      await seedMobileDevices('dev-1')
       await upsertApnsDevice({ ...BASE_DEVICE, userId: 'user-a', mobileDeviceId: 'dev-1' })
       await upsertApnsDevice({
         ...BASE_DEVICE,
@@ -130,13 +126,13 @@ describe('apns-device-service', () => {
         mobileDeviceId: 'dev-1',
       })
 
-      const rows = listApnsDevices()
+      const rows = await listApnsDevices()
       expect(rows).toHaveLength(1)
       expect(rows[0].token).toBe(TOKEN_B)
     })
 
     it('does not evict rows belonging to a different physical device', async () => {
-      seedMobileDevices('dev-1', 'dev-2')
+      await seedMobileDevices('dev-1', 'dev-2')
       await upsertApnsDevice({ ...BASE_DEVICE, userId: 'user-a', mobileDeviceId: 'dev-1' })
       await upsertApnsDevice({
         ...BASE_DEVICE,
@@ -145,20 +141,20 @@ describe('apns-device-service', () => {
         mobileDeviceId: 'dev-2',
       })
 
-      expect(listApnsDevices()).toHaveLength(2)
+      expect(await listApnsDevices()).toHaveLength(2)
     })
 
     it('a null mobileDeviceId never evicts anything', async () => {
-      seedMobileDevices('dev-1')
+      await seedMobileDevices('dev-1')
       await upsertApnsDevice({ ...BASE_DEVICE, userId: 'user-a', mobileDeviceId: 'dev-1' })
       await upsertApnsDevice({ ...BASE_DEVICE, token: TOKEN_B, userId: 'user-a' })
 
-      expect(listApnsDevices()).toHaveLength(2)
+      expect(await listApnsDevices()).toHaveLength(2)
     })
 
     it('delivery excludes registrations whose paired device has expired', async () => {
-      seedMobileDevices('dev-live', 'dev-expired')
-      testDb
+      await seedMobileDevices('dev-live', 'dev-expired')
+      await testDb
         .update(schema.mobileDevice)
         .set({ expiresAt: new Date(Date.now() - 1000) })
         .where(eq(schema.mobileDevice.id, 'dev-expired'))
@@ -174,8 +170,8 @@ describe('apns-device-service', () => {
       // Defensive local-mode-parity row with no device link stays deliverable.
       await upsertApnsDevice({ ...BASE_DEVICE, token: 'c'.repeat(64) })
 
-      expect(listApnsDevices()).toHaveLength(3)
-      const deliverable = listDeliverableApnsDevices()
+      expect(await listApnsDevices()).toHaveLength(3)
+      const deliverable = await listDeliverableApnsDevices()
       expect(deliverable).toHaveLength(2)
       expect(deliverable.map((d) => d.mobileDeviceId)).toEqual(
         expect.arrayContaining(['dev-live', null])
@@ -190,7 +186,7 @@ describe('apns-device-service', () => {
       }
 
       expect(await upsertApnsDevice({ ...BASE_DEVICE, token: 'f'.repeat(64) })).toBe(false)
-      expect(listApnsDevices()).toHaveLength(MAX_APNS_DEVICES_PER_OWNER)
+      expect(await listApnsDevices()).toHaveLength(MAX_APNS_DEVICES_PER_OWNER)
 
       // Re-upserting a token that already exists is a refresh, not growth.
       expect(
@@ -218,7 +214,7 @@ describe('apns-device-service', () => {
       ])
 
       expect(admitted.filter(Boolean)).toHaveLength(1)
-      expect(listApnsDevices()).toHaveLength(MAX_APNS_DEVICES_PER_OWNER)
+      expect(await listApnsDevices()).toHaveLength(MAX_APNS_DEVICES_PER_OWNER)
     })
   })
 
@@ -226,22 +222,22 @@ describe('apns-device-service', () => {
     it('an auth-mode user cannot delete another user’s device by token', async () => {
       await upsertApnsDevice({ ...BASE_DEVICE, userId: 'user-a' })
 
-      expect(deleteApnsDeviceByToken(TOKEN_A, 'user-b')).toBe(false)
-      expect(listApnsDevices()).toHaveLength(1)
+      expect(await deleteApnsDeviceByToken(TOKEN_A, 'user-b')).toBe(false)
+      expect(await listApnsDevices()).toHaveLength(1)
 
-      expect(deleteApnsDeviceByToken(TOKEN_A, 'user-a')).toBe(true)
-      expect(listApnsDevices()).toHaveLength(0)
+      expect(await deleteApnsDeviceByToken(TOKEN_A, 'user-a')).toBe(true)
+      expect(await listApnsDevices()).toHaveLength(0)
     })
 
     it('local mode (no owner) deletes by token alone — including rows from a previous auth-mode life', async () => {
       await upsertApnsDevice({ ...BASE_DEVICE, userId: 'user-a' })
 
-      expect(deleteApnsDeviceByToken(TOKEN_A)).toBe(true)
-      expect(listApnsDevices()).toHaveLength(0)
+      expect(await deleteApnsDeviceByToken(TOKEN_A)).toBe(true)
+      expect(await listApnsDevices()).toHaveLength(0)
     })
 
     it('returns false when nothing matches (route surfaces this as 404)', async () => {
-      expect(deleteApnsDeviceByToken('0'.repeat(64))).toBe(false)
+      expect(await deleteApnsDeviceByToken('0'.repeat(64))).toBe(false)
     })
   })
 })

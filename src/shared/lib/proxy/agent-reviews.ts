@@ -2,6 +2,7 @@
  * One agent's pending proxy and x-agent reviews: the store the actor owns.
  * The router in front of every agent's store is `review-manager`.
  */
+import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from './x-agent-review'
 import crypto from 'crypto'
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
 import type { AgentInputRequests } from '@shared/lib/user-input/agent-input-requests'
@@ -228,7 +229,9 @@ export class AgentReviews {
 
   resolveMatching(scope: string, decision: ReviewDecision): void {
     for (const entry of this.entries()) {
-      if (!detailsOf(entry).matchedScopes.includes(scope)) continue
+      const details = detailsOf(entry)
+      if (decision === 'allow' && requiresOneTimeXAgentReview(details.xAgent)) continue
+      if (!details.matchedScopes.includes(scope)) continue
       this.settleDecided(entry, decision)
     }
     this.shadowSettlerCheck('resolveMatchingPending')
@@ -245,6 +248,7 @@ export class AgentReviews {
   resolveMatchingByLabel(label: ScopeLabel, decision: ReviewDecision): void {
     for (const entry of this.entries()) {
       const details = detailsOf(entry)
+      if (decision === 'allow' && requiresOneTimeXAgentReview(details.xAgent)) continue
       const hasLabel = details.matchedScopes.some((s) => getScopeLabel(details.toolkit, s) === label)
       if (!hasLabel) continue
       this.settleDecided(entry, decision)
@@ -262,7 +266,9 @@ export class AgentReviews {
    */
   resolveMatchingXAgent(operation: XAgentOperation, decision: ReviewDecision): void {
     for (const entry of this.entries()) {
-      if (detailsOf(entry).xAgent?.operation !== operation) continue
+      const xAgent = detailsOf(entry).xAgent
+      if (xAgent?.operation !== operation) continue
+      if (decision === 'allow' && requiresOneTimeXAgentReview(xAgent)) continue
       this.settleDecided(entry, decision)
     }
     this.shadowSettlerCheck('resolveMatchingXAgentByOperation')
@@ -282,6 +288,7 @@ export class AgentReviews {
     targetAgentName: string,
     operation: XAgentOperation,
     preview?: string,
+    fileTransfer?: XAgentFileTransfer,
     signal?: AbortSignal,
   ): Promise<ReviewDecision> {
     const scope =
@@ -290,14 +297,21 @@ export class AgentReviews {
         : operation === 'create'
           ? 'create'
           : `${operation}:${targetAgentSlug}`
-    const description =
-      operation === 'create'
+    let description: string
+    if (fileTransfer?.kind === 'download') {
+      description = `Allow agent to download "${fileTransfer.filename}" from "${targetAgentName}"?`
+    } else if (fileTransfer?.kind === 'send') {
+      const count = fileTransfer.paths.length
+      description = `Allow agent to send a message and ${count} ${count === 1 ? 'file' : 'files'} to "${targetAgentName}"?`
+    } else {
+      description = operation === 'create'
         ? `Allow agent to create a new agent named "${targetAgentName}"?`
         : operation === 'list'
-          ? `Allow agent to list other agents in this workspace?`
-          : operation === 'invoke'
-            ? `Allow agent to send a message to "${targetAgentName}"?`
-            : `Allow agent to read sessions of "${targetAgentName}"?`
+          ? 'Allow agent to list other agents in this workspace?'
+          : operation === 'read'
+            ? `Allow agent to read sessions of "${targetAgentName}"?`
+            : `Allow agent to send a message to "${targetAgentName}"?`
+    }
 
     return this.request(
       {
@@ -313,6 +327,7 @@ export class AgentReviews {
           targetAgentName,
           operation,
           preview,
+          ...(fileTransfer ? { fileTransfer } : {}),
         },
       },
       signal,

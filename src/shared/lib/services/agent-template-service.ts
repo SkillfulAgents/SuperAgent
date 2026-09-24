@@ -1366,7 +1366,7 @@ async function generateAgentPRSuggestions(
 
   let client
   try {
-    client = getConfiguredLlmClient()
+    client = await getConfiguredLlmClient()
   } catch {
     return fallback
   }
@@ -1435,7 +1435,7 @@ async function generateAgentPublishSuggestions(
 
   let client
   try {
-    client = getConfiguredLlmClient()
+    client = await getConfiguredLlmClient()
   } catch {
     return fallback
   }

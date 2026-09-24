@@ -715,6 +715,27 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     category: 'Analytics & Marketing',
   },
   {
+    slug: 'triple-whale',
+    displayName: 'Triple Whale',
+    description: 'Read-only ecommerce analytics — attribution, ad spend, revenue, and performance',
+    url: 'https://mcp.triplewhale.com/v1/mcp',
+    authType: 'oauth',
+    category: 'Analytics & Marketing',
+  },
+  {
+    slug: 'trueprofit',
+    displayName: 'TrueProfit',
+    description: 'Ecommerce profit analytics — profit, products, ads, orders, and performance',
+    url: 'https://mcp.trueprofit.io/mcp',
+    authType: 'oauth',
+    category: 'Analytics & Marketing',
+    setup: {
+      steps: [
+        'When prompted, open TrueProfit and sign in with your TrueProfit account (not a store-only login). Return to the authorization page and refresh to continue.',
+      ],
+    },
+  },
+  {
     slug: 'customer-io',
     displayName: 'Customer.io',
     description: 'Customer engagement — messaging campaigns, journeys, segments, and broadcasts',

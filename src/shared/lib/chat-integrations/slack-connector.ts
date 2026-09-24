@@ -22,7 +22,8 @@ import {
   type SystemPromptContext,
 } from './chat-agent-integration'
 import { buildSessionContextPrompt } from './chat-session-context'
-import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage, withSessionUrl, type AppLinkContext } from './utils'
+import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
+import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { isUnrecoverableSlackError } from './slack-error'
 import { MAX_TRACKED_SLACK_THREADS, type SlackThreadStateStore } from './slack-thread-state'
 import { captureException } from '@shared/lib/error-reporting'
@@ -200,6 +201,27 @@ export interface SlackMessageRoutingResult {
    * passed in — i.e. before the caller marks this thread active.
    */
   isNewThreadEntry: boolean
+}
+
+/**
+ * Links for the app's message card: the message itself and its conversation
+ * (the thread root for a reply). Needs the workspace URL from auth.test.
+ */
+export function slackLinks(workspaceUrl: string | undefined, channel: string, ts: string, threadTs?: string): { messageUrl?: string; conversationUrl?: string } {
+  if (!workspaceUrl || !channel || !ts) return {}
+  try {
+    const base = new URL(`archives/${encodeURIComponent(channel)}/`, workspaceUrl)
+    const permalink = (messageTs: string) => new URL(`p${messageTs.replace('.', '')}`, base)
+    const message = permalink(ts)
+    if (threadTs && threadTs !== ts) {
+      message.searchParams.set('thread_ts', threadTs)
+      message.searchParams.set('cid', channel)
+    }
+    const conversation = threadTs ? permalink(threadTs) : new URL(base.pathname.replace(/\/$/, ''), base)
+    return { messageUrl: message.toString(), conversationUrl: conversation.toString() }
+  } catch {
+    return {}
+  }
 }
 
 export function routeSlackMessage(params: SlackMessageRoutingParams): SlackMessageRoutingResult {
@@ -471,7 +493,7 @@ export class SlackConnector extends ChatAgentIntegration {
         // participation too. A disk error must not swallow the current message.
         if (this.threadState && this.botUserId) {
           try {
-            this.threadState.save(this.botUserId, [...this.activeThreads])
+            await this.threadState.save(this.botUserId, [...this.activeThreads])
           } catch (err) {
             console.error('[SlackConnector] Failed to persist thread participation:', err)
             captureException(err, { tags: { component: 'slack', operation: 'save-thread-state' } })
@@ -489,6 +511,7 @@ export class SlackConnector extends ChatAgentIntegration {
 
       // Resolve <@U123>, <#C123|name>, links, and special mentions in the text
       let text = await this.resolveMentionsInText(rawText)
+      const requestText = text
 
       // When joining a thread mid-conversation, fetch earlier messages as context.
       // isNewThreadEntry already implies threadTs is set; the check narrows the type.
@@ -513,6 +536,12 @@ export class SlackConnector extends ChatAgentIntegration {
         chatName,
         files: files?.length ? files : undefined,
         timestamp: new Date(Number(ts) * 1000),
+        display: {
+          requestText,
+          avatarUrl: this.userAvatarCache.get(userId),
+          workspace: this.workspace.name,
+          ...slackLinks(this.workspace.url, chatId, ts, routing.threadContext?.threadTs),
+        },
       })
     })
 
@@ -573,6 +602,7 @@ export class SlackConnector extends ChatAgentIntegration {
         throw new Error(`Slack auth.test failed: ${authResult.error}`)
       }
       this.botUserId = authResult.user_id || null
+      this.workspace = { name: authResult.team || undefined, url: authResult.url || undefined }
       console.log(`[SlackConnector] Authenticated as ${authResult.user} in workspace ${authResult.team}`)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -610,7 +640,7 @@ export class SlackConnector extends ChatAgentIntegration {
     // alone is insufficient when several threads share a single agent session.
     if (this.threadState && this.botUserId && !this.disconnecting) {
       this.activeThreads.clear()
-      for (const key of this.threadState.load(this.botUserId)) {
+      for (const key of await this.threadState.load(this.botUserId)) {
         touchAndCapSet(this.activeThreads, key, SlackConnector.MAX_TRACKED_THREADS)
       }
     }
@@ -709,6 +739,7 @@ export class SlackConnector extends ChatAgentIntegration {
     this.threadContextMap.clear()
     this.activeThreads.clear()
     this.userNameCache.clear()
+    this.userAvatarCache.clear()
     this.channelNameCache.clear()
 
     if (this.app) {
@@ -1160,6 +1191,9 @@ export class SlackConnector extends ChatAgentIntegration {
 
   // Cache resolved names with TTL to prevent unbounded growth
   private userNameCache: Map<string, { value: string; ts: number }> = new Map()
+  // Public profile images from users.info, for the app's message card only.
+  private userAvatarCache: Map<string, string> = new Map()
+  private workspace: { name?: string; url?: string } = {}
   private channelNameCache: Map<string, { value: string; ts: number }> = new Map()
   private static readonly CACHE_TTL_MS = 60 * 60 * 1000 // 1 hour
 
@@ -1171,6 +1205,8 @@ export class SlackConnector extends ChatAgentIntegration {
       const result = await this.app.client.users.info({ user: userId })
       const name = result.user?.real_name || result.user?.name || undefined
       if (name) this.userNameCache.set(userId, { value: name, ts: Date.now() })
+      const avatar = result.user?.profile?.image_72
+      if (avatar) touchAndCapMap(this.userAvatarCache, userId, avatar, SlackConnector.MAX_TRACKED_THREADS)
       return name
     } catch (err) {
       console.warn(`[SlackConnector] Failed to resolve user name for ${userId}:`, err instanceof Error ? err.message : err)

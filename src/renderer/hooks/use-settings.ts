@@ -63,13 +63,20 @@ export function useWarmStartOnTypeEnabled(): boolean {
  * catalog. The `['settings', …]` key keeps it refreshed by the same broad
  * invalidations the settings mutations already fire (e.g. a catalog edit).
  */
-export function useModelSettings() {
+export function useModelSettings(agentSlug?: string, llmProviderId?: string | null) {
   return useQuery<ModelPickerSettingsResponse>({
-    queryKey: ['settings', 'models'],
+    queryKey: ['settings', 'models', ...(agentSlug ? [agentSlug, llmProviderId] : [])],
     queryFn: async () => {
       const res = await apiFetch('/api/settings/models')
       if (!res.ok) throw new Error('Failed to fetch model settings')
-      return res.json()
+      const data: ModelPickerSettingsResponse = await res.json()
+      if (agentSlug) {
+        const query = llmProviderId ? `?llmProviderId=${encodeURIComponent(llmProviderId)}` : ''
+        const response = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/llm-connections${query}`)
+        if (!response.ok) throw new Error('Failed to fetch saved model connection')
+        data.connections = (await response.json()).connections
+      }
+      return data
     },
     staleTime: 60000,
   })
@@ -78,14 +85,16 @@ export function useModelSettings() {
 export function useProviderModelSearch(
   providerId: LlmProviderId,
   query: string,
-  options?: { enabled?: boolean },
+  options?: { enabled?: boolean; llmProviderId?: string },
 ) {
   const trimmedQuery = query.trim()
   return useQuery<ModelSearchResult[]>({
-    queryKey: ['settings', 'llm-provider-model-search', providerId, trimmedQuery],
+    queryKey: ['settings', 'llm-provider-model-search', providerId, options?.llmProviderId, trimmedQuery],
     queryFn: async () => {
       const res = await apiFetch(
-        `/api/settings/llm-providers/${providerId}/models/search?q=${encodeURIComponent(trimmedQuery)}`,
+        options?.llmProviderId
+          ? `/api/llm-connections/${encodeURIComponent(options.llmProviderId)}/models/search?q=${encodeURIComponent(trimmedQuery)}`
+          : `/api/settings/llm-providers/${providerId}/models/search?q=${encodeURIComponent(trimmedQuery)}`,
       )
       const body = await res.json().catch(() => ({})) as { data?: ModelSearchResult[]; error?: string }
       if (!res.ok) throw new Error(body.error || 'Failed to search provider models')
@@ -124,6 +133,7 @@ export function useUpdateSettings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      queryClient.invalidateQueries({ queryKey: ['runtime-status'] })
       // Voice provider / key / default voice live in these settings, and the
       // speaker buttons and Voice tab gate on the derived status.
       queryClient.invalidateQueries({ queryKey: ['voice-configured'] })

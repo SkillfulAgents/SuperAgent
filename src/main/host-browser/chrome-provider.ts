@@ -10,6 +10,7 @@ import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionI
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { readJsonFileStrictSync, writeFileAtomicSync, CorruptFileError } from '@shared/lib/utils/file-storage'
 import { waitForBrowserProfileCleanup, markProfileInUse, unmarkProfileInUse } from './profile-maintenance'
+import { GooglePasskeyRecovery } from './google-passkey-recovery'
 import { z } from 'zod'
 
 // Chrome's DevTools Protocol has no auth token: any host/process that can reach
@@ -22,6 +23,8 @@ import { z } from 'zod'
 // Loopback-forwarding runners (Docker Desktop, user-mode Lima, rootless Podman)
 // need no proxy.
 const CDP_LOOPBACK_ADDRESS = '127.0.0.1'
+const CDP_VERSION_TIMEOUT_MS = 2000
+const cdpVersionSchema = z.object({ webSocketDebuggerUrl: z.string().min(1) })
 
 /** True if `ip` is assigned to a local network interface (i.e. bindable by this host). */
 function isLocalInterfaceAddress(ip: string): boolean {
@@ -220,6 +223,7 @@ export class ChromeProvider implements HostBrowserProvider {
 
   private instances: Map<string, BrowserInstance> = new Map()
   private detectedPath: string | null = null
+  private passkeyRecovery = new GooglePasskeyRecovery()
 
   onExternalClose: ((instanceId: string) => void) | null = null
 
@@ -250,6 +254,7 @@ export class ChromeProvider implements HostBrowserProvider {
     // Check if an instance already exists and its port is still open
     const existing = this.instances.get(instanceId)
     if (existing && await this.isPortOpen(existing.port)) {
+      await this.watchPasskeyRecovery(instanceId, existing.port)
       return { port: existing.proxyPort ?? existing.port }
     }
 
@@ -591,6 +596,7 @@ export class ChromeProvider implements HostBrowserProvider {
     const handleExit = (reason: string) => {
       console.log(`[ChromeProvider] Browser for instance ${instanceId} exited (${reason})`)
       const wasIntentional = instance.stoppingIntentionally
+      this.passkeyRecovery.stop(instanceId)
       instance.proxyServer?.close()
       if (instance.externalCloseWatcher) {
         clearInterval(instance.externalCloseWatcher)
@@ -692,12 +698,31 @@ export class ChromeProvider implements HostBrowserProvider {
     }
 
     const exposedPort = proxyPort ?? port
+    await this.watchPasskeyRecovery(instanceId, port)
 
     console.log(`[ChromeProvider] Chrome CDP on ${CDP_LOOPBACK_ADDRESS}:${port}${proxyPort ? `, proxy on ${proxyHost}:${proxyPort}` : ''} for instance ${instanceId} (pid ${chromePid})`)
     return { port: exposedPort, downloadDir }
   }
 
+  // Google's passkey prompt opens a native WebAuthn dialog that swallows the viewer's CDP clicks.
+  private async watchPasskeyRecovery(instanceId: string, port: number): Promise<void> {
+    try {
+      const response = await fetch(`http://${CDP_LOOPBACK_ADDRESS}:${port}/json/version`, {
+        signal: AbortSignal.timeout(CDP_VERSION_TIMEOUT_MS),
+      })
+      const { webSocketDebuggerUrl } = cdpVersionSchema.parse(await response.json())
+      this.passkeyRecovery.watch(instanceId, webSocketDebuggerUrl)
+    } catch (err) {
+      console.warn('[ChromeProvider] Google passkey recovery unavailable:', err)
+      captureException(err, {
+        tags: { component: 'browser', operation: 'passkey-recovery-watch' },
+        extra: { instanceId, port },
+      })
+    }
+  }
+
   async stop(instanceId: string): Promise<void> {
+    this.passkeyRecovery.stop(instanceId)
     const instance = this.instances.get(instanceId)
     if (instance) {
       instance.stoppingIntentionally = true

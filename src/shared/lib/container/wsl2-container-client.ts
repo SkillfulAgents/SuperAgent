@@ -121,6 +121,39 @@ function collectWSL2Diagnostics(): Record<string, unknown> {
 
 export const WSL2_DISTRO_NAME = 'superagent'
 
+// Matches `USER claude` (uid/gid 1000) in agent-container/Dockerfile.
+const AGENT_CONTAINER_UID = 1000
+
+/**
+ * /etc/wsl.conf for the distro.
+ *
+ * [boot] is an optimization for starting containerd (unreliable across WSL
+ * versions, so superagent-nerdctl remains the primary mechanism).
+ *
+ * [automount] makes Windows drives appear owned by the agent container's
+ * user. Without it drvfs presents every file as owned by the distro's
+ * default user (root, for an imported distro), and Linux lets only a file's
+ * owner set explicit timestamps or change its mode — so even on 0777 files
+ * the agent gets EPERM from `utimes(path, t, t)` and `chmod`. That breaks the
+ * CLI's task tools (their lock probes mtime precision with utimes),
+ * shutil.copy2, `cp -p`, and archive extraction that restores mtimes.
+ * Automount options apply only when the distro boots; see
+ * ensureAgentOwnsWindowsDrives for existing distros.
+ */
+const WSL_CONF = [
+  '[boot]',
+  'command = /bin/sh -c "setsid containerd > /dev/null 2>&1 &"',
+  '',
+  '[automount]',
+  `options = "uid=${AGENT_CONTAINER_UID},gid=${AGENT_CONTAINER_UID}"`,
+].join('\n')
+
+const WRITE_WSL_CONF_SCRIPT = [
+  'cat > /etc/wsl.conf << "WSLCONF"',
+  WSL_CONF,
+  'WSLCONF',
+].join('\n')
+
 const execFileAsync = promisify(execFile)
 
 /**
@@ -445,10 +478,10 @@ export class WSL2ContainerClient extends BaseContainerClient {
    * Override to write env files under %USERPROFILE%\.superagent\tmp\ and
    * translate the path for WSL2.
    */
-  protected buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): { flag: string; cleanup: () => void } {
+  protected async buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): Promise<{ flag: string; cleanup: () => void }> {
     const home = os.homedir()
     const tmpDir = path.join(home, '.superagent', 'tmp')
-    const { filePath, cleanup } = writeEnvFile(this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId, tmpDir)
+    const { filePath, cleanup } = writeEnvFile(await this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId, tmpDir)
 
     // Translate the Windows file path to a WSL2 path for the --env-file flag
     const wslPath = windowsToWSLPath(filePath)
@@ -590,7 +623,7 @@ export async function ensureWSL2Ready(): Promise<void> {
   }
 }
 
-async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
+async function ensureWSL2ReadyImpl(isRetry: boolean, ownerRestartDone = false): Promise<void> {
   const wsl2Home = getWSL2Home()
   fs.mkdirSync(wsl2Home, { recursive: true })
 
@@ -793,9 +826,66 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
     return ensureWSL2ReadyImpl(true)
   }
 
+  // Best-effort: a failure here leaves agents hitting EPERM on utimes/chmod
+  // in /workspace (see WSL_CONF), which is no reason to keep the runtime down.
+  let restartedForOwner = false
+  try {
+    restartedForOwner = await ensureAgentOwnsWindowsDrives(!ownerRestartDone)
+  } catch (error) {
+    captureException(error, {
+      tags: { component: 'wsl2', operation: 'mount-owner' },
+      extra: { wsl2Home, isRetry, ownerRestartDone },
+    })
+  }
+  if (restartedForOwner) {
+    return ensureWSL2ReadyImpl(isRetry, true)
+  }
+
   // Create/update the nerdctl wrapper script
   createWSL2NerdctlWrapper()
   addErrorBreadcrumb({ category: 'wsl2', message: 'ensureWSL2Ready completed successfully' })
+}
+
+/**
+ * Make sure Windows drives are mounted owned by the agent container's user
+ * (see WSL_CONF). Distros provisioned before the [automount] section have
+ * root-owned drives until wsl.conf is rewritten and the distro reboots.
+ *
+ * Terminating the distro kills its containers, so it only restarts when none
+ * are running; otherwise the new wsl.conf applies at the next distro start
+ * (app quit stops the distro). `mayRestart` is false on the pass after a
+ * restart, so a WSL that ignores the options can't cause a restart loop.
+ *
+ * Returns true when the distro was terminated and readiness must be re-run.
+ */
+async function ensureAgentOwnsWindowsDrives(mayRestart: boolean): Promise<boolean> {
+  const { stdout: owner } = await execWSL('stat -c %u /mnt/c')
+  if (owner.trim() === String(AGENT_CONTAINER_UID)) return false
+
+  if (!mayRestart) {
+    captureMessage('WSL2 automount uid option did not take effect after restart', {
+      level: 'warning',
+      tags: { component: 'wsl2', operation: 'mount-owner' },
+      extra: { owner: owner.trim(), ...collectWSL2Diagnostics() },
+    })
+    return false
+  }
+
+  await runDistroScript(WRITE_WSL_CONF_SCRIPT, 'wsl.conf update')
+
+  const { stdout: running } = await execWSL('/usr/local/bin/superagent-nerdctl ps -q')
+  if (running.trim()) {
+    addErrorBreadcrumb({
+      category: 'wsl2',
+      message: 'Windows drives not owned by agent user; containers running, remap deferred to next distro start',
+    })
+    return false
+  }
+
+  console.log('Restarting WSL2 distro so Windows drives mount owned by the agent user...')
+  addErrorBreadcrumb({ category: 'wsl2', message: 'Restarting distro to apply automount uid' })
+  await execWithPath(`wsl --terminate ${WSL2_DISTRO_NAME}`)
+  return true
 }
 
 /**
@@ -912,16 +1002,19 @@ async function provisionWSL2Distro(): Promise<void> {
     'NERDCTL_WRAPPER',
     'chmod +x /usr/local/bin/superagent-nerdctl',
     '',
-    '# Also try boot command as optimization (may not work on all WSL versions)',
-    'cat > /etc/wsl.conf << "WSLCONF"',
-    '[boot]',
-    'command = /bin/sh -c "setsid containerd > /dev/null 2>&1 &"',
-    'WSLCONF',
+    WRITE_WSL_CONF_SCRIPT,
   ].join('\n')
 
-  // Pipe the provision script via stdin rather than writing to a file on the
-  // Windows filesystem. Freshly imported WSL2 distros may not have /mnt/c
-  // automounted yet, making Windows file paths inaccessible.
+  await runDistroScript(provisionScript, 'Provision script')
+}
+
+/**
+ * Run a shell script inside the distro as root.
+ * Pipes the script via stdin rather than writing it to a file on the
+ * Windows filesystem: freshly imported WSL2 distros may not have /mnt/c
+ * automounted yet, making Windows file paths inaccessible.
+ */
+async function runDistroScript(script: string, label: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const proc = spawn('wsl', ['-d', WSL2_DISTRO_NAME, '--', 'sh', '-s'], {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -932,11 +1025,11 @@ async function provisionWSL2Distro(): Promise<void> {
       if (code === 0) {
         resolve()
       } else {
-        reject(new Error(`Provision script failed (exit ${code}): ${stderr.trim()}`))
+        reject(new Error(`${label} failed (exit ${code}): ${stderr.trim()}`))
       }
     })
     proc.on('error', reject)
-    proc.stdin.write(provisionScript)
+    proc.stdin.write(script)
     proc.stdin.end()
   })
 }

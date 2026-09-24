@@ -124,7 +124,7 @@ import { configureDownloadNonceRecovery } from '@shared/lib/services/download-no
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
 import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
 import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
-import { applyPreferredApiTarget, resolveApiTargetForRenderer } from './api-target'
+import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoint } from './api-target'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
@@ -227,9 +227,9 @@ function dismissReviewNotification(reviewId: string): void {
  * path; the IPC handler runs after the renderer's gate so it doesn't need
  * this check itself).
  */
-function isNotificationTypeAllowedLocally(notificationType: string | undefined): boolean {
+async function isNotificationTypeAllowedLocally(notificationType: string | undefined): Promise<boolean> {
   try {
-    const settings = getUserSettings('local')
+    const settings = await getUserSettings('local')
     const n = settings.notifications
     if (!n.enabled) return false
     switch (notificationType) {
@@ -475,15 +475,19 @@ ipcMain.handle('get-api-url', () => {
   return `http://localhost:${actualApiPort}`
 })
 
-/** The cloud proxy's base URL, or null when there is no workspace to drive. */
-function cloudApiBaseUrl(): string | null {
-  if (!isCloudProxyEnabled() || !resolveCloudProxyTarget()) return null
-  return `http://localhost:${actualApiPort}${CLOUD_PROXY_PREFIX}/${getCloudProxyKey()}`
+/** The cloud proxy's base URL and the deployment behind it, or null when there is no workspace to drive. */
+function cloudEndpoint(): CloudEndpoint | null {
+  const target = isCloudProxyEnabled() ? resolveCloudProxyTarget() : null
+  if (!target) return null
+  return {
+    baseUrl: `http://localhost:${actualApiPort}${CLOUD_PROXY_PREFIX}/${getCloudProxyKey()}`,
+    deploymentUrl: target.deploymentUrl,
+  }
 }
 
 /** Which Superagent this app is driving, and the base URL that reaches it. */
 function activeApiTarget() {
-  return resolveApiTargetForRenderer(`http://localhost:${actualApiPort}`, cloudApiBaseUrl())
+  return resolveApiTargetForRenderer(`http://localhost:${actualApiPort}`, cloudEndpoint())
 }
 
 // Which Superagent this renderer drives, settled in main rather than in the
@@ -1323,7 +1327,7 @@ function startNotificationListener(): void {
   const es = new EventSource(url)
   notificationEventSource = es
 
-  es.onmessage = (event) => {
+  es.onmessage = async (event) => {
     try {
       const data = JSON.parse(event.data)
 
@@ -1359,7 +1363,7 @@ function startNotificationListener(): void {
         const notificationType = data.notificationType as string | undefined
         if (
           (!mainWindow || mainWindow.isDestroyed()) &&
-          isNotificationTypeAllowedLocally(notificationType) &&
+          (await isNotificationTypeAllowedLocally(notificationType)) &&
           Notification.isSupported()
         ) {
           const actions = data.actions as Array<{ text: string }> | undefined
@@ -1552,7 +1556,7 @@ async function startApp() {
   }
 
   // Restore keep-awake state from previous session (after window is ready so dialogs display correctly)
-  const userSettings = getUserSettings('local')
+  const userSettings = await getUserSettings('local')
   restoreKeepAwakeOnStartup(userSettings.keepAwakeEnabled).catch((error) => {
     console.error('Failed to restore keep-awake state:', error)
   })

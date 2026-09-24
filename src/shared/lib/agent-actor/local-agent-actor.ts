@@ -195,8 +195,8 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
       deps.sessionService.finalizeAutomationStatus(store, sessionId, status),
     ensureDirectory: () => deps.sessionService.ensureSessionsDirectory(store),
     fileRealPathWithinAgent: (sessionId) => deps.sessionService.sessionFileRealPathWithinAgent(store, sessionId),
-    usage: (sessionId, options) =>
-      deps.loadSessionUsageTotals({ files: store.files, transcript: transcriptPath(store, sessionId), ...options }),
+    usage: (sessionId) =>
+      deps.loadSessionUsageTotals({ files: store.files, transcript: transcriptPath(store, sessionId) }),
     byScheduledTask: (taskId) => deps.sessionService.getSessionsByScheduledTask(store, taskId),
     byWebhookTrigger: (triggerId) => deps.sessionService.getSessionsByWebhookTrigger(store, triggerId),
     forScheduledExecution: (taskId, executionAt) =>
@@ -210,6 +210,7 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
       deps.transcripts.readWorkflowAgentTranscript(store, sessionId, runId, workflowAgentId),
     copyDerivedFiles: (sourceId, targetId) => deps.transcripts.copyDerivedSessionFiles(store, sourceId, targetId),
 
+    getLive: (sessionId) => client().getSession(sessionId),
     create: (options) => client().createSession(options),
     fork: (sessionId) => client().forkSession(sessionId),
     deleteLive: (sessionId) => client().deleteSession(sessionId),
@@ -218,6 +219,7 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
     isActive: (sessionId) => deps.messagePersister.isSessionActive(slug, sessionId),
     isAwaitingInput: (sessionId) => deps.messagePersister.isSessionAwaitingInput(slug, sessionId),
     markActive: (sessionId) => deps.messagePersister.markSessionActive(slug, sessionId),
+    markProvisionalActive: (sessionId) => deps.messagePersister.markSessionProvisionallyActive(slug, sessionId),
     markIdle: (sessionId) => {
       // Going idle is the last moment the session was busy.
       deps.containerHost.runtime(slug).noteSessionActivity()

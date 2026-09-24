@@ -1,3 +1,4 @@
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * X-Agent Work routes
  *
@@ -9,12 +10,13 @@
  * Bearer <token>. The route resolves the caller's agent slug from that token and
  * applies xAgentPolicies + ACLs accordingly.
  */
+import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, isNotNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
 import { insertMessageAuthorBestEffort } from './message-author'
@@ -29,20 +31,39 @@ import {
 } from '@shared/lib/services/agent-service'
 import { displaySlug } from '@shared/lib/utils/file-storage'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
+import type { FileOps } from '@shared/lib/agent-actor/types'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   evaluate as evaluatePolicy,
   type XAgentOperation,
 } from '@shared/lib/services/x-agent-policy-service'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
-import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { captureException } from '@shared/lib/error-reporting'
 import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
-import { compactMessage, pageTranscript } from './x-agent-transcript-view'
+import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
+import {
+  removeTransferredAttachments,
+  transferXAgentAttachments,
+  normalizeXAgentAttachmentPaths,
+  openXAgentFile,
+  transferError,
+  XAgentAttachmentError,
+} from '@shared/lib/services/x-agent-attachment-service'
+import {
+  xAgentAttachmentsSchema,
+  xAgentDownloadFileBodySchema,
+} from '@shared/lib/services/x-agent-attachment-schema'
+import {
+  collectDeliveredFiles,
+  compactMessage,
+  findDeliveredFile,
+  pageTranscript,
+} from './x-agent-transcript-view'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
+const invokingSessions = new Set<string>()
 
 // Typed context variables for the x-agent router. Using Hono's generic instead
 // of `as never` casts gives us type safety on c.get/c.set.
@@ -104,10 +125,12 @@ async function getLatestMessageAuthorUserId(
       .where(and(
         eq(messageAuthor.agentSlug, agentSlug),
         eq(messageAuthor.sessionId, sessionId),
+        // An integration-delivered message has no user author.
+        isNotNull(messageAuthor.userId),
       ))
       .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
       .limit(1)
-    return rows[0]?.userId
+    return rows[0]?.userId ?? undefined
   } catch (error) {
     // Attribution is optional. A DB/read failure must never block the invoke.
     console.warn('[x-agent] failed to resolve triggering message author; continuing unattributed', {
@@ -207,10 +230,11 @@ async function checkAgentPolicy(
   targetSlug: string | null,
   targetName: string,
   preview?: string,
+  fileTransfer?: XAgentFileTransfer,
 ): Promise<{ allowed: boolean; reason?: string }> {
   if (operation !== 'create') {
-    const decision = evaluatePolicy(callerSlug, operation, targetSlug)
-    if (decision === 'allow') return { allowed: true }
+    const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
+    if (decision === 'allow' && !requiresOneTimeXAgentReview({ operation, fileTransfer })) return { allowed: true }
     if (decision === 'block') return { allowed: false, reason: 'Blocked by policy' }
     // 'review' → fall through to interactive prompt
   }
@@ -221,6 +245,7 @@ async function checkAgentPolicy(
       targetName,
       operation,
       preview,
+      fileTransfer,
     )
     if (userDecision === 'deny') {
       return { allowed: false, reason: 'Denied by user' }
@@ -638,8 +663,78 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
 
   const entries = await actor.messages.withCompact(sessionId)
   const { messages, total } = pageTranscript(entries, { fullTranscript, limit })
+  const deliveredFiles = collectDeliveredFiles(entries)
 
-  return c.json({ status, messages, total })
+  return c.json({ status, messages, total, deliveredFiles })
+})
+
+// ----------------------------------------------------------------------------
+// POST /api/x-agent/download-file - stream a successful deliver_file output
+// ----------------------------------------------------------------------------
+
+function attachmentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_')
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+}
+
+xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), async (c) => {
+  const callerSlug = getCallerSlug(c)
+  const { slug: rawTargetSlug, sessionId, deliveryId } = c.req.valid('json')
+  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
+  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
+
+  const target = await getAgentRecord(targetSlug)
+  if (!target) return c.json({ error: 'Target agent not found' }, 404)
+  if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
+    return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
+  }
+  const actor = agentRegistry.get(targetSlug)
+  if (!(await actor.sessions.isKnown(sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
+  const entries = await actor.messages.withCompact(sessionId)
+  const delivery = findDeliveredFile(entries, deliveryId)
+  if (!delivery) return c.json({ error: 'Delivered file not found' }, 404)
+  const policy = await checkAgentPolicy(
+    callerSlug,
+    'read',
+    targetSlug,
+    target.name,
+    undefined,
+    { kind: 'download', filename: delivery.filename },
+  )
+  if (!policy.allowed) return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
+
+  let sourcePath: string
+  try {
+    [sourcePath] = normalizeXAgentAttachmentPaths([delivery.filePath])
+  } catch {
+    return c.json({ error: 'Delivered file path is invalid' }, 400)
+  }
+  try {
+    const upstream = await openXAgentFile(actor.files, sourcePath)
+    const currentSize = upstream.sizeBytes
+    if (currentSize !== delivery.sizeBytes) {
+      await upstream.body.cancel().catch(() => {})
+      return c.json({ error: 'Delivered file changed after it was published' }, 409)
+    }
+    return new Response(upstream.body, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(currentSize),
+        'Content-Disposition': attachmentDisposition(delivery.filename),
+        'Cache-Control': 'private, no-store, max-age=0',
+      },
+    })
+  } catch (caught) {
+    const error = transferError(caught)
+    if (error instanceof XAgentAttachmentError) {
+      return c.json({ error: error.status === 404 ? 'Delivered file is no longer available' : error.message }, error.status)
+    }
+    return c.json({ error: 'Failed to read delivered file' }, 502)
+  }
 })
 
 // ----------------------------------------------------------------------------
@@ -651,6 +746,7 @@ const invokeBodySchema = z.object({
   prompt: z.string().min(1),
   sessionId: z.string().optional(),
   sync: z.boolean().optional(),
+  attachments: xAgentAttachmentsSchema.optional(),
   // Cycle protection: container sends the calling Claude session ID so the host
   // can reject calls from sessions that were themselves invoked by another agent
   // (one-hop rule — also blocks A→B→A and any deeper chain transitively).
@@ -666,7 +762,14 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   const syncDeadline = Date.now() + SYNC_WAIT_TIMEOUT_MS
   const deliveryCutoff = Date.now() + DELIVERY_CUTOFF_MS
   const callerSlug = getCallerSlug(c)
-  const { slug: rawTargetSlug, prompt, sessionId: existingSessionId, sync, _callerSessionId } = c.req.valid('json')
+  const {
+    slug: rawTargetSlug,
+    prompt,
+    sessionId: existingSessionId,
+    sync,
+    attachments = [],
+    _callerSessionId,
+  } = c.req.valid('json')
 
   // Resolve display slug → canonical id so ACL / policy / runtime all use ids.
   const targetSlug = await agentCatalog.resolve(rawTargetSlug)
@@ -712,6 +815,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     targetSlug,
     target.name,
     prompt.slice(0, 200),
+    attachments.length ? { kind: 'send', paths: attachments } : undefined,
   )
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
@@ -735,6 +839,10 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   return runWithOptionalUser(attributedUserId, async () => {
     // Stages for runtime 500s: ensure_running → create_session / send_message.
     let stage = 'ensure_running'
+    let stagedTargetDirectory: string | undefined
+    let stagedTargetFiles: FileOps | undefined
+    let promptDeliveryStarted = false
+    let invokingSessionKey: string | undefined
     try {
       const targetActor = agentRegistry.get(targetSlug)
       if (existingSessionId) {
@@ -745,11 +853,28 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         if (!(await targetActor.sessions.isKnown(existingSessionId))) {
           return c.json({ error: 'Session not found' }, 404)
         }
-        if (targetActor.sessions.isActive(existingSessionId)) {
+        const candidateKey = `${targetSlug}\0${existingSessionId}`
+        if (targetActor.sessions.isActive(existingSessionId) || invokingSessions.has(candidateKey)) {
           return c.json({ error: 'Target session is currently running' }, 409)
         }
+        invokingSessions.add(candidateKey)
+        invokingSessionKey = candidateKey
         stage = 'ensure_running'
         await targetActor.container.start()
+        const files = targetActor.files
+        stagedTargetFiles = files
+        let deliveredPrompt = prompt
+        if (attachments.length > 0) {
+          stage = 'transfer_attachments'
+          const transferred = await transferXAgentAttachments({
+            sourceFiles: agentRegistry.get(callerSlug).files,
+            targetFiles: files,
+            sourcePaths: attachments,
+            signal: c.req.raw.signal,
+          })
+          stagedTargetDirectory = transferred.targetDirectory
+          deliveredPrompt = appendAttachedFiles(prompt, transferred.attachments.map((item) => item.targetPath))
+        }
         // Last reply flushed before THIS prompt goes out — used to make sure a
         // fast turn's answer isn't confused with the previous turn's while the
         // new entry is still being written to the JSONL file.
@@ -772,6 +897,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             targetSlug,
             sessionId: existingSessionId,
           })
+          if (stagedTargetDirectory) {
+            await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+          }
           return c.json({ error: deliveryCutoffError() }, 504)
         }
         stage = 'send_message'
@@ -788,16 +916,35 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             if (recorded) messageUuid = candidateUuid
           }
           try {
+            // A failed send can be ambiguous: retain files once delivery starts so
+            // a message accepted just before a transport error never references deleted bytes.
+            promptDeliveryStarted = true
             if (messageUuid) {
-              await targetActor.messages.send(existingSessionId, prompt, messageUuid, { isAutomated: true })
+              await targetActor.messages.send(existingSessionId, deliveredPrompt, messageUuid, { isAutomated: true })
             } else {
-              await targetActor.messages.send(existingSessionId, prompt, undefined, { isAutomated: true })
+              await targetActor.messages.send(existingSessionId, deliveredPrompt, undefined, { isAutomated: true })
             }
           } catch (sendError) {
             if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
+            try {
+              const current = await targetActor.sessions.getLive(existingSessionId)
+              if (current?.isRunning === false) {
+                targetActor.sessions.markIdle(existingSessionId)
+                promptDeliveryStarted = false
+                if (stagedTargetDirectory) {
+                  await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+                  stagedTargetDirectory = undefined
+                }
+              }
+            } catch {
+              // Transport failures are ambiguous: stream events reconcile a send
+              // that reached the container, so retain active state and files.
+            }
             throw sendError
           }
         })
+        invokingSessions.delete(invokingSessionKey)
+        invokingSessionKey = undefined
 
         if (sync) {
           stage = 'wait_for_idle'
@@ -838,12 +985,26 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
 
       stage = 'ensure_running'
       await targetActor.container.start()
+      const files = targetActor.files
+      stagedTargetFiles = files
+      let deliveredPrompt = prompt
+      if (attachments.length > 0) {
+        stage = 'transfer_attachments'
+        const transferred = await transferXAgentAttachments({
+          sourceFiles: agentRegistry.get(callerSlug).files,
+          targetFiles: files,
+          sourcePaths: attachments,
+          signal: c.req.raw.signal,
+        })
+        stagedTargetDirectory = transferred.targetDirectory
+        deliveredPrompt = appendAttachedFiles(prompt, transferred.attachments.map((item) => item.targetPath))
+      }
       const availableEnvVars = await getSecretEnvVars(targetSlug)
       const agentLimits = getEffectiveAgentLimits()
       const customEnvVars = getCustomEnvVars()
       const targetPrefs = await readAgentPreferences(targetSlug)
       const models = getEffectiveModels()
-      const resolved = resolveRuntimeInherit({}, targetPrefs, models)
+      const resolved = await resolveConnectionRuntimeInherit({}, targetPrefs, models)
       const callerName = await getAgentDisplayNameBestEffort(callerSlug)
       const initialMessageUuid = isAuthMode() && attributedUserId
         ? randomUUID()
@@ -856,6 +1017,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           callerSlug,
           targetSlug,
         })
+        if (stagedTargetDirectory) {
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+        }
         return c.json({ error: deliveryCutoffError() }, 504)
       }
       stage = 'create_session'
@@ -864,11 +1028,13 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       // lands after the caller's fetch is already dead, revoke the session the
       // moment it materializes instead of leaving a ghost run for the caller's
       // retry to duplicate.
+      promptDeliveryStarted = true
       const createPromise = targetActor.sessions.create({
         availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-        initialMessage: prompt,
+        initialMessage: deliveredPrompt,
         ...(initialMessageUuid ? { initialMessageUuid } : {}),
         model: resolved.model,
+      llmProviderId: resolved.llmProviderId,
         browserModel: models.browserModel,
         dashboardBuilderModel: models.dashboardBuilderModel,
         effort: resolved.effort,
@@ -881,21 +1047,37 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         maxBrowserTabs: getSettings().app?.maxBrowserTabs,
         metadata: { isAutomated: true },
       })
-      const created = await raceDeadline(createPromise, deliveryCutoff)
+      let created: Awaited<typeof createPromise> | typeof DEADLINE
+      try {
+        created = await raceDeadline(createPromise, deliveryCutoff)
+      } catch (error) {
+        if (stagedTargetDirectory) {
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+        }
+        throw error
+      }
       if (created === DEADLINE) {
         console.warn('[x-agent] delivery cutoff exceeded during create; late session will be revoked', {
           callerSlug,
           targetSlug,
         })
         void createPromise.then(
-          (lateSession) =>
-            targetActor.sessions.deleteLive(lateSession.id).catch((cleanupErr) => {
+          async (lateSession) => {
+            await targetActor.sessions.deleteLive(lateSession.id).catch((cleanupErr) => {
               console.error('[x-agent] failed to revoke late-created session', {
                 sessionId: lateSession.id,
                 error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
               })
-            }),
-          () => {}, // create itself failed — nothing to revoke
+            })
+            if (stagedTargetDirectory) {
+              await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+            }
+          },
+          async () => {
+            if (stagedTargetDirectory) {
+              await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+            }
+          },
         )
         return c.json({ error: lateDeliveryRevokedError() }, 504)
       }
@@ -951,6 +1133,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           await deleteMessageAuthorBestEffort(initialMessageUuid)
         }
         targetActor.sessions.unsubscribeStream(newSessionId)
+        if (stagedTargetDirectory) {
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+        }
         return c.json({ error: `Failed to register invoked session: ${message}` }, 500)
       }
 
@@ -985,6 +1170,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           await deleteMessageAuthorBestEffort(initialMessageUuid)
         }
         targetActor.sessions.unsubscribeStream(newSessionId)
+        if (stagedTargetDirectory) {
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+        }
         return c.json({ error: `Failed to attach to invoked session: ${message}` }, 500)
       }
       if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
@@ -1023,6 +1211,12 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       }
       return c.json({ sessionId: newSessionId, status: 'running' })
     } catch (err) {
+      if (!promptDeliveryStarted && stagedTargetFiles && stagedTargetDirectory) {
+        await removeTransferredAttachments(stagedTargetFiles, stagedTargetDirectory).catch(() => {})
+      }
+      if (err instanceof XAgentAttachmentError) {
+        return c.json({ error: err.message }, err.status)
+      }
       const message = err instanceof Error ? err.message : String(err)
       console.error('[x-agent] invoke failed', {
         callerSlug,
@@ -1036,6 +1230,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         extra: { callerSlug, targetSlug, existingSessionId: existingSessionId ?? null },
       })
       return c.json({ error: `Failed to invoke agent (${stage}): ${message}` }, 500)
+    } finally {
+      if (invokingSessionKey) invokingSessions.delete(invokingSessionKey)
     }
   })
 })

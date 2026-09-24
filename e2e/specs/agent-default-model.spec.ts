@@ -101,6 +101,6 @@ test.describe('Per-agent default model', () => {
 
     const resetRecord = await recorder.waitFor((r) => r.type === 'createSession' && r.initialMessage === resetMessage
     )
-    expect(resetRecord.model).toBe('claude-opus-5')
+    expect(resetRecord.model).toBe('claude-opus-5-5')
   })
 })

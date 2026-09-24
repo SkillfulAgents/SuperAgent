@@ -21,25 +21,25 @@ function toUserProfile(profile: ProfileRow) {
 }
 
 /** Internal read API: callers authorize IDs through their agent/session first. */
-export function getUserSummaries(userIds: readonly string[]) {
+export async function getUserSummaries(userIds: readonly string[]) {
   const ids = [...new Set(userIds)]
   const profiles = ids.length
-    ? db.select(profileFields).from(user).where(inArray(user.id, ids)).all()
+    ? await db.select(profileFields).from(user).where(inArray(user.id, ids)).all()
     : []
   return new Map(profiles.map(profile => [profile.id, toUserProfile(profile)]))
 }
 
-export function userExists(userId: string): boolean {
-  return !!db.select({ id: user.id }).from(user).where(eq(user.id, userId)).get()
+export async function userExists(userId: string): Promise<boolean> {
+  return !!(await db.select({ id: user.id }).from(user).where(eq(user.id, userId)).get())
 }
 
 /** Callers authorize directory access and supply users to exclude. */
-export function searchUserSummaries(query: string | undefined, excludeIds: readonly string[]) {
+export async function searchUserSummaries(query: string | undefined, excludeIds: readonly string[]) {
   // SQLite LIKE is case-insensitive. Treat %, _ and backslash as literals.
   const escaped = query?.trim().replace(/[\\%_]/g, '\\$&') ?? ''
   const matchesQuery = (column: AnyColumn) =>
     sql`${column} LIKE ${`%${escaped}%`} ESCAPE '\\'`
-  const profiles = db.select(profileFields).from(user).where(and(
+  const profiles = await db.select(profileFields).from(user).where(and(
     // Exclude before limiting, so existing members don't consume result slots.
     excludeIds.length ? notInArray(user.id, [...excludeIds]) : undefined,
     escaped ? or(matchesQuery(user.name), matchesQuery(user.email)) : undefined,

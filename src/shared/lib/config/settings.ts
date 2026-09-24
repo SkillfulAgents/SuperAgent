@@ -1,3 +1,5 @@
+import { modelSelectionSchema } from '../llm-provider/connection-schema'
+import { parseStoredGlobalPricing, type GlobalModelPricing } from '../llm-provider/global-pricing-schema'
 import type { VoiceProvider } from '../voice/provider-types'
 import fs from 'fs'
 import path from 'path'
@@ -272,6 +274,12 @@ export interface PushSettings {
 export const DEFAULT_APNS_RELAY_URL = 'https://apn-relay.gamutagents.com'
 
 export interface AppSettings {
+  /** Connection selections; absent only before the legacy import. */
+  llmDefault?: import('../llm-provider/connection-schema').ModelSelection
+  llmSummarizer?: import('../llm-provider/connection-schema').ModelSelection | null
+  /** Binding for model-only preferences written before connections existed. */
+  llmLegacyProviderId?: string
+
   container: ContainerSettings
   apiKeys?: ApiKeySettings
   llmProvider?: LlmProviderId
@@ -281,6 +289,7 @@ export interface AppSettings {
   app?: AppPreferences
   models?: ModelSettings
   modelCatalog?: ModelCatalogSettings
+  modelPricing?: GlobalModelPricing
   agentLimits?: AgentLimitsSettings
   customEnvVars?: Record<string, string>
   skillsets?: SkillsetConfig[]
@@ -369,6 +378,7 @@ export interface GlobalSettingsResponse {
   llmProvider: LlmProviderId
   llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
+  modelPricing?: GlobalModelPricing
   // GET: always the vendor the agent runs (pin when set; Platform-if-login / native when unset).
   // PUT still writes the stored pin (or null to clear). `webProviderIsDefault` is true iff stored unset.
   webProvider: WebProviderId
@@ -416,8 +426,12 @@ export interface GlobalSettingsResponse {
  */
 export type ModelPickerSettingsResponse = Pick<
   GlobalSettingsResponse,
-  'llmProvider' | 'llmProviderStatus' | 'models' | 'webProvider'
->
+  'llmProvider' | 'llmProviderStatus' | 'models' | 'webProvider' | 'enableToolSearch' | 'modelPricing'
+> & {
+  connections?: import('../llm-provider/connection-schema').ConnectionInfo[]
+  defaultSelection?: import('../llm-provider/connection-schema').ModelSelection
+  legacyLlmProviderId?: string
+}
 
 /**
  * Default container runner: Lima on macOS (bundled, no install needed),
@@ -548,6 +562,9 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     },
     apiKeys: loaded.apiKeys,
     llmProvider: loaded.llmProvider,
+    llmDefault: loaded.llmDefault === undefined ? undefined : modelSelectionSchema.parse(loaded.llmDefault),
+    llmSummarizer: loaded.llmSummarizer == null ? loaded.llmSummarizer : modelSelectionSchema.parse(loaded.llmSummarizer),
+    llmLegacyProviderId: loaded.llmLegacyProviderId,
     // Recover a pre-collapse selection: webSearchProvider shipped (v0.4.5-0.4.7) and the single
     // UI select wrote both old fields to the same value, so the legacy webSearchProvider is the
     // user's choice. Read-fallback (not a boot-time migration) keeps this merge pure; the next
@@ -577,6 +594,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
       }
     })(),
     modelCatalog,
+    modelPricing: parseStoredGlobalPricing(loaded.modelPricing),
     agentLimits: loaded.agentLimits,
     customEnvVars: loaded.customEnvVars,
     // Deep-clone the default when defaulting: callers mutate `s.skillsets` in

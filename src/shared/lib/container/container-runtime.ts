@@ -20,7 +20,7 @@ import type {
 } from './types'
 import { healthMonitor } from './health-monitor'
 import { db } from '@shared/lib/db'
-import { agentConnectedAccounts, connectedAccounts, agentRemoteMcps, remoteMcpServers } from '@shared/lib/db/schema'
+import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
@@ -37,10 +37,7 @@ import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { mergeCustomEnvVars } from './reserved-env-vars'
-import {
-  buildConnectedAccountsProjection,
-  buildRemoteMcpProjection,
-} from './connection-runtime-projections'
+import { buildConnectedAccountsProjection, listAgentMcpConnections } from './connection-runtime-projections'
 import { recoverFromUnexpectedDeath } from './runtime-recovery'
 
 /**
@@ -554,18 +551,7 @@ export class ContainerRuntime {
     )
     envVars['CONNECTED_ACCOUNTS'] = JSON.stringify(accountMetadata)
 
-    // Fetch remote MCPs for this agent
-    const mcpMappings = await db
-      .select({ mcp: remoteMcpServers })
-      .from(agentRemoteMcps)
-      .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
-      .where(eq(agentRemoteMcps.agentSlug, slug))
-
-    const mcpConfigs = buildRemoteMcpProjection(
-      mcpMappings.map(({ mcp }) => mcp),
-      slug,
-      hostApiBaseUrl,
-    )
+    const mcpConfigs = await listAgentMcpConnections(slug, hostApiBaseUrl)
 
     if (mcpConfigs.length > 0) {
       envVars['REMOTE_MCPS'] = JSON.stringify(mcpConfigs)
@@ -597,7 +583,7 @@ export class ContainerRuntime {
     }
 
     // Set container timezone to the agent owner's timezone
-    const tz = resolveTimezoneForAgent(slug)
+    const tz = await resolveTimezoneForAgent(slug)
     envVars['TZ'] = tz
 
     // Tell the agent container which host OS is running (for script type selection)

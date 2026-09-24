@@ -9,8 +9,8 @@ import type { ApiTarget } from '@renderer/lib/api-target'
  * Chooses which Superagent this app drives: the one on this computer, or the
  * organization's cloud workspace.
  *
- * Hidden entirely when there is no cloud workspace to switch to, so a
- * single-machine user never sees a control with one option.
+ * Always shown in the desktop app, so it is also how a user without cloud
+ * agents finds them. What pressing Cloud does is in `use-target-switch`.
  *
  * Sits in the sidebar's title-bar row, which is a fixed 48px shared with the
  * traffic lights and the history/search buttons — so it shows icons only, and

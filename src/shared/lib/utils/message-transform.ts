@@ -7,6 +7,7 @@
 
 import { ContentBlock, JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
+import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
 
@@ -44,6 +45,8 @@ export interface TransformedMessage {
     name: string
     email: string
   }
+  /** Host-recorded card data for a message an integration delivered; attached at serve time. */
+  integration?: IntegrationMessageDisplay
   /** SDK error code when assistant message failed due to LLM provider error */
   apiError?: string
   /** Provider-authored copy for the apiError, attached at serve time (see agents route). */

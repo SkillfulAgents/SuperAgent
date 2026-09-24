@@ -347,7 +347,7 @@ describe('SessionAutoDeleteMonitor', () => {
     expect(mockUnsubscribeFromSession).not.toHaveBeenCalledWith('test-agent', 'failed')
   })
 
-  it('cleans notifications but not messageAuthor when not in auth mode', async () => {
+  it('cleans notifications and message authors when not in auth mode (integrations author messages too)', async () => {
     const now = Date.now()
     const old = makeSession('old', new Date(now - 60 * 86_400_000))
 
@@ -360,11 +360,11 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    // Notification cleanup is unconditional (notifications exist in both modes);
-    // messageAuthor cleanup stays gated on auth mode.
+    // Both are unconditional: notifications exist in both modes, and an
+    // integration's message_author rows exist without auth.
     const deletedTables = mockDbDelete.mock.calls.map((call) => call[0])
     expect(deletedTables).toContainEqual({ sessionId: 'notifications_session_id' })
-    expect(deletedTables).not.toContainEqual({ sessionId: 'message_author_session_id' })
+    expect(deletedTables).toContainEqual(expect.objectContaining({ sessionId: 'message_author_session_id' }))
   })
 
   // --------------------------------------------------------------------------

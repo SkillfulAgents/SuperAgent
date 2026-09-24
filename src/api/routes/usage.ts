@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 import { listAgents } from '@shared/lib/services/agent-service'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
-import { getSettings } from '@shared/lib/config/settings'
 import { subDays, format, addDays } from 'date-fns'
 import type { DailyUsageEntry, UsageResponse } from '@shared/lib/types/usage'
 import { Authenticated } from '../middleware/auth'
@@ -68,7 +67,6 @@ usage.get('/', async (c) => {
   } else {
     agents = await listAgents()
   }
-  const providerId = getSettings().llmProvider ?? 'anthropic'
 
   // Aggregate: date -> { totalCost, totalTokens, byAgent, byModel }
   const dateMap = new Map<string, {
@@ -86,7 +84,7 @@ usage.get('/', async (c) => {
     const results = await Promise.all(
       batch.map(async (agent) => {
         try {
-          const dailyData = await agentRegistry.get(agent.slug).usage.daily({ since, providerId })
+          const dailyData = await agentRegistry.get(agent.slug).usage.daily({ since })
           return { agent, dailyData }
         } catch {
           return null

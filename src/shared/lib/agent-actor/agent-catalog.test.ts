@@ -2,14 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import { eq } from 'drizzle-orm'
 import * as schema from '@shared/lib/db/schema'
+import type { AppDatabase } from '@shared/lib/db/drivers/types'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 
-let testDb: ReturnType<typeof drizzle>
-let sqlite: InstanceType<typeof Database>
+let testDb: AppDatabase
+let handle: TestDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 import { createAgentCatalog } from './agent-catalog'
@@ -25,14 +24,13 @@ async function writeAgentDirectory(slug: string, claudeMd: string | null): Promi
   if (claudeMd !== null) await fs.promises.writeFile(getAgentClaudeMdPath(slug), claudeMd)
 }
 
-function rowFor(slug: string) {
+async function rowFor(slug: string) {
   return testDb.select().from(schema.agents).where(eq(schema.agents.slug, slug)).get()
 }
 
 beforeEach(async () => {
-  sqlite = new Database(':memory:')
-  testDb = drizzle(sqlite, { schema })
-  migrate(testDb, { migrationsFolder: 'src/shared/lib/db/migrations' })
+  handle = await createTestDatabase()
+  testDb = handle.db
   dataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'agent-catalog-test-'))
   previousDataDir = process.env.SUPERAGENT_DATA_DIR
   process.env.SUPERAGENT_DATA_DIR = dataDir
@@ -42,7 +40,7 @@ beforeEach(async () => {
 afterEach(async () => {
   if (previousDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
   else process.env.SUPERAGENT_DATA_DIR = previousDataDir
-  sqlite.close()
+  await handle.close()
   await fs.promises.rm(dataDir, { recursive: true, force: true })
 })
 
@@ -144,19 +142,19 @@ describe('removing an agent', () => {
 
     await catalog.remove('gone')
 
-    expect(rowFor('gone')).toBeUndefined()
+    expect(await rowFor('gone')).toBeUndefined()
     expect(fs.existsSync(getAgentDir('gone'))).toBe(false)
   })
 
   it('removes only the row of an agent placed elsewhere, and touches no directory', async () => {
-    testDb.insert(schema.agents).values({
+    await testDb.insert(schema.agents).values({
       slug: 'remote', name: 'Remote', createdAt: new Date(), runtime: 'modal', workspaceHandle: 'superagent-remote',
     }).run()
     await writeAgentDirectory('remote', null)
 
     await catalog.remove('remote')
 
-    expect(rowFor('remote')).toBeUndefined()
+    expect(await rowFor('remote')).toBeUndefined()
     expect(fs.existsSync(getAgentDir('remote'))).toBe(true)
   })
 
@@ -175,7 +173,7 @@ describe('removing an agent', () => {
 
     try {
       await expect(catalog.remove('stuck')).rejects.toThrow()
-      expect(rowFor('stuck')).toBeDefined()
+      expect(await rowFor('stuck')).toBeDefined()
       expect(await catalog.exists('stuck')).toBe(true)
       expect(fs.existsSync(getAgentDir('stuck'))).toBe(true)
     } finally {
@@ -183,7 +181,7 @@ describe('removing an agent', () => {
     }
 
     await catalog.remove('stuck')
-    expect(rowFor('stuck')).toBeUndefined()
+    expect(await rowFor('stuck')).toBeUndefined()
     expect(fs.existsSync(getAgentDir('stuck'))).toBe(false)
   })
 })

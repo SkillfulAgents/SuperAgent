@@ -5,11 +5,13 @@ import { UsageTab } from './usage-tab'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
 const useSettingsMock = vi.fn()
+const useModelSettingsMock = vi.fn()
 const useUsageMock = vi.fn()
 const refetchMock = vi.fn()
 
 vi.mock('@renderer/hooks/use-settings', () => ({
   useSettings: () => useSettingsMock(),
+  useModelSettings: () => useModelSettingsMock(),
 }))
 
 vi.mock('@renderer/hooks/use-usage', () => ({
@@ -23,6 +25,7 @@ vi.mock('@renderer/context/user-context', () => ({
 describe('UsageTab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    useModelSettingsMock.mockImplementation(() => useSettingsMock())
     useUsageMock.mockReturnValue({
       data: { daily: [] },
       isLoading: false,
@@ -72,6 +75,26 @@ describe('UsageTab', () => {
     render(<UsageTab />)
 
     expect(screen.getByRole('link', { name: label })).toHaveAttribute('href', href)
+  })
+
+  it('uses the selected connection for billing guidance when legacy settings differ', () => {
+    useSettingsMock.mockReturnValue({ data: { llmProvider: 'anthropic' } })
+    useModelSettingsMock.mockReturnValue({ data: { llmProvider: 'openrouter' } })
+
+    render(<UsageTab />)
+
+    expect(screen.getByRole('link', { name: 'OpenRouter Activity dashboard' }))
+      .toHaveAttribute('href', 'https://openrouter.ai/activity')
+    expect(screen.queryByRole('link', { name: 'Anthropic API Console' })).not.toBeInTheDocument()
+  })
+
+  it('does not send subscription users to the legacy Anthropic API billing page', () => {
+    useSettingsMock.mockReturnValue({ data: { llmProvider: 'anthropic' } })
+    useModelSettingsMock.mockReturnValue({ data: { llmProvider: 'claude-subscription' } })
+
+    render(<UsageTab />)
+
+    expect(screen.queryByRole('link', { name: 'Anthropic API Console' })).not.toBeInTheDocument()
   })
 
   it('falls back to provider billing guidance when there is no known dashboard', () => {

@@ -9,6 +9,7 @@ import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/co
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
+import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 
 export type { ApiAgentWidget }
 
@@ -156,6 +157,7 @@ export interface ApiSession {
   speed?: SpeedLevel
   // Last model used on this session (seeds the composer selector)
   model?: string
+  llmProviderId?: string | null
   // Present when the session has a pending scheduled wake (long sleep):
   // it will auto-resume at pendingWakeAt with pendingWakeNote echoed back.
   pendingWakeAt?: string
@@ -211,6 +213,12 @@ export interface ApiMessage {
   toolCalls: ApiToolCall[]
   createdAt: Date
   sender?: ApiMessageSender
+  /**
+   * Present on a message an integration delivered (Slack, Linear, …). Written
+   * by the host beside the transcript, never parsed from the message text, so
+   * `content.text` stays exactly what the agent received.
+   */
+  integration?: IntegrationMessageDisplay
   /** SDK error code when assistant message failed due to LLM provider error */
   apiError?: string
   /** Provider-authored copy for the apiError (severity, icon, markdown + CTA link). */
@@ -424,6 +432,7 @@ export interface ApiScheduledTask {
   lastSessionId: string | null
   createdBySessionId: string | null
   timezone: string | null
+  llmProviderId?: string | null
   model: string | null
   effort: string | null
   speed: string | null

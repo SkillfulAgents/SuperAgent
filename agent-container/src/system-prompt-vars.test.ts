@@ -52,6 +52,18 @@ describe('buildSystemPromptVars', () => {
 })
 
 describe('generateSystemPrompt rendering', () => {
+  it.each(['active', 'auth_required'])('explains agent-owned identities and parent lifecycle (%s)', status => {
+    process.env.REMOTE_MCPS = JSON.stringify([{ id: 'integration:id', name: 'agent_integration_id', status,
+      proxyUrl: 'http://host/api/mcp-proxy/agent/integration:id', tools: [{ name: 'save_comment' }],
+      integration: { id: 'id', provider: 'Linear', name: 'Task Agent', workspace: 'Test' } }])
+    const out = generateSystemPrompt()
+    expect(out).toContain('your own Linear identity, "Task Agent", in workspace "Test"')
+    expect(out).toContain('general sessions as well as tasks started by the integration')
+    expect(out).toContain('mcp__agent_integration_id__<tool_name>')
+    expect(out).not.toContain('Calling one of its listed tools will pause')
+    expect(out.includes('independent MCP reauthorization is unavailable')).toBe(status === 'auth_required')
+  })
+
   it('renders the mounted-folders block only when mounts are present', () => {
     expect(generateSystemPrompt()).not.toContain('Mounted folders:')
     process.env.SUPERAGENT_MOUNTS = JSON.stringify(['/mounts/project'])
@@ -105,23 +117,34 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('/opt/gamut/docs/x.md')).toBe(webhook || composio)
     expect(out.includes('Never invent an X endpoint')).toBe(webhook)
     expect(out.includes('$0.01 per person')).toBe(webhook)
-    expect(out.includes('## Built-in Deepgram audio')).toBe(webhook)
+    expect(out.includes('## Built-in audio')).toBe(webhook)
     // The X connected account needs Gamut's Composio, so it follows the composio gate.
     expect(out.includes('## X through a connected account')).toBe(composio)
     expect(out.includes('$0.200')).toBe(composio)
     expect(out.includes('public reads included')).toBe(composio)
-    expect(out.includes('/opt/gamut/docs/deepgram.md')).toBe(webhook)
-    expect(out.includes('Never invent a Deepgram endpoint')).toBe(webhook)
+    expect(out.includes('/opt/gamut/docs/audio.md')).toBe(webhook)
+    expect(out.includes('Never invent an OpenAI endpoint')).toBe(webhook)
     expect(out.includes('Before long recordings')).toBe(webhook)
     expect(out.includes('## Built-in Exa search')).toBe(webhook)
     expect(out.includes('/opt/gamut/docs/exa.md')).toBe(webhook)
     expect(out.includes('Prefer the normal web-search tool')).toBe(webhook)
     expect(out).not.toContain('v1/deepgram')
+    expect(out).not.toContain('v1/openai')
     expect(out).not.toContain('v1/exa')
     expect(out).not.toContain('v1/replicate')
     expect(out).not.toContain('v1/x')
     expect(out).not.toContain('ANTHROPIC_AUTH_TOKEN')
   })
+
+  it.each(['audio.md', 'x.md', 'exa.md', 'media-generation.md', 'lead-enrichment.md'])(
+    '%s uses Platform service credentials independently of the LLM provider', (filename) => {
+      const guide = readFileSync(join(__dirname, '..', 'docs', filename), 'utf8')
+      expect(guide).toContain('$PLATFORM_BASE_URL/v1/')
+      expect(guide).toContain('Bearer $PLATFORM_AUTH_TOKEN')
+      expect(guide).not.toContain('ANTHROPIC_BASE_URL')
+      expect(guide).not.toContain('ANTHROPIC_AUTH_TOKEN')
+    },
+  )
 
   // The platform's model table replaced a scraped catalog: listing is filtered
   // by `kind`, the list row carries the cost the confirmation must quote, and a
@@ -147,7 +170,7 @@ describe('generateSystemPrompt rendering', () => {
     const guide = readFileSync(join(__dirname, '..', 'docs', 'lead-enrichment.md'), 'utf8')
 
     expect(guide).toContain('/v1/apollo')
-    expect(guide).toContain('POST "$ANTHROPIC_BASE_URL/v1/apollo/people/match"')
+    expect(guide).toContain('POST "$PLATFORM_BASE_URL/v1/apollo/people/match"')
     expect(guide).toContain('GET /organizations/enrich?domain=')
     expect(guide).toContain('POST /people/bulk_match')
     expect(guide).toContain('POST /organizations/bulk_enrich')
@@ -180,20 +203,27 @@ describe('generateSystemPrompt rendering', () => {
     expect(guide).toContain('Never print either environment variable')
   })
 
-  it('teaches the Deepgram proxy contract in the guide', () => {
-    const guide = readFileSync(join(__dirname, '..', 'docs', 'deepgram.md'), 'utf8')
-    expect(guide).toContain('$ANTHROPIC_BASE_URL/v1/deepgram')
-    for (const endpoint of ['/listen', '/speak', '/read', '/auth/grant']) {
+  it('teaches the OpenAI voice proxy contract in the audio guide', () => {
+    const guide = readFileSync(join(__dirname, '..', 'docs', 'audio.md'), 'utf8')
+    expect(guide).toContain('$PLATFORM_BASE_URL/v1/openai')
+    for (const endpoint of ['/audio/transcriptions', '/audio/speech']) {
       expect(guide).toContain(`\`${endpoint}\``)
     }
     expect(guide).toContain('Never print either environment variable')
-    expect(guide).toContain('WebSocket transcription is not supported through this proxy')
-    expect(guide).toContain('`callback` and `callback_method` are not supported')
+    expect(guide).toContain('do not call them')
+    expect(guide).not.toMatch(/curl[^\n]*\/v1\/openai\/(realtime|live)/)
+    expect(guide).not.toMatch(/deepgram/i)
+    expect(guide).not.toContain('v1/deepgram')
+    // Metering rates mirror platform/apps/proxy/src/service-pricing.ts.
+    expect(guide).toContain('$0.006')
+    expect(guide).toContain('$0.015')
+    expect(guide).toContain('$0.02 ')
+    expect(guide).toContain('25 MB')
   })
 
   it('teaches Exa script usage and bounded search fallback in the guide', () => {
     const guide = readFileSync(join(__dirname, '..', 'docs', 'exa.md'), 'utf8')
-    expect(guide).toContain('$ANTHROPIC_BASE_URL/v1/exa')
+    expect(guide).toContain('$PLATFORM_BASE_URL/v1/exa')
     expect(guide).toContain('`/search`')
     expect(guide).toContain('`/contents`')
     expect(guide).toContain('Prefer the normal web-search tool')
@@ -218,7 +248,7 @@ describe('generateSystemPrompt rendering', () => {
       'browser-use.md',
       'computer-use.md',
       'x.md',
-      'deepgram.md',
+      'audio.md',
       'exa.md',
     ]
 

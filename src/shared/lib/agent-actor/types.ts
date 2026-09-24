@@ -21,6 +21,7 @@
  * `container.status()` and `sessions.activity()` — alongside the other
  * synchronous persister reads. Everything that does I/O returns a Promise.
  */
+import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 import type {
   ContainerInfo,
   ContainerSession,
@@ -291,7 +292,7 @@ export interface SessionOps {
   /** `sessionFileRealPathWithinAgent` — the transcript's real location is inside the workspace, links followed. */
   fileRealPathWithinAgent(sessionId: string): Promise<boolean>
   /** `loadSessionUsageTotals` (usage-service) over this session's transcript and the files beside it. */
-  usage(sessionId: string, options?: Pick<CommonLoadOptions, 'providerId'>): Promise<SessionUsageTotals>
+  usage(sessionId: string): Promise<SessionUsageTotals>
   /** `getSessionsByScheduledTask` */
   byScheduledTask(scheduledTaskId: string): Promise<SessionInfo[]>
   /** `getSessionsByWebhookTrigger` */
@@ -322,6 +323,8 @@ export interface SessionOps {
 
   // Live sessions — ContainerClient. Needs the container.
 
+  /** Inspect the running container session, including whether a send was accepted. */
+  getLive(sessionId: string): Promise<ContainerSession | null>
   /** `client.createSession` */
   create(options: CreateSessionOptions): Promise<ContainerSession>
   /** `client.forkSession` */
@@ -339,6 +342,8 @@ export interface SessionOps {
   isAwaitingInput(sessionId: string): boolean
   /** `messagePersister.markSessionActive` */
   markActive(sessionId: string): void
+  /** Mark active for stream recovery; undo only if no new send, turn, or output took ownership. */
+  markProvisionalActive(sessionId: string): () => void
   /** `messagePersister.markSessionIdle` */
   markIdle(sessionId: string): void
   /** `messagePersister.markSessionInterrupted` */
@@ -523,6 +528,7 @@ export interface ReviewOps {
     targetAgentName: string,
     operation: 'list' | 'read' | 'invoke' | 'create',
     preview?: string,
+    fileTransfer?: XAgentFileTransfer,
     signal?: AbortSignal,
   ): Promise<'allow' | 'deny'>
 }
@@ -618,6 +624,11 @@ export interface ByteRange {
 }
 
 export interface WriteOptions {
+  /** Refuse symlink escapes; used when sharing files across agents. */
+  confined?: boolean
+  /** Publish only if no destination exists, including racing writers. */
+  overwrite?: boolean
+  signal?: AbortSignal
   /**
    * File mode to apply. Advisory: a filesystem implementation applies it (the
    * container must be able to read `.env`), anything else ignores it.
@@ -688,7 +699,7 @@ export interface FileOps {
   /** Write a file of any size from a stream; parents are created; nothing is left behind on failure. */
   write(path: string, body: ReadableStream<Uint8Array> | Uint8Array, options?: WriteOptions): Promise<{ size: number }>
   /** Remove a file, or a directory tree with `recursive`. An absent path is a no-op. */
-  delete(path: string, options?: { recursive?: boolean }): Promise<void>
+  delete(path: string, options?: { recursive?: boolean; confined?: boolean }): Promise<void>
   /** Create a directory and any missing parents. */
   mkdir(path: string): Promise<void>
   /**
@@ -703,7 +714,7 @@ export interface FileOps {
    * beyond a single ranged `read`. Absent → `not-found`; a directory →
    * `not-a-file`. The caller closes it.
    */
-  open(path: string): Promise<OpenFile>
+  open(path: string, options?: { confined?: boolean }): Promise<OpenFile>
 }
 
 /**

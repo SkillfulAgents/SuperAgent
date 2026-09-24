@@ -18,6 +18,8 @@ import { cancelWebhookTriggerWithCleanup } from '@shared/lib/services/webhook-tr
 
 export async function cleanupAgentData(agentSlug: string): Promise<void> {
   await cleanupWebhookTriggers(agentSlug)
+  const { cleanupIntegrationResources } = await import('../agent-integrations/cleanup')
+  await cleanupIntegrationResources(agentSlug)
 
   // Delete all peripheral rows in one batch so the cleanup is atomic: either
   // every row referencing this agent is removed or none is, never a
@@ -39,7 +41,7 @@ export async function cleanupAgentData(agentSlug: string): Promise<void> {
 // Delegates per-trigger cancel + upstream teardown to the shared path so the
 // minting-member-attributed delete (SUP-765) applies to agent deletion too.
 async function cleanupWebhookTriggers(agentSlug: string): Promise<void> {
-  const triggers = db
+  const triggers = await db
     .select({ id: webhookTriggers.id })
     .from(webhookTriggers)
     .where(

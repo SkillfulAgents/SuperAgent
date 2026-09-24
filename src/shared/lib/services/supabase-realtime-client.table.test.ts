@@ -143,6 +143,27 @@ describe('SupabaseRealtimeClient table parameterization', () => {
   })
 })
 
+describe('SupabaseRealtimeClient onConnect', () => {
+  it('runs on the first open and again when the client reconnects by itself', async () => {
+    vi.useFakeTimers()
+    try {
+      const onConnect = vi.fn()
+      const client = new SupabaseRealtimeClient()
+      await client.connect(BASE_CONFIG, () => {}, undefined, onConnect)
+      expect(onConnect).toHaveBeenCalledTimes(1)
+
+      sockets[0].onclose?.()
+      await vi.advanceTimersByTimeAsync(1000)
+
+      expect(sockets).toHaveLength(2)
+      expect(onConnect).toHaveBeenCalledTimes(2)
+      client.disconnect()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('SupabaseRealtimeClient connection failure', () => {
   it('rejects connect() when the socket closes before it ever opens', async () => {
     // The close event cancels the 10s timeout, so without an explicit

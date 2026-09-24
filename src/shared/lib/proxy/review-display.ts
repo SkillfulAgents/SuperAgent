@@ -2,6 +2,7 @@
  * What a proxy or x-agent review is about, and how it reads on a card. Pure
  * helpers: the review stores and their router both build on them.
  */
+import type { XAgentReview } from './x-agent-review'
 
 export interface ReviewDetails {
   agentSlug: string
@@ -19,13 +20,7 @@ export interface ReviewDetails {
   // Optional: x-agent review fields.
   // When present, the UI renders a dedicated "Agent X wants to use Agent Y" prompt
   // with a read/invoke level selector. targetAgentSlug is the other agent being acted on.
-  xAgent?: {
-    targetAgentSlug: string
-    targetAgentName: string
-    operation: 'list' | 'read' | 'invoke' | 'create'
-    // For 'invoke': the prompt being sent. For 'create': the proposed name.
-    preview?: string
-  }
+  xAgent?: XAgentReview
 }
 
 /**
