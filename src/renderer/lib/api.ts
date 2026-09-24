@@ -3,7 +3,6 @@ import { hasInteractiveLogin, isAuthMode } from './auth-mode'
 import { reportCloudSessionRejected } from './cloud-session'
 import { addRendererBreadcrumb } from './error-reporting'
 import { WORKSPACE_UNAVAILABLE_HEADER, WorkspaceUnavailableError } from './workspace-unavailable'
-import { mockProviderFetch } from './dev/mock-providers'
 
 /**
  * Fetch wrapper that prepends the API base URL.
@@ -18,15 +17,6 @@ export async function apiFetch(
   path: string,
   init?: RequestInit
 ): Promise<Response> {
-  // Dev-only provider mocks (lib/dev/mock-providers.ts); inert until a scenario is set.
-  if (import.meta.env.DEV) {
-    const mocked = await mockProviderFetch(path, init, () => fetchApi(path, init))
-    if (mocked) return mocked
-  }
-  return fetchApi(path, init)
-}
-
-async function fetchApi(path: string, init?: RequestInit): Promise<Response> {
   const baseUrl = getApiBaseUrl()
   const response = await fetch(`${baseUrl}${path}`, init)
   handleWorkspaceUnavailableResponse(path, (name) => response.headers.get(name))
