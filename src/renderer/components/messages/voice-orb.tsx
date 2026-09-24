@@ -19,6 +19,10 @@ interface VoiceOrbProps {
 
 /** Representative loudness for the one static frame reduced motion gets. */
 const STATIC_LEVEL: Record<DotOrbState, number> = { boot: 0, ready: 0, thinking: 0, user: 0.75, agent: 0.8 }
+/** Smoothed mic level above which a waiting orb shows the person talking: over a quiet room, under speech. */
+const VOICE_ONSET_LEVEL = 0.1
+/** How long it keeps showing them after the level drops, so gaps between words do not flicker it. */
+const VOICE_HANGOVER_MS = 600
 
 /**
  * The dot orb as a canvas: one renderer instance per size, a delta-time
@@ -76,24 +80,30 @@ export function VoiceOrb({ state, monochrome = false, size, getAnalyser, classNa
     let running = false
     let last = 0
     let level = 0
+    let voicedAt = -Infinity
     let buffer: Uint8Array<ArrayBuffer> | null = null
     const tick = (now: number) => {
       if (!running) return
       const dt = Math.min(0.1, last ? (now - last) / 1000 : 1 / 60)
       last = now
-      const { state: current, getAnalyser: analyserOf } = latest.current
-      const speaking = current === 'user' || current === 'agent'
+      const { state: asked, getAnalyser: analyserOf } = latest.current
       let target = 0
-      if (speaking) {
+      if (asked === 'user' || asked === 'agent' || asked === 'ready') {
         const analyser = analyserOf()
         if (analyser) {
           if (!buffer || buffer.length !== analyser.fftSize) buffer = new Uint8Array(analyser.fftSize)
           target = readLevel(analyser, buffer)
-        } else {
-          target = syntheticEnvelope(now / 1000, current === 'agent' ? 1.7 : 0)
+        } else if (asked !== 'ready') {
+          target = syntheticEnvelope(now / 1000, asked === 'agent' ? 1.7 : 0)
         }
       }
       level = smoothLevel(level, target, dt)
+      // Waiting for the person, the orb takes their voice from the mic itself:
+      // an engine can say they are talking only once it has their words (Live's
+      // come after they stop), and the stir has to move with the voice.
+      if (asked === 'ready' && level > VOICE_ONSET_LEVEL) voicedAt = now
+      else if (asked !== 'ready') voicedAt = -Infinity
+      orb.setState(asked === 'ready' && now - voicedAt < VOICE_HANGOVER_MS ? 'user' : asked)
       orb.setLevel(level)
       orb.step(dt)
       paint()

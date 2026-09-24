@@ -2,6 +2,7 @@
 import { render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { VoiceOrb } from './voice-orb'
+import { DotOrb } from '@renderer/lib/voice/orb/dot-orb'
 
 function stubContext() {
   const ctx = { fillStyle: '', clearRect: vi.fn(), beginPath: vi.fn(), arc: vi.fn(), fill: vi.fn(), setTransform: vi.fn() }
@@ -47,6 +48,41 @@ describe('VoiceOrb', () => {
     const before = callbacks.length
     callbacks[before - 1](1032)
     expect(callbacks).toHaveLength(before)
+  })
+
+  it('while waiting, shows the person talking from the mic level alone, and settles after they stop', () => {
+    stubContext()
+    reducedMotion(false)
+    const callbacks: FrameRequestCallback[] = []
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { callbacks.push(cb); return callbacks.length })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+    const shown = vi.spyOn(DotOrb.prototype, 'setState')
+    let loud = false
+    const analyser = {
+      fftSize: 256,
+      // A loud sine while talking, the midline (silence) otherwise.
+      getByteTimeDomainData: (buffer: Uint8Array) => {
+        for (let i = 0; i < buffer.length; i++) buffer[i] = loud ? Math.round(128 + 90 * Math.sin(i / 3)) : 128
+      },
+    } as unknown as AnalyserNode
+    let now = 1000
+    const frames = (count: number) => {
+      for (let i = 0; i < count; i++) { now += 16; callbacks[callbacks.length - 1](now) }
+    }
+
+    const { unmount } = render(<VoiceOrb state="ready" size={64} getAnalyser={() => analyser} />)
+    frames(10)
+    expect(shown).toHaveBeenLastCalledWith('ready')
+    loud = true
+    frames(10)
+    expect(shown).toHaveBeenLastCalledWith('user')
+    // A breath between words keeps it; a pause past the hangover lets it settle.
+    loud = false
+    frames(10)
+    expect(shown).toHaveBeenLastCalledWith('user')
+    frames(60)
+    expect(shown).toHaveBeenLastCalledWith('ready')
+    unmount()
   })
 
   it('draws one still frame per state under reduced motion, with no loop', () => {

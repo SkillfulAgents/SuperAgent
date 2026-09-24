@@ -155,6 +155,14 @@ describe('Live WebRTC lifecycle', () => {
     adapter.close()
   })
 
+  it('a mute set while connecting holds on the track it opens', async () => {
+    const { adapter } = setup()
+    adapter.setMicrophoneMuted(true)
+    await adapter.start()
+    expect(track.enabled).toBe(false)
+    adapter.close()
+  })
+
   it('ignores microphone noise and cuts on recognized input words only', async () => {
     const { adapter, callbacks } = setup()
     await adapter.start()

@@ -94,14 +94,13 @@ export class OpenAILiveConversation {
       const microphone = await acquireMicStream()
       if (this.closed) { microphone.getTracks().forEach((track) => track.stop()); return }
       this.microphone = microphone
-      microphone.getTracks().forEach((track) => { track.enabled = !this.paused && !this.muted })
       this.analyser = this.context.createAnalyser()
       this.analyser.fftSize = 2048
       this.context.createMediaStreamSource(microphone).connect(this.analyser)
       // Input transcripts open the music-suppression gate. Microphone activity
       // may only keep an already-open gate alive while transcription catches up.
       for (const track of microphone.getAudioTracks()) {
-        track.enabled = !this.paused
+        track.enabled = !this.paused && !this.muted
         peer.addTrack(track, microphone)
       }
       peer.ontrack = ({ track }) => {
