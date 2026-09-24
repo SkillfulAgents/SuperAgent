@@ -1,6 +1,6 @@
 import { CredentialRefreshError } from './credential-refresh-error'
 import { normalizeCodexRequest, collectCodexResponse, normalizeCodexError, CodexResponseError } from './llm-proxy-codex'
-import { normalizeGrokMessages, grokWireFormat } from './llm-proxy-grok'
+import { normalizeGrokMessages, normalizeGrokMessagesStream, grokWireFormat } from './llm-proxy-grok'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
@@ -141,7 +141,8 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       if (validated.data.stream) {
         if (!upstream.body) throw new Error('Missing upstream stream')
         const stream = format === 'responses' ? responsesStreamToMessagesStream(upstream.body, replyOptions)
-          : format === 'chat-completions' ? chatCompletionsStreamToMessagesStream(upstream.body, replyOptions) : upstream.body
+          : format === 'chat-completions' ? chatCompletionsStreamToMessagesStream(upstream.body, replyOptions)
+          : config.adapter === 'grok' ? normalizeGrokMessagesStream(upstream.body) : upstream.body
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
         await pipeline(Readable.fromWeb(stream as import('node:stream/web').ReadableStream<Uint8Array>), res)
       } else {
