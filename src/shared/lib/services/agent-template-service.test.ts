@@ -1259,6 +1259,9 @@ describe('computeAgentTemplateHash', () => {
     fs.mkdirSync(workspaceDir)
     fs.writeFileSync(path.join(templateDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
     fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_CLAUDE_MD)
+    // Sorts between AGENTS.md and CLAUDE.md.
+    fs.writeFileSync(path.join(templateDir, 'BOOTSTRAP.md'), 'setup')
+    fs.writeFileSync(path.join(workspaceDir, 'BOOTSTRAP.md'), 'setup')
     expect(await computeAgentTemplateHash(workspaceDir)).toBe(await computeAgentTemplateHash(templateDir))
   })
 

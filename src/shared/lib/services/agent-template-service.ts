@@ -1130,7 +1130,9 @@ export async function computeWorkspaceTemplateHash(files: FileOps): Promise<stri
 
 async function computeTemplateHash(tree: TemplateTree): Promise<string> {
   const files = await walkTemplateFiles(tree)
-  files.sort() // Ensure deterministic order
+  // Sort by template name, so a workspace's AGENTS.md sits where a template's CLAUDE.md does.
+  const nameOf = new Map(files.map((file) => [file, templatePathOf(file, files)]))
+  files.sort((a, b) => (nameOf.get(a)! < nameOf.get(b)! ? -1 : nameOf.get(a)! > nameOf.get(b)! ? 1 : 0))
 
   const limit = pLimit(8)
   const contents = new Map<string, string>()
@@ -1147,8 +1149,7 @@ async function computeTemplateHash(tree: TemplateTree): Promise<string> {
   for (const relativePath of files) {
     const content = contents.get(relativePath)
     if (content === undefined) continue
-    // The same instructions hash alike as a template's CLAUDE.md and a workspace's AGENTS.md.
-    hash.update(templatePathOf(relativePath, files))
+    hash.update(nameOf.get(relativePath)!)
     hash.update(content)
   }
 
