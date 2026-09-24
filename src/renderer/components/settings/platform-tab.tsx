@@ -1,3 +1,4 @@
+import { formatCents } from '@renderer/lib/currency'
 import { useState, type ReactNode } from 'react'
 import { ArrowUpRight, BadgeX, Check, ChevronsUpDown, Loader2, RefreshCw } from 'lucide-react'
 
@@ -48,15 +49,6 @@ function SettingRow({ name, subtitle, right }: SettingRowProps) {
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
-
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-})
-
-function formatCents(cents: number): string {
-  return currencyFormatter.format(cents / 100)
-}
 
 function seatPercentRemaining(seat: NonNullable<ParsedPlatformBillingInfo['seat']>): number {
   if (seat.startingBalanceCents <= 0) return 0

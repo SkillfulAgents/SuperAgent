@@ -1,3 +1,4 @@
+import { parseGrokUsage } from './usage-schema'
 import type { EffortLevel } from '../container/types'
 import { GROK_DEFAULT_MODELS } from './model-catalog-defaults'
 export { GROK_DEFAULT_MODELS } from './model-catalog-defaults'
@@ -69,6 +70,19 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
         return this.fetch(input, { ...init, ...(body ? { body: JSON.stringify(normalizeGrokMessages(body)) } : {}) })
       },
     })
+  }
+  override readonly supportsUsage = true
+
+  override async getUsage() {
+    // Optional usage reporting must never drive OAuth refresh or block sessions.
+    const accessToken = this.configuration?.oauth?.accessToken
+    if (!accessToken) throw new Error('Grok usage credentials unavailable')
+    const response = await fetch(`${GROK_SUBSCRIPTION_BASE_URL}/v1/billing?format=credits`, {
+      headers: { ...GROK_CLIENT_HEADERS, authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(10_000), redirect: 'error',
+    })
+    if (!response.ok) { await response.body?.cancel(); throw new Error('Could not load Grok usage') }
+    return parseGrokUsage(await response.json())
   }
   async validateKey() {
     try { await this.searchModels(''); return { valid: true } }

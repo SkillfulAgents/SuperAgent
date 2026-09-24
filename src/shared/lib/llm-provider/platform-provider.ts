@@ -1,3 +1,5 @@
+import { fetchPlatformBillingInfo } from '../services/platform-billing-service'
+import { usageSnapshot, type UsageLimit } from './usage-schema'
 import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type AgentIdentity } from './base-llm-provider'
 import { orgBillingUrl, parsePlatformErrorResponse } from './platform-error-presentation'
@@ -49,6 +51,24 @@ export class PlatformLlmProvider extends BaseLlmProvider {
 
   override getEffectiveApiKey(): string | undefined {
     return getPlatformAccessToken() ?? process.env[this.envVarName] ?? undefined
+  }
+
+  override readonly supportsUsage = true
+
+  override async getUsage() {
+    // Fetch within the request's member attribution scope. Never cache globally.
+    const billing = await fetchPlatformBillingInfo({ signal: AbortSignal.timeout(10_000), reportErrors: false })
+    if (!billing.configured) return usageSnapshot([])
+    const limits: UsageLimit[] = []
+    if (billing.seat) {
+      const { balanceCents, startingBalanceCents } = billing.seat
+      if (startingBalanceCents > 0) limits.push({ kind: 'window', id: 'seat', label: 'Seat allowance',
+        usedPercent: Math.max(0, (1 - balanceCents / startingBalanceCents) * 100),
+        ...(billing.subscription.currentPeriodEnd && Number.isFinite(Date.parse(billing.subscription.currentPeriodEnd)) ? { resetsAt: billing.subscription.currentPeriodEnd } : {}) })
+      limits.push({ kind: 'balance', id: 'seat-credits', label: 'Seat credits', remaining: balanceCents / 100, unit: 'USD' })
+    }
+    limits.push({ kind: 'balance', id: 'organization-credits', label: 'Organization credits', remaining: billing.orgPool.poolBalanceCents / 100, unit: 'USD' })
+    return usageSnapshot(limits)
   }
 
   createClient(): Anthropic {

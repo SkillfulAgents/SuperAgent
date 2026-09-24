@@ -1,3 +1,4 @@
+import type { ProviderUsage } from './usage-schema'
 import type { LlmProxyConfig } from '../../../../agent-container/src/llm-proxy-schema'
 import type { OAuthCredential } from './oauth-schema'
 import Anthropic from '@anthropic-ai/sdk'
@@ -78,6 +79,13 @@ export abstract class BaseLlmProvider {
 
   /** Whether this provider supports host-side Messages API calls (including summaries). */
   readonly supportsDirectApi: boolean = true
+
+  readonly supportsUsage: boolean = false
+
+  /** Read-only allowance snapshot; never gates inference or model selection. */
+  async getUsage(): Promise<ProviderUsage> {
+    return { status: 'unsupported', observedAt: new Date().toISOString(), limits: [] }
+  }
 
   /**
    * Value of `ENABLE_TOOL_SEARCH` for containers on this provider, or

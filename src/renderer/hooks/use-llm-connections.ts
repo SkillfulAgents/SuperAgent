@@ -55,8 +55,9 @@ export function useConnectionMutation() {
       if (!response.ok) throw new Error(result.error ?? 'Could not update connection')
       return result
     },
-    onSuccess: () => Promise.all([
+    onSuccess: (_result, { path }) => Promise.all([
       queryClient.invalidateQueries({ queryKey: ['settings'] }),
+      ...(path && /^\/[^/]+$/.test(path) ? [queryClient.invalidateQueries({ queryKey: ['llm-provider-usage', path.slice(1)] })] : []),
       queryClient.invalidateQueries({ queryKey: ['runtime-status'] }),
     ]),
   })

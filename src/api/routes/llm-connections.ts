@@ -1,3 +1,5 @@
+import { readConnectionUsage } from '@shared/lib/llm-provider/connection-usage'
+import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { startOAuthLogin, pollOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -6,6 +8,7 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getSettings } from '@shared/lib/config/settings'
 import {
+  canSelectConnection,
   isHelperSelection,
   listConnections,
   resolveSummarizerSelection,
@@ -108,6 +111,14 @@ routes.post('/validate', async (c) => {
       baseUrl: config.apiKeys.genericBaseUrl,
     })
   )
+})
+routes.get('/:id/usage', async c => {
+  c.header('Cache-Control', 'no-store')
+  const row = await getConnection(c.req.param('id'))
+  const actor = viewer(c)
+  // Being able to use another member's saved session does not expose their billing.
+  if (!row || !canSelectConnection(row, actor)) return c.json({ error: 'Connection not found' }, 404)
+  return c.json(await runWithOptionalUser(actor.userId, () => readConnectionUsage(row)))
 })
 routes.get('/:id/models/search', async (c) => {
   const row = await getConnection(c.req.param('id'))
