@@ -1,3 +1,6 @@
+import Anthropic from '@anthropic-ai/sdk'
+import { createServer } from 'node:http'
+import { startLlmProxy } from '../../../agent-container/src/llm-proxy'
 import { eq } from 'drizzle-orm'
 import { llmConnections } from '@shared/lib/db/schema'
 import { connectionConfigSchema } from '@shared/lib/llm-provider/connection-schema'
@@ -45,8 +48,8 @@ vi.mock('@shared/lib/agent-actor', () => ({
   },
 }))
 import routes from './llm-runtime'
-import { saveConnection, setGlobalSelection } from '@shared/lib/llm-provider/connections'
-import { sessionRuntime } from '@shared/lib/llm-provider/connection-runtime'
+import { saveConnection, setGlobalSelection, resolveConnectionSelection } from '@shared/lib/llm-provider/connections'
+import { sessionRuntime, connectionRuntime } from '@shared/lib/llm-provider/connection-runtime'
 
 let handle: TestDatabase
 const app = new Hono().route('/runtime', routes)
@@ -128,4 +131,57 @@ it('returns a non-retryable reconnect contract for a revoked subscription', asyn
   const response = await request('resolve', { sessionId: 'own-session', llmProviderId: state.currentId, rejectedGeneration: 0 })
   expect(response.status).toBe(401)
   expect(await response.json()).toMatchObject({ code: 'provider_reconnect_required', error: expect.stringContaining('reconnect in Settings') })
+})
+
+it.each(['chat-completions', 'responses'] as const)('rotates a saved static key through an existing %s proxy', async apiFormat => {
+  const seen: Array<string | undefined> = []
+  const upstream = createServer(async (req, res) => {
+    for await (const chunk of req) { void chunk } // Drain before replying.
+    seen.push(req.headers.authorization)
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify(apiFormat === 'responses'
+      ? { id: 'r', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }], usage: { input_tokens: 1, output_tokens: 1 } }
+      : { id: 'c', choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'OK' } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }))
+  })
+  await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve))
+  const baseUrl = `http://127.0.0.1:${(upstream.address() as { port: number }).port}/v1`
+  let proxy: Awaited<ReturnType<typeof startLlmProxy>> | undefined
+  try {
+    await saveConnection({ name: 'Account', provider: 'generic', config: {
+      apiFormat, apiKeys: { genericApiKey: 'old-static-key', genericBaseUrl: baseUrl },
+    } }, { userId: null, admin: true }, state.currentId)
+    const first = await (await request('resolve', { sessionId: 'own-session' })).json()
+    // The proxy runs on the host in this test; undo Docker's loopback rewrite.
+    proxy = await startLlmProxy({ llmProviderId: state.currentId, config: { ...first.proxy, baseUrl } })
+    const client = new Anthropic({ baseURL: proxy.env.ANTHROPIC_BASE_URL, apiKey: proxy.env.ANTHROPIC_API_KEY, maxRetries: 0 })
+    const prompt = { model: 'model', max_tokens: 32, messages: [{ role: 'user' as const, content: 'Hi' }] }
+    await client.messages.create(prompt)
+    await saveConnection({ name: 'Account', provider: 'generic', config: { apiKeys: { genericApiKey: 'new-static-key' } } }, { userId: null, admin: true }, state.currentId)
+    const next = await (await request('resolve', { sessionId: 'own-session' })).json()
+    proxy.updateCredential(next.proxy.credential)
+    await client.messages.create(prompt)
+    // A late runtime snapshot must not undo the edit.
+    proxy.updateCredential(first.proxy.credential)
+    await client.messages.create(prompt)
+    expect(seen).toEqual(['Bearer old-static-key', 'Bearer new-static-key', 'Bearer new-static-key'])
+    expect(next.proxy.credential.generation).toBe(next.generation)
+    expect(next.generation).toBeGreaterThan(first.generation)
+  } finally {
+    await proxy?.close()
+    upstream.closeAllConnections()
+    await new Promise<void>(resolve => upstream.close(() => resolve()))
+  }
+})
+
+it('preserves the fresh OAuth generation when the selected connection snapshot is older', async () => {
+  const selected = await resolveConnectionSelection({ llmProviderId: state.currentId, model: 'model' })
+  if (!selected) throw new Error('Expected the fixture connection to resolve')
+  const spy = vi.spyOn(selected.provider, 'getContainerProxyConfig').mockResolvedValue({
+    baseUrl: 'https://upstream.example/v1', format: 'responses', headers: {},
+    credential: { accessToken: 'refreshed-access', expiresAt: Date.now() + 3600000, generation: selected.connection.generation + 1 },
+  })
+  try {
+    const runtime = await connectionRuntime(selected, 'alpha')
+    expect(runtime.proxy?.credential.generation).toBe(selected.connection.generation + 1)
+  } finally { spy.mockRestore() }
 })
