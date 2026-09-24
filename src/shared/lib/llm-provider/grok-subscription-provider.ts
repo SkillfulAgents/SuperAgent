@@ -6,8 +6,9 @@ import Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
 import { BaseLlmProvider } from './base-llm-provider'
 import { PLATFORM_CATALOG } from './builtin-catalogs'
-import { normalizeGrokMessages } from '../../../../agent-container/src/llm-proxy-grok'
-import type { LlmProxyConfig } from '../../../../agent-container/src/llm-proxy-schema'
+import { normalizeGrokResponses } from '../../../../agent-container/src/llm-proxy-grok'
+import { translatedMessagesFetch } from './translated-messages-fetch'
+import type { LlmProxyConfig, ProxyCredential } from '../../../../agent-container/src/llm-proxy-schema'
 import { inferErrorStatus, extractErrorMessage } from './error-presentation'
 
 export const GROK_SUBSCRIPTION_BASE_URL = 'https://cli-chat-proxy.grok.com'
@@ -39,36 +40,36 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
   async getContainerEnvVars() { return {} }
   override async getContainerProxyConfig(): Promise<LlmProxyConfig> {
     const { accessToken, expiresAt, generation, accountId } = await this.credential()
-    return { adapter: 'grok', format: 'messages', baseUrl: `${GROK_SUBSCRIPTION_BASE_URL}/v1`,
+    return { adapter: 'grok', format: 'responses', baseUrl: `${GROK_SUBSCRIPTION_BASE_URL}/v1`,
       headers: GROK_CLIENT_HEADERS, credential: { accessToken, expiresAt, generation, accountId }, maxOutputTokens: 32768 }
   }
-  private async fetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
+  private async withCredential(send: (credential: ProxyCredential) => Promise<Response>): Promise<Response> {
     let credential = await this.credential()
-    const send = () => {
+    let response = await send(credential)
+    if (response.status === 401) {
+      await response.body?.cancel()
+      credential = await this.credential(credential.generation)
+      response = await send(credential)
+    }
+    return response
+  }
+  private async fetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
+    return this.withCredential(credential => {
       const headers = new Headers(init?.headers)
       headers.set('authorization', `Bearer ${credential.accessToken}`)
       headers.delete('x-api-key')
       for (const [key, value] of Object.entries(GROK_CLIENT_HEADERS)) headers.set(key, value)
       return fetch(input, { ...init, headers, redirect: 'error' })
-    }
-    let response = await send()
-    if (response.status === 401) {
-      await response.body?.cancel()
-      credential = await this.credential(credential.generation)
-      response = await send()
-    }
-    return response
+    })
   }
   createClient(): Anthropic {
     return new Anthropic({ apiKey: '', authToken: 'app-managed', baseURL: GROK_SUBSCRIPTION_BASE_URL,
-      fetch: async (input, init) => {
-        let body: Record<string, unknown> | undefined
-        if (typeof init?.body === 'string') {
-          try { body = z.record(z.string(), z.unknown()).parse(JSON.parse(init.body)) }
-          catch { throw new Error('Invalid Messages request') }
-        }
-        return this.fetch(input, { ...init, ...(body ? { body: JSON.stringify(normalizeGrokMessages(body)) } : {}) })
-      },
+      // Rebuild translation after an auth retry so reasoning replay is scoped
+      // to the credential actually used, including reconnects to another account.
+      fetch: (input, init) => this.withCredential(credential => translatedMessagesFetch(
+        `${GROK_SUBSCRIPTION_BASE_URL}/v1`, credential.accessToken, 'responses', 'max_completion_tokens',
+        { headers: GROK_CLIENT_HEADERS, upstreamRequest: normalizeGrokResponses },
+      )(input, init)),
     })
   }
   override readonly supportsUsage = true

@@ -9,11 +9,18 @@ Built-in models remain code-driven; costs use the shared API-equivalent price li
 
 ## Requests and refresh
 
-Ordinary agent requests use Grok's native Messages endpoint through the on-demand
-container proxy. Compatibility adaptations fill missing object-schema `required`
-arrays, lift images out of tool results, and remove incompatible thinking blocks.
-Deferred ToolSearch references expand into the discovered tool schemas. Requests
-containing hosted web search use Responses through `llm-endpoint-translation`.
+All agent inference uses Grok's Responses endpoint through the on-demand
+container proxy and `llm-endpoint-translation`. Deferred ToolSearch references
+expand into the discovered tool schemas. The shared codec preserves separate
+parallel calls, tool results, direct and tool-result images, mid-turn system notes,
+and account-scoped encrypted reasoning. Native hosted WebSearch uses the same route.
+
+Grok's subscription Messages SSE loses parallel call boundaries, omits delta
+indexes, and reuses block indexes. The Messages stream-index repair from #1186
+is removed: the Responses codec generates valid Messages events for the SDK.
+Already-issued runtime descriptors marked `adapter: grok` also take Responses,
+even if their old format field says Messages. Grok rejects reasoning effort
+`none`, so disabled-thinking helper calls map to `low`. Other efforts are retained.
 
 Only access tokens, expiry, account identity and credential generation reach the
 container. Near expiry, or after one pre-stream 401, the proxy calls the app's
@@ -23,32 +30,48 @@ refresh across workers, and a config/generation comparison prevents a late refre
 from overwriting a reconnect, edit or deletion. Old-generation rejections reuse
 the current token. Quota errors and interrupted streams are not replayed.
 
-Host-side helper calls also obtain credentials through this app service. Grok
-supports ordinary direct Messages calls, so it can be selected as a summarizer.
-The container's hosted-web-search routing is not used by the host-side client.
+Host-side helper and summarizer calls also use Responses through the shared
+translation code and obtain credentials through this app service. A pre-stream
+401 rebuilds the translation after refresh, so a reconnect cannot replay another
+account's reasoning. Model discovery and subscription usage retain their existing
+endpoints.
 
 ## Validation
 
-Live validation used a real Gamut agent container, bundled Claude SDK, Gamut
-prompts and the user's temporary Grok OAuth account:
+The Responses migration was validated on 2026-09-24 with a real Grok 4.7
+subscription, the production container proxy, Claude Agent SDK 0.3.281, and
+`ClaudeCodeProcess`. The repeatable harness and preparation instructions are in
+[`e2e/live/grok-responses`](../e2e/live/grok-responses/README.md).
 
 | Case | Observed result |
 | --- | --- |
-| Question and continuation | 17 × 23 = 391; continuation +9 = 400 |
-| Bash and Read | Created and read a file; independently checked its content and SHA-256 |
-| Deferred tool search | Loaded browser tools, opened example.com and read “Example Domain” through the container browser service |
-| Image in a tool result | Read a PNG and identified COPPER, two blue circles, a red triangle and a green square |
-| Hosted WebSearch | Retrieved Python TaskGroup documentation and its Python 3.11 introduction |
-| App refresh | Five concurrent callers received one persisted generation and rotated token pair; a late rejection reused it |
-| Host helper after refresh | Direct Messages request returned 72 for 8 × 9 |
-| Credential boundary | Runtime descriptor contained no refresh token |
+| Question, continuation and process resume | 17 × 23 = 391; continuation +9 = 400; remembered marker after a fresh SDK process resumed the session |
+| Bash, Read and Edit | Created a file, changed alpha to omega, independently checked its content and SHA-256 |
+| Parallel Read | Three independent tool calls in one model response; all file markers returned |
+| Parallel MCP web fetch | Deferred ToolSearch, then three same-name calls in one model response with distinct IDs and valid independent arguments; fetched all three pages and synthesized their markers |
+| Direct user image | Identified COPPER, two blue circles, a red triangle and a green square |
+| Image in a tool result | Read the PNG and identified its word, colors and shapes |
+| Browser screenshot | Loaded deferred browser tools, opened a page in Chromium, requested a screenshot and identified its marker |
+| Hosted WebSearch | Used native WebSearch for Python TaskGroup documentation and its Python 3.11 introduction |
+| Host helper | Streamed 391 through Responses with disabled thinking mapped to low effort |
+| Streaming regression from #1186 | Every live turn emitted text deltas with valid block indexes; reasoning followed by text also passed through the SDK in integration tests |
 
-The SDK's final aggregate usage was zero in these runs. The app uses per-message
-usage and shared pricing; Grok's observed `grok-4.7-build` response ID maps to the
-existing `grok-4.7` price. This validation does not establish subscription quota
-reporting or behavior on an actually exhausted account.
+The live container run made 26 Responses requests and zero Messages requests.
+All nine agent turns and the separate direct-image check passed with no tool or
+stream-index errors. The parallel fetch case uses real MCP calls and real HTTP
+fetches against local fixture pages through a test host bridge; hosted WebSearch
+separately exercises live internet search. No external email/chat message was sent.
+Delivery consumers were covered by the message-persister and chat SSE tests.
 
-Automated coverage exercises OAuth ownership and credential secrecy, refresh
-races/reconnect/deletion, libsql, proxy authentication retry and account-scoped
-reasoning replay, schema/image adaptation, sign-in polling/expiry/unmount, and
-pricing aliases. Light and dark settings screenshots accompany the PR.
+Automated validation passed 1,304 container tests and 911 host/provider,
+runtime, persistence and chat-stream tests, plus typecheck and lint. New regression
+coverage includes interleaved parallel arguments, long MCP names, tool-result call
+IDs, old runtime descriptors, images, deferred schemas, quota errors and a 401
+reconnect that must not replay another account's reasoning. The generic persister
+fallback from #1185 remains intact.
+
+The SDK reported nonzero input/output/cache usage in this run. The app uses
+shared API-equivalent pricing; these figures are not subscription quota usage.
+Existing automated coverage also exercises OAuth ownership and credential secrecy,
+refresh races/reconnect/deletion, libsql, sign-in polling/expiry/unmount, and pricing
+aliases. This validation does not establish behavior on an exhausted account.

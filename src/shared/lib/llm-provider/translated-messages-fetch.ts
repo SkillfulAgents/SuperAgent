@@ -2,8 +2,13 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { expandDeferredTools } from '../../../../agent-container/src/llm-proxy-tools'
 
+interface TranslationOptions {
+  headers?: Record<string, string>
+  upstreamRequest?: (body: Record<string, unknown>) => Record<string, unknown>
+}
+
 /** Host-side helpers and dashboard shims use the same wire codecs as agents. */
-export function translatedMessagesFetch(baseUrl: string, apiKey: string, format: 'chat-completions' | 'responses', tokenLimitField: 'max_tokens' | 'max_completion_tokens' = 'max_completion_tokens'): typeof fetch {
+export function translatedMessagesFetch(baseUrl: string, apiKey: string, format: 'chat-completions' | 'responses', tokenLimitField: 'max_tokens' | 'max_completion_tokens' = 'max_completion_tokens', translation: TranslationOptions = {}): typeof fetch {
   return async (input, init) => {
     let pathname: string
     try { pathname = new URL(input instanceof Request ? input.url : String(input)).pathname }
@@ -31,7 +36,8 @@ export function translatedMessagesFetch(baseUrl: string, apiKey: string, format:
       : messagesRequestToChatCompletions(body, { tokenLimitField })
     const response = await fetch(`${baseUrl}/${format === 'responses' ? 'responses' : 'chat/completions'}`, {
       method: 'POST', redirect: 'error', signal: init?.signal,
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }, body: JSON.stringify(translated),
+      headers: { 'content-type': 'application/json', ...translation.headers, authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(translation.upstreamRequest?.(translated) ?? translated),
     })
     if (!response.ok) {
       const error: unknown = await response.json().catch(() => ({}))

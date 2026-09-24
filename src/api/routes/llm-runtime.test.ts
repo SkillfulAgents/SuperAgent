@@ -117,7 +117,7 @@ it('returns access-only proxy credentials and keeps them out of presentation met
   const response = await request('resolve', { sessionId: 'own-session', llmProviderId: state.currentId })
   expect(response.status).toBe(200)
   const body = await response.json()
-  expect(body.proxy).toMatchObject({ adapter: 'grok', credential: { accessToken: 'private-access' } })
+  expect(body.proxy).toMatchObject({ adapter: 'grok', format: 'responses', credential: { accessToken: 'private-access' } })
   expect(JSON.stringify(body)).not.toContain('never-container-refresh')
   expect(JSON.stringify(sessionRuntime('alpha', 'own-session'))).not.toContain('private-access')
   expect((await request('resolve', { sessionId: 'own-session', llmProviderId: 'another-account', rejectedGeneration: 0 })).status).toBe(409)
