@@ -35,10 +35,13 @@ export class OpenAILiveConversation {
   private peer: RTCPeerConnection | null = null
   private channel: RTCDataChannel | null = null
   private microphone: MediaStream | null = null
+  private muted = false
+  private outputMuted = false
   private audio: HTMLAudioElement | null = null
   private context: AudioContext | null = null
   analyser: AnalyserNode | null = null
-  private outputAnalyser: AnalyserNode | null = null
+  /** The remote voice's playback, metered for turn-taking and the orb alike. */
+  outputAnalyser: AnalyserNode | null = null
   private meter: ReturnType<typeof setInterval> | undefined
   private inputSpeechTimer: ReturnType<typeof setInterval> | undefined
   private lastInputActivity = -Infinity
@@ -84,6 +87,7 @@ export class OpenAILiveConversation {
       const audio = new Audio()
       audio.autoplay = true
       this.audio = audio
+      audio.muted = this.outputMuted
       this.context = new AudioContext()
       await this.context.resume()
       if (this.closed) return
@@ -96,7 +100,7 @@ export class OpenAILiveConversation {
       // Input transcripts open the music-suppression gate. Microphone activity
       // may only keep an already-open gate alive while transcription catches up.
       for (const track of microphone.getAudioTracks()) {
-        track.enabled = !this.paused
+        track.enabled = !this.paused && !this.muted
         peer.addTrack(track, microphone)
       }
       peer.ontrack = ({ track }) => {
@@ -244,11 +248,30 @@ export class OpenAILiveConversation {
     this.paused = paused
     if (paused) this.clearInputSpeech()
     this.bridge.setPaused(paused)
-    this.microphone?.getTracks().forEach((track) => { track.enabled = !paused })
-    this.send({ type: paused ? 'session.input_audio.mute' : 'session.input_audio.unmute' })
+    this.gateMicrophone()
     this.send({ type: 'session.instructions.append', delegation_id: null, content: paused
       ? 'The user is answering a request card in the application. Finish what you are saying, then wait; do not delegate until the application resumes.'
       : 'The application is ready for voice conversation. Continue listening and responding normally.' })
+  }
+
+  /** Silence the remote voice at the speaker; the call and its turn-taking carry on. */
+  setOutputMuted(muted: boolean) {
+    this.outputMuted = muted
+    if (this.audio && !this.closed) this.audio.muted = muted
+  }
+
+  /** The person's own mute, independent of a request card's pause. */
+  setMicrophoneMuted(muted: boolean) {
+    if (this.muted === muted) return
+    this.muted = muted
+    this.gateMicrophone()
+  }
+
+  /** The track carries audio only while neither a pause nor a mute holds it; Live is told either way. */
+  private gateMicrophone() {
+    const open = !this.paused && !this.muted
+    this.microphone?.getTracks().forEach((track) => { track.enabled = open })
+    this.send({ type: open ? 'session.input_audio.unmute' : 'session.input_audio.mute' })
   }
 
   setBusy(busy: boolean) { this.bridge.setBusy(busy) }
@@ -340,5 +363,6 @@ export class OpenAILiveConversation {
     if (this.audio) { this.audio.pause(); this.audio.srcObject = null }
     void this.context?.close().catch(() => {})
     this.analyser = null
+    this.outputAnalyser = null
   }
 }

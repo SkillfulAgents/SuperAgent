@@ -1,22 +1,17 @@
-import { AudioLines, AudioLinesOff } from 'lucide-react'
 import { classifyVoiceModeNotice } from '@shared/lib/voice/voice-mode-messages'
 import { ThreadDivider } from '../thread-divider'
 import type { UserMessageKindSpec, UserMessageRenderProps } from './types'
 
 /**
- * A rule across the transcript where the person switched voice mode on or
- * off, drawn like the compact boundary. The notice's text is for the agent,
- * never shown.
+ * A solid rule across the transcript where the person switched voice mode
+ * on or off. The notice's text is for the agent, never shown.
  */
 export function VoiceModeBoundary({ text }: UserMessageRenderProps) {
   const notice = classifyVoiceModeNotice(text) ?? 'entered'
-  const Icon = notice === 'exited' ? AudioLinesOff : AudioLines
   return (
-    <ThreadDivider className="py-2" data-testid="voice-mode-boundary" data-notice={notice}>
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Icon className="h-3 w-3" aria-hidden />
-        <span>{notice === 'exited' ? 'Exited Voice Mode' : 'Entered Voice Mode'}</span>
-      </div>
+    // Edge to edge like the completed-turn summary above it, no side inset.
+    <ThreadDivider solid className="px-0 py-2" data-testid="voice-mode-boundary" data-notice={notice}>
+      <span className="text-xs text-muted-foreground">{notice === 'exited' ? 'Voice mode: off' : 'Voice mode: on'}</span>
     </ThreadDivider>
   )
 }

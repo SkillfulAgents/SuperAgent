@@ -11,6 +11,8 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
 import { VoiceModeComposer } from './voice-mode-composer'
+import { AnimatedHeight } from './animated-height'
+import { useAgent } from '@renderer/hooks/use-agents'
 import { VoiceModeControls, useHoldSoundPreference } from './voice-mode-controls'
 import { useVoiceMode } from '@renderer/hooks/use-voice-mode'
 import { useHoldSound } from '@renderer/hooks/use-hold-sound'
@@ -59,6 +61,20 @@ interface MessageInputProps {
    * person left.
    */
   suspended?: boolean
+}
+
+/**
+ * Whether Space is voice mode's to take: nothing else has handled it, and
+ * focus is on the page itself or on the voice composer outside its controls.
+ * Anywhere else (the message list, a drawer row, the live browser) Space
+ * keeps its own meaning rather than interrupting the agent.
+ */
+function spaceInterruptsVoice(event: KeyboardEvent, frame: HTMLElement | null): boolean {
+  if (event.defaultPrevented) return false
+  const target = event.target
+  if (target === document.body) return true
+  if (!(target instanceof Element) || !frame?.contains(target)) return false
+  return target.closest('button, input, textarea, select, a[href], [role="button"]') === null
 }
 
 export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, initialLlmProviderId, registerSnapshot, suspended = false }: MessageInputProps) {
@@ -357,6 +373,8 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         ? [{ role: message.type, content: message.content.text }]
         : [],
     )), [messages])
+  // The agent's name labels its lines in the voice transcript.
+  const { data: voiceAgent } = useAgent(agentSlug)
   const voice = useVoiceMode({
     sessionId,
     agentSlug,
@@ -366,6 +384,33 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     startWithAgentTurn: openedByVoice,
     history: voiceHistory,
   })
+  // Keys while voice mode is on: Space interrupts the agent (the orb's own
+  // action while it has the floor), ⌘⇧M (Ctrl⇧M) mutes the microphone and
+  // ⌘⇧A (Ctrl⇧A) the agent's voice. Read from the latest render so the
+  // listener is bound once per voice session.
+  const voiceRef = useRef(voice)
+  voiceRef.current = voice
+  const voiceFrameRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!voiceModeOn || isViewOnly) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === ' ' && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+        if (!spaceInterruptsVoice(event, voiceFrameRef.current)) return
+        if (voiceRef.current.phase === 'listening') return
+        voiceRef.current.pressMic()
+        event.preventDefault()
+        return
+      }
+      if (event.defaultPrevented || !(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey) return
+      const key = event.key.toLowerCase()
+      if (key === 'm') voiceRef.current.setMicMuted(!voiceRef.current.micMuted)
+      else if (key === 'a') voiceRef.current.setOutputMuted(!voiceRef.current.outputMuted)
+      else return
+      event.preventDefault()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [voiceModeOn, isViewOnly])
   // Something to hear while the agent works, unless the person muted it.
   const holdSoundWanted = useHoldSoundPreference()
   useHoldSound({
@@ -381,62 +426,67 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     return null
   }
 
-  if (voiceModeOn) {
-    return (
-      <div
-        className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
-        {...composer.dragHandlers}
-      >
-        <MountChoiceDialog
-          open={composer.mountDialog.open}
-          onChoice={composer.mountDialog.onChoice}
-          folderName={composer.mountDialog.folderName}
-        />
-        <VoiceModeComposer
-          phase={voice.phase}
-          utterance={voice.utterance}
-          transcript={voice.transcript}
-          error={voice.error}
-          onClearError={voice.clearError}
-          onPressMic={voice.pressMic}
-          getAnalyser={voice.getAnalyser}
-          onExit={exitVoiceMode}
-          attachments={composer.attachments}
-          onRemoveAttachment={composer.removeAttachment}
-          onRetryAttachment={composer.retryAttachment}
-          attachmentPicker={(
-            <AttachmentPicker
-              onFileSelect={composer.handleFileSelect}
-              onFolderSelect={composer.handleFolderSelect}
-              onRecentFileAttach={(file) => composer.addFiles([{ file }])}
-              disabled={isDisabled}
-            />
-          )}
-          composerOptions={(
-            <ComposerOptions
-              state={composerOptions}
-              disabled={isDisabled || isActive}
-              footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
-            />
-          )}
-          voiceControls={<VoiceModeControls showSpeed={voice.capabilities.speechSpeed} />}
-          footer={(
-            <>
-              {isOffline && (
-                <div className="mt-2 flex items-center justify-center gap-1.5 text-xs text-destructive">
-                  <WifiOff className="h-3 w-3 shrink-0" />
-                  <span>No internet connection. Messages cannot be sent.</span>
-                </div>
-              )}
-              <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2 justify-center" />
-            </>
-          )}
-        />
-      </div>
-    )
-  }
-
-  return (
+  const form = voiceModeOn ? (
+    <div
+      ref={voiceFrameRef}
+      className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      {...composer.dragHandlers}
+    >
+      <MountChoiceDialog
+        open={composer.mountDialog.open}
+        onChoice={composer.mountDialog.onChoice}
+        folderName={composer.mountDialog.folderName}
+      />
+      <VoiceModeComposer
+        phase={voice.phase}
+        ready={voice.ready}
+        agentName={voiceAgent?.name}
+        userSpeaking={voice.userSpeaking}
+        utterance={voice.utterance}
+        transcript={voice.transcript}
+        error={voice.error}
+        onClearError={voice.clearError}
+        onPressMic={voice.pressMic}
+        micMuted={voice.micMuted}
+        onToggleMicMuted={() => voice.setMicMuted(!voice.micMuted)}
+        outputMuted={voice.outputMuted}
+        onToggleOutputMuted={() => voice.setOutputMuted(!voice.outputMuted)}
+        getAnalyser={voice.getAnalyser}
+        getOutputAnalyser={voice.getOutputAnalyser}
+        onExit={exitVoiceMode}
+        attachments={composer.attachments}
+        onRemoveAttachment={composer.removeAttachment}
+        onRetryAttachment={composer.retryAttachment}
+        attachmentPicker={(
+          <AttachmentPicker
+            onFileSelect={composer.handleFileSelect}
+            onFolderSelect={composer.handleFolderSelect}
+            onRecentFileAttach={(file) => composer.addFiles([{ file }])}
+            disabled={isDisabled}
+          />
+        )}
+        composerOptions={(
+          <ComposerOptions
+            state={composerOptions}
+            disabled={isDisabled || isActive}
+            footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
+          />
+        )}
+        voiceControls={<VoiceModeControls showSpeed={voice.capabilities.speechSpeed} />}
+        footer={(
+          <>
+            {isOffline && (
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-destructive">
+                <WifiOff className="h-3 w-3 shrink-0" />
+                <span>No internet connection. Messages cannot be sent.</span>
+              </div>
+            )}
+            <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2" />
+          </>
+        )}
+      />
+    </div>
+  ) : (
     <form
       onSubmit={composer.handleSubmit}
       className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
@@ -465,7 +515,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         filter={slashFilter ?? ''}
       />
       <ChatComposerBox
-        className={FLOATING_COMPOSER_CLASS}
+        className={`${FLOATING_COMPOSER_CLASS} composer-enter-contents`}
         attachments={composer.attachments}
         onRemoveAttachment={composer.removeAttachment}
         onRetryAttachment={composer.retryAttachment}
@@ -546,4 +596,8 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       />
     </form>
   )
+
+  // One frame around either form: it stays mounted across the swap so the
+  // height glides, and the incoming form gets the enter animation.
+  return <AnimatedHeight>{form}</AnimatedHeight>
 }

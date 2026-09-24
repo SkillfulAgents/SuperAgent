@@ -197,7 +197,11 @@ export function SessionChatColumn({
                       <span className="relative z-10" />
                     )}
                     {voiceModeActive ? (
-                      <span className="relative z-10" />
+                      <span className="relative z-10 flex items-center gap-1 text-xs text-muted-foreground" data-testid="voice-mode-hint">
+                        <span>Speak or</span>
+                        <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">Space</kbd>
+                        <span>to Interrupt</span>
+                      </span>
                     ) : (
                       <span className="relative z-10 flex items-center gap-1 text-xs text-muted-foreground">
                         <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>

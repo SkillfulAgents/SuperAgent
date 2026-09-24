@@ -91,6 +91,8 @@ class ReadAloudController {
   private snapshot: ReadAloudSnapshot = READ_ALOUD_IDLE
   private readonly listeners = new Set<() => void>()
   private player: SpeechPlayer | null = null
+  /** Voice mode's speaker mute: silent playback, timing intact. */
+  private muted = false
   /** What is playing, so a restart (speed change) can pick it back up. */
   private current: { id: string; markdown: string } | null = null
   private stream: StreamReading | null = null
@@ -355,7 +357,18 @@ class ReadAloudController {
     const stream = this.stream
     if (!stream || stream.id !== id) return
     stream.ducked = ducked
-    this.player?.setVolume(ducked ? DUCKED_VOLUME : 1)
+    this.player?.setVolume(this.volumeFor(stream))
+  }
+
+  /** Silence playback without stopping it, so the reply still runs to its end on time. */
+  setMuted(muted: boolean): void {
+    this.muted = muted
+    this.player?.setVolume(this.volumeFor(this.stream))
+  }
+
+  private volumeFor(stream: { ducked: boolean } | null | undefined): number {
+    if (this.muted) return 0
+    return stream?.ducked ? DUCKED_VOLUME : 1
   }
 
   /** The turn is over: say what is left, then finish. */
@@ -484,7 +497,7 @@ class ReadAloudController {
     })
     stream.opening = false
     this.player = player
-    if (stream.ducked) player.setVolume(DUCKED_VOLUME)
+    if (stream.ducked || this.muted) player.setVolume(this.volumeFor(stream))
     player.start()
     this.flushStreamWords()
     if (stream.ended) player.end()

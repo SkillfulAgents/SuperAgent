@@ -1,4 +1,6 @@
-import { AudioLines, AudioLinesOff } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { Music2 } from 'lucide-react'
+import { Button } from '@renderer/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { ReadAloudSpeedSelect } from './read-aloud-controls'
 import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
@@ -12,6 +14,41 @@ export function useHoldSoundPreference(): boolean {
 }
 
 /**
+ * A square toggle in voice mode's action row, the size of the exit beside it,
+ * with the row's instant tooltip below. The label names what a click does.
+ */
+export function VoiceToggleButton({ label, pressed, onClick, testId, className, children }: {
+  label: string
+  pressed: boolean
+  onClick: () => void
+  testId: string
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    <TooltipProvider delayDuration={0}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            className={cn('h-[34px] w-[34px]', className)}
+            onClick={onClick}
+            aria-pressed={pressed}
+            aria-label={label}
+            data-testid={testId}
+          >
+            {children}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
+/**
  * The controls under the mic that are voice mode's own: the reading speed
  * and the hold sound, both written to the person's settings so they hold
  * across sessions.
@@ -19,35 +56,23 @@ export function useHoldSoundPreference(): boolean {
 export function VoiceModeControls({ showSpeed = true }: { showSpeed?: boolean }) {
   const holdSound = useHoldSoundPreference()
   const updateUserSettings = useUpdateUserSettings()
-  const label = holdSound ? 'Hold sound on' : 'Hold sound off'
 
   return (
-    <TooltipProvider>
-      <div className="flex items-center gap-0.5" data-testid="voice-mode-controls">
+    <TooltipProvider delayDuration={0}>
+      <div className="flex items-center gap-2" data-testid="voice-mode-controls">
         {showSpeed && <ReadAloudSpeedSelect testId="voice-mode-speed" align="center" />}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              aria-pressed={holdSound}
-              aria-label={label}
-              data-testid="voice-mode-hold-sound"
-              // From the settings as they are when the write runs, not as
-              // shown: two quick clicks toggle twice rather than cancel out.
-              onClick={() => updateUserSettings.mutate((current) => ({ voice: { holdSound: !resolveHoldSound(current.voice?.holdSound) } }))}
-              className={cn(
-                'inline-flex h-6 w-6 items-center justify-center rounded transition-colors',
-                'hover:bg-black/[0.06] hover:text-foreground dark:hover:bg-white/[0.1]',
-                holdSound ? 'text-muted-foreground' : 'text-muted-foreground/50',
-              )}
-            >
-              {holdSound ? <AudioLines className="h-3.5 w-3.5" /> : <AudioLinesOff className="h-3.5 w-3.5" />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            {holdSound ? 'Hold sound while the agent works. Click to mute.' : 'Hold sound muted. Click to play it while the agent works.'}
-          </TooltipContent>
-        </Tooltip>
+        <VoiceToggleButton
+          label={holdSound ? 'Mute hold music' : 'Unmute hold music'}
+          pressed={holdSound}
+          testId="voice-mode-hold-sound"
+          // From the settings as they are when the write runs, not as
+          // shown: two quick clicks toggle twice rather than cancel out.
+          onClick={() => updateUserSettings.mutate((current) => ({ voice: { holdSound: !resolveHoldSound(current.voice?.holdSound) } }))}
+          // Muted reads as off.
+          className={holdSound ? 'text-foreground' : 'text-muted-foreground/60'}
+        >
+          <Music2 className="h-4 w-4" />
+        </VoiceToggleButton>
       </div>
     </TooltipProvider>
   )

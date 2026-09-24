@@ -34,6 +34,7 @@ export class ChainedConversationAdapter implements VoiceConversationAdapter {
   private restarts = 0
   private closed = false
   private paused = false
+  private micMuted = false
   private ready = false
   private assistantSpeaking = false
   private lastAudioAt = -Infinity
@@ -106,6 +107,7 @@ export class ChainedConversationAdapter implements VoiceConversationAdapter {
       },
     })
     this.listener = listener
+    listener.setMuted(this.micMuted)
     try {
       await listener.start()
       if (this.listener !== listener || this.closed) return
@@ -232,6 +234,15 @@ export class ChainedConversationAdapter implements VoiceConversationAdapter {
     })
   }
 
+  setMicrophoneMuted(muted: boolean) {
+    this.micMuted = muted
+    this.listener?.setMuted(muted)
+  }
+
+  setOutputMuted(muted: boolean) {
+    readAloud.setMuted(muted)
+  }
+
   setPaused(paused: boolean) {
     if (this.closed || this.paused === paused) return
     this.paused = paused
@@ -268,6 +279,8 @@ export class ChainedConversationAdapter implements VoiceConversationAdapter {
   close() {
     if (this.closed) return
     this.closed = true
+    // The reader is shared with read-aloud elsewhere: leave it audible.
+    readAloud.setMuted(false)
     this.held = null
     this.unsubscribe?.()
     clearInterval(this.audioMeter)

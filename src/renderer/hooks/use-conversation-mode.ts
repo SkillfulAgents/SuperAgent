@@ -25,6 +25,13 @@ export interface VoiceModeResult extends VoiceConversationSnapshot {
   clearError(): void
   pressMic(): void
   getAnalyser(): AnalyserNode | null
+  getOutputAnalyser(): AnalyserNode | null
+  /** The person's microphone mute, kept across engine restarts and cleared when voice mode ends. */
+  micMuted: boolean
+  setMicMuted(muted: boolean): void
+  /** The speaker mute for the agent's voice, kept the same way. */
+  outputMuted: boolean
+  setOutputMuted(muted: boolean): void
 }
 const IDLE: VoiceConversationSnapshot = {
   phase: 'listening', ready: false, userSpeaking: false, assistantSpeaking: false,
@@ -49,6 +56,10 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
   const [providerError, setProviderError] = useState<string | null>(null)
   const [agentIssue, setAgentIssue] = useState<string | null>(null)
   const [capabilities, setCapabilities] = useState<VoiceConversationAdapter['capabilities']>({ speechSpeed: false, spokenTranscript: false })
+  const [micMuted, setMicMutedState] = useState(false)
+  const micMutedRef = useRef(false)
+  const [outputMuted, setOutputMutedState] = useState(false)
+  const outputMutedRef = useRef(false)
 
   useEffect(() => {
     setSnapshot(IDLE)
@@ -106,6 +117,8 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
     coordinator.current = turns
     setCapabilities(conversation.capabilities)
     conversation.setPaused(latest.current.args.paused ?? false)
+    conversation.setMicrophoneMuted(micMutedRef.current)
+    conversation.setOutputMuted(outputMutedRef.current)
     turns.setPaused(latest.current.args.paused ?? false)
     turns.start(handoff.pending)
     void conversation.start().catch((error: unknown) => {
@@ -119,6 +132,16 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
       if (coordinator.current === turns) coordinator.current = null
     }
   }, [active, engine, sessionId, agentSlug])
+
+  // The mutes last as long as voice mode: leaving it clears them, so the
+  // next entry starts listening and audible.
+  useEffect(() => {
+    if (active) return
+    micMutedRef.current = false
+    setMicMutedState(false)
+    outputMutedRef.current = false
+    setOutputMutedState(false)
+  }, [active])
 
   useEffect(() => {
     // Pause the adapter first so nothing new reaches a paused coordinator;
@@ -141,11 +164,23 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
 
   const pressMic = useCallback(() => adapter.current?.pressMic(), [])
   const getAnalyser = useCallback(() => adapter.current?.analyser ?? null, [])
+  const getOutputAnalyser = useCallback(() => adapter.current?.outputAnalyser ?? null, [])
+  const setMicMuted = useCallback((muted: boolean) => {
+    micMutedRef.current = muted
+    setMicMutedState(muted)
+    adapter.current?.setMicrophoneMuted(muted)
+  }, [])
+  const setOutputMuted = useCallback((muted: boolean) => {
+    outputMutedRef.current = muted
+    setOutputMutedState(muted)
+    adapter.current?.setOutputMuted(muted)
+  }, [])
   const clearError = useCallback(() => { setProviderError(null); setAgentIssue(null) }, [])
   return {
     ...snapshot, engine, capabilities,
     working: active && !paused && snapshot.ready && agent.active,
     speechActive: snapshot.userSpeaking || snapshot.assistantSpeaking,
-    error: agentIssue ?? providerError, clearError, pressMic, getAnalyser,
+    error: agentIssue ?? providerError, clearError, pressMic, getAnalyser, getOutputAnalyser,
+    micMuted, setMicMuted, outputMuted, setOutputMuted,
   }
 }

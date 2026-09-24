@@ -16,6 +16,7 @@ interface FakeListener {
   analyser: null
   start: ReturnType<typeof vi.fn>
   stop: ReturnType<typeof vi.fn>
+  setMuted: ReturnType<typeof vi.fn>
   take: ReturnType<typeof vi.fn>
   discard: ReturnType<typeof vi.fn>
   hear: (text: string) => void
@@ -29,6 +30,7 @@ vi.mock('@renderer/lib/voice/services/listener', () => ({
     analyser = null
     start = vi.fn(async () => {})
     stop = vi.fn()
+    setMuted = vi.fn()
     take = vi.fn(async () => {
       const text = this.utterance.trim()
       this.utterance = ''
@@ -77,6 +79,7 @@ const reader = vi.hoisted(() => {
     nextStreamSegment: vi.fn(),
     endStream: vi.fn(),
     duckStream: vi.fn(),
+    setMuted: vi.fn(),
     stop: vi.fn(() => api.set({ activeId: null, status: 'idle' })),
     unlockAudio: vi.fn(),
   }
@@ -363,6 +366,55 @@ describe('useVoiceMode', () => {
     expect(interruptSession.mutate).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1', agentSlug: 'agent', signal: expect.any(AbortSignal) }), expect.anything())
     expect(result.current.phase).toBe('listening')
     expect(result.current.utterance).toBe(enough)
+  })
+
+  it('muting the agent silences the reader without stopping it, and leaves it audible on exit', () => {
+    const { result, unmount } = setup()
+    act(() => result.current.setOutputMuted(true))
+    expect(result.current.outputMuted).toBe(true)
+    expect(reader.setMuted).toHaveBeenLastCalledWith(true)
+    expect(reader.stop).not.toHaveBeenCalled()
+    unmount()
+    expect(reader.setMuted).toHaveBeenLastCalledWith(false)
+  })
+
+  it('muting the microphone reaches the listener and is applied again to a fresh one', async () => {
+    const { result, listener } = setup()
+    expect(result.current.micMuted).toBe(false)
+    act(() => result.current.setMicMuted(true))
+    expect(result.current.micMuted).toBe(true)
+    expect(listener.setMuted).toHaveBeenCalledWith(true)
+
+    // A listener error restarts capture after a delay: the replacement starts muted too.
+    vi.useFakeTimers()
+    try {
+      act(() => listener.events.onError(new Error('socket dropped')))
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_100) })
+    } finally {
+      vi.useRealTimers()
+    }
+    const replacement = h.listeners[h.listeners.length - 1]
+    expect(replacement).not.toBe(listener)
+    expect(replacement.setMuted).toHaveBeenCalledWith(true)
+
+    act(() => result.current.setMicMuted(false))
+    expect(replacement.setMuted).toHaveBeenLastCalledWith(false)
+  })
+
+  it('leaving voice mode clears both mutes, so the next entry starts listening and audible', () => {
+    const { result, rerender } = setup()
+    act(() => {
+      result.current.setMicMuted(true)
+      result.current.setOutputMuted(true)
+    })
+    rerender({ active: false })
+    expect(result.current.micMuted).toBe(false)
+    expect(result.current.outputMuted).toBe(false)
+
+    rerender({ active: true })
+    const listener = h.listeners[h.listeners.length - 1]
+    expect(listener.setMuted).not.toHaveBeenCalledWith(true)
+    expect(reader.setMuted).toHaveBeenLastCalledWith(false)
   })
 
   it('the mic button sends while listening and interrupts while the agent has the floor', async () => {

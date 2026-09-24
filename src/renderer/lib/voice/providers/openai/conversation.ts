@@ -38,6 +38,7 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
   }
 
   get analyser() { return this.conversation.analyser }
+  get outputAnalyser() { return this.conversation.outputAnalyser }
   async start() {
     if (this.closed) return
     this.releaseAudio ??= readAloud.suspend()
@@ -64,6 +65,8 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
   }
 
   setPaused(paused: boolean) { this.paused = paused; this.conversation.setPaused(paused); this.publish() }
+  setMicrophoneMuted(muted: boolean) { this.conversation.setMicrophoneMuted(muted) }
+  setOutputMuted(muted: boolean) { this.conversation.setOutputMuted(muted) }
   pressMic() { if (!this.closed && !this.paused) this.conversation.pressMic(this.state.active || this.assistantSpeaking) }
   close() { this.closed = true; this.conversation.close(); this.releaseAudio?.(); this.releaseAudio = null }
 

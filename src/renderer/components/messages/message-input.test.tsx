@@ -173,6 +173,77 @@ describe('MessageInput', () => {
       expect(screen.getByTestId('voice-mode-button')).toBeInTheDocument()
     })
 
+    it('Space interrupts, and ⌘⇧M / ⌘⇧A toggle the microphone and agent mutes while voice mode is on', async () => {
+      mockCanUseVoiceMode = true
+      const setMicMuted = vi.fn()
+      const setOutputMuted = vi.fn()
+      const pressMic = vi.fn()
+      const voiceState = {
+        phase: 'speaking' as 'listening' | 'thinking' | 'speaking', working: true, hold: { allowed: false, delayMs: 700 },
+        capabilities: { speechSpeed: true, spokenTranscript: false }, utterance: '', error: null,
+        clearError: vi.fn(), pressMic, getAnalyser: () => null, getOutputAnalyser: () => null,
+        micMuted: false, setMicMuted, outputMuted: true, setOutputMuted,
+      }
+      mockUseVoiceMode.mockImplementation(() => voiceState)
+      try {
+        renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+        await userEvent.keyboard('{Meta>}{Shift>}m{/Shift}{/Meta}')
+        expect(setMicMuted).not.toHaveBeenCalled()
+
+        await userEvent.click(screen.getByTestId('voice-mode-button'))
+        // A focused control keeps its own Space: here it presses the speaker button, not the orb.
+        screen.getByTestId('voice-mode-mute-output').focus()
+        await userEvent.keyboard(' ')
+        expect(pressMic).not.toHaveBeenCalled()
+        expect(setOutputMuted).toHaveBeenCalledTimes(1)
+        ;(document.activeElement as HTMLElement | null)?.blur()
+        await userEvent.keyboard(' ')
+        expect(pressMic).toHaveBeenCalledTimes(1)
+        // Focus elsewhere in the app keeps Space: a scrollable list, a drawer row, or a
+        // handler (the live browser) that already took the key.
+        const list = document.body.appendChild(Object.assign(document.createElement('div'), { tabIndex: 0 }))
+        const row = document.body.appendChild(Object.assign(document.createElement('div'), { tabIndex: 0 }))
+        row.setAttribute('role', 'button')
+        try {
+          for (const element of [list, row]) {
+            element.focus()
+            await userEvent.keyboard(' ')
+          }
+          list.addEventListener('keydown', (event) => event.preventDefault())
+          list.focus()
+          await userEvent.keyboard(' ')
+          expect(pressMic).toHaveBeenCalledTimes(1)
+          // The voice composer's own surface is voice mode's.
+          const surface = screen.getByTestId('voice-mode-composer')
+          surface.tabIndex = -1
+          surface.focus()
+          await userEvent.keyboard(' ')
+          expect(pressMic).toHaveBeenCalledTimes(2)
+        } finally {
+          list.remove()
+          row.remove()
+        }
+        // While it is the person's turn there is nothing to interrupt.
+        voiceState.phase = 'listening'
+        await userEvent.keyboard(' ')
+        expect(pressMic).toHaveBeenCalledTimes(2)
+
+        await userEvent.keyboard('{Meta>}{Shift>}m{/Shift}{/Meta}')
+        expect(setMicMuted).toHaveBeenCalledWith(true)
+        await userEvent.keyboard('{Control>}{Shift>}a{/Shift}{/Control}')
+        expect(setOutputMuted).toHaveBeenCalledWith(false)
+        // Plain letters and the meta key alone are left to the app.
+        await userEvent.keyboard('m')
+        await userEvent.keyboard('{Meta>}m{/Meta}')
+        expect(setMicMuted).toHaveBeenCalledTimes(1)
+
+        await userEvent.click(screen.getByTestId('voice-mode-exit'))
+        await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledTimes(2))
+      } finally {
+        mockUseVoiceMode.mockReset()
+      }
+    })
+
     it('pauses behind a request card rather than ending, and resumes after it', async () => {
       mockCanUseVoiceMode = true
       const { rerender } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
