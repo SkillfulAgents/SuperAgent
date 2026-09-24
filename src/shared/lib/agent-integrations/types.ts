@@ -1,3 +1,4 @@
+import type { IntegrationTransport } from './transport'
 import type { IntegrationCapability } from './public'
 import type { AgentActor } from '../agent-actor'
 import type { SessionActivity, SessionMetadata } from '../types/agent'
@@ -154,4 +155,9 @@ export interface AgentIntegrationDefinition {
   managementCapabilities?: readonly IntegrationCapability[]
   settings: readonly { key: string; label: string; type: 'boolean' }[]
   setup: { kind: string; credentialFields: readonly string[] }
+  /**
+   * How it can receive events; `['direct']` when omitted. A provider without
+   * `direct` can't be set up while the host has no webhook relay.
+   */
+  transports?: readonly IntegrationTransport[]
 }
