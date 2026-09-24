@@ -4,6 +4,7 @@ import { render, screen } from '@testing-library/react'
 
 const useUserMock = vi.fn()
 const platformConnectMock = vi.fn()
+const billingInfoMock = vi.fn()
 
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => useUserMock(),
@@ -15,7 +16,7 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-billing-info', () => ({
-  useBillingInfo: () => ({ data: undefined, isLoading: false, isFetching: false, error: null, refetch: vi.fn() }),
+  useBillingInfo: () => billingInfoMock(),
 }))
 
 vi.mock('@renderer/hooks/use-cloud-workspace', () => ({
@@ -46,6 +47,46 @@ function disconnected() {
     isLoadingPlatformAuth: false,
   }
 }
+
+function connectedAuth(role: string | null) {
+  return {
+    ...disconnected(),
+    isConnected: true,
+    platformAuth: {
+      connected: true,
+      email: 'a@example.com',
+      orgId: 'org_1',
+      orgName: 'Acme',
+      role,
+      updatedAt: null,
+      platformBaseUrl: 'https://platform.example.com',
+    },
+  }
+}
+
+const configuredBilling = {
+  billing: {
+    configured: true,
+    subscription: { status: 'active', paymentStatus: 'ok' },
+    seat: null,
+    orgPool: { poolBalanceCents: 0 },
+  },
+}
+
+const unconfiguredBilling = {
+  billing: { configured: false },
+}
+
+beforeEach(() => {
+  useUserMock.mockReturnValue(localUser)
+  billingInfoMock.mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isFetching: false,
+    error: null,
+    refetch: vi.fn(),
+  })
+})
 
 describe('PlatformTab profile section', () => {
   beforeEach(() => {
@@ -106,5 +147,69 @@ describe('PlatformTab after connect', () => {
     render(<PlatformTab />)
     expect(screen.getByText('Connected.')).toBeInTheDocument()
     expect(screen.getByTestId('stale-agents-notice')).toBeInTheDocument()
+  })
+})
+
+describe('PlatformTab billing role gate', () => {
+  beforeEach(() => {
+    billingInfoMock.mockReturnValue({
+      data: configuredBilling,
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    })
+  })
+
+  it('shows Manage billing for owners', () => {
+    platformConnectMock.mockReturnValue(connectedAuth('owner'))
+    render(<PlatformTab />)
+    expect(screen.getByRole('button', { name: /Manage/ })).toBeInTheDocument()
+  })
+
+  it('shows Manage billing for admins', () => {
+    platformConnectMock.mockReturnValue(connectedAuth('admin'))
+    render(<PlatformTab />)
+    expect(screen.getByRole('button', { name: /Manage/ })).toBeInTheDocument()
+  })
+
+  it('shows Manage billing when the role is unknown (platform enforces access)', () => {
+    platformConnectMock.mockReturnValue(connectedAuth(null))
+    render(<PlatformTab />)
+    expect(screen.getByRole('button', { name: /Manage/ })).toBeInTheDocument()
+  })
+
+  it('hides Manage billing for members', () => {
+    platformConnectMock.mockReturnValue(connectedAuth('member'))
+    render(<PlatformTab />)
+    expect(screen.queryByText('Manage billing on the web')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Manage/ })).not.toBeInTheDocument()
+  })
+
+  it('hides Set up for members when billing is unconfigured', () => {
+    billingInfoMock.mockReturnValue({
+      data: unconfiguredBilling,
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    })
+    platformConnectMock.mockReturnValue(connectedAuth('member'))
+    render(<PlatformTab />)
+    expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument()
+    expect(screen.getByText('Managed by workspace admins')).toBeInTheDocument()
+  })
+
+  it('shows Set up for owners when billing is unconfigured', () => {
+    billingInfoMock.mockReturnValue({
+      data: unconfiguredBilling,
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    })
+    platformConnectMock.mockReturnValue(connectedAuth('owner'))
+    render(<PlatformTab />)
+    expect(screen.getByRole('button', { name: 'Set up' })).toBeInTheDocument()
   })
 })
