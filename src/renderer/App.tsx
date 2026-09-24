@@ -10,6 +10,7 @@ import { DraftsProvider } from './context/drafts-context'
 import { SearchProvider } from './context/search-context'
 import { Toaster } from './components/ui/sonner'
 import { ErrorBoundary } from './components/ui/error-boundary'
+import { MockProvidersSwitcher } from './components/dev/mock-providers-switcher'
 import { router } from './router'
 
 /**
@@ -38,6 +39,7 @@ export default function App() {
                     <ErrorBoundary>
                       <RouterMount />
                       <Toaster />
+                      {import.meta.env.DEV && <MockProvidersSwitcher />}
                     </ErrorBoundary>
                   </SearchProvider>
                 </DraftsProvider>

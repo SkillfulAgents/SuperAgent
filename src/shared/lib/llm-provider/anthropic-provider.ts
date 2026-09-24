@@ -7,7 +7,7 @@ import { ANTHROPIC_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
 
 export class AnthropicLlmProvider extends BaseLlmProvider {
   readonly id = 'anthropic' as const
-  readonly name = 'Anthropic'
+  readonly name = 'Anthropic API'
   readonly defaultModelOptions = CLAUDE_DEFAULT_MODEL_OPTIONS
   readonly catalogDefaultModels = ANTHROPIC_CATALOG_DEFAULT_MODELS
   // Anthropic's own API is where deferred tool loading is expanded server-side.

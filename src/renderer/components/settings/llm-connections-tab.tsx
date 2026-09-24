@@ -1,15 +1,15 @@
 import { ProviderUsage } from './provider-usage'
+import { ProviderLogo } from './provider-logo'
 import { SubscriptionSignIn } from './subscription-sign-in'
 import { CopyableValue, SetupPanel, SetupSteps } from './setup-steps'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import { withGlobalModelPricing } from '@shared/lib/llm-provider/global-pricing'
 import type { GlobalModelPricing } from '@shared/lib/llm-provider/global-pricing-schema'
 import { useCallback, useId, useState, type ReactNode } from 'react'
-import { ChevronDown, Globe, MoreHorizontal, Plus, Pencil, Trash2 } from 'lucide-react'
+import { ChevronDown, MoreHorizontal, Plus, Pencil, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
-import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { Switch } from '@renderer/components/ui/switch'
 import { Input } from '@renderer/components/ui/input'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/components/ui/collapsible'
@@ -50,39 +50,6 @@ const providers = {
   openrouter: 'OpenRouter',
   bedrock: 'AWS Bedrock',
   generic: 'Generic',
-}
-// Tints a bundled monochrome brand glyph (same mask approach as the Usage tab). `color` defaults to the
-// text color, so marks whose brand is black/white follow the theme.
-// provider-icons/ holds Simple Icons glyphs (CC0): anthropic/openrouter from 16.32.0, aws from 10.x (removed
-// later) recolored to AWS's squid-ink wordmark and orange smile. model-icons/anthropic.svg is the Claude spark.
-function BrandMark({ src, color = 'currentColor' }: { src: string; color?: string }) {
-  const url = `url("${import.meta.env.BASE_URL}${src}")`
-  return (
-    <span
-      className="h-5 w-5 text-foreground"
-      style={{ backgroundColor: color, maskImage: url, maskSize: 'contain', maskRepeat: 'no-repeat', maskPosition: 'center', WebkitMaskImage: url, WebkitMaskSize: 'contain', WebkitMaskRepeat: 'no-repeat', WebkitMaskPosition: 'center' }}
-      aria-hidden="true"
-    />
-  )
-}
-// Card logos in brand color. Anthropic, xAI and OpenAI marks are officially black/white, so they follow the theme.
-function ProviderLogo({ provider }: { provider: keyof typeof providers }) {
-  switch (provider) {
-    case 'anthropic':
-      return <BrandMark src="provider-icons/anthropic.svg" />
-    case 'claude-subscription':
-      return <BrandMark src="model-icons/anthropic.svg" color="#D97757" />
-    case 'grok-subscription':
-      return <ModelIcon icon="xai" className="h-5 w-5" />
-    case 'codex-subscription':
-      return <ModelIcon icon="openai" className="h-5 w-5" />
-    case 'bedrock':
-      return <img src={`${import.meta.env.BASE_URL}provider-icons/aws.svg`} alt="" aria-hidden="true" className="h-5 w-5 object-contain" />
-    case 'openrouter':
-      return <BrandMark src="provider-icons/openrouter.svg" color="#94A3B8" />
-    case 'generic':
-      return <Globe className="h-5 w-5 text-sky-500" aria-hidden="true" />
-  }
 }
 // Example names for the connection-name placeholder.
 const nameExamples: Record<keyof typeof providers, string> = {

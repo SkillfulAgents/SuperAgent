@@ -11,17 +11,15 @@ interface ProgressProps extends HTMLAttributes<HTMLDivElement> {
    * not read as "failing" at 3%).
    */
   thresholds?: { warning: number; critical: number }
-  /** Strict consumed thresholds, independent of remaining-percent thresholds. */
-  consumedThresholds?: { warning: number; critical: number }
   className?: string
+  /** Fill color override for a bar without thresholds. */
+  fillClassName?: string
 }
 
-export function Progress({ percent, thresholds, consumedThresholds, className, ...props }: ProgressProps) {
+export function Progress({ percent, thresholds, className, fillClassName, ...props }: ProgressProps) {
   const pct = Math.max(0, Math.min(100, percent))
-  const color = consumedThresholds
-    ? percent > consumedThresholds.critical ? 'bg-red-500' : percent > consumedThresholds.warning ? 'bg-orange-500' : 'bg-primary'
-    : !thresholds
-    ? 'bg-primary'
+  const color = !thresholds
+    ? fillClassName ?? 'bg-primary'
     : pct <= thresholds.critical
       ? 'bg-red-500'
       : pct <= thresholds.warning

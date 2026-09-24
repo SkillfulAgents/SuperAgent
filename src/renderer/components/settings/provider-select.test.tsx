@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ProviderSelect } from './provider-select'
 import { connectionInfoSchema } from '@shared/lib/llm-provider/connection-schema'
@@ -33,6 +33,25 @@ describe('provider dropdown with usage', () => {
     usageReads.mockClear()
     expect(screen.queryByText('5h: 100% used; Weekly: 85% used')).not.toBeInTheDocument()
     expect(usageReads).not.toHaveBeenCalled()
+  })
+  it('keeps rows above the highlight open until the pointer leaves, collapsing rows below at once', async () => {
+    const three = [...connections, connectionInfoSchema.parse({ ...connections[0], id: 'Platform', name: 'Platform' })]
+    render(<ProviderSelect connections={three} value="Codex" onChange={vi.fn()} />)
+    await userEvent.click(screen.getByRole('combobox'))
+    const open = () => three.filter(c => screen.getByRole('option', { name: c.name }).querySelector('[data-expanded]')).map(c => c.name)
+    fireEvent.focus(screen.getByRole('option', { name: 'Grok' }))
+    fireEvent.focus(screen.getByRole('option', { name: 'Platform' }))
+    expect(open()).toEqual(['Codex', 'Grok', 'Platform'])
+    fireEvent.focus(screen.getByRole('option', { name: 'Grok' }))
+    expect(open()).toEqual(['Codex', 'Grok'])
+    fireEvent.pointerLeave(screen.getByRole('listbox'))
+    expect(open()).toEqual([])
+  })
+  it('always lists Platform first', async () => {
+    const platform = connectionInfoSchema.parse({ ...connections[0], id: 'Platform', name: 'Platform', provider: 'platform' })
+    render(<ProviderSelect connections={[...connections, platform]} value="Codex" onChange={vi.fn()} />)
+    await userEvent.click(screen.getByRole('combobox'))
+    expect(screen.getAllByRole('option').map(o => o.getAttribute('aria-label'))).toEqual(['Platform', 'Codex', 'Grok'])
   })
   it('preserves the single-connection picker with no extra dropdown', () => {
     const { container } = render(<ProviderSelect connections={connections.slice(0, 1)} value="Codex" onChange={vi.fn()} />)
