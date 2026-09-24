@@ -612,12 +612,16 @@ export class AgentIntegrationManager {
       }
     })
 
-    conn.errorUnsubscribe = connector.onError(async (error) => {
+    const errorUnsubscribe = connector.onError(async (error) => {
       console.error(`[AgentIntegrationManager] Connector error for ${integration.id}:`, error)
       reportError(error, 'connector-error', { integrationId: integration.id, provider: integration.provider, agentSlug: integration.agentSlug })
       try { await this.writeStatus(integration.id, generation, 'error', error.message) } catch { /* best-effort */ }
       this.emitNotification(integration, 'error', error.message)
     })
+    const recoveredUnsubscribe = connector.onRecovered(() => {
+      void this.writeStatus(integration.id, generation, 'active', null).catch(() => { /* best-effort */ })
+    })
+    conn.errorUnsubscribe = () => { errorUnsubscribe(); recoveredUnsubscribe() }
 
     this.connections.set(integration.id, conn)
 

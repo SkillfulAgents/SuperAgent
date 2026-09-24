@@ -12,6 +12,7 @@ export abstract class AgentIntegration {
   abstract readonly definition: AgentIntegrationDefinition
   private eventHandlers = new Set<(event: IntegrationEvent) => void | Promise<void>>()
   protected errorHandlers: Array<(error: Error) => void> = []
+  private recoveredHandlers = new Set<() => void>()
 
   private runtimeHost?: IntegrationHost
   protected get host(): IntegrationHost {
@@ -56,6 +57,16 @@ export abstract class AgentIntegration {
   onError(handler: (error: Error) => void): () => void {
     this.errorHandlers.push(handler)
     return () => { this.errorHandlers = this.errorHandlers.filter(h => h !== handler) }
+  }
+
+  onRecovered(handler: () => void): () => void {
+    this.recoveredHandlers.add(handler)
+    return () => { this.recoveredHandlers.delete(handler) }
+  }
+
+  /** The transport is healthy again after an emitted error. */
+  protected emitRecovered(): void {
+    for (const handler of this.recoveredHandlers) handler()
   }
 
   protected emitError(error: Error): void {
