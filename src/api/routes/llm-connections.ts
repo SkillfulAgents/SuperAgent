@@ -1,6 +1,7 @@
 import { readConnectionUsage } from '@shared/lib/llm-provider/connection-usage'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { startOAuthLogin, pollOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
+import { OAUTH_PROVIDER_IDS } from '@shared/lib/llm-provider/provider-types'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { Authenticated, IsAdmin } from '../middleware/auth'
@@ -40,9 +41,8 @@ routes.onError((error, c) =>
   )
 )
 routes.post('/oauth/:provider/start', async c => {
-  const provider = z.enum(['grok', 'codex']).parse(c.req.param('provider'))
-  const providerId = provider === 'codex' ? 'codex-subscription' : 'grok-subscription'
-  const input = z.object({ id: z.string().optional(), userId: z.string().nullable() }).parse(await c.req.json())
+  const providerId = z.enum(OAUTH_PROVIDER_IDS).parse(`${c.req.param('provider')}-subscription`)
+  const input = z.object({ id: z.string().optional(), userId: z.string().nullable(), region: z.string().optional() }).parse(await c.req.json())
   const actor = viewer(c)
   if (input.id) {
     const row = await getConnection(input.id)
@@ -51,7 +51,7 @@ routes.post('/oauth/:provider/start', async c => {
   }
   if (input.userId === null ? !actor.admin : input.userId !== actor.userId) throw new Error('Cannot manage this connection')
   c.header('Cache-Control', 'no-store')
-  return c.json(await startOAuthLogin(actor, input.userId, input.id, providerId))
+  return c.json(await startOAuthLogin(actor, input.userId, input.id, providerId, { region: input.region }))
 })
 routes.post('/oauth/:id/poll', async c => {
   c.header('Cache-Control', 'no-store')

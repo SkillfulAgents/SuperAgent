@@ -80,3 +80,16 @@ export function parseGrokUsage(raw: unknown): ProviderUsage {
   if (prepaid != null) limits.push({ kind: 'balance', id: 'prepaid', label: 'Prepaid credits', remaining: prepaid / 100, unit: 'USD' })
   return usageSnapshot(limits)
 }
+
+const kimiWindow = z.object({ used_ratio: z.number().finite().min(0).nullish().catch(undefined), reset_time: timestamp }).nullish().catch(undefined)
+export const kimiUsageSchema = z.object({ usages: z.object({
+  limit_5h: kimiWindow, limit_7d: kimiWindow, limit_month_total: kimiWindow,
+}).nullish().catch(undefined) })
+
+export function parseKimiUsage(raw: unknown): ProviderUsage {
+  const usages = kimiUsageSchema.parse(raw).usages
+  const windows = [['5h', '5-hour', usages?.limit_5h], ['7d', 'Weekly', usages?.limit_7d], ['month', 'Monthly', usages?.limit_month_total]] as const
+  const limits: UsageLimit[] = windows.flatMap(([id, label, window]): UsageLimit[] => window?.used_ratio == null ? []
+    : [{ kind: 'window', id, label, usedPercent: window.used_ratio * 100, resetsAt: window.reset_time ?? undefined }])
+  return usageSnapshot(limits)
+}

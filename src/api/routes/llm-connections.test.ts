@@ -19,6 +19,7 @@ vi.mock('@shared/lib/llm-provider/grok-oauth', () => ({
   pollGrokLogin: async () => ({ credential: { accessToken: 'private-oauth-access', refreshToken: 'private-oauth-refresh', expiresAt: Date.now() + 3600000, accountLabel: 'Alice Grok' } }),
 }))
 vi.mock('@shared/lib/llm-provider/codex-oauth', () => ({
+  refreshCodexCredential: state.refresh,
   startCodexLogin: async () => ({ device: { device_code: 'private-codex-device', user_code: 'CODE', verification_uri: 'https://auth.openai.com/codex/device', expires_in: 900, interval: 5 }, endpoints: { token_endpoint: 'https://auth.openai.com/oauth/token' } }),
   pollCodexLogin: async () => ({ credential: { accessToken: 'private-codex-access', refreshToken: 'private-codex-refresh', expiresAt: Date.now() + 3600000, accountId: 'account', accountLabel: 'Alice Codex' } }),
 }))

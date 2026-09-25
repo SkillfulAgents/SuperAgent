@@ -1,12 +1,35 @@
 import { startCodexLogin, pollCodexLogin } from './codex-oauth'
 import { randomUUID } from 'node:crypto'
 import { startGrokLogin, pollGrokLogin } from './grok-oauth'
+import { startKimiLogin, pollKimiLogin, kimiRegion } from './kimi-oauth'
 import type { OAuthCredential } from './oauth-schema'
 import type { ConnectionViewer } from './connections'
+import type { OAuthProvider } from './provider-types'
+export type { OAuthProvider } from './provider-types'
 
-export type OAuthProvider = 'grok-subscription' | 'codex-subscription'
+type Device = { device_code: string; user_code: string; verification_uri: string; verification_uri_complete?: string; expires_in: number; interval: number }
+type PollResult = { pending: 'authorization_pending' | 'slow_down' } | { credential: OAuthCredential }
+type DeviceFlow = { device: Device; poll: () => Promise<PollResult> }
+// Each flow validates the options it understands; others ignore them.
+export type OAuthLoginOptions = { region?: string }
 
-type Login = Awaited<ReturnType<typeof startGrokLogin>> & {
+const flows: Record<OAuthProvider, (options: OAuthLoginOptions) => Promise<DeviceFlow>> = {
+  'grok-subscription': async () => {
+    const { device, endpoints } = await startGrokLogin()
+    return { device, poll: () => pollGrokLogin(device.device_code, endpoints.token_endpoint, endpoints.userinfo_endpoint) }
+  },
+  'codex-subscription': async () => {
+    const { device } = await startCodexLogin()
+    return { device, poll: () => pollCodexLogin(device.device_code, device.user_code) }
+  },
+  'kimi-subscription': async options => {
+    const region = kimiRegion(options.region)
+    const { device } = await startKimiLogin(region)
+    return { device, poll: () => pollKimiLogin(device.device_code, region) }
+  },
+}
+
+type Login = DeviceFlow & {
   provider: OAuthProvider
   actor: string | null
   owner: string | null
@@ -24,10 +47,10 @@ function requireLogin(id: string, viewer: ConnectionViewer) {
   }
   return login
 }
-export async function startOAuthLogin(viewer: ConnectionViewer, owner: string | null, connectionId?: string, provider: OAuthProvider = 'grok-subscription') {
+export async function startOAuthLogin(viewer: ConnectionViewer, owner: string | null, connectionId?: string, provider: OAuthProvider = 'grok-subscription', options: OAuthLoginOptions = {}) {
   for (const [id, login] of logins) if (login.expiresAt < Date.now()) logins.delete(id)
   if (logins.size >= 100) throw new Error('Too many pending sign-ins. Please retry shortly.')
-  const result = provider === 'codex-subscription' ? await startCodexLogin() : await startGrokLogin()
+  const result = await flows[provider](options)
   const id = randomUUID()
   const expiresAt = Date.now() + result.device.expires_in * 1000
   logins.set(id, { ...result, provider, actor: viewer.userId, owner, connectionId, expiresAt, nextPollAt: 0 })
@@ -38,9 +61,7 @@ export async function pollOAuthLogin(id: string, viewer: ConnectionViewer) {
   if (!login.credential && Date.now() >= login.nextPollAt) {
     login.polling ??= (async () => {
       login.nextPollAt = Date.now() + login.device.interval * 1000
-      const result = login.provider === 'codex-subscription'
-        ? await pollCodexLogin(login.device.device_code, login.device.user_code)
-        : await pollGrokLogin(login.device.device_code, login.endpoints.token_endpoint, login.endpoints.userinfo_endpoint)
+      const result = await login.poll()
       if ('credential' in result) login.credential = result.credential
       else if (result.pending === 'slow_down') {
         login.device.interval += 5

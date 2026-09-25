@@ -2,16 +2,29 @@ import { useEffect, useState } from 'react'
 import { CheckCircle2, ExternalLink, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { apiFetch } from '@renderer/lib/api'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
 import { CopyableValue, SetupPanel, SetupSteps } from './setup-steps'
 
-export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, accountLabel, onConnected }: {
-  provider?: 'grok' | 'codex'
+export type SubscriptionSignInProvider = 'grok' | 'codex' | 'kimi'
+type Region = { value: string; label: string }
+export const SIGN_IN: Record<SubscriptionSignInProvider, { name: string; account: string; note?: string; regions?: Region[] }> = {
+  grok: { name: 'Grok', account: 'X or xAI account' },
+  codex: { name: 'Codex', account: 'ChatGPT account',
+    note: 'Pick a separate API-capable summarizer if this becomes the app default. Fast mode uses more subscription credits.' },
+  kimi: { name: 'Kimi', account: 'Kimi account',
+    regions: [{ value: 'us', label: 'US (kimi.ai)' }, { value: 'cn', label: 'China (kimi.com)' }] },
+}
+
+export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, accountLabel, region: savedRegion, onConnected }: {
+  provider?: SubscriptionSignInProvider
   connectionId?: string
   userId: string | null
   accountLabel?: string
+  region?: string
   onConnected: (id: string, label: string) => void
 }) {
-  const name = provider === 'codex' ? 'Codex' : 'Grok'
+  const { name, account, note, regions } = SIGN_IN[provider]
+  const [region, setRegion] = useState(savedRegion ?? regions?.[0].value)
   const [login, setLogin] = useState<{ id: string; url: string; code: string; interval: number }>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -42,7 +55,7 @@ export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, ac
     setBusy(true); setError(''); setLogin(undefined)
     try {
       const response = await apiFetch(`/api/llm-connections/oauth/${provider}/start`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: connectionId, userId }),
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: connectionId, userId, region }),
       })
       const result = await response.json()
       if (!response.ok) throw new Error(result.error ?? 'Could not start sign-in')
@@ -50,10 +63,7 @@ export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, ac
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not start sign-in') }
     finally { setBusy(false) }
   }
-  const account = provider === 'codex' ? 'ChatGPT account' : 'X or xAI account'
-  const notes = [
-    provider === 'codex' && 'Pick a separate API-capable summarizer if this becomes the app default. Fast mode uses more subscription credits.',
-  ]
+  const notes = [note]
   const signInButton = (
     <Button type="button" className="mt-2 w-fit" disabled={busy} onClick={() => void start()}>
       {busy ? 'Starting sign-in…' : `Sign in with ${name}`}
@@ -109,6 +119,14 @@ export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, ac
     ) : (
       <div className="space-y-3">
         <p>Sign in with the {account} that has your {name} subscription.</p>
+        {regions && (
+          <Select value={region} onValueChange={setRegion}>
+            <SelectTrigger className="w-fit" aria-label={`${name} region`}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {regions.map(({ value, label }) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
         {signInButton}
       </div>
     )}

@@ -34,7 +34,12 @@ import type {
   ConnectionConfig,
   ModelSelection,
 } from '@shared/lib/llm-provider/connection-schema'
-import type { LlmProviderId } from '@shared/lib/llm-provider/provider-types'
+import { isOAuthProvider, type LlmProviderId, type OAuthProvider } from '@shared/lib/llm-provider/provider-types'
+import { SIGN_IN, type SubscriptionSignInProvider } from './subscription-sign-in'
+
+const SIGN_IN_PROVIDER: Record<OAuthProvider, SubscriptionSignInProvider> = {
+  'grok-subscription': 'grok', 'codex-subscription': 'codex', 'kimi-subscription': 'kimi',
+}
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
 // Shared by connection rows and the Add connection row so the list keeps one row height.
@@ -47,6 +52,7 @@ const providers = {
   'claude-subscription': 'Claude Subscription',
   'grok-subscription': 'Grok Subscription',
   'codex-subscription': 'Codex Subscription',
+  'kimi-subscription': 'Kimi Subscription',
   openrouter: 'OpenRouter',
   bedrock: 'AWS Bedrock',
   generic: 'Generic',
@@ -57,6 +63,7 @@ const nameExamples: Record<keyof typeof providers, string> = {
   'claude-subscription': 'Personal Claude Max',
   'grok-subscription': 'Personal Grok',
   'codex-subscription': 'Work ChatGPT Pro',
+  'kimi-subscription': 'Personal Kimi Code',
   openrouter: 'Shared OpenRouter',
   bedrock: 'Bedrock us-east-1',
   generic: 'Local vLLM server',
@@ -67,6 +74,7 @@ const providerDescriptions: Record<keyof typeof providers, string> = {
   'claude-subscription': 'Use your Claude Pro or Max plan through a Claude Code setup token.',
   'grok-subscription': 'Sign in with your xAI account to use your Grok subscription.',
   'codex-subscription': 'Sign in with ChatGPT to use your Codex subscription.',
+  'kimi-subscription': 'Sign in with your Kimi account to use your Kimi Code membership.',
   openrouter: 'Multi-model access through a single API key.',
   bedrock: 'AWS managed Claude inference with IAM or API key credentials.',
   generic: 'Any Anthropic- or OpenAI-compatible endpoint at a base URL.',
@@ -373,7 +381,7 @@ function ConnectionEditor({
   const connected = useCallback((id: string, label: string) => {
     setOAuthLoginId(id)
     setAccountLabel(label)
-    setName(current => current.trim() ? current : `${provider === 'codex-subscription' ? 'Codex' : 'Grok'} - ${label}`)
+    if (isOAuthProvider(provider)) setName(current => current.trim() ? current : `${SIGN_IN[SIGN_IN_PROVIDER[provider]].name} - ${label}`)
   }, [provider])
   const [apiFormat, setApiFormat] = useState<NonNullable<ConnectionConfig['apiFormat']>>(existing?.apiFormat ?? 'messages')
   const [chatTokenLimitField, setChatTokenLimitField] = useState<NonNullable<ConnectionConfig['chatTokenLimitField']>>(existing?.chatTokenLimitField ?? 'max_completion_tokens')
@@ -386,7 +394,7 @@ function ConnectionEditor({
   const [envName, setEnvName] = useState('')
   const [envValue, setEnvValue] = useState('')
   // Subscriptions check their token on first use instead; managed connections have nothing to enter.
-  const canValidate = !existing?.managed && provider !== 'claude-subscription' && provider !== 'grok-subscription' && provider !== 'codex-subscription'
+  const canValidate = !existing?.managed && provider !== 'claude-subscription' && !isOAuthProvider(provider)
   // A new connection has nothing to check until a credential is entered; a saved one validates its stored credential.
   const hasCredentialToValidate = !!existing || apiKey.trim() !== '' || (provider === 'bedrock' && accessKey.trim() !== '' && secretKey.trim() !== '')
   // null marks a removed variable (sent so the server deletes it); undefined is a saved value left unchanged.
@@ -488,7 +496,7 @@ function ConnectionEditor({
           </Select>
         </FieldRow>
       )}
-      {provider !== 'platform' && provider !== 'grok-subscription' && provider !== 'codex-subscription' && (
+      {provider !== 'platform' && !isOAuthProvider(provider) && (
         <div className="grid gap-2 text-sm">
           <label htmlFor={`${formId}-apiKey`}>{provider === 'claude-subscription' ? 'Subscription token' : 'API key'}</label>
           <div className="flex gap-2">
@@ -511,7 +519,7 @@ function ConnectionEditor({
         </div>
       )}
       {provider === 'claude-subscription' && <ClaudeSetupTokenSteps />}
-      {(provider === 'grok-subscription' || provider === 'codex-subscription') && <SubscriptionSignIn provider={provider === 'codex-subscription' ? 'codex' : 'grok'} key={`${provider}:${owner ?? 'global'}`} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} onConnected={connected} />}
+      {isOAuthProvider(provider) && <SubscriptionSignIn provider={SIGN_IN_PROVIDER[provider]} key={`${provider}:${owner ?? 'global'}`} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} region={existing?.region} onConnected={connected} />}
       {provider === 'generic' && (
         <div className="grid gap-2 text-sm">
           <label htmlFor={`${formId}-apiFormat`}>API format</label>
@@ -666,14 +674,14 @@ function ConnectionEditor({
             <CatalogEditor
               providerId={provider}
               llmProviderId={existing?.id}
-              supportsModelSearch={!!existing && (provider === 'openrouter' || provider === 'generic' || provider === 'grok-subscription' || provider === 'codex-subscription')}
+              supportsModelSearch={!!existing && (provider === 'openrouter' || provider === 'generic' || isOAuthProvider(provider))}
               builtinCatalog={catalogFor(provider)}
               effectiveCatalog={catalog}
               modelCatalog={{ [provider]: { overrides } }}
               modelPricing={modelPricing}
               canEditPricing={admin}
               disabled={mutation.isPending || updateSettings.isPending}
-              pricingNote={provider === 'claude-subscription' || provider === 'grok-subscription' || provider === 'codex-subscription'
+              pricingNote={provider === 'claude-subscription' || isOAuthProvider(provider)
                 ? 'Costs shown for this subscription are API-equivalent estimates, not what you are charged.'
                 : undefined}
               onChange={({ modelCatalog, modelPricing: prices }) => {
@@ -690,7 +698,7 @@ function ConnectionEditor({
         <Button type="button" variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-        <Button type="submit" disabled={mutation.isPending || ((provider === 'grok-subscription' || provider === 'codex-subscription') && !oauthLoginId && !existing?.isConfigured)}>
+        <Button type="submit" disabled={mutation.isPending || (isOAuthProvider(provider) && !oauthLoginId && !existing?.isConfigured)}>
           Save
         </Button>
       </DialogFooter>

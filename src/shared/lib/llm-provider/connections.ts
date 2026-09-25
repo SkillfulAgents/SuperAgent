@@ -23,7 +23,7 @@ import {
   getLlmProvider,
   resolveModelForProvider,
 } from './index'
-import { LLM_PROVIDER_IDS } from './provider-types'
+import { LLM_PROVIDER_IDS, isOAuthProvider } from './provider-types'
 import { type ModelDefinition } from './model-catalog-schema'
 import {
   connectionConfigSchema,
@@ -122,7 +122,7 @@ export async function listConnections(
       baseUrl: config.apiKeys.genericBaseUrl,
       apiFormat: config.apiFormat,
       chatTokenLimitField: config.chatTokenLimitField,
-      region: config.apiKeys.bedrockRegion,
+      region: config.apiKeys.bedrockRegion ?? config.oauth?.region,
       customEnvVarKeys: canManage ? Object.keys(config.runtimeEnv) : [],
       canManage,
       deletionBlockedReason,
@@ -167,10 +167,10 @@ export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, 
   }
   const config = mergeConnectionConfig(oldConfig, input.config)
   if (input.oauthLoginId) {
-    if (input.provider !== 'grok-subscription' && input.provider !== 'codex-subscription') throw new Error('Invalid subscription sign-in')
+    if (!isOAuthProvider(input.provider)) throw new Error('Invalid subscription sign-in')
     config.oauth = credentialsFromLogin(input.oauthLoginId, viewer, input.userId, id, input.provider)
   }
-  if (input.provider === 'grok-subscription' || input.provider === 'codex-subscription') {
+  if (isOAuthProvider(input.provider)) {
     if (!config.oauth) throw new Error('Sign in before saving this subscription connection')
     const conflicting = Object.keys(config.runtimeEnv).filter(key => isProviderEnvVar(key) || key === 'CLAUDE_CONFIG_DIR')
     if (conflicting.length) throw new Error('This subscription manages its own authentication. Remove provider authentication environment variables.')

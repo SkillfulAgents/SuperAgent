@@ -1,4 +1,5 @@
 import { providerForConnection, type ConnectionRow } from './connections'
+import { isOAuthProvider } from './provider-types'
 import { providerUsageSchema, usageSnapshot, type ProviderUsage } from './usage-schema'
 
 // Access is checked by the route before consulting this process-local cache.
@@ -9,7 +10,7 @@ const lastWarning = new Map<string, number>()
 const TTL = 60_000
 
 export function readConnectionUsage(row: Pick<ConnectionRow, 'id' | 'provider' | 'config' | 'generation'>): Promise<ProviderUsage> {
-  const shared = row.provider === 'codex-subscription' || row.provider === 'grok-subscription'
+  const shared = isOAuthProvider(row.provider)
   const key = JSON.stringify([row.id, row.provider, row.generation])
   const now = Date.now()
   for (const [id, entry] of cache) if (entry.expiresAt <= now) cache.delete(id)
