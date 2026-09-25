@@ -243,6 +243,29 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     expect(JSON.stringify(calls[1].options)).not.toContain('bedrock-secret')
   })
 
+  it('updates provider instructions without registering media tools or changing the session model', async () => {
+    const runtime = { llmProviderId: 'anthropic', generation: 0, provider: 'anthropic', model: 'claude-model',
+      browserModel: 'claude-model', dashboardBuilderModel: 'claude-model', modelPromptHints: [],
+      subagentModels: [], modelContextWindows: {}, env: {} }
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'provider-instructions', workingDirectory: '/tmp', llmRuntime: runtime })
+    await claudeProcess.start()
+    const originalPrompt = (calls[0].options.systemPrompt as { prompt: string }).prompt
+    const mediaHint = 'Use Bash to call the provider image endpoint.'
+    const connected = { ...runtime, modelPromptHints: [...runtime.modelPromptHints, mediaHint] }
+    await claudeProcess.sendMessage('Generate an image', undefined, { llmRuntime: connected })
+    expect(calls).toHaveLength(2)
+    expect((calls[1].options.systemPrompt as { prompt: string }).prompt).toContain(mediaHint)
+    expect(calls[1].options.model).toBe('claude-model')
+    expect(calls[1].options.mcpServers).not.toHaveProperty('media')
+    await claudeProcess.sendMessage('Continue', undefined, { llmRuntime: connected })
+    expect(calls).toHaveLength(2)
+    await claudeProcess.sendMessage('Disconnected', undefined, { llmRuntime: runtime })
+    expect(calls).toHaveLength(3)
+    expect(calls[2].options.systemPrompt).toMatchObject({ prompt: originalPrompt })
+    await claudeProcess.sendMessage('Continue without providers', undefined, { llmRuntime: runtime })
+    expect(calls).toHaveLength(3)
+  })
+
   it('rebuilds proxy-backed queries when helper models or prompt hints change', async () => {
     const runtime = { llmProviderId: 'a', generation: 0, provider: 'generic', model: 'model',
       browserModel: 'model', dashboardBuilderModel: 'model', modelPromptHints: [], subagentModels: [], modelContextWindows: {}, env: {},

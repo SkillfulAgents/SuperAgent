@@ -104,7 +104,7 @@ export async function connectionRuntime(resolved: ResolvedConnection, agentId: s
     model: wireModel,
     browserModel: subagent(connection.browserModel),
     dashboardBuilderModel: subagent(connection.dashboardModel),
-    modelPromptHints: getContainerModelPromptHints(wireModel, catalog),
+    modelPromptHints: [...getContainerModelPromptHints(wireModel, catalog), ...(provider.mediaPrompt ? [provider.mediaPrompt] : [])],
     subagentModels: getSubagentModelCatalog(catalog),
     modelContextWindows: getModelContextWindowMap(catalog),
     env,
