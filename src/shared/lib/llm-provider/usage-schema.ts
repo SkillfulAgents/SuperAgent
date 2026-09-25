@@ -97,53 +97,22 @@ export function parseKimiUsage(raw: unknown): ProviderUsage {
 const count = z.number().finite().nullish().catch(undefined)
 const minimaxRemainSchema = z.object({
   model_name: z.string().min(1),
-  start_time: count, end_time: count, weekly_end_time: count,
-  current_interval_total_count: count, current_interval_usage_count: count, current_interval_status: count,
-  current_weekly_total_count: count, current_weekly_usage_count: count, current_weekly_status: count,
+  end_time: count, weekly_end_time: count,
+  current_interval_total_count: count, current_interval_usage_count: count,
+  current_weekly_total_count: count, current_weekly_usage_count: count,
 })
 export const minimaxUsageSchema = z.object({ model_remains: z.array(minimaxRemainSchema).nullish().catch(undefined) })
 
-function epochIso(value: number | null | undefined): string | undefined {
-  if (value == null || value <= 0) return undefined
-  const ms = value > 1e12 ? value : value > 1e9 ? value * 1000 : undefined
-  if (ms == null) return undefined
-  const date = new Date(ms)
-  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined
-}
-function spanSeconds(start: number | null | undefined, end: number | null | undefined): number | undefined {
-  if (start == null || end == null || end <= start) return undefined
-  const delta = end - start
-  return delta > 1e6 ? delta / 1000 : delta
-}
-function minimaxWindowLabel(seconds: number | undefined, fallback: string): string {
-  if (seconds == null) return fallback
-  if (Math.abs(seconds - 18_000) < 120) return '5-hour'
-  if (Math.abs(seconds - 604_800) < 120) return 'Weekly'
-  if (seconds % 86_400 === 0) return seconds === 86_400 ? 'Daily' : `${seconds / 86_400} days`
-  if (seconds % 3600 === 0) return `${seconds / 3600}h`
-  return fallback
-}
-
+// Follows the official MiniMax CLI: `*_usage_count` is the remaining count and times are Unix ms.
+// Zero totals mean unlimited or not in the plan, so those windows have no bar.
 export function parseMinimaxUsage(raw: unknown): ProviderUsage {
   const remains = minimaxUsageSchema.parse(raw).model_remains ?? []
-  const limits: UsageLimit[] = []
-  remains.forEach((model, index) => {
-    const unavailable = model.current_interval_status === 3 && model.current_weekly_status === 3
-      && !(model.current_interval_total_count && model.current_interval_total_count > 0)
-      && !(model.current_weekly_total_count && model.current_weekly_total_count > 0)
-    if (unavailable) return
-    const windows = [
-      { id: 'interval', label: minimaxWindowLabel(spanSeconds(model.start_time, model.end_time), 'Usage'), usage: model.current_interval_usage_count, total: model.current_interval_total_count, status: model.current_interval_status, resetsAt: epochIso(model.end_time) },
-      { id: 'weekly', label: 'Weekly', usage: model.current_weekly_usage_count, total: model.current_weekly_total_count, status: model.current_weekly_status, resetsAt: epochIso(model.weekly_end_time) },
-    ]
-    for (const window of windows) {
-      if (window.status === 3 && !(window.total && window.total > 0)) continue
-      if (window.usage == null || window.usage < 0 || window.total == null || window.total <= 0) continue
-      limits.push({
-        kind: 'window', id: `${index}-${window.id}`, label: `${model.model_name} · ${window.label}`,
-        usedPercent: window.usage / window.total * 100, ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}),
-      })
-    }
-  })
+  const limits: UsageLimit[] = remains.flatMap((model, index) => [
+    { id: 'interval', label: '5-hour', remaining: model.current_interval_usage_count, total: model.current_interval_total_count, end: model.end_time },
+    { id: 'weekly', label: 'Weekly', remaining: model.current_weekly_usage_count, total: model.current_weekly_total_count, end: model.weekly_end_time },
+  ].flatMap(({ id, label, remaining, total, end }): UsageLimit[] => remaining == null || !total || total <= 0 ? [] : [{
+    kind: 'window', id: `${index}-${id}`, label: `${model.model_name} · ${label}`,
+    usedPercent: Math.max(0, total - remaining) / total * 100, ...(end && end > 0 ? { resetsAt: new Date(end).toISOString() } : {}),
+  }]))
   return usageSnapshot(limits)
 }

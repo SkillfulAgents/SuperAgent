@@ -2,7 +2,7 @@ import { CredentialRefreshError } from './credential-refresh-error'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import Anthropic from '@anthropic-ai/sdk'
-import { startLlmProxy, type LlmProxyHandle } from './llm-proxy'
+import { llmProxyBinding, startLlmProxy, type LlmProxyHandle } from './llm-proxy'
 import { expandDeferredTools } from './llm-proxy-tools'
 import type { LlmProxyConfig } from './llm-proxy-schema'
 
@@ -292,16 +292,22 @@ describe('embedded provider proxy', () => {
     expect(attempts).toBe(1)
   })
 
-  it('replaces a configured x-api-key with the current credential', async () => {
+  it('sends the current credential in the configured credential header', async () => {
     const base = await upstream((_body, req, res) => {
       expect(req.headers['x-api-key']).toBe('upstream-key')
       expect(req.headers.authorization).toBe('Bearer upstream-key')
       json(res, reply)
     })
     const handle = await proxy(base, 'messages', {
-      config: { baseUrl: base, format: 'messages', headers: { 'x-api-key': 'stale' }, credential: { accessToken: 'upstream-key', generation: 1 } },
+      config: { baseUrl: base, format: 'messages', credentialHeader: 'x-api-key', headers: { 'x-api-key': 'stale' }, credential: { accessToken: 'upstream-key', generation: 1 } },
     })
     await expect(client(handle).messages.create(prompt)).resolves.toMatchObject({ content: [{ type: 'text', text: 'OK' }] })
+  })
+
+  it('keeps the proxy binding when only the credential header copy rotates', () => {
+    const config = (key: string, generation: number): LlmProxyConfig => ({ baseUrl: 'https://api.example.com', format: 'messages', credentialHeader: 'x-api-key', headers: { 'x-api-key': key, 'user-agent': 'SuperAgent' }, credential: { accessToken: key, generation } })
+    expect(llmProxyBinding('minimax-subscription', config('old', 1))).toBe(llmProxyBinding('minimax-subscription', config('new', 2)))
+    expect(llmProxyBinding('minimax-subscription', config('old', 1))).not.toBe(llmProxyBinding('minimax-subscription', { ...config('old', 1), headers: { 'x-api-key': 'old', 'user-agent': 'Other' } }))
   })
 
   it('refreshes near expiry before sending and does not forward client auth or routing headers', async () => {
