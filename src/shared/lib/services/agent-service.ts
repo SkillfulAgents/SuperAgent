@@ -146,7 +146,7 @@ async function commitIdentity(
     // Put the document back as it was: its old text, or its absence, so the
     // rejected identity is not left behind in a file the row does not match.
     if (document) await actor.config.put('instructions', document.raw).catch(() => undefined)
-    else await actor.files.delete(CONFIG_DOCS.instructions.path).catch(() => undefined)
+    else await actor.files.delete(CONFIG_DOCS.instructions.fallbackPath).catch(() => undefined)
     throw error
   }
 }

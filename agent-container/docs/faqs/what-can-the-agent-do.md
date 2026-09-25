@@ -15,7 +15,7 @@ Gamut agents are general-purpose, code-capable AI agents. Anything that can be r
 - **Message the user anywhere** — chat integrations for Slack, Telegram, and iMessage, so conversations and notifications don't require the app to be open.
 - **Build reusable skills** — recurring work gets captured as named, documented skills the agent evolves over time.
 - **Collaborate with other agents** — invoke specialist agents in the same workspace and read their session transcripts.
-- **Remember** — a persistent memory system (who the user is, feedback, project context) plus standing instructions in `CLAUDE.md`.
+- **Remember** — a persistent memory system (who the user is, feedback, project context) plus standing instructions in `AGENTS.md`.
 
 Some deployments also enable **computer use** (controlling native desktop apps on the user's machine). If the computer-use tools are not in the agent's tool list, that feature is not enabled for this agent.
 

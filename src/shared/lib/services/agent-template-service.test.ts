@@ -892,6 +892,13 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
     expect(entries).toContain('skills/tool.py')
   })
 
+  it('exports an AGENTS.md workspace as a template with CLAUDE.md', async () => {
+    createWorkspace('test-agent', { 'AGENTS.md': MINIMAL_CLAUDE_MD, 'skills/tool.py': 'print("hi")' })
+    const entries = await getZipEntries(await exportAgentTemplate('test-agent'))
+    expect(entries).toContain('CLAUDE.md')
+    expect(entries).not.toContain('AGENTS.md')
+  })
+
   // ---------- Source ownership ----------
   // archiver reads the sources it is handed but neither listens on them nor
   // ends them when it stops; the export owns both.
@@ -1244,6 +1251,19 @@ describe('computeAgentTemplateHash', () => {
     }
     return dir
   }
+
+  it('hashes a workspace AGENTS.md the same as a template CLAUDE.md', async () => {
+    const templateDir = path.join(testDir, 'template')
+    const workspaceDir = path.join(testDir, 'renamed')
+    fs.mkdirSync(templateDir)
+    fs.mkdirSync(workspaceDir)
+    fs.writeFileSync(path.join(templateDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_CLAUDE_MD)
+    // Sorts between AGENTS.md and CLAUDE.md.
+    fs.writeFileSync(path.join(templateDir, 'BOOTSTRAP.md'), 'setup')
+    fs.writeFileSync(path.join(workspaceDir, 'BOOTSTRAP.md'), 'setup')
+    expect(await computeAgentTemplateHash(workspaceDir)).toBe(await computeAgentTemplateHash(templateDir))
+  })
 
   it('returns a 64-character hex string (SHA-256)', async () => {
     const dir = createDir({ 'CLAUDE.md': MINIMAL_CLAUDE_MD })
@@ -2212,6 +2232,20 @@ describe('exportAgentFull', () => {
     expect(entryNames).toContain('CLAUDE.md')
   })
 
+  it('exports AGENTS.md as CLAUDE.md when the workspace has no CLAUDE.md', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_CLAUDE_MD)
+
+    const zipBuffer = await exportAgentFull('full-agent')
+    const reader = await openZipFromBuffer(zipBuffer)
+    const entryNames = reader.entries.map((e) => e.fileName)
+    reader.close()
+
+    expect(entryNames).toContain('CLAUDE.md')
+    expect(entryNames).not.toContain('AGENTS.md')
+  })
+
   it('includes .env in the export', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
@@ -2569,8 +2603,9 @@ describe('importAgentFromTemplate (full mode)', () => {
     await importAgentFromTemplate(zip, undefined, mode)
 
     for (const [name, content] of Object.entries(keep)) {
-      expect(fs.readFileSync(path.join(workspaceDir, name), 'utf8')).toBe(content)
+      expect(fs.readFileSync(path.join(workspaceDir, name === 'CLAUDE.md' ? 'AGENTS.md' : name), 'utf8')).toBe(content)
     }
+    expect(fs.existsSync(path.join(workspaceDir, 'CLAUDE.md'))).toBe(false)
     for (const [name, content] of Object.entries(history)) {
       if (mode === 'full') expect(fs.readFileSync(path.join(workspaceDir, name), 'utf8')).toBe(content)
       else expect(fs.existsSync(path.join(workspaceDir, name))).toBe(false)
@@ -2753,11 +2788,12 @@ describe('installAgentFromSkillset', () => {
         '1.0.0',
       )
 
-      // The template's CLAUDE.md is in place; the identity (the chosen name,
+      // The template's CLAUDE.md is in place as AGENTS.md; the identity (the chosen name,
       // the template's description, the install-time createdAt) is adopted
       // and projected back by agent-service, which is covered in its own suite.
-      const claudeMd = fs.readFileSync(path.join(workspaceDir, 'CLAUDE.md'), 'utf-8')
-      expect(claudeMd).toContain(oldTemplateTime)
+      const agentsMd = fs.readFileSync(path.join(workspaceDir, 'AGENTS.md'), 'utf-8')
+      expect(agentsMd).toContain(oldTemplateTime)
+      expect(fs.existsSync(path.join(workspaceDir, 'CLAUDE.md'))).toBe(false)
       expect(adoptAgentIdentityFromWorkspace).toHaveBeenCalledWith(slug, { name: 'My Agent' })
     } finally {
       fs.rmSync(repoDir, { recursive: true, force: true })

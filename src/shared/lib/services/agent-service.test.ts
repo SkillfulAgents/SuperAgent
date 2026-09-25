@@ -157,20 +157,20 @@ describe('agent-service', () => {
     })
 
     it('still surfaces a real read error on an existing agent', async () => {
-      // CLAUDE.md is a directory: the agent exists, its config is unreadable.
+      // AGENTS.md is a directory: the agent exists, its config is unreadable.
       // The workspace layer reports EISDIR as its own `not-a-file` error; what
       // matters here is that it propagates instead of reading as "no agent".
       const created = await createAgent({ name: 'Broken' })
-      const claudeMd = path.join(testDir, 'agents', created.slug, 'workspace', 'CLAUDE.md')
-      await fs.promises.rm(claudeMd)
-      await fs.promises.mkdir(claudeMd)
+      const agentsMd = path.join(testDir, 'agents', created.slug, 'workspace', 'AGENTS.md')
+      await fs.promises.rm(agentsMd)
+      await fs.promises.mkdir(agentsMd)
 
       await expect(getAgent(created.slug)).rejects.toMatchObject({ name: 'WorkspaceFileError', code: 'not-a-file' })
     })
 
-    it('reads an agent whose CLAUDE.md has gone missing as one with no instructions', async () => {
+    it('reads an agent whose AGENTS.md has gone missing as one with no instructions', async () => {
       const created = await createAgent({ name: 'Bare' })
-      await fs.promises.rm(path.join(testDir, 'agents', created.slug, 'workspace', 'CLAUDE.md'))
+      await fs.promises.rm(path.join(testDir, 'agents', created.slug, 'workspace', 'AGENTS.md'))
 
       const agent = await getAgent(created.slug)
 
@@ -576,7 +576,7 @@ Instructions`
 
     it('leaves no document behind when the row update fails for an agent that had none', async () => {
       const created = await createAgent({ name: 'Bare' })
-      await fs.promises.rm(path.join(testDir, 'agents', created.slug, 'workspace', 'CLAUDE.md'))
+      await fs.promises.rm(path.join(testDir, 'agents', created.slug, 'workspace', 'AGENTS.md'))
       vi.spyOn(agentCatalog, 'update').mockRejectedValueOnce(new Error('database is locked'))
 
       await expect(updateAgent(created.slug, { name: 'Half Renamed' })).rejects.toThrow('database is locked')
@@ -639,10 +639,10 @@ Instructions`
       expect(content).toContain('Template body')
     })
 
-    it('does nothing for an unknown agent or one without a CLAUDE.md', async () => {
+    it('does nothing for an unknown agent or one without instructions', async () => {
       await writeAgentIdentityProjection('nonexistent')
       const created = await createAgent({ name: 'Bare' })
-      await fs.promises.rm(path.join(testDir, 'agents', created.slug, 'workspace', 'CLAUDE.md'))
+      await fs.promises.rm(path.join(testDir, 'agents', created.slug, 'workspace', 'AGENTS.md'))
       await writeAgentIdentityProjection(created.slug)
       expect(await getAgentClaudeMdContent(created.slug)).toBeNull()
     })
