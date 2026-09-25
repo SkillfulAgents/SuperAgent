@@ -59,14 +59,14 @@ describe('skillset install', () => {
     })
   })
 
-  it('installs from a seeded cache within the install budget', async () => {
-    const skillsetId = 'perf-skillset'
+  it.each(['AGENTS.md', 'CLAUDE.md'])('installs a %s template within the install budget', async (instructionsFile) => {
+    const skillsetId = instructionsFile === 'AGENTS.md' ? 'perf-canonical' : 'perf-legacy'
     const agentPath = 'agents/perf-template/'
     const repoDir = getSkillsetRepoDir(skillsetId)
     const templateDir = path.join(repoDir, 'agents', 'perf-template')
     await fs.promises.mkdir(templateDir, { recursive: true })
     await fs.promises.writeFile(
-      path.join(templateDir, 'CLAUDE.md'),
+      path.join(templateDir, instructionsFile),
       '---\nname: Perf Template\n---\n# Perf\n',
       'utf-8',
     )
@@ -97,18 +97,10 @@ describe('skillset install', () => {
       ),
     )
     expectWithinBudget('skillset installAgentFromSkillset', measurement, {
-      // Pinned exactly: 41 copies and 43 hash reads as the plain copy did,
-      // plus the atomic writer's temp file and rename for the three documents
-      // the install writes (main wrote two of them in place), one realpath
-      // for the cycle guard on the source tree, and the one file the copy
-      // replaces: the skillset's CLAUDE.md lands on the one the agent was
-      // created with, and a copy that refuses to write through an existing
-      // entry unlinks it and copies again. Each of the three instructions
-      // writes first stats CLAUDE.md to choose it over AGENTS.md. Moving the
-      // template's CLAUDE.md to AGENTS.md adds a read, an atomic write and a
-      // delete, and later reads miss CLAUDE.md before finding AGENTS.md; the
-      // agent is now created with AGENTS.md, so the unlink and second copy go.
-      totalOps: 117,
+      // Includes one source-directory read to distinguish a real second
+      // instructions file from the AGENTS.md created with the new agent.
+      // Legacy templates additionally read, write and remove CLAUDE.md.
+      totalOps: instructionsFile === 'AGENTS.md' ? 114 : 118,
       // Recorded 430–490 ms on an idle machine; ~2× that, as the home
       // profiles are budgeted, so runner load cannot trip it while a
       // serialised copy path still would.

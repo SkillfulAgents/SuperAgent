@@ -93,6 +93,8 @@ import {
   getAgentTemplatePrompt,
   MAX_TEMPLATE_PROMPT_SIZE,
   getDiscoverableAgents,
+  publishAgentToSkillset,
+  createAgentPR,
 } from './agent-template-service'
 import { adoptAgentIdentityFromWorkspace, createAgentFromExistingWorkspace, getAgentWithStatus } from '@shared/lib/services/agent-service'
 import { getSkillsetIndex } from '@shared/lib/services/skillset-service'
@@ -888,15 +890,15 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
     })
     const buf = await exportAgentTemplate('test-agent')
     const entries = await getZipEntries(buf)
-    expect(entries).toContain('CLAUDE.md')
+    expect(entries).toContain('AGENTS.md')
     expect(entries).toContain('skills/tool.py')
   })
 
-  it('exports an AGENTS.md workspace as a template with CLAUDE.md', async () => {
+  it('exports an AGENTS.md workspace without renaming its instructions', async () => {
     createWorkspace('test-agent', { 'AGENTS.md': MINIMAL_CLAUDE_MD, 'skills/tool.py': 'print("hi")' })
     const entries = await getZipEntries(await exportAgentTemplate('test-agent'))
-    expect(entries).toContain('CLAUDE.md')
-    expect(entries).not.toContain('AGENTS.md')
+    expect(entries).toContain('AGENTS.md')
+    expect(entries).not.toContain('CLAUDE.md')
   })
 
   // ---------- Source ownership ----------
@@ -970,7 +972,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
     })
     const buf = await exportAgentTemplate('test-agent')
     const entries = await getZipEntries(buf)
-    expect(entries).toContain('CLAUDE.md')
+    expect(entries).toContain('AGENTS.md')
     expect(entries).toContain('artifacts/app/index.js')
     expect(entries.some((e) => e.includes('node_modules'))).toBe(false)
   })
@@ -996,7 +998,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
     })
     const buf = await exportAgentTemplate('test-agent')
     const entries = await getZipEntries(buf)
-    expect(entries).toContain('CLAUDE.md')
+    expect(entries).toContain('AGENTS.md')
     expect(entries.some((e) => e.includes('.env'))).toBe(false)
   })
 
@@ -1217,7 +1219,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
     })
     const buf = await exportAgentTemplate('test-agent')
     const entries = await getZipEntries(buf)
-    expect(entries).toContain('CLAUDE.md')
+    expect(entries).toContain('AGENTS.md')
   })
 })
 
@@ -2206,7 +2208,7 @@ describe('exportAgentFull', () => {
     const zipBuffer = await readableToBuffer(second)
     const reader = await openZipFromBuffer(zipBuffer)
     reader.close()
-    expect(reader.entries.some((e) => e.fileName === 'CLAUDE.md')).toBe(true)
+    expect(reader.entries.some((e) => e.fileName === 'AGENTS.md')).toBe(true)
   })
 
   it('does not hold the lock when the workspace is missing', async () => {
@@ -2229,10 +2231,10 @@ describe('exportAgentFull', () => {
     const reader = await openZipFromBuffer(zipBuffer)
     const entryNames = reader.entries.map((e) => e.fileName)
     reader.close()
-    expect(entryNames).toContain('CLAUDE.md')
+    expect(entryNames).toContain('AGENTS.md')
   })
 
-  it('exports AGENTS.md as CLAUDE.md when the workspace has no CLAUDE.md', async () => {
+  it('keeps AGENTS.md in a full export', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
     fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_CLAUDE_MD)
@@ -2242,8 +2244,8 @@ describe('exportAgentFull', () => {
     const entryNames = reader.entries.map((e) => e.fileName)
     reader.close()
 
-    expect(entryNames).toContain('CLAUDE.md')
-    expect(entryNames).not.toContain('AGENTS.md')
+    expect(entryNames).toContain('AGENTS.md')
+    expect(entryNames).not.toContain('CLAUDE.md')
   })
 
   it('includes .env in the export', async () => {
@@ -2257,7 +2259,7 @@ describe('exportAgentFull', () => {
     const entryNames = reader.entries.map((e) => e.fileName)
     reader.close()
 
-    expect(entryNames).toContain('CLAUDE.md')
+    expect(entryNames).toContain('AGENTS.md')
     expect(entryNames).toContain('.env')
   })
 
@@ -2309,7 +2311,7 @@ describe('exportAgentFull', () => {
     const entryNames = reader.entries.map((e) => e.fileName)
     reader.close()
 
-    expect(entryNames).toContain('CLAUDE.md')
+    expect(entryNames).toContain('AGENTS.md')
     expect(entryNames).not.toContain('broken-link')
   })
 
@@ -2512,6 +2514,32 @@ describe('importAgentFromTemplate (full mode)', () => {
     fs.mkdirSync(workspaceDir, { recursive: true })
     return workspaceDir
   }
+
+  it.each(['template', 'full'] as const)('preserves both instruction documents through a %s round trip', async (mode) => {
+    const workspace = setupAgentMock('roundtrip-agent')
+    const original = { 'CLAUDE.md': MINIMAL_CLAUDE_MD, 'AGENTS.md': '# Independent instructions\n' }
+    for (const [name, content] of Object.entries(original)) fs.writeFileSync(path.join(workspace, name), content)
+    const zip = await (mode === 'full' ? exportAgentFull('roundtrip-agent') : exportAgentTemplate('roundtrip-agent'))
+    const imported = setupAgentMock('roundtrip-imported')
+    fs.writeFileSync(path.join(imported, 'AGENTS.md'), '# Creation-time placeholder\n')
+
+    await importAgentFromTemplate(zip, undefined, mode)
+
+    for (const [name, content] of Object.entries(original)) {
+      expect(fs.readFileSync(path.join(imported, name), 'utf8')).toBe(content)
+    }
+  })
+
+  it.each(['CLAUDE.md', 'AGENTS.md'])('imports %s as AGENTS.md, replacing the creation-time placeholder', async (name) => {
+    const workspace = setupAgentMock('canonical-import')
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), '# Placeholder\n')
+    const zip = await makeZip({ [name]: MINIMAL_CLAUDE_MD })
+
+    await importAgentFromTemplate(zip)
+
+    expect(fs.readFileSync(path.join(workspace, 'AGENTS.md'), 'utf8')).toBe(MINIMAL_CLAUDE_MD)
+    expect(fs.existsSync(path.join(workspace, 'CLAUDE.md'))).toBe(false)
+  })
 
   it('fails the import, without taking the process down, when an entry inflates past its declared size', async () => {
     // A crafted or merely corrupted archive: the entry's header says 1000
@@ -2756,7 +2784,7 @@ describe('installAgentFromSkillset', () => {
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
 
-  it('adopts the chosen name over the template frontmatter after copying it in', async () => {
+  it.each(['directory', 'AGENTS.md', 'CLAUDE.md'])('installs an index using %s and adopts the chosen name', async (indexPath) => {
     const slug = 'install-test-agent'
     const installTime = new Date()
     const oldTemplateTime = '2020-01-01T00:00:00.000Z'
@@ -2776,14 +2804,14 @@ describe('installAgentFromSkillset', () => {
     const templateDir = path.join(repoDir, agentPath)
     fs.mkdirSync(templateDir, { recursive: true })
     fs.writeFileSync(
-      path.join(templateDir, 'CLAUDE.md'),
+      path.join(templateDir, indexPath === 'directory' ? 'AGENTS.md' : indexPath),
       `---\nname: Template Agent\ncreatedAt: "${oldTemplateTime}"\n---\n# Template\n`,
     )
 
     try {
       await installAgentFromSkillset(
         { skillsetId, skillsetUrl: 'https://example.com', provider: 'github' },
-        agentPath,
+        indexPath === 'directory' ? agentPath : `${agentPath}/${indexPath}`,
         'My Agent',
         '1.0.0',
       )
@@ -2798,5 +2826,66 @@ describe('installAgentFromSkillset', () => {
     } finally {
       fs.rmSync(repoDir, { recursive: true, force: true })
     }
+  })
+})
+
+
+describe('publishAgentToSkillset instruction files', () => {
+  let testDir: string
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-publish-payload-'))
+    vi.stubEnv('SUPERAGENT_DATA_DIR', testDir)
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllEnvs()
+    fs.rmSync(testDir, { recursive: true, force: true })
+  })
+
+  it('updates a legacy filename index and retires its root alias when publishing an existing template', async () => {
+    const { getSkillsetProvider } = await import('@shared/lib/skillset-provider')
+    const { readIndexJson } = await import('./skillset-service')
+    const { agentRegistry } = await import('@shared/lib/agent-actor')
+    const publish = vi.spyOn(getSkillsetProvider('github'), 'publishUpdate').mockResolvedValue({ successMessage: 'Created' })
+    vi.mocked(readIndexJson).mockResolvedValue({ skillset_name: 'test', description: '', version: '1', skills: [], agents: [
+      { name: 'Test Agent', path: 'templates/nested/agent/CLAUDE.md', description: '', version: '1.0.0' },
+    ] })
+    const actor = agentRegistry.get('publish-existing')
+    await actor.files.putDoc('AGENTS.md', new TextEncoder().encode(MINIMAL_CLAUDE_MD))
+    await actor.config.put('skillsetMetadata', {
+      skillsetId: 'test', skillsetUrl: 'https://github.com/example/templates', agentName: 'Test Agent',
+      agentPath: 'templates/nested/agent/CLAUDE.md', installedVersion: '1.0.0', installedAt: '2026-01-01', originalContentHash: 'original', provider: 'github',
+    })
+
+    await createAgentPR('publish-existing', { title: 'Update', body: 'Update' })
+
+    const request = publish.mock.calls[0][0]
+    expect(request.targetName).toBe('agent')
+    expect(request.deletePaths).toEqual(['templates/nested/agent/CLAUDE.md'])
+    expect(request.files.some(file => file.path === 'templates/nested/agent/AGENTS.md')).toBe(true)
+    expect(JSON.parse(request.files.find(file => file.path === 'index.json')!.content).agents[0].path)
+      .toBe('templates/nested/agent/AGENTS.md')
+  })
+
+  it.each(['AGENTS.md', 'CLAUDE.md', 'both'])('publishes %s with the version applied to the active instructions', async (source) => {
+    const { getSkillsetProvider } = await import('@shared/lib/skillset-provider')
+    const { readIndexJson } = await import('./skillset-service')
+    const publish = vi.spyOn(getSkillsetProvider('github'), 'publishUpdate').mockResolvedValue({ successMessage: 'Created' })
+    vi.mocked(readIndexJson).mockResolvedValue({ skillset_name: 'test', description: '', version: '1', skills: [], agents: [] })
+    const workspace = path.join(testDir, 'agents', 'publish-agent', 'workspace')
+    fs.mkdirSync(workspace, { recursive: true })
+    fs.writeFileSync(path.join(workspace, source === 'both' ? 'CLAUDE.md' : source), MINIMAL_CLAUDE_MD)
+    if (source === 'both') fs.writeFileSync(path.join(workspace, 'AGENTS.md'), '# Independent document')
+
+    await publishAgentToSkillset('publish-agent', {
+      id: 'test', url: 'https://github.com/example/templates', name: 'Test', description: '', addedAt: '2026-01-01', provider: 'github',
+    }, { title: 'Publish', body: 'Publish', newVersion: '2.0.0' })
+
+    expect(publish.mock.calls[0][0].deletePaths).toEqual(source === 'both' ? [] : ['agents/publish-agent/CLAUDE.md'])
+    const files = publish.mock.calls[0][0].files
+    const effectivePath = source === 'both' ? 'CLAUDE.md' : 'AGENTS.md'
+    expect(files.find((file) => file.path === `agents/publish-agent/${effectivePath}`)?.content).toContain('version: 2.0.0')
+    if (source === 'both') expect(files.find((file) => file.path === 'agents/publish-agent/AGENTS.md')?.content).toBe('# Independent document')
+    else expect(files.some((file) => file.path.endsWith('/CLAUDE.md'))).toBe(false)
   })
 })
