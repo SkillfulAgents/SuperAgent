@@ -11,6 +11,7 @@ import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reportin
 import { readJsonFileStrictSync, writeFileAtomicSync, CorruptFileError } from '@shared/lib/utils/file-storage'
 import { waitForBrowserProfileCleanup, markProfileInUse, unmarkProfileInUse } from './profile-maintenance'
 import { GooglePasskeyRecovery } from './google-passkey-recovery'
+import { requestChromeClose } from './chrome-cdp-close'
 import { z } from 'zod'
 
 // Chrome's DevTools Protocol has no auth token: any host/process that can reach
@@ -24,6 +25,7 @@ import { z } from 'zod'
 // need no proxy.
 const CDP_LOOPBACK_ADDRESS = '127.0.0.1'
 const CDP_VERSION_TIMEOUT_MS = 2000
+const GRACEFUL_CLOSE_TIMEOUT_MS = 5000
 const cdpVersionSchema = z.object({ webSocketDebuggerUrl: z.string().min(1) })
 
 /** True if `ip` is assigned to a local network interface (i.e. bindable by this host). */
@@ -732,7 +734,14 @@ export class ChromeProvider implements HostBrowserProvider {
         instance.externalCloseWatcher = null
       }
 
-      if (instance.process && !instance.process.killed) {
+      // Browser.close first: a signal skips Chrome's cookie flush, losing
+      // logins from the last ~30s. Signals below only handle a Chrome that
+      // did not exit on its own.
+      if (await requestChromeClose(`http://${CDP_LOOPBACK_ADDRESS}:${instance.port}`)) {
+        await this.waitForExit(instance, GRACEFUL_CLOSE_TIMEOUT_MS)
+      }
+
+      if (instance.process && !instance.process.killed && !this.hasExited(instance.process)) {
         // linux/win32: we own the child process. Kill via the ChildProcess
         // and wait for the 'exit' event so the next launch() doesn't race
         // with a still-dying Chrome.
@@ -828,6 +837,23 @@ export class ChromeProvider implements HostBrowserProvider {
 
   private async pidAlive(pid: number): Promise<boolean> {
     try { process.kill(pid, 0); return true } catch { return false }
+  }
+
+  private hasExited(child: ChildProcess): boolean {
+    return (child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null
+  }
+
+  private async waitForExit(instance: BrowserInstance, timeoutMs: number): Promise<void> {
+    const child = instance.process
+    if (!child) return this.waitForPidExit(instance.pid, timeoutMs)
+    if (this.hasExited(child)) return
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(resolve, timeoutMs)
+      child.once('exit', () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+    })
   }
 
   private async waitForPidExit(pid: number, timeoutMs: number): Promise<void> {
