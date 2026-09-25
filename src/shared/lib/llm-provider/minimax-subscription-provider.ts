@@ -49,9 +49,8 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
   override async getContainerProxyConfig(): Promise<LlmProxyConfig> {
     const { accessToken, expiresAt, generation, accountId } = await this.credential()
     return {
-      format: 'messages', baseUrl: `${this.apiBase}/anthropic/v1`,
-      // The published container only accepts grok/codex/kimi adapters and always adds Authorization.
-      // It forwards this header as-is; MiniMax reads the token from x-api-key.
+      format: 'messages', baseUrl: `${this.apiBase}/anthropic/v1`, credentialHeader: 'x-api-key',
+      // MiniMax reads the token from x-api-key. Published images ignore credentialHeader and forward this snapshot.
       headers: { ...MINIMAX_HEADERS, 'x-api-key': accessToken },
       credential: { accessToken, expiresAt, generation, accountId },
     }
@@ -60,7 +59,7 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
     let credential = await this.credential()
     const send = () => {
       const headers = new Headers(init?.headers)
-      // The Messages endpoint rejects Authorization and requires this header.
+      // The Messages endpoint authenticates with this header, not Authorization.
       headers.set('x-api-key', credential.accessToken)
       headers.delete('authorization')
       for (const [key, value] of Object.entries(MINIMAX_HEADERS)) headers.set(key, value)
