@@ -4,6 +4,7 @@ import path from 'node:path'
 import { z } from 'zod'
 import { callWebHost } from '../web/host-client'
 import { codexMediaTools } from './codex'
+import { grokMediaTools } from './grok'
 
 const generatedMediaResponseSchema = z.object({
   images: z.array(z.object({ mimeType: z.string(), base64: z.string().min(1) })),
@@ -21,6 +22,7 @@ export type MediaToolFactory = (context: MediaToolContext) => SdkMcpToolDefiniti
 // prefixed with the provider, e.g. mcp__media__codex_generate_image.
 export const MEDIA_TOOLS: Record<string, MediaToolFactory> = {
   codex: codexMediaTools,
+  grok: grokMediaTools,
 }
 
 const EXTENSIONS: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }
