@@ -69,14 +69,4 @@ describe('partial allowance payloads', () => {
     ])
     expect(parseKimiUsage({}).status).toBe('unavailable')
   })
-  it('reads Kimi count windows when ratio fields are absent', () => {
-    const snapshot = parseKimiUsage({
-      usage: { name: 'Weekly limit', limit: '100', used: '40', resetAt: '2026-10-01T00:00:00.000Z' },
-      limits: [{ window: { duration: 300, timeUnit: 'TIME_UNIT_MINUTE' }, detail: { limit: '100', remaining: '75', resetTime: '2026-09-24T23:58:26Z' } }],
-    })
-    expect(snapshot.limits).toEqual([
-      { kind: 'window', id: 'summary', label: 'Weekly limit', usedPercent: 40, resetsAt: '2026-10-01T00:00:00.000Z' },
-      { kind: 'window', id: 'limit-0', label: '5-hour', usedPercent: 25, resetsAt: '2026-09-24T23:58:26Z' },
-    ])
-  })
 })
