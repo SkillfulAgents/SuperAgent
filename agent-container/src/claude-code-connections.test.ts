@@ -250,15 +250,16 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     claudeProcess = new ClaudeCodeProcess({ sessionId: 'provider-instructions', workingDirectory: '/tmp', llmRuntime: runtime })
     await claudeProcess.start()
     const originalPrompt = (calls[0].options.systemPrompt as { prompt: string }).prompt
-    const extraSystemPrompt = '## Codex images\nUse Bash to POST /subscription-media/codex/image.'
-    await claudeProcess.sendMessage('Generate an image', undefined, { llmRuntime: { ...runtime, extraSystemPrompt } })
+    const mediaHint = 'Use Bash to POST /subscription-media/codex/image.'
+    const connected = { ...runtime, modelPromptHints: [...runtime.modelPromptHints, mediaHint] }
+    await claudeProcess.sendMessage('Generate an image', undefined, { llmRuntime: connected })
     expect(calls).toHaveLength(2)
-    expect(calls[1].options.systemPrompt).toMatchObject({ prompt: `${originalPrompt}\n\n${extraSystemPrompt}` })
+    expect((calls[1].options.systemPrompt as { prompt: string }).prompt).toContain(mediaHint)
     expect(calls[1].options.model).toBe('claude-model')
     expect(calls[1].options.mcpServers).not.toHaveProperty('media')
-    await claudeProcess.sendMessage('Continue', undefined, { llmRuntime: { ...runtime, extraSystemPrompt } })
+    await claudeProcess.sendMessage('Continue', undefined, { llmRuntime: connected })
     expect(calls).toHaveLength(2)
-    await claudeProcess.sendMessage('Disconnected', undefined, { llmRuntime: { ...runtime, extraSystemPrompt: '' } })
+    await claudeProcess.sendMessage('Disconnected', undefined, { llmRuntime: runtime })
     expect(calls).toHaveLength(3)
     expect(calls[2].options.systemPrompt).toMatchObject({ prompt: originalPrompt })
     await claudeProcess.sendMessage('Continue without providers', undefined, { llmRuntime: runtime })

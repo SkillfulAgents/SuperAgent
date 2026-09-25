@@ -16,7 +16,6 @@ export const connectionRuntimeSchema = z.object({
   modelContextWindows: modelContextWindowsSchema,
   env: z.record(z.string(), z.string()),
   proxy: llmProxyConfigSchema.optional(),
-  extraSystemPrompt: z.string().optional(),
 })
 export type ConnectionRuntime = z.infer<typeof connectionRuntimeSchema>
 

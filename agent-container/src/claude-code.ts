@@ -437,7 +437,6 @@ export function generateSystemPrompt(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
-  extraSystemPrompt?: string,
 ): string {
   const vars = buildSystemPromptVars(
     availableEnvVars,
@@ -448,8 +447,7 @@ export function generateSystemPrompt(
     capabilityPolicies,
     subagentModels,
   );
-  const prompt = renderPrompt(SYSTEM_PROMPT, vars);
-  return extraSystemPrompt ? `${prompt}\n\n${extraSystemPrompt}` : prompt;
+  return renderPrompt(SYSTEM_PROMPT, vars);
 }
 
 /**
@@ -707,7 +705,6 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.webFetchProvider,
       this.capabilityPolicies,
       this.subagentModels,
-      this.llmRuntime?.extraSystemPrompt,
     );
   }
 
@@ -1684,8 +1681,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       JSON.stringify([nextRuntime.browserModel, nextRuntime.dashboardBuilderModel, nextRuntime.subagentModels, nextRuntime.modelPromptHints, nextRuntime.modelContextWindows]) !==
         JSON.stringify([this.llmRuntime?.browserModel, this.llmRuntime?.dashboardBuilderModel, this.llmRuntime?.subagentModels, this.llmRuntime?.modelPromptHints, this.llmRuntime?.modelContextWindows]) ||
       llmProxyBinding(nextRuntime.llmProviderId, nextRuntime.proxy) !==
-        llmProxyBinding(this.llmRuntime?.llmProviderId ?? '', this.llmRuntime?.proxy) ||
-      (nextRuntime.extraSystemPrompt ?? '') !== (this.llmRuntime?.extraSystemPrompt ?? '')
+        llmProxyBinding(this.llmRuntime?.llmProviderId ?? '', this.llmRuntime?.proxy)
     );
     if (nextRuntime) {
       this.llmRuntime = nextRuntime;
@@ -1746,7 +1742,6 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.webFetchProvider,
           nextPolicies,
           this.subagentModels,
-          this.llmRuntime?.extraSystemPrompt,
         );
       }
       this.reconcilePendingCapabilityReviews();

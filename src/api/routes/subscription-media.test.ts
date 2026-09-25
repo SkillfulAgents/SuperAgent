@@ -38,7 +38,7 @@ vi.mock('../middleware/auth', () => ({
   },
 }))
 import routes from './subscription-media'
-import { subscriptionMediaPrompt } from '@shared/lib/subscription-media'
+import { subscriptionMediaPromptHints } from '@shared/lib/subscription-media'
 
 const fake: SubscriptionMediaProvider = {
   id: 'codex',
@@ -122,15 +122,15 @@ it('includes instructions only for providers the owner can use', async () => {
   const grok = { ...fake, id: 'grok', llmProviderId: 'grok-subscription' as const, extraPrompt: 'Grok media instructions.' }
   state.providers = [fake, grok]
   await addConnection('coworker-codex', 'coworker', 1)
-  expect(await subscriptionMediaPrompt('alpha')).toBe('')
+  expect(await subscriptionMediaPromptHints('alpha')).toEqual([])
   await addConnection('shared-codex', null, 2)
-  expect(await subscriptionMediaPrompt('alpha')).toBe(fake.extraPrompt)
+  expect(await subscriptionMediaPromptHints('alpha')).toEqual([fake.extraPrompt])
   await addConnection('owner-codex', 'owner', 3)
-  expect(await subscriptionMediaPrompt('alpha')).toBe(fake.extraPrompt)
+  expect(await subscriptionMediaPromptHints('alpha')).toEqual([fake.extraPrompt])
   await addConnection('owner-grok', 'owner', 4, 'grok-subscription')
-  expect(await subscriptionMediaPrompt('alpha')).toBe(`${fake.extraPrompt}\n\n${grok.extraPrompt}`)
+  expect(await subscriptionMediaPromptHints('alpha')).toEqual([fake.extraPrompt, grok.extraPrompt])
   state.owner = null
-  expect(await subscriptionMediaPrompt('alpha')).toBe(fake.extraPrompt)
+  expect(await subscriptionMediaPromptHints('alpha')).toEqual([fake.extraPrompt])
   state.providers = []
-  expect(await subscriptionMediaPrompt('alpha')).toBe('')
+  expect(await subscriptionMediaPromptHints('alpha')).toEqual([])
 })

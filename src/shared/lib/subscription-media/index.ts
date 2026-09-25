@@ -29,8 +29,8 @@ export async function mediaConnectionId(provider: SubscriptionMediaProvider, age
   return row?.id
 }
 
-export async function subscriptionMediaPrompt(agentSlug: string): Promise<string> {
-  if (SUBSCRIPTION_MEDIA_PROVIDERS.length === 0) return ''
+export async function subscriptionMediaPromptHints(agentSlug: string): Promise<string[]> {
+  if (SUBSCRIPTION_MEDIA_PROVIDERS.length === 0) return []
   const rows = await db.selectDistinct({ provider: llmConnections.provider }).from(llmConnections)
     .where(and(
       inArray(llmConnections.provider, SUBSCRIPTION_MEDIA_PROVIDERS.map(provider => provider.llmProviderId)),
@@ -39,5 +39,5 @@ export async function subscriptionMediaPrompt(agentSlug: string): Promise<string
     .all()
   const connected = new Set(rows.map(row => row.provider))
   return SUBSCRIPTION_MEDIA_PROVIDERS.filter(provider => connected.has(provider.llmProviderId))
-    .map(provider => provider.extraPrompt).join('\n\n')
+    .map(provider => provider.extraPrompt)
 }
