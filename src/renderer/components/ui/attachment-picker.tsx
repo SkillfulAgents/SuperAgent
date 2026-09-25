@@ -29,7 +29,7 @@ export function AttachmentPicker({
   onFolderSelect,
   onRecentFileAttach,
   disabled,
-  buttonClassName = 'h-[34px] w-[34px] p-0',
+  buttonClassName = 'h-[34px] w-[34px] shrink-0 p-0',
   popoverAlign = 'start',
 }: AttachmentPickerProps) {
   const [open, setOpen] = useState(false)

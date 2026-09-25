@@ -19,6 +19,16 @@ const EMPTY_SECURED_SECRETS: SecuredSecret[] = []
 export const COMPOSER_BOX_CLASS =
   'group relative mx-auto w-full rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80'
 
+/** The action row under the editor. When even the left group's icons do not fit, the right group wraps to its own line. */
+export const COMPOSER_ACTIONS_ROW_CLASS = 'mt-1 flex min-w-0 flex-wrap items-center gap-2'
+
+/**
+ * The row's left group takes the width the right group leaves, and is the size container the
+ * model picker collapses on. 76px holds the paperclip and the picker's icon, so the row wraps
+ * before they would overlap the right group.
+ */
+export const COMPOSER_LEFT_ACTIONS_CLASS = 'flex min-w-[76px] flex-1 items-center gap-2 [container-type:inline-size]'
+
 /**
  * The floating translucent treatment for a composer that sits over content —
  * the session composer's look, shared so the wizard's create-agent composer
@@ -137,8 +147,8 @@ export function ChatComposerBox({
           onSecure={secureSecrets.onSecure}
         />
       )}
-      <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-1">{leftActions}</div>
+      <div className={COMPOSER_ACTIONS_ROW_CLASS}>
+        <div className={COMPOSER_LEFT_ACTIONS_CLASS}>{leftActions}</div>
         <div className="flex shrink-0 items-center gap-2">{rightActions}</div>
       </div>
       {footer}

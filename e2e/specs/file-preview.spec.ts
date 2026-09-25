@@ -342,6 +342,56 @@ test.describe('File Preview', () => {
     expect(feedbackPostCount).toBe(0)
   })
 
+  test('a composer squeezed by the preview keeps its toolbar buttons apart in a wide window', async ({ page }) => {
+    // Wide enough that the preview sits beside the chat, not over it.
+    await page.setViewportSize({ width: 1100, height: 800 })
+    await page.evaluate(() => localStorage.setItem('tray_drawer_width', '400'))
+    // Voice configured, so the row carries the voice-mode button as it does for users who set it up.
+    // Without it the left group is ~40px wider and the label stage would pass a cutoff that
+    // collapses the picker for those users.
+    await page.route('**/api/voice/configured', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, supportsTts: true }) }),
+    )
+    // The app already loaded in beforeEach; reload so no cached voice status predates the route.
+    await appPage.reload()
+
+    await agentPage.createAgent(`ComposerSqueeze ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report')
+
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+
+    const toolbar = async () => {
+      const [attachBox, pickerBox, sendBox] = await Promise.all([
+        page.getByRole('button', { name: 'Add files' }).boundingBox(),
+        page.getByTestId('composer-options-trigger').boundingBox(),
+        page.getByTestId('send-button').boundingBox(),
+      ])
+      return {
+        pickerWidth: pickerBox?.width,
+        labelShown: (pickerBox?.width ?? 0) > 34,
+        sendBelowAttach: !!attachBox && !!sendBox && sendBox.y >= attachBox.y + attachBox.height,
+      }
+    }
+    const drawerWidth = async () => (await page.getByTestId('tray-drawer').boundingBox())?.width
+
+    // The chat is narrower than the window, but the row still leaves the picker room for its label.
+    await expect(page.getByTestId('voice-mode-button')).toBeVisible()
+    await expect.poll(drawerWidth).toBe(400)
+    await expect.poll(toolbar).toMatchObject({ labelShown: true, sendBelowAttach: false })
+
+    // Squeezed further, the picker becomes its icon and the right-hand buttons wrap to their own
+    // line instead of overlapping it.
+    await page.evaluate(() => localStorage.setItem('tray_drawer_width', '620'))
+    await appPage.reload()
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    await expect.poll(drawerWidth).toBe(620)
+    await expect.poll(toolbar).toMatchObject({ pickerWidth: 34, sendBelowAttach: true })
+  })
+
   test('renders a video and pins a timestamped comment via the Add Comment button', async ({ page }) => {
     await agentPage.createAgent(`VideoComment ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)

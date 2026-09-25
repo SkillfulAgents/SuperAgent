@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { Mic, MicOff, Volume2, VolumeOff, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { VoiceInputError } from '@renderer/components/ui/voice-input-button'
-import { COMPOSER_BOX_CLASS, FLOATING_COMPOSER_CLASS } from './chat-composer-box'
+import { COMPOSER_ACTIONS_ROW_CLASS, COMPOSER_BOX_CLASS, COMPOSER_LEFT_ACTIONS_CLASS, FLOATING_COMPOSER_CLASS } from './chat-composer-box'
 import { AttachmentPreview, type Attachment } from './attachment-preview'
 import { VoiceConversationPreview } from './voice-conversation-preview'
 import { VoiceToggleButton } from './voice-mode-controls'
@@ -150,8 +150,8 @@ export function VoiceModeComposer({
             </div>
           </div>
         </div>
-        <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-1">
+        <div className={COMPOSER_ACTIONS_ROW_CLASS}>
+          <div className={COMPOSER_LEFT_ACTIONS_CLASS}>
             {attachmentPicker}
             {composerOptions}
           </div>
