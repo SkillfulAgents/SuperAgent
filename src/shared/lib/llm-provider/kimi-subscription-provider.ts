@@ -13,13 +13,19 @@ import { inferErrorStatus, extractErrorMessage } from './error-presentation'
 
 // Effort tiers advertised by the subscription's /models (live verified).
 const KIMI_EFFORTS: EffortLevel[] = ['low', 'high', 'max']
-// Fixed at 256K: plans below the 1M tier reject larger K3 contexts, so compaction must start before that.
+// k3-256k is the same K3 model at about half the quota of 1M k3, which lower plans cap at 256K anyway.
 const KIMI_MODELS: ModelDefinition[] = [
-  { id: 'k3', label: 'Kimi K3', isLatest: true, isDefault: true },
+  { id: 'k3-256k', label: 'Kimi K3', isLatest: true, isDefault: true },
 ].map(model => ({
   ...model, family: 'kimi', icon: 'kimi', blurb: 'Uses your Kimi Code subscription', supportedEfforts: KIMI_EFFORTS,
   supportsWebSearch: false, supportsImageInput: true, contextWindow: 262_144, pricing: pricingFor('kimi-k3'),
 }))
+
+// Models without advertised efforts get Kimi's documented default, so discovered models stay addable.
+function kimiEfforts(advertised: string[] | undefined): EffortLevel[] {
+  const efforts = KIMI_EFFORTS.filter(effort => advertised?.includes(effort))
+  return efforts.length > 0 ? efforts : ['high']
+}
 
 export class KimiSubscriptionLlmProvider extends BaseLlmProvider {
   readonly id = 'kimi-subscription' as const
@@ -92,7 +98,7 @@ export class KimiSubscriptionLlmProvider extends BaseLlmProvider {
     const body = schema.parse(await response.json())
     return body.data.filter(model => model.id.toLowerCase().includes(query.toLowerCase())).map(model => ({
       id: model.id, label: model.display_name ?? model.id, contextWindow: model.context_length, supportsImageInput: model.supports_image_in,
-      supportedEfforts: KIMI_EFFORTS.filter(effort => model.think_efforts?.valid_efforts?.includes(effort)), supportsWebSearch: false,
+      supportedEfforts: kimiEfforts(model.think_efforts?.valid_efforts), supportsWebSearch: false,
     }))
   }
   protected override parseErrorResponseOverride(status: number | undefined, body: unknown) {
@@ -100,7 +106,9 @@ export class KimiSubscriptionLlmProvider extends BaseLlmProvider {
     const message = extractErrorMessage(body)
     if (KIMI_PLAN_LIMIT.test(message)) return { severity: 'error' as const, icon: 'info' as const, message: `**Your Kimi plan does not include this request.** ${message}` }
     if (actual === 401) return { severity: 'error' as const, icon: 'info' as const, message: '**Kimi sign-in expired or invalid.** Reconnect in Settings → Model Providers.' }
-    if (actual === 402 || actual === 403) return { severity: 'error' as const, icon: 'info' as const, message: '**Kimi subscription access was denied.** Check the connected account’s membership.' }
+    if (actual === 402) return { severity: 'error' as const, icon: 'info' as const, message: '**Kimi subscription access was denied.** Check the connected account’s membership.' }
+    // Kimi uses 403 for quota and concurrency limits; its message carries the reset and recovery details.
+    if (actual === 403) return { severity: 'error' as const, icon: 'info' as const, message: `**Kimi denied this request.** ${message}` }
     return null
   }
 }
