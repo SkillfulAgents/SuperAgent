@@ -49,6 +49,7 @@ import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
 import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-protocol';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
+import { connectCdp, runBrowserStorage } from './browser-storage';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
 
@@ -2704,6 +2705,34 @@ app.post('/browser/fill-credential', async (c) => {
     return c.json({ error: 'Credential autofill failed' }, 500);
   }
 });
+
+async function getBrowserWsUrl(): Promise<string> {
+  if (browserState.cdpUrl) return browserState.cdpUrl;
+  const response = await fetch(`${getCdpHttpEndpoint()}/json/version`);
+  const { webSocketDebuggerUrl } = await response.json() as { webSocketDebuggerUrl: string };
+  return webSocketDebuggerUrl;
+}
+
+// Host-only browser storage endpoints. Captures and restores carry live
+// session credentials, so they refuse to run without host authentication.
+for (const action of ['snapshot', 'capture', 'restore'] as const) {
+  app.post(`/browser/storage/${action}`, async (c) => {
+    if (!hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503);
+    c.header('Cache-Control', 'no-store');
+    try {
+      const result = await runBrowserStorage(action, await c.req.json().catch(() => null), {
+        validateSession: validateBrowserSessionWithRecovery,
+        isBrowserActive: () => browserState.active,
+        connect: async () => connectCdp(await getBrowserWsUrl()),
+      });
+      if (!result.success) return c.json(result.body, result.status);
+      return c.json(result.body);
+    } catch (error) {
+      console.error(`[Browser] Storage ${action} failed:`, error instanceof Error ? error.message : 'Unknown error');
+      return c.json({ error: `Browser storage ${action} failed` }, 500);
+    }
+  });
+}
 
 /** Helper to build a CDP message, adding sessionId when in session mode */
 function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params?: Record<string, unknown>): string {
