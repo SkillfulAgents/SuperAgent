@@ -979,6 +979,7 @@ html[data-keyboard-open] [data-composer-footer] {
   position: absolute;
   inset: 0;
   width: 100% !important;
+  transition-property: width; /* a slide-over margin snaps to 0 with the edge instead of gliding after it */
   z-index: 30;
   border-left-width: 0;
   box-shadow: none;
@@ -995,6 +996,7 @@ html[data-keyboard-open] [data-composer-footer] {
     z-index: 30;
     left: 0;
     width: 100% !important; /* overrides the persisted inline drawer width */
+    margin-left: 0 !important; /* and the slide-over margin */
     border-left-width: 0;
     box-shadow: none;
     transform: translateX(0);
@@ -1007,6 +1009,10 @@ html[data-keyboard-open] [data-composer-footer] {
   }
 
   .file-preview-responsive-resize-handle {
+    display: none;
+  }
+
+  .file-preview-responsive-scrim {
     display: none;
   }
 
