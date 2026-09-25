@@ -12,6 +12,11 @@ import { inferErrorStatus, extractErrorMessage } from './error-presentation'
 export const CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex'
 export const CODEX_CLIENT_VERSION = '0.156.1'
 export const CODEX_HEADERS = { originator: 'codex_cli_rs', 'OpenAI-Beta': 'responses=experimental' }
+const CODEX_IMAGE_PROMPT = `Codex image generation is available in this session through the connected ChatGPT subscription; it uses that subscription's Codex allowance. There is no dedicated tool: write a Bash script (Node or Python) that follows these steps. Never print tokens, credentials, base64 or full responses.
+1. Credential: POST process.env.SUPERAGENT_HOST_API_URL (remove its trailing slash) + "/llm-runtime/resolve" with Authorization: Bearer <process.env.PROXY_TOKEN>, Content-Type: application/json and body {"sessionId": <process.env.GAMUT_SESSION_ID>}. Use proxy.credential.accessToken, proxy.credential.accountId and proxy.credential.generation from the response.
+2. Generate: POST ${CODEX_BASE_URL}/images/generations with headers Authorization: Bearer <accessToken>, ChatGPT-Account-ID: <accountId>, ${Object.entries(CODEX_HEADERS).map(([name, value]) => `${name}: ${value}`).join(', ')}, Content-Type: application/json. Body: {"model":"gpt-image-2","prompt":"A red square on a white background","size":"auto","quality":"auto","background":"opaque"}; use "background":"transparent" for a transparent image. To edit or use reference images, POST the same body plus "images":[{"image_url":"data:image/png;base64,..."}] to ${CODEX_BASE_URL}/images/edits, with up to 5 PNG, JPEG or WebP data URLs encoded from local files. Allow up to 5 minutes.
+3. If the image request returns 401, resolve again with {"sessionId": ..., "rejectedGeneration": <generation>} and retry once. Do not retry after a timeout or network failure: the first request may already have used allowance. For other errors, report the provider's error message.
+4. The response is {"data":[{"b64_json":"..."}]}. Decode each image, save it under /workspace/media/ with a unique filename and an extension matching its bytes, print only the saved paths, and deliver them with the existing file-delivery tool. Reuse saved files instead of regenerating.`
 // Subscription speed choices exclude the API-only Flex tier.
 const CODEX_SPEEDS: SpeedLevel[] = ['normal', 'fast']
 // Subscription model availability/context differs from the public API catalog.
@@ -25,6 +30,7 @@ export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
   override readonly toolSearchEnv = 'true' as const
+  override readonly extraPrompt = CODEX_IMAGE_PROMPT
   override readonly supportsModelSearch = true
   // This integration exposes the subscription through the agent proxy, not a
   // host API client. Existing helper selection supplies a global API provider.

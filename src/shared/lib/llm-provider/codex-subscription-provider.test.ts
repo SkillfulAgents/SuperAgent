@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { CodexSubscriptionLlmProvider } from './codex-subscription-provider'
+import { CODEX_BASE_URL, CodexSubscriptionLlmProvider } from './codex-subscription-provider'
 
 describe('Codex subscription provider', () => {
   it('sends only the selected account access credential to the agent proxy', async () => {
@@ -10,6 +10,13 @@ describe('Codex subscription provider', () => {
     expect(JSON.stringify(runtime)).not.toContain('private-refresh')
     expect(await provider.getContainerEnvVars()).toEqual({})
     expect(new CodexSubscriptionLlmProvider().getApiKeyStatus().isConfigured).toBe(false)
+  })
+  it('tells the agent to call the real image endpoints with the session credential', () => {
+    const prompt = new CodexSubscriptionLlmProvider().extraPrompt
+    expect(prompt).toContain('"/llm-runtime/resolve"')
+    expect(prompt).toContain(`${CODEX_BASE_URL}/images/generations`)
+    expect(prompt).toContain(`${CODEX_BASE_URL}/images/edits`)
+    expect(prompt).toContain('originator: codex_cli_rs')
   })
   it('uses code-driven subscription models and directs helpers to a separate API provider', () => {
     const provider = new CodexSubscriptionLlmProvider()
