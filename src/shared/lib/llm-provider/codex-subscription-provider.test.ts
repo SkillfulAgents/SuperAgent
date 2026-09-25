@@ -12,7 +12,7 @@ describe('Codex subscription provider', () => {
     expect(new CodexSubscriptionLlmProvider().getApiKeyStatus().isConfigured).toBe(false)
   })
   it('tells the agent to call the real image endpoints with the session credential', () => {
-    const prompt = new CodexSubscriptionLlmProvider().extraPrompt
+    const prompt = new CodexSubscriptionLlmProvider().mediaPrompt
     expect(prompt).toContain('"/llm-runtime/resolve"')
     expect(prompt).toContain(`${CODEX_BASE_URL}/images/generations`)
     expect(prompt).toContain(`${CODEX_BASE_URL}/images/edits`)

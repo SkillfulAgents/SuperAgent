@@ -30,7 +30,7 @@ export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
   override readonly toolSearchEnv = 'true' as const
-  override readonly extraPrompt = CODEX_IMAGE_PROMPT
+  override readonly mediaPrompt = CODEX_IMAGE_PROMPT
   override readonly supportsModelSearch = true
   // This integration exposes the subscription through the agent proxy, not a
   // host API client. Existing helper selection supplies a global API provider.
