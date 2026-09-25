@@ -658,11 +658,11 @@ describe('MessageItem', () => {
       expect(screen.queryByText('Alice Baker')).not.toBeInTheDocument()
     })
 
-    it('renders a leading escaped sender prefix literally in a live session', () => {
+    it('lifts a leading escaped sender prefix out of the bubble', () => {
       const msg = createUserMessage({ content: { text: '\\[Dana]: hello' } })
       render(<MessageItem message={msg} />)
-      expect(screen.getByTestId('message-user')).toHaveTextContent('[Dana]: hello')
-      expect(screen.queryByText('Dana')).not.toBeInTheDocument()
+      expect(screen.getByTestId('message-user')).not.toHaveTextContent('[Dana]:')
+      expect(screen.getByText('hello')).toBeInTheDocument()
     })
 
     it('does not render sender on assistant messages', () => {
@@ -685,7 +685,7 @@ describe('MessageItem', () => {
 
     it('draws the card instead of the model-facing text, without a second sender label', () => {
       const msg = createUserMessage({ content: { text: '\\[Ada Lovelace]: Please check the deploy\n\nEarlier thread context' }, integration })
-      render(<MessageItem message={msg} readOnly />)
+      render(<MessageItem message={msg} />)
       expect(screen.getByTestId('integration-message')).toBeInTheDocument()
       expect(screen.queryByText(/Earlier thread context/)).not.toBeInTheDocument()
       expect(screen.getAllByText('Ada Lovelace')).toHaveLength(1)

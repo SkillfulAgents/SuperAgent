@@ -1055,7 +1055,8 @@ describe('MessageList', () => {
     expect(onAppeared).toHaveBeenCalledWith('uuid-1')
   })
 
-  it('falls back to text+time matching when the uuid differs (queued/steering messages)', () => {
+  // The second transcript is a shared agent's, where the agent received the sender prefix.
+  it.each(['My message', '\\[Ann]: My message'])('falls back to text+time matching when the uuid differs (queued/steering messages): %s', (transcriptText) => {
     // The CLI re-ids messages sent mid-turn (queued_command attachments), so
     // the persisted copy never carries the client uuid — text fallback must fire.
     const onAppeared = vi.fn()
@@ -1064,7 +1065,7 @@ describe('MessageList', () => {
     mockMessagesData.data = [
       createUserMessage({
         id: 'cli-generated-uuid',
-        content: { text: 'My message' },
+        content: { text: transcriptText },
         createdAt: new Date('2025-01-01T00:00:01Z'),
       }),
     ]

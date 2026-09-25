@@ -3,6 +3,7 @@ import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { agentAcl, user } from '@shared/lib/db/schema'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { hasMinRole } from '@shared/lib/types/agent'
 import { agentMembersByAgentSchema, type AgentMember } from '@shared/lib/agent-members-schema'
 import { getUserSummaries } from './user-profile-service'
 import { publishCollaborationEvent } from './collaboration-events'
@@ -29,6 +30,14 @@ export async function listAgentMembers(agentSlug: string) {
 }
 
 export type AgentRole = AgentMember['role']
+
+/** How many members hold at least `minRole` on the agent. */
+export async function countMembersWithMinRole(agentSlug: string, minRole: AgentRole): Promise<number> {
+  const roles = agentAcl.role.enumValues.filter(role => hasMinRole(role, minRole))
+  const row = await db.select({ n: count() }).from(agentAcl)
+    .where(and(eq(agentAcl.agentSlug, agentSlug), inArray(agentAcl.role, roles))).get()
+  return row?.n ?? 0
+}
 
 /** Why a member write changed nothing, or `done`. */
 export type MemberWriteOutcome = 'done' | 'not-a-member' | 'last-owner'
