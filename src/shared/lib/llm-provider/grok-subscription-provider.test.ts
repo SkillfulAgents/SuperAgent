@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { GrokSubscriptionLlmProvider, GROK_CLIENT_HEADERS } from './grok-subscription-provider'
+import { GrokSubscriptionLlmProvider, GROK_CLIENT_HEADERS, GROK_SUBSCRIPTION_BASE_URL } from './grok-subscription-provider'
 vi.mock('../config/settings', () => ({ getSettings: () => ({}), getModelCatalogSettings: () => ({}) }))
 afterEach(() => vi.restoreAllMocks())
 const credential = { accessToken: 'old', refreshToken: 'secret-refresh', accountId: 'a', generation: 1, expiresAt: Date.now() + 3600000 }
@@ -12,6 +12,13 @@ it('issues an access-only Responses proxy descriptor', async () => {
   const config = await provider().getContainerProxyConfig()
   expect(config).toMatchObject({ adapter: 'grok', format: 'responses', headers: GROK_CLIENT_HEADERS, credential: { accessToken: 'old' } })
   expect(JSON.stringify(config)).not.toContain('secret-refresh')
+})
+it('tells the agent to call the subscription media endpoints with the session credential', () => {
+  const media = new GrokSubscriptionLlmProvider().mediaPrompt
+  expect(media).toContain('"/llm-runtime/resolve"')
+  for (const path of ['images/generations', 'images/edits', 'videos/generations', 'videos/<request_id>'])
+    expect(media).toContain(`${GROK_SUBSCRIPTION_BASE_URL}/v1/${path}`)
+  expect(media).toContain('x-grok-client-mode: cli')
 })
 it('translates host helper calls, thinking configuration, tools and usage through Responses', async () => {
   const upstream = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json(reply))
