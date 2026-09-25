@@ -137,11 +137,11 @@ describe('skillset-reconcile', () => {
       state.isInstalledValid.mockReturnValue(false)
       const files = workspaceOf('a')
       await files.putDoc('.skillset-agent-metadata.json', JSON.stringify(platformMeta('old-org')))
-      await files.putDoc('CLAUDE.md', '# agent')
+      await files.putDoc('AGENTS.md', '# agent')
       await files.putDoc('notes/todo.md', '- x')
 
       expect(await pruneInstalledTemplateIfInvalid(platformMeta('old-org'), files, '.skillset-agent-metadata.json')).toBe(true)
-      expect(Object.keys(files.snapshot()).sort()).toEqual(['CLAUDE.md', 'notes/todo.md'])
+      expect(Object.keys(files.snapshot()).sort()).toEqual(['AGENTS.md', 'notes/todo.md'])
     })
 
     it('returns false and touches nothing for a valid record', async () => {
@@ -160,10 +160,10 @@ describe('skillset-reconcile', () => {
 
     it('treats an agent with no skills directory and no template metadata as clean', async () => {
       state.slugs = ['fresh']
-      await workspaceOf('fresh').putDoc('CLAUDE.md', '# agent')
+      await workspaceOf('fresh').putDoc('AGENTS.md', '# agent')
 
       expect(await reconcileInstalledForCurrentAuth()).toEqual({ skillsRemoved: 0, templatesRemoved: 0 })
-      expect(Object.keys(workspaceOf('fresh').snapshot())).toEqual(['CLAUDE.md'])
+      expect(Object.keys(workspaceOf('fresh').snapshot())).toEqual(['AGENTS.md'])
     })
 
     it('sweeps every listed agent, removing invalid skills and template metadata and counting them', async () => {

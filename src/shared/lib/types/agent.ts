@@ -24,7 +24,7 @@ export function hasMinRole(actual: AgentRole | null, required: AgentRole): boole
 // ============================================================================
 
 /**
- * Frontmatter stored in CLAUDE.md
+ * Frontmatter stored in AGENTS.md
  */
 export interface AgentFrontmatter {
   name: string
@@ -34,12 +34,12 @@ export interface AgentFrontmatter {
 }
 
 /**
- * Full agent configuration from CLAUDE.md (internal use)
+ * Full agent configuration from AGENTS.md (internal use)
  */
 export interface AgentConfig {
   slug: string
   frontmatter: AgentFrontmatter
-  instructions: string // CLAUDE.md body (system prompt)
+  instructions: string // AGENTS.md body (system prompt)
 }
 
 /**
@@ -378,9 +378,9 @@ You are a helpful AI assistant.
 `
 
 /**
- * Generate default CLAUDE.md content for a new agent
+ * Generate default AGENTS.md content for a new agent
  */
-export function generateDefaultClaudeMd(name: string, description?: string): string {
+export function generateDefaultAgentInstructions(name: string, description?: string): string {
   const frontmatter: AgentFrontmatter = {
     name,
     createdAt: new Date().toISOString(),

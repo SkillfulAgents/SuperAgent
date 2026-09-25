@@ -68,7 +68,7 @@ const mockGetAgent = vi.fn()
 const mockListAgents = vi.fn()
 const mockCreateAgent = vi.fn()
 // The route reads identity from the catalog record; the fixtures below are
-// still written as CLAUDE.md-shaped agents and projected here.
+// still written as AGENTS.md-shaped agents and projected here.
 type AgentFixture = { slug: string; frontmatter: { name: string; description?: string; createdAt?: string } }
 const recordOf = (agent: AgentFixture | null | undefined) =>
   agent

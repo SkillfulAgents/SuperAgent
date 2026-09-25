@@ -480,11 +480,13 @@ export function getAgentWorkspaceDir(slug: string): string {
   return path.join(getAgentDir(slug), 'workspace')
 }
 
-/**
- * Get CLAUDE.md path for agent (inside workspace)
- * ~/.superagent/agents/{slug}/workspace/CLAUDE.md
- */
-export function getAgentClaudeMdPath(slug: string): string {
+/** Canonical instructions path for an agent's workspace. */
+export function getAgentInstructionsPath(slug: string): string {
+  return path.join(getAgentWorkspaceDir(slug), 'AGENTS.md')
+}
+
+/** Legacy instructions path, used only for compatibility and migration. */
+export function getLegacyAgentInstructionsPath(slug: string): string {
   return path.join(getAgentWorkspaceDir(slug), 'CLAUDE.md')
 }
 
@@ -1024,7 +1026,7 @@ function parseJsonStrict<T>(filePath: string, content: string, schema: ZodType<T
  *
  * Use this everywhere a read-modify-write previously swallowed errors into an
  * empty default, so a transiently-unreadable file aborts the write instead of
- * being overwritten with the default (the CLAUDE.md fail-closed rule).
+ * being overwritten with the default (the instructions-document fail-closed rule).
  */
 export async function readJsonFileStrict<T>(
   filePath: string,

@@ -88,7 +88,7 @@ export function findReservedEnvVarKeys(
 
 /**
  * Zod schema for the `customEnvVars` map at the settings write boundary.
- * Defense-in-depth (per CLAUDE.md's validate-at-boundary rule): rejects any
+ * Defense-in-depth (per AGENTS.md's validate-at-boundary rule): rejects any
  * payload that tries to set a reserved runtime key so it never even reaches
  * persisted settings. The container merge (mergeCustomEnvVars) is the primary
  * guard; this stops the bad config at the door.

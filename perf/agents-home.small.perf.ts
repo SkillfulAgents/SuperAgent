@@ -16,7 +16,7 @@ import { defineHomeScenarios } from './home-scenarios'
 // stat where it used to be an access call, and nothing is added.
 //
 // The agent listing itself reads no workspace: which agents exist and what
-// they are called comes from the `agents` table. The per-agent CLAUDE.md
+// they are called comes from the `agents` table. The per-agent AGENTS.md
 // read, the agents-directory listing and its existence probe that every
 // listing used to pay are gone (7 ops here: 5 reads, 1 readdir, 1 probe),
 // and resolving the `:id` of a session route no longer stats the agent's
