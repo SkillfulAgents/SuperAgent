@@ -48,6 +48,14 @@ describe('isContainerFacingPath', () => {
     expect(isContainerFacingPath('/api/web-search/search')).toBe(true)
   })
 
+  // Regression: subscription credential refresh and media generation call
+  // /api/llm-runtime/resolve from the container; Apple container 403'd here.
+  it('bypasses the llm-runtime routes', () => {
+    expect(isContainerFacingPath('/api/llm-runtime/resolve')).toBe(true)
+    expect(isContainerFacingPath('/api/llm-runtime/prewarm')).toBe(true)
+    expect(isContainerFacingPath('/api/llm-runtimes')).toBe(false)
+  })
+
   it('does NOT bypass browser-facing API routes', () => {
     expect(isContainerFacingPath('/api/agents')).toBe(false)
     expect(isContainerFacingPath('/api/agents/foo/x-agent-policies')).toBe(false)
