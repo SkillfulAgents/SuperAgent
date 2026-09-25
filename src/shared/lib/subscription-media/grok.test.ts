@@ -25,13 +25,16 @@ afterEach(() => {
   credential.mockClear()
 })
 
-it('generates one inline image through the xAI images API', async () => {
+it('generates the documented image request through the subscription proxy', async () => {
+  expect(grokMediaProvider.extraPrompt).toContain('/subscription-media/grok/image')
+  expect(grokMediaProvider.extraPrompt).toContain('process.env.PROXY_TOKEN')
+  const input = JSON.parse(grokMediaProvider.extraPrompt.match(/Image request JSON: (\{.*\})/)![1])
   fetchMock.mockResolvedValueOnce(json(200, { data: [{ b64_json: '/9j/jpeg', mime_type: 'image/jpeg' }] }))
-  const images = await grokMediaProvider.generateImage({ prompt: 'a red square', aspectRatio: '16:9', resolution: '2k' }, credential)
+  const images = await grokMediaProvider.generateImage(input, credential)
   expect(images).toEqual([{ mimeType: 'image/jpeg', base64: '/9j/jpeg' }])
   const request = sent()
   expect(request.url).toBe('https://cli-chat-proxy.grok.com/v1/images/generations')
-  expect(request.body).toEqual({ model: 'grok-imagine-image-2.0', prompt: 'a red square', n: 1, response_format: 'b64_json', aspect_ratio: '16:9', resolution: '2k' })
+  expect(request.body).toEqual({ model: 'grok-imagine-image-2.0', prompt: 'A red square on a white background', n: 1, response_format: 'b64_json', aspect_ratio: '16:9', resolution: '2k' })
   expect(request.headers.get('authorization')).toBe('Bearer old-token')
   expect(request.headers.get('x-grok-client-mode')).toBe('cli')
 })
@@ -72,13 +75,15 @@ it('returns xAI string errors and rejects invalid input before calling xAI', asy
   expect(fetchMock).toHaveBeenCalledTimes(1)
 })
 
-it('starts a video job with the unified video model', async () => {
+it('starts the documented video request with an optional first frame', async () => {
+  expect(grokMediaProvider.extraPrompt).toContain('/subscription-media/grok/video/status')
+  const input = JSON.parse(grokMediaProvider.extraPrompt.match(/Video request JSON: (\{.*\})/)![1])
   fetchMock.mockResolvedValueOnce(json(200, { request_id: 'req-1' }))
   const image = 'data:image/png;base64,Zm9v'
-  expect(await grokMediaProvider.startVideo!({ prompt: 'waves', image, duration: 6, resolution: '720p' }, credential)).toBe('req-1')
+  expect(await grokMediaProvider.startVideo!({ ...input, image }, credential)).toBe('req-1')
   const request = sent()
   expect(request.url).toBe('https://cli-chat-proxy.grok.com/v1/videos/generations')
-  expect(request.body).toEqual({ model: 'grok-imagine-video-1.5', prompt: 'waves', image: { url: image }, duration: 6, resolution: '720p' })
+  expect(request.body).toEqual({ model: 'grok-imagine-video-1.5', prompt: 'Ocean waves moving gently', image: { url: image }, duration: 6, aspect_ratio: '16:9', resolution: '720p' })
   await expect(grokMediaProvider.startVideo!({ prompt: 'waves', duration: 30 }, credential)).rejects.toMatchObject({ status: 400 })
 })
 

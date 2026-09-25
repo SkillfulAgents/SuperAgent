@@ -30,13 +30,16 @@ afterEach(() => {
   fetchMock.mockReset()
 })
 
-it('generates with the official Codex image request', async () => {
+it('generates with the documented request and official Codex image protocol', async () => {
+  expect(codexMediaProvider.extraPrompt).toContain('/subscription-media/codex/image')
+  expect(codexMediaProvider.extraPrompt).toContain('process.env.PROXY_TOKEN')
+  const input = JSON.parse(codexMediaProvider.extraPrompt.match(/Request JSON: (\{.*\})/)![1])
   fetchMock.mockResolvedValueOnce(json(200, { created: 1, data: [{ b64_json: PNG }] }))
-  const images = await codexMediaProvider.generateImage({ prompt: 'a red square' }, credentialSource())
+  const images = await codexMediaProvider.generateImage(input, credentialSource())
   expect(images).toEqual([{ mimeType: 'image/png', base64: PNG }])
   const request = sent()
   expect(request.url).toBe('https://chatgpt.com/backend-api/codex/images/generations')
-  expect(request.body).toEqual({ prompt: 'a red square', background: 'opaque', model: 'gpt-image-2', quality: 'auto', size: 'auto' })
+  expect(request.body).toEqual({ prompt: 'A red square on a white background', background: 'opaque', model: 'gpt-image-2', quality: 'auto', size: 'auto' })
   expect(request.headers.get('authorization')).toBe('Bearer old-token')
   expect(request.headers.get('chatgpt-account-id')).toBe('account-1')
   expect(request.headers.get('originator')).toBe('codex_cli_rs')

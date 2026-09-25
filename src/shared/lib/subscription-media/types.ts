@@ -16,10 +16,10 @@ export type MediaCredentialSource = (rejectedGeneration?: number) => ReturnType<
 /** Media generation backed by a user's own subscription connection. Each
  * provider validates its own input; the shared route only selects the account. */
 export interface SubscriptionMediaProvider {
-  /** Route segment and container tool prefix, e.g. `codex`. */
   readonly id: string
   readonly name: string
   readonly llmProviderId: LlmProviderId
+  readonly extraPrompt: string
   generateImage(input: unknown, credential: MediaCredentialSource): Promise<GeneratedMedia[]>
   /** Starts an asynchronous video job and returns the provider request id. */
   startVideo?(input: unknown, credential: MediaCredentialSource): Promise<string>

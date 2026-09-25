@@ -29,7 +29,7 @@ export async function mediaConnectionId(provider: SubscriptionMediaProvider, age
   return row?.id
 }
 
-export async function availableMediaProviders(agentSlug: string): Promise<string[]> {
+export async function subscriptionMediaPromptHints(agentSlug: string): Promise<string[]> {
   if (SUBSCRIPTION_MEDIA_PROVIDERS.length === 0) return []
   const rows = await db.selectDistinct({ provider: llmConnections.provider }).from(llmConnections)
     .where(and(
@@ -38,5 +38,6 @@ export async function availableMediaProviders(agentSlug: string): Promise<string
     ))
     .all()
   const connected = new Set(rows.map(row => row.provider))
-  return SUBSCRIPTION_MEDIA_PROVIDERS.filter(provider => connected.has(provider.llmProviderId)).map(provider => provider.id)
+  return SUBSCRIPTION_MEDIA_PROVIDERS.filter(provider => connected.has(provider.llmProviderId))
+    .map(provider => provider.extraPrompt)
 }

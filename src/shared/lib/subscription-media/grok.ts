@@ -66,6 +66,18 @@ export const grokMediaProvider: SubscriptionMediaProvider = {
   id: 'grok',
   name: 'Grok',
   llmProviderId: 'grok-subscription',
+  extraPrompt: `Grok subscription image and video generation is available, regardless of the current chat model. Use existing Bash tools to call the host API; there are no dedicated media tools.
+Use Grok when requested. If several media providers are available and the user did not specify one, ask which to use. Generation uses the connected Grok subscription's allowance, not platform credits.
+Use process.env.SUPERAGENT_HOST_API_URL (remove its trailing slash) as the base URL for the following POST endpoints, with Authorization: Bearer <process.env.PROXY_TOKEN> and Content-Type: application/json. Read these variables in your script; never print tokens or request subscription credentials. Allow several minutes for generation/download responses.
+Images: POST /subscription-media/grok/image (Grok Imagine).
+Image request JSON: {"prompt":"A red square on a white background","aspectRatio":"16:9","resolution":"2k","images":[]}
+prompt is required; the other fields are optional. aspectRatio accepts ${GROK_IMAGE_ASPECT_RATIOS.join(', ')}; resolution accepts ${GROK_IMAGE_RESOLUTIONS.join(', ')}. For editing, images accepts up to 5 PNG, JPEG or WebP data URLs (data:image/png;base64,...), not file paths or remote URLs. Read reference files locally, keep each under 20 MB, and encode them in the script.
+The image response is {"images":[{"mimeType":"image/jpeg","base64":"..."}]}. Validate it, decode base64 and save each image with a unique filename under /workspace/media/ using mimeType for the extension. Print only saved paths, never base64 or the full response; deliver saved files with the existing file-delivery tool.
+Videos: POST /subscription-media/grok/video (Grok Imagine).
+Video request JSON: {"prompt":"Ocean waves moving gently","duration":6,"aspectRatio":"16:9","resolution":"720p"}
+prompt is required. Optional fields: duration (integer 1–15 seconds), aspectRatio (${GROK_VIDEO_ASPECT_RATIOS.join(', ')}), resolution (${GROK_VIDEO_RESOLUTIONS.join(', ')}), image (a PNG/JPEG/WebP data URL for the first frame).
+The start response is {"job":"..."}. Save the complete job handle to a uniquely named file under /workspace/media/ and print it BEFORE polling. POST /subscription-media/grok/video/status with {"job":"the saved handle"} every 5 seconds. Responses: {"status":"pending"}, {"status":"failed","error":"..."}, or {"status":"done","video":{"mimeType":"video/mp4","base64":"..."}}. Decode a finished video to a unique .mp4 file and print only its path. After about 4 minutes, return the saved handle and resume polling it in a later Bash call.
+On polling/download errors, keep the saved handle and retry status rather than starting another video. On non-2xx responses, report the JSON error; a 409 means the connection changed. Do not automatically retry image generation or video creation after a timeout/network failure, since the first request may already have consumed allowance.`,
   async generateImage(raw: unknown, credential: MediaCredentialSource): Promise<GeneratedMedia[]> {
     const parsed = inputSchema.safeParse(raw)
     if (!parsed.success) throw new MediaRequestError(400, `Invalid Grok image request: ${parsed.error.issues.map(issue => issue.message).join('; ')}`)
