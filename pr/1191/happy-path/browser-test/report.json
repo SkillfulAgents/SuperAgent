@@ -1,23 +1,26 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified browser-use feature: agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and the live browser preview panel displayed correctly with real-time content.",
+  "reason": "Successfully tested browser navigation capability - agent opened browser, navigated to example.com, retrieved page title \"Example Domain\", and reported results.",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 - Application loaded successfully showing Gamut home page with sidebar containing agents. Screenshot: step1-app-loaded.png",
-    "Step 2 - Found and clicked agent \"QA-20260924-232342-9e4n\" in the sidebar - Agent page opened with chat interface ready for input. Screenshot: step2-agent-opened.png",
-    "Step 3 - Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field - Message successfully entered in the chat input. Ref: e204",
-    "Step 4 - Clicked \"Send message\" button to send the message - Message sent successfully, agent transitioned to \"working\" state, browser preview panel appeared on the right showing live browser navigation. Screenshot: step3-message-sent.png. Ref: e357",
-    "Step 5 - Waited for agent response (3 minutes max, actual: 9 seconds) - Agent successfully completed the task and responded with \"The title of https://example.com is \\\"Example Domain\\\". The browser is still open if you want to look at it.\" Response verified to contain \"Example Domain\" as required. Screenshot: step4-response-received.png and step5-final-result.png"
+    "Navigate to http://localhost:47891 — Page loaded successfully showing Gamut interface with agent list in sidebar.",
+    "Found and clicked agent \"QA-20260925-173520-juuw\" in sidebar — Agent page opened successfully, displayed chat interface with input textbox.",
+    "Clicked message input textbox — Textbox became active and ready for input.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered into the textbox.",
+    "Clicked \"Send message\" button — Message was sent successfully, agent status changed to \"working\", session was created with ID 90c61a41-62d8-4203-be9d-39e80eee570d.",
+    "Waited 10 seconds for response — Agent completed work in 8 seconds, response appeared in chat.",
+    "Verified response contains \"Example Domain\" — Response text clearly states \"The page title is \"Example Domain\". The page at https://example.com loaded normally, and I've closed the browser.\"",
+    "Took screenshot of response — Screenshot captured showing complete conversation and agent response with \"Example Domain\" text visible."
   ],
   "bugs": [],
-  "durationMs": 101186,
-  "sessionId": "c8d2be9a-b83f-4b70-9970-38e250df9453",
+  "durationMs": 78035,
+  "sessionId": "0b4c6f31-6022-4b22-9407-fb55ea0db7f3",
   "cost": {
-    "inputTokens": 440,
-    "outputTokens": 16449,
-    "cacheCreationTokens": 91250,
-    "cacheReadTokens": 1425219,
+    "inputTokens": 364,
+    "outputTokens": 9846,
+    "cacheCreationTokens": 67156,
+    "cacheReadTokens": 1057452,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.339269
+    "totalCostUsd": 0.239284
   }
 }
