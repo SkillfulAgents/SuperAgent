@@ -179,15 +179,23 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
   }
 
   async mintEphemeralToken(apiKey: string): Promise<string> {
-    return this.mintClientSecret(apiKey, { session: { type: 'transcription' } })
-  }
-
-  override supportsVoiceAgent(): boolean {
-    return true
-  }
-
-  override async mintVoiceAgentToken(apiKey: string): Promise<string> {
-    return this.mintClientSecret(apiKey, { session: { type: 'realtime' } })
+    const res = await fetch(`${this.apiBaseUrl()}/realtime/client_secrets`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ session: { type: 'transcription' } }),
+    })
+    if (!res.ok) {
+      void res.body?.cancel().catch(() => {})
+      throw new Error(this.failureMessage(res.status, `${this.name} API error (${res.status}). Please try again.`))
+    }
+    const data = await res.json()
+    if (!data.value || typeof data.value !== 'string') {
+      throw new Error(`${this.name} returned an unexpected response: missing client secret value`)
+    }
+    return data.value
   }
 
   override supportsTranscription(): boolean {
@@ -219,25 +227,5 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
     if (status === 401 || status === 403) return this.messages().authFailed
     if (status === 402 || status === 429) return this.messages().quotaExceeded
     return fallback
-  }
-
-  protected async mintClientSecret(apiKey: string, body: Record<string, unknown>): Promise<string> {
-    const res = await fetch(`${this.apiBaseUrl()}/realtime/client_secrets`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    })
-    if (!res.ok) {
-      void res.body?.cancel().catch(() => {})
-      throw new Error(this.failureMessage(res.status, `${this.name} API error (${res.status}). Please try again.`))
-    }
-    const data = await res.json()
-    if (!data.value || typeof data.value !== 'string') {
-      throw new Error(`${this.name} returned an unexpected response: missing client secret value`)
-    }
-    return data.value
   }
 }

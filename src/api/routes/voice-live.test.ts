@@ -31,7 +31,7 @@ vi.mock('@shared/lib/voice', () => ({
         ? { createLiveSession: mocks.alternateCreate, mapLiveConversation: mocks.alternateMap, closeLiveSession: mocks.alternateClose }
         : null,
     getEffectiveApiKey: () => 'session-token',
-    getApiKeyStatus: () => ({ isConfigured: true }), supportsTts: () => true, getTtsVoices: () => OPENAI_TTS_VOICES, resolveTtsVoice: () => 'marin', supportsVoiceAgent: () => true, getConversationEngine: () => 'openai-live',
+    getApiKeyStatus: () => ({ isConfigured: true }), supportsTts: () => true, getTtsVoices: () => OPENAI_TTS_VOICES, resolveTtsVoice: () => 'marin', getConversationEngine: () => 'openai-live',
   }),
 }))
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: () => mocks.user }))

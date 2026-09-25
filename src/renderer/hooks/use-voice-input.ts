@@ -130,7 +130,6 @@ type SttCredentials = VoiceTokenResponse
 interface VoiceConfiguredStatus {
   conversationEngine?: VoiceConversationEngine | null
   configured: boolean
-  supportsVoiceAgent: boolean
   supportsTts: boolean
   /** Read-aloud voices the configured provider offers; empty when it cannot speak. */
   voices: TtsVoiceInfo[]
@@ -138,7 +137,7 @@ interface VoiceConfiguredStatus {
   defaultVoice?: string
 }
 
-const NOT_CONFIGURED: VoiceConfiguredStatus = { configured: false, supportsVoiceAgent: false, supportsTts: false, voices: [] }
+const NOT_CONFIGURED: VoiceConfiguredStatus = { configured: false, supportsTts: false, voices: [] }
 
 function useVoiceConfiguredStatus(): VoiceConfiguredStatus {
   const { data } = useQuery<VoiceConfiguredStatus>({
@@ -156,14 +155,6 @@ function useVoiceConfiguredStatus(): VoiceConfiguredStatus {
 /** Hook to check whether voice input is fully configured (provider + API key). */
 export function useIsVoiceConfigured(): boolean {
   return useVoiceConfiguredStatus().configured
-}
-
-/**
- * Hook to check whether the configured STT provider supports Voice Agent (S2S)
- * sessions. Returns false if STT is not configured at all.
- */
-export function useIsVoiceAgentConfigured(): boolean {
-  return useVoiceConfiguredStatus().supportsVoiceAgent
 }
 
 /**

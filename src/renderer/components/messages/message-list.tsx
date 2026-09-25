@@ -1,10 +1,7 @@
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
 
 import { useMessages, useDeleteMessage, useDeleteToolCall, useCancelQueuedMessage, TranscriptNotFoundError } from '@renderer/hooks/use-messages'
-import { useAgent } from '@renderer/hooks/use-agents'
-import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import { useIsVoiceReading } from '@renderer/hooks/use-read-aloud'
-import { VoiceAgentFeedbackDialog } from './voice-agent-feedback-dialog'
 import {
   useMessageStream,
   clearCompacting,
@@ -26,13 +23,13 @@ import { InformationalItem } from './informational-item'
 import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
 import { ForkBoundaryItem, forkBoundaryIndex } from './fork-boundary'
 import { MessageErrorBoundary } from './message-error-boundary'
-import { ArrowDown, ChevronRight, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
+import { ArrowDown, ChevronRight, FileX2, Loader2, WifiOff } from 'lucide-react'
 import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
 import { deliverFileDef, getDeliveredFileSize } from '@shared/lib/tool-definitions/deliver-file'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
-import { appendToSessionDraft, useDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
 import { useWorkflow } from '@renderer/context/workflow-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import {
@@ -59,8 +56,6 @@ const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duratio
 interface CompletedTurn {
   id: string
   startMessageId: string
-  /** Null during the brief idle window before the streamed final text persists. */
-  finalAssistantMessageId: string | null
   /** The final textual response for this visual work phase. */
   answerMessageIds: ReadonlySet<string>
   /** Tool cards on the answer message that appear only after expansion. */
@@ -75,12 +70,10 @@ function TurnSummaryRow({
   turn,
   expanded,
   onToggle,
-  onProvideFeedback,
 }: {
   turn: CompletedTurn
   expanded: boolean
   onToggle: () => void
-  onProvideFeedback?: () => void
 }) {
   return (
     <div className="flex items-center gap-3 border-b border-border text-muted-foreground">
@@ -106,16 +99,6 @@ function TurnSummaryRow({
           aria-hidden="true"
         />
       </button>
-      {onProvideFeedback && (
-        <button
-          type="button"
-          onClick={onProvideFeedback}
-          className="flex shrink-0 items-center gap-1 text-xs transition-colors hover:text-foreground"
-        >
-          <MessageSquarePlus className="h-3 w-3" />
-          <span>Voice feedback</span>
-        </button>
-      )}
     </div>
   )
 }
@@ -175,7 +158,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // materialize on the next refetch.
   const [pickedUpIds, setPickedUpIds] = useState<Set<string>>(new Set())
   const { user } = useUser()
-  const [, setSessionDraft] = useDraft<string>(`session:${sessionId}`)
   // Imperative draft access for restoring undelivered messages at idle (must not
   // re-render this list on every composer keystroke).
   const draftsStore = useDraftsStore()
@@ -194,15 +176,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     [sessionId, agentSlug, deleteToolCall]
   )
 
-  // Voice Agent feedback dialog state
-  const { data: agentData } = useAgent(agentSlug)
-  const hasVoiceConfigured = useIsVoiceAgentConfigured()
-  const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
   const [expandedTurnIds, setExpandedTurnIds] = useState<Set<string>>(new Set())
-
-  const handleProvideFeedback = useCallback(() => {
-    setFeedbackDialogOpen(true)
-  }, [])
 
   const toggleTurn = useCallback((turnId: string) => {
     setExpandedTurnIds((current) => {
@@ -212,24 +186,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       return next
     })
   }, [])
-
-  // Find the latest assistant response (for the voice feedback button).
-  const lastAssistantMessageId = useMemo(() => {
-    if (!messages) return null
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i]
-      if (m.type === 'assistant') return m.id
-    }
-    return null
-  }, [messages])
-
-  // Collect plain-text messages for the feedback dialog context
-  const plainMessages = useMemo(() => {
-    if (!messages) return []
-    return messages.filter(
-      (m): m is ApiMessage => (m.type === 'user' || m.type === 'assistant')
-    )
-  }, [messages])
 
   // Final answers commonly embed the container path reported by a screenshot
   // tool. Resolve only paths that were reported alongside a real image block;
@@ -698,11 +654,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // remains fully expanded until it completes; afterward each steering message
   // floats between the summary for the work before it and the summary for the
   // work it initiated.
-  const hasUnpersistedStreamingMessage =
-    !!streamingMessage && !isStreamingMessagePersisted
-  const hasUnpersistedStreamingTools = unpersistedStreamingToolUses.length > 0
-  const hasUnpersistedThinking = unpersistedThinkingBlocks.length > 0
-
   const { completedTurns, completedTurnByItemId, collapsedMessageById } = useMemo(() => {
     const turns: CompletedTurn[] = []
     const byItemId = new Map<string, CompletedTurn>()
@@ -713,7 +664,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       startIndex: number,
       endIndex: number,
       isTerminalPhase: boolean,
-      finalTextIsStillStreaming = false,
     ) => {
       if (endIndex <= startIndex + 1) return
       const items = visibleMessages.slice(startIndex, endIndex)
@@ -795,7 +745,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       const turn: CompletedTurn = {
         id: start.id,
         startMessageId: start.id,
-        finalAssistantMessageId: finalTextIsStillStreaming ? null : finalAssistant.id,
         answerMessageIds,
         revealedToolCallIds,
         elapsedMs:
@@ -810,7 +759,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       for (const item of items) byItemId.set(item.id, turn)
     }
 
-    const finishActualTurn = (endIndex: number, finalTextIsStillStreaming = false) => {
+    const finishActualTurn = (endIndex: number) => {
       if (
         actualTurnStartIndex === null ||
         endIndex <= actualTurnStartIndex + 1
@@ -823,12 +772,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         finishWorkPhase(phaseStartIndex, i, false)
         phaseStartIndex = i
       }
-      finishWorkPhase(
-        phaseStartIndex,
-        endIndex,
-        true,
-        finalTextIsStillStreaming,
-      )
+      finishWorkPhase(phaseStartIndex, endIndex, true)
     }
 
     for (let i = 0; i < visibleMessages.length; i++) {
@@ -837,18 +781,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       actualTurnStartIndex = i
     }
 
-    const hasUnreconciledOutput =
-      hasUnpersistedStreamingMessage ||
-      hasUnpersistedStreamingTools ||
-      hasUnpersistedThinking
     if (actualTurnStartIndex !== null && (!isActive || hasTurnStartingPendingMessage)) {
       // session_idle can precede the final messages refetch. Collapse the
-      // persisted work immediately, but don't mistake its last interim text
-      // for the final answer — the still-streamed final text below owns that.
-      finishActualTurn(
-        visibleMessages.length,
-        hasUnreconciledOutput && !hasTurnStartingPendingMessage,
-      )
+      // persisted work immediately; the still-streamed final text renders below.
+      finishActualTurn(visibleMessages.length)
     }
 
     return {
@@ -856,14 +792,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       completedTurnByItemId: byItemId,
       collapsedMessageById: collapsedById,
     }
-  }, [
-    visibleMessages,
-    hasUnpersistedStreamingMessage,
-    hasUnpersistedStreamingTools,
-    hasUnpersistedThinking,
-    isActive,
-    hasTurnStartingPendingMessage,
-  ])
+  }, [visibleMessages, isActive, hasTurnStartingPendingMessage])
 
   // All scrolling behavior — live-edge following (the owned engine), the
   // new-turn reading-line reserve, windowed rendering of long histories. The
@@ -1273,11 +1202,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                   turn={turn}
                   expanded={expanded}
                   onToggle={() => toggleTurn(turn.id)}
-                  onProvideFeedback={
-                    hasVoiceConfigured && turn.finalAssistantMessageId === lastAssistantMessageId
-                      ? handleProvideFeedback
-                      : undefined
-                  }
                 />
               )}
               {index === forkBoundaryAt && (
@@ -1492,14 +1416,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         </button>
       )}
 
-      {/* Voice Agent feedback dialog */}
-      <VoiceAgentFeedbackDialog
-        open={feedbackDialogOpen}
-        onOpenChange={setFeedbackDialogOpen}
-        agentInstructions={agentData?.instructions ?? ''}
-        messages={plainMessages}
-        onSetDraft={setSessionDraft}
-      />
     </div>
   )
 }

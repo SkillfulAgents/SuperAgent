@@ -40,12 +40,10 @@ describe('PlatformVoiceProvider', () => {
     expect(body).toMatchObject({ model: 'gpt-4o-mini-tts', input: 'Hi', response_format: 'pcm' })
   })
 
-  it('mints dictation and voice-agent client secrets through the proxy', async () => {
+  it('mints dictation client secrets through the proxy', async () => {
     fetchMock.mockImplementation(async () => new Response(JSON.stringify({ value: 'ek_1' })))
     await expect(provider.getEphemeralToken()).resolves.toEqual({ provider: 'platform', token: 'ek_1', protocol: 'openai-realtime' })
     expect(lastCall()).toMatchObject({ url: 'https://proxy.test/v1/openai/realtime/client_secrets', body: { session: { type: 'transcription' } } })
-    await expect(provider.getVoiceAgentToken()).resolves.toEqual({ provider: 'platform', token: 'ek_1', protocol: 'openai-realtime' })
-    expect(lastCall().body).toEqual({ session: { type: 'realtime' } })
   })
 
   it('creates and closes Live sessions through the proxy', async () => {
@@ -80,7 +78,6 @@ describe('PlatformVoiceProvider', () => {
     mocks.token = null
     await expect(provider.synthesizeSpeech({ text: 'Hi', voice: 'marin', speed: 1 })).rejects.toThrow('Connect your platform account')
     await expect(provider.getEphemeralToken()).rejects.toThrow('Connect your platform account')
-    await expect(provider.getVoiceAgentToken()).rejects.toThrow('Connect your platform account')
     await expect(provider.getTtsConnection()).rejects.toThrow('Connect your platform account')
     mocks.token = 'platform-token'
     fetchMock.mockResolvedValueOnce(new Response('denied', { status: 403 }))

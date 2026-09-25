@@ -38,7 +38,6 @@ async function mockSpeech(page: Page, { supportsTts = true } = {}): Promise<Spee
       contentType: 'application/json',
       body: JSON.stringify({
         configured: true,
-        supportsVoiceAgent: false,
         supportsTts,
         voices: supportsTts ? [{ id: 'aura-2-thalia-en', label: 'Thalia', description: 'Clear, confident, energetic' }] : [],
         defaultVoice: supportsTts ? 'aura-2-thalia-en' : undefined,
@@ -288,5 +287,23 @@ test.describe('voice mode', () => {
     await page.goto(sessionUrl)
     await expect(page.getByTestId('message-input')).toBeVisible()
     await expect(page.getByTestId('voice-mode-boundary').filter({ hasText: 'Voice mode: off' })).toBeVisible({ timeout: 10_000 })
+  })
+
+  test('the empty agent home "Brainstorm with Voice" card starts a voice-mode session', async ({ page }) => {
+    test.setTimeout(90_000)
+    const speech = await mockSpeech(page)
+    await appPage.goto()
+    await appPage.waitForAgentsLoaded()
+    // A new agent with no sessions yet: the only home that shows the card.
+    await agentPage.clickCreateAgent()
+    await expect(page.getByTestId('agent-breadcrumb')).toHaveText('Untitled', { timeout: 10_000 })
+
+    await page.getByRole('button', { name: /Brainstorm with Voice/ }).click()
+    await expect(page).toHaveURL(/\/sessions\//, { timeout: 15_000 })
+    const composer = page.getByTestId('voice-mode-composer')
+    await expect(composer).toBeVisible()
+    await expect(page.getByTestId('voice-mode-boundary').filter({ hasText: 'Voice mode: on' })).toBeVisible({ timeout: 10_000 })
+    await expect(composer).toHaveAttribute('data-phase', 'listening', { timeout: 15_000 })
+    await expect.poll(() => speech.listen() !== null).toBe(true)
   })
 })

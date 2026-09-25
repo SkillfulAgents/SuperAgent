@@ -136,9 +136,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
   const renameUntitledAgent = useRenameUntitledAgent()
-  // Tracks whether a name has already been assigned (e.g. by the voice agent)
-  // so the post-submit deriveAgentName fallback doesn't clobber it.
-  const nameAssignedRef = useRef(false)
   // Agent-scoped dialogs opened from HomeExtras. Header settings are a
   // popover on the gear now; the sidebar context menu keeps the full dialog.
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
@@ -219,8 +216,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       return res.json() as Promise<{ path: string }>
     }, [agent.slug]),
     onSubmit: useCallback(async (content: string) => {
-      const shouldRename =
-        agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && !nameAssignedRef.current
+      const shouldRename = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
@@ -231,10 +227,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       onSessionCreated(session.id, content, session.initialMessageUuid)
       // Fire rename after the session is created + navigated — the mutation
       // survives AgentHome unmounting since the queryClient is app-scoped.
-      if (shouldRename) {
-        nameAssignedRef.current = true
-        renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
-      }
+      if (shouldRename) renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
     }, [createSession, agent.slug, agent.name, onSessionCreated, composerOptions, sessions.length, renameUntitledAgent]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
@@ -277,8 +270,10 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const isDisabled = createSession.isPending || composer.isUploading || !isRuntimeReady
 
   // Voice mode from the home page: the session opens with the voice-mode
-  // notice as its first message, and its composer comes up listening.
-  const startVoiceSession = useCallback(async () => {
+  // notice as its first message, and its composer comes up listening. The
+  // composer button and the empty-state "Brainstorm with Voice" card both land here.
+  const startVoiceSession = useCallback(async (origin: 'home' | 'home_card') => {
+    if (isDisabled) return
     // Audio output is unlocked here, inside the click, for the reply to use.
     readAloud.unlockAudio()
     try {
@@ -288,12 +283,12 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         ...composerOptions.toRuntimeOptions(),
       })
       onSessionCreated(session.id, VOICE_MODE_ENTERED_MESSAGE, session.initialMessageUuid, { voiceMode: true })
-      track('voice_mode_entered', { origin: 'home' })
+      track('voice_mode_entered', { origin })
     } catch (error) {
       console.error('Failed to start a voice session:', error)
-      track('voice_mode_start_failed', { origin: 'home' })
+      track('voice_mode_start_failed', { origin })
     }
-  }, [createSession, agent.slug, composerOptions, onSessionCreated, track])
+  }, [isDisabled, createSession, agent.slug, composerOptions, onSessionCreated, track])
 
   const isFreshUntitled = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
   const typewriterPlaceholder = useTypewriterPlaceholder(
@@ -302,17 +297,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const composerPlaceholder = isFreshUntitled
     ? typewriterPlaceholder
     : 'How can I help? Press cmd+enter to send'
-
-  const handleVoiceResult = useCallback(
-    ({ name, prompt }: { name: string; prompt: string }) => {
-      if (prompt) composer.setMessage(prompt)
-      if (name && agent.name === UNTITLED_AGENT_NAME) {
-        nameAssignedRef.current = true
-        updateAgent.mutate({ slug: agent.slug, name })
-      }
-    },
-    [composer, agent.name, agent.slug, updateAgent],
-  )
 
   const handleImportComplete = useCallback(
     async (imported: ImportResult) => {
@@ -546,7 +530,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                     <>
                       <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
                       {!isFreshUntitled && (
-                        <VoiceModeButton onClick={() => void startVoiceSession()} disabled={isDisabled} />
+                        <VoiceModeButton onClick={() => void startVoiceSession('home')} disabled={isDisabled} />
                       )}
                       {isFreshUntitled ? (
                         <Button
@@ -640,7 +624,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   </>
                 ) : (
                   <AgentCreationAids
-                    onVoiceResult={handleVoiceResult}
+                    onStartVoiceMode={() => void startVoiceSession('home_card')}
                     onImportComplete={handleImportComplete}
                   />
                 )}
