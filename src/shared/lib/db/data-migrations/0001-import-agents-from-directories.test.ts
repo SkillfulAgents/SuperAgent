@@ -15,10 +15,10 @@ let db: ReturnType<typeof drizzle<typeof schema>>
 let dataDir: string
 let previousDataDir: string | undefined
 
-function writeAgentDirectory(slug: string, claudeMd: string | null): void {
+function writeAgentDirectory(slug: string, instructions: string | null): void {
   const workspace = path.join(dataDir, 'agents', slug, 'workspace')
   fs.mkdirSync(workspace, { recursive: true })
-  if (claudeMd !== null) fs.writeFileSync(path.join(workspace, 'CLAUDE.md'), claudeMd)
+  if (instructions !== null) fs.writeFileSync(path.join(workspace, 'AGENTS.md'), instructions)
 }
 
 function rows() {
@@ -42,7 +42,7 @@ afterEach(() => {
 })
 
 describe('import-agents-from-directories', () => {
-  it('imports every directory with a CLAUDE.md, named from its frontmatter, and ignores the rest', async () => {
+  it('imports every directory with a AGENTS.md, named from its frontmatter, and ignores the rest', async () => {
     writeAgentDirectory('imported', [
       '---',
       'name: Imported Agent',

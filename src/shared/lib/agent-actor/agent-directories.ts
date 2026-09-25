@@ -5,8 +5,7 @@
  * it while the database is being opened.
  */
 import * as fs from 'fs'
-import * as path from 'path'
-import { getAgentClaudeMdPath, getAgentDir, getAgentsDir, getAgentWorkspaceDir, parseMarkdownWithFrontmatter } from '@shared/lib/utils/file-storage'
+import { getLegacyAgentInstructionsPath, getAgentInstructionsPath, getAgentDir, getAgentsDir, parseMarkdownWithFrontmatter } from '@shared/lib/utils/file-storage'
 import type { AgentSlug } from './types'
 
 /** The runtime of an agent whose workspace is a directory under the agents data directory. */
@@ -69,10 +68,10 @@ export function readAgentDirectoriesSync(): AgentDirectoryIdentity[] {
     let content: string
     try {
       try {
-        content = fs.readFileSync(getAgentClaudeMdPath(slug), 'utf-8')
+        content = fs.readFileSync(getLegacyAgentInstructionsPath(slug), 'utf-8')
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-        content = fs.readFileSync(path.join(getAgentWorkspaceDir(slug), 'AGENTS.md'), 'utf-8')
+        content = fs.readFileSync(getAgentInstructionsPath(slug), 'utf-8')
       }
     } catch {
       continue
@@ -105,10 +104,10 @@ export function readAgentDirectoriesSync(): AgentDirectoryIdentity[] {
  * would change the instructions the agent runs with.
  */
 export function renameClaudeMdToAgentsMdSync(slug: AgentSlug): boolean {
-  const claudeMd = getAgentClaudeMdPath(slug)
-  const agentsMd = path.join(getAgentWorkspaceDir(slug), 'AGENTS.md')
-  if (!fs.lstatSync(claudeMd, { throwIfNoEntry: false })?.isFile()) return false
+  const legacyInstructions = getLegacyAgentInstructionsPath(slug)
+  const agentsMd = getAgentInstructionsPath(slug)
+  if (!fs.lstatSync(legacyInstructions, { throwIfNoEntry: false })?.isFile()) return false
   if (fs.lstatSync(agentsMd, { throwIfNoEntry: false })) return false
-  fs.renameSync(claudeMd, agentsMd)
+  fs.renameSync(legacyInstructions, agentsMd)
   return true
 }

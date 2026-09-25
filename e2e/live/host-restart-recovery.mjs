@@ -127,7 +127,7 @@ const CONTAINER_BASE_PORT = 5400
 
 const log = (msg) => console.log(`[restart-recovery] ${msg}`)
 
-const AGENT_CLAUDE_MD = `---
+const AGENT_INSTRUCTIONS = `---
 name: Restart Recovery Agent
 createdAt: "2026-01-01T00:00:00.000Z"
 description: Drives the host-restart recovery probe
@@ -186,8 +186,8 @@ function seed() {
     if (existsSync(from)) copyFileSync(from, path.join(TARGET, optional))
   }
   writeFileSync(
-    path.join(TARGET, 'agents', AGENT_SLUG, 'workspace', 'CLAUDE.md'),
-    AGENT_CLAUDE_MD,
+    path.join(TARGET, 'agents', AGENT_SLUG, 'workspace', 'AGENTS.md'),
+    AGENT_INSTRUCTIONS,
   )
 
   copyFileSync(path.join(SOURCE, 'superagent.db'), path.join(TARGET, 'superagent.db'))

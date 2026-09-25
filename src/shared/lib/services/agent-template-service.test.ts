@@ -132,19 +132,19 @@ afterEach(() => {
   resetHostExportLockForTests()
 })
 
-const MINIMAL_CLAUDE_MD = `---
+const MINIMAL_INSTRUCTIONS = `---
 name: Test Agent
 ---
 # Test Agent
 `
 
-const CLAUDE_MD_NO_NAME = `---
+const INSTRUCTIONS_NO_NAME = `---
 description: An agent without a name field
 ---
 # Some Agent
 `
 
-const CLAUDE_MD_NO_FRONTMATTER = `# Just Markdown
+const INSTRUCTIONS_NO_FRONTMATTER = `# Just Markdown
 No frontmatter at all.
 `
 
@@ -159,7 +159,7 @@ function zipEntry(fileName: string, uncompressedSize: number): ZipEntryMeta {
 
 function templateEntriesWithSizes(sizes: number[]): ZipEntryMeta[] {
   return [
-    zipEntry('CLAUDE.md', Buffer.byteLength(MINIMAL_CLAUDE_MD, 'utf-8')),
+    zipEntry('AGENTS.md', Buffer.byteLength(MINIMAL_INSTRUCTIONS, 'utf-8')),
     ...sizes.map((size, index) => zipEntry(`data-${index}.bin`, size)),
   ]
 }
@@ -201,8 +201,8 @@ describe('validateAgentTemplate', () => {
   // Basic validation
   // --------------------------------------------------------------------------
 
-  it('accepts a valid minimal template with CLAUDE.md', async () => {
-    const buf = await makeZip({ 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+  it('accepts a valid minimal template with AGENTS.md', async () => {
+    const buf = await makeZip({ 'AGENTS.md': MINIMAL_INSTRUCTIONS })
     const result = await validateAgentTemplate(buf)
     expect(result.valid).toBe(true)
     expect(result.agentName).toBe('Test Agent')
@@ -212,7 +212,7 @@ describe('validateAgentTemplate', () => {
 
   it('accepts a template with multiple files', async () => {
     const buf = await makeZip({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'skills/tool.py': 'print("hi")',
       'config.json': '{}',
     })
@@ -221,22 +221,22 @@ describe('validateAgentTemplate', () => {
     expect(result.fileCount).toBe(3)
   })
 
-  it('rejects a template missing CLAUDE.md', async () => {
+  it('rejects a template missing AGENTS.md', async () => {
     const buf = await makeZip({ 'README.md': '# hi' })
     const result = await validateAgentTemplate(buf)
     expect(result.valid).toBe(false)
-    expect(result.error).toContain('CLAUDE.md not found')
+    expect(result.error).toContain('Agent instructions not found')
   })
 
-  it('returns agentName as undefined when CLAUDE.md has no name in frontmatter', async () => {
-    const buf = await makeZip({ 'CLAUDE.md': CLAUDE_MD_NO_NAME })
+  it('returns agentName as undefined when AGENTS.md has no name in frontmatter', async () => {
+    const buf = await makeZip({ 'AGENTS.md': INSTRUCTIONS_NO_NAME })
     const result = await validateAgentTemplate(buf)
     expect(result.valid).toBe(true)
     expect(result.agentName).toBeUndefined()
   })
 
-  it('returns agentName as undefined when CLAUDE.md has no frontmatter', async () => {
-    const buf = await makeZip({ 'CLAUDE.md': CLAUDE_MD_NO_FRONTMATTER })
+  it('returns agentName as undefined when AGENTS.md has no frontmatter', async () => {
+    const buf = await makeZip({ 'AGENTS.md': INSTRUCTIONS_NO_FRONTMATTER })
     const result = await validateAgentTemplate(buf)
     expect(result.valid).toBe(true)
     expect(result.agentName).toBeUndefined()
@@ -263,7 +263,7 @@ describe('validateAgentTemplate', () => {
   describe('wrapper directory prefix', () => {
     it('detects and handles wrapper directory prefix', async () => {
       const buf = await makeZip({
-        'MyAgent-template/CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'MyAgent-template/AGENTS.md': MINIMAL_INSTRUCTIONS,
         'MyAgent-template/skills/tool.py': 'print("hi")',
       })
       const result = await validateAgentTemplate(buf)
@@ -274,7 +274,7 @@ describe('validateAgentTemplate', () => {
 
     it('returns empty prefix when files are at root level', async () => {
       const buf = await makeZip({
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'tool.py': 'print("hi")',
       })
       const result = await validateAgentTemplate(buf)
@@ -284,28 +284,28 @@ describe('validateAgentTemplate', () => {
 
     it('returns empty prefix when files have mixed first segments', async () => {
       const buf = await makeZip({
-        'dir1/CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'dir1/AGENTS.md': MINIMAL_INSTRUCTIONS,
         'dir2/tool.py': 'print("hi")',
       })
       const result = await validateAgentTemplate(buf)
-      expect(result.valid).toBe(false) // CLAUDE.md won't be found without a single prefix
+      expect(result.valid).toBe(false) // AGENTS.md won't be found without a single prefix
       expect(result.stripPrefix).toBe('')
     })
 
     it('returns empty prefix when a file is at root and others in a dir', async () => {
       const buf = await makeZip({
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'subdir/tool.py': 'print("hi")',
       })
       const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(true)
-      // CLAUDE.md is at root, so no common prefix
+      // AGENTS.md is at root, so no common prefix
       expect(result.stripPrefix).toBe('')
     })
 
-    it('finds CLAUDE.md inside wrapper directory', async () => {
+    it('finds AGENTS.md inside wrapper directory', async () => {
       const buf = await makeZip({
-        'Agent-Export/CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'Agent-Export/AGENTS.md': MINIMAL_INSTRUCTIONS,
       })
       const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(true)
@@ -320,8 +320,8 @@ describe('validateAgentTemplate', () => {
   describe('excluded entries are not counted toward file limits', () => {
     it('filters out __MACOSX entries', async () => {
       const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
-        '__MACOSX/._CLAUDE.md': 'resource fork',
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
+        '__MACOSX/._AGENTS.md': 'resource fork',
       }
       const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
@@ -330,7 +330,7 @@ describe('validateAgentTemplate', () => {
 
     it('filters out node_modules at any depth', async () => {
       const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'artifacts/app/node_modules/lodash/index.js': 'module.exports = {}',
         'artifacts/app/node_modules/lodash/package.json': '{}',
         'node_modules/something/index.js': 'nope',
@@ -342,7 +342,7 @@ describe('validateAgentTemplate', () => {
 
     it('filters out __pycache__ directories', async () => {
       const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'skills/__pycache__/tool.cpython-311.pyc': 'bytecode',
         '__pycache__/other.cpython-311.pyc': 'bytecode',
       }
@@ -353,18 +353,18 @@ describe('validateAgentTemplate', () => {
 
     it('filters out .pyc files', async () => {
       const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'skills/tool.py': 'print("hi")',
         'skills/tool.pyc': 'bytecode',
       }
       const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
-      expect(result.fileCount).toBe(2) // CLAUDE.md + tool.py
+      expect(result.fileCount).toBe(2) // AGENTS.md + tool.py
     })
 
     it('filters out .env files at any depth', async () => {
       const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         '.env': 'SECRET=abc',
         'subdir/.env': 'SECRET=def',
         'deep/nested/.env': 'SECRET=ghi',
@@ -376,7 +376,7 @@ describe('validateAgentTemplate', () => {
 
     it('filters out .DS_Store files at any depth', async () => {
       const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         '.DS_Store': 'binary',
         'subdir/.DS_Store': 'binary',
       }
@@ -387,7 +387,7 @@ describe('validateAgentTemplate', () => {
 
     it('filters out session-metadata.json', async () => {
       const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'session-metadata.json': '{}',
       }
       const result = await validateAgentTemplate(await makeZip(files))
@@ -397,7 +397,7 @@ describe('validateAgentTemplate', () => {
 
     it('filters out .superagent-sessions.json', async () => {
       const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         '.superagent-sessions.json': '[]',
       }
       const result = await validateAgentTemplate(await makeZip(files))
@@ -407,7 +407,7 @@ describe('validateAgentTemplate', () => {
 
     it('filters out .skillset-agent-metadata.json', async () => {
       const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         '.skillset-agent-metadata.json': '{}',
       }
       const result = await validateAgentTemplate(await makeZip(files))
@@ -417,7 +417,7 @@ describe('validateAgentTemplate', () => {
 
     it('does not count filtered entries toward MAX_FILE_COUNT', async () => {
       const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
       }
       for (let i = 0; i < 1500; i++) {
         files[`artifacts/app/node_modules/pkg-${i}/index.js`] = `module.exports = ${i}`
@@ -431,7 +431,7 @@ describe('validateAgentTemplate', () => {
   describe('filtering with wrapper prefix', () => {
     it('filters excluded entries inside a wrapper directory', async () => {
       const files: Record<string, string> = {
-        'Agent-template/CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'Agent-template/AGENTS.md': MINIMAL_INSTRUCTIONS,
         'Agent-template/skills/tool.py': 'print("hi")',
         'Agent-template/skills/__pycache__/tool.cpython-311.pyc': 'bytecode',
         'Agent-template/node_modules/pkg/index.js': 'nope',
@@ -441,7 +441,7 @@ describe('validateAgentTemplate', () => {
       const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
       expect(result.stripPrefix).toBe('Agent-template/')
-      expect(result.fileCount).toBe(2) // CLAUDE.md + tool.py
+      expect(result.fileCount).toBe(2) // AGENTS.md + tool.py
     })
   })
 
@@ -452,9 +452,9 @@ describe('validateAgentTemplate', () => {
   describe('file count limits', () => {
     it('rejects template with too many files (> 10,000)', async () => {
       const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
       }
-      // 10,000 additional files + CLAUDE.md = 10,001 (beyond the limit)
+      // 10,000 additional files + AGENTS.md = 10,001 (beyond the limit)
       for (let i = 0; i < 10_000; i++) {
         files[`files/file-${i}.txt`] = `content ${i}`
       }
@@ -466,9 +466,9 @@ describe('validateAgentTemplate', () => {
 
     it('accepts template at exactly the file count limit', async () => {
       const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
       }
-      // 9,999 additional files + CLAUDE.md = 10,000 exactly
+      // 9,999 additional files + AGENTS.md = 10,000 exactly
       for (let i = 0; i < 9_999; i++) {
         files[`files/file-${i}.txt`] = `content ${i}`
       }
@@ -493,9 +493,9 @@ describe('validateAgentTemplate', () => {
 
     it('accepts template at exactly the uncompressed size limit', () => {
       const tenMB = 10 * 1024 * 1024
-      // Fill the remaining budget: 500MB - 49*10MB - CLAUDE.md size
-      const claudeMdSize = Buffer.byteLength(MINIMAL_CLAUDE_MD, 'utf-8')
-      const remaining = 500 * 1024 * 1024 - 49 * tenMB - claudeMdSize
+      // Fill the remaining budget: 500MB - 49*10MB - AGENTS.md size
+      const instructionsSize = Buffer.byteLength(MINIMAL_INSTRUCTIONS, 'utf-8')
+      const remaining = 500 * 1024 * 1024 - 49 * tenMB - instructionsSize
       const result = validateTemplateEntries(templateEntriesWithSizes([
         ...Array(49).fill(tenMB),
         remaining,
@@ -505,8 +505,8 @@ describe('validateAgentTemplate', () => {
 
     it('rejects template at exactly one byte over the limit', () => {
       const tenMB = 10 * 1024 * 1024
-      const claudeMdSize = Buffer.byteLength(MINIMAL_CLAUDE_MD, 'utf-8')
-      const remaining = 500 * 1024 * 1024 - 49 * tenMB - claudeMdSize
+      const instructionsSize = Buffer.byteLength(MINIMAL_INSTRUCTIONS, 'utf-8')
+      const remaining = 500 * 1024 * 1024 - 49 * tenMB - instructionsSize
       const result = validateTemplateEntries(templateEntriesWithSizes([
         ...Array(49).fill(tenMB),
         remaining + 1,
@@ -534,7 +534,7 @@ describe('validateAgentTemplate', () => {
       // manually modify the ZIP buffer to inject a path traversal entry.
       // We create a valid ZIP, then modify the central directory entry name.
       const buf = Buffer.from(await makeZip({
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'safe/evil.txt': 'root:x:0:0:',
       }))
       // Replace 'safe/evil.txt' with '../evil.txt' in the buffer
@@ -553,7 +553,7 @@ describe('validateAgentTemplate', () => {
 
     it('rejects entries with .. as a path segment in deeper paths', async () => {
       const buf = Buffer.from(await makeZip({
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'foo/ZZ/xx/bar.txt': 'data',
       }))
       // Replace 'ZZ' segment with '..' to create foo/../xx/bar.txt
@@ -571,7 +571,7 @@ describe('validateAgentTemplate', () => {
 
     it('rejects trailing .. segment', async () => {
       const buf = Buffer.from(await makeZip({
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'foo/ZZ/data.txt': 'data',
       }))
       const searchStr = Buffer.from('foo/ZZ/data')
@@ -588,7 +588,7 @@ describe('validateAgentTemplate', () => {
 
     it('allows double dots within a filename (file..txt)', async () => {
       const buf = await makeZip({
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'file..txt': 'content',
       })
       const result = await validateAgentTemplate(buf)
@@ -597,7 +597,7 @@ describe('validateAgentTemplate', () => {
 
     it('allows double dots within a directory name (config..backup/)', async () => {
       const buf = await makeZip({
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'config..backup/data.json': '{}',
       })
       const result = await validateAgentTemplate(buf)
@@ -606,7 +606,7 @@ describe('validateAgentTemplate', () => {
 
     it('allows triple-dot directory names (dir.../file.txt)', async () => {
       const buf = await makeZip({
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'dir.../file.txt': 'content',
       })
       const result = await validateAgentTemplate(buf)
@@ -615,7 +615,7 @@ describe('validateAgentTemplate', () => {
 
     it('allows Next.js optional catch-all routes ([[...slug]])', async () => {
       const buf = await makeZip({
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'src/app/[[...slug]]/page.tsx': 'export default function() {}',
       })
       const result = await validateAgentTemplate(buf)
@@ -624,7 +624,7 @@ describe('validateAgentTemplate', () => {
 
     it('allows module names with double dots (some..module/index.ts)', async () => {
       const buf = await makeZip({
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'some..module/index.ts': 'export {}',
       })
       const result = await validateAgentTemplate(buf)
@@ -639,7 +639,7 @@ describe('validateAgentTemplate', () => {
   describe('edge cases', () => {
     it('allows paths containing triple dots like Next.js catch-all routes', async () => {
       const buf = await makeZip({
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'AGENTS.md': MINIMAL_INSTRUCTIONS,
         'uploads/src/app/api/proxy/[...path]/route.ts': 'export {}',
       })
       const result = await validateAgentTemplate(buf)
@@ -648,34 +648,34 @@ describe('validateAgentTemplate', () => {
 
     it('handles template with only directories (no files)', async () => {
       const buf = await makeZip({ 'somedir/placeholder': '', 'anotherdir/placeholder': '' })
-      // This zip has files but no CLAUDE.md
+      // This zip has files but no AGENTS.md
       const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(false)
-      expect(result.error).toContain('CLAUDE.md not found')
+      expect(result.error).toContain('Agent instructions not found')
     })
 
-    it('finds CLAUDE.md with leading ./ prefix stripped', async () => {
+    it('finds AGENTS.md with leading ./ prefix stripped', async () => {
       // The code strips leading ./ from entry names
-      const buf = await makeZip({ './CLAUDE.md': MINIMAL_CLAUDE_MD })
+      const buf = await makeZip({ './AGENTS.md': MINIMAL_INSTRUCTIONS })
       const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(true)
     })
 
-    it('does not match claude.md (case-sensitive)', async () => {
-      const buf = await makeZip({ 'claude.md': MINIMAL_CLAUDE_MD })
+    it.each(['agents.md', 'claude.md'])('does not match %s (case-sensitive)', async (name) => {
+      const buf = await makeZip({ [name]: MINIMAL_INSTRUCTIONS })
       const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(false)
-      expect(result.error).toContain('CLAUDE.md not found')
+      expect(result.error).toContain('Agent instructions not found')
     })
 
-    it('rejects CLAUDE.md in a subdirectory without matching prefix', async () => {
+    it('rejects AGENTS.md in a subdirectory without matching prefix', async () => {
       const buf = await makeZip({
-        'subdir/CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'subdir/AGENTS.md': MINIMAL_INSTRUCTIONS,
         'otherdir/file.txt': 'data',
       })
       const result = await validateAgentTemplate(buf)
       // Two different first segments, so no prefix detected
-      // CLAUDE.md is not at root -> should fail
+      // AGENTS.md is not at root -> should fail
       expect(result.valid).toBe(false)
     })
   })
@@ -688,7 +688,7 @@ describe('validateAgentTemplate', () => {
 describe('validateAgentTemplate (full mode)', () => {
   it('counts .env files toward fileCount in full mode', async () => {
     const files: Record<string, string> = {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.env': 'SECRET=abc',
       'session-metadata.json': '{}',
     }
@@ -699,7 +699,7 @@ describe('validateAgentTemplate (full mode)', () => {
 
   it('excludes .env files from fileCount in template mode', async () => {
     const files: Record<string, string> = {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.env': 'SECRET=abc',
       'session-metadata.json': '{}',
     }
@@ -710,7 +710,7 @@ describe('validateAgentTemplate (full mode)', () => {
 
   it('enforces file count limit including excluded files in full mode', async () => {
     const files: Record<string, string> = {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
     }
     for (let i = 0; i < 10_000; i++) {
       files[`.env.${i}`] = `SECRET_${i}=value`
@@ -723,7 +723,7 @@ describe('validateAgentTemplate (full mode)', () => {
   it('enforces size limit including excluded files in full mode', async () => {
     const largeEnv = 'x'.repeat(10 * 1024 * 1024)
     const files: Record<string, string> = {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
     }
     for (let i = 0; i < 51; i++) {
       files[`data/large-${i}.env`] = largeEnv
@@ -735,8 +735,8 @@ describe('validateAgentTemplate (full mode)', () => {
 
   it('still filters __MACOSX entries in full mode', async () => {
     const files: Record<string, string> = {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      '__MACOSX/._CLAUDE.md': 'resource fork',
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
+      '__MACOSX/._AGENTS.md': 'resource fork',
     }
     const result = await validateAgentTemplate(await makeZip(files), 'full')
     expect(result.valid).toBe(true)
@@ -745,7 +745,7 @@ describe('validateAgentTemplate (full mode)', () => {
 
   it('checks path traversal on excluded entries in full mode', async () => {
     const buf = Buffer.from(await makeZip({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'safe/evil.txt': 'data',
     }))
     // Replace 'safe/evil.txt' with '../evil..txt' in the buffer
@@ -763,7 +763,7 @@ describe('validateAgentTemplate (full mode)', () => {
 
   it('defaults to template mode when mode is omitted', async () => {
     const files: Record<string, string> = {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.env': 'SECRET=abc',
     }
     const result = await validateAgentTemplate(await makeZip(files))
@@ -778,7 +778,7 @@ describe('validateAgentTemplate (full mode)', () => {
 describe('detectZipPrefix (via validateAgentTemplate)', () => {
   it('detects prefix when all entries share a common first directory', async () => {
     const buf = await makeZip({
-      'common-dir/CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'common-dir/AGENTS.md': MINIMAL_INSTRUCTIONS,
       'common-dir/file1.txt': 'a',
       'common-dir/sub/file2.txt': 'b',
     })
@@ -789,7 +789,7 @@ describe('detectZipPrefix (via validateAgentTemplate)', () => {
 
   it('returns empty prefix when there is no common directory', async () => {
     const buf = await makeZip({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'file.txt': 'content',
     })
     const result = await validateAgentTemplate(buf)
@@ -798,7 +798,7 @@ describe('detectZipPrefix (via validateAgentTemplate)', () => {
 
   it('returns empty prefix when entries are in different top-level directories', async () => {
     const buf = await makeZip({
-      'dir1/CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'dir1/AGENTS.md': MINIMAL_INSTRUCTIONS,
       'dir2/file.txt': 'content',
     })
     const result = await validateAgentTemplate(buf)
@@ -807,9 +807,9 @@ describe('detectZipPrefix (via validateAgentTemplate)', () => {
 
   it('ignores __MACOSX entries when detecting prefix', async () => {
     const buf = await makeZip({
-      'MyTemplate/CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'MyTemplate/AGENTS.md': MINIMAL_INSTRUCTIONS,
       'MyTemplate/tool.py': 'code',
-      '__MACOSX/MyTemplate/._CLAUDE.md': 'resource fork',
+      '__MACOSX/MyTemplate/._AGENTS.md': 'resource fork',
     })
     const result = await validateAgentTemplate(buf)
     expect(result.stripPrefix).toBe('MyTemplate/')
@@ -818,7 +818,7 @@ describe('detectZipPrefix (via validateAgentTemplate)', () => {
 
   it('handles single file in a directory as common prefix', async () => {
     const buf = await makeZip({
-      'wrapper/CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'wrapper/AGENTS.md': MINIMAL_INSTRUCTIONS,
     })
     const result = await validateAgentTemplate(buf)
     expect(result.stripPrefix).toBe('wrapper/')
@@ -868,7 +868,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('keeps a file executable in both exports', async () => {
     const workspaceDir = createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'skills/run.sh': '#!/bin/sh\n',
     })
     fs.chmodSync(path.join(workspaceDir, 'skills', 'run.sh'), 0o755)
@@ -883,9 +883,9 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
     }
   })
 
-  it('exports a basic agent template', async () => {
+  it.each(['AGENTS.md', 'CLAUDE.md'])('exports a basic %s agent template as AGENTS.md', async (instructionsFile) => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      [instructionsFile]: MINIMAL_INSTRUCTIONS,
       'skills/tool.py': 'print("hi")',
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -895,7 +895,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
   })
 
   it('exports an AGENTS.md workspace without renaming its instructions', async () => {
-    createWorkspace('test-agent', { 'AGENTS.md': MINIMAL_CLAUDE_MD, 'skills/tool.py': 'print("hi")' })
+    createWorkspace('test-agent', { 'AGENTS.md': MINIMAL_INSTRUCTIONS, 'skills/tool.py': 'print("hi")' })
     const entries = await getZipEntries(await exportAgentTemplate('test-agent'))
     expect(entries).toContain('AGENTS.md')
     expect(entries).not.toContain('CLAUDE.md')
@@ -906,7 +906,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
   // ends them when it stops; the export owns both.
 
   it('a source that fails mid-read fails the export and releases the host lock', async () => {
-    createWorkspace('test-agent', { 'CLAUDE.md': MINIMAL_CLAUDE_MD, 'skills/tool.py': 'print("hi")' })
+    createWorkspace('test-agent', { 'AGENTS.md': MINIMAL_INSTRUCTIONS, 'skills/tool.py': 'print("hi")' })
     const { agentRegistry } = await import('@shared/lib/agent-actor')
     const files = agentRegistry.get('test-agent').files
     const read = vi.spyOn(files, 'read').mockImplementation(async () => new ReadableStream<Uint8Array>({
@@ -931,7 +931,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
   })
 
   it('destroying the archive cancels the sources it had opened', async () => {
-    createWorkspace('test-agent', { 'CLAUDE.md': MINIMAL_CLAUDE_MD, 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c' })
+    createWorkspace('test-agent', { 'AGENTS.md': MINIMAL_INSTRUCTIONS, 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c' })
     const { agentRegistry } = await import('@shared/lib/agent-actor')
     const files = agentRegistry.get('test-agent').files
     let opened = 0
@@ -966,7 +966,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes node_modules at any depth', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'artifacts/app/node_modules/lodash/index.js': 'module.exports = {}',
       'artifacts/app/index.js': 'import lodash from "lodash"',
     })
@@ -979,7 +979,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes __pycache__ directories at any depth', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'skills/tool.py': 'print("hi")',
       'skills/__pycache__/tool.cpython-311.pyc': 'bytecode',
       'deep/nested/__pycache__/something.pyc': 'bytecode',
@@ -992,7 +992,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes .env files at any depth', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.env': 'SECRET=abc',
       'subdir/.env': 'SECRET=def',
     })
@@ -1004,7 +1004,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes .DS_Store files at any depth', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.DS_Store': 'binary junk',
       'subdir/.DS_Store': 'binary junk',
     })
@@ -1015,7 +1015,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes session-metadata.json', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'session-metadata.json': '{}',
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -1025,7 +1025,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes .superagent-sessions.json', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.superagent-sessions.json': '[]',
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -1035,7 +1035,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes .skillset-agent-metadata.json', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.skillset-agent-metadata.json': '{}',
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -1047,7 +1047,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes .pyc files at any depth', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'skills/tool.py': 'print("hi")',
       'skills/tool.pyc': 'bytecode',
       'deep/nested/module.pyc': 'bytecode',
@@ -1062,7 +1062,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes top-level uploads/ directory', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'uploads/file.pdf': 'pdf data',
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -1072,7 +1072,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes top-level downloads/ directory', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'downloads/report.csv': 'csv data',
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -1082,7 +1082,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes top-level .browser-profile/ directory', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.browser-profile/Default/Cookies': 'binary',
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -1092,7 +1092,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('does NOT exclude nested downloads/ directories (only top-level)', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'artifacts/app/downloads/valid.txt': 'this is fine',
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -1102,7 +1102,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('does NOT exclude nested uploads/ directories (only top-level)', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'artifacts/uploads/valid.txt': 'nested uploads ok',
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -1114,7 +1114,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('includes .claude/skills/ files', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.claude/skills/my-skill/SKILL.md': 'skill content',
       '.claude/skills/my-skill/tool.py': 'skill code',
     })
@@ -1126,7 +1126,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes .claude/projects/', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.claude/projects/settings.json': 'settings',
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -1136,7 +1136,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes .claude/debug/', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.claude/debug/log.txt': 'debug log',
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -1146,7 +1146,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes .claude/todos/', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.claude/todos/todo.md': 'todo items',
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -1156,7 +1156,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('excludes files directly in .claude/ (not in subdirectories)', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.claude/.claude.json': '{}',
       '.claude/stats-cache.json': '{}',
     })
@@ -1168,7 +1168,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('applies exclusion rules inside .claude/skills/ (e.g., node_modules)', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.claude/skills/my-skill/tool.py': 'code',
       '.claude/skills/my-skill/node_modules/dep/index.js': 'dep',
       '.claude/skills/my-skill/__pycache__/tool.cpython-311.pyc': 'bytecode',
@@ -1188,7 +1188,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       '.DS_Store': 'binary',
       'node_modules/pkg/index.js': 'nope',
     })
-    // Will throw because CLAUDE.md is missing, but let's test the hash instead
+    // Will throw because AGENTS.md is missing, but let's test the hash instead
     const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
     const hash = await computeAgentTemplateHash(workspaceDir)
     // Hash of no files should be consistent
@@ -1197,7 +1197,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('handles deeply nested directory structures', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'a/b/c/d/e/f/deep-file.txt': 'very deep',
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -1214,7 +1214,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
 
   it('handles .claude/ directory that does not exist', async () => {
     createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       // No .claude/ directory at all
     })
     const buf = await exportAgentTemplate('test-agent')
@@ -1259,8 +1259,8 @@ describe('computeAgentTemplateHash', () => {
     const workspaceDir = path.join(testDir, 'renamed')
     fs.mkdirSync(templateDir)
     fs.mkdirSync(workspaceDir)
-    fs.writeFileSync(path.join(templateDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
-    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(templateDir, 'CLAUDE.md'), MINIMAL_INSTRUCTIONS)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
     // Sorts between AGENTS.md and CLAUDE.md.
     fs.writeFileSync(path.join(templateDir, 'BOOTSTRAP.md'), 'setup')
     fs.writeFileSync(path.join(workspaceDir, 'BOOTSTRAP.md'), 'setup')
@@ -1268,14 +1268,14 @@ describe('computeAgentTemplateHash', () => {
   })
 
   it('returns a 64-character hex string (SHA-256)', async () => {
-    const dir = createDir({ 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+    const dir = createDir({ 'AGENTS.md': MINIMAL_INSTRUCTIONS })
     const hash = await computeAgentTemplateHash(dir)
     expect(hash).toMatch(/^[a-f0-9]{64}$/)
   })
 
   it('produces the same hash for the same files', async () => {
     const dir = createDir({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'tool.py': 'print("hello")',
     })
     const hash1 = await computeAgentTemplateHash(dir)
@@ -1289,7 +1289,7 @@ describe('computeAgentTemplateHash', () => {
     const dir2 = path.join(testDir, 'ws2')
 
     const files = {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'b.txt': 'content-b',
       'a.txt': 'content-a',
       'sub/z.txt': 'content-z',
@@ -1317,17 +1317,17 @@ describe('computeAgentTemplateHash', () => {
   })
 
   it('produces different hash when file content changes', async () => {
-    const dir = createDir({ 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+    const dir = createDir({ 'AGENTS.md': MINIMAL_INSTRUCTIONS })
     const hash1 = await computeAgentTemplateHash(dir)
 
     // Modify the file
-    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), '# Modified Agent\n')
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# Modified Agent\n')
     const hash2 = await computeAgentTemplateHash(dir)
     expect(hash1).not.toBe(hash2)
   })
 
   it('produces different hash when a file is added', async () => {
-    const dir = createDir({ 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+    const dir = createDir({ 'AGENTS.md': MINIMAL_INSTRUCTIONS })
     const hash1 = await computeAgentTemplateHash(dir)
 
     // Add a new file
@@ -1338,7 +1338,7 @@ describe('computeAgentTemplateHash', () => {
 
   it('produces different hash when a file is removed', async () => {
     const dir = createDir({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'extra.txt': 'extra content',
     })
     const hash1 = await computeAgentTemplateHash(dir)
@@ -1366,7 +1366,7 @@ describe('computeAgentTemplateHash', () => {
   })
 
   it('ignores excluded files when computing hash', async () => {
-    const dir1 = createDir({ 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+    const dir1 = createDir({ 'AGENTS.md': MINIMAL_INSTRUCTIONS })
     const hash1 = await computeAgentTemplateHash(dir1)
 
     // Add excluded files and check hash is unchanged
@@ -1380,7 +1380,7 @@ describe('computeAgentTemplateHash', () => {
   })
 
   it('ignores top-level excluded directories when computing hash', async () => {
-    const dir1 = createDir({ 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+    const dir1 = createDir({ 'AGENTS.md': MINIMAL_INSTRUCTIONS })
     const hash1 = await computeAgentTemplateHash(dir1)
 
     // Add top-level excluded dirs
@@ -1406,7 +1406,7 @@ describe('computeAgentTemplateHash', () => {
 
   it('digest is byte-identical to the serial implementation on a fixture tree', async () => {
     const files: Record<string, string> = {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'CLAUDE.md': MINIMAL_INSTRUCTIONS,
       'a.txt': 'a-content',
       'b.txt': 'b-content',
       'c.txt': 'c-content',
@@ -1488,13 +1488,13 @@ describe('getAgentTemplateStatus', () => {
   // ---------- local ----------
 
   it('returns { type: "local" } when agent has no metadata file', async () => {
-    createWorkspace('local-agent', { 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+    createWorkspace('local-agent', { 'AGENTS.md': MINIMAL_INSTRUCTIONS })
     const result = await getAgentTemplateStatus('local-agent', [])
     expect(result).toEqual({ type: 'local' })
   })
 
   it('returns { type: "local" } when metadata file does not exist', async () => {
-    createWorkspace('no-meta-agent', { 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+    createWorkspace('no-meta-agent', { 'AGENTS.md': MINIMAL_INSTRUCTIONS })
     const result = await getAgentTemplateStatus('no-meta-agent', [buildSkillsetConfig()])
     expect(result).toEqual({ type: 'local' })
   })
@@ -1503,7 +1503,7 @@ describe('getAgentTemplateStatus', () => {
 
   it('returns { type: "locally_modified" } when current hash differs from original', async () => {
     createWorkspace('modified-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
     })
 
     // Compute the hash with original content, then write metadata with a DIFFERENT hash
@@ -1530,7 +1530,7 @@ describe('getAgentTemplateStatus', () => {
 
   it('returns locally_modified with openPrUrl when hash matches but openPrUrl is set', async () => {
     const workspaceDir = createWorkspace('pr-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
     })
 
     const currentHash = await computeAgentTemplateHash(workspaceDir)
@@ -1558,7 +1558,7 @@ describe('getAgentTemplateStatus', () => {
 
   it('includes openPrUrl in locally_modified when hash also mismatches', async () => {
     createWorkspace('both-modified-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
     })
 
     const prUrl = 'https://github.com/TestOrg/agents/pull/99'
@@ -1587,7 +1587,7 @@ describe('getAgentTemplateStatus', () => {
 
   it('returns { type: "update_available" } when remote version differs from installed', async () => {
     const workspaceDir = createWorkspace('updatable-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
     })
 
     const currentHash = await computeAgentTemplateHash(workspaceDir)
@@ -1630,7 +1630,7 @@ describe('getAgentTemplateStatus', () => {
 
   it('returns { type: "up_to_date" } when hash matches and version matches', async () => {
     const workspaceDir = createWorkspace('uptodate-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
     })
 
     const currentHash = await computeAgentTemplateHash(workspaceDir)
@@ -1670,7 +1670,7 @@ describe('getAgentTemplateStatus', () => {
 
   it('returns up_to_date when agent is not found in skillset index (no version mismatch)', async () => {
     const workspaceDir = createWorkspace('no-entry-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
     })
 
     const currentHash = await computeAgentTemplateHash(workspaceDir)
@@ -1700,7 +1700,7 @@ describe('getAgentTemplateStatus', () => {
 
   it('returns up_to_date when skillset index is null', async () => {
     const workspaceDir = createWorkspace('null-index-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
     })
 
     const currentHash = await computeAgentTemplateHash(workspaceDir)
@@ -1726,7 +1726,7 @@ describe('getAgentTemplateStatus', () => {
 
   it('uses skillset config name when available', async () => {
     const workspaceDir = createWorkspace('named-ss-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
     })
 
     const currentHash = await computeAgentTemplateHash(workspaceDir)
@@ -1752,7 +1752,7 @@ describe('getAgentTemplateStatus', () => {
 
   it('returns local when skillset config is not found', async () => {
     const workspaceDir = createWorkspace('no-config-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
     })
 
     const currentHash = await computeAgentTemplateHash(workspaceDir)
@@ -2140,24 +2140,24 @@ describe('exportAgentTemplate - error cases', () => {
     )
   })
 
-  it('throws when CLAUDE.md is missing from workspace', async () => {
-    const workspaceDir = path.join(testDir, 'agents', 'no-claude', 'workspace')
+  it('throws when AGENTS.md is missing from workspace', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'no-instructions', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'README.md'), '# No Claude MD here')
+    fs.writeFileSync(path.join(workspaceDir, 'README.md'), '# No instructions here')
 
-    await expect(exportAgentTemplate('no-claude')).rejects.toThrow(
-      'CLAUDE.md not found'
+    await expect(exportAgentTemplate('no-instructions')).rejects.toThrow(
+      'Agent instructions not found'
     )
   })
 
-  it('does not hold the lock when CLAUDE.md is missing', async () => {
-    const missingDir = path.join(testDir, 'agents', 'no-claude', 'workspace')
+  it('does not hold the lock when AGENTS.md is missing', async () => {
+    const missingDir = path.join(testDir, 'agents', 'no-instructions', 'workspace')
     fs.mkdirSync(missingDir, { recursive: true })
-    await expect(exportAgentTemplate('no-claude')).rejects.toThrow('CLAUDE.md not found')
+    await expect(exportAgentTemplate('no-instructions')).rejects.toThrow('Agent instructions not found')
 
     const workspaceDir = path.join(testDir, 'agents', 'ok-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
     const zipBuffer = await exportAgentTemplate('ok-agent')
     expect(zipBuffer.length).toBeGreaterThan(0)
   })
@@ -2194,7 +2194,7 @@ describe('exportAgentFull', () => {
   it('rejects a second export while the first stream is still open', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
 
     expect(isHostExportBusy()).toBe(false)
     const first = await exportAgentFullStream('full-agent')
@@ -2215,7 +2215,7 @@ describe('exportAgentFull', () => {
     await expect(exportAgentFull('missing')).rejects.toThrow('Agent workspace not found')
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
     const zipBuffer = await exportAgentFull('full-agent')
     expect(zipBuffer.length).toBeGreaterThan(0)
   })
@@ -2223,7 +2223,7 @@ describe('exportAgentFull', () => {
   it('returns a readable zip stream', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
 
     const stream = await exportAgentFullStream('full-agent')
     expect(typeof stream.pipe).toBe('function')
@@ -2237,7 +2237,7 @@ describe('exportAgentFull', () => {
   it('keeps AGENTS.md in a full export', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
 
     const zipBuffer = await exportAgentFull('full-agent')
     const reader = await openZipFromBuffer(zipBuffer)
@@ -2251,7 +2251,7 @@ describe('exportAgentFull', () => {
   it('includes .env in the export', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
     fs.writeFileSync(path.join(workspaceDir, '.env'), 'SECRET=abc')
 
     const zipBuffer = await exportAgentFull('full-agent')
@@ -2266,7 +2266,7 @@ describe('exportAgentFull', () => {
   it('includes session-metadata.json in the export', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
     fs.writeFileSync(path.join(workspaceDir, 'session-metadata.json'), '{}')
 
     const zipBuffer = await exportAgentFull('full-agent')
@@ -2281,7 +2281,7 @@ describe('exportAgentFull', () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     const nmDir = path.join(workspaceDir, 'node_modules', 'pkg')
     fs.mkdirSync(nmDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
     fs.writeFileSync(path.join(nmDir, 'index.js'), 'module.exports = 1')
 
     const zipBuffer = await exportAgentFull('full-agent')
@@ -2295,7 +2295,7 @@ describe('exportAgentFull', () => {
   it('skips symlinks without hanging', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
 
     // Create a broken symlink (points to a non-existent target)
     const linkPath = path.join(workspaceDir, 'broken-link')
@@ -2319,7 +2319,7 @@ describe('exportAgentFull', () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     const bpDir = path.join(workspaceDir, '.browser-profile')
     fs.mkdirSync(bpDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
     fs.writeFileSync(path.join(bpDir, 'cookies.db'), 'data')
 
     const zipBuffer = await exportAgentFull('full-agent')
@@ -2333,7 +2333,7 @@ describe('exportAgentFull', () => {
   it('releases the lock when the caller destroys the stream before reading it', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
 
     const first = await exportAgentFullStream('full-agent')
     expect(isHostExportBusy()).toBe(true)
@@ -2349,7 +2349,7 @@ describe('exportAgentFull', () => {
   it('releases the lock when the abort signal fires mid-export', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
     for (let i = 0; i < 40; i++) {
       const blob = Buffer.alloc(64 * 1024)
       for (let j = 0; j < blob.length; j++) blob[j] = (i + j * 31) & 0xff
@@ -2370,7 +2370,7 @@ describe('exportAgentFull', () => {
   it('releases the lock when the HTTP client hangs up mid-download', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
     for (let i = 0; i < 8; i++) {
       const blob = Buffer.alloc(256 * 1024)
       for (let j = 0; j < blob.length; j++) blob[j] = (i * 17 + j * 13) & 0xff
@@ -2424,7 +2424,7 @@ describe('exportAgentFull', () => {
   it('errors instead of finalizing an incomplete zip when a source file disappears mid-export', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
     for (let i = 0; i < 40; i++) {
       fs.writeFileSync(path.join(workspaceDir, `data-${i}.txt`), `entry ${i}`)
     }
@@ -2444,7 +2444,7 @@ describe('exportAgentFull', () => {
   it('aborts queued archiver work when the consumer cancels mid-stream', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
-    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
     // Incompressible entries so a few reads leave most of the queue pending.
     for (let i = 0; i < 30; i++) {
       fs.writeFileSync(
@@ -2517,7 +2517,7 @@ describe('importAgentFromTemplate (full mode)', () => {
 
   it.each(['template', 'full'] as const)('preserves both instruction documents through a %s round trip', async (mode) => {
     const workspace = setupAgentMock('roundtrip-agent')
-    const original = { 'CLAUDE.md': MINIMAL_CLAUDE_MD, 'AGENTS.md': '# Independent instructions\n' }
+    const original = { 'CLAUDE.md': MINIMAL_INSTRUCTIONS, 'AGENTS.md': '# Independent instructions\n' }
     for (const [name, content] of Object.entries(original)) fs.writeFileSync(path.join(workspace, name), content)
     const zip = await (mode === 'full' ? exportAgentFull('roundtrip-agent') : exportAgentTemplate('roundtrip-agent'))
     const imported = setupAgentMock('roundtrip-imported')
@@ -2533,11 +2533,11 @@ describe('importAgentFromTemplate (full mode)', () => {
   it.each(['CLAUDE.md', 'AGENTS.md'])('imports %s as AGENTS.md, replacing the creation-time placeholder', async (name) => {
     const workspace = setupAgentMock('canonical-import')
     fs.writeFileSync(path.join(workspace, 'AGENTS.md'), '# Placeholder\n')
-    const zip = await makeZip({ [name]: MINIMAL_CLAUDE_MD })
+    const zip = await makeZip({ [name]: MINIMAL_INSTRUCTIONS })
 
     await importAgentFromTemplate(zip)
 
-    expect(fs.readFileSync(path.join(workspace, 'AGENTS.md'), 'utf8')).toBe(MINIMAL_CLAUDE_MD)
+    expect(fs.readFileSync(path.join(workspace, 'AGENTS.md'), 'utf8')).toBe(MINIMAL_INSTRUCTIONS)
     expect(fs.existsSync(path.join(workspace, 'CLAUDE.md'))).toBe(false)
   })
 
@@ -2549,7 +2549,7 @@ describe('importAgentFromTemplate (full mode)', () => {
     // rejection, not the process as an unhandled error.
     setupAgentMock('import-lying-size-agent')
     const honest = await makeZip({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'big.bin': 'a'.repeat(300 * 1024),
     })
     const lying = declareUncompressedSize(honest, 'big.bin', 1000)
@@ -2571,7 +2571,7 @@ describe('importAgentFromTemplate (full mode)', () => {
   it('imports .env in full mode', async () => {
     const workspaceDir = setupAgentMock('import-full-agent')
     const zipBuffer = await makeZip({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.env': 'SECRET=abc',
     })
 
@@ -2587,7 +2587,7 @@ describe('importAgentFromTemplate (full mode)', () => {
     // 240 bytes: accepted by the filesystem, with no room for a suffix on it.
     const long = `${'n'.repeat(236)}.txt`
     const zipBuffer = await makeZip({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       [`docs/${long}`]: 'kept',
     })
 
@@ -2602,7 +2602,7 @@ describe('importAgentFromTemplate (full mode)', () => {
   ] as const)('filters full archive history for mode %s with prefix %s', async (mode, prefix) => {
     const workspaceDir = setupAgentMock('import-history-agent')
     const keep = {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'PROMPT.md': 'Start a new conversation.',
       '.claude/skills/helper/SKILL.md': '# Helper',
       '.claude/skills/helper/references/projects/guide.txt': 'Skill reference',
@@ -2631,7 +2631,7 @@ describe('importAgentFromTemplate (full mode)', () => {
     await importAgentFromTemplate(zip, undefined, mode)
 
     for (const [name, content] of Object.entries(keep)) {
-      expect(fs.readFileSync(path.join(workspaceDir, name === 'CLAUDE.md' ? 'AGENTS.md' : name), 'utf8')).toBe(content)
+      expect(fs.readFileSync(path.join(workspaceDir, name), 'utf8')).toBe(content)
     }
     expect(fs.existsSync(path.join(workspaceDir, 'CLAUDE.md'))).toBe(false)
     for (const [name, content] of Object.entries(history)) {
@@ -2644,7 +2644,7 @@ describe('importAgentFromTemplate (full mode)', () => {
   it('strips .env in template mode', async () => {
     const workspaceDir = setupAgentMock('import-template-agent')
     const zipBuffer = await makeZip({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.env': 'SECRET=abc',
     })
 
@@ -2657,7 +2657,7 @@ describe('importAgentFromTemplate (full mode)', () => {
   it('imports session-metadata.json in full mode', async () => {
     const workspaceDir = setupAgentMock('import-session-agent')
     const zipBuffer = await makeZip({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'session-metadata.json': '{"sessions":[]}',
     })
 
@@ -2671,7 +2671,7 @@ describe('importAgentFromTemplate (full mode)', () => {
     setupAgentMock('import-traversal-agent')
     // Create a zip with path traversal — the import should silently skip it
     const buf = Buffer.from(await makeZip({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'safe/evil.txt': 'data',
     }))
     const searchStr = Buffer.from('safe/evil.txt')
@@ -2688,8 +2688,8 @@ describe('importAgentFromTemplate (full mode)', () => {
   it('still filters __MACOSX in full mode', async () => {
     const workspaceDir = setupAgentMock('import-macosx-agent')
     const zipBuffer = await makeZip({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      '__MACOSX/._CLAUDE.md': 'resource fork junk',
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
+      '__MACOSX/._AGENTS.md': 'resource fork junk',
     })
 
     await importAgentFromTemplate(zipBuffer, undefined, 'full')
@@ -2701,7 +2701,7 @@ describe('importAgentFromTemplate (full mode)', () => {
   it('defaults to template mode', async () => {
     const workspaceDir = setupAgentMock('import-default-agent')
     const zipBuffer = await makeZip({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.env': 'SECRET=abc',
     })
 
@@ -2713,7 +2713,7 @@ describe('importAgentFromTemplate (full mode)', () => {
 
   it('imports from a ZIP file on disk identically to a buffer', async () => {
     const zipBuffer = await makeZip({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       '.env': 'SECRET=abc',
       'sessions/s1/messages.jsonl': '{"type":"user"}\n',
       'sub/dir/deep.txt': 'deep',
@@ -2745,7 +2745,7 @@ describe('importAgentFromTemplate (full mode)', () => {
   })
 
   it('validates from a ZIP file on disk', async () => {
-    const zipBuffer = await makeZip({ 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+    const zipBuffer = await makeZip({ 'AGENTS.md': MINIMAL_INSTRUCTIONS })
     const zipPath = path.join(testDir, 'validate.zip')
     fs.writeFileSync(zipPath, zipBuffer)
 
@@ -2797,7 +2797,7 @@ describe('installAgentFromSkillset', () => {
     const workspaceDir = path.join(testDir, 'agents', slug, 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
 
-    // Create a fake skillset repo with a CLAUDE.md that has an old createdAt
+    // Create a fake skillset repo with instructions that have an old createdAt
     const skillsetId = 'test-skillset'
     const repoDir = `/tmp/mock-skillset-cache/${skillsetId}`
     const agentPath = 'agents/my-template'
@@ -2816,7 +2816,7 @@ describe('installAgentFromSkillset', () => {
         '1.0.0',
       )
 
-      // The template's CLAUDE.md is in place as AGENTS.md; the identity (the chosen name,
+      // The template instructions are in place as AGENTS.md; the identity (the chosen name,
       // the template's description, the install-time createdAt) is adopted
       // and projected back by agent-service, which is covered in its own suite.
       const agentsMd = fs.readFileSync(path.join(workspaceDir, 'AGENTS.md'), 'utf-8')
@@ -2851,7 +2851,7 @@ describe('publishAgentToSkillset instruction files', () => {
       { name: 'Test Agent', path: 'templates/nested/agent/CLAUDE.md', description: '', version: '1.0.0' },
     ] })
     const actor = agentRegistry.get('publish-existing')
-    await actor.files.putDoc('AGENTS.md', new TextEncoder().encode(MINIMAL_CLAUDE_MD))
+    await actor.files.putDoc('AGENTS.md', new TextEncoder().encode(MINIMAL_INSTRUCTIONS))
     await actor.config.put('skillsetMetadata', {
       skillsetId: 'test', skillsetUrl: 'https://github.com/example/templates', agentName: 'Test Agent',
       agentPath: 'templates/nested/agent/CLAUDE.md', installedVersion: '1.0.0', installedAt: '2026-01-01', originalContentHash: 'original', provider: 'github',
@@ -2874,7 +2874,7 @@ describe('publishAgentToSkillset instruction files', () => {
     vi.mocked(readIndexJson).mockResolvedValue({ skillset_name: 'test', description: '', version: '1', skills: [], agents: [] })
     const workspace = path.join(testDir, 'agents', 'publish-agent', 'workspace')
     fs.mkdirSync(workspace, { recursive: true })
-    fs.writeFileSync(path.join(workspace, source === 'both' ? 'CLAUDE.md' : source), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspace, source === 'both' ? 'CLAUDE.md' : source), MINIMAL_INSTRUCTIONS)
     if (source === 'both') fs.writeFileSync(path.join(workspace, 'AGENTS.md'), '# Independent document')
 
     await publishAgentToSkillset('publish-agent', {

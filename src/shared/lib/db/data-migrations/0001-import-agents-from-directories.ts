@@ -3,10 +3,10 @@
  *
  * Before the table, an agent existed because a directory existed under the
  * agents data directory, and its name and description lived in the
- * frontmatter of its `CLAUDE.md`. This one-time move gives every such
- * directory a row: name from the frontmatter falling back to the slug, the
+ * frontmatter of its instructions document (`AGENTS.md`, or legacy `CLAUDE.md`).
+ * This one-time move gives every such directory a row: name from the frontmatter falling back to the slug, the
  * description, and the creation date from the frontmatter falling back to
- * the directory's birth time. A directory without a readable `CLAUDE.md` is
+ * the directory's birth time. A directory without readable instructions is
  * not an agent and is left alone. Directories the table already knows are
  * left alone too, so re-running is safe.
  */

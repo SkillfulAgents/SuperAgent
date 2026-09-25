@@ -1,6 +1,6 @@
 /**
  * A template refresh that copies the upstream files into the workspace
- * replaces CLAUDE.md, and with it the identity projection the host wrote. The
+ * replaces AGENTS.md, and with it the identity projection the host wrote. The
  * catalog row is the authority for the name and description, so the
  * projection has to be restored after every such copy, and the content hash
  * recorded afterwards has to describe the workspace as it then is: otherwise
@@ -67,7 +67,7 @@ vi.mock('@shared/lib/skillset-provider', async (importOriginal) => {
 })
 
 import { agentCatalog, agentRegistry, identityFromInstructions } from '@shared/lib/agent-actor'
-import { createAgent, getAgentClaudeMdContent, updateAgent } from './agent-service'
+import { createAgent, getAgentInstructionsContent, updateAgent } from './agent-service'
 import { computeWorkspaceTemplateHash, refreshAgentTemplates } from './agent-template-service'
 
 let dataDir: string
@@ -80,12 +80,12 @@ const skillset: SkillsetConfig = {
   provider: 'github',
 } as SkillsetConfig
 
-const UPSTREAM_CLAUDE_MD = '---\nname: Upstream Name\ndescription: Upstream description\n---\n# Upstream body\n'
+const UPSTREAM_INSTRUCTIONS = '---\nname: Upstream Name\ndescription: Upstream description\n---\n# Upstream body\n'
 
-async function writeUpstreamTemplate(agentPath: string): Promise<string> {
+async function writeUpstreamTemplate(agentPath: string, instructionsFile = 'AGENTS.md'): Promise<string> {
   const dir = path.join(cacheRoot, skillset.id, agentPath)
   await fs.promises.mkdir(dir, { recursive: true })
-  await fs.promises.writeFile(path.join(dir, 'CLAUDE.md'), UPSTREAM_CLAUDE_MD)
+  await fs.promises.writeFile(path.join(dir, instructionsFile), UPSTREAM_INSTRUCTIONS)
   await fs.promises.writeFile(path.join(dir, 'README.md'), '# From upstream\n')
   return dir
 }
@@ -111,7 +111,7 @@ async function installedAgent(meta: Partial<InstalledAgentMetadata>): Promise<st
 }
 
 async function expectProjectedIdentity(slug: string): Promise<void> {
-  const content = await getAgentClaudeMdContent(slug)
+  const content = await getAgentInstructionsContent(slug)
   expect(content).not.toBeNull()
   expect(identityFromInstructions(content!)).toMatchObject({ name: 'Chosen Name', description: 'Chosen description' })
   expect(content).toContain('# Upstream body')
@@ -138,10 +138,9 @@ afterEach(async () => {
   await fs.promises.rm(dataDir, { recursive: true, force: true })
 })
 
-describe('refreshAgentTemplates keeps the catalog identity in CLAUDE.md', () => {
+describe('refreshAgentTemplates keeps the catalog identity in the instructions', () => {
   it.each(['CLAUDE.md', 'AGENTS.md'])('after a merged platform submission with %s is copied in', async (name) => {
-    const upstream = await writeUpstreamTemplate('agents/tpl')
-    if (name === 'AGENTS.md') await fs.promises.rename(path.join(upstream, 'CLAUDE.md'), path.join(upstream, 'AGENTS.md'))
+    await writeUpstreamTemplate('agents/tpl', name)
     const slug = await installedAgent({ pendingQueueItemId: 'queue-1' })
     // A legacy workspace must not shadow the incoming canonical document.
     await agentRegistry.get(slug).files.putDoc('CLAUDE.md', new TextEncoder().encode('# Old legacy instructions'))
@@ -157,7 +156,7 @@ describe('refreshAgentTemplates keeps the catalog identity in CLAUDE.md', () => 
   })
 
   it('preserves independent instructions when the upstream template contains both names', async () => {
-    const upstream = await writeUpstreamTemplate('agents/tpl')
+    const upstream = await writeUpstreamTemplate('agents/tpl', 'CLAUDE.md')
     await fs.promises.writeFile(path.join(upstream, 'AGENTS.md'), '# Independent instructions\n')
     const slug = await installedAgent({ pendingQueueItemId: 'both-files' })
     queueStatuses.set('both-files', 'merged')
