@@ -5,6 +5,7 @@ import xAgent from './routes/x-agent'
 import xAgentChat from './routes/x-agent-chat'
 import xAgentIntegrations from './routes/x-agent-integrations'
 import webSearch from './routes/web-search'
+import subscriptionMedia from './routes/subscription-media'
 import webFetch from './routes/web-fetch'
 import connectedAccounts from './routes/connected-accounts'
 import settings from './routes/settings'
@@ -233,6 +234,7 @@ app.route('/api/x-agent', xAgent)
 app.route('/api/x-agent/chat', xAgentChat)
 app.route('/api/x-agent/integrations', xAgentIntegrations)
 app.route('/api/web-search', webSearch)
+app.route('/api/subscription-media', subscriptionMedia)
 app.route('/api/web-fetch', webFetch)
 app.route('/api/connected-accounts', connectedAccounts)
 app.route('/api/settings', settings)

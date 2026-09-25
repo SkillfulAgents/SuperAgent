@@ -18,6 +18,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { EffortLevel, SpeedLevel } from './types';
 import { gamutPluginDir } from './gamut-plugin';
+import { createMediaMcpServer, mediaToolProviders } from './tools/media';
 import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createWidgetsMcpServer, createAgentsMcpServer, createChatMcpServer, createWebMcpServer } from './mcp-server';
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
@@ -343,6 +344,8 @@ export interface SystemPromptVars {
   remoteMcps: RemoteMcpView[];
   hasEnvVars: boolean;
   envVars: string[];
+  hasSubscriptionMedia: boolean;
+  subscriptionMediaProviders: string;
   hasMounts: boolean;
   mountPathsJoined: string;
   userInstructions: string;
@@ -373,6 +376,7 @@ export function buildSystemPromptVars(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  mediaProviders: string[] = [],
 ): SystemPromptVars {
   // Connected accounts run through Gamut's Composio (not a personal key). Managed
   // triggers and the platform-only accounts both exist only there.
@@ -416,6 +420,8 @@ export function buildSystemPromptVars(
     remoteMcps,
     hasEnvVars: envVars.length > 0,
     envVars,
+    hasSubscriptionMedia: mediaProviders.length > 0,
+    subscriptionMediaProviders: mediaProviders.join(', '),
     hasMounts: mountPaths.length > 0,
     // Each path is rendered as a JSON string literal. A folder name is user
     // bytes, and a raw newline or `#` in it would read as prompt structure.
@@ -437,6 +443,7 @@ export function generateSystemPrompt(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  mediaProviders?: string[],
 ): string {
   const vars = buildSystemPromptVars(
     availableEnvVars,
@@ -446,6 +453,7 @@ export function generateSystemPrompt(
     webFetchProvider,
     capabilityPolicies,
     subagentModels,
+    mediaProviders,
   );
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
@@ -705,6 +713,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.webFetchProvider,
       this.capabilityPolicies,
       this.subagentModels,
+      mediaToolProviders(this.llmRuntime?.mediaProviders),
     );
   }
 
@@ -952,6 +961,7 @@ export class ClaudeCodeProcess extends EventEmitter {
    * setMcpServers — which skips servers it already has registered.
    */
   private buildSdkMcpServers(browserMcpTools: ReturnType<typeof createBrowserTools>): Record<string, McpServerConfig> {
+    const mediaProviders = mediaToolProviders(this.llmRuntime?.mediaProviders);
     const servers: Record<string, McpServerConfig> = {
       'user-input': createUserInputMcpServer(() => this),
       'browser': createBrowserMcpServer(browserMcpTools),
@@ -962,6 +972,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       ...((this.webSearchProvider || this.webFetchProvider)
         ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
         : {}),
+      ...(mediaProviders.length > 0 ? { 'media': createMediaMcpServer(mediaProviders, this.workingDirectory) } : {}),
       ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer() } : {}),
     };
     this.sdkMcpServerConfigs = servers;
@@ -1681,7 +1692,10 @@ export class ClaudeCodeProcess extends EventEmitter {
       JSON.stringify([nextRuntime.browserModel, nextRuntime.dashboardBuilderModel, nextRuntime.subagentModels, nextRuntime.modelPromptHints, nextRuntime.modelContextWindows]) !==
         JSON.stringify([this.llmRuntime?.browserModel, this.llmRuntime?.dashboardBuilderModel, this.llmRuntime?.subagentModels, this.llmRuntime?.modelPromptHints, this.llmRuntime?.modelContextWindows]) ||
       llmProxyBinding(nextRuntime.llmProviderId, nextRuntime.proxy) !==
-        llmProxyBinding(this.llmRuntime?.llmProviderId ?? '', this.llmRuntime?.proxy)
+        llmProxyBinding(this.llmRuntime?.llmProviderId ?? '', this.llmRuntime?.proxy) ||
+      // Media tools and their prompt section are baked into the query.
+      JSON.stringify(mediaToolProviders(nextRuntime.mediaProviders)) !==
+        JSON.stringify(mediaToolProviders(this.llmRuntime?.mediaProviders))
     );
     if (nextRuntime) {
       this.llmRuntime = nextRuntime;
@@ -1742,6 +1756,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.webFetchProvider,
           nextPolicies,
           this.subagentModels,
+          mediaToolProviders(this.llmRuntime?.mediaProviders),
         );
       }
       this.reconcilePendingCapabilityReviews();

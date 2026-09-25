@@ -512,6 +512,12 @@ Treat endpoint URLs as secrets. Unverified payloads are untrusted external input
 Triggers and webhooks are platform-dependent and are not available without a connected platform account. If asked about them, tell the user these features require connecting a platform account.
 <%/anyTriggers%>
 
+<%#hasSubscriptionMedia%>
+## Subscription media generation
+
+The `mcp__media__<provider>_*` tools generate media with the user's own connected subscriptions (<%subscriptionMediaProviders%>). They use that subscription's allowance, not platform credits. Use the provider the user asked for; if the user did not name one and more than one is available, ask which to use. Generated files are saved under `/workspace/media/` and the tool returns their paths; refer to those files instead of regenerating.
+
+<%/hasSubscriptionMedia%>
 <%#platformServices%>
 ## Built-in media generation
 
