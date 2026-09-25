@@ -26,6 +26,8 @@ export interface ComposerOptionsState {
   llmProviderId?: string
   connections?: ConnectionInfo[]
   setConnection?: (llmProviderId: string) => void
+  /** Switch model, connection, effort and speed to the app-wide default in one step. */
+  applyGlobalDefault?: () => void
   effort: EffortLevel
   setEffort: (e: EffortLevel) => void
   speed: SpeedLevel
@@ -340,6 +342,21 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     followDefaults,
   ])
 
+  const applyGlobalDefault = useCallback(() => {
+    const global = resolveSelection(connectionData?.defaultSelection, connections)
+    const nextModel = global?.model ?? settings?.models?.agentModel
+    if (!nextModel) return
+    if (global) {
+      connectionDirty.current = true
+      setLlmProviderId(global.llmProviderId)
+    }
+    modelSeededRef.current = true
+    modelDirtyRef.current = true
+    setModelState(nextModel)
+    setEffort((settings?.models?.agentEffort ?? DEFAULT_EFFORT) as EffortLevel)
+    setSpeed(DEFAULT_SPEED)
+  }, [connectionData?.defaultSelection, connections, settings, setEffort, setSpeed])
+
   // Seeded refs are read at submit time: only a user pick or a session-seeded
   // value counts as an explicit choice worth putting on the wire.
   const displayedModel = connectionData?.defaultSelection ? effectiveSelection?.model : model
@@ -357,6 +374,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       llmProviderId: effectiveLlmProviderId,
       connections,
       setConnection,
+      applyGlobalDefault,
       effort,
       setEffort,
       speed,
@@ -369,7 +387,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       toRuntimeOptions,
       markSubmitted,
     }),
-    [effectiveLlmProviderId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, setModel, catalog, fallbackModel, settings, toRuntimeOptions, markSubmitted],
+    [effectiveLlmProviderId, connections, setConnection, applyGlobalDefault, effort, setEffort, speed, setSpeed, displayedModel, setModel, catalog, fallbackModel, settings, toRuntimeOptions, markSubmitted],
   )
 }
 

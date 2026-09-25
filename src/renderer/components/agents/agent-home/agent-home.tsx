@@ -500,11 +500,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                         state={composerOptions}
                         disabled={isDisabled}
                         footer={
-                          <AgentDefaultFooter
-                            agentSlug={agent.slug}
-                            state={composerOptions}
-                            agentHomeLink={false}
-                          />
+                          <AgentDefaultFooter agentSlug={agent.slug} state={composerOptions} />
                         }
                       />
                     </>
