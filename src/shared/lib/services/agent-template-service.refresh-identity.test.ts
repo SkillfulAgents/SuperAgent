@@ -139,17 +139,34 @@ afterEach(async () => {
 })
 
 describe('refreshAgentTemplates keeps the catalog identity in CLAUDE.md', () => {
-  it('after a merged platform submission is copied in', async () => {
-    await writeUpstreamTemplate('agents/tpl')
+  it.each(['CLAUDE.md', 'AGENTS.md'])('after a merged platform submission with %s is copied in', async (name) => {
+    const upstream = await writeUpstreamTemplate('agents/tpl')
+    if (name === 'AGENTS.md') await fs.promises.rename(path.join(upstream, 'CLAUDE.md'), path.join(upstream, 'AGENTS.md'))
     const slug = await installedAgent({ pendingQueueItemId: 'queue-1' })
+    // A legacy workspace must not shadow the incoming canonical document.
+    await agentRegistry.get(slug).files.putDoc('CLAUDE.md', new TextEncoder().encode('# Old legacy instructions'))
     queueStatuses.set('queue-1', 'merged')
 
     await refreshAgentTemplates([skillset])
 
     await expectProjectedIdentity(slug)
+    expect(await agentRegistry.get(slug).files.getDoc('CLAUDE.md')).toBeNull()
     const meta = (await agentRegistry.get(slug).config.get('skillsetMetadata')) as InstalledAgentMetadata
     expect(meta.pendingQueueItemId).toBeUndefined()
     expect((await agentCatalog.get(slug))?.name).toBe('Chosen Name')
+  })
+
+  it('preserves independent instructions when the upstream template contains both names', async () => {
+    const upstream = await writeUpstreamTemplate('agents/tpl')
+    await fs.promises.writeFile(path.join(upstream, 'AGENTS.md'), '# Independent instructions\n')
+    const slug = await installedAgent({ pendingQueueItemId: 'both-files' })
+    queueStatuses.set('both-files', 'merged')
+
+    await refreshAgentTemplates([skillset])
+
+    await expectProjectedIdentity(slug)
+    const bytes = await agentRegistry.get(slug).files.getDoc('AGENTS.md')
+    expect(new TextDecoder().decode(bytes!)).toBe('# Independent instructions\n')
   })
 
   it('after upstream moved forward while a PR was open', async () => {
