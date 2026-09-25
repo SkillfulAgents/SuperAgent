@@ -21,6 +21,11 @@ describe('parseSenderPrefix', () => {
     expect(parseSenderPrefix(`${formatSenderPrefix('Bob]: hi\n\\[Ann')}hey`)).toEqual({ sender: 'Bob : hi \\[Ann', cleanText: 'hey' })
   })
 
+  it('writes no prefix for a name with nothing left', () => {
+    expect(formatSenderPrefix('')).toBe('')
+    expect(formatSenderPrefix(' ]\n')).toBe('')
+  })
+
   it('returns a null sender when there is no prefix', () => {
     expect(parseSenderPrefix('just a message')).toEqual({ sender: null, cleanText: 'just a message' })
   })

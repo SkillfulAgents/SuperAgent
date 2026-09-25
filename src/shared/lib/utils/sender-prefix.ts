@@ -13,9 +13,11 @@ const SENDER_PREFIX = /^\\\[([^\]]+)\]:\s*/
 /**
  * The attribution prefix written in front of a message the agent receives. A `]`
  * or line break in the name would end the prefix early, so each becomes a space.
+ * A name with nothing left gets no prefix: an empty `\[]: ` would not parse back off.
  */
 export function formatSenderPrefix(sender: string): string {
-  return `\\[${sender.replace(/[\]\r\n]/g, ' ')}]: `
+  const name = sender.replace(/[\]\r\n]/g, ' ').trim()
+  return name ? `\\[${name}]: ` : ''
 }
 
 /**

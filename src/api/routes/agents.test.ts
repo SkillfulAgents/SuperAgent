@@ -1,6 +1,7 @@
 vi.mock('@shared/lib/services/agent-members-service', () => ({
   notifyAgentMembersChanged: (...args: unknown[]) => mockNotifyAgentMembersChanged(...args),
   listAgentMembers: vi.fn(() => []),
+  countMembersWithMinRole: vi.fn(async () => 0),
   changeMemberRole: (...args: unknown[]) => mockChangeMemberRole(...args),
   removeMember: (...args: unknown[]) => mockRemoveMember(...args),
 }))
@@ -739,7 +740,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listAgentMembers } from '@shared/lib/services/agent-members-service'
+import { countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
@@ -3750,6 +3751,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
   beforeEach(async () => {
     vi.clearAllMocks()
+    vi.mocked(countMembersWithMinRole).mockReset()
     app = createApp()
     vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
     mockSendMessage.mockResolvedValue(undefined)
@@ -3810,21 +3812,31 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(body.uuid).toBe(insertedValues.id)
   })
 
-  it('names the sender to the agent once two members can send, but never in front of a command', async () => {
+  it('names the sender to the agent once two members can send, but never in front of a command or notice', async () => {
     mockIsAuthMode.mockReturnValue(true)
-    const member = (role: 'owner' | 'user' | 'viewer') => ({ id: role, name: role, email: `${role}@example.test`, image: null, role })
-    vi.mocked(listAgentMembers).mockResolvedValueOnce([member('owner'), member('viewer')])
+    vi.mocked(countMembersWithMinRole).mockResolvedValue(1)
 
     const solo = await (await postJson(app, URL, { content: 'hello' })).json()
+    expect(countMembersWithMinRole).toHaveBeenLastCalledWith('test-agent', 'user')
     expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'hello', solo.uuid, {})
 
-    // A command skips the roster, so the shared roster below is still unread when 'hello' is sent.
-    vi.mocked(listAgentMembers).mockResolvedValueOnce([member('owner'), member('user')])
+    vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
     const command = await (await postJson(app, URL, { content: '/compact' })).json()
     expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '/compact', command.uuid, {})
+    const notice = await (await postJson(app, URL, { content: '[SYSTEM] note' })).json()
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '[SYSTEM] note', notice.uuid, {})
 
     const shared = await (await postJson(app, URL, { content: 'hello' })).json()
     expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '\\[Test User]: hello', shared.uuid, {})
+  })
+
+  it('sends the message unattributed when the member count fails', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(countMembersWithMinRole).mockRejectedValue(new Error('database unavailable'))
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(201)
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'hello', (await res.json()).uuid, {})
   })
 
   it('ignores a client-supplied uuid — the attribution PK is always server-generated', async () => {
@@ -6003,6 +6015,7 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
 
   beforeEach(async () => {
     vi.clearAllMocks()
+    vi.mocked(countMembersWithMinRole).mockReset()
     app = createApp()
     vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
     mockSendMessage.mockResolvedValue(undefined)
@@ -6038,6 +6051,7 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
 
   it('coalesces a user message during recovery and does not send to the container', async () => {
     mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
     vi.mocked(messagePersister.coalesceIfRecovering).mockReturnValueOnce(true)
 
     const res = await postJson(app, URL, { content: 'keep going' })
@@ -6046,23 +6060,33 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
     expect(body.queued).toBe(true)
     expect(messagePersister.coalesceIfRecovering).toHaveBeenCalledWith('test-agent', 'sess-1', {
       uuid: expect.any(String),
-      text: 'keep going',
+      text: '\\[Test User]: keep going',
     })
     expect(mockSendMessage).not.toHaveBeenCalled()
   })
 
-  it('a transcript-only append coalesced during recovery is remembered as one', async () => {
+  it('a transcript-only append coalesced during recovery is remembered as one, attributed like a live append', async () => {
     mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
     vi.mocked(messagePersister.coalesceIfRecovering).mockReturnValueOnce(true)
 
-    const res = await postJson(app, URL, { content: '[SYSTEM] note', shouldQuery: false })
+    const res = await postJson(app, URL, { content: 'note', shouldQuery: false })
     expect(res.status).toBe(201)
     expect(messagePersister.coalesceIfRecovering).toHaveBeenCalledWith('test-agent', 'sess-1', {
       uuid: expect.any(String),
-      text: '[SYSTEM] note',
+      text: '\\[Test User]: note',
       shouldQuery: false,
     })
     expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('a live transcript-only append is attributed like any other message', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
+
+    const res = await postJson(app, URL, { content: 'note', shouldQuery: false })
+    expect(res.status).toBe(201)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '\\[Test User]: note', (await res.json()).uuid, { shouldQuery: false, preserveRuntime: true })
   })
 
   it('does not broadcast user_message in non-auth mode', async () => {
@@ -8564,6 +8588,18 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Greeting' }] })
     expect((await postJson(app, SESSIONS_URL, { message: 'hello there' })).status).toBe(201)
     await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Greeting'))
+  })
+
+  it('a shared agent is told who opened the session', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
+    try {
+      expect((await postJson(app, SESSIONS_URL, { message: 'hello there' })).status).toBe(201)
+      expect(mockCreateSession.mock.calls[0][0].initialMessage).toBe('\\[Test User]: hello there')
+    } finally {
+      mockIsAuthMode.mockReturnValue(false)
+      vi.mocked(countMembersWithMinRole).mockReset()
+    }
   })
 
   it('falls back to agent preference defaults when the request has no model/effort', async () => {
