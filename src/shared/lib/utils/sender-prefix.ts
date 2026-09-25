@@ -1,7 +1,7 @@
-// Read-only chat mirror: in group/channel contexts connectors prefix an incoming
-// message with an escaped "\[sender]: " (e.g. Telegram/Slack) so the agent can
-// attribute who spoke. The mirror lifts that prefix into the sender label instead
-// of showing it inline. Live sessions never carry it, and DMs are never prefixed.
+// In group/channel contexts connectors prefix an incoming message with an escaped
+// "\[sender]: " (e.g. Telegram/Slack) so the agent can attribute who spoke; the app
+// does the same for messages sent to an agent with several members. The bubble
+// lifts that prefix off instead of showing it inline. DMs are never prefixed.
 //
 // We require the leading backslash the connector always writes: a user's own text
 // that happens to start "[TODO]: buy milk" is not a connector prefix, and stripping
@@ -9,6 +9,14 @@
 // transcripts carried an unescaped "[sender]: "; those now render the prefix inline
 // rather than lifted - cosmetic only, and no worse than mis-lifting real user text.)
 const SENDER_PREFIX = /^\\\[([^\]]+)\]:\s*/
+
+/**
+ * The attribution prefix written in front of a message the agent receives. A `]`
+ * or line break in the name would end the prefix early, so each becomes a space.
+ */
+export function formatSenderPrefix(sender: string): string {
+  return `\\[${sender.replace(/[\]\r\n]/g, ' ')}]: `
+}
 
 /**
  * Split a leading escaped "\[sender]: " prefix off message text. Returns the sender

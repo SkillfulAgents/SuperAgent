@@ -3,7 +3,8 @@ import { listConnections, getConnection, providerForConnection, resolveGlobalSel
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
-import { notifyAgentMembersChanged, changeMemberRole, removeMember } from '@shared/lib/services/agent-members-service'
+import { notifyAgentMembersChanged, changeMemberRole, removeMember, listAgentMembers } from '@shared/lib/services/agent-members-service'
+import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
@@ -2010,7 +2011,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     const containerSession = await actor.sessions.create({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: message.trim(),
+      initialMessage: await attributedForAgent(c, slug, message.trim()),
       initialMessageUuid,
       model: resolved.model,
       llmProviderId: resolved.llmProviderId,
@@ -2662,6 +2663,14 @@ async function persistAndBroadcastUserMessage(
   })
 }
 
+/** In an agent several people can message, name the sender for the agent, as chat integrations do. */
+async function attributedForAgent(c: Context, agentSlug: string, text: string): Promise<string> {
+  // A slash command or system notice only keeps its meaning at the very start of the text.
+  if (!isAuthMode() || text.startsWith('/') || isSystemMessageText(text)) return text
+  if ((await listAgentMembers(agentSlug)).filter(m => m.role !== 'viewer').length < 2) return text
+  return formatSenderPrefix((c.get('user' as never) as UserSenderSource).name) + text
+}
+
 // POST /api/agents/:id/sessions/:sessionId/messages - Send a message
 agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
   try {
@@ -2704,10 +2713,11 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // so the client can materialize its optimistic copy by exact id match.
     const messageUuid = randomUUID()
     const text = content.trim()
+    const agentText = await attributedForAgent(c, agentSlug, text)
 
     if (agentRegistry.get(agentSlug).messages.coalesceIfRecovering(sessionId, {
       uuid: messageUuid,
-      text,
+      text: agentText,
       ...(runtimeOptions.shouldQuery === false ? { shouldQuery: false as const } : {}),
     })) {
       await persistAndBroadcastUserMessage(c, {
@@ -2790,7 +2800,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         queued: wasQueued,
       })
 
-      await actor.messages.send(sessionId, text, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
       nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
       const updates: Partial<SessionMetadata> = {}
       if (runtimeOptions.effort) updates.effort = runtimeOptions.effort

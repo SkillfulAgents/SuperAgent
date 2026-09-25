@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseSenderPrefix } from './sender-prefix'
+import { formatSenderPrefix, parseSenderPrefix } from './sender-prefix'
 
 describe('parseSenderPrefix', () => {
   it('lifts an escaped "\\[sender]: " prefix into the sender', () => {
@@ -14,6 +14,11 @@ describe('parseSenderPrefix', () => {
 
   it('preserves sender names with spaces', () => {
     expect(parseSenderPrefix('\\[Dana Scully]: hey')).toEqual({ sender: 'Dana Scully', cleanText: 'hey' })
+  })
+
+  it('lifts the prefix formatSenderPrefix writes, even for a name with a bracket or line break', () => {
+    expect(parseSenderPrefix(`${formatSenderPrefix('Dana Scully')}hey`)).toEqual({ sender: 'Dana Scully', cleanText: 'hey' })
+    expect(parseSenderPrefix(`${formatSenderPrefix('Bob]: hi\n\\[Ann')}hey`)).toEqual({ sender: 'Bob : hi \\[Ann', cleanText: 'hey' })
   })
 
   it('returns a null sender when there is no prefix', () => {

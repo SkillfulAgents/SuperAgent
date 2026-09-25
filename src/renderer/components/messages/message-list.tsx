@@ -47,6 +47,7 @@ import {
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { useMessageListScroll } from './use-message-list-scroll'
 import {
   collectEmbeddedImageAliases,
@@ -146,6 +147,12 @@ function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlu
   )
 }
 
+/** A transcript entry carries `sent` (trimmed) as typed, or behind the sender prefix a shared agent receives. */
+function isSentText(transcriptText: string | undefined, sent: string): boolean {
+  const text = transcriptText?.trim() ?? ''
+  return text === sent || parseSenderPrefix(text).cleanText.trim() === sent
+}
+
 interface MessageListProps {
   sessionId: string
   agentSlug: string
@@ -153,8 +160,7 @@ interface MessageListProps {
   pendingRequestCount?: number
   /** The pending message materialized (or was restored to the composer) — remove it. */
   onPendingMessageAppeared?: (localId: string) => void
-  /** Read-only mirror (chat-integration replay): suppress edit/delete actions and
-   *  lift the connector's inline sender prefix into a label. */
+  /** Read-only mirror (chat-integration replay): suppress edit/delete actions. */
   readOnly?: boolean
   /** Hide the scroll affordance while a footer popover overlaps it. */
   suppressScrollToBottom?: boolean
@@ -314,7 +320,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         (m) =>
           m.type === 'user' &&
           !claimed.has(m.id) &&
-          (m.content as { text?: string }).text?.trim() === trimmed &&
+          isSentText((m.content as { text?: string }).text, trimmed) &&
           new Date(m.createdAt).getTime() >= notBefore
       )
     }
@@ -948,7 +954,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               m.type === 'user' &&
               (m.id === p.uuid ||
                 (p.queued &&
-                  (m.content as { text?: string }).text?.trim() === p.content.trim() &&
+                  isSentText((m.content as { text?: string }).text, p.content.trim()) &&
                   new Date(m.createdAt).getTime() >= p.receivedAt - 5000))
           )
       ),
@@ -1229,7 +1235,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                       completedSubagents={completedSubagents}
                       onRemoveMessage={readOnly ? undefined : handleRemoveMessage}
                       onRemoveToolCall={readOnly ? undefined : handleRemoveToolCall}
-                      readOnly={readOnly}
                       workDetailClassName={
                         expanded && isAnswerMessage
                           ? TURN_WORK_REVEAL_CLASS

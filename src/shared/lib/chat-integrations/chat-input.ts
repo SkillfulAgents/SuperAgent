@@ -3,6 +3,7 @@ import { isMultiPartyChatType, type ChatConnectorClass, type IncomingMessage } f
 import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
 import { sanitizeUploadFilename, withUploadTimestamp } from '../utils/path-safety'
 import { isHostOrSubdomain, tryParseUrl } from '../utils/url-safety'
+import { formatSenderPrefix } from '../utils/sender-prefix'
 import { agentRegistry } from '../agent-actor'
 import { captureException } from '../error-reporting'
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024
@@ -26,7 +27,7 @@ export class ChatInputBuilder {
     const sender = message.userName || message.userId
     const prefix = sender
       && isMultiPartyChatType(connectorClass?.classifyChatId?.(message))
-      ? `\\[${sender}]: `
+      ? formatSenderPrefix(sender)
       : ''
     const text = prefix + (message.text || '')
     // What the person wrote, for display: no attribution prefix, injected context or file block.

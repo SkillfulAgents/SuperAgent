@@ -739,6 +739,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
+import { listAgentMembers } from '@shared/lib/services/agent-members-service'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
@@ -3807,6 +3808,23 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id, {})
     const body = await res.json()
     expect(body.uuid).toBe(insertedValues.id)
+  })
+
+  it('names the sender to the agent once two members can send, but never in front of a command', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    const member = (role: 'owner' | 'user' | 'viewer') => ({ id: role, name: role, email: `${role}@example.test`, image: null, role })
+    vi.mocked(listAgentMembers).mockResolvedValueOnce([member('owner'), member('viewer')])
+
+    const solo = await (await postJson(app, URL, { content: 'hello' })).json()
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'hello', solo.uuid, {})
+
+    // A command skips the roster, so the shared roster below is still unread when 'hello' is sent.
+    vi.mocked(listAgentMembers).mockResolvedValueOnce([member('owner'), member('user')])
+    const command = await (await postJson(app, URL, { content: '/compact' })).json()
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '/compact', command.uuid, {})
+
+    const shared = await (await postJson(app, URL, { content: 'hello' })).json()
+    expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '\\[Test User]: hello', shared.uuid, {})
   })
 
   it('ignores a client-supplied uuid — the attribution PK is always server-generated', async () => {
