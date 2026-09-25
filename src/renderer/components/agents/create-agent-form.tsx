@@ -50,11 +50,11 @@ import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@share
 const HANDOFF_TEMPLATE_WAIT_MS = 10000
 
 /**
- * Soft edges for the template roster's scroll viewport, same recipe as the
- * voice-agent transcript: cards dissolve over 32px instead of clipping at the
- * top of the composer above and the footer below. Top padding (the measured
- * composer overlap plus this gap) keeps at-rest content clear of the bands,
- * so nothing looks faded until it is actually leaving.
+ * Soft edges for the template roster's scroll viewport: cards dissolve over
+ * 32px instead of clipping at the top of the composer above and the footer
+ * below. Top padding (the measured composer overlap plus this gap) keeps
+ * at-rest content clear of the bands, so nothing looks faded until it is
+ * actually leaving.
  */
 const ROSTER_FADE_MASK =
   'linear-gradient(to bottom, transparent 0, black 32px, black calc(100% - 32px), transparent 100%)'

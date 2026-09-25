@@ -38,7 +38,7 @@ export abstract class BaseVoiceProvider {
   /** Validate an API key. Returns { valid: true } or { valid: false, error: string }. */
   abstract validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }>
 
-  /** Wire protocol the renderer uses for dictation / voice-agent sockets. */
+  /** Wire protocol the renderer uses for dictation sockets. */
   getSttProtocol(): SttProtocol {
     return 'deepgram'
   }

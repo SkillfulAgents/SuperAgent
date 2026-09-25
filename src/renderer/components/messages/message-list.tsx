@@ -56,8 +56,6 @@ const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duratio
 interface CompletedTurn {
   id: string
   startMessageId: string
-  /** Null during the brief idle window before the streamed final text persists. */
-  finalAssistantMessageId: string | null
   /** The final textual response for this visual work phase. */
   answerMessageIds: ReadonlySet<string>
   /** Tool cards on the answer message that appear only after expansion. */
@@ -656,11 +654,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // remains fully expanded until it completes; afterward each steering message
   // floats between the summary for the work before it and the summary for the
   // work it initiated.
-  const hasUnpersistedStreamingMessage =
-    !!streamingMessage && !isStreamingMessagePersisted
-  const hasUnpersistedStreamingTools = unpersistedStreamingToolUses.length > 0
-  const hasUnpersistedThinking = unpersistedThinkingBlocks.length > 0
-
   const { completedTurns, completedTurnByItemId, collapsedMessageById } = useMemo(() => {
     const turns: CompletedTurn[] = []
     const byItemId = new Map<string, CompletedTurn>()
@@ -671,7 +664,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       startIndex: number,
       endIndex: number,
       isTerminalPhase: boolean,
-      finalTextIsStillStreaming = false,
     ) => {
       if (endIndex <= startIndex + 1) return
       const items = visibleMessages.slice(startIndex, endIndex)
@@ -753,7 +745,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       const turn: CompletedTurn = {
         id: start.id,
         startMessageId: start.id,
-        finalAssistantMessageId: finalTextIsStillStreaming ? null : finalAssistant.id,
         answerMessageIds,
         revealedToolCallIds,
         elapsedMs:
@@ -768,7 +759,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       for (const item of items) byItemId.set(item.id, turn)
     }
 
-    const finishActualTurn = (endIndex: number, finalTextIsStillStreaming = false) => {
+    const finishActualTurn = (endIndex: number) => {
       if (
         actualTurnStartIndex === null ||
         endIndex <= actualTurnStartIndex + 1
@@ -781,12 +772,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         finishWorkPhase(phaseStartIndex, i, false)
         phaseStartIndex = i
       }
-      finishWorkPhase(
-        phaseStartIndex,
-        endIndex,
-        true,
-        finalTextIsStillStreaming,
-      )
+      finishWorkPhase(phaseStartIndex, endIndex, true)
     }
 
     for (let i = 0; i < visibleMessages.length; i++) {
@@ -795,18 +781,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       actualTurnStartIndex = i
     }
 
-    const hasUnreconciledOutput =
-      hasUnpersistedStreamingMessage ||
-      hasUnpersistedStreamingTools ||
-      hasUnpersistedThinking
     if (actualTurnStartIndex !== null && (!isActive || hasTurnStartingPendingMessage)) {
       // session_idle can precede the final messages refetch. Collapse the
-      // persisted work immediately, but don't mistake its last interim text
-      // for the final answer — the still-streamed final text below owns that.
-      finishActualTurn(
-        visibleMessages.length,
-        hasUnreconciledOutput && !hasTurnStartingPendingMessage,
-      )
+      // persisted work immediately; the still-streamed final text renders below.
+      finishActualTurn(visibleMessages.length)
     }
 
     return {
@@ -814,14 +792,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       completedTurnByItemId: byItemId,
       collapsedMessageById: collapsedById,
     }
-  }, [
-    visibleMessages,
-    hasUnpersistedStreamingMessage,
-    hasUnpersistedStreamingTools,
-    hasUnpersistedThinking,
-    isActive,
-    hasTurnStartingPendingMessage,
-  ])
+  }, [visibleMessages, isActive, hasTurnStartingPendingMessage])
 
   // All scrolling behavior — live-edge following (the owned engine), the
   // new-turn reading-line reserve, windowed rendering of long histories. The

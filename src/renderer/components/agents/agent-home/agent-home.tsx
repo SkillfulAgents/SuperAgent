@@ -136,9 +136,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
   const renameUntitledAgent = useRenameUntitledAgent()
-  // Tracks whether a name has already been assigned (e.g. by the voice agent)
-  // so the post-submit deriveAgentName fallback doesn't clobber it.
-  const nameAssignedRef = useRef(false)
   // Agent-scoped dialogs opened from HomeExtras. Header settings are a
   // popover on the gear now; the sidebar context menu keeps the full dialog.
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
@@ -219,8 +216,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       return res.json() as Promise<{ path: string }>
     }, [agent.slug]),
     onSubmit: useCallback(async (content: string) => {
-      const shouldRename =
-        agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && !nameAssignedRef.current
+      const shouldRename = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
@@ -231,10 +227,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       onSessionCreated(session.id, content, session.initialMessageUuid)
       // Fire rename after the session is created + navigated — the mutation
       // survives AgentHome unmounting since the queryClient is app-scoped.
-      if (shouldRename) {
-        nameAssignedRef.current = true
-        renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
-      }
+      if (shouldRename) renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
     }, [createSession, agent.slug, agent.name, onSessionCreated, composerOptions, sessions.length, renameUntitledAgent]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,

@@ -686,7 +686,7 @@ describe('useMessageComposer', () => {
         { wrapper },
       )
       expect(result.current.composer.message).toBe('')
-      // Simulate an outside caller (e.g. voice feedback) writing to the same key.
+      // Simulate an outside caller (e.g. a file comment) writing to the same key.
       act(() => result.current.draft[1]('injected from outside'))
       expect(result.current.composer.message).toBe('injected from outside')
     })
