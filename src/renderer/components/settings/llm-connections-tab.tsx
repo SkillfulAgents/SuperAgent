@@ -38,7 +38,7 @@ import { isOAuthProvider, type LlmProviderId, type OAuthProvider } from '@shared
 import { SIGN_IN, type SubscriptionSignInProvider } from './subscription-sign-in'
 
 const SIGN_IN_PROVIDER: Record<OAuthProvider, SubscriptionSignInProvider> = {
-  'grok-subscription': 'grok', 'codex-subscription': 'codex', 'kimi-subscription': 'kimi',
+  'grok-subscription': 'grok', 'codex-subscription': 'codex', 'kimi-subscription': 'kimi', 'minimax-subscription': 'minimax',
 }
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
@@ -53,6 +53,7 @@ const providers = {
   'grok-subscription': 'Grok Subscription',
   'codex-subscription': 'Codex Subscription',
   'kimi-subscription': 'Kimi Subscription',
+  'minimax-subscription': 'MiniMax Subscription',
   openrouter: 'OpenRouter',
   bedrock: 'AWS Bedrock',
   generic: 'Generic',
@@ -64,6 +65,7 @@ const nameExamples: Record<keyof typeof providers, string> = {
   'grok-subscription': 'Personal Grok',
   'codex-subscription': 'Work ChatGPT Pro',
   'kimi-subscription': 'Personal Kimi Code',
+  'minimax-subscription': 'Personal MiniMax',
   openrouter: 'Shared OpenRouter',
   bedrock: 'Bedrock us-east-1',
   generic: 'Local vLLM server',
@@ -75,6 +77,7 @@ const providerDescriptions: Record<keyof typeof providers, string> = {
   'grok-subscription': 'Sign in with your xAI account to use your Grok subscription.',
   'codex-subscription': 'Sign in with ChatGPT to use your Codex subscription.',
   'kimi-subscription': 'Sign in with your Kimi account to use your Kimi Code membership.',
+  'minimax-subscription': 'Sign in with your MiniMax account to use your Token Plan.',
   openrouter: 'Multi-model access through a single API key.',
   bedrock: 'AWS managed Claude inference with IAM or API key credentials.',
   generic: 'Any Anthropic- or OpenAI-compatible endpoint at a base URL.',

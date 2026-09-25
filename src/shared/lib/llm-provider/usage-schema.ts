@@ -93,3 +93,26 @@ export function parseKimiUsage(raw: unknown): ProviderUsage {
     : [{ kind: 'window', id, label, usedPercent: window.used_ratio * 100, resetsAt: window.reset_time ?? undefined }])
   return usageSnapshot(limits)
 }
+
+const count = z.number().finite().nullish().catch(undefined)
+const minimaxRemainSchema = z.object({
+  model_name: z.string().min(1),
+  end_time: count, weekly_end_time: count,
+  current_interval_total_count: count, current_interval_usage_count: count,
+  current_weekly_total_count: count, current_weekly_usage_count: count,
+})
+export const minimaxUsageSchema = z.object({ model_remains: z.array(minimaxRemainSchema).nullish().catch(undefined) })
+
+// Follows the official MiniMax CLI: `*_usage_count` is the remaining count and times are Unix ms.
+// Zero totals mean unlimited or not in the plan, so those windows have no bar.
+export function parseMinimaxUsage(raw: unknown): ProviderUsage {
+  const remains = minimaxUsageSchema.parse(raw).model_remains ?? []
+  const limits: UsageLimit[] = remains.flatMap((model, index) => [
+    { id: 'interval', label: '5-hour', remaining: model.current_interval_usage_count, total: model.current_interval_total_count, end: model.end_time },
+    { id: 'weekly', label: 'Weekly', remaining: model.current_weekly_usage_count, total: model.current_weekly_total_count, end: model.weekly_end_time },
+  ].flatMap(({ id, label, remaining, total, end }): UsageLimit[] => remaining == null || !total || total <= 0 ? [] : [{
+    kind: 'window', id: `${index}-${id}`, label: `${model.model_name} · ${label}`,
+    usedPercent: Math.max(0, total - remaining) / total * 100, ...(end && end > 0 ? { resetsAt: new Date(end).toISOString() } : {}),
+  }]))
+  return usageSnapshot(limits)
+}

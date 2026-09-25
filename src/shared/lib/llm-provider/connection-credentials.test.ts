@@ -10,6 +10,7 @@ vi.mock('../db', () => ({ get db() { return state.db } }))
 vi.mock('./codex-oauth', () => ({ refreshCodexCredential: state.exchange }))
 vi.mock('./grok-oauth', () => ({ refreshGrokCredential: state.exchange }))
 vi.mock('./kimi-oauth', () => ({ refreshKimiCredential: state.exchange }))
+vi.mock('./minimax-oauth', () => ({ refreshMinimaxCredential: state.exchange }))
 import { resolveConnectionCredential } from './connection-credentials'
 let handle: TestDatabase
 const expired = { accessToken: 'old', refreshToken: 'refresh-old', expiresAt: 0 }
@@ -22,7 +23,7 @@ beforeEach(async () => { handle = await createTestDatabase(); state.db = handle.
 afterEach(async () => { await handle.close() })
 
 describe('app-owned subscription credentials', () => {
-  it.each(['grok-subscription', 'codex-subscription', 'kimi-subscription'])('coalesces %s refresh and persists the rotated pair', async provider => {
+  it.each(['grok-subscription', 'codex-subscription', 'kimi-subscription', 'minimax-subscription'])('coalesces %s refresh and persists the rotated pair', async provider => {
     await seed(expired, 'connection', provider)
     state.exchange.mockImplementation(async () => { await new Promise(resolve => setTimeout(resolve, 25)); return fresh })
     const credentials = await Promise.all(Array.from({ length: 5 }, () => resolveConnectionCredential('connection')))

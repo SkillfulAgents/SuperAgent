@@ -128,6 +128,7 @@ function modelProviderIcon(model: string): string | undefined {
   ) return 'openai'
   if (id.startsWith('x-ai/') || id.startsWith('xai/') || id.includes('grok')) return 'xai'
   if (id.startsWith('moonshot/') || id.includes('kimi')) return 'kimi'
+  if (id.includes('minimax')) return 'minimax'
   if (id.startsWith('z-ai/') || id.startsWith('zai/') || id.includes('glm')) return 'zai'
   if (id.startsWith('meta/') || id.includes('llama')) return 'meta'
   return undefined

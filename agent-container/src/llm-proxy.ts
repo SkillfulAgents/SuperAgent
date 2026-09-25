@@ -123,7 +123,9 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
         return fetch(`${config.baseUrl.replace(/\/$/, '')}${path}`, {
           method: 'POST', redirect: 'error', signal: abort.signal,
           headers: { 'content-type': 'application/json', ...(format === 'messages' ? { 'anthropic-version': '2023-06-01' } : {}),
-            ...config.headers, ...(config.adapter === 'codex' && credential.accountId ? { 'ChatGPT-Account-ID': credential.accountId } : {}), authorization: `Bearer ${credential.accessToken}` },
+            ...config.headers, ...(config.adapter === 'codex' && credential.accountId ? { 'ChatGPT-Account-ID': credential.accountId } : {}),
+            ...(config.credentialHeader ? { [config.credentialHeader]: credential.accessToken } : {}),
+            authorization: `Bearer ${credential.accessToken}` },
           body: JSON.stringify(upstreamBody),
         })
       }
@@ -203,5 +205,7 @@ function sendError(res: ServerResponse, status: number, message: string): void {
 export function llmProxyBinding(llmProviderId: string, proxy?: LlmProxyConfig): string | undefined {
   if (!proxy) return undefined
   const { credential, ...configuration } = proxy
-  return JSON.stringify([llmProviderId, configuration, credential.accountId])
+  // A credential copied into a header rotates on refresh. Including it would restart the query.
+  const headers = Object.fromEntries(Object.entries(proxy.headers ?? {}).filter(([key]) => key !== proxy.credentialHeader))
+  return JSON.stringify([llmProviderId, { ...configuration, headers }, credential.accountId])
 }

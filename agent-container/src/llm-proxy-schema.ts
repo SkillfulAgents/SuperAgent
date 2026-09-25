@@ -13,6 +13,8 @@ export const llmProxyConfigSchema = z.object({
   baseUrl: z.url({ protocol: /^https?$/ }),
   credential: proxyCredentialSchema,
   headers: z.record(z.string(), z.string()).default({}),
+  // Also send the live credential in this header. Older images drop the field and forward headers as configured.
+  credentialHeader: z.literal('x-api-key').optional(),
   maxOutputTokens: z.number().int().positive().optional(),
   chatTokenLimitField: z.enum(['max_tokens', 'max_completion_tokens']).optional(),
   omitReasoningEffort: z.boolean().optional(),

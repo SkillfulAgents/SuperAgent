@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseCodexUsage, parseGrokUsage, parseKimiUsage } from './usage-schema'
+import { parseCodexUsage, parseGrokUsage, parseKimiUsage, parseMinimaxUsage } from './usage-schema'
 
 describe('provider allowance normalization', () => {
   it('keeps concurrent Codex windows, reset times and credits with their own units', () => {
@@ -68,5 +68,17 @@ describe('partial allowance payloads', () => {
       { kind: 'window', id: 'month', label: 'Monthly', usedPercent: 0, resetsAt: '2026-10-25T00:00:00Z' },
     ])
     expect(parseKimiUsage({}).status).toBe('unavailable')
+  })
+  it('reads MiniMax Token Plan remaining counts as used percentages and skips windows without a total', () => {
+    const start = Date.parse('2026-09-24T18:00:00Z')
+    const snapshot = parseMinimaxUsage({ model_remains: [
+      { model_name: 'MiniMax-M3', start_time: start, end_time: start + 5 * 3_600_000, current_interval_usage_count: 75, current_interval_total_count: 100, current_interval_status: 1, current_weekly_usage_count: 990, current_weekly_total_count: 1000, current_weekly_status: 1, weekly_end_time: Date.parse('2026-10-01T00:00:00Z') },
+      { model_name: 'video', current_interval_usage_count: 0, current_interval_total_count: 0, current_weekly_usage_count: 0, current_weekly_total_count: 0, current_interval_status: 3, current_weekly_status: 3 },
+    ] })
+    expect(snapshot.limits).toEqual([
+      { kind: 'window', id: '0-interval', label: 'MiniMax-M3 · 5-hour', usedPercent: 25, resetsAt: new Date(start + 5 * 3_600_000).toISOString() },
+      { kind: 'window', id: '0-weekly', label: 'MiniMax-M3 · Weekly', usedPercent: 1, resetsAt: '2026-10-01T00:00:00.000Z' },
+    ])
+    expect(parseMinimaxUsage({}).status).toBe('unavailable')
   })
 })
