@@ -38,12 +38,13 @@ vi.mock('../middleware/auth', () => ({
   },
 }))
 import routes from './subscription-media'
-import { availableMediaProviders } from '@shared/lib/subscription-media'
+import { subscriptionMediaPrompt } from '@shared/lib/subscription-media'
 
 const fake: SubscriptionMediaProvider = {
   id: 'codex',
   name: 'Codex',
   llmProviderId: 'codex-subscription',
+  extraPrompt: 'Use Bash to POST /subscription-media/codex/image.',
   async generateImage(input, credential) {
     const { accessToken } = await credential()
     return [{ mimeType: 'image/png', base64: Buffer.from(`${accessToken}:${JSON.stringify(input)}`).toString('base64') }]
@@ -117,11 +118,19 @@ it('returns a reconnect error when the credential cannot refresh', async () => {
   expect((await response.json()).error).toContain('reconnect')
 })
 
-it('lists only providers the owner can use', async () => {
+it('includes instructions only for providers the owner can use', async () => {
+  const grok = { ...fake, id: 'grok', llmProviderId: 'grok-subscription' as const, extraPrompt: 'Grok media instructions.' }
+  state.providers = [fake, grok]
   await addConnection('coworker-codex', 'coworker', 1)
-  expect(await availableMediaProviders('alpha')).toEqual([])
-  await addConnection('owner-codex', 'owner', 2)
-  expect(await availableMediaProviders('alpha')).toEqual(['codex'])
+  expect(await subscriptionMediaPrompt('alpha')).toBe('')
+  await addConnection('shared-codex', null, 2)
+  expect(await subscriptionMediaPrompt('alpha')).toBe(fake.extraPrompt)
+  await addConnection('owner-codex', 'owner', 3)
+  expect(await subscriptionMediaPrompt('alpha')).toBe(fake.extraPrompt)
+  await addConnection('owner-grok', 'owner', 4, 'grok-subscription')
+  expect(await subscriptionMediaPrompt('alpha')).toBe(`${fake.extraPrompt}\n\n${grok.extraPrompt}`)
+  state.owner = null
+  expect(await subscriptionMediaPrompt('alpha')).toBe(fake.extraPrompt)
   state.providers = []
-  expect(await availableMediaProviders('alpha')).toEqual([])
+  expect(await subscriptionMediaPrompt('alpha')).toBe('')
 })
