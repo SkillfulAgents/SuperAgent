@@ -28,11 +28,10 @@ interface ConnectedAccountsResponse {
   accounts: ConnectedAccount[]
 }
 
-interface InitiateConnectionResponse {
-  connectionId: string
-  redirectUrl: string
-  providerSlug: string
-}
+/** The account the user already has, or where to send them to grant a new one. */
+type InitiateConnectionResponse =
+  | { accountId: string }
+  | { connectionId: string; redirectUrl: string; providerSlug: string }
 
 /**
  * Hook to fetch all connected accounts
@@ -99,7 +98,8 @@ export function useInitiateConnection() {
 
       return res.json()
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (data, variables) => {
+      if ('accountId' in data) return
       track('account_added', { slug: variables.providerSlug, location: variables.location ?? 'settings' })
     },
   })

@@ -257,9 +257,13 @@ describe('connected-accounts reconnect flow', () => {
       expect(mockComposioFetch).not.toHaveBeenCalled()
     })
 
-    // Composio's link page would ask the merchant to type the store.
-    it('starts the grant with the store pre-filled', async () => {
-      mockDbSelectLimit.mockResolvedValue([])
+    // Composio's link page would ask the merchant to type the store. A lapsed
+    // store account is granted again, not opened.
+    it.each([
+      ['a new store', []],
+      ['a lapsed store', [{ id: 'shop-acc', displayName: SHOP, status: 'expired' }]],
+    ])('starts the grant with the store pre-filled for %s', async (_, existing) => {
+      mockDbSelectLimit.mockResolvedValue(existing)
       mockComposioFetch.mockResolvedValue({ id: 'ca_shop', redirect_url: 'https://backend.composio.dev/s/abc' })
 
       const res = await app.request('http://localhost/api/connected-accounts/initiate', {
@@ -273,8 +277,9 @@ describe('connected-accounts reconnect flow', () => {
       expect(mockInitiateConnection).not.toHaveBeenCalled()
     })
 
-    // A second Composio grant for a store retires the first connection's refresh token.
-    it('refuses a second grant for a store that is already connected', async () => {
+    // A second Composio grant for a store retires the first connection's refresh
+    // token, and Shopify reopens the install on every admin visit.
+    it('returns the connected account for a store instead of a second grant', async () => {
       mockDbSelectLimit.mockResolvedValue([{ id: 'shop-acc', displayName: SHOP, status: 'active' }])
 
       const res = await app.request('http://localhost/api/connected-accounts/initiate', {
@@ -283,21 +288,22 @@ describe('connected-accounts reconnect flow', () => {
         body: JSON.stringify({ providerSlug: 'shopify', identity: SHOP }),
       })
 
-      expect(res.status).toBe(409)
-      expect(await res.json()).toMatchObject({ error: `${SHOP} is already connected` })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ accountId: 'shop-acc' })
       expect(mockComposioFetch).not.toHaveBeenCalled()
     })
 
     it('reconnects an existing account through its store', async () => {
-      mockDbSelectLimit.mockResolvedValue([{ id: 'shop-acc', providerConnectionId: 'old', displayName: SHOP, toolkitSlug: 'shopify' }])
+      mockDbSelectLimit.mockResolvedValue([{ id: 'shop-acc', providerConnectionId: 'old', displayName: SHOP, toolkitSlug: 'shopify', status: 'active' }])
       mockComposioFetch.mockResolvedValue({ id: 'ca_new', redirect_url: 'https://backend.composio.dev/s/def' })
 
-      await app.request('http://localhost/api/connected-accounts/initiate', {
+      const res = await app.request('http://localhost/api/connected-accounts/initiate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ providerSlug: 'shopify', reconnectAccountId: 'shop-acc' }),
       })
 
+      expect(await res.json()).toMatchObject({ redirectUrl: 'https://backend.composio.dev/s/def' })
       const connection = createdConnection()
       expect(connection.state.val.subdomain).toBe('gamut-dev')
       expect(connection.callback_url).toContain('reconnectAccountId=shop-acc')

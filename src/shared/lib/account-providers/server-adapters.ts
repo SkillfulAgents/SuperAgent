@@ -8,9 +8,9 @@ import { shopifyAdapter } from './shopify'
  */
 export interface ProviderServerAdapter {
   /**
-   * Starts the grant in place of the account provider: refuse it, or return the
-   * connection and where to send the user. `identity` is what the renderer sent
-   * with the connect.
+   * Starts the grant in place of the account provider: refuse it, return the
+   * account the user already has for `identity`, or return the connection and
+   * where to send the user. `identity` is what the renderer sent with the connect.
    */
   startConnect?(ctx: {
     c: Context
@@ -18,7 +18,7 @@ export interface ProviderServerAdapter {
     reconnecting?: ConnectedAccount
     callbackUrl: string
     userId?: string
-  }): Promise<{ error: string; status: 400 | 409 } | { connectionId: string; redirectUrl: string }>
+  }): Promise<{ error: string; status: 400 } | { accountId: string } | { connectionId: string; redirectUrl: string }>
   /**
    * After a grant finishes: the name to save it under, and the account it
    * replaces. A provider with this hook owns its accounts: they are never

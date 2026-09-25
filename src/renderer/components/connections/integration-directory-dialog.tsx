@@ -381,7 +381,7 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
           electron: !!window.electronAPI,
           location: 'connections_tab',
         })
-        return result.redirectUrl
+        return 'redirectUrl' in result ? result.redirectUrl : null
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to connect')

@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useConnectionArrival } from './use-connection-arrival'
 
 const router = vi.hoisted(() => ({ navigate: vi.fn(), search: {} as Record<string, string> }))
-const accounts = vi.hoisted(() => [] as Array<Record<string, string>>)
 const mockInitiate = vi.hoisted(() => vi.fn())
 
 vi.mock('@tanstack/react-router', () => ({
@@ -13,7 +12,6 @@ vi.mock('@tanstack/react-router', () => ({
   useSearch: () => router.search,
 }))
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({
-  useConnectedAccounts: () => ({ data: { accounts } }),
   useInitiateConnection: () => ({ mutateAsync: mockInitiate }),
 }))
 
@@ -24,7 +22,6 @@ describe('useConnectionArrival (Shopify handoff to Connections)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     router.search = { shop: SHOP }
-    accounts.length = 0
     Object.defineProperty(window, 'location', { value: { ...window.location, assign }, writable: true })
   })
 
@@ -45,13 +42,15 @@ describe('useConnectionArrival (Shopify handoff to Connections)', () => {
     expect(mockInitiate).toHaveBeenCalledTimes(1)
   })
 
-  it('opens the existing account instead of starting a second grant for a connected store', () => {
-    accounts.push({ id: 'shop-acc', toolkitSlug: 'shopify', displayName: SHOP, status: 'active' })
+  // The connect route, not the renderer, knows which account a store belongs to.
+  it('opens the account the connect route returns instead of starting a grant', async () => {
+    mockInitiate.mockResolvedValue({ accountId: 'shop-acc' })
     renderHook(() => useConnectionArrival())
 
-    expect(mockInitiate).not.toHaveBeenCalled()
-    const { search, replace } = router.navigate.mock.calls[0][0]
-    expect(search({ shop: SHOP, connectionView: 'logs' })).toEqual({ shop: undefined, detail: 'account-shop-acc', connectionView: undefined })
+    await waitFor(() => expect(router.navigate).toHaveBeenCalledTimes(2))
+    expect(assign).not.toHaveBeenCalled()
+    const { search, replace } = router.navigate.mock.calls[1][0]
+    expect(search({ connectionView: 'logs' })).toEqual({ detail: 'account-shop-acc', connectionView: undefined })
     expect(replace).toBe(true)
   })
 })

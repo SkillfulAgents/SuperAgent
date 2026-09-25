@@ -196,6 +196,7 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       ? await startConnect({ c, identity: body.identity, reconnecting, callbackUrl, userId })
       : await provider.initiateConnection(providerSlug, callbackUrl, userId)
     if ('error' in started) return c.json({ error: started.error }, started.status)
+    if ('accountId' in started) return c.json({ accountId: started.accountId })
     const { connectionId, redirectUrl } = started
 
     return c.json({

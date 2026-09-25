@@ -41,9 +41,9 @@ export const shopifyAdapter: ProviderServerAdapter = {
   async startConnect({ c, identity, reconnecting, callbackUrl, userId }) {
     const store = parseShopDomain(reconnecting ? reconnecting.displayName : identity)
     if (!store) return { error: 'Install Gamut from the Shopify App Store to connect a store', status: 400 }
-    if (!reconnecting && (await findStoreAccount(c, store))?.status === 'active') {
-      return { error: `${store} is already connected`, status: 409 }
-    }
+    // Shopify reopens the install on every admin visit: a connected store opens its account.
+    const existing = reconnecting ? undefined : await findStoreAccount(c, store)
+    if (existing?.status === 'active') return { accountId: existing.id }
     const authConfig = await getOrCreateAuthConfig('shopify')
     const raw = await composioFetch<unknown>('/connected_accounts', {
       method: 'POST',
