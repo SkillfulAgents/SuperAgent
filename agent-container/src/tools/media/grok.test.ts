@@ -52,5 +52,21 @@ it('reports a failed video', async () => {
   waitForVideo.mockRejectedValueOnce(new Error('the video was withheld by moderation'))
   const result = await getVideoTool.handler({ job_id: 'connection:request-1' }, {})
   expect(result.isError).toBe(true)
-  expect(result.content[0].text).toBe('Grok video generation failed: the video was withheld by moderation')
+  expect(result.content[0].text).toContain('Grok video generation failed: the video was withheld by moderation.')
+  expect(result.content[0].text).toContain('job_id "connection:request-1"')
+})
+
+it('keeps the job id when polling fails after the video was created', async () => {
+  waitForVideo.mockRejectedValueOnce(new Error('Network error calling grok/video/status'))
+  const result = await videoTool.handler({ prompt: 'waves' }, {})
+  expect(startVideo).toHaveBeenCalledTimes(1)
+  expect(result.isError).toBe(true)
+  expect(result.content[0].text).toContain('job_id "connection:request-1"')
+  expect(result.content[0].text).toContain('instead of starting a new video')
+})
+
+it('has no job id to return when creation itself fails', async () => {
+  startVideo.mockRejectedValueOnce(new Error('Grok video limit reached'))
+  const result = await videoTool.handler({ prompt: 'waves' }, {})
+  expect(result.content[0].text).toBe('Grok video generation failed: Grok video limit reached.')
 })

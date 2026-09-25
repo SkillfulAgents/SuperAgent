@@ -2,9 +2,12 @@ import { z } from 'zod'
 import { MediaRequestError, type GeneratedMedia, type MediaCredentialSource, type SubscriptionMediaProvider, type VideoJobStatus } from './types'
 import { sendWithCredential, upstreamMediaError } from './upstream'
 import { imageDataUrlSchema, imageMimeType, referenceImagesSchema } from './image-data'
+import { GROK_CLIENT_HEADERS, GROK_SUBSCRIPTION_BASE_URL } from '../llm-provider/grok-subscription-provider'
 
-// The subscription OAuth grant includes `api:access`, which the public xAI API accepts.
-const GROK_API_BASE_URL = 'https://api.x.ai/v1'
+// OAuth media must use the subscription proxy: api.x.ai bills the developer
+// account and rejects subscribers with 403 spending-limit (CLIProxyAPI #5335).
+const GROK_MEDIA_BASE_URL = `${GROK_SUBSCRIPTION_BASE_URL}/v1`
+const MAX_IMAGE_BYTES = 32 * 1024 * 1024
 const IMAGE_MODEL = 'grok-imagine-image-2.0'
 const VIDEO_MODEL = 'grok-imagine-video-1.5'
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024
@@ -37,26 +40,26 @@ const DONE = new Set(['done', 'succeeded', 'success', 'completed'])
 const FAILED = new Set(['failed', 'error', 'expired', 'cancelled', 'canceled'])
 
 function request(path: string, credential: MediaCredentialSource, init: RequestInit = {}) {
-  return sendWithCredential(credential, current => fetch(`${GROK_API_BASE_URL}/${path}`, {
+  return sendWithCredential(credential, current => fetch(`${GROK_MEDIA_BASE_URL}/${path}`, {
     ...init,
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${current.accessToken}` },
+    headers: { ...GROK_CLIENT_HEADERS, 'content-type': 'application/json', authorization: `Bearer ${current.accessToken}` },
     signal: AbortSignal.timeout(300_000),
     redirect: 'error',
   }))
 }
 
-// The completed video URL is pre-signed; never send the subscription token to it.
-async function downloadVideo(url: string): Promise<GeneratedMedia> {
-  if (!url.startsWith('https://')) throw new MediaRequestError(502, 'Grok returned an invalid video URL')
+// Result URLs are pre-signed; never send the subscription token to them.
+async function download(url: string, mimeType: string, maxBytes: number): Promise<GeneratedMedia> {
+  if (!url.startsWith('https://')) throw new MediaRequestError(502, 'Grok returned an invalid media URL')
   const response = await fetch(url, { signal: AbortSignal.timeout(300_000) })
-  if (!response.ok) throw new MediaRequestError(502, `Grok video download failed (${response.status})`)
+  if (!response.ok) throw new MediaRequestError(502, `Grok media download failed (${response.status})`)
   const bytes = Buffer.from(await response.arrayBuffer())
-  if (bytes.length > MAX_VIDEO_BYTES) throw new MediaRequestError(502, 'Grok video is larger than 100 MB')
-  return { mimeType: 'video/mp4', base64: bytes.toString('base64') }
+  if (bytes.length > maxBytes) throw new MediaRequestError(502, `Grok media is larger than ${maxBytes / 1024 / 1024} MB`)
+  return { mimeType, base64: bytes.toString('base64') }
 }
 
 const responseSchema = z.object({
-  data: z.array(z.object({ b64_json: z.string().min(1), mime_type: z.string().optional() })).min(1),
+  data: z.array(z.object({ b64_json: z.string().min(1).optional(), url: z.string().optional(), mime_type: z.string().optional() })).min(1),
 })
 
 export const grokMediaProvider: SubscriptionMediaProvider = {
@@ -79,9 +82,11 @@ export const grokMediaProvider: SubscriptionMediaProvider = {
     })
     const response = await request(path, credential, { method: 'POST', body })
     if (!response.ok) throw await upstreamMediaError('Grok', response)
-    return responseSchema.parse(await response.json()).data.map(item => ({
-      mimeType: item.mime_type ?? imageMimeType(item.b64_json),
-      base64: item.b64_json,
+    // The subscription proxy may return a URL even when base64 is requested.
+    return Promise.all(responseSchema.parse(await response.json()).data.map(item => {
+      if (item.b64_json) return { mimeType: item.mime_type ?? imageMimeType(item.b64_json), base64: item.b64_json }
+      if (item.url) return download(item.url, item.mime_type ?? 'image/jpeg', MAX_IMAGE_BYTES)
+      throw new MediaRequestError(502, 'Grok returned an image without data')
     }))
   },
   async startVideo(raw: unknown, credential: MediaCredentialSource): Promise<string> {
@@ -115,6 +120,6 @@ export const grokMediaProvider: SubscriptionMediaProvider = {
     if (!DONE.has(status) && !result.video) return { status: 'pending' }
     if (result.video?.respect_moderation === false) return { status: 'failed', error: 'the video was withheld by moderation' }
     if (!result.video?.url) return { status: 'failed', error: 'the finished job had no video URL' }
-    return { status: 'done', video: await downloadVideo(result.video.url) }
+    return { status: 'done', video: await download(result.video.url, 'video/mp4', MAX_VIDEO_BYTES) }
   },
 }

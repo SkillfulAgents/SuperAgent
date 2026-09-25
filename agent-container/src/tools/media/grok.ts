@@ -11,8 +11,9 @@ function videoResult(job: string, file: string | undefined) {
     ? `Generated with Grok:\n${file}`
     : `The Grok video is still rendering. Call grok_get_video with job_id "${job}" to keep waiting.`)
 }
-function failure(kind: string, error: unknown) {
-  return textResult(`Grok ${kind} failed: ${error instanceof Error ? error.message : String(error)}`, true)
+function failure(kind: string, error: unknown, job?: string) {
+  const retry = job ? ` The job was created; call grok_get_video with job_id "${job}" to check it again instead of starting a new video.` : ''
+  return textResult(`Grok ${kind} failed: ${error instanceof Error ? error.message : String(error)}.${retry}`, true)
 }
 
 export const grokMediaTools: MediaToolFactory = ({ generateImages, startVideo, waitForVideo }) => [
@@ -50,12 +51,13 @@ Uses the subscription's daily video allowance. Waits up to 4 minutes; if the vid
       resolution: z.enum(['480p', '720p', '1080p']).optional().describe('Output resolution.'),
     },
     async (args) => {
+      let job: string | undefined
       try {
         const image = args.image_path ? await imageDataUrl(args.image_path) : undefined
-        const job = await startVideo({ prompt: args.prompt, image, duration: args.duration, aspectRatio: args.aspect_ratio, resolution: args.resolution })
+        job = await startVideo({ prompt: args.prompt, image, duration: args.duration, aspectRatio: args.aspect_ratio, resolution: args.resolution })
         return videoResult(job, await waitForVideo(job, VIDEO_WAIT_MS))
       } catch (error) {
-        return failure('video generation', error)
+        return failure('video generation', error, job)
       }
     },
   ),
@@ -67,7 +69,7 @@ Uses the subscription's daily video allowance. Waits up to 4 minutes; if the vid
       try {
         return videoResult(args.job_id, await waitForVideo(args.job_id, VIDEO_WAIT_MS))
       } catch (error) {
-        return failure('video generation', error)
+        return failure('video generation', error, args.job_id)
       }
     },
   ),
