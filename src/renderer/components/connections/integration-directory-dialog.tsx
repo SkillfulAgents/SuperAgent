@@ -38,7 +38,8 @@ import {
 } from '@renderer/hooks/use-remote-mcps'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { useLoginWindow } from '@renderer/hooks/use-login-window'
-import type { Provider } from '@shared/lib/account-providers/service-catalog'
+import { getProvider, type Provider } from '@shared/lib/account-providers/service-catalog'
+import { openExternalUrl } from '@renderer/lib/open-external'
 import { COMMON_MCP_SERVERS, type CommonMcpServer } from '@shared/lib/mcp/common-servers'
 import { McpSetupGuide } from './mcp-setup-guide'
 import { McpAdvancedClientFields } from './mcp-advanced-client-fields'
@@ -366,6 +367,11 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
   const mcpMatchCount = useMemo(() => filterMcpServers(filter).length, [filter])
 
   const handleConnect = async (slug: string) => {
+    const installUrl = getProvider(slug)?.installUrl
+    if (installUrl) {
+      void openExternalUrl(installUrl)
+      return
+    }
     setLaunchedSlug(slug)
     setError(null)
     try {
@@ -375,7 +381,7 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
           electron: !!window.electronAPI,
           location: 'connections_tab',
         })
-        return result.redirectUrl
+        return 'redirectUrl' in result ? result.redirectUrl : null
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to connect')

@@ -31,6 +31,8 @@ vi.mock('@renderer/hooks/use-connected-accounts', () => ({
   useTriggerCountsPerAccount: () => ({ data: {} }),
 }))
 
+vi.mock('@renderer/hooks/use-connection-arrival', () => ({ useConnectionArrival: () => {} }))
+
 vi.mock('@renderer/hooks/use-remote-mcps', () => ({
   useRemoteMcps: () => ({
     data: { servers: [{

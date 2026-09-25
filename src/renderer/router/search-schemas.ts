@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { isSafeInternalPath } from '@renderer/lib/api'
 import { TEMPLATE_SLUG_RE } from '@shared/lib/signup-handoff-params'
+import { SUPPORTED_PROVIDERS } from '@shared/lib/account-providers/service-catalog'
 
 /**
  * Zod schemas for the router's URL boundary (search params + the settings tab
@@ -74,6 +75,10 @@ export const homeSearchSchema = z.object({
   template_slug: z.string().regex(TEMPLATE_SLUG_RE).optional().catch(undefined),
 })
 
+const arrivalParams = Object.fromEntries(
+  SUPPORTED_PROVIDERS.flatMap((p) => (p.arrivalParam ? [[p.arrivalParam, z.string().optional().catch(undefined)]] : [])),
+)
+
 // Settings close-target: the path the gear was opened FROM, so closing returns
 // there. A query param (not an in-memory stash) so it SURVIVES a refresh inside
 // settings.
@@ -84,6 +89,8 @@ export const homeSearchSchema = z.object({
 // other tabs. No `source` here — settings detail always returns to its own list.
 export const settingsSearchSchema = z
   .object({
+    // The account a provider's install hands back, under its catalog `arrivalParam`.
+    ...arrivalParams,
     from: internalPath.optional(),
     detail: connectionDetailKey.optional(),
     connectionView: z.literal('logs').optional(),

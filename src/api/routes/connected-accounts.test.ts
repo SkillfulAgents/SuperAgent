@@ -60,7 +60,7 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
-  connectedAccounts: { id: 'id', providerConnectionId: 'provider_connection_id', providerName: 'provider_name' },
+  connectedAccounts: { id: 'id', providerConnectionId: 'provider_connection_id', providerName: 'provider_name', toolkitSlug: 'toolkit_slug', displayName: 'display_name', userId: 'user_id' },
   agentConnectedAccounts: {},
 }))
 
@@ -82,13 +82,38 @@ const mockProvider = {
   getAccountDisplayName: (...args: unknown[]) => mockGetAccountDisplayName(...args),
 }
 
-vi.mock('@shared/lib/account-providers', () => ({
-  getDefaultAccountProvider: () => mockProvider,
-  getAccountProviderByName: () => mockProvider,
-  isValidProviderName: (name: string) => ['composio', 'nango'].includes(name),
-  isProviderSupported: () => true,
-  getProvider: (slug: string) => ({ slug, displayName: slug.charAt(0).toUpperCase() + slug.slice(1) }),
+vi.mock('@shared/lib/account-providers', async () => {
+  const catalog = await vi.importActual<typeof import('@shared/lib/account-providers/service-catalog')>('@shared/lib/account-providers/service-catalog')
+  return {
+    getDefaultAccountProvider: () => mockProvider,
+    getAccountProviderByName: () => mockProvider,
+    isValidProviderName: (name: string) => ['composio', 'nango'].includes(name),
+    isProviderSupported: () => true,
+    // Shopify keeps its real adapter; other slugs are stubs.
+    getProvider: (slug: string) => slug === 'shopify'
+      ? catalog.getProvider(slug)
+      : ({ slug, displayName: slug.charAt(0).toUpperCase() + slug.slice(1) }),
+  }
+})
+
+// The Shopify adapter starts its grant and reads the finished grant's store from Composio.
+const mockComposioFetch = vi.fn()
+vi.mock('@shared/lib/composio/client', () => ({
+  composioFetch: (...args: unknown[]) => mockComposioFetch(...args),
+  getOrCreateAuthConfig: async () => ({ id: 'ac_shopify' }),
 }))
+
+/** The Shopify grant Composio reports: `subdomain` is the store it authorized. */
+function composioGrant(subdomain?: string) {
+  mockComposioFetch.mockResolvedValue({ toolkit: { slug: 'shopify' }, state: { val: subdomain ? { subdomain } : {} } })
+}
+
+/** The body of the Shopify adapter's `POST /connected_accounts`. */
+function createdConnection() {
+  const [endpoint, init] = mockComposioFetch.mock.calls[0]
+  expect(endpoint).toBe('/connected_accounts')
+  return JSON.parse((init as RequestInit).body as string).connection
+}
 
 vi.mock('@shared/lib/auth/config', () => ({
   getAppBaseUrlFromRequest: () => 'http://localhost:3000',
@@ -172,7 +197,7 @@ describe('connected-accounts reconnect flow', () => {
 
   describe('POST /initiate with reconnectAccountId', () => {
     it('accepts reconnectAccountId and includes it in callback URL', async () => {
-      mockDbSelectLimit.mockResolvedValue([{ id: 'existing-acc', providerConnectionId: 'old-conn' }])
+      mockDbSelectLimit.mockResolvedValue([{ id: 'existing-acc', providerConnectionId: 'old-conn', toolkitSlug: 'github' }])
       mockInitiateConnection.mockResolvedValue({
         connectionId: 'new-conn',
         redirectUrl: 'https://oauth.example.com/auth',
@@ -212,11 +237,150 @@ describe('connected-accounts reconnect flow', () => {
     })
   })
 
+  describe('Shopify', () => {
+    const SHOP = 'gamut-dev.myshopify.com'
+
+    // Installs start at the App Store listing, which the renderer opens itself:
+    // a connect without a real store never reaches Composio.
+    it.each([
+      ['no store', undefined],
+      ['a store outside myshopify.com', 'evil.com'],
+    ])('refuses a connect with %s', async (_, shop) => {
+      const res = await app.request('http://localhost/api/connected-accounts/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerSlug: 'shopify', identity: shop }),
+      })
+
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toMatch(/App Store/)
+      expect(mockComposioFetch).not.toHaveBeenCalled()
+    })
+
+    // Composio's link page would ask the merchant to type the store. A lapsed
+    // store account is granted again, not opened.
+    it.each([
+      ['a new store', []],
+      ['a lapsed store', [{ id: 'shop-acc', displayName: SHOP, status: 'expired' }]],
+    ])('starts the grant with the store pre-filled for %s', async (_, existing) => {
+      mockDbSelectLimit.mockResolvedValue(existing)
+      mockComposioFetch.mockResolvedValue({ id: 'ca_shop', redirect_url: 'https://backend.composio.dev/s/abc' })
+
+      const res = await app.request('http://localhost/api/connected-accounts/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerSlug: 'shopify', identity: SHOP }),
+      })
+
+      expect(await res.json()).toMatchObject({ connectionId: 'ca_shop', redirectUrl: 'https://backend.composio.dev/s/abc' })
+      expect(createdConnection().state.val.subdomain).toBe('gamut-dev')
+      expect(mockInitiateConnection).not.toHaveBeenCalled()
+    })
+
+    // A second Composio grant for a store retires the first connection's refresh
+    // token, and Shopify reopens the install on every admin visit.
+    it('returns the connected account for a store instead of a second grant', async () => {
+      mockDbSelectLimit.mockResolvedValue([{ id: 'shop-acc', displayName: SHOP, status: 'active' }])
+
+      const res = await app.request('http://localhost/api/connected-accounts/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerSlug: 'shopify', identity: SHOP }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ accountId: 'shop-acc' })
+      expect(mockComposioFetch).not.toHaveBeenCalled()
+    })
+
+    it('reconnects an existing account through its store', async () => {
+      mockDbSelectLimit.mockResolvedValue([{ id: 'shop-acc', providerConnectionId: 'old', displayName: SHOP, toolkitSlug: 'shopify', status: 'active' }])
+      mockComposioFetch.mockResolvedValue({ id: 'ca_new', redirect_url: 'https://backend.composio.dev/s/def' })
+
+      const res = await app.request('http://localhost/api/connected-accounts/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerSlug: 'shopify', reconnectAccountId: 'shop-acc' }),
+      })
+
+      expect(await res.json()).toMatchObject({ redirectUrl: 'https://backend.composio.dev/s/def' })
+      const connection = createdConnection()
+      expect(connection.state.val.subdomain).toBe('gamut-dev')
+      expect(connection.callback_url).toContain('reconnectAccountId=shop-acc')
+    })
+
+    it('names the new account after its store', async () => {
+      mockDbSelectLimit.mockResolvedValue([])
+      mockGetConnection.mockResolvedValue({ id: 'ca_shop', status: 'ACTIVE' })
+      composioGrant('gamut-dev')
+
+      const res = await app.request(
+        'http://localhost/api/connected-accounts/callback' +
+        '?connectedAccountId=ca_shop&status=success&toolkit=shopify',
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockDbInsertValues.mock.calls[0][0]).toMatchObject({ toolkitSlug: 'shopify', displayName: SHOP })
+    })
+
+    // Composio has already granted the authorized store, so the account for THAT
+    // store takes the connection, not the one the reconnect started from.
+    it('saves a reconnect under the store that was authorized', async () => {
+      mockGetConnection.mockResolvedValue({ id: 'ca_other', status: 'ACTIVE' })
+      composioGrant('other-store')
+      mockDbSelectLimit.mockResolvedValue([{ id: 'other-acc', providerConnectionId: 'ca_first', displayName: 'other-store.myshopify.com', toolkitSlug: 'shopify' }])
+
+      const res = await app.request('http://localhost/api/connected-accounts/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connectionId: 'ca_other', toolkit: 'shopify', reconnectAccountId: 'shop-acc' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockDbUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ providerConnectionId: 'ca_other', displayName: 'other-store.myshopify.com' }))
+      expect(mockDbSelectWhere).toHaveBeenCalledWith([
+        { col: 'toolkit_slug', val: 'shopify' },
+        { col: 'display_name', val: 'other-store.myshopify.com' },
+        undefined,
+      ])
+      expect(mockDbUpdateWhere).toHaveBeenCalledWith({ col: 'id', val: 'other-acc' })
+      expect(mockCompleteReauthAccount).toHaveBeenCalledWith('other-acc')
+    })
+
+    it('does not save a Shopify account whose store could not be verified', async () => {
+      mockGetConnection.mockResolvedValue({ id: 'ca_shop', status: 'ACTIVE' })
+      composioGrant()
+
+      const res = await app.request('http://localhost/api/connected-accounts/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connectionId: 'ca_shop', toolkit: 'shopify' }),
+      })
+
+      expect(res.status).toBe(502)
+      expect(mockDbInsertValues).not.toHaveBeenCalled()
+      expect(mockDbUpdateSet).not.toHaveBeenCalled()
+    })
+
+    it('refuses to rename a Shopify account', async () => {
+      mockDbSelectLimit.mockResolvedValue([{ id: 'shop-acc', toolkitSlug: 'shopify', displayName: SHOP }])
+
+      const res = await app.request('http://localhost/api/connected-accounts/shop-acc', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName: 'My store' }),
+      })
+
+      expect(res.status).toBe(400)
+      expect(mockDbUpdateSet).not.toHaveBeenCalled()
+    })
+  })
+
   describe('POST /complete with reconnectAccountId', () => {
     it('updates existing record instead of inserting', async () => {
       mockGetConnection.mockResolvedValue({ id: 'new-conn', status: 'ACTIVE' })
       mockGetAccountDisplayName.mockResolvedValue('My GitHub')
-      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn' }])
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', toolkitSlug: 'github' }])
 
       const res = await app.request('http://localhost/api/connected-accounts/complete', {
         method: 'POST',
@@ -247,7 +411,7 @@ describe('connected-accounts reconnect flow', () => {
     it('deletes old remote connection after reconnect', async () => {
       mockGetConnection.mockResolvedValue({ id: 'new-conn', status: 'ACTIVE' })
       mockGetAccountDisplayName.mockResolvedValue('My GitHub')
-      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn' }])
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', toolkitSlug: 'github' }])
       mockDeleteConnection.mockResolvedValue(undefined)
 
       await app.request('http://localhost/api/connected-accounts/complete', {
@@ -269,7 +433,7 @@ describe('connected-accounts reconnect flow', () => {
     it('does not delete old connection if IDs match', async () => {
       mockGetConnection.mockResolvedValue({ id: 'same-conn', status: 'ACTIVE' })
       mockGetAccountDisplayName.mockResolvedValue('My GitHub')
-      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'same-conn' }])
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'same-conn', toolkitSlug: 'github' }])
 
       await app.request('http://localhost/api/connected-accounts/complete', {
         method: 'POST',
@@ -314,7 +478,7 @@ describe('connected-accounts reconnect flow', () => {
     it('resumes parked proxy requests after the web OAuth callback activates the account', async () => {
       mockGetConnection.mockResolvedValue({ id: 'new-web-conn', status: 'ACTIVE' })
       mockGetAccountDisplayName.mockResolvedValue('My GitHub')
-      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn' }])
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', toolkitSlug: 'github' }])
 
       const res = await app.request(
         'http://localhost/api/connected-accounts/callback' +

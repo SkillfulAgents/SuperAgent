@@ -5,6 +5,7 @@ import { getRegisteredProviders } from '@shared/lib/account-providers'
 import type { ProviderConnectionListItem } from '@shared/lib/account-providers'
 import type { BaseAccountProvider } from '@shared/lib/account-providers'
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
+import { getServerAdapter } from '@shared/lib/account-providers/server-adapters'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { attribution, runWithRequestUser } from '@shared/lib/platform-attribution'
 import { syncAgentsAssignedConnectedAccount } from '@shared/lib/services/connection-sync-service'
@@ -194,6 +195,7 @@ class AccountSyncService {
     for (const remote of remoteConnections) {
       if (remote.status !== 'ACTIVE') continue
       if (localByConnectionId.has(remote.id)) continue
+      if (getServerAdapter(remote.toolkitSlug)?.syncImports === false) continue
 
       try {
         const serviceProvider = getProvider(remote.toolkitSlug)

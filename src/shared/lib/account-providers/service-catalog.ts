@@ -12,6 +12,23 @@ export interface Provider {
    * developer app), so it is hidden on a local Composio key.
    */
   platformOnly?: true
+  /**
+   * Not offered in the directory, the agent's service search, or the chat
+   * card's Connect button. Arrivals and reconnects still work.
+   */
+  unlisted?: true
+  /**
+   * Connecting starts on this page (an app store listing), never from a Gamut
+   * grant: its install hands the account back through `arrivalParam`.
+   */
+  installUrl?: string
+  /** The account is named after what it is authorized for, so it cannot be renamed. */
+  fixedName?: true
+  /**
+   * The search param an install hands the account's identity back in, on
+   * /settings/connections. Connections connects it on arrival.
+   */
+  arrivalParam?: string
 }
 
 export const SUPPORTED_PROVIDERS: Provider[] = [
@@ -301,6 +318,21 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     description: 'Posts, timelines, and direct messages',
     composioSlug: 'twitter',
     platformOnly: true,
+  },
+
+  // E-commerce
+  {
+    slug: 'shopify',
+    displayName: 'Shopify',
+    icon: 'shopping-bag',
+    description: 'Online store: products, orders, customers',
+    composioSlug: 'shopify',
+    platformOnly: true,
+    unlisted: true,
+    // Shopify only allows installing Gamut's app from its App Store listing (rule 2.3.1).
+    installUrl: 'https://apps.shopify.com/gamut',
+    fixedName: true,
+    arrivalParam: 'shop',
   },
 
   // Finance
