@@ -564,3 +564,22 @@ describe('SessionContextMenu raw log', () => {
     expect(mockToastDismiss).not.toHaveBeenCalled()
   })
 })
+
+describe('SessionContextMenu onOpenChange', () => {
+  it('reports the menu opening so a hover-revealed trigger can stay visible', async () => {
+    mockApiFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ totalCost: 0, totalTokens: 0, priceMissing: false, usageIncomplete: false }),
+    })
+    const onOpenChange = vi.fn()
+    render(
+      <SessionContextMenu sessionId="session-1" sessionName="Session One" agentSlug="agent-1" activity={IDLE} onOpenChange={onOpenChange}>
+        <button type="button">Session One</button>
+      </SessionContextMenu>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open context menu' }))
+
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(true))
+  })
+})
