@@ -37,6 +37,13 @@ export const codexMediaProvider: SubscriptionMediaProvider = {
   id: 'codex',
   name: 'Codex',
   llmProviderId: 'codex-subscription',
+  extraPrompt: `Codex subscription image generation is available, regardless of the current chat model. Use existing Bash tools to call the host API; there is no dedicated media tool.
+Use Codex when requested. If several media providers are available and the user did not specify one, ask which to use. This uses the connected ChatGPT subscription's Codex allowance, not platform credits.
+POST to process.env.SUPERAGENT_HOST_API_URL (remove its trailing slash) + "/subscription-media/codex/image", with Authorization: Bearer <process.env.PROXY_TOKEN> and Content-Type: application/json. Read these variables in your script; never print tokens or request subscription credentials. Allow up to 6 minutes for the response.
+Request JSON: {"prompt":"A red square on a white background","transparentBackground":false,"images":[]}
+prompt is required. transparentBackground defaults to false. For editing, images accepts up to 5 PNG, JPEG or WebP data URLs (data:image/png;base64,...), not file paths or remote URLs. Read reference files locally, keep each under 20 MB, and encode them in the script. Model, size and quality are fixed by the host (gpt-image-2, auto).
+A successful response is {"images":[{"mimeType":"image/png","base64":"..."}]}. Validate the response, decode base64, and save each image with a unique filename under /workspace/media/ using mimeType for the extension. Print only saved paths, never base64 or the full response. Deliver saved files with the existing file-delivery tool; reuse them instead of regenerating.
+On a non-2xx response, report its JSON error. Do not automatically retry generation after a timeout or network failure: the first request may already have consumed allowance.`,
   async generateImage(raw: unknown, credential: MediaCredentialSource): Promise<GeneratedMedia[]> {
     const parsed = inputSchema.safeParse(raw)
     if (!parsed.success) throw new MediaRequestError(400, `Invalid Codex image request: ${parsed.error.issues.map(issue => issue.message).join('; ')}`)

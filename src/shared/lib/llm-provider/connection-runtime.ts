@@ -6,7 +6,7 @@ import { getRequestUserId } from '../platform-attribution/request-context'
 import { resolveRuntimeInherit } from '../container/runtime-options'
 import type { AgentPreferences } from '../types/agent-preferences'
 import { getSubagentModelCatalog } from '../container/subagent-model-catalog'
-import { availableMediaProviders } from '../subscription-media'
+import { subscriptionMediaPrompt } from '../subscription-media'
 import { connectionConfigSchema, resolveSelection } from './connection-schema'
 import {
   storedSelection,
@@ -109,7 +109,7 @@ export async function connectionRuntime(resolved: ResolvedConnection, agentId: s
     subagentModels: getSubagentModelCatalog(catalog),
     modelContextWindows: getModelContextWindowMap(catalog),
     env,
-    mediaProviders: await availableMediaProviders(agentId),
+    extraSystemPrompt: await subscriptionMediaPrompt(agentId),
   }
 }
 export type ConnectionRuntime = Awaited<ReturnType<typeof connectionRuntime>>
