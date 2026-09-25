@@ -13,6 +13,15 @@ import { inferErrorStatus, extractErrorMessage } from './error-presentation'
 
 export const GROK_SUBSCRIPTION_BASE_URL = 'https://cli-chat-proxy.grok.com'
 export const GROK_CLIENT_HEADERS = { 'x-grok-client-mode': 'cli', 'x-grok-client-version': '1.0.4' }
+// Media must use the subscription proxy: api.x.ai bills the developer account
+// and rejects subscribers with a 403 spending limit (CLIProxyAPI #5335).
+const GROK_MEDIA_BASE_URL = `${GROK_SUBSCRIPTION_BASE_URL}/v1`
+const GROK_MEDIA_PROMPT = `Grok Imagine image and video generation is available in this session through the connected Grok subscription; it uses that subscription's allowance. There are no dedicated tools: write Bash scripts (Node or Python) that follow these steps. Never print tokens, credentials, base64 or full responses.
+Credential: POST process.env.SUPERAGENT_HOST_API_URL (remove its trailing slash) + "/llm-runtime/resolve" with Authorization: Bearer <process.env.PROXY_TOKEN>, Content-Type: application/json and body {"sessionId": <process.env.GAMUT_SESSION_ID>}. Use proxy.credential.accessToken and proxy.credential.generation from the response.
+Send every Grok request to ${GROK_MEDIA_BASE_URL} (never api.x.ai) with headers Authorization: Bearer <accessToken>, ${Object.entries(GROK_CLIENT_HEADERS).map(([name, value]) => `${name}: ${value}`).join(', ')}, Content-Type: application/json. If a request returns 401, resolve again with {"sessionId": ..., "rejectedGeneration": <generation>} and retry once. Do not retry image generation or video creation after a timeout or network failure: the first request may already have used allowance. For other errors, report the provider's error message.
+Images: POST ${GROK_MEDIA_BASE_URL}/images/generations with {"model":"grok-imagine-image-2.0","prompt":"A red square on a white background","n":1,"response_format":"b64_json"}. Optional: "aspect_ratio" (auto, 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 2:1, 1:2, 21:9) and "resolution" (1k, 2k). To edit or use reference images, POST the same body plus "images":[{"type":"image_url","url":"data:image/png;base64,..."}] (up to 5 PNG, JPEG or WebP data URLs encoded from local files) to ${GROK_MEDIA_BASE_URL}/images/edits. The response is {"data":[...]}; each item has b64_json or a url (optionally mime_type). Download a url without the Authorization header.
+Videos: POST ${GROK_MEDIA_BASE_URL}/videos/generations with {"model":"grok-imagine-video-1.5","prompt":"Ocean waves moving gently"}. Optional: "duration" (integer 1-15 seconds), "aspect_ratio" (1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3), "resolution" (480p, 720p, 1080p), "image":{"url":"<data URL for the first frame>"}. The response is {"request_id":"..."}; save it to a uniquely named file under /workspace/media/ and print it BEFORE polling. Poll GET ${GROK_MEDIA_BASE_URL}/videos/<request_id> every 5 seconds. A done/succeeded/completed status comes with video.url; failed/error/expired/cancelled is a failure; video.respect_moderation false means moderation withheld it. Download video.url without the Authorization header. After about 4 minutes, return the saved request_id and resume polling in a later Bash call; on polling or download errors keep polling the saved request_id instead of starting another video.
+Save each result under /workspace/media/ with a unique filename and an extension matching its bytes (.mp4 for video), print only the saved paths, and deliver them with the existing file-delivery tool. Reuse saved files instead of regenerating.`
 
 export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
   readonly id = 'grok-subscription' as const
@@ -22,6 +31,7 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
   override readonly toolSearchEnv = 'true' as const
+  override readonly mediaPrompt = GROK_MEDIA_PROMPT
   override readonly supportsModelSearch = true
 
   override getEffectiveApiKey() { return this.configuration?.oauth?.accessToken }

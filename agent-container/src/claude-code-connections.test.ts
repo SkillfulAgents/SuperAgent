@@ -250,7 +250,7 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     claudeProcess = new ClaudeCodeProcess({ sessionId: 'provider-instructions', workingDirectory: '/tmp', llmRuntime: runtime })
     await claudeProcess.start()
     const originalPrompt = (calls[0].options.systemPrompt as { prompt: string }).prompt
-    const mediaHint = 'Use Bash to POST /subscription-media/codex/image.'
+    const mediaHint = 'Use Bash to call the provider image endpoint.'
     const connected = { ...runtime, modelPromptHints: [...runtime.modelPromptHints, mediaHint] }
     await claudeProcess.sendMessage('Generate an image', undefined, { llmRuntime: connected })
     expect(calls).toHaveLength(2)

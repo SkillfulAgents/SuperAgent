@@ -6,7 +6,6 @@ import { getRequestUserId } from '../platform-attribution/request-context'
 import { resolveRuntimeInherit } from '../container/runtime-options'
 import type { AgentPreferences } from '../types/agent-preferences'
 import { getSubagentModelCatalog } from '../container/subagent-model-catalog'
-import { subscriptionMediaPromptHints } from '../subscription-media'
 import { connectionConfigSchema, resolveSelection } from './connection-schema'
 import {
   storedSelection,
@@ -105,7 +104,7 @@ export async function connectionRuntime(resolved: ResolvedConnection, agentId: s
     model: wireModel,
     browserModel: subagent(connection.browserModel),
     dashboardBuilderModel: subagent(connection.dashboardModel),
-    modelPromptHints: [...getContainerModelPromptHints(wireModel, catalog), ...await subscriptionMediaPromptHints(agentId)],
+    modelPromptHints: [...getContainerModelPromptHints(wireModel, catalog), ...(provider.mediaPrompt ? [provider.mediaPrompt] : [])],
     subagentModels: getSubagentModelCatalog(catalog),
     modelContextWindows: getModelContextWindowMap(catalog),
     env,

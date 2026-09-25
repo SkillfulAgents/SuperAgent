@@ -103,6 +103,9 @@ export abstract class BaseLlmProvider {
    */
   readonly toolSearchEnv: 'true' | undefined = undefined
 
+  /** Media-generation instructions for the agent, added only to sessions using this provider. */
+  readonly mediaPrompt: string | undefined = undefined
+
   /** Check whether an API key is configured and its source. */
   getApiKeyStatus(): ApiKeyStatus {
     const settings = { apiKeys: this.configuredKeys() }
