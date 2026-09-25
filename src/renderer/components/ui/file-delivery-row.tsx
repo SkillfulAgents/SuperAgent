@@ -36,7 +36,8 @@ export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, c
     <div
       {...openableProps(() => openFile(file.path, file.agentSlug, description))}
       className={cn(
-        'group flex w-full items-center gap-3 rounded-lg border bg-background px-3 py-2 text-left cursor-pointer',
+        // The row is the size container the Download label collapses on.
+        'group flex w-full items-center gap-3 rounded-lg border bg-background px-3 py-2 text-left cursor-pointer [container-type:inline-size]',
         'hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors',
         className,
       )}
@@ -67,7 +68,9 @@ export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, c
           className={cn(buttonVariants({ variant: 'outline', size: 'xs' }), 'shrink-0')}
         >
           <ArrowDownToLine className="h-3.5 w-3.5" />
-          Download
+          {/* In a row narrower than 240px the button keeps only its icon, leaving the file name the room.
+              The query sees the row's inside: 240px less its 26px of padding and border. */}
+          <span className="[@container(max-width:213px)]:hidden">Download</span>
         </a>
       )}
     </div>

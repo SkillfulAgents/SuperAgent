@@ -83,7 +83,8 @@ function TurnSummaryRow({
   onProvideFeedback?: () => void
 }) {
   return (
-    <div className="flex items-center gap-3 border-b border-border text-muted-foreground">
+    // The row is the size container the Voice feedback label collapses on.
+    <div className="flex items-center gap-3 border-b border-border text-muted-foreground [container-type:inline-size]">
       <button
         type="button"
         className="flex min-w-0 flex-1 items-center gap-1.5 py-3 text-left text-sm tabular-nums transition-colors hover:text-foreground"
@@ -110,10 +111,12 @@ function TurnSummaryRow({
         <button
           type="button"
           onClick={onProvideFeedback}
+          aria-label="Voice feedback"
           className="flex shrink-0 items-center gap-1 text-xs transition-colors hover:text-foreground"
         >
           <MessageSquarePlus className="h-3 w-3" />
-          <span>Voice feedback</span>
+          {/* Under 320px the label would squeeze the turn summary onto several lines, so only the icon stays. */}
+          <span className="[@container(max-width:319px)]:hidden">Voice feedback</span>
         </button>
       )}
     </div>

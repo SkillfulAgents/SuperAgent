@@ -442,6 +442,8 @@ test.describe('File Preview', () => {
 
       const header = page.getByTestId('file-preview-header')
       await expect(header).toBeVisible({ timeout: 5000 })
+      // The compact overlay covers the chat outright, so the slide-over dim stays hidden.
+      await expect(page.getByTestId('tray-drawer-scrim')).toHaveCSS('display', 'none')
 
       // Poll while the full-width tray slides in. Compact mode replaces the
       // right-side panel control with a left-side close button.
@@ -462,6 +464,49 @@ test.describe('File Preview', () => {
       expect(drawerBox).not.toBeNull()
       expect(Math.abs(drawerBox!.x - containerBox!.x)).toBeLessThanOrEqual(1)
       expect(Math.abs(drawerBox!.width - containerBox!.width)).toBeLessThanOrEqual(1)
+    })
+  })
+
+  test.describe('drawer wider than the chat can spare', () => {
+    // Wide enough that the drawer sits beside the chat, narrow enough that 800px of it leaves the chat ~100px.
+    test.use({ viewport: { width: 1200, height: 760 } })
+
+    test('the drawer slides over the chat instead of squeezing it, and Download keeps only its icon', async ({ page }) => {
+      await page.addInitScript(() => localStorage.setItem('tray_drawer_width', '800'))
+      await appPage.goto()
+      await appPage.waitForAgentsLoaded()
+
+      await agentPage.createAgent(`SlideOver ${Date.now()}`)
+      const agentSlug = await getLatestAgentSlug(page)
+      seedWorkspaceFile(agentSlug, 'output/report.md', '# Report')
+      seedWorkspaceFile(agentSlug, 'output/bundle.zip', Buffer.alloc(64))
+
+      await sessionPage.sendMessage('deliver archive')
+      await sessionPage.waitForResponse(15000)
+      await sessionPage.sendMessage('deliver file')
+      await sessionPage.waitForResponse(15000)
+      const downloadLabel = getDeliveredFileRow(page, 'bundle.zip').getByText('Download', { exact: true })
+      await expect(downloadLabel).toBeVisible()
+      await getDeliveredFileRow(page, 'report.md').first().click()
+
+      // The drawer keeps its full width and the chat keeps 240px under it, rather than either giving way.
+      const chat = page.getByTestId('session-thread-main')
+      await expect(async () => {
+        expect(Math.round((await chat.boundingBox())!.width)).toBe(240)
+        expect(Math.round((await page.getByTestId('tray-drawer').boundingBox())!.width)).toBe(800)
+      }).toPass({ timeout: 5000 })
+      // Over the z-20 composer footer: the dim takes clicks in the strip the drawer leaves uncovered, and the drawer
+      // paints above both where it overlaps the chat.
+      const chatBox = (await chat.boundingBox())!
+      const drawerBox = (await page.getByTestId('tray-drawer').boundingBox())!
+      const y = chatBox.y + chatBox.height - 20
+      const hit = (x: number) => page.evaluate(([px, py]) => {
+        const el = document.elementFromPoint(px, py)
+        return el?.closest('[data-testid="tray-drawer"]') ? 'tray-drawer' : (el as HTMLElement | null)?.dataset.testid
+      }, [x, y])
+      expect(await hit(chatBox.x + 8)).toBe('tray-drawer-scrim')
+      expect(await hit((drawerBox.x + chatBox.x + chatBox.width) / 2)).toBe('tray-drawer')
+      await expect(downloadLabel).toBeHidden()
     })
   })
 
