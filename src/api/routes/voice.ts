@@ -12,7 +12,6 @@ import { VOICE_LIVE_BODY_MAX_BYTES } from '@shared/lib/voice/conversation-types'
 import { resolveTtsSpeed } from '@shared/lib/voice/tts-preferences'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
-import { getVoiceAgentPrompt, type VoiceAgentPromptName } from '@shared/prompts/voice-agent'
 import { captureException } from '@shared/lib/error-reporting'
 
 const voice = new Hono<LimitedJsonBodyEnv>()
@@ -26,7 +25,7 @@ voice.use('*', Authenticated())
 voice.get('/configured', (c) => {
   const voiceSettings = getVoiceSettings()
   const provider = voiceSettings.sttProvider
-  if (!provider) return c.json({ configured: false, supportsVoiceAgent: false, supportsTts: false, voices: [] })
+  if (!provider) return c.json({ configured: false, supportsTts: false, voices: [] })
   const sttProvider = getVoiceProvider(provider)
   const status = sttProvider.getApiKeyStatus()
   const configured = status.isConfigured
@@ -34,7 +33,6 @@ voice.get('/configured', (c) => {
   return c.json({
     configured,
     conversationEngine: configured ? sttProvider.getConversationEngine() : null,
-    supportsVoiceAgent: configured && sttProvider.supportsVoiceAgent(),
     supportsTts,
     voices: supportsTts ? sttProvider.getTtsVoices() : [],
     defaultVoice: supportsTts ? sttProvider.resolveTtsVoice(voiceSettings.ttsVoice) : undefined,
@@ -157,45 +155,6 @@ voice.get('/token', async (c) => {
     captureException(error, {
       tags: { component: 'voice', operation: 'stt-token', provider: provider ?? 'none' },
     })
-    return c.json({ error: message }, 500)
-  }
-})
-
-voice.get('/voice-agent-prompt', (c) => {
-  const name = c.req.query('name') as VoiceAgentPromptName | undefined
-  if (!name || !['create-agent', 'improve-agent'].includes(name)) {
-    return c.json({ error: 'Invalid prompt name. Use "create-agent" or "improve-agent".' }, 400)
-  }
-  try {
-    const prompt = getVoiceAgentPrompt(name)
-    return c.json({ prompt })
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to load voice agent prompt'
-    return c.json({ error: message }, 500)
-  }
-})
-
-voice.get('/voice-agent-token', async (c) => {
-  try {
-    const providerParam = c.req.query('provider')
-    if (providerParam && providerParam !== 'deepgram' && providerParam !== 'openai' && providerParam !== 'platform') {
-      return c.json({ error: `Invalid voice provider: ${providerParam}` }, 400)
-    }
-
-    const voiceSettings = getVoiceSettings()
-    const provider: VoiceProvider | undefined = (providerParam as VoiceProvider) || voiceSettings.sttProvider
-
-    const sttProvider = requireConfiguredProvider(c, provider)
-    if (sttProvider instanceof Response) return sttProvider
-    if (!sttProvider.supportsVoiceAgent()) {
-      return c.json({ error: `Voice Agent not supported by ${provider}` }, 400)
-    }
-
-    const result = await sttProvider.getVoiceAgentToken()
-    return c.json(result)
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to get Voice Agent credentials'
-    console.error('Failed to get Voice Agent credentials:', error)
     return c.json({ error: message }, 500)
   }
 })

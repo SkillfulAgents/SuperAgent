@@ -104,9 +104,8 @@ function userRequestText(
     text = command.args ? `/${command.name} ${command.args}` : `/${command.name}`
   }
 
-  // Same peel as the transcript bubble, minus the sender prefix (the summary
-  // wants the request as the agent saw it, attribution included).
-  text = parseUserMessageParts(text, { readOnly: false }).text
+  // Same peel as the transcript bubble.
+  text = parseUserMessageParts(text).text
   return text.trim() || null
 }
 

@@ -15,7 +15,7 @@ vi.mock('../db', () => ({
 }))
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
 
-import { changeMemberRole, removeMember } from './agent-members-service'
+import { changeMemberRole, countMembersWithMinRole, removeMember } from './agent-members-service'
 
 const { agentAcl, user } = schema
 const AGENT = 'shared-agent'
@@ -47,6 +47,15 @@ beforeEach(() => {
 
 afterEach(() => {
   testSqlite.close()
+})
+
+describe('countMembersWithMinRole', () => {
+  it('counts members at or above the role, and only on this agent', async () => {
+    seed([{ id: 'ann', role: 'owner' }, { id: 'bob', role: 'user' }, { id: 'vic', role: 'viewer' }])
+    testDb.insert(agentAcl).values({ id: 'acl-elsewhere', userId: 'bob', agentSlug: 'other-agent', role: 'owner', createdAt: new Date() }).run()
+    expect(await countMembersWithMinRole(AGENT, 'user')).toBe(2)
+    expect(await countMembersWithMinRole(AGENT, 'owner')).toBe(1)
+  })
 })
 
 describe('removeMember', () => {

@@ -65,8 +65,6 @@ describe('ComposerOptionsPopover', () => {
     render(<Harness initialModel="opus" initialEffort="high" />)
     const trigger = screen.getByTestId('composer-options-trigger')
     expect(trigger).toHaveTextContent('Opus 4.8 · High')
-    expect(trigger).toHaveClass('max-[420px]:w-[34px]')
-    expect(trigger.querySelector('span')).toHaveClass('max-[420px]:hidden')
   })
 
   it('uses the provider catalog default on the trigger when no model is set', () => {

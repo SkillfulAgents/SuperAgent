@@ -1,6 +1,6 @@
 # Conversation voice architecture and OpenAI Live setup
 
-This extends the existing OpenAI voice provider and the microphone experience inside an agent conversation. The Deepgram path and the separate creation/feedback voice-agent experience remain available.
+This extends the existing OpenAI voice provider and the microphone experience inside an agent conversation. The Deepgram path remains available.
 
 ## Try it
 

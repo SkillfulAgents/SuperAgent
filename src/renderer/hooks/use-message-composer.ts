@@ -73,7 +73,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     setDraftSecuredSecrets(securedSecrets.length > 0 ? securedSecrets : undefined)
   }, [securedSecrets, setDraftSecuredSecrets])
 
-  // Sync externally-injected drafts (e.g. voice feedback) into the local message.
+  // Sync externally-injected drafts (file comments, restored undelivered
+  // messages) into the local message.
   useEffect(() => {
     if (draft !== undefined && draft !== message) {
       setMessage(draft)

@@ -1496,8 +1496,8 @@ describe('MessageInput', () => {
       expect(screen.getByTestId('message-input').textContent).toBe('')
     })
 
-    it('reflects externally-injected drafts (voice feedback path) into the input', async () => {
-      function VoiceWriter({ sessionId, value }: { sessionId: string; value: string | null }) {
+    it('reflects externally-injected drafts (file comments, restored messages) into the input', async () => {
+      function DraftWriter({ sessionId, value }: { sessionId: string; value: string | null }) {
         const [, setDraft] = useDraft<string>(`session:${sessionId}`)
         useEffect(() => {
           if (value !== null) setDraft(value)
@@ -1508,22 +1508,22 @@ describe('MessageInput', () => {
       const { rerender } = renderWithProviders(
         <>
           <MessageInput sessionId="s-1" agentSlug="agent-1" />
-          <VoiceWriter sessionId="s-1" value={null} />
+          <DraftWriter sessionId="s-1" value={null} />
         </>
       )
 
       expect(screen.getByTestId('message-input').textContent).toBe('')
 
-      // Simulate voice feedback writing the drafted message.
+      // Simulate another surface writing to the session draft.
       rerender(
         <>
           <MessageInput sessionId="s-1" agentSlug="agent-1" />
-          <VoiceWriter sessionId="s-1" value="voice-generated draft" />
+          <DraftWriter sessionId="s-1" value="externally written draft" />
         </>
       )
 
       await waitFor(() => {
-        expect(screen.getByTestId('message-input').textContent).toBe('voice-generated draft')
+        expect(screen.getByTestId('message-input').textContent).toBe('externally written draft')
       })
     })
   })

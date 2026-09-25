@@ -4,7 +4,7 @@ import { createAgent, createSession, gotoAgentSession, waitForSessionIdle } from
 // Exercise the real HTTP adapter and PCM player; only synthesis is mocked.
 async function mockReadAloud(page: Page) {
   await page.route('**/api/voice/configured', route => route.fulfill({ json: {
-    configured: true, supportsTts: true, supportsVoiceAgent: true, conversationEngine: 'openai-live',
+    configured: true, supportsTts: true, conversationEngine: 'openai-live',
     voices: [{ id: 'marin', label: 'Marin', description: 'OpenAI' }], defaultVoice: 'marin',
   } }))
   await page.route('**/api/voice/tts-session', route => route.fulfill({ json: {

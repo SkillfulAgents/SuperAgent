@@ -279,9 +279,6 @@ interface MessageItemProps {
   completedSubagents?: Set<string> | null
   onRemoveMessage?: (messageId: string) => void
   onRemoveToolCall?: (toolCallId: string) => void
-  /** Read-only mirror (chat-integration replay): no edit actions; lift the
-   *  connector's inline sender prefix into the sender label. */
-  readOnly?: boolean
   /** Optional reveal animation for work restored on turn expansion. */
   workDetailClassName?: string
   /** Tool calls that were hidden while the containing work phase was collapsed. */
@@ -323,16 +320,15 @@ function resolveSubagentRun(
   }
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
 
   const rawText = message.content.text
   // User bubbles: lift the attached-files / mounted-folders blocks into pills
-  // (every session) and the read-only mirror's connector sender prefix into
-  // the sender label (mirrors only), leaving just the typed text.
-  const userParts = isUser ? parseUserMessageParts(rawText, { readOnly: !!readOnly }) : null
+  // and the sender prefix into the sender label, leaving just the typed text.
+  const userParts = isUser ? parseUserMessageParts(rawText) : null
   const senderFromPrefix = userParts?.sender ?? null
   const attachedFiles = userParts?.attachedFiles ?? []
   const mountedFolders = userParts?.mountedFolders ?? []

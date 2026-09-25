@@ -4,19 +4,19 @@ React hooks connect the UI and agent session to this package. Vendor protocols s
 
 | Directory | Responsibility | May import |
 | --- | --- | --- |
-| `contracts/` | STT, TTS, voice-agent and agent-conversation interfaces; settings metadata types | nothing in this package |
+| `contracts/` | STT, TTS and agent-conversation interfaces; settings metadata types | nothing in this package |
 | `shared/` | Leaf utilities: microphone capture, PCM conversion, WebSocket STT lifecycle, HTTP TTS, and `speech/` (playback, segmentation, highlighting data, hold sound, browser audio workarounds) | `contracts/` |
-| `providers/openai/`, `providers/deepgram/` | Vendor protocols: transcription, TTS, voice-agent, Live session/media and mapping, errors, settings metadata | `contracts/`, `shared/`, `services/` |
+| `providers/openai/`, `providers/deepgram/` | Vendor protocols: transcription, TTS, Live session/media and mapping, errors, settings metadata | `contracts/`, `shared/`, `services/` |
 | `registry/` | Select implementations by provider or engine and expose settings metadata; the only place that imports provider code | everything |
 | `services/` | App-wide services that compose providers through the registry: the read-aloud singleton and the microphone listener | `contracts/`, `shared/`, `registry/` |
 | `conversation/` | In-session voice: the coordinator that owns the agent loop, and the provider-independent chained engine (listener + read-aloud) | `contracts/`, `services/` |
 | `orb/` | The dot-orb renderer behind the voice-mode mic: lattice, projection, the designed states and their motion, level helpers. Plain maths on a 2D context; `components/messages/voice-orb.tsx` owns the canvas and the clock | nothing in this package |
 
-Two things are easy to confuse. A **voice agent** (`contracts/voice-agent.ts`) is the standalone spoken assistant used by agent creation and feedback aids: it has its own model and no session. A **conversation** (`contracts/conversation.ts`) is voice inside an agent session: the coordinator drives the agent, and an engine handles speech turn-taking. Both have a registry entrypoint and provider implementations.
+A **conversation** (`contracts/conversation.ts`) is voice inside an agent session: the coordinator drives the agent, and an engine handles speech turn-taking. The `VoiceAgent*` names in that contract (`VoiceAgentCoordinator`, `VoiceAgentState`) refer to the session's agent, not a separate spoken assistant.
 
 ## Registry entrypoints
 
-There is one entrypoint per capability (`stt`, `tts`, `voice-agent`, `conversation`, `catalog`) rather than one per provider, so a consumer that only needs dictation or read-aloud never loads the Live session code. Each entrypoint is a `Record` over the provider or engine union checked with `satisfies`, so adding a member to the union without an implementation is a type error. TTS is selected by the connection transport the host reports; the websocket branch is the Deepgram speak protocol today. `catalog.ts` owns the platform option because which vendor backs it is the host's decision.
+There is one entrypoint per capability (`stt`, `tts`, `conversation`, `catalog`) rather than one per provider, so a consumer that only needs dictation or read-aloud never loads the Live session code. Each entrypoint is a `Record` over the provider or engine union checked with `satisfies`, so adding a member to the union without an implementation is a type error. TTS is selected by the connection transport the host reports; the websocket branch is the Deepgram speak protocol today. `catalog.ts` owns the platform option because which vendor backs it is the host's decision.
 
 ## Conversation contract
 
