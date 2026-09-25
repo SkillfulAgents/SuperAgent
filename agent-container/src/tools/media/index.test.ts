@@ -6,14 +6,14 @@ import { MEDIA_TOOLS, mediaToolProviders, saveGeneratedMedia } from './index'
 import { generateSystemPrompt } from '../../claude-code'
 
 afterEach(() => {
-  delete MEDIA_TOOLS.codex
+  delete MEDIA_TOOLS.fake
 })
 
 describe('mediaToolProviders', () => {
   it('keeps only host providers this container has tools for', () => {
-    expect(mediaToolProviders(['codex', 'grok'])).toEqual([])
-    MEDIA_TOOLS.codex = () => []
-    expect(mediaToolProviders(['codex', 'grok'])).toEqual(['codex'])
+    expect(mediaToolProviders(['fake', 'unknown'])).toEqual([])
+    MEDIA_TOOLS.fake = () => []
+    expect(mediaToolProviders(['fake', 'unknown'])).toEqual(['fake'])
     expect(mediaToolProviders(['toString'])).toEqual([])
     expect(mediaToolProviders(undefined)).toEqual([])
   })

@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { z } from 'zod'
 import { callWebHost } from '../web/host-client'
+import { codexMediaTools } from './codex'
 
 const generatedMediaResponseSchema = z.object({
   images: z.array(z.object({ mimeType: z.string(), base64: z.string().min(1) })),
@@ -18,7 +19,9 @@ export type MediaToolFactory = (context: MediaToolContext) => SdkMcpToolDefiniti
 
 // Provider-owned tools, keyed by host media provider id. Tool names are
 // prefixed with the provider, e.g. mcp__media__codex_generate_image.
-export const MEDIA_TOOLS: Record<string, MediaToolFactory> = {}
+export const MEDIA_TOOLS: Record<string, MediaToolFactory> = {
+  codex: codexMediaTools,
+}
 
 const EXTENSIONS: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }
 
