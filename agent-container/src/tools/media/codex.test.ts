@@ -6,7 +6,7 @@ import { codexMediaTools } from './codex'
 
 let root: string
 const generateImages = vi.fn(async () => ['/workspace/media/codex-1.png'])
-const [codexTool] = codexMediaTools({ generateImages })
+const [codexTool] = codexMediaTools({ generateImages, startVideo: vi.fn(), waitForVideo: vi.fn() })
 
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'codex-media-'))

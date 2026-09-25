@@ -48,16 +48,25 @@ const fake: SubscriptionMediaProvider = {
     const { accessToken } = await credential()
     return [{ mimeType: 'image/png', base64: Buffer.from(`${accessToken}:${JSON.stringify(input)}`).toString('base64') }]
   },
+  async startVideo(_input, credential) {
+    return `request-for-${(await credential()).accessToken}`
+  },
+  async getVideo(requestId, credential) {
+    return { status: 'failed', error: `${requestId} polled with ${(await credential()).accessToken}` }
+  },
 }
 
 let handle: TestDatabase
 const app = new Hono().route('/media', routes)
-function generate(provider = 'codex', token = 'agent-test-token') {
-  return app.request(`/media/${provider}/image`, {
+function post(path: string, body: unknown, token = 'agent-test-token') {
+  return app.request(`/media/${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ prompt: 'a red square' }),
+    body: JSON.stringify(body),
   })
+}
+function generate(provider = 'codex', token = 'agent-test-token') {
+  return post(`${provider}/image`, { prompt: 'a red square' }, token)
 }
 async function addConnection(id: string, userId: string | null, createdAt: number, provider = 'codex-subscription') {
   await handle.db.insert(llmConnections).values({
@@ -124,4 +133,24 @@ it('lists only providers the owner can use', async () => {
   expect(await availableMediaProviders('alpha')).toEqual(['codex'])
   state.providers = []
   expect(await availableMediaProviders('alpha')).toEqual([])
+})
+
+it('binds a video job to the connection that started it', async () => {
+  await addConnection('owner-codex', 'owner', 1)
+  const started = await post('codex/video', { prompt: 'waves' })
+  const { job } = await started.json()
+  expect(job).toBe('owner-codex:request-for-token-for-owner-codex')
+  expect(await (await post('codex/video/status', { job })).json()).toEqual({
+    status: 'failed', error: 'request-for-token-for-owner-codex polled with token-for-owner-codex',
+  })
+
+  const forged = await post('codex/video/status', { job: 'coworker-codex:request-1' })
+  expect(forged.status).toBe(409)
+  expect((await post('codex/video/status', { job: 'no-separator' })).status).toBe(400)
+})
+
+it('rejects video for providers without video support', async () => {
+  state.providers = [{ ...fake, startVideo: undefined, getVideo: undefined }]
+  await addConnection('owner-codex', 'owner', 1)
+  expect((await post('codex/video', { prompt: 'waves' })).status).toBe(404)
 })

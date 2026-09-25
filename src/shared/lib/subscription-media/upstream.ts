@@ -19,12 +19,12 @@ export async function sendWithCredential(credential: MediaCredentialSource, send
 }
 
 /** Limit, entitlement and rejected-prompt reasons help the agent; other bodies stay private. */
-export async function upstreamMediaError(providerName: string, response: Response): Promise<MediaRequestError> {
+export async function upstreamMediaError(providerName: string, response: Response, kind: 'image' | 'video' = 'image'): Promise<MediaRequestError> {
   const parsed = errorSchema.safeParse(await response.json().catch(() => null))
   const detail = parsed.success ? text(parsed.data.error) ?? text(parsed.data.detail) : undefined
   const reason = detail ? `: ${detail.slice(0, 500)}` : ''
-  if (response.status === 429) return new MediaRequestError(429, `${providerName} image limit reached${reason}`)
-  if (response.status === 402 || response.status === 403) return new MediaRequestError(403, `${providerName} image generation is not available for this account${reason}`)
-  if (response.status === 400 || response.status === 422) return new MediaRequestError(400, `${providerName} rejected the image request${reason}`)
-  return new MediaRequestError(502, `${providerName} image generation failed (${response.status})`)
+  if (response.status === 429) return new MediaRequestError(429, `${providerName} ${kind} limit reached${reason}`)
+  if (response.status === 402 || response.status === 403) return new MediaRequestError(403, `${providerName} ${kind} generation is not available for this account${reason}`)
+  if (response.status === 400 || response.status === 422) return new MediaRequestError(400, `${providerName} rejected the ${kind} request${reason}`)
+  return new MediaRequestError(502, `${providerName} ${kind} generation failed (${response.status})`)
 }

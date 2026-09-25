@@ -59,3 +59,32 @@ it('returns xAI string errors and rejects invalid input before calling xAI', asy
   await expect(grokMediaProvider.generateImage({ prompt: 'x', aspectRatio: '7:3' }, credential)).rejects.toMatchObject({ status: 400 })
   expect(fetchMock).toHaveBeenCalledTimes(1)
 })
+
+it('starts a video job with the unified video model', async () => {
+  fetchMock.mockResolvedValueOnce(json(200, { request_id: 'req-1' }))
+  const image = 'data:image/png;base64,Zm9v'
+  expect(await grokMediaProvider.startVideo!({ prompt: 'waves', image, duration: 6, resolution: '720p' }, credential)).toBe('req-1')
+  const request = sent()
+  expect(request.url).toBe('https://api.x.ai/v1/videos/generations')
+  expect(request.body).toEqual({ model: 'grok-imagine-video-1.5', prompt: 'waves', image: { url: image }, duration: 6, resolution: '720p' })
+  await expect(grokMediaProvider.startVideo!({ prompt: 'waves', duration: 30 }, credential)).rejects.toMatchObject({ status: 400 })
+})
+
+it('reports pending, failed and finished video jobs', async () => {
+  fetchMock.mockResolvedValueOnce(json(200, { status: 'pending', progress: 40 }))
+  expect(await grokMediaProvider.getVideo!('req-1', credential)).toEqual({ status: 'pending' })
+  expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.x.ai/v1/videos/req-1')
+
+  fetchMock.mockResolvedValueOnce(json(200, { status: 'failed', error: { message: 'content policy' } }))
+  expect(await grokMediaProvider.getVideo!('req-1', credential)).toEqual({ status: 'failed', error: 'content policy' })
+
+  fetchMock
+    .mockResolvedValueOnce(json(200, { status: 'done', video: { url: 'https://vidgen.x.ai/v.mp4' } }))
+    .mockResolvedValueOnce(new Response('mp4-bytes'))
+  expect(await grokMediaProvider.getVideo!('req-1', credential)).toEqual({ status: 'done', video: { mimeType: 'video/mp4', base64: Buffer.from('mp4-bytes').toString('base64') } })
+  const download = fetchMock.mock.calls.at(-1)!
+  expect(String(download[0])).toBe('https://vidgen.x.ai/v.mp4')
+  expect(new Headers(download[1]?.headers).get('authorization')).toBeNull()
+
+  await expect(grokMediaProvider.getVideo!('../files', credential)).rejects.toMatchObject({ status: 400 })
+})

@@ -5,7 +5,7 @@ import { getAgentOwnerUserId } from '../services/agent-owner'
 import { SUBSCRIPTION_MEDIA_PROVIDERS } from './registry'
 import type { SubscriptionMediaProvider } from './types'
 
-export { MediaRequestError, type GeneratedMedia, type SubscriptionMediaProvider } from './types'
+export { MediaRequestError, type GeneratedMedia, type SubscriptionMediaProvider, type VideoJobStatus } from './types'
 
 export function mediaProvider(id: string): SubscriptionMediaProvider | undefined {
   return SUBSCRIPTION_MEDIA_PROVIDERS.find(provider => provider.id === id)
