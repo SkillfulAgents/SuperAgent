@@ -63,12 +63,15 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
           variant="outline"
           size="sm"
           disabled={disabled}
-          className="h-[34px] min-w-0 gap-1.5 px-2 text-xs font-medium max-[420px]:w-[34px] max-[420px]:shrink-0 max-[420px]:justify-center max-[420px]:px-0"
+          // Collapses on the width the composer row leaves for it, not the window's: a drawer
+          // can squeeze the row in a wide window. Under 160px the label is cut into the model
+          // name, so the icon reads better.
+          className="h-[34px] min-w-0 gap-1.5 px-2 text-xs font-medium [@container(max-width:160px)]:w-[34px] [@container(max-width:160px)]:shrink-0 [@container(max-width:160px)]:px-0"
           aria-label={`${includeEffort ? 'Model and effort' : 'Model'}: ${triggerAriaLabel}. Click to change.`}
           data-testid="composer-options-trigger"
         >
-          <Settings2 className="hidden h-3.5 w-3.5 max-[420px]:block" aria-hidden="true" />
-          <span className="max-[420px]:hidden">
+          <Settings2 className="hidden h-3.5 w-3.5 [@container(max-width:160px)]:block" aria-hidden="true" />
+          <span className="truncate [@container(max-width:160px)]:hidden">
             {selectedModelLabel}
             {includeEffort && (
               <span className="text-muted-foreground">
@@ -76,7 +79,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
               </span>
             )}
           </span>
-          <ChevronDown className="h-3.5 w-3.5 max-[420px]:hidden" />
+          <ChevronDown className="h-3.5 w-3.5 [@container(max-width:160px)]:hidden" />
         </Button>
       </PopoverTrigger>
       <PopoverContent
