@@ -25,6 +25,7 @@ import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
+import { WEBHOOK_RELAY_QUERY_KEY } from '@renderer/hooks/use-webhook-relay'
 import {
   applyDashboardRuntimeStatus,
   applySessionActivityStatus,
@@ -647,6 +648,10 @@ export function GlobalNotificationHandler() {
             // Runtime readiness changed (e.g., image pull started/completed)
             queryClient.invalidateQueries({ queryKey: ['settings'] })
             queryClient.invalidateQueries({ queryKey: ['runtime-status'] })
+            break
+
+          case 'webhook_relay_changed':
+            queryClient.setQueryData(WEBHOOK_RELAY_QUERY_KEY, data.status)
             break
         }
       } catch {

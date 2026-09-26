@@ -234,7 +234,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (!this.online) {
       return {
         available: false,
-        unavailableReason: 'platform_disconnected',
+        unavailableReason: this.started ? 'platform_disconnected' : 'stopped',
         transport: 'idle',
         lastClaimAt: this.lastClaimAt,
         lastError: null,
@@ -255,7 +255,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   }
 
   private transport(): WebhookRelayTransport {
-    if (!this.hasEndpoints()) return 'idle'
+    if (!this.hasClaimableEndpoints()) return 'idle'
     if (this.health === 'unknown') return 'connecting'
     if (this.health === 'failed') return 'unreachable'
     return this.realtime?.isActive() ? 'realtime' : 'polling'
@@ -279,8 +279,11 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   // Endpoints
   // ==========================================================================
 
+  // The same answer the snapshot gives, so nothing mints a URL whose events
+  // would never be claimed (before start(), after stop(), or offline).
   private requireAvailable(): void {
-    if (!this.deps.getToken()) throw new WebhookRelayUnavailableError('platform_disconnected')
+    const { unavailableReason } = this.snapshot()
+    if (unavailableReason) throw new WebhookRelayUnavailableError(unavailableReason)
   }
 
   async createEndpoint(scope: RelayScope, spec: RelayEndpointSpec): Promise<RelayEndpoint> {
@@ -301,8 +304,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     })
   }
 
+  // Only minting needs a running relay (a URL nobody claims from is the
+  // problem); taking one down just needs the platform.
   async disableEndpoint(scope: RelayScope, endpointId: string): Promise<void> {
-    this.requireAvailable()
+    if (!this.deps.getToken()) throw new WebhookRelayUnavailableError('platform_disconnected')
     await this.deps.endpoints.disable(scope, endpointId)
   }
 
@@ -433,6 +438,15 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
 
   private hasEndpoints(): boolean {
     for (const state of this.consumers.values()) if (state.endpointIds.size > 0) return true
+    return false
+  }
+
+  /** Registered endpoints in a scope this token can claim. */
+  private hasClaimableEndpoints(): boolean {
+    const orgToken = this.deps.requiresMemberScope()
+    for (const state of this.consumers.values()) {
+      if (state.endpointIds.size > 0 && !(orgToken && state.scope === LOCAL_RELAY_SCOPE)) return true
+    }
     return false
   }
 
