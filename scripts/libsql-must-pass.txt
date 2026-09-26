@@ -29,6 +29,7 @@ src/api/routes/agent-integration-relay-setup.test.ts
 src/shared/lib/services/scheduled-task-service.overlap-guard.test.ts
 src/shared/lib/agent-integrations/lifecycle.test.ts
 src/shared/lib/task-manager-integrations/linear/linear-agent-integration.test.ts
+src/shared/lib/task-manager-integrations/linear/linear-relay-transport.test.ts
 src/shared/lib/task-manager-integrations/linear/mcp.test.ts
 src/shared/lib/task-manager-integrations/linear/setup.test.ts
 src/shared/lib/task-manager-integrations/task-manager-agent-integration.test.ts

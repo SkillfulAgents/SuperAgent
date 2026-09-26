@@ -6,9 +6,9 @@ let handle: TestDatabase
 let testDb: AppDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
-const runtime = vi.hoisted(() => ({ add: vi.fn(async (_id: string) => {}), pause: vi.fn(async (_id: string) => {}) }))
+const runtime = vi.hoisted(() => ({ add: vi.fn(async (_id: string) => {}), remove: vi.fn(async (_id: string) => {}), pause: vi.fn(async (_id: string) => {}) }))
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: {
-  addIntegration: runtime.add, pauseIntegration: runtime.pause, resumeIntegration: vi.fn(), integrationCreated: vi.fn(), isIntegrationConnected: () => false,
+  addIntegration: runtime.add, removeIntegration: runtime.remove, pauseIntegration: runtime.pause, resumeIntegration: vi.fn(), integrationCreated: vi.fn(), isIntegrationConnected: () => false,
 } }))
 vi.mock('../middleware/auth', () => ({
   getAuthorizedAgentRole: () => 'owner',
@@ -40,7 +40,7 @@ vi.mock('@shared/lib/webhook-relay', async (importOriginal) => ({
   getWebhookRelay: () => ({ createEndpoint: relay.create, disableEndpoint: relay.disable, register: vi.fn() }),
 }))
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
-import { getAgentIntegration, listAgentIntegrations } from '@shared/lib/services/agent-integration-service'
+import { getAgentIntegration, listAgentIntegrations, updateAgentIntegrationStatus } from '@shared/lib/services/agent-integration-service'
 import { WebhookRelayUnavailableError } from '@shared/lib/webhook-relay'
 import router from './agent-integrations'
 
@@ -52,6 +52,8 @@ function register(provider: string, transports: readonly ('direct' | 'relay')[])
     serialize: row => ({ ...row, config: undefined, settings: {}, hasCredentials: false }),
     configuration: { identityPaths: ['$.key'], uniqueKey: input => (input as { key?: string }).key ?? null, merge: stored => JSON.parse(stored) },
     setup: { prepare: async input => ({ config: { ...(input as Record<string, unknown>) }, status: 'disconnected' as const }) },
+    // A settings change that needs a fresh connection, like a transport switch.
+    updateSettings: async (_record, input) => ({ reconnect: !!(input.settings as { transport?: string } | undefined)?.transport }),
   })
 }
 register('test-relay', ['direct', 'relay'])
@@ -129,4 +131,27 @@ it('publishes the provider\'s transports with its setup links', async () => {
   const response = await app.request('/api/agent-integrations/agents/agent/providers/test-relay/setup', { headers })
 
   expect(await response.json()).toEqual({ transports: ['direct', 'relay'] })
+})
+
+it('reconnects an installation whose provider settings change needs it', async () => {
+  const row = await (await create('test-relay', { key: 'a' })).json()
+  const patch = (settings: Record<string, unknown>) => app.request(`/api/agent-integrations/${row.id}`, { method: 'PATCH', headers, body: JSON.stringify({ settings }) })
+
+  expect((await patch({ runOnStatusChange: true })).status).toBe(200)
+  expect(runtime.remove).not.toHaveBeenCalled()
+
+  expect((await patch({ transport: 'relay' })).status).toBe(200)
+  expect(runtime.remove).toHaveBeenCalledExactlyOnceWith(row.id)
+  expect(runtime.add).toHaveBeenCalledWith(row.id)
+})
+
+it('keeps a saved settings change when the reconnect it needs fails, and reports it on the row', async () => {
+  const row = await (await create('test-relay', { key: 'a' })).json()
+  await updateAgentIntegrationStatus(row.id, 'active')
+  runtime.add.mockRejectedValueOnce(new Error('Paste the webhook signing secret from your Linear app'))
+
+  const response = await app.request(`/api/agent-integrations/${row.id}`, { method: 'PATCH', headers, body: JSON.stringify({ settings: { transport: 'relay' } }) })
+
+  expect(response.status).toBe(200)
+  expect(await getAgentIntegration(row.id)).toMatchObject({ status: 'error', errorMessage: 'Paste the webhook signing secret from your Linear app' })
 })

@@ -229,7 +229,10 @@ export function useUpdateAgentIntegration() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
       })
-      if (!res.ok) throw new Error('Failed to update agent integration')
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as { error?: string } | null
+        throw new Error(payload?.error ?? 'Failed to update agent integration')
+      }
       return res.json() as Promise<PublicAgentIntegration>
     },
     onSuccess: (data) => {

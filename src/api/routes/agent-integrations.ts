@@ -288,7 +288,7 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
 
     const integration = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
     await assertConnectionSelectionAccess(llmProviderId, integration.llmProviderId)
-    await agentIntegrationRegistry.getProvider(integration.provider).updateSettings?.(integration, body)
+    const settingsChange = await agentIntegrationRegistry.getProvider(integration.provider).updateSettings?.(integration, body)
 
     // Step 1: Persist DB updates first (config, name, showToolCalls)
     const updates: Record<string, unknown> = {}
@@ -312,10 +312,19 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
       await agentIntegrationManager.pauseIntegration(id)
     } else if (status === 'active') {
       await agentIntegrationManager.resumeIntegration(id)
-    } else if (config !== undefined && status !== 'paused') {
+    } else if ((config !== undefined || settingsChange?.reconnect) && status !== 'paused') {
       // Config changed while active — reconnect to pick up new credentials
       await agentIntegrationManager.removeIntegration(id)
-      if (integration.status !== 'paused') await agentIntegrationManager.addIntegration(id)
+      if (integration.status !== 'paused') {
+        try {
+          await agentIntegrationManager.addIntegration(id)
+        } catch (err) {
+          // The change is saved either way; a connection it can't make yet
+          // (e.g. a secret still to paste) is what the row's status reports.
+          captureException(err, { tags: { ...SENTRY_TAGS, operation: 'update-integration-connect' }, extra: { integrationId: id } })
+          await updateAgentIntegrationStatus(id, 'error', err instanceof Error ? err.message : String(err))
+        }
+      }
     }
 
     const updated = await getAgentIntegration(id)

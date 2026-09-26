@@ -2,16 +2,23 @@ import { createHash, randomBytes } from 'node:crypto'
 import { LINEAR_SCOPES, type LinearConfig } from './config'
 
 export function hashOAuthState(state: string): string { return createHash('sha256').update(state).digest('hex') }
-export function linearAppCreationUrl(name: string, config: Pick<LinearConfig, 'redirectUri'>): string {
+/** What the app's webhooks must include for the relay transport. */
+export const LINEAR_WEBHOOK_RESOURCE_TYPES = ['AppUserNotification', 'Comment', 'Issue'] as const
+
+export function linearAppCreationUrl(name: string, config: Pick<LinearConfig, 'redirectUri'> & { relay?: { url: string } }): string {
   const url = new URL('https://linear.app/settings/api/applications/new')
   const appName = name.replace(/linear|https?:\/\//gi, '').trim().slice(0, 70) || 'Gamut Agent'
   const params: Record<string, string> = {
     distribution: 'private', 'oauth.client_name': appName.length < 2 ? `${appName} Agent` : appName,
     'oauth.client_uri': 'https://gamutagents.com', 'oauth.redirect_uris': config.redirectUri,
     'oauth.grant_types': 'authorization_code', 'display.description': `${appName} agent in your Linear workspace`,
-    'developer.name': 'Gamut', 'webhook.enabled': 'false',
+    'developer.name': 'Gamut', 'webhook.enabled': config.relay ? 'true' : 'false',
   }
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
+  if (config.relay) {
+    url.searchParams.set('webhook.url', config.relay.url)
+    for (const type of LINEAR_WEBHOOK_RESOURCE_TYPES) url.searchParams.append('webhook.resourceTypes', type)
+  }
   return url.toString()
 }
 export function linearAuthorization(config: LinearConfig) {
