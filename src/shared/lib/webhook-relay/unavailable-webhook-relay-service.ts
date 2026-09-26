@@ -27,7 +27,7 @@ export class UnavailableWebhookRelayService implements WebhookRelayService {
   }
 
   register(): RelayConsumerHandle {
-    return { update: () => {}, dispose: () => {} }
+    return { update: () => {}, retryNow: () => {}, dispose: () => {} }
   }
 
   async createEndpoint(): Promise<RelayEndpoint> {

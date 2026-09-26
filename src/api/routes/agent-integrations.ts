@@ -32,6 +32,7 @@ import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/clean
 import { listAgentIntegrationsHandler } from './agent-integration-list'
 import { getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, setupError } from '@shared/lib/agent-integrations/setup'
 import { integrationSetupQuerySchema, integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/setup-schema'
+import { supportedTransports } from '@shared/lib/agent-integrations/transport'
 import { toPublicAgentIntegration, publicIntegrationStatus } from '@shared/lib/agent-integrations/serialization'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -149,7 +150,8 @@ agentIntegrationsRouter.get('/agents/:id/providers/:provider/setup', ResolveAgen
     const { name } = integrationSetupQuerySchema.parse(c.req.query())
     const context = integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
     const metadata = await getIntegrationSetup(provider).describe?.(context, name) ?? {}
-    return c.json(integrationSetupMetadataSchema.parse(metadata))
+    const transports = supportedTransports(agentIntegrationRegistry.getDefinition(provider)!)
+    return c.json(integrationSetupMetadataSchema.parse({ ...metadata, transports }))
   } catch (error) {
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)
@@ -202,6 +204,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
         createdByUserId,
       })
     } catch (err) {
+      await prepared.release()
       if (err instanceof DuplicateIntegrationIdentityError) {
         // User-facing conflict — capture at `warning` level so we can track frequency
         // but it doesn't page anyone as an error.

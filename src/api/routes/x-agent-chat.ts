@@ -111,6 +111,7 @@ xAgentChat.post('/add', async (c) => {
         status: prepared.status,
       })
     } catch (err) {
+      await prepared.release()
       if (err instanceof DuplicateIntegrationIdentityError) {
         return c.json({ error: err.message, code: 'duplicate_bot_token' }, 409)
       }

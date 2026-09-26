@@ -2,6 +2,7 @@ import { listAgentIntegrations } from '../services/agent-integration-service'
 import { captureException } from '../error-reporting'
 import { agentIntegrationRegistry } from './registry'
 import { agentIntegrationManager } from './agent-integration-manager'
+import { releaseIntegrationTransport } from './relay-transport'
 import type { AgentIntegrationRecord } from './types'
 
 /** Stop the local runtime before deletion; unavailable remote services cannot block it. */
@@ -15,6 +16,7 @@ export async function cleanupIntegrationResource(integration: AgentIntegrationRe
       extra: { integrationId: integration.id, provider: integration.provider },
     })
   }
+  await releaseIntegrationTransport(integration)
 }
 
 export async function cleanupIntegrationResources(agentSlug?: string): Promise<void> {

@@ -1,4 +1,5 @@
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
+import { useWebhookRelay } from '@renderer/hooks/use-webhook-relay'
 import { isPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { useState } from 'react'
 import { Plus } from 'lucide-react'
@@ -49,7 +50,11 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
   const { canAdminAgent, canUseAgent } = useUser()
   const canManageApproval = canAdminAgent(agentSlug)
   const { data: platform } = usePlatformAuthStatus()
-  const providers = integrationSetupProviders.filter(provider => !provider.platformOnly || platform?.connected).filter(provider => provider.managementAccess === 'owner' ? canManageApproval : canUseAgent(agentSlug))
+  const { data: relay } = useWebhookRelay()
+  const providers = integrationSetupProviders
+    .filter(provider => !provider.platformOnly || platform?.connected)
+    .filter(provider => !provider.requiresRelay || relay?.available)
+    .filter(provider => provider.managementAccess === 'owner' ? canManageApproval : canUseAgent(agentSlug))
   const { data: agent } = useAgent(agentSlug)
   const agentName = agent?.name ?? agentSlug
   const rows = Array.isArray(integrations) ? integrations : []
