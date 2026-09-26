@@ -51,6 +51,7 @@ class Tasks extends TaskManagerAgentIntegration {
   protected taskGuidance() { return 'Reply to this issue.' }
   protected async hydrateTask() { return { id: 'conversation', identifier: 'TEST-1', title: 'Test', description: '', url: 'https://example.com', updatedAt: '', properties: {}, comments: [], attachments: [], truncated: false } }
   input(id = 'input') { return this.acceptTaskEvent({ id, taskId: 'conversation', interactionId: 'conversation', kind: 'invocation', timestamp: new Date().toISOString(), text: id, replyTarget: { commentId: 'thread' }, payload: {} } satisfies TaskEvent) }
+  context(id: string) { return this.acceptTaskEvent({ id, taskId: 'conversation', interactionId: 'conversation', kind: 'context', timestamp: new Date().toISOString(), text: id, replyTarget: {}, payload: {} } satisfies TaskEvent) }
 }
 let manager: AgentIntegrationManager
 let adapter: Chat | Tasks
@@ -79,6 +80,34 @@ beforeEach(async () => {
   runtime.interrupt.mockResolvedValue({ interrupted: true })
 })
 afterEach(async () => { vi.restoreAllMocks(); manager?.stop(); await new Promise(resolve => setTimeout(resolve, 20)); await handle.close() })
+
+describe('input handoff results', () => {
+  it('tells the provider whether its input was accepted, a duplicate, or rejected', async () => {
+    await start()
+    expect(await adapter.input('first')).toBe('accepted')
+    expect(await adapter.input('first')).toBe('duplicate')
+    // The row stops taking input underneath a live connection.
+    await database.update(chatIntegrations).set({ status: 'paused' }).run()
+    expect(await adapter.input('second')).toBe('rejected')
+    expect(await rows()).toHaveLength(1)
+  })
+  it('asks for a retry once the manager no longer listens to the connection', async () => {
+    await start()
+    manager.stop()
+    expect(await adapter.input('late')).toBe('retry')
+    expect(await rows()).toEqual([])
+  })
+  it('asks for a retry from a task connection that is disconnected, and rejects context', async () => {
+    await start('linear')
+    const tasks = adapter as Tasks
+    expect(await tasks.input('first')).toBe('accepted')
+    expect(await tasks.context('edit')).toBe('rejected')
+    await tasks.disconnect()
+    expect(await tasks.input('second')).toBe('retry')
+    // Context is never input, connected or not.
+    expect(await tasks.context('edit-while-down')).toBe('rejected')
+  })
+})
 
 describe('shared manager durability with real integration storage', () => {
   it.each(['slack', 'linear'] as const)('keys each %s card by its delivery, for the first input and a follow-up', async provider => {

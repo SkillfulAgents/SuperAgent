@@ -1,5 +1,5 @@
 import { AgentIntegration } from '../agent-integrations/agent-integration'
-import type { AgentIntegrationRecord, IntegrationInputContext, IntegrationInputEvent, IntegrationOutput,
+import type { AgentIntegrationRecord, IntegrationInputContext, IntegrationInputEvent, IntegrationInputResult, IntegrationOutput,
   IntegrationRoute, IntegrationSessionContext } from '../agent-integrations/types'
 import { captureException } from '../error-reporting'
 import { taskEventSchema } from './schemas'
@@ -40,10 +40,12 @@ export abstract class TaskManagerAgentIntegration extends AgentIntegration {
     return { externalId: task.taskId, interactionId: task.interactionId, displayName: task.title,
       replyTarget: task.replyTarget, action: task.kind === 'context' ? 'ignore' : 'run' }
   }
-  protected async acceptTaskEvent(event: TaskEvent): Promise<void> {
-    if (!this.connected || event.kind === 'context') return
+  /** Context events are never input; they only resolve to 'rejected'. */
+  protected async acceptTaskEvent(event: TaskEvent): Promise<IntegrationInputResult> {
+    if (event.kind === 'context') return 'rejected'
+    if (!this.connected) return 'retry'
     // Deduplication and acceptance belong to the shared manager for all families.
-    await this.emitEvent({ type: 'input', id: event.id, externalId: event.taskId,
+    return this.emitEvent({ type: 'input', id: event.id, externalId: event.taskId,
       timestamp: new Date(event.timestamp), payload: event })
   }
   async acknowledgeInput(event: IntegrationInputEvent): Promise<void> {

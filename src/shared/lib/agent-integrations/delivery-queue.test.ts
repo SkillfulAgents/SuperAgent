@@ -39,13 +39,13 @@ describe('durable integration delivery (common SQL path)', () => {
   it.each(['slack', 'telegram', 'imessage', 'linear'] as const)('persists and deduplicates stable event IDs for %s across restarts', async provider => {
     await database.update(chatIntegrations).set({ provider }).run()
     const first = queue()
-    await first.accept('integration', event(), route) // killed before dispatch
+    expect(await first.accept('integration', event(), route)).toBe('accepted') // killed before dispatch
     expect(dispatch).not.toHaveBeenCalled()
     expect((await rows())[0].state).toBe('pending')
     const restarted = queue(); await restarted.start()
     await settled({ state: 'delivered' })
     expect(dispatch).toHaveBeenCalledOnce()
-    await restarted.accept('integration', event(), route)
+    expect(await restarted.accept('integration', event(), route)).toBe('duplicate')
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(dispatch).toHaveBeenCalledOnce()
     expect(await rows()).toHaveLength(1)
@@ -150,7 +150,9 @@ describe('durable integration delivery (common SQL path)', () => {
   it('deletion cascades accepted work, and inactive installations reject new acceptance', async () => {
     await deliveryStore.accept('integration', event(), route)
     await database.update(chatIntegrations).set({ status: 'paused' }).run()
-    expect(await deliveryStore.accept('integration', event('late'), route)).toBe(false)
+    expect(await deliveryStore.accept('integration', event('late'), route)).toBe('rejected')
+    // Already stored before the pause: still a duplicate, not a rejection.
+    expect(await deliveryStore.accept('integration', event(), route)).toBe('duplicate')
     await queue().start(); await new Promise(resolve => setTimeout(resolve, 20))
     expect(dispatch).not.toHaveBeenCalled()
     await database.delete(chatIntegrations).run()

@@ -3,7 +3,7 @@ import { db } from '../db'
 import { batch, changesOf, insertWhere } from '../db/batch'
 import { chatIntegrations, chatIntegrationSessions, integrationDeliveries as rows } from '../db/schema'
 import { parseDeliveryEnvelope } from './delivery-schema'
-import type { IntegrationInputEvent, IntegrationRoute } from './types'
+import type { IntegrationInputEvent, IntegrationInputResult, IntegrationRoute } from './types'
 
 export type DeliveryRecord = typeof rows.$inferSelect
 const waiting = () => or(eq(rows.state, 'pending'), and(eq(rows.state, 'sending'), sql`${rows.owner} is null`), eq(rows.noticeState, 'pending'))
@@ -12,7 +12,7 @@ const runnable = () => sql`exists (select 1 from ${chatIntegrations} where ${cha
 export const DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 
 export const deliveryStore = {
-  async accept(integrationId: string, event: IntegrationInputEvent, route: IntegrationRoute) {
+  async accept(integrationId: string, event: IntegrationInputEvent, route: IntegrationRoute): Promise<Exclude<IntegrationInputResult, 'retry'>> {
     // Normalize Dates and optional fields at the boundary, then validate the JSON
     // that will actually survive a restart (no functions, buffers or class state).
     const envelope = parseDeliveryEnvelope(JSON.stringify({ event, route }))
@@ -22,7 +22,12 @@ export const deliveryStore = {
       envelope: JSON.stringify(envelope), nextAttemptAt: now, createdAt: now, updatedAt: now },
     sql`exists (select 1 from ${chatIntegrations} where ${chatIntegrations.id} = ${integrationId} and ${chatIntegrations.status} in ('active', 'error'))`)
       .onConflictDoNothing().run()
-    return changesOf(result) > 0
+    if (changesOf(result) > 0) return 'accepted'
+    // Nothing written: the event is already stored, or the integration isn't
+    // taking input (removed, paused, disconnected).
+    const existing = await db.select({ id: rows.id }).from(rows)
+      .where(and(eq(rows.integrationId, integrationId), eq(rows.externalId, route.externalId), eq(rows.eventId, event.id))).get()
+    return existing ? 'duplicate' : 'rejected'
   },
   async due(availableIds: readonly string[]) {
     if (!availableIds.length) return []

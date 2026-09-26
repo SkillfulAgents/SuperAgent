@@ -35,6 +35,17 @@ export interface IntegrationInputEvent {
   payload: unknown
 }
 
+/**
+ * What the host did with an input event a provider handed it:
+ * - accepted: stored for delivery
+ * - duplicate: already stored (same integration, route, and event id)
+ * - rejected: will never be taken (the integration isn't taking input, or
+ *   the event has no route)
+ * - retry: not taken now because this connection was replaced or stopped;
+ *   whoever delivers the event should hand it over again
+ */
+export type IntegrationInputResult = 'accepted' | 'duplicate' | 'rejected' | 'retry'
+
 export interface IntegrationResponseEvent {
   type: 'response'
   externalId: string
