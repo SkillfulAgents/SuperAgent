@@ -55,6 +55,7 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
   notificationManager: {
     triggerSessionComplete: vi.fn(() => Promise.resolve()),
     triggerSessionWaitingInput: vi.fn(() => Promise.resolve()),
+    triggerAgentNotify: vi.fn(() => Promise.resolve({ ok: true, outcome: 'created' })),
   },
 }))
 
@@ -187,12 +188,14 @@ vi.mock('@shared/lib/db/schema', () => ({
 
 // Mock container-host (used by resolveContainerInput / rejectContainerInput)
 const mockContainerClientFetch = vi.fn<MockFn>(() => Promise.resolve({ ok: true }))
+const mockContainerPromoteSession = vi.fn<(sessionId: string) => Promise<void>>(() => Promise.resolve())
 vi.mock('./container-host', async () => {
   const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
   return {
     containerHost: hostFromManagerMock({
       getClient: () => ({
         fetch: (...args: unknown[]) => mockContainerClientFetch(...args),
+        promoteSession: (sessionId: string) => mockContainerPromoteSession(sessionId),
       }),
     }),
   }
@@ -3263,6 +3266,159 @@ describe('MessagePersister', () => {
   })
 
   // ============================================================================
+  // notify_user tool handling
+  // ============================================================================
+
+  describe('notify_user tool handling', () => {
+    function simulateNotifyUserToolUse(toolId: string, input: Record<string, unknown>) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: 'mcp__user-input__notify_user' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    function resolveCalls() {
+      return mockContainerClientFetch.mock.calls.filter((c) => String(c[0]).includes('/resolve'))
+    }
+
+    function rejectCalls() {
+      return mockContainerClientFetch.mock.calls.filter((c) => String(c[0]).includes('/reject'))
+    }
+
+    beforeEach(() => {
+      vi.mocked(notificationManager.triggerAgentNotify).mockClear()
+      vi.mocked(notificationManager.triggerAgentNotify).mockResolvedValue({ ok: true, outcome: 'created' })
+    })
+
+    it('notifies with the message and title, then resolves the tool', async () => {
+      simulateNotifyUserToolUse('notify-1', { message: 'Gave up after 3 rate limits.', title: 'Sync failed' })
+
+      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
+
+      expect(notificationManager.triggerAgentNotify).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        'Gave up after 3 rate limits.',
+        'Sync failed',
+      )
+      const body = JSON.parse(resolveCalls()[0][1].body)
+      expect(body.value).toContain('notified')
+      expect(rejectCalls()).toHaveLength(0)
+    })
+
+    it('tells the agent when the session was surfaced but the notification was suppressed by settings', async () => {
+      vi.mocked(notificationManager.triggerSessionComplete).mockClear()
+      vi.mocked(notificationManager.triggerAgentNotify).mockResolvedValueOnce({ ok: true, outcome: 'suppressed' })
+
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      simulateNotifyUserToolUse('notify-8', { message: 'Done, needs a look.' })
+
+      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
+      const body = JSON.parse(resolveCalls()[0][1].body)
+      expect(body.value).toContain('no notification was sent')
+      expect(body.value).not.toContain('has been notified')
+
+      // The outcome is surfaced (session visible), so the completion alert stays suppressed too.
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+    })
+
+    it('rejects when message is missing', async () => {
+      simulateNotifyUserToolUse('notify-2', { title: 'no body' })
+
+      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
+      expect(notificationManager.triggerAgentNotify).not.toHaveBeenCalled()
+      expect(resolveCalls()).toHaveLength(0)
+    })
+
+    it('rejects a non-string message instead of throwing out of the handler', async () => {
+      // Host parses the raw stream; a `.trim()` on a number used to escape as
+      // an unhandled rejection, which quits the Electron app.
+      simulateNotifyUserToolUse('notify-4', { message: 123 })
+
+      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
+      const body = JSON.parse(rejectCalls()[0][1].body)
+      expect(body.reason).toContain('Invalid tool input')
+      expect(notificationManager.triggerAgentNotify).not.toHaveBeenCalled()
+      expect(resolveCalls()).toHaveLength(0)
+    })
+
+    it('rejects a whitespace-only message', async () => {
+      simulateNotifyUserToolUse('notify-5', { message: '   ' })
+
+      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
+      expect(notificationManager.triggerAgentNotify).not.toHaveBeenCalled()
+    })
+
+    it('suppresses the completion notification for the notifying turn, not the next one', async () => {
+      vi.mocked(notificationManager.triggerSessionComplete).mockClear()
+      const emitSuccess = () =>
+        mockClient._sendMessage({
+          type: 'result', subtype: 'success', is_error: false, num_turns: 1,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        })
+
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      simulateNotifyUserToolUse('notify-6', { message: 'Done, needs a look.' })
+      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
+      emitSuccess()
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+
+      // Next turn: the user replied; its completion alerts as usual.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      emitSuccess()
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+    })
+
+    it('rejects on an interactive session and still lets the turn completion alert', async () => {
+      vi.mocked(notificationManager.triggerSessionComplete).mockClear()
+      vi.mocked(notificationManager.triggerAgentNotify).mockResolvedValueOnce({ ok: false, reason: 'interactive_session' })
+
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      simulateNotifyUserToolUse('notify-7', { message: 'hello' })
+
+      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
+      const body = JSON.parse(rejectCalls()[0][1].body)
+      expect(body.reason).toContain('interactive')
+      expect(resolveCalls()).toHaveLength(0)
+
+      // Nothing was delivered, so the completion notification is not suppressed.
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+    })
+
+    it('rejects when the notification manager throws', async () => {
+      vi.mocked(notificationManager.triggerAgentNotify).mockRejectedValueOnce(new Error('db locked'))
+      simulateNotifyUserToolUse('notify-3', { message: 'hello' })
+
+      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
+      const body = JSON.parse(rejectCalls()[0][1].body)
+      expect(body.reason).toContain('db locked')
+      expect(resolveCalls()).toHaveLength(0)
+    })
+  })
+
+  // ============================================================================
   // schedule_resume tool handling
   // ============================================================================
 
@@ -5010,9 +5166,38 @@ describe('MessagePersister', () => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
           expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
-          { promotedToInteractive: true },
+          { noninteractive: false },
         )
       })
+      // The container holds its own copy of the flag; the host tells it once
+      // the session is really visible, after its own write.
+      await vi.waitFor(() => expect(mockContainerPromoteSession).toHaveBeenCalledWith(SESSION_ID))
+      expect(vi.mocked(updateSessionMetadata).mock.invocationCallOrder[0]).toBeLessThan(
+        mockContainerPromoteSession.mock.invocationCallOrder[0],
+      )
+    })
+
+    it('a failed container promotion is logged and does not undo the host promotion', async () => {
+      const PROMOTE_SESSION = 'container-down-session'
+      const PROMOTE_AGENT = 'container-down-agent'
+      const restoreMetadata = withHiddenScheduledMetadata(PROMOTE_AGENT, PROMOTE_SESSION)
+      mockContainerPromoteSession.mockRejectedValueOnce(new Error('container is not running'))
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        await expect(messagePersister.promoteAutomatedSession(PROMOTE_AGENT, PROMOTE_SESSION)).resolves.toBeUndefined()
+        expect(updateSessionMetadata).toHaveBeenCalledWith(
+          expect.objectContaining({ slug: PROMOTE_AGENT }),
+          PROMOTE_SESSION,
+          { noninteractive: false },
+        )
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('Container promotion failed'),
+          expect.any(Error),
+        )
+      } finally {
+        warn.mockRestore()
+        restoreMetadata()
+      }
     })
 
     it('promotes a webhook session when user input is requested', async () => {
@@ -5030,7 +5215,7 @@ describe('MessagePersister', () => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
           expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
-          { promotedToInteractive: true },
+          { noninteractive: false },
         )
       })
     })
@@ -5045,13 +5230,17 @@ describe('MessagePersister', () => {
         description: 'Upload a file',
       })
 
+      // Hidden by its own flag, so it still takes the legacy marker.
       await vi.waitFor(() => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
           expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
-          { promotedToInteractive: true },
+          { noninteractive: false, promotedToInteractive: true },
         )
       })
+      // Never noninteractive on the container side: nothing to tell it.
+      await new Promise((r) => setTimeout(r, 20))
+      expect(mockContainerPromoteSession).not.toHaveBeenCalled()
     })
 
     it('promotes an x-agent session when user input is requested', async () => {
@@ -5067,7 +5256,7 @@ describe('MessagePersister', () => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
           expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
-          { promotedToInteractive: true },
+          { noninteractive: false, promotedToInteractive: true },
         )
       })
     })
@@ -5132,7 +5321,7 @@ describe('MessagePersister', () => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
           expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
-          { promotedToInteractive: true },
+          { noninteractive: false },
         )
       })
       // The session genuinely awaits here, so the state assertion is correct.

@@ -346,6 +346,8 @@ export interface SystemPromptVars {
   hasMounts: boolean;
   mountPathsJoined: string;
   userInstructions: string;
+  /** Nobody is watching this session (cron / trigger): renders the unattended-session section. */
+  noninteractive: boolean;
 }
 
 const mountsEnvSchema = z.array(z.string().min(1));
@@ -373,6 +375,7 @@ export function buildSystemPromptVars(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  noninteractive?: boolean,
 ): SystemPromptVars {
   // Connected accounts run through Gamut's Composio (not a personal key). Managed
   // triggers and the platform-only accounts both exist only there.
@@ -421,6 +424,7 @@ export function buildSystemPromptVars(
     // bytes, and a raw newline or `#` in it would read as prompt structure.
     mountPathsJoined: mountPaths.map((p) => JSON.stringify(p)).join(', '),
     userInstructions,
+    noninteractive: noninteractive === true,
   };
 }
 
@@ -437,6 +441,7 @@ export function generateSystemPrompt(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  noninteractive?: boolean,
 ): string {
   const vars = buildSystemPromptVars(
     availableEnvVars,
@@ -446,6 +451,7 @@ export function generateSystemPrompt(
     webFetchProvider,
     capabilityPolicies,
     subagentModels,
+    noninteractive,
   );
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
@@ -541,6 +547,7 @@ export interface ClaudeCodeProcessOptions {
   speed?: SpeedLevel;
   capabilityPolicies?: AgentCapabilityPolicies;
   sessionCapabilityGrants?: Capability[];
+  noninteractive?: boolean;
 }
 
 export class ClaudeCodeProcess extends EventEmitter {
@@ -594,6 +601,11 @@ export class ClaudeCodeProcess extends EventEmitter {
   private availableEnvVars: string[] | undefined;
   private userSystemPrompt: string | undefined;
   private modelPromptHints: string[] | undefined;
+  // Unattended session: adds notify_user and the unattended prompt section.
+  // Both are baked into the query, so `queryNoninteractive` remembers what the
+  // live query was built with and a flip forces a re-query on the next send.
+  private noninteractive: boolean;
+  private queryNoninteractive: boolean | null = null;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
   // Monotonic id of the current query; bumped by initializeQuery. A previous
@@ -687,6 +699,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.availableEnvVars = options.availableEnvVars;
     this.userSystemPrompt = options.userSystemPrompt;
     this.modelPromptHints = options.llmRuntime?.modelPromptHints ?? options.modelPromptHints;
+    this.noninteractive = options.noninteractive === true;
     this.refreshSystemPrompt();
   }
 
@@ -705,7 +718,23 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.webFetchProvider,
       this.capabilityPolicies,
       this.subagentModels,
+      this.noninteractive,
     );
+  }
+
+  isNoninteractive(): boolean {
+    return this.noninteractive;
+  }
+
+  /**
+   * Flip unattended mode. Takes effect at the next sendMessage, which sees the
+   * live query was built for the other mode and rebuilds it (tool list and
+   * prompt are fixed at query creation). An in-flight turn is not interrupted.
+   */
+  setNoninteractive(value: boolean): void {
+    if (this.noninteractive === value) return;
+    this.noninteractive = value;
+    this.refreshSystemPrompt();
   }
 
   /**
@@ -953,7 +982,7 @@ export class ClaudeCodeProcess extends EventEmitter {
    */
   private buildSdkMcpServers(browserMcpTools: ReturnType<typeof createBrowserTools>): Record<string, McpServerConfig> {
     const servers: Record<string, McpServerConfig> = {
-      'user-input': createUserInputMcpServer(() => this),
+      'user-input': createUserInputMcpServer(() => this, { noninteractive: this.noninteractive }),
       'browser': createBrowserMcpServer(browserMcpTools),
       'dashboards': createDashboardsMcpServer(),
       'widgets': createWidgetsMcpServer(),
@@ -1009,6 +1038,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     const remoteMcpToolPatterns = Object.keys(remoteMcpConfigs).map(name => `mcp__${name}__*`);
     this.connectedAccountsSnapshot = connectedAccountsSnapshot();
     this.remoteMcpsSnapshot = remoteMcpsSnapshot();
+    this.queryNoninteractive = this.noninteractive;
 
     // Browser tools are bound per-session via a getter read on every request:
     // this.sessionId changes when the query (re)starts, and a module-global id
@@ -1742,10 +1772,17 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.webFetchProvider,
           nextPolicies,
           this.subagentModels,
+          this.noninteractive,
         );
       }
       this.reconcilePendingCapabilityReviews();
     }
+
+    // Promotion (a request, notify_user, or a human message) flipped the mode
+    // since the live query was built: notify_user and the unattended prompt
+    // section are query-creation facts, so rebuild like a block-boundary flip.
+    const noninteractiveChanged =
+      this.queryNoninteractive !== null && this.queryNoninteractive !== this.noninteractive;
 
     if (effortChanged) {
       this.effort = effort;
@@ -1777,6 +1814,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       effortChanged ||
       speedChanged ||
       capabilityBlockChanged ||
+      noninteractiveChanged ||
       connectedAccountsChanged ||
       contextWindowChanged
     ) {
@@ -1793,6 +1831,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       if (effortChanged) reasons.push(`effort ${currentEffort} -> ${effort}`);
       if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');
+      if (noninteractiveChanged) reasons.push(`noninteractive ${this.queryNoninteractive} -> ${this.noninteractive}`);
       if (connectedAccountsChanged) reasons.push('connected accounts changed');
       if (remoteMcpsChanged) reasons.push('remote MCP servers changed');
       if (contextWindowChanged) reasons.push('model context window changed');

@@ -37,10 +37,18 @@ class MockClaudeProcess extends EventEmitter {
   sentContents: string[] = []
   lastStopOptions: { graceful?: boolean } | undefined
   sessionId: string
+  noninteractive: boolean
+  setNoninteractiveCalls: boolean[] = []
 
-  constructor(options: { sessionId: string }) {
+  constructor(options: { sessionId: string; noninteractive?: boolean }) {
     super()
     this.sessionId = options.sessionId
+    this.noninteractive = options.noninteractive === true
+  }
+
+  setNoninteractive(value: boolean): void {
+    this.setNoninteractiveCalls.push(value)
+    this.noninteractive = value
   }
 
   async start(): Promise<void> {
@@ -100,7 +108,7 @@ let nextStartFailure: Error | null = null
 let nextStartDelayMs = 0
 vi.mock('./claude-code', () => ({
   ClaudeCodeProcess: class {
-    constructor(options: { sessionId: string }) {
+    constructor(options: { sessionId: string; noninteractive?: boolean }) {
       const proc = new MockClaudeProcess(options)
       spawnedProcesses.push(proc)
       return proc
@@ -109,6 +117,7 @@ vi.mock('./claude-code', () => ({
 }))
 
 import { SessionManager } from './session-manager'
+import { inputManager } from './input-manager'
 
 const IDLE_MS = 10
 
@@ -232,7 +241,7 @@ describe('SessionManager idle eviction', () => {
   })
 
   it('evicts an automated session as soon as it is idle (threshold 0)', async () => {
-    const { id, proc } = await createIdleSession({ metadata: { isAutomated: true } })
+    const { id, proc } = await createIdleSession({ metadata: { noninteractive: true } })
 
     await manager.evictIdleSessions()
 
@@ -465,7 +474,7 @@ describe('SessionManager idle eviction', () => {
       wakeGraceMs: 60_000,
     })
     try {
-      await gapManager.createSession({ initialMessage: 'hi', metadata: { isAutomated: true } })
+      await gapManager.createSession({ initialMessage: 'hi', metadata: { noninteractive: true } })
       const proc = spawnedProcesses[spawnedProcesses.length - 1]
       proc.emit('message', { type: 'system', subtype: 'task_started', task_id: 'bg-w' })
       emitSettled(proc) // premature idle: turn over, task still running
@@ -494,7 +503,7 @@ describe('SessionManager idle eviction', () => {
       wakeGraceMs: 5,
     })
     try {
-      await graceManager.createSession({ initialMessage: 'hi', metadata: { isAutomated: true } })
+      await graceManager.createSession({ initialMessage: 'hi', metadata: { noninteractive: true } })
       const proc = spawnedProcesses[spawnedProcesses.length - 1]
       proc.emit('message', { type: 'system', subtype: 'task_started', task_id: 'bg-g' })
       emitSettled(proc)
@@ -511,19 +520,25 @@ describe('SessionManager idle eviction', () => {
     }
   })
 
-  it('isAutomated survives persistence, so a bare-resumed automated session keeps its eviction class', async () => {
+  function metaOf(sessionId: string) {
+    return persistedSessions.get(sessionId)?.metadata as
+      | { noninteractive?: boolean; isAutomated?: boolean }
+      | undefined
+  }
+
+  it('noninteractive survives persistence, so a bare-resumed session keeps its eviction class and process mode', async () => {
     const session = await manager.createSession({
       initialMessage: 'hi',
-      metadata: { isAutomated: true },
+      metadata: { noninteractive: true },
     })
     const firstProc = spawnedProcesses[spawnedProcesses.length - 1]
+    expect(firstProc.noninteractive).toBe(true)
     emitSettled(firstProc)
     await manager.stopAll()
 
     // Fresh manager = container restart. Interactive threshold is huge, so
-    // only the restored isAutomated flag (threshold 0) can allow eviction.
-    // Resume via a bare getSession — a human message would (correctly)
-    // promote the session to interactive instead.
+    // only the restored flag (threshold 0) can allow eviction. Resume via a
+    // bare getSession — a human message would (correctly) promote instead.
     const restarted = new SessionManager(workDir, {
       prewarmEnabled: false,
       idleEvictionMs: 60 * 60_000,
@@ -531,8 +546,9 @@ describe('SessionManager idle eviction', () => {
     })
     try {
       const resumed = await restarted.getSession(session.id)
-      expect(resumed?.metadata?.isAutomated).toBe(true)
+      expect(resumed?.metadata?.noninteractive).toBe(true)
       const proc = spawnedProcesses[spawnedProcesses.length - 1]
+      expect(proc.noninteractive).toBe(true)
 
       await restarted.evictIdleSessions()
       expect(proc.stopCalls).toBe(1)
@@ -541,7 +557,27 @@ describe('SessionManager idle eviction', () => {
     }
   })
 
-  it('a human message promotes an automated session to the interactive class', async () => {
+  it('a record persisted with the legacy isAutomated spelling resumes as noninteractive', async () => {
+    const session = await manager.createSession({ initialMessage: 'hi' })
+    await manager.stopAll()
+    const record = persistedSessions.get(session.id)!
+    persistedSessions.set(session.id, { ...record, metadata: { isAutomated: true, other: 'keep' } })
+
+    const restarted = new SessionManager(workDir, {
+      prewarmEnabled: false,
+      idleEvictionMs: 60 * 60_000,
+      automatedIdleEvictionMs: 0,
+    })
+    try {
+      const resumed = await restarted.getSession(session.id)
+      expect(resumed?.metadata).toEqual({ noninteractive: true, other: 'keep' })
+      expect(spawnedProcesses[spawnedProcesses.length - 1].noninteractive).toBe(true)
+    } finally {
+      await restarted.stopAll()
+    }
+  })
+
+  it('a human message promotes a noninteractive session to the interactive class', async () => {
     const promoManager = new SessionManager(workDir, {
       prewarmEnabled: false,
       idleEvictionMs: 60 * 60_000, // interactive effectively off
@@ -550,32 +586,36 @@ describe('SessionManager idle eviction', () => {
     try {
       const session = await promoManager.createSession({
         initialMessage: 'hi',
-        metadata: { isAutomated: true },
+        metadata: { noninteractive: true },
       })
       const proc = spawnedProcesses[spawnedProcesses.length - 1]
       emitSettled(proc)
 
       await promoManager.evictIdleSessions()
-      expect(proc.stopCalls).toBe(1) // automated: reaped at threshold 0
+      expect(proc.stopCalls).toBe(1) // noninteractive: reaped at threshold 0
 
       // Human follow-up: resumes AND promotes — settled turns no longer
-      // evict at threshold 0.
+      // evict at threshold 0, and the process is told before the send so it
+      // rebuilds its query (tool list + prompt) for that message.
       await promoManager.sendMessage(session.id, 'hello, human here')
+      expect(proc.setNoninteractiveCalls).toEqual([false])
       emitSettled(proc)
       await promoManager.evictIdleSessions()
       expect(proc.stopCalls).toBe(1) // interactive 1h threshold now applies
 
       // Promotion is persisted: after a restart, a bare resume is still
       // interactive-class.
-      expect(
-        (persistedSessions.get(session.id)?.metadata as { isAutomated?: boolean })?.isAutomated
-      ).toBe(false)
+      expect(metaOf(session.id)?.noninteractive).toBe(false)
+
+      // Idempotent: a second human message does not re-promote.
+      await promoManager.sendMessage(session.id, 'and again')
+      expect(proc.setNoninteractiveCalls).toEqual([false])
     } finally {
       await promoManager.stopAll()
     }
   })
 
-  it('an automated follow-up preserves the automated session class', async () => {
+  it('a message marked noninteractive (scheduled wake, x-agent follow-up) preserves the class', async () => {
     const promoManager = new SessionManager(workDir, {
       prewarmEnabled: false,
       idleEvictionMs: 60 * 60_000,
@@ -584,29 +624,89 @@ describe('SessionManager idle eviction', () => {
     try {
       const session = await promoManager.createSession({
         initialMessage: 'hi',
-        metadata: { isAutomated: true },
+        metadata: { noninteractive: true },
       })
       const proc = spawnedProcesses[spawnedProcesses.length - 1]
       emitSettled(proc)
 
-      await promoManager.sendMessage(session.id, 'agent follow-up', undefined, { isAutomated: true })
+      await promoManager.sendMessage(session.id, 'agent follow-up', undefined, { noninteractive: true })
       emitSettled(proc)
       await promoManager.evictIdleSessions()
 
       expect(proc.stopCalls).toBe(1)
-      expect(
-        (persistedSessions.get(session.id)?.metadata as { isAutomated?: boolean })?.isAutomated
-      ).toBe(true)
+      expect(proc.setNoninteractiveCalls).toEqual([])
+      expect(metaOf(session.id)?.noninteractive).toBe(true)
     } finally {
       await promoManager.stopAll()
     }
+  })
+
+  it('a shouldQuery:false append does not promote', async () => {
+    const session = await manager.createSession({
+      initialMessage: 'hi',
+      metadata: { noninteractive: true },
+    })
+    const proc = spawnedProcesses[spawnedProcesses.length - 1]
+    await manager.sendMessage(session.id, 'note', undefined, { shouldQuery: false })
+    expect(proc.setNoninteractiveCalls).toEqual([])
+    expect(metaOf(session.id)?.noninteractive).toBe(true)
+  })
+
+  it('raising an input request does not promote: the host may auto-approve it without showing it', async () => {
+    const session = await manager.createSession({
+      initialMessage: 'hi',
+      metadata: { noninteractive: true },
+    })
+    const proc = spawnedProcesses[spawnedProcesses.length - 1]
+    for (const [id, type] of [['t-1', 'secret'], ['t-2', 'script_run'], ['t-3', 'notify_user']] as const) {
+      void inputManager.createPendingWithType(id, type, undefined, session.id).catch(() => undefined)
+    }
+    expect(proc.setNoninteractiveCalls).toEqual([])
+    expect(metaOf(session.id)?.noninteractive).toBe(true)
+    for (const id of ['t-1', 't-2', 't-3']) inputManager.reject(id, 'test done')
+  })
+
+  it('the host promotes a live session: process told, flag persisted, idempotent', async () => {
+    const session = await manager.createSession({
+      initialMessage: 'hi',
+      metadata: { noninteractive: true },
+    })
+    const proc = spawnedProcesses[spawnedProcesses.length - 1]
+
+    expect(manager.promoteToInteractive(session.id, 'host')).toBe(true)
+    expect(proc.setNoninteractiveCalls).toEqual([false])
+    expect(metaOf(session.id)?.noninteractive).toBe(false)
+
+    expect(manager.promoteToInteractive(session.id, 'host')).toBe(true)
+    expect(proc.setNoninteractiveCalls).toEqual([false])
+  })
+
+  it('the host promotes a cold session: persisted flag flips so the resume is interactive-class', async () => {
+    const session = await manager.createSession({
+      initialMessage: 'hi',
+      metadata: { noninteractive: true, other: 'keep' },
+    })
+    await manager.stopAll()
+    const spawnedBefore = spawnedProcesses.length
+
+    expect(manager.promoteToInteractive(session.id, 'host')).toBe(true)
+    expect(spawnedProcesses.length).toBe(spawnedBefore) // no resume just to flip a flag
+    expect(metaOf(session.id)).toEqual({ noninteractive: false, other: 'keep' })
+
+    const resumed = await manager.getSession(session.id)
+    expect(resumed?.metadata?.noninteractive).toBe(false)
+    expect(spawnedProcesses[spawnedProcesses.length - 1].noninteractive).toBe(false)
+  })
+
+  it('promoting an unknown session returns false', () => {
+    expect(manager.promoteToInteractive('nope', 'host')).toBe(false)
   })
 
   it('eviction stops the process GRACEFULLY (transcript-flush protection)', async () => {
     // A hard abort races the CLI's transcript flush — the durability E2E
     // proved probabilistic loss of the latest turns. This pins the graceful
     // flag at unit level so a revert can't slip through the normal suite.
-    const { proc } = await createIdleSession({ metadata: { isAutomated: true } })
+    const { proc } = await createIdleSession({ metadata: { noninteractive: true } })
     await manager.evictIdleSessions()
     expect(proc.stopCalls).toBe(1)
     expect(proc.lastStopOptions?.graceful).toBe(true)
@@ -633,7 +733,7 @@ describe('SessionManager idle eviction', () => {
     // directly; the process emits outbound-message and the manager listener
     // must flip the tracker busy, or a sweep landing before the CLI's
     // 'running' event kills the turn it just started.
-    const { proc } = await createIdleSession({ metadata: { isAutomated: true } })
+    const { proc } = await createIdleSession({ metadata: { noninteractive: true } })
 
     proc.emit('outbound-message', { expectsResponse: true })
     await manager.evictIdleSessions()
@@ -741,7 +841,7 @@ describe('SessionManager idle eviction', () => {
     // background_tasks_changed is process-local and a fresh process emits no
     // initial snapshot: a task id carried across a process replacement
     // (interrupt/crash mid-task) would pin the session unevictable forever.
-    const { proc } = await createIdleSession({ metadata: { isAutomated: true } })
+    const { proc } = await createIdleSession({ metadata: { noninteractive: true } })
     proc.emit('message', { type: 'system', subtype: 'task_started', task_id: 'orphan-1' })
 
     await manager.evictIdleSessions()
@@ -817,7 +917,7 @@ describe('SessionManager idle eviction', () => {
     try {
       const session = await promoManager.createSession({
         initialMessage: 'hi',
-        metadata: { isAutomated: true },
+        metadata: { noninteractive: true },
       })
       const proc = spawnedProcesses[spawnedProcesses.length - 1]
       emitSettled(proc)

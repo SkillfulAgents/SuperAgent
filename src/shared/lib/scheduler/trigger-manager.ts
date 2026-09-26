@@ -333,7 +333,7 @@ class TriggerManager {
       llmProviderId: resolved.llmProviderId,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
-      metadata: { isAutomated: true },
+      metadata: { noninteractive: true },
       effort: resolved.effort,
       ...(resolved.speed ? { speed: resolved.speed } : {}),
     })
@@ -342,6 +342,7 @@ class TriggerManager {
     const sessionName = trigger.name || `Webhook: ${trigger.triggerType}`
 
     await actor.sessions.register(sessionId, sessionName, {
+      noninteractive: true,
       isWebhookExecution: true,
       webhookTriggerId: trigger.id,
       webhookTriggerName: trigger.name || undefined,

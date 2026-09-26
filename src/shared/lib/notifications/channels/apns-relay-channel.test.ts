@@ -122,7 +122,7 @@ beforeEach(() => {
 })
 
 describe('type gating', () => {
-  it.each(['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook'] as const)(
+  it.each(['session_complete', 'session_waiting', 'session_notify', 'session_scheduled', 'session_webhook'] as const)(
     'delivers %s (at least silently)',
     async (type) => {
       await channel.deliver(makeEvent({ type }))
@@ -236,6 +236,67 @@ describe('origin-device alert routing', () => {
     const pushes = sentPushes()
     expect(pushes).toHaveLength(2)
     expect(pushes.every((p) => p.kind === 'background')).toBe(true)
+  })
+
+  it('session_notify alerts every eligible device: its session has no origin (cron / trigger)', async () => {
+    mocks.listDeliverableApnsDevices.mockReturnValue([
+      makeDevice(),
+      makeDevice({ id: 'dev-row-2', token: TOKEN_B, mobileDeviceId: 'family-2' }),
+    ])
+    mocks.getSessionMetadata.mockResolvedValue({ noninteractive: true, isScheduledExecution: true })
+
+    await channel.deliver(
+      makeEvent({ type: 'session_notify', title: 'Demo Agent needs your attention', body: 'Gave up after 3 retries.' })
+    )
+
+    const pushes = sentPushes()
+    expect(pushes).toHaveLength(4)
+    for (const token of [TOKEN_A, TOKEN_B]) {
+      const own = pushes.filter((p) => p.deviceToken === token)
+      expect(own.map((p) => p.kind).sort()).toEqual(['alert', 'background'])
+      expect(own.find((p) => p.kind === 'alert')!.alert).toEqual({
+        title: 'Demo Agent needs your attention',
+        body: 'Gave up after 3 retries.',
+      })
+    }
+  })
+
+  it('session_notify still honors the owner prefs gate (sessionWaiting off → background only)', async () => {
+    mocks.getSessionMetadata.mockResolvedValue({ noninteractive: true })
+    mocks.getUserSettings.mockReturnValue({
+      notifications: {
+        enabled: true,
+        sessionComplete: true,
+        sessionWaiting: false,
+        sessionScheduled: true,
+        platformNotification: true,
+        notifyWhenUnfocused: false,
+      },
+    })
+
+    await channel.deliver(makeEvent({ type: 'session_notify' }))
+
+    const pushes = sentPushes()
+    expect(pushes).toHaveLength(1)
+    expect(pushes[0].kind).toBe('background')
+  })
+
+  it('session_notify in auth mode alerts only devices whose owner can access the agent', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    mocks.listDeliverableApnsDevices.mockReturnValue([
+      makeDevice({ userId: 'user-a' }),
+      makeDevice({ id: 'dev-row-2', token: TOKEN_B, mobileDeviceId: 'family-2', userId: 'user-b' }),
+    ])
+    mocks.getAccessibleAgentSlugs.mockImplementation(async (userId: string) =>
+      userId === 'user-a' ? ['agent-x'] : []
+    )
+    mocks.getSessionMetadata.mockResolvedValue({ noninteractive: true })
+
+    await channel.deliver(makeEvent({ type: 'session_notify' }))
+
+    const pushes = sentPushes()
+    expect(pushes.map((p) => p.deviceToken)).toEqual([TOKEN_A, TOKEN_A])
+    expect(pushes.map((p) => p.kind).sort()).toEqual(['alert', 'background'])
   })
 
   it('a device row with no mobileDeviceId can never be the origin', async () => {

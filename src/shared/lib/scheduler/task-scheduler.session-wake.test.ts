@@ -222,7 +222,7 @@ describe('TaskScheduler session wake (resume) branch', () => {
     expect(content).toContain('resuming as scheduled')
     expect(content).toContain('Check whether Dana replied to the intro email')
     expect(typeof uuid).toBe('string')
-    expect(options).toEqual({ shouldQuery: true })
+    expect(options).toEqual({ shouldQuery: true, noninteractive: true })
 
     expect(mockMarkSessionActive).toHaveBeenCalledWith('agent-one', 'sleeping-session-1')
     expect(mockMarkTaskExecuted).toHaveBeenCalledWith('wake-task-1', 'sleeping-session-1')

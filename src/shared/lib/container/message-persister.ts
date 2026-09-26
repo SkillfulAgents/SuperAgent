@@ -12,6 +12,7 @@ import type { RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request
 import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/request-browser-input'
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { notifyUserInputSchema } from '@shared/lib/tool-definitions/notify-user'
 import { userInputRequestManager, type UserInputRequestTransition } from '@shared/lib/user-input/request-manager'
 import {
   isReplayableUserInputRequest,
@@ -79,9 +80,9 @@ import {
   revertSessionActivity,
   type SessionActivityMark,
 } from '@shared/lib/services/session-summary-cache'
-import { isHiddenAutomatedSession, isAgentIntegrationSession } from '@shared/lib/services/session-visibility'
+import { isHiddenAutomatedSession, isAgentIntegrationSession, isNoninteractiveSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
-import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { notificationManager, type NotificationOutcome } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
 import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capability-policy-schema'
@@ -227,6 +228,8 @@ interface StreamingState {
   // told the live clients). Cleared when a turn starts. A client that connects
   // now reads it from the `connected` snapshot, since it missed the frame.
   waitingBackground: boolean
+  // notify_user surfaced this turn's outcome (delivered or suppressed by settings); skip the completion alert.
+  notifyUserHandledThisTurn?: boolean
   isRecovering: boolean // Mid-turn death claimed for resume; skip session_error until resume fails
   coalescedUserMessages?: CoalescedUserMessage[] // User texts sent while recovering; delivered with their uuids
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
@@ -925,7 +928,7 @@ class MessagePersister {
         this.finalizeIdle(agentSlug, sessionId, state)
         // Completion notification at the real end of the work. Skip
         // resume-exits: the session is pausing for a resume, not done.
-        if (state.lastResultSubtype === 'success' && state.agentSlug) {
+        if (state.lastResultSubtype === 'success' && state.agentSlug && !state.notifyUserHandledThisTurn) {
           notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
             responseText: state.lastAssistantText,
             responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
@@ -1798,6 +1801,7 @@ class MessagePersister {
     // Message-scoped: true for a queued message just as much as a new turn.
     state.isInterrupted = false // Reset interrupted flag on new message
     state.waitingBackground = false
+    state.notifyUserHandledThisTurn = false
     this.cancelSettleAfterStop(state)
     state.isAwaitingInput = false // Reset awaiting input on new message
     state.lastApiErrorCode = null // Clear previous API error on new message
@@ -2023,18 +2027,41 @@ class MessagePersister {
     this.syncSessionAwaiting(agentSlug, sessionId)
   }
 
-  // Promote an automated session (cron/webhook/chat/x-agent) to a regular
-  // session so it appears in the sidebar and receives completion notifications.
-  // Public: the notification manager promotes on session_waiting so blocked
-  // automations surface in session lists instead of accruing unread rows
-  // nothing displays.
+  // Promote a hidden session (cron/webhook/widget-repair/chat/x-agent) to a
+  // regular session so it appears in the sidebar and receives completion
+  // notifications. Noninteractive sessions leave that mode for good; chat and
+  // x-agent sessions are hidden by their own flags, so they still take the
+  // legacy marker. Public: the notification manager promotes on
+  // session_waiting so blocked automations surface in session lists instead
+  // of accruing unread rows nothing displays. Idempotent.
   async promoteAutomatedSession(agentSlug: string, sessionId: string): Promise<void> {
     const meta = await getSessionMetadata(this.storeOf(agentSlug), sessionId)
     if (!isHiddenAutomatedSession(meta)) return
 
+    const hiddenByOwnFlag = isAgentIntegrationSession(meta) || !!meta?.invokedByAgentSlug
+    const wasNoninteractive = isNoninteractiveSession(meta)
     await updateSessionMetadata(this.storeOf(agentSlug), sessionId, {
-      promotedToInteractive: true,
+      noninteractive: false,
+      ...(hiddenByOwnFlag ? { promotedToInteractive: true } : {}),
     })
+
+    // The container keeps its own copy of the flag (it drives the notify_user
+    // tool and the unattended prompt). Host first: if this call fails, the
+    // session is visible and the host rejects a stray notify_user, which is
+    // the safe side. A container that is down for this call catches up when
+    // the human message reaches it (its sendMessage promotes too).
+    if (wasNoninteractive) {
+      try {
+        const client = (await getContainerHost()).runtime(agentSlug).getClient()
+        await client.promoteSession(sessionId)
+      } catch (error) {
+        console.warn(`[MessagePersister] Container promotion failed for session ${sessionId}:`, error)
+        captureException(error, {
+          tags: { area: 'sessions', op: 'promote-container-session' },
+          extra: { agentSlug, sessionId },
+        })
+      }
+    }
 
     // Promoted sessions behave interactive from here on — keep their stream
     // alive across settles like any other interactive session.
@@ -2960,8 +2987,9 @@ class MessagePersister {
         // notification (vs just creating the DB record) is the renderer's
         // call — it knows about window focus, per-user viewing, and the
         // `notifyWhenUnfocused` toggle. Skip for 'resume' exits — the
-        // session is pausing for a resume, not truly finished.
-        if (content.subtype !== 'resume' && state.agentSlug) {
+        // session is pausing for a resume, not truly finished — and for a
+        // turn notify_user already alerted on.
+        if (content.subtype !== 'resume' && state.agentSlug && !state.notifyUserHandledThisTurn) {
           notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
             responseText: state.lastAssistantText,
             responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
@@ -3951,6 +3979,16 @@ class MessagePersister {
             )
           }
 
+          // Notify user tool - blocking, host promotes + notifies
+          if (state.currentToolUse.name === 'mcp__user-input__notify_user') {
+            this.handleNotifyUserTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           // List scheduled tasks tool - blocking
           if (state.currentToolUse.name === 'mcp__user-input__list_scheduled_tasks') {
             this.handleListScheduledTasksTool(
@@ -4427,6 +4465,78 @@ class MessagePersister {
         console.error('[MessagePersister] Wake persisted but result delivery failed:', deliveryError)
       }
     })()
+  }
+
+  // notify_user: surface a hidden automated session and alert the user. The
+  // notification manager promotes on session_notify, so one call does both.
+  // Nothing may escape this handler: an unhandled rejection quits the app.
+  private handleNotifyUserTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug: string
+  ): void {
+    ;(async () => {
+      let raw: unknown
+      try {
+        raw = JSON.parse(toolInput)
+      } catch {
+        console.error('[MessagePersister] Failed to parse notify_user input:', toolInput)
+        await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input').catch(console.error)
+        return
+      }
+
+      const parsed = notifyUserInputSchema.safeParse(raw)
+      if (!parsed.success) {
+        await this.rejectContainerInput(
+          agentSlug,
+          toolUseId,
+          'Invalid tool input: message must be a non-empty string; title, if present, a string'
+        ).catch(console.error)
+        return
+      }
+      const { message, title } = parsed.data
+
+      let outcome: NotificationOutcome
+      try {
+        const result = await notificationManager.triggerAgentNotify(sessionId, agentSlug, message, title)
+        if (!result.ok) {
+          await this.rejectContainerInput(
+            agentSlug,
+            toolUseId,
+            'notify_user is only for sessions nobody is watching. This session is interactive: the user reads your replies here, so state the outcome in this conversation instead.'
+          ).catch(console.error)
+          return
+        }
+        outcome = result.outcome
+      } catch (error) {
+        console.error('[MessagePersister] Error handling notify_user:', error)
+        const msg = error instanceof Error ? error.message : String(error)
+        await this.rejectContainerInput(agentSlug, toolUseId, `Failed to notify the user: ${msg}`).catch(console.error)
+        return
+      }
+
+      // The outcome is covered either way (the session is visible now); the
+      // turn's completion must not alert a second time.
+      const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
+      if (state) state.notifyUserHandledThisTurn = true
+
+      try {
+        await this.resolveContainerInput(
+          agentSlug,
+          toolUseId,
+          outcome === 'created'
+            ? 'The user has been notified and this session is now visible in their session list. Do not call notify_user again for the same outcome.'
+            : 'This session is now visible in the user\'s session list, but no notification was sent: the user has this notification type turned off. Do not call notify_user again for the same outcome.'
+        )
+      } catch (deliveryError) {
+        console.error('[MessagePersister] Notification sent but result delivery failed:', deliveryError)
+      }
+    })().catch((error) => {
+      console.error('[MessagePersister] notify_user handler failed:', error)
+      captureException(error, { tags: { area: 'notifications', op: 'notify-user-tool' }, extra: { agentSlug, sessionId } })
+      this.rejectContainerInput(agentSlug, toolUseId, 'Failed to notify the user').catch(console.error)
+    })
   }
 
   /**

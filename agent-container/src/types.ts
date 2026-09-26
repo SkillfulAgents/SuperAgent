@@ -121,6 +121,23 @@ export interface SendMessageRequest {
   speed?: SpeedLevel; // If set and different from current session speed, triggers interrupt+restart with new speed
   model?: string; // If set and different from current session model, triggers interrupt+restart with new model
   shouldQuery?: boolean; // When false, appends to transcript without triggering an assistant turn
-  isAutomated?: boolean; // Agent-originated follow-up: preserve the session's automated runtime class
+  noninteractive?: boolean; // Not from a human (scheduled wake, x-agent follow-up): do not promote the session
   capabilityPolicies?: AgentCapabilityPolicies; // Current launch policies; a block-boundary change triggers interrupt+restart
+}
+
+// `noninteractive: true` = nobody is watching this session (cron / trigger /
+// widget repair). It adds the notify_user tool + unattended guidance and picks
+// the eager idle-eviction class. The host clears it for good once it has made
+// the session visible (POST /sessions/:id/promote). Older records spelled it
+// `isAutomated`.
+export function isNoninteractive(metadata: Record<string, unknown> | undefined): boolean {
+  return metadata?.noninteractive === true;
+}
+
+export function normalizeSessionMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!metadata || !('isAutomated' in metadata)) return metadata;
+  const { isAutomated, ...rest } = metadata;
+  return { ...rest, noninteractive: rest.noninteractive === true || isAutomated === true };
 }

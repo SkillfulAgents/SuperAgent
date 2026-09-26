@@ -351,7 +351,7 @@ describe('scheduled-tasks route', () => {
       expect(sessionId).toBe('sleeping-session-1')
       expect(content.startsWith('[SYSTEM] ')).toBe(true)
       expect(content).toContain('Check whether Dana replied')
-      expect(options).toEqual({ shouldQuery: true })
+      expect(options).toEqual({ shouldQuery: true, noninteractive: true })
 
       expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
         expect.objectContaining({ slug: 'agent-one' }),

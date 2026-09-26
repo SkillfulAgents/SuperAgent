@@ -66,7 +66,7 @@ export async function finishConnectionReplacement(
 
   const deliveries = await Promise.allSettled(ready.map(({ sessionId, client }) =>
     messagePersister.withSessionSend(agentSlug, sessionId, client, () =>
-      client.sendMessage(sessionId, buildConnectionReplacementMessage(change), randomUUID(), { shouldQuery: true }),
+      client.sendMessage(sessionId, buildConnectionReplacementMessage(change), randomUUID(), { shouldQuery: true, noninteractive: true }),
     ),
   ))
   for (const result of deliveries) {
