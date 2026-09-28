@@ -895,6 +895,7 @@ describe('usage-service', () => {
     it.each([
       // Anthropic API canonical ids and pre-4.6 convenience aliases.
       ['claude-sonnet-5', 2, 10],
+      ['claude-sonnet-5-5', 2, 10],
       ['claude-haiku-4-5-20251001', 1, 5],
       ['claude-haiku-4-5', 1, 5],
       // Provider-translated runtime ids observed in sanitized transcripts.

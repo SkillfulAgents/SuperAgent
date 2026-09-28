@@ -149,12 +149,20 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
   {
     id: 'claude-sonnet-5',
     label: 'Sonnet 5',
+    family: 'sonnet',
+    icon: ICON,
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-sonnet-5'),
+  },
+  {
+    id: 'claude-sonnet-5-5',
+    label: 'Sonnet 5.5',
     blurb: 'Balanced speed and capability',
     family: 'sonnet',
     isLatest: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
-    pricing: pricingFor('claude-sonnet-5'),
+    pricing: pricingFor('claude-sonnet-5-5'),
   },
   {
     id: 'claude-opus-4-6',
