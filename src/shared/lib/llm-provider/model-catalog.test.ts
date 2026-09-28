@@ -117,6 +117,7 @@ describe('getProviderCatalog', () => {
     ['claude-haiku-4-5', ['low', 'medium', 'high']],
     ['claude-sonnet-4-6', ['low', 'medium', 'high', 'max']],
     ['claude-sonnet-5', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['claude-sonnet-5-5', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['claude-opus-4-6', ['low', 'medium', 'high', 'max']],
     ['claude-opus-4-7', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['claude-opus-4-8', ['low', 'medium', 'high', 'xhigh', 'max']],
@@ -695,7 +696,7 @@ describe('resolveModelForProvider', () => {
 
   it('resolves a bare family alias to that family latest id', () => {
     expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-5-5')
-    expect(resolveModelForProvider('sonnet', 'anthropic', 'agent')).toBe('claude-sonnet-5')
+    expect(resolveModelForProvider('sonnet', 'anthropic', 'agent')).toBe('claude-sonnet-5-5')
   })
 
   it('keeps an explicit Opus 5 pin on Opus 5 after 5.5 becomes latest', () => {

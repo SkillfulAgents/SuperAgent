@@ -192,6 +192,13 @@
     "cacheCreation1h": 4,
     "cacheRead": 0.2
   },
+  "claude-sonnet-5-5": {
+    "input": 2,
+    "output": 10,
+    "cacheCreation": 2.5,
+    "cacheCreation1h": 4,
+    "cacheRead": 0.2
+  },
   "gpt-5.4": {
     "input": 2.5,
     "output": 15,
