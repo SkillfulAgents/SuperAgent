@@ -39,6 +39,8 @@ export type SkillsetPublishInput = {
   title: string
   body: string
   gitAddPaths?: string[]
+  /** Obsolete repository files to remove as part of a GitHub update. */
+  deletePaths?: string[]
 } & SkillsetHostedUpdateInput
 
 export type SkillsetPublishResult = {

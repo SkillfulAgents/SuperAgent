@@ -17,7 +17,7 @@ import { validateAgentTemplate } from '@shared/lib/services/agent-template-servi
 import { validateSkillZip } from '@shared/lib/services/skillset-service'
 
 const templateValid = { valid: true, agentName: 'Researcher', fileCount: 3, stripPrefix: '' }
-const templateInvalid = { valid: false, error: 'CLAUDE.md not found in template', fileCount: 1, stripPrefix: '' }
+const templateInvalid = { valid: false, error: 'Agent instructions not found in template', fileCount: 1, stripPrefix: '' }
 const skillValid = { valid: true, skillName: 'pdf-tools', fileCount: 2, stripPrefix: '' }
 const skillInvalid = { valid: false, error: 'SKILL.md not found in package', fileCount: 1, stripPrefix: '' }
 
@@ -69,7 +69,7 @@ describe('classifyImportPackage', () => {
     const result = await classifyImportPackage(writePackage('broken.skill'))
 
     expect(result).toMatchObject({ error: expect.stringContaining('Invalid path in package: ../evil') })
-    expect(result).not.toMatchObject({ error: expect.stringContaining('CLAUDE.md') })
+    expect(result).not.toMatchObject({ error: expect.stringContaining('Agent instructions') })
     // Extension also breaks both-marker ties: skill validation ran before template.
     expect(vi.mocked(validateSkillZip).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(validateAgentTemplate).mock.invocationCallOrder[0])

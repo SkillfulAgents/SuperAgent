@@ -14,6 +14,6 @@ import type { FileOps } from '@shared/lib/agent-actor/types'
 export interface AgentWorkspaceAccess {
   /** The agent's workspace file operations. */
   files(slug: string): FileOps
-  /** The agent's instructions document (`CLAUDE.md`), or null when it has none. */
+  /** The agent's instructions document (`AGENTS.md`), or null when it has none. */
   instructions(slug: string): Promise<string | null>
 }

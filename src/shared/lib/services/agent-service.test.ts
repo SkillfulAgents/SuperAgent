@@ -7,9 +7,9 @@ import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '@shared/lib/db/schema'
 import {
-  SAMPLE_CLAUDE_MD,
-  SAMPLE_CLAUDE_MD_MINIMAL,
-  SAMPLE_CLAUDE_MD_NO_FRONTMATTER,
+  SAMPLE_INSTRUCTIONS,
+  SAMPLE_INSTRUCTIONS_MINIMAL,
+  SAMPLE_INSTRUCTIONS_NO_FRONTMATTER,
 } from './__fixtures__/test-data'
 
 // Mock the container host before importing the service
@@ -62,8 +62,8 @@ import {
   updateAgent,
   deleteAgent,
   agentExists,
-  getAgentClaudeMdContent,
-  setAgentClaudeMdContent,
+  getAgentInstructionsContent,
+  setAgentInstructionsContent,
   adoptAgentIdentityFromWorkspace,
   writeAgentIdentityProjection,
 } from './agent-service'
@@ -109,14 +109,14 @@ describe('agent-service', () => {
   })
 
   // Helper to create an agent the way an install found on disk is: a
-  // directory with a CLAUDE.md, imported into the catalog by the data
+  // directory with a AGENTS.md, imported into the catalog by the data
   // migration that runs when the database is opened.
-  async function createTestAgent(slug: string, claudeMdContent: string) {
+  async function createTestAgent(slug: string, instructionsContent: string) {
     const workspaceDir = path.join(testDir, 'agents', slug, 'workspace')
     await fs.promises.mkdir(workspaceDir, { recursive: true })
     await fs.promises.writeFile(
-      path.join(workspaceDir, 'CLAUDE.md'),
-      claudeMdContent
+      path.join(workspaceDir, 'AGENTS.md'),
+      instructionsContent
     )
     await importAgentDirectories(testDb)
   }
@@ -131,7 +131,7 @@ describe('agent-service', () => {
       expect(agent).toBeNull()
     })
 
-    it('returns null when a directory exists but CLAUDE.md is missing, so it was never imported', async () => {
+    it('returns null when a directory exists but AGENTS.md is missing, so it was never imported', async () => {
       await fs.promises.mkdir(path.join(testDir, 'agents', 'hollow', 'workspace'), { recursive: true })
       await importAgentDirectories(testDb)
 
@@ -181,15 +181,15 @@ describe('agent-service', () => {
     it('answers with the catalog name, not the frontmatter, once they differ', async () => {
       // The agent editing its own frontmatter no longer renames it: the row
       // is the authority and the host rewrites the projection on its next write.
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
-      await setAgentClaudeMdContent('test-agent', SAMPLE_CLAUDE_MD.replace('name: Github Agent', 'name: Self Renamed'))
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+      await setAgentInstructionsContent('test-agent', SAMPLE_INSTRUCTIONS.replace('name: Github Agent', 'name: Self Renamed'))
 
       expect((await getAgent('test-agent'))?.frontmatter.name).toBe('Github Agent')
       expect((await getAgentRecord('test-agent'))?.name).toBe('Github Agent')
     })
 
     it('returns agent config for existing agent', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const agent = await getAgent('test-agent')
 
@@ -203,8 +203,8 @@ describe('agent-service', () => {
       expect(agent?.instructions).toContain('You are a helpful AI assistant')
     })
 
-    it('handles CLAUDE.md without description', async () => {
-      await createTestAgent('minimal-agent', SAMPLE_CLAUDE_MD_MINIMAL)
+    it('handles AGENTS.md without description', async () => {
+      await createTestAgent('minimal-agent', SAMPLE_INSTRUCTIONS_MINIMAL)
 
       const agent = await getAgent('minimal-agent')
 
@@ -226,13 +226,13 @@ Instructions
       expect(agent?.frontmatter.name).toBe('no-name-agent')
     })
 
-    it('handles CLAUDE.md without frontmatter', async () => {
-      await createTestAgent('no-frontmatter', SAMPLE_CLAUDE_MD_NO_FRONTMATTER)
+    it('handles AGENTS.md without frontmatter', async () => {
+      await createTestAgent('no-frontmatter', SAMPLE_INSTRUCTIONS_NO_FRONTMATTER)
 
       const agent = await getAgent('no-frontmatter')
 
       expect(agent?.frontmatter.name).toBe('no-frontmatter') // Falls back to slug
-      expect(agent?.instructions).toBe(SAMPLE_CLAUDE_MD_NO_FRONTMATTER)
+      expect(agent?.instructions).toBe(SAMPLE_INSTRUCTIONS_NO_FRONTMATTER)
     })
   })
 
@@ -243,7 +243,7 @@ Instructions
     })
 
     it('returns agent with stopped status', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const agent = await getAgentWithStatus('test-agent')
 
@@ -257,7 +257,7 @@ Instructions
     })
 
     it('returns agent with running status when container is running', async () => {
-      await createTestAgent('running-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('running-agent', SAMPLE_INSTRUCTIONS)
 
       // Mock container as running
       mockGetCachedInfo.mockReturnValueOnce({ status: 'running', port: 3456 })
@@ -269,7 +269,7 @@ Instructions
     })
 
     it('can omit filesystem session summaries for command responses', async () => {
-      await createTestAgent('command-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('command-agent', SAMPLE_INSTRUCTIONS)
 
       const agent = await getAgentWithStatus('command-agent', { includeSummary: false })
 
@@ -281,7 +281,7 @@ Instructions
     })
 
     it('surfaces awaiting input when agent has pending proxy reviews and no active sessions', async () => {
-      await createTestAgent('review-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('review-agent', SAMPLE_INSTRUCTIONS)
       mockGetPendingReviewsForAgent.mockReturnValueOnce([
         { id: 'review-1', agentSlug: 'review-agent', accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/messages', matchedScopes: [], scopeDescriptions: {} },
       ])
@@ -299,8 +299,8 @@ Instructions
     })
 
     it('lists all agents', async () => {
-      await createTestAgent('agent-1', SAMPLE_CLAUDE_MD)
-      await createTestAgent('agent-2', SAMPLE_CLAUDE_MD_MINIMAL)
+      await createTestAgent('agent-1', SAMPLE_INSTRUCTIONS)
+      await createTestAgent('agent-2', SAMPLE_INSTRUCTIONS_MINIMAL)
 
       const agents = await listAgents()
 
@@ -330,8 +330,8 @@ Instructions`
       expect(agents[1].name).toBe('Old Agent')
     })
 
-    it('skips directories without CLAUDE.md', async () => {
-      await createTestAgent('valid-agent', SAMPLE_CLAUDE_MD)
+    it('skips directories without AGENTS.md', async () => {
+      await createTestAgent('valid-agent', SAMPLE_INSTRUCTIONS)
 
       // Create empty agent directory
       await fs.promises.mkdir(
@@ -367,10 +367,10 @@ Instructions`
       ])
     })
 
-    it('skips an agent whose CLAUDE.md is missing while keeping its siblings', async () => {
-      await createTestAgent('first', SAMPLE_CLAUDE_MD)
+    it('skips an agent whose AGENTS.md is missing while keeping its siblings', async () => {
+      await createTestAgent('first', SAMPLE_INSTRUCTIONS)
       await fs.promises.mkdir(path.join(testDir, 'agents', 'hollow', 'workspace'), { recursive: true })
-      await createTestAgent('last', SAMPLE_CLAUDE_MD)
+      await createTestAgent('last', SAMPLE_INSTRUCTIONS)
 
       const listed = await listAgents()
 
@@ -380,8 +380,8 @@ Instructions`
 
   describe('listAgentsWithStatus', () => {
     it('returns agents with their container status and without instructions', async () => {
-      await createTestAgent('agent-1', SAMPLE_CLAUDE_MD)
-      await createTestAgent('agent-2', SAMPLE_CLAUDE_MD_MINIMAL)
+      await createTestAgent('agent-1', SAMPLE_INSTRUCTIONS)
+      await createTestAgent('agent-2', SAMPLE_INSTRUCTIONS_MINIMAL)
 
       // Default mock returns stopped status
       const agents = await listAgentsWithStatus()
@@ -396,9 +396,9 @@ Instructions`
     })
 
     it('restricts the listing to the given slugs, newest first', async () => {
-      await createTestAgent('agent-1', SAMPLE_CLAUDE_MD)
-      await createTestAgent('agent-2', SAMPLE_CLAUDE_MD_MINIMAL)
-      await createTestAgent('agent-3', SAMPLE_CLAUDE_MD)
+      await createTestAgent('agent-1', SAMPLE_INSTRUCTIONS)
+      await createTestAgent('agent-2', SAMPLE_INSTRUCTIONS_MINIMAL)
+      await createTestAgent('agent-3', SAMPLE_INSTRUCTIONS)
 
       const agents = await listAgentsWithStatus({ slugs: ['agent-2', 'agent-3', 'not-an-agent'] })
 
@@ -437,7 +437,7 @@ Instructions`
 
       // The catalog holds it, and the file carries the projection
       expect((await getAgentRecord(agent.slug))?.description).toBe('This is a description')
-      const content = await getAgentClaudeMdContent(agent.slug)
+      const content = await getAgentInstructionsContent(agent.slug)
       expect(content).toContain('description: This is a description')
       expect(content).toContain('name: Described Agent')
     })
@@ -486,8 +486,8 @@ Instructions`
       expect(result).toBeNull()
     })
 
-    it('updates agent name in the catalog and projects it into CLAUDE.md', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+    it('updates agent name in the catalog and projects it into AGENTS.md', async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const updated = await updateAgent('test-agent', { name: 'Updated Name' })
 
@@ -498,11 +498,11 @@ Instructions`
       const agent = await getAgent('test-agent')
       expect(agent?.frontmatter.name).toBe('Updated Name')
       expect((await getAgentRecord('test-agent'))?.name).toBe('Updated Name')
-      expect(await getAgentClaudeMdContent('test-agent')).toContain('name: Updated Name')
+      expect(await getAgentInstructionsContent('test-agent')).toContain('name: Updated Name')
     })
 
     it('updates agent description', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const updated = await updateAgent('test-agent', {
         description: 'New description',
@@ -512,17 +512,17 @@ Instructions`
     })
 
     it('removes description when set to empty string', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const updated = await updateAgent('test-agent', { description: '' })
 
       expect(updated?.description).toBeUndefined()
       expect(await getAgentRecord('test-agent')).not.toHaveProperty('description')
-      expect(await getAgentClaudeMdContent('test-agent')).not.toContain('description:')
+      expect(await getAgentInstructionsContent('test-agent')).not.toContain('description:')
     })
 
     it('updates agent instructions', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const updated = await updateAgent('test-agent', {
         instructions: 'New instructions',
@@ -532,7 +532,7 @@ Instructions`
     })
 
     it('preserves unchanged fields', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       await updateAgent('test-agent', { name: 'New Name' })
 
@@ -547,11 +547,11 @@ Instructions`
 
   describe('rename atomicity', () => {
     const frontmatterName = async (slug: string) =>
-      (await getAgentClaudeMdContent(slug))?.match(/^name: (.*)$/m)?.[1]
+      (await getAgentInstructionsContent(slug))?.match(/^name: (.*)$/m)?.[1]
 
     it('leaves the old identity in the row and the document when the projection write fails', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
-      const before = await getAgentClaudeMdContent('test-agent')
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+      const before = await getAgentInstructionsContent('test-agent')
       vi.spyOn(agentRegistry.get('test-agent').config, 'put').mockRejectedValueOnce(new Error('disk full'))
 
       await expect(updateAgent('test-agent', { name: 'Half Renamed', description: 'Half described' })).rejects.toThrow('disk full')
@@ -560,18 +560,18 @@ Instructions`
         name: 'Github Agent',
         description: 'An agent that helps with GitHub tasks',
       })
-      expect(await getAgentClaudeMdContent('test-agent')).toBe(before)
+      expect(await getAgentInstructionsContent('test-agent')).toBe(before)
     })
 
     it('puts the old document back when the row update fails after the projection was written', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
-      const before = await getAgentClaudeMdContent('test-agent')
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+      const before = await getAgentInstructionsContent('test-agent')
       vi.spyOn(agentCatalog, 'update').mockRejectedValueOnce(new Error('row update failed'))
 
       await expect(updateAgent('test-agent', { name: 'Half Renamed' })).rejects.toThrow('row update failed')
 
       expect((await getAgentRecord('test-agent'))?.name).toBe('Github Agent')
-      expect(await getAgentClaudeMdContent('test-agent')).toBe(before)
+      expect(await getAgentInstructionsContent('test-agent')).toBe(before)
     })
 
     it('leaves no document behind when the row update fails for an agent that had none', async () => {
@@ -582,11 +582,11 @@ Instructions`
       await expect(updateAgent(created.slug, { name: 'Half Renamed' })).rejects.toThrow('database is locked')
 
       expect((await getAgentRecord(created.slug))?.name).toBe('Bare')
-      expect(await getAgentClaudeMdContent(created.slug)).toBeNull()
+      expect(await getAgentInstructionsContent(created.slug)).toBeNull()
     })
 
     it('serializes overlapping renames so the last one completed wins in the row and the document', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
       const config = agentRegistry.get('test-agent').config
       const realPut = config.put.bind(config)
       let release!: () => void
@@ -613,25 +613,25 @@ Instructions`
 
     it('leaves the created identity alone when the projection write fails during adoption', async () => {
       const created = await createAgent({ name: 'Placeholder', description: 'Placeholder description' })
-      await setAgentClaudeMdContent(created.slug, '---\nname: Template Name\ndescription: From the template\n---\nBody\n')
-      const before = await getAgentClaudeMdContent(created.slug)
+      await setAgentInstructionsContent(created.slug, '---\nname: Template Name\ndescription: From the template\n---\nBody\n')
+      const before = await getAgentInstructionsContent(created.slug)
       vi.spyOn(agentRegistry.get(created.slug).config, 'put').mockRejectedValueOnce(new Error('disk full'))
 
       await expect(adoptAgentIdentityFromWorkspace(created.slug)).rejects.toThrow('disk full')
 
       expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Placeholder', description: 'Placeholder description' })
-      expect(await getAgentClaudeMdContent(created.slug)).toBe(before)
+      expect(await getAgentInstructionsContent(created.slug)).toBe(before)
     })
   })
 
   describe('identity projection', () => {
     it('rewrites the frontmatter from the catalog and keeps other keys and the body', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
-      await setAgentClaudeMdContent('test-agent', '---\nname: Template Name\nversion: 2.0.0\n---\nTemplate body\n')
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+      await setAgentInstructionsContent('test-agent', '---\nname: Template Name\nversion: 2.0.0\n---\nTemplate body\n')
 
       await writeAgentIdentityProjection('test-agent')
 
-      const content = await getAgentClaudeMdContent('test-agent')
+      const content = await getAgentInstructionsContent('test-agent')
       expect(content).toContain('name: Github Agent')
       expect(content).toContain('description: An agent that helps with GitHub tasks')
       expect(content).toContain('createdAt: "2026-01-24T01:30:50.090Z"')
@@ -644,17 +644,17 @@ Instructions`
       const created = await createAgent({ name: 'Bare' })
       await fs.promises.rm(path.join(testDir, 'agents', created.slug, 'workspace', 'AGENTS.md'))
       await writeAgentIdentityProjection(created.slug)
-      expect(await getAgentClaudeMdContent(created.slug)).toBeNull()
+      expect(await getAgentInstructionsContent(created.slug)).toBeNull()
     })
 
     it('adopts the name and description a template brought, keeping the creation date', async () => {
       const created = await createAgent({ name: 'Placeholder' })
-      await setAgentClaudeMdContent(created.slug, '---\nname: Template Name\ndescription: From the template\ncreatedAt: "2020-01-01T00:00:00.000Z"\n---\nBody\n')
+      await setAgentInstructionsContent(created.slug, '---\nname: Template Name\ndescription: From the template\ncreatedAt: "2020-01-01T00:00:00.000Z"\n---\nBody\n')
 
       const adopted = await adoptAgentIdentityFromWorkspace(created.slug)
 
       expect(adopted).toMatchObject({ name: 'Template Name', description: 'From the template', createdAt: created.createdAt })
-      const content = await getAgentClaudeMdContent(created.slug)
+      const content = await getAgentInstructionsContent(created.slug)
       expect(content).toContain('name: Template Name')
       expect(content).toContain(`createdAt: "${created.createdAt.toISOString()}"`)
       expect(content).not.toContain('2020-01-01')
@@ -662,10 +662,10 @@ Instructions`
 
     it('lets an override win over the template name, and keeps the row name when the template has none', async () => {
       const created = await createAgent({ name: 'Chosen' })
-      await setAgentClaudeMdContent(created.slug, '---\nname: Template Name\n---\nBody\n')
+      await setAgentInstructionsContent(created.slug, '---\nname: Template Name\n---\nBody\n')
       expect((await adoptAgentIdentityFromWorkspace(created.slug, { name: '  Override  ' }))?.name).toBe('Override')
 
-      await setAgentClaudeMdContent(created.slug, 'No frontmatter\n')
+      await setAgentInstructionsContent(created.slug, 'No frontmatter\n')
       expect((await adoptAgentIdentityFromWorkspace(created.slug, { name: '' }))?.name).toBe('Override')
       expect(await adoptAgentIdentityFromWorkspace('nonexistent')).toBeNull()
     })
@@ -678,7 +678,7 @@ Instructions`
     })
 
     it('deletes agent and returns true', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const result = await deleteAgent('test-agent')
 
@@ -687,7 +687,7 @@ Instructions`
     })
 
     it('stops container before deleting', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
       mockStopContainer.mockClear()
 
       await deleteAgent('test-agent')
@@ -707,35 +707,35 @@ Instructions`
     })
 
     it('returns true for existing agent', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const exists = await agentExists('test-agent')
       expect(exists).toBe(true)
     })
   })
 
-  describe('getAgentClaudeMdContent', () => {
+  describe('getAgentInstructionsContent', () => {
     it('returns null for non-existent agent', async () => {
-      const content = await getAgentClaudeMdContent('nonexistent')
+      const content = await getAgentInstructionsContent('nonexistent')
       expect(content).toBeNull()
     })
 
-    it('returns raw CLAUDE.md content', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+    it('returns raw AGENTS.md content', async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
-      const content = await getAgentClaudeMdContent('test-agent')
-      expect(content).toBe(SAMPLE_CLAUDE_MD)
+      const content = await getAgentInstructionsContent('test-agent')
+      expect(content).toBe(SAMPLE_INSTRUCTIONS)
     })
   })
 
-  describe('setAgentClaudeMdContent', () => {
-    it('writes raw CLAUDE.md content', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+  describe('setAgentInstructionsContent', () => {
+    it('writes raw AGENTS.md content', async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const newContent = '# New Content\n\nNew instructions.'
-      await setAgentClaudeMdContent('test-agent', newContent)
+      await setAgentInstructionsContent('test-agent', newContent)
 
-      const content = await getAgentClaudeMdContent('test-agent')
+      const content = await getAgentInstructionsContent('test-agent')
       expect(content).toBe(newContent)
     })
   })

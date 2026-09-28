@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 import { createTestDatabase, type TestDatabase } from '../testing/create-test-database'
 import { agents } from '../schema'
+import { importAgentDirectories } from './0001-import-agents-from-directories'
 import { renameAgentInstructions } from './0005-rename-claude-md-to-agents-md'
 
 let handle: TestDatabase
@@ -33,6 +34,19 @@ const read = (workspace: string, name: string) => fs.readFileSync(path.join(work
 const exists = (workspace: string, name: string) => fs.existsSync(path.join(workspace, name))
 
 describe('rename-claude-md-to-agents-md', () => {
+  it('recovers canonical and migrated workspaces after the database is recreated', async () => {
+    await addAgent('migrated', { 'CLAUDE.md': '---\nname: Migrated\n---\nBody' })
+    await addAgent('canonical', { 'AGENTS.md': '---\nname: Canonical\n---\nBody' })
+    await addAgent('both', { 'CLAUDE.md': '---\nname: Legacy wins\n---\nBody', 'AGENTS.md': '---\nname: Other\n---\nBody' })
+    await renameAgentInstructions(handle.db)
+    await handle.close()
+    handle = await createTestDatabase()
+
+    expect((await importAgentDirectories(handle.db)).sort()).toEqual(['both', 'canonical', 'migrated'])
+    expect(await handle.db.select({ slug: agents.slug, name: agents.name }).from(agents).orderBy(agents.slug).all())
+      .toEqual([{ slug: 'both', name: 'Legacy wins' }, { slug: 'canonical', name: 'Canonical' }, { slug: 'migrated', name: 'Migrated' }])
+  })
+
   it('moves CLAUDE.md to AGENTS.md, and leaves an agent that has an AGENTS.md or neither alone', async () => {
     const renamed = await addAgent('renamed', { 'CLAUDE.md': 'claude\n' })
     const both = await addAgent('both', { 'CLAUDE.md': 'claude\n', 'AGENTS.md': 'agents\n' })

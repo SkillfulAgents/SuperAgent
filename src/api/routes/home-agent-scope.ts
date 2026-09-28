@@ -14,7 +14,7 @@ export interface HomeAgentScope {
 export async function getHomeAgentScope(c: Context): Promise<HomeAgentScope> {
   const userId = getViewerUserId(c)
   if (userId === null) {
-    // Slugs only — listAgents() would parse every agent's CLAUDE.md just to
+    // Slugs only — listAgents() would parse every agent's AGENTS.md just to
     // throw the result away.
     return { agentSlugs: await listAgentSlugs(), userId }
   }

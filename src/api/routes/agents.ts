@@ -1202,7 +1202,7 @@ async function createOwnerAcl(c: Context, agentSlug: string) {
 
 // Insert the owner ACL for a just-created agent, rolling back the on-disk
 // workspace if the ACL write fails. Agent creation writes the workspace
-// (directory + CLAUDE.md) before the ACL row exists; without this, a transient
+// (directory + AGENTS.md) before the ACL row exists; without this, a transient
 // ACL insert failure would return 500 but leave an orphaned agent directory
 // with no owner ACL (SUP-207). The cleanup is best-effort and guarded so a
 // failed rollback never masks the original error. In non-auth mode

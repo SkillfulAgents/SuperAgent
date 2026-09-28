@@ -37,7 +37,7 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
   const firstWritableId = skillsets?.find((ss) => isSkillsetPublishable(ss.publishMode))?.id ?? null
   const selectedId = selectedSkillsetId ?? firstWritableId
 
-  // Suggested title/body/version derive from the agent's CLAUDE.md (see
+  // Suggested title/body/version derive from the agent's AGENTS.md (see
   // getAgentPublishInfo); the fetch targets the currently selected skillset so
   // its publish preconditions are checked before the final Publish click.
   const {

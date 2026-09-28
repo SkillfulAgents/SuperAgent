@@ -60,7 +60,7 @@ describe.each(['template', 'full'] as const)('failed %s import cleanup', (mode) 
     fs.writeFileSync(existingFile, 'KEEP_EXISTING_AGENT')
     const before = await agentCatalog.list()
     const zip = await createZipBuffer({
-      'CLAUDE.md': instructions,
+      'AGENTS.md': instructions,
       'good.txt': 'EXTRACTED_BEFORE_FAILURE',
       ['x'.repeat(270) + '.txt']: 'invalid filename component',
     })
@@ -80,7 +80,7 @@ describe.each(['template', 'full'] as const)('failed %s import cleanup', (mode) 
 
   it('rolls back when finalizing the imported agent fails after extraction', async () => {
     getHealthWarnings.mockImplementationOnce(() => { throw new Error('finalization failed') })
-    const zip = await createZipBuffer({ 'CLAUDE.md': instructions, 'good.txt': 'COMPLETE' })
+    const zip = await createZipBuffer({ 'AGENTS.md': instructions, 'good.txt': 'COMPLETE' })
 
     await expect(importAgentFromTemplate(zip, undefined, mode)).rejects.toThrow('finalization failed')
 
@@ -91,7 +91,7 @@ describe.each(['template', 'full'] as const)('failed %s import cleanup', (mode) 
   it('reports rollback failure and preserves the workspace if the container cannot stop', async () => {
     stopContainer.mockRejectedValueOnce(new Error('container stop unavailable'))
     const zip = await createZipBuffer({
-      'CLAUDE.md': instructions,
+      'AGENTS.md': instructions,
       'good.txt': 'PRESERVE_WHILE_CONTAINER_STATE_IS_UNKNOWN',
       ['x'.repeat(270) + '.txt']: 'invalid filename component',
     })
@@ -109,7 +109,7 @@ describe.each(['template', 'full'] as const)('failed %s import cleanup', (mode) 
   })
 
   it('keeps a successfully imported agent and its complete contents', async () => {
-    const zip = await createZipBuffer({ 'CLAUDE.md': instructions, 'good.txt': 'COMPLETE' })
+    const zip = await createZipBuffer({ 'AGENTS.md': instructions, 'good.txt': 'COMPLETE' })
     const agent = await importAgentFromTemplate(zip, undefined, mode)
     expect(await agentCatalog.list()).toEqual([agent.slug])
     expect(fs.readFileSync(path.join(testDir, 'agents', agent.slug, 'workspace', 'good.txt'), 'utf8')).toBe('COMPLETE')

@@ -1,12 +1,11 @@
 /**
  * What an agent directory says about the agent it holds: the identity in the
- * frontmatter of its `CLAUDE.md`. Synchronous and free of the database, so
+ * frontmatter of its instructions document. Synchronous and free of the database, so
  * the data migration that imports directories into the catalog table can run
  * it while the database is being opened.
  */
 import * as fs from 'fs'
-import * as path from 'path'
-import { getAgentClaudeMdPath, getAgentDir, getAgentsDir, getAgentWorkspaceDir, parseMarkdownWithFrontmatter } from '@shared/lib/utils/file-storage'
+import { getLegacyAgentInstructionsPath, getAgentInstructionsPath, getAgentDir, getAgentsDir, parseMarkdownWithFrontmatter } from '@shared/lib/utils/file-storage'
 import type { AgentSlug } from './types'
 
 /** The runtime of an agent whose workspace is a directory under the agents data directory. */
@@ -27,7 +26,7 @@ function frontmatterString(value: unknown): string | undefined {
 }
 
 /**
- * The identity a workspace's `CLAUDE.md` frontmatter carries: what an import
+ * The identity a workspace's instructions frontmatter carries: what an import
  * brings with it, and what the directory import seeds a row from. Absent or
  * blank fields are absent here; the caller chooses the fallback.
  */
@@ -48,8 +47,8 @@ export function identityFromInstructions(
 
 /**
  * Every directory under the agents data directory that holds a readable
- * `CLAUDE.md`, with the identity it carries. A directory without one is not
- * an agent, the same as it never was for the listing. The name falls back to
+ * instructions document, with legacy `CLAUDE.md` taking precedence over
+ * `AGENTS.md`, as in the runtime. The name falls back to
  * the slug and the creation date to the directory's birth time.
  */
 export function readAgentDirectoriesSync(): AgentDirectoryIdentity[] {
@@ -68,7 +67,12 @@ export function readAgentDirectoriesSync(): AgentDirectoryIdentity[] {
     const slug = entry.name
     let content: string
     try {
-      content = fs.readFileSync(getAgentClaudeMdPath(slug), 'utf-8')
+      try {
+        content = fs.readFileSync(getLegacyAgentInstructionsPath(slug), 'utf-8')
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        content = fs.readFileSync(getAgentInstructionsPath(slug), 'utf-8')
+      }
     } catch {
       continue
     }
@@ -100,10 +104,10 @@ export function readAgentDirectoriesSync(): AgentDirectoryIdentity[] {
  * would change the instructions the agent runs with.
  */
 export function renameClaudeMdToAgentsMdSync(slug: AgentSlug): boolean {
-  const claudeMd = getAgentClaudeMdPath(slug)
-  const agentsMd = path.join(getAgentWorkspaceDir(slug), 'AGENTS.md')
-  if (!fs.lstatSync(claudeMd, { throwIfNoEntry: false })?.isFile()) return false
+  const legacyInstructions = getLegacyAgentInstructionsPath(slug)
+  const agentsMd = getAgentInstructionsPath(slug)
+  if (!fs.lstatSync(legacyInstructions, { throwIfNoEntry: false })?.isFile()) return false
   if (fs.lstatSync(agentsMd, { throwIfNoEntry: false })) return false
-  fs.renameSync(claudeMd, agentsMd)
+  fs.renameSync(legacyInstructions, agentsMd)
   return true
 }

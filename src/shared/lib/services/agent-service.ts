@@ -3,7 +3,7 @@
  *
  * CRUD operations for agents. Which agents exist and what they are called is
  * the catalog's (the `agents` table); an agent's instructions are the body of
- * the `CLAUDE.md` in its workspace, read and written through the agent
+ * the `AGENTS.md` in its workspace, read and written through the agent
  * actor's `config` document `instructions`. The frontmatter of that document
  * is a projection of the catalog row that the host writes on create and
  * rename, so the agent still sees who it is and exports still carry it.
@@ -71,7 +71,7 @@ function newAgentResponse(record: AgentRecord, instructions?: string): ApiAgent 
 }
 
 /**
- * The frontmatter the host projects into `CLAUDE.md`: the row's identity over
+ * The frontmatter the host projects into `AGENTS.md`: the row's identity over
  * whatever other keys the document carries (a template version, say).
  */
 function projectedFrontmatter(record: AgentRecord, carried: Record<string, unknown>): AgentFrontmatter {
@@ -100,7 +100,7 @@ async function readInstructionsDocument(slug: string): Promise<InstructionsDocum
 
 /**
  * Per-slug promise chains: every change to an agent's identity, which spans
- * the catalog row and the `CLAUDE.md` projection, runs to completion before
+ * the catalog row and the `AGENTS.md` projection, runs to completion before
  * the next one starts, so two overlapping renames cannot leave the row with
  * one name and the document with the other. The same in-process
  * serialization the config documents use for their read-modify-write.
@@ -146,7 +146,7 @@ async function commitIdentity(
     // Put the document back as it was: its old text, or its absence, so the
     // rejected identity is not left behind in a file the row does not match.
     if (document) await actor.config.put('instructions', document.raw).catch(() => undefined)
-    else await actor.files.delete(CONFIG_DOCS.instructions.fallbackPath).catch(() => undefined)
+    else await actor.files.delete(CONFIG_DOCS.instructions.path).catch(() => undefined)
     throw error
   }
 }
@@ -171,7 +171,7 @@ export async function listAgentSlugs(): Promise<string[]> {
 /**
  * Get a single agent by slug: its identity from the catalog, its instructions
  * from the workspace. Null when there is no such agent; a workspace whose
- * `CLAUDE.md` cannot be read is an error, not a missing agent.
+ * `AGENTS.md` cannot be read is an error, not a missing agent.
  */
 export async function getAgent(slug: string): Promise<AgentConfig | null> {
   const record = await agentCatalog.get(slug)
@@ -338,7 +338,7 @@ export async function updateAgent(
 }
 
 /**
- * Rewrite the identity projection in an agent's `CLAUDE.md` from its catalog
+ * Rewrite the identity projection in an agent's `AGENTS.md` from its catalog
  * row, keeping the document's other frontmatter keys and its body. For after
  * something else has replaced the document, such as a template update.
  */
@@ -363,7 +363,7 @@ async function writeProjection(
 }
 
 /**
- * Take an agent's name and description from the `CLAUDE.md` its workspace
+ * Take an agent's name and description from the `AGENTS.md` its workspace
  * now holds (an imported template, an installed skillset agent), then write
  * the projection back. `name` overrides whatever the document carries; a
  * document without a name keeps the row's. The creation date stays the row's.
@@ -452,7 +452,7 @@ export async function deleteAgent(slug: string): Promise<boolean> {
  */
 export async function createAgentFromExistingWorkspace(rawName: string): Promise<ApiAgent> {
   const name = String(rawName)
-  // A basic CLAUDE.md (may be overwritten by template)
+  // A basic AGENTS.md (may be overwritten by template)
   const record = await writeNewAgent({ name }, DEFAULT_AGENT_INSTRUCTIONS)
   return newAgentResponse(record)
 }
@@ -465,16 +465,16 @@ export async function agentExists(slug: string): Promise<boolean> {
 }
 
 /**
- * Get raw CLAUDE.md content (for editor)
+ * Get raw AGENTS.md content (for editor)
  */
-export async function getAgentClaudeMdContent(slug: string): Promise<string | null> {
+export async function getAgentInstructionsContent(slug: string): Promise<string | null> {
   return agentRegistry.get(slug).config.get('instructions')
 }
 
 /**
- * Set raw CLAUDE.md content (from editor)
+ * Set raw AGENTS.md content (from editor)
  */
-export async function setAgentClaudeMdContent(
+export async function setAgentInstructionsContent(
   slug: string,
   content: string
 ): Promise<void> {
