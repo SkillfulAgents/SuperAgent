@@ -3,7 +3,7 @@ import { Play, Pause, MessageSquarePlus } from 'lucide-react'
 import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
 import { CommentPin } from '../comments/comment-pin'
 import { CommentOverlay } from '../comments/comment-overlay'
-import { formatMediaTime } from '../comments/format-media-time'
+import { formatCommentTime, formatMediaTime } from '../comments/format-media-time'
 
 interface VideoRendererProps {
   url: string
@@ -195,7 +195,7 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
                   onClick={() => seekTo(comment.timestamp)}
                   style={{ left: `${(comment.timestamp / maxSeek) * 100}%` }}
                   className="absolute top-0 h-2 w-1 -translate-x-1/2 rounded-sm bg-primary hover:scale-y-150 transition-transform"
-                  title={`Comment at ${formatMediaTime(comment.timestamp)}`}
+                  title={`Comment at ${formatCommentTime(comment.timestamp)}`}
                 />
               ))}
           </div>

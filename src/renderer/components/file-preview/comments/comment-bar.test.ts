@@ -29,7 +29,7 @@ describe('formatComments', () => {
     ]
     const result = formatComments('/workspace/clip.mp4', comments)
     expect(result).toContain('File feedback on `clip.mp4`')
-    expect(result).toContain('At 1:15 at position (30%, 61%):')
+    expect(result).toContain('At 1:15.40 at position (30%, 61%):')
     expect(result).toContain('Cut this scene')
   })
 
@@ -38,7 +38,7 @@ describe('formatComments', () => {
       { id: '1', filePath: '/workspace/clip.mp4', agentSlug: 'test-agent', text: 'Audio drops out', timestamp: 5 },
     ]
     const result = formatComments('/workspace/clip.mp4', comments)
-    expect(result).toContain('At 0:05:')
+    expect(result).toContain('At 0:05.00:')
     expect(result).not.toContain('position')
   })
 

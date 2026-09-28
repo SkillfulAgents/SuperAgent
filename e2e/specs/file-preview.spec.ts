@@ -414,21 +414,27 @@ test.describe('File Preview', () => {
     // The Add Comment button opens the editor directly and pins the timestamp.
     await page.getByTestId('video-add-comment').click()
     const overlay = page.locator('[data-comment-overlay]')
-    await expect(overlay.getByText('At 0:00', { exact: false })).toBeVisible({ timeout: 5000 })
+    await expect(overlay.getByText('At 0:00.00', { exact: false })).toBeVisible({ timeout: 5000 })
 
     await page.getByPlaceholder('Add your comment...').fill('Trim the intro here')
     await overlay.getByRole('button', { name: 'Add' }).click()
 
     // The comment bar lists the timestamped comment.
     const tray = page.getByTestId('file-preview-tray')
-    await expect(tray.getByText('At 0:00', { exact: false })).toBeVisible({ timeout: 5000 })
+    await expect(tray.getByText('At 0:00.00', { exact: false })).toBeVisible({ timeout: 5000 })
     await expect(tray.getByText('Trim the intro here')).toBeVisible()
+    // The scrubber markers render once the video reports a duration; the fixture can't decode, so report one.
+    await page.getByTestId('video-element').evaluate((v: HTMLVideoElement) => {
+      Object.defineProperty(v, 'duration', { configurable: true, value: 8 })
+      v.dispatchEvent(new Event('loadedmetadata'))
+    })
+    await expect(page.getByTitle('Comment at 0:00.00')).toBeAttached()
 
     // The video feedback follows the same review-before-send flow.
     await tray.getByRole('button', { name: 'Submit' }).click()
     const composer = sessionPage.getMessageInput()
     await expect(composer).toContainText('File feedback on clip.mp4:')
-    await expect(composer).toContainText('At 0:00 at position (50%, 50%):')
+    await expect(composer).toContainText('At 0:00.00 at position (50%, 50%):')
     await expect(composer).toContainText('Trim the intro here')
   })
 
@@ -458,12 +464,12 @@ test.describe('File Preview', () => {
     await hoverComment.click()
 
     const overlay = page.locator('[data-comment-overlay]')
-    await expect(overlay.getByText('At 0:00', { exact: false })).toBeVisible({ timeout: 5000 })
+    await expect(overlay.getByText('At 0:00.00', { exact: false })).toBeVisible({ timeout: 5000 })
     await page.getByPlaceholder('Add your comment...').fill('Remove this background noise')
     await overlay.getByRole('button', { name: 'Add' }).click()
 
     const tray = page.getByTestId('file-preview-tray')
-    await expect(tray.getByText('At 0:00', { exact: false })).toBeVisible({ timeout: 5000 })
+    await expect(tray.getByText('At 0:00.00', { exact: false })).toBeVisible({ timeout: 5000 })
     await expect(tray.getByText('Remove this background noise')).toBeVisible()
 
     await tray.getByRole('button', { name: 'Submit' }).click()
