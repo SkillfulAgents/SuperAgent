@@ -351,6 +351,13 @@
       "when": 1790125000109,
       "tag": "0049_message_author_integrations",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1790615353616,
+      "tag": "0050_browser_credentials",
+      "breakpoints": true
     }
   ]
 }

@@ -4,6 +4,8 @@ import {
   proxyAuditLog,
   proxyTokens,
   agentConnectedAccounts,
+  agentBrowserCredentials,
+  browserCredentials,
   scheduledTasks,
   notifications,
   sessionUnreadMarks,
@@ -58,6 +60,8 @@ function factoryResetTables(): SQLiteTable[] { return [
   agentAcl,
   xAgentPolicies,
   webhookTriggers,
+  agentBrowserCredentials,
+  browserCredentials,
   // the agent catalog itself, once the per-agent rows above are gone
   agents,
   notifications,

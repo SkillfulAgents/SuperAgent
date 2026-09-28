@@ -5225,6 +5225,35 @@ describe('browser credential broker routes', () => {
     expect(mockContainerFetch).not.toHaveBeenCalled()
     expect(mockCredentialSuggest).not.toHaveBeenCalled()
   })
+
+  it('does not save a sign-in on an agent shared with another member', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(countMembersWithMinRole).mockResolvedValueOnce(2)
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tool-login',
+      kind: 'browser_input',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {
+        login: true,
+        browserContext: { url: 'https://example.com/login', capturedAt: Date.now() },
+      },
+    })
+    mockContainerFetch.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/complete-browser-input',
+      { toolUseId: 'tool-login', saveLogin: true },
+    )
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true })
+    expect(countMembersWithMinRole).toHaveBeenCalledWith('test-agent', 'viewer')
+    expect(mockContainerFetch.mock.calls.map(([path]) => path)).toEqual(['/inputs/tool-login/resolve'])
+  })
 })
 
 describe('decision routes settle their request immediately', () => {

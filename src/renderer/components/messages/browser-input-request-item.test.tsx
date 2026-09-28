@@ -292,11 +292,12 @@ describe('BrowserInputRequestItem', () => {
     expect(mockApiFetch.mock.calls[0][0]).toBe(COMPLETE_URL)
   })
 
-  it('completes (Done) → posts only the toolUseId, shows Completed, calls onComplete', async () => {
+  it('completes (Done) without offering to save, shows Completed, calls onComplete', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValueOnce(ok())
 
     render(<BrowserInputRequestItem {...defaultProps} />)
+    expect(screen.queryByTestId('browser-input-save-login')).toBeNull()
     await user.click(screen.getByTestId('browser-input-complete-btn'))
 
     await waitFor(() => expect(screen.getByText('Completed')).toBeInTheDocument())
@@ -304,8 +305,26 @@ describe('BrowserInputRequestItem', () => {
     const [url, opts] = mockApiFetch.mock.calls[0]
     expect(url).toBe(COMPLETE_URL)
     expect(opts.method).toBe('POST')
-    expect(JSON.parse(opts.body)).toEqual({ toolUseId: 'tu-1' }) // no decline field
+    expect(JSON.parse(opts.body)).toEqual({ toolUseId: 'tu-1', saveLogin: false })
     expect(defaultProps.onComplete).toHaveBeenCalledTimes(1)
+  })
+
+  it('saves a sign-in by default and lets the user opt out', async () => {
+    const user = userEvent.setup()
+    mockApiFetch.mockResolvedValue(ok())
+
+    const { unmount } = render(<BrowserInputRequestItem {...defaultProps} login />)
+    expect(screen.getByTestId('browser-input-save-login')).toBeChecked()
+    await user.click(screen.getByTestId('browser-input-complete-btn'))
+    await waitFor(() => expect(screen.getByText('Completed')).toBeInTheDocument())
+    expect(JSON.parse(mockApiFetch.mock.calls[0][1].body)).toEqual({ toolUseId: 'tu-1', saveLogin: true })
+    unmount()
+
+    render(<BrowserInputRequestItem {...defaultProps} login />)
+    await user.click(screen.getByTestId('browser-input-save-login'))
+    await user.click(screen.getByTestId('browser-input-complete-btn'))
+    await waitFor(() => expect(screen.getByText('Completed')).toBeInTheDocument())
+    expect(JSON.parse(mockApiFetch.mock.calls[1][1].body)).toEqual({ toolUseId: 'tu-1', saveLogin: false })
   })
 
   // --- requirements hardening (merged from upstream b37838ff) ---

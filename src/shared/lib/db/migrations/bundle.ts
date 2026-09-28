@@ -537,5 +537,17 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1790125000109,
     "hash": "2a55801aa6124e98dfa6d1ced402a9b81c60bf21237bbf2eb2c6ca3abe8eace9"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `agent_browser_credentials` (\n\t`agent_slug` text NOT NULL,\n\t`credential_id` text NOT NULL,\n\t`site` text NOT NULL,\n\t`applied_version` integer NOT NULL,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tPRIMARY KEY(`agent_slug`, `site`),\n\tFOREIGN KEY (`credential_id`) REFERENCES `browser_credentials`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE INDEX `agent_browser_credentials_credential_idx` ON `agent_browser_credentials` (`credential_id`);",
+      "\nCREATE TABLE `browser_credentials` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text,\n\t`name` text NOT NULL,\n\t`site` text NOT NULL,\n\t`browser_type` text NOT NULL,\n\t`bundle` text NOT NULL,\n\t`version` integer DEFAULT 1 NOT NULL,\n\t`captured_at` integer NOT NULL,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE INDEX `browser_credentials_user_site_idx` ON `browser_credentials` (`user_id`,`site`);",
+      "\nCREATE UNIQUE INDEX `browser_credentials_owner_site_type_unique` ON `browser_credentials` (coalesce(`user_id`, ''),`site`,`browser_type`);"
+    ],
+    "bps": true,
+    "folderMillis": 1790615353616,
+    "hash": "d2f8b59e7488a2ef19bc524629d013584fd1b88b559304337e7b5b222dc81983"
   }
 ]

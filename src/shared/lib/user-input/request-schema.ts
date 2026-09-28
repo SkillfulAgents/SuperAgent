@@ -100,6 +100,8 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
     payload: z.looseObject({
       message: lenientString,
       requirements: z.unknown().optional(),
+      /** Set for purpose "login": the card offers saving the login. */
+      login: z.boolean().optional().catch(undefined),
       // Captured by the host harness when the request opens. This is not part
       // of the model-facing tool input: the browser itself remains the source
       // of truth for credential scoping.

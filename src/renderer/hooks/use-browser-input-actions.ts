@@ -1,9 +1,26 @@
 import { useState } from 'react'
+import { toast } from 'sonner'
+import type { LoginSaveOutcome } from '@shared/lib/browser/browser-login-save'
 import { apiFetch } from '@renderer/lib/api'
 import { useDraft } from '@renderer/context/drafts-context'
+import { useUser } from '@renderer/context/user-context'
+import { useAgentMembers } from '@renderer/hooks/use-agent-members'
 
 export type BrowserInputStatus = 'pending' | 'submitting' | 'completed' | 'declined'
 type SubmittingAction = 'completing' | 'declining'
+
+const LOGIN_SAVE_TOASTS: Record<LoginSaveOutcome, [kind: 'success' | 'info' | 'error', message: string]> = {
+  saved: ['success', 'Login saved to your vault'],
+  updated: ['success', 'Saved login updated'],
+  failed: ['error', 'Login not saved'],
+}
+
+/** Saving a login is offered only on single-member agents; the host enforces the same rule. */
+export function useCanSaveBrowserLogin(agentSlug: string, enabled: boolean): boolean {
+  const { isAuthMode } = useUser()
+  const members = useAgentMembers(agentSlug, enabled)
+  return !isAuthMode || members.data?.length === 1
+}
 
 interface UseBrowserInputActionsArgs {
   agentSlug: string
@@ -48,11 +65,13 @@ export function useBrowserInputActions({ agentSlug, sessionId, onResolved }: Use
         }
       )
 
+      const data = await response.json().catch(() => ({}))
       if (!response.ok) {
-        const data = await response.json()
         throw new Error(data.error || 'Request failed')
       }
 
+      const loginSaveToast = LOGIN_SAVE_TOASTS[data.loginSave as LoginSaveOutcome]
+      if (loginSaveToast) toast[loginSaveToast[0]](loginSaveToast[1])
       setStatus(successStatus)
       onResolved(body.toolUseId)
       return true
@@ -64,7 +83,8 @@ export function useBrowserInputActions({ agentSlug, sessionId, onResolved }: Use
     }
   }
 
-  const complete = (toolUseId: string) => submit({ toolUseId }, 'completed', 'completing')
+  const complete = (toolUseId: string, options: { saveLogin?: boolean } = {}) =>
+    submit({ toolUseId, ...options }, 'completed', 'completing')
 
   const decline = async (toolUseId: string, reason?: string) => {
     const ok = await submit({ toolUseId, decline: true }, 'declined', 'declining')

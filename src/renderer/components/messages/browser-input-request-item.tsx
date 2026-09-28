@@ -1,10 +1,12 @@
+import { useState } from 'react'
 import { Globe } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import { Checkbox } from '@renderer/components/ui/checkbox'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 import { RequestError } from './request-error'
 import { DeclineButton } from './decline-button'
-import { useBrowserInputActions } from '@renderer/hooks/use-browser-input-actions'
+import { useBrowserInputActions, useCanSaveBrowserLogin } from '@renderer/hooks/use-browser-input-actions'
 import { linkify } from '@renderer/lib/linkify'
 import { cn } from '@shared/lib/utils/cn'
 import { BrowserCredentialPicker } from './browser-credential-picker'
@@ -16,6 +18,8 @@ interface BrowserInputRequestItemProps {
   sessionId: string
   agentSlug: string
   readOnly?: boolean
+  /** A sign-in request (purpose "login"): offers saving the login to the user's vault. */
+  login?: boolean
   onComplete: () => void
 }
 
@@ -26,6 +30,7 @@ export function BrowserInputRequestItem({
   sessionId,
   agentSlug,
   readOnly,
+  login = false,
   onComplete,
 }: BrowserInputRequestItemProps) {
   const { status, submittingAction, error, complete, decline } = useBrowserInputActions({
@@ -33,6 +38,9 @@ export function BrowserInputRequestItem({
     sessionId,
     onResolved: onComplete,
   })
+
+  const [saveLogin, setSaveLogin] = useState(true)
+  const canSaveLogin = useCanSaveBrowserLogin(agentSlug, login && !readOnly)
 
   // `requirements` is typed string[] but originates from model tool input, so a
   // malformed value (e.g. a bare string) can reach here. Normalize to an array
@@ -96,6 +104,21 @@ export function BrowserInputRequestItem({
         />
       )}
 
+      {login && canSaveLogin && !readOnly && !isCompleted && (
+        <div className="flex items-center gap-2 pt-3">
+          <Checkbox
+            id={`browser-input-save-login-${toolUseId}`}
+            checked={saveLogin}
+            onCheckedChange={(checked) => setSaveLogin(checked === true)}
+            disabled={status === 'submitting'}
+            data-testid="browser-input-save-login"
+          />
+          <label htmlFor={`browser-input-save-login-${toolUseId}`} className="text-sm text-muted-foreground">
+            Save login to my vault
+          </label>
+        </div>
+      )}
+
       <RequestItemActions>
         <DeclineButton
           onDecline={(reason) => decline(toolUseId, reason)}
@@ -108,7 +131,7 @@ export function BrowserInputRequestItem({
         />
 
         <Button
-          onClick={() => complete(toolUseId)}
+          onClick={() => complete(toolUseId, { saveLogin: login && canSaveLogin && saveLogin })}
           loading={submittingAction === 'completing'}
           disabled={status === 'submitting'}
           size="xs"
