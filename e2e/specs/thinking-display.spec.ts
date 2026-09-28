@@ -2,6 +2,7 @@ import { test, expect, type APIRequestContext, type Page, type TestInfo } from '
 import { AppPage } from '../pages/app.page'
 import { SessionPage } from '../pages/session.page'
 import { createAgent, createSession, openAgentSession, waitForSessionIdle } from '../helpers/agents'
+import type { ApiMessageOrBoundary } from '../../src/shared/lib/types/api'
 
 async function setupThinkingTest(
   page: Page,
@@ -29,6 +30,53 @@ async function setupThinkingTest(
 }
 
 test.describe('Thinking Display', () => {
+  test('a follow-up during a background wait does not resurrect prior thinking', async ({ page, request }, testInfo) => {
+    test.slow()
+    const { sessionPage, agent, setupSession } = await setupThinkingTest(page, request, testInfo, 'BackgroundFollowup')
+    const sessionUrl = `/api/agents/${agent.slug}/sessions/${setupSession.id}`
+
+    try {
+      await sessionPage.sendMessage('please think then wait for background')
+      await expect(page.getByText('Thinking finished; waiting for the background job.')).toBeVisible()
+      await expect(sessionPage.getActivityIndicator()).toContainText('Background command')
+      await expect(page.getByTestId('thinking-block')).toHaveCount(3)
+      await page.screenshot({ path: testInfo.outputPath('before-followup.png'), fullPage: true })
+
+      // The foreground result has landed, but the background job keeps the
+      // host active. The POST and session_active SSE therefore call this
+      // queued, while the runtime persists it as a new turn-starting message.
+      const sent = page.waitForResponse(response =>
+        response.url().endsWith(`${sessionUrl}/messages`) && response.request().method() === 'POST',
+      )
+      await sessionPage.sendMessage('status ?')
+      expect((await (await sent).json()).queued).toBe(true)
+      await expect(sessionPage.getUserMessages().filter({ hasText: 'status ?' })).toBeVisible()
+      await expect(page.getByTestId('turn-summary').last()).toBeVisible()
+
+      const messagesResponse = await request.get(`${sessionUrl}/messages`)
+      expect(messagesResponse.ok()).toBeTruthy()
+      const transcript = await messagesResponse.json() as ApiMessageOrBoundary[]
+      const followup = transcript.find(message =>
+        message.type === 'user' && (message.content as { text?: string }).text === 'status ?',
+      )
+      expect(followup).toBeDefined()
+      expect(followup).not.toHaveProperty('queued', true)
+      await testInfo.attach('transcript-after-followup', {
+        body: JSON.stringify(transcript, null, 2), contentType: 'application/json',
+      })
+      await page.screenshot({ path: testInfo.outputPath('after-followup.png'), fullPage: true })
+
+      // These three cards were already persisted. After their turn folds,
+      // none should be resurrected below the user's new message.
+      const cardsBelowFollowup = page.locator(
+        'xpath=//*[@data-testid="message-user" and contains(., "status ?")]/following::*[@data-testid="thinking-block"]',
+      )
+      await expect(cardsBelowFollowup).toHaveCount(0)
+    } finally {
+      await request.post(`${sessionUrl}/interrupt`, { data: { scope: 'all' } })
+    }
+  })
+
   test('thinking streams into an expanded transcript card, then collapses', async ({ page, request }, testInfo) => {
     const { sessionPage } = await setupThinkingTest(page, request, testInfo, 'Card')
 

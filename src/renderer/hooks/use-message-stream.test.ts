@@ -3283,6 +3283,46 @@ describe('useMessageStream — extended thinking blocks', () => {
     expect(result.current.thinkingBlocks[0].endedAt).toBeNull()
   })
 
+  it('permanently consumes completed handoffs while preserving an open block and other subscribers', async () => {
+    const { useMessageStream, consumeThinkingBlocks } = await getHookModule()
+    const wrapper = createWrapper()
+    const first = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+    const second = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+    const es = MockEventSource.instances[0]
+    act(() => {
+      es.simulateMessage({ type: 'connected', isActive: true })
+      es.simulateMessage({ type: 'thinking_start', thinkingId: 'old:0' })
+      es.simulateMessage({ type: 'thinking_delta', thinkingId: 'old:0', text: 'already persisted' })
+      es.simulateMessage({ type: 'thinking_stop' })
+      es.simulateMessage({ type: 'thinking_start', thinkingId: 'new:0' })
+      es.simulateMessage({ type: 'thinking_delta', thinkingId: 'new:0', text: 'still streaming' })
+    })
+    const ids = first.result.current.thinkingBlocks.map(block => block.id)
+    act(() => consumeThinkingBlocks('session-1', ids))
+    expect(first.result.current.thinkingBlocks).toHaveLength(1)
+    expect(second.result.current.thinkingBlocks).toHaveLength(1)
+    expect(first.result.current.isThinking).toBe(true)
+
+    act(() => {
+      es.simulateMessage({ type: 'session_active', queuedMidTurn: true })
+      es.simulateMessage({ type: 'thinking_delta', thinkingId: 'new:0', text: ' more' })
+      es.simulateMessage({ type: 'thinking_stop' })
+    })
+    expect(first.result.current.thinkingBlocks).toMatchObject([{ persistedId: 'new:0', text: 'still streaming more' }])
+    act(() => consumeThinkingBlocks('session-1', ids))
+    expect(first.result.current.thinkingBlocks).toEqual([])
+    expect(first.result.current.isThinking).toBe(false)
+
+    // Repeated cleanup cannot consume a later episode with the same text.
+    act(() => {
+      es.simulateMessage({ type: 'thinking_start', thinkingId: 'later:0' })
+      es.simulateMessage({ type: 'thinking_delta', thinkingId: 'later:0', text: 'already persisted' })
+      es.simulateMessage({ type: 'thinking_stop' })
+      consumeThinkingBlocks('session-1', ids)
+    })
+    expect(second.result.current.thinkingBlocks).toMatchObject([{ persistedId: 'later:0', text: 'already persisted' }])
+  })
+
   it('thinking_stop closes the block but keeps it readable for the rest of the turn', async () => {
     const { result, es } = await setup()
 

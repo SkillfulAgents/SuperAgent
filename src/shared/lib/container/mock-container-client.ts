@@ -375,7 +375,9 @@ export class MultiPassThinkingScenario implements MockScenario {
     private chunkDelayMs = 200,
     /** Gap between a pass ending and the next one starting. The real CLI can
      * emit thinking_stop and the next thinking_start nearly back-to-back. */
-    private interPassGapMs = 100
+    private interPassGapMs = 100,
+    /** Keep the session active after its foreground result, until stopped. */
+    private waitForBackground = false,
   ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
@@ -444,6 +446,33 @@ export class MultiPassThinkingScenario implements MockScenario {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'message_stop' } },
       })
+      if (this.waitForBackground) {
+        const toolId = `thinking-background-tool-${randomUUID()}`
+        const taskId = `thinking-background-task-${randomUUID()}`
+        client.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: { content: [{
+            type: 'tool_use', id: toolId, name: 'Bash',
+            input: { command: 'sleep 600', run_in_background: true },
+          }] },
+          timestamp: new Date().toISOString(),
+        })
+        const result = {
+          backgroundTaskId: taskId, stdout: '', stderr: '', interrupted: false, isImage: false,
+        }
+        const content = [{ type: 'tool_result', tool_use_id: toolId, content: `Command running in background with ID: ${taskId}.` }]
+        client.writeJsonlEntry(sessionId, {
+          type: 'user',
+          toolUseResult: result,
+          message: { content },
+          timestamp: new Date().toISOString(),
+        })
+        client.registerBackgroundTask(sessionId, taskId)
+        client.emitStreamMessage(sessionId, {
+          type: 'user',
+          content: { type: 'user', tool_use_result: result, message: { content } },
+        })
+      }
       client.writeJsonlEntry(sessionId, {
         type: 'assistant',
         message: { content: [{ type: 'text', text: this.responseText }] },
@@ -1938,6 +1967,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'Done with the marathon of thinking passes — here is the answer.',
       15,
       10
+    )],
+    // Foreground completion with a pending task: a follow-up starts a new
+    // runtime turn while the host still reports the session as active.
+    ['think then wait for background', new MultiPassThinkingScenario(
+      ['Inspect the inputs.', 'Prepare the job.', 'Check its progress.'],
+      'Thinking finished; waiting for the background job.',
+      150,
+      100,
+      true,
     )],
     // Several thinking passes persisted one-by-one — an interruptible thinking turn
     ['think in passes', new MultiPassThinkingScenario(

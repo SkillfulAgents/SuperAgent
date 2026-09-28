@@ -80,6 +80,9 @@ const mockClearCompacting = vi.fn()
 const mockRemovePeerUserMessage = vi.fn()
 const mockClearPeerUserMessages = vi.fn()
 const mockConsumeDiscardedCommand = vi.fn()
+const mockConsumeThinkingBlocks = vi.fn((_sessionId: string, ids: number[]) => {
+  mockStreamState.thinkingBlocks = mockStreamState.thinkingBlocks.filter(block => !ids.includes(block.id))
+})
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStreamState,
@@ -87,6 +90,7 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
   removePeerUserMessage: (...args: unknown[]) => mockRemovePeerUserMessage(...args),
   clearPeerUserMessages: (...args: unknown[]) => mockClearPeerUserMessages(...args),
   consumeDiscardedCommand: (...args: unknown[]) => mockConsumeDiscardedCommand(...args),
+  consumeThinkingBlocks: (sessionId: string, ids: number[]) => mockConsumeThinkingBlocks(sessionId, ids),
 }))
 
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
@@ -3871,6 +3875,80 @@ describe('MessageList', () => {
   describe('thinking block dedup (live vs persisted)', () => {
     const liveBlock = (text: string, endedAt: number | null = null, persistedId?: string) =>
       ({ id: 1, persistedId, text, startedAt: Date.now() - 5000, endedAt })
+
+    it.each([true, false])('does not resurrect matched thinking when a background wait receives a new turn (stable IDs: %s)', (withIds) => {
+      // A background job keeps the session active after the foreground result.
+      // markSessionActive then emits queuedMidTurn:true, retaining these blocks,
+      // even though the runtime writes the follow-up as a normal user message.
+      const passes = ['Inspect the inputs', 'Prepare the job', 'Check its progress']
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Run a long job' } }),
+        ...passes.map((text, i) => createAssistantMessage({
+          content: { text: '' },
+          thinking: [{ ...(withIds && { id: `background-pass-${i}:0` }), text }],
+        })),
+        createAssistantMessage({ content: { text: 'The job is running in the background.' } }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.thinkingBlocks = passes.map((text, i) => ({
+        ...liveBlock(text, Date.now(), withIds ? `background-pass-${i}:0` : undefined),
+        id: i + 1,
+      }))
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      // Each live block has already matched its persisted copy.
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(3)
+
+      mockMessagesData.data = [
+        ...mockMessagesData.data,
+        createUserMessage({ content: { text: 'status ?' } }),
+        createAssistantMessage({ content: { text: 'Still running.' } }),
+      ]
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      // The previous turn's cards are folded into its summary. No old live
+      // copies should appear after the follow-up at the transcript tail.
+      expect(screen.getByTestId('turn-summary')).toBeInTheDocument()
+      expect(screen.queryAllByTestId('thinking-block')).toHaveLength(0)
+      fireEvent.click(screen.getByTestId('turn-summary'))
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(3)
+    })
+
+    it('matches stable IDs across a turn boundary even when both turns arrive in one refetch', () => {
+      mockMessagesData.data = [
+        createUserMessage(),
+        createAssistantMessage({ thinking: [{ id: 'old:0', text: 'old thinking' }] }),
+        createUserMessage({ content: { text: 'status ?' } }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.thinkingBlocks = [liveBlock('old thinking', Date.now(), 'old:0')]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.queryAllByTestId('thinking-block')).toHaveLength(0)
+      expect(mockConsumeThinkingBlocks).toHaveBeenCalledWith('s-1', [1])
+      fireEvent.click(screen.getByTestId('turn-summary'))
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
+    })
+
+    it('consumes completed matches before their persisted messages leave the loaded page', () => {
+      mockMessagesData.data = [
+        createUserMessage(),
+        createAssistantMessage({ thinking: [{ text: 'legacy matched reasoning' }] }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.thinkingBlocks = [liveBlock('legacy matched reasoning', Date.now())]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(mockConsumeThinkingBlocks).toHaveBeenCalledWith('s-1', [1])
+
+      mockMessagesData.data = [createUserMessage({ content: { text: 'Latest loaded turn' } })]
+      mockStreamState.thinkingBlocks = [
+        ...mockStreamState.thinkingBlocks,
+        { ...liveBlock('legacy matched reasoning'), id: 2 },
+      ]
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
+      expect(screen.getByText('legacy matched reasoning')).toBeInTheDocument()
+    })
 
     it('renders a live thinking card while the turn streams', () => {
       mockMessagesData.data = [createUserMessage({ content: { text: 'Question' } })]
