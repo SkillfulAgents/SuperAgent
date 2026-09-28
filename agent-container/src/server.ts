@@ -49,7 +49,14 @@ import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
 import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-protocol';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
-import { connectCdp, isStorageStubTarget, runBrowserStorage } from './browser-storage';
+import {
+  applyPendingSessionStorage,
+  clearPendingSessionStorage,
+  connectCdp,
+  hasPendingSessionStorage,
+  isStorageStubTarget,
+  runBrowserStorage,
+} from './browser-storage';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
 
@@ -684,7 +691,7 @@ app.all('/artifacts/:slug', async (c) => {
 import {
   type BrowserState,
   getBrowserState as _getBrowserState,
-  setBrowserState as _setBrowserState,
+  setBrowserState as setCanonicalBrowserState,
   validateBrowserSession,
   releaseBrowserLock,
   transferBrowserLock,
@@ -704,6 +711,12 @@ import { confirmNoPagesLeft, readTabSources, recheckPageTarget } from './browser
 // opened during that span must not be torn down by a verdict formed against the
 // one before it. Detection snapshots this before looking and re-compares last.
 let browserOpenGeneration = 0;
+
+function _setBrowserState(state: BrowserState): void {
+  // Saved sessionStorage waiting for a tab belongs to the browser that is closing.
+  if (!state.active) clearPendingSessionStorage();
+  setCanonicalBrowserState(state);
+}
 
 // Proxy object so existing code can read `browserState.active` etc. without changes.
 // Writes must go through _setBrowserState() to keep the canonical module state in sync.
@@ -1281,6 +1294,8 @@ app.post('/browser/open', async (c) => {
       if (fallback.exitCode === 0 && fallback.stdout.trim()) observeUrl(fallback.stdout.trim());
     }
     broadcastBrowserEvent(true);
+    // Before responding, so the reload lands before the agent starts using the page.
+    await applyPendingSessionStorageAfterOpen();
 
     return c.json({ success: true, location, switchedFrom, page, launched });
   } catch (error: any) {
@@ -2719,7 +2734,7 @@ async function getBrowserWsUrl(): Promise<string> {
 
 // Host-only browser storage endpoints. Captures and restores carry live
 // session credentials, so they refuse to run without host authentication.
-for (const action of ['capture', 'restore'] as const) {
+for (const action of ['capture', 'restore', 'clear'] as const) {
   app.post(`/browser/storage/${action}`, async (c) => {
     if (!hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503);
     c.header('Cache-Control', 'no-store');
@@ -3014,6 +3029,31 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
     } satisfies BrowserTabListMessage));
   } catch (err) {
     console.error('[CDP] Failed to broadcast tab list:', err);
+  }
+}
+
+let applyingPendingSessionStorage = false;
+
+/**
+ * After browser_open lands on an origin with saved sessionStorage waiting, write
+ * it there. Only on open: a reload after later actions could discard the agent's
+ * in-progress work on the page.
+ */
+async function applyPendingSessionStorageAfterOpen(): Promise<void> {
+  if (applyingPendingSessionStorage || !hasPendingSessionStorage() || !browserState.active) return;
+  applyingPendingSessionStorage = true;
+  try {
+    const cdp = await connectCdp(await getBrowserWsUrl());
+    try {
+      const applied = await applyPendingSessionStorage(cdp);
+      if (applied.length > 0) console.log(`[Browser] Applied saved sessionStorage to ${applied.length} tab(s)`);
+    } finally {
+      cdp.close();
+    }
+  } catch (error) {
+    console.error('[Browser] Applying saved sessionStorage failed:', error instanceof Error ? error.message : 'Unknown error');
+  } finally {
+    applyingPendingSessionStorage = false;
   }
 }
 

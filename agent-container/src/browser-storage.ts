@@ -332,7 +332,50 @@ export async function captureSiteStorage(cdp: CdpClient, site: string, extraOrig
  * next to the restored one breaks some logins), then each origin's storage is
  * replaced. Does not reload any page.
  */
+// sessionStorage lives in a tab, so a restore with no open tab of an origin
+// keeps its entries here until the agent's browser shows that origin.
+const pendingSessionStorage = new Map<string, Array<[string, string]>>()
+
+function forgetPendingSessionStorage(site: string): void {
+  for (const origin of pendingSessionStorage.keys()) {
+    if (hostBelongsToSite(new URL(origin).hostname, site)) pendingSessionStorage.delete(origin)
+  }
+}
+
+export function hasPendingSessionStorage(): boolean {
+  return pendingSessionStorage.size > 0
+}
+
+/** Pending entries belong to one browser; call when it closes. */
+export function clearPendingSessionStorage(): void {
+  pendingSessionStorage.clear()
+}
+
+/**
+ * Write pending sessionStorage into open tabs that now show its origin and
+ * reload each once so the page reads it. Returns the origins applied.
+ */
+export async function applyPendingSessionStorage(cdp: CdpClient): Promise<string[]> {
+  const applied: string[] = []
+  for (const page of await listPages(cdp)) {
+    const origin = originOf(page.url)
+    const entries = origin && !page.url.endsWith(STUB_PATH) ? pendingSessionStorage.get(origin) : undefined
+    if (!origin || !entries) continue
+    const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId: page.targetId, flatten: true })
+    try {
+      await callInPage(cdp, sessionId, WRITE_SESSION_STORAGE_FUNCTION, [entries])
+      await cdp.send('Page.reload', {}, sessionId)
+      pendingSessionStorage.delete(origin)
+      applied.push(origin)
+    } finally {
+      await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {})
+    }
+  }
+  return applied
+}
+
 export async function restoreSiteStorage(cdp: CdpClient, bundle: SiteStorageBundle): Promise<RestoreResult> {
+  forgetPendingSessionStorage(bundle.site)
   const existing = await siteCookies(cdp, bundle.site)
   if (existing.length > 0) await cdp.send('Storage.setCookies', { cookies: existing.map(expiredCookie) })
   if (bundle.cookies.length > 0) await cdp.send('Storage.setCookies', { cookies: bundle.cookies })
@@ -353,10 +396,52 @@ export async function restoreSiteStorage(cdp: CdpClient, bundle: SiteStorageBund
     if (origin.sessionStorage) {
       const restored = await withOpenTab(cdp, pages, origin.origin, (sessionId) =>
         callInPage<number>(cdp, sessionId, WRITE_SESSION_STORAGE_FUNCTION, [origin.sessionStorage]))
-      if (restored === undefined) sessionStorageSkipped.push(origin.origin)
+      if (restored === undefined) {
+        sessionStorageSkipped.push(origin.origin)
+        pendingSessionStorage.set(origin.origin, origin.sessionStorage)
+      }
     }
   }
   return { cookies: bundle.cookies.length, origins, sessionStorageSkipped }
+}
+
+export async function clearSiteStorage(cdp: CdpClient, site: string, storedOrigins: string[]): Promise<{ skipped: string[] }> {
+  forgetPendingSessionStorage(site)
+  const existing = await siteCookies(cdp, site)
+  if (existing.length > 0) await cdp.send('Storage.setCookies', { cookies: existing.map(expiredCookie) })
+
+  const pages = await listPages(cdp)
+  const openOrigins = [...new Set(pages.map((page) => originOf(page.url)))]
+    .filter((origin): origin is string => origin !== null && hostBelongsToSite(new URL(origin).hostname, site))
+  const candidates = candidateOrigins(site, existing, pages.map((page) => page.url), storedOrigins)
+  if (candidates.length > 0) {
+    // One stub tab's session reaches the agent's browser context, which remote providers keep out of the default one.
+    await withStubPage(cdp, candidates[0], async (sessionId) => {
+      for (const origin of candidates) {
+        await cdp.send('Storage.clearDataForOrigin', { origin, storageTypes: 'local_storage,indexeddb' }, sessionId)
+      }
+    })
+  }
+
+  const clearedSessionOrigins = new Set<string>()
+  for (const page of pages) {
+    const origin = originOf(page.url)
+    if (!origin || !openOrigins.includes(origin)) continue
+    const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId: page.targetId, flatten: true })
+    try {
+      const current = await cdp.send<{ result: { value: string } }>('Runtime.evaluate', {
+        expression: 'location.origin', returnByValue: true,
+      }, sessionId)
+      if (current.result.value !== origin) continue
+      await callInPage(cdp, sessionId, WRITE_SESSION_STORAGE_FUNCTION, [[]])
+      clearedSessionOrigins.add(origin)
+      await cdp.send('Page.reload', {}, sessionId)
+    } finally {
+      await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {})
+    }
+  }
+  // Session storage lives only in open tabs, so a stored origin with no open tab has none left to clear.
+  return { skipped: openOrigins.filter((origin) => !clearedSessionOrigins.has(origin)) }
 }
 
 // ---------------------------------------------------------------------------
@@ -374,7 +459,11 @@ const restoreRequestSchema = z.object({
   bundle: siteStorageBundleSchema,
 }).strict()
 
-export type BrowserStorageAction = 'capture' | 'restore'
+const clearRequestSchema = siteRequestSchema.extend({
+  origins: z.array(originSchema).max(100),
+}).refine(({ site, origins }) => origins.every((origin) => hostBelongsToSite(new URL(origin).hostname, site)))
+
+export type BrowserStorageAction = 'capture' | 'restore' | 'clear'
 
 export interface BrowserStorageOptions {
   validateSession: (sessionId: string) => string | null
@@ -408,6 +497,11 @@ export async function runBrowserStorage(
     const parsed = restoreRequestSchema.safeParse(rawBody)
     if (!parsed.success) return invalid
     return run(parsed.data.sessionId, (cdp) => restoreSiteStorage(cdp, parsed.data.bundle))
+  }
+  if (action === 'clear') {
+    const parsed = clearRequestSchema.safeParse(rawBody)
+    if (!parsed.success) return invalid
+    return run(parsed.data.sessionId, (cdp) => clearSiteStorage(cdp, parsed.data.site, parsed.data.origins))
   }
   const parsed = siteRequestSchema.safeParse(rawBody)
   if (!parsed.success) return invalid

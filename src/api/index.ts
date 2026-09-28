@@ -19,6 +19,7 @@ import proxy from './routes/proxy'
 import mcpProxy from './routes/mcp-proxy'
 import cloudProxy, { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from './routes/cloud-proxy'
 import browser from './routes/browser'
+import browserLogins from './routes/browser-logins'
 import skillsets from './routes/skillsets'
 import usage from './routes/usage'
 import remoteMcps from './routes/remote-mcps'
@@ -249,6 +250,7 @@ app.route('/api/proxy', proxy)
 app.route('/api/agent-bootstrap', agentBootstrap)
 app.route('/api/mcp-proxy', mcpProxy)
 app.route('/api/browser', browser)
+app.route('/api/browser-logins', browserLogins)
 app.route('/api/skillsets', skillsets)
 app.route('/api/usage', usage)
 app.route('/api/remote-mcps', remoteMcps)

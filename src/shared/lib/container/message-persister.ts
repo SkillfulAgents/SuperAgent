@@ -13,6 +13,7 @@ import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/requ
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { userInputRequestManager, type UserInputRequestTransition } from '@shared/lib/user-input/request-manager'
+import { syncAgentBrowserLogins } from '@shared/lib/browser/browser-login-apply'
 import {
   isReplayableUserInputRequest,
   type PendingUserInputRequest,
@@ -2975,13 +2976,20 @@ class MessagePersister {
         break
       }
 
-      case 'browser_active':
+      case 'browser_active': {
         // Browser state changed — forward to SSE clients
         this.broadcastToSSE(agentSlug, sessionId, {
           type: 'browser_active',
           active: content.active,
         })
+        const client = content.active === true ? this.containerClients.get(ctx.key) : undefined
+        if (client) {
+          void syncAgentBrowserLogins(client, agentSlug, sessionId).catch((error: unknown) => {
+            console.warn('[MessagePersister] Failed to sync saved browser logins:', error instanceof Error ? error.message : error)
+          })
+        }
         break
+      }
 
       case 'capability_review_cancelled':
         // The container's gate hook stopped waiting for this review (the CLI
