@@ -48,9 +48,16 @@ test.describe('Thinking Display', () => {
       await expect(sessionPage.getUserMessages().filter({ hasText: 'status ?' })).toBeVisible()
       await expect(page.getByTestId('turn-summary').last()).toBeVisible()
 
-      const messagesResponse = await request.get(`${sessionUrl}/messages`)
-      expect(messagesResponse.ok()).toBeTruthy()
-      const transcript = await messagesResponse.json() as ApiMessageOrBoundary[]
+      // The optimistic user bubble can precede the CLI's persisted entry.
+      let transcript: ApiMessageOrBoundary[] = []
+      await expect(async () => {
+        const messagesResponse = await request.get(`${sessionUrl}/messages`)
+        expect(messagesResponse.ok()).toBeTruthy()
+        transcript = await messagesResponse.json() as ApiMessageOrBoundary[]
+        expect(transcript.some(message =>
+          message.type === 'user' && (message.content as { text?: string }).text === 'status ?',
+        )).toBe(true)
+      }).toPass({ timeout: 15_000 })
       const thinking = transcript.flatMap(message => message.type === 'assistant' ? message.thinking ?? [] : [])
       expect(thinking).toHaveLength(3)
       expect(new Set(thinking.map(block => block.id)).size).toBe(3)
