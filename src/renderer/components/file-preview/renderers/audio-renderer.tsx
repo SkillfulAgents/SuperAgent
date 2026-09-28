@@ -4,6 +4,8 @@ import { useFilePreview, type FileComment } from '@renderer/context/file-preview
 import { CommentOverlay } from '../comments/comment-overlay'
 import { formatMediaTime } from '../comments/format-media-time'
 import { createFallbackWaveform, createWaveformPeaks } from './audio-waveform'
+import { useMediaKeys } from './use-media-keys'
+import { PlaybackSpeedSelect } from './playback-speed'
 import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface AudioRendererProps {
@@ -144,13 +146,6 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
     setCurrentTime(nextTime)
   }, [maxSeek])
 
-  const togglePlay = useCallback(() => {
-    const audio = audioRef.current
-    if (!audio) return
-    if (audio.paused) void audio.play().catch(() => {})
-    else audio.pause()
-  }, [])
-
   const beginComment = useCallback((timestamp: number) => {
     const audio = audioRef.current
     const timeline = timelineRef.current
@@ -167,6 +162,13 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
     clearHoverCloseTimer()
     setHoverTime(null)
   }, [clearHoverCloseTimer, maxSeek])
+
+  // Read the media clock, not the last rendered time, which can trail a seek.
+  const commentAtPlayhead = () => beginComment(audioRef.current?.currentTime ?? 0)
+
+  const { rate, setRate, togglePlay } = useMediaKeys(audioRef, {
+    onComment: commentsEnabled && !pending ? commentAtPlayhead : undefined,
+  })
 
   const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (pending) return
@@ -189,7 +191,7 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
   }, [commentsFor, filePath, agentSlug, maxSeek])
 
   return (
-    <div className="flex min-h-full items-start justify-center p-5" data-testid="audio-renderer">
+    <div className="flex min-h-full items-start justify-center p-5" data-testid="audio-renderer" data-media-player>
       <div className="w-full max-w-[720px] rounded-xl border border-border/60 bg-card/70 p-4 shadow-sm sm:p-5">
         <div className="mb-5 flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -360,10 +362,11 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
           <span className="text-xs tabular-nums text-muted-foreground">
             {formatMediaTime(currentTime)} / {formatMediaTime(duration)}
           </span>
+          <PlaybackSpeedSelect rate={rate} onChange={setRate} />
           {commentsEnabled && (
             <button
               type="button"
-              onClick={() => beginComment(currentTime)}
+              onClick={commentAtPlayhead}
               disabled={pending != null}
               className="ml-auto flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
               data-testid="audio-add-comment"

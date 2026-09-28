@@ -43,6 +43,9 @@ describe('AudioRenderer', () => {
     )
 
     expect(screen.queryByTestId('audio-add-comment')).not.toBeInTheDocument()
+    expect(fireEvent.keyDown(window, { key: 'c' })).toBe(true)
+    expect(HTMLMediaElement.prototype.pause).not.toHaveBeenCalled()
+    expect(screen.queryByPlaceholderText('Add your comment...')).not.toBeInTheDocument()
   })
 
   it('renders custom playback controls and a waveform timeline', () => {
@@ -140,6 +143,50 @@ describe('AudioRenderer', () => {
 
     expect(screen.getByText('0:04 / 0:00')).toBeVisible()
     expect(requestFrame).toHaveBeenCalledTimes(2)
+  })
+
+  it('plays, seeks, changes speed and comments from the keyboard, but not while typing', async () => {
+    const user = userEvent.setup()
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
+    const audio = screen.getByTestId('audio-element') as HTMLAudioElement
+    Object.defineProperty(audio, 'duration', { configurable: true, value: 120 })
+    fireEvent.loadedMetadata(audio)
+    audio.currentTime = 60
+
+    await user.keyboard('l')
+    expect(audio.currentTime).toBe(70)
+    await user.keyboard('>')
+    expect(audio.playbackRate).toBe(1.25)
+    expect(screen.getByTestId('playback-speed')).toHaveTextContent('1.25×')
+    await user.keyboard(' ')
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalledOnce()
+
+    await user.keyboard('c')
+    const box = screen.getByPlaceholderText('Add your comment...')
+    expect(HTMLMediaElement.prototype.pause).toHaveBeenCalled()
+    await user.type(box, 'kl ')
+    expect(box).toHaveValue('kl ')
+    expect(audio.currentTime).toBe(70)
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalledOnce()
+    await user.click(screen.getByRole('button', { name: 'Add' }))
+    expect(addComment).toHaveBeenCalledWith(expect.objectContaining({ timestamp: 70 }))
+  })
+
+  it('sets the speed from the picker, and keys inside the open picker stay there', async () => {
+    HTMLElement.prototype.hasPointerCapture = () => false
+    HTMLElement.prototype.scrollIntoView = () => {}
+    const user = userEvent.setup()
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
+    const audio = screen.getByTestId('audio-element') as HTMLAudioElement
+    Object.defineProperty(audio, 'duration', { configurable: true, value: 120 })
+    fireEvent.loadedMetadata(audio)
+    audio.currentTime = 60
+
+    await user.click(screen.getByTestId('playback-speed'))
+    await user.keyboard('j')
+    expect(audio.currentTime).toBe(60)
+    await user.click(screen.getByRole('option', { name: '2×' }))
+    expect(audio.playbackRate).toBe(2)
   })
 
   it('pauses playback and saves the locked timestamp when adding a comment', async () => {

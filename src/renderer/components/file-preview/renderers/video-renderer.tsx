@@ -1,9 +1,11 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { Play, Pause, MessageSquarePlus } from 'lucide-react'
 import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
 import { CommentPin } from '../comments/comment-pin'
 import { CommentOverlay } from '../comments/comment-overlay'
 import { formatMediaTime } from '../comments/format-media-time'
+import { frameSeconds, useMediaKeys } from './use-media-keys'
+import { PlaybackSpeedSelect } from './playback-speed'
 
 interface VideoRendererProps {
   url: string
@@ -47,13 +49,6 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
   const fileComments = commentsFor(filePath, agentSlug)
   const videoComments = fileComments.filter((c): c is VideoComment => c.timestamp != null)
 
-  const togglePlay = useCallback(() => {
-    const v = videoRef.current
-    if (!v) return
-    if (v.paused) void v.play().catch(() => {})
-    else v.pause()
-  }, [])
-
   const seekTo = useCallback((time: number) => {
     const v = videoRef.current
     if (!v) return
@@ -94,6 +89,43 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
     else beginComment({ x, y })
   }, [pending, beginComment])
 
+  // The mouse's frame position, so C opens a comment where the mouse is.
+  const pointerRef = useRef<{ x: number; y: number } | null>(null)
+  const handleFramePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect()
+    pointerRef.current = { x: ((e.clientX - rect.left) / rect.width) * 100, y: ((e.clientY - rect.top) / rect.height) * 100 }
+  }, [])
+
+  // Browsers don't expose the frame rate: take the shortest frame length seen
+  // while playing, and assume 30 fps until one is seen.
+  const frameDurationRef = useRef(Infinity)
+  useEffect(() => {
+    const v = videoRef.current
+    // Firefox before 132 lacks the callback; steps then stay at the 30 fps guess.
+    if (!playing || !v || !('requestVideoFrameCallback' in v)) return
+    let last: VideoFrameCallbackMetadata | null = null
+    let id = 0
+    const onFrame: VideoFrameRequestCallback = (_now, meta) => {
+      const seconds = last && frameSeconds(last, meta)
+      if (seconds) frameDurationRef.current = Math.min(frameDurationRef.current, seconds)
+      last = meta
+      id = v.requestVideoFrameCallback(onFrame)
+    }
+    // A pair of samples must not span a seek.
+    const forgetLast = () => { last = null }
+    v.addEventListener('seeking', forgetLast)
+    id = v.requestVideoFrameCallback(onFrame)
+    return () => {
+      v.cancelVideoFrameCallback(id)
+      v.removeEventListener('seeking', forgetLast)
+    }
+  }, [playing])
+
+  const { rate, setRate, togglePlay } = useMediaKeys(videoRef, {
+    frameStep: () => (Number.isFinite(frameDurationRef.current) ? frameDurationRef.current : 1 / 30),
+    onComment: commentsEnabled && !pending ? () => beginComment(pointerRef.current) : undefined,
+  })
+
   const handleBoxPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault()
     draggingRef.current = true
@@ -118,13 +150,15 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
   const maxSeek = duration > 0 ? duration : 0
 
   return (
-    <div className="flex flex-col items-center gap-3 p-4" data-testid="video-renderer">
+    <div className="flex flex-col items-center gap-3 p-4" data-testid="video-renderer" data-media-player>
       {/* Video frame — clicking anywhere starts a comment at that point. */}
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
       <div
         ref={frameRef}
         className={`relative inline-block max-w-full ${commentsEnabled ? 'cursor-crosshair' : ''}`}
         onClick={commentsEnabled ? handleFrameClick : undefined}
+        onPointerMove={handleFramePointerMove}
+        onPointerLeave={() => { pointerRef.current = null }}
       >
         {/* Agent-delivered videos have no caption track to offer. */}
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
@@ -225,6 +259,7 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
           <span className="text-xs text-muted-foreground tabular-nums">
             {formatMediaTime(currentTime)} / {formatMediaTime(duration)}
           </span>
+          <PlaybackSpeedSelect rate={rate} onChange={setRate} />
           {commentsEnabled && (
             <button
               type="button"
