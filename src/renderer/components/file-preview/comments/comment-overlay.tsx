@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { MessageSquarePlus } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useFilePreview } from '@renderer/context/file-preview-context'
+import { isComposing, isSubmitEnter } from '@renderer/lib/enter-key'
 import type { TextSelectionInfo } from './use-text-selection'
 import { formatMediaTime } from './format-media-time'
 
@@ -44,7 +45,8 @@ export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEd
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    if (isComposing(e.nativeEvent)) return
+    if (isSubmitEnter(e.nativeEvent)) {
       e.preventDefault()
       handleAdd()
     }

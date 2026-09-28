@@ -107,7 +107,7 @@ export function CommentBar({ comments, filePath, agentSlug, sessionId }: Comment
               {comment.timestamp == null && comment.x != null && comment.y != null && (
                 <div className="text-muted-foreground/70">({Math.round(comment.x)}%, {Math.round(comment.y)}%)</div>
               )}
-              <div className="text-foreground">{comment.text}</div>
+              <div className="text-foreground whitespace-pre-wrap">{comment.text}</div>
             </div>
             <button
               onClick={() => removeComment(filePath, agentSlug, comment.id)}
