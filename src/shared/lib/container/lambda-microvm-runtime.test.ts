@@ -555,6 +555,85 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
   })
 
+  it('tags getInfo control-plane failures with who answered and groups them by status', async () => {
+    process.env.MICROVM_PROXY_URL = 'https://mvm.internal'
+    process.env.MICROVM_PROXY_TOKEN = 'org-a-token'
+    resetMicrovmRuntimeForTests()
+    let getResponse: () => Response = () =>
+      ({ ok: true, status: 200, json: async () => ({ state: 'RUNNING', endpoint: 'ep.svc' }) }) as unknown as Response
+    vi.mocked(fetch).mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input)
+      if (url === 'https://mvm.internal/microvm/run') {
+        return { ok: true, status: 201, json: async () => ({ microvmId: 'mvm-svc', endpoint: 'ep.svc' }) } as unknown as Response
+      }
+      if (url === 'https://mvm.internal/microvm/mvm-svc') return getResponse()
+      return { ok: true } as Response
+    })
+    const client = newClient()
+    await client.start()
+
+    getResponse = () => new Response('<html>502 Bad Gateway</html>', { status: 502, headers: { server: 'awselb/2.0' } })
+    vi.mocked(captureException).mockClear()
+    expect((await client.getInfoFromRuntime()).status).toBe('running')
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'MicrovmServiceError', status: 502 }),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          op: 'microvm.getInfo',
+          service_status: '502',
+          service_code: 'none',
+          answered_by: 'gateway',
+          service_server: 'awselb/2.0',
+        }),
+        fingerprint: ['microvm-service', 'getInfo', '502'],
+      }),
+    )
+
+    getResponse = () =>
+      new Response(JSON.stringify({ error: 'microvm control plane unavailable', code: 'microvm_control_plane_unavailable' }), { status: 503 })
+    vi.mocked(captureException).mockClear()
+    expect((await client.getInfoFromRuntime()).status).toBe('running')
+    expect(vi.mocked(captureException).mock.calls[0][1]?.tags).toMatchObject({
+      service_status: '503',
+      service_code: 'microvm_control_plane_unavailable',
+      answered_by: 'controller',
+    })
+  })
+
+  it('records the terminal state and reason when a MicroVM terminates before ready', async () => {
+    let gets = 0
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') return { microvmId: 'mvm-1', endpoint: 'ep.1' }
+      if (cmd.type === 'Get') {
+        gets++
+        return gets === 1 ? { state: 'PENDING' } : { state: 'TERMINATED', stateReason: 'Image pull failed' }
+      }
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      vi.mocked(addErrorBreadcrumb).mockClear()
+      const started = newClient().start()
+      const assertion = expect(started).rejects.toThrow(/entered TERMINATED before becoming ready/)
+      await vi.advanceTimersByTimeAsync(2_000)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(addErrorBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'MicroVM terminal before ready',
+        data: expect.objectContaining({
+          state: 'TERMINATED',
+          stateReason: 'Image pull failed',
+          previousState: 'PENDING',
+          polls: 2,
+        }),
+      }),
+    )
+  })
+
   it('start stops the prior proxy across a terminate→restart cycle (no leaked listener)', async () => {
     const stopSpy = vi.spyOn(LocalAuthForwardProxy.prototype, 'stop')
     const client = newClient()
