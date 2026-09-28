@@ -1,12 +1,19 @@
-import { Vault } from 'lucide-react'
+import { Users, Vault } from 'lucide-react'
 import type { SavedLogins } from '@renderer/hooks/use-saved-logins'
+
+/** Shown before applying a saved login to an agent other members can use. */
+export function sharedLoginNotice(otherMembers: number, site: string): string {
+  return `${otherMembers} other ${otherMembers === 1 ? 'member' : 'members'} can use this agent. It will stay signed in to ${site} with your account.`
+}
 
 interface SavedLoginPickerProps {
   savedLogins: SavedLogins
   disabled?: boolean
+  /** Other members of the agent; when any, the picker says they can use the applied login. */
+  otherMembers?: number
 }
 
-export function SavedLoginPicker({ savedLogins, disabled }: SavedLoginPickerProps) {
+export function SavedLoginPicker({ savedLogins, disabled, otherMembers = 0 }: SavedLoginPickerProps) {
   const { logins, applyingId, applied, error, apply } = savedLogins
   if (!logins || logins.length === 0) return null
 
@@ -16,6 +23,12 @@ export function SavedLoginPicker({ savedLogins, disabled }: SavedLoginPickerProp
         <Vault className="h-3.5 w-3.5" />
         Use a saved login
       </div>
+      {!applied && otherMembers > 0 && (
+        <p className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground" data-testid="saved-login-shared-notice">
+          <Users className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          {sharedLoginNotice(otherMembers, logins[0].site)}
+        </p>
+      )}
       {applied ? (
         <p className="mt-2 text-xs text-muted-foreground">Saved login applied. The agent will check that it is signed in.</p>
       ) : (

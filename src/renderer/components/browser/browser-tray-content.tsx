@@ -12,7 +12,8 @@ import { Checkbox } from '@renderer/components/ui/checkbox'
 import { DeclineButton } from '@renderer/components/messages/decline-button'
 import { linkify } from '@renderer/lib/linkify'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useBrowserInputActions, useCanSaveBrowserLogin } from '@renderer/hooks/use-browser-input-actions'
+import { useBrowserInputActions, useCanSaveBrowserLogin, useOtherAgentMemberCount } from '@renderer/hooks/use-browser-input-actions'
+import { sharedLoginNotice } from '@renderer/components/messages/saved-login-picker'
 import { useSavedLogins } from '@renderer/hooks/use-saved-logins'
 import { cn } from '@shared/lib/utils/cn'
 import {
@@ -83,6 +84,7 @@ export function BrowserTrayContent({
 
   const isLogin = latestRequest?.login === true
   const canSaveLogin = useCanSaveBrowserLogin(agentSlug, isLogin)
+  const otherMembers = useOtherAgentMemberCount(agentSlug, isLogin)
   const savedLogins = useSavedLogins(agentSlug, sessionId, latestRequest?.toolUseId ?? null, isLogin)
   const savedLogin = savedLogins.logins?.[0]
   // Saving over an existing login is opt-in, so a failed sign-in cannot replace a working one. Choices last one request.
@@ -229,6 +231,11 @@ export function BrowserTrayContent({
                   </Button>
                 )}
               </div>
+              {savedLogin && !showManualSignIn && otherMembers > 0 && (
+                <p className="mt-1 px-1 text-2xs text-muted-foreground" data-testid="browser-tray-shared-notice">
+                  {sharedLoginNotice(otherMembers, savedLogin.site)}
+                </p>
+              )}
               {(actionError || savedLogins.error) && (
                 <p className="mt-1 px-1 text-2xs text-destructive">{actionError || savedLogins.error}</p>
               )}

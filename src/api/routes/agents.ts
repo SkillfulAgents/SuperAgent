@@ -4189,6 +4189,13 @@ agents.post(
   },
 )
 
+/** Site of the page a sign-in request opened on; null when the request is not a sign-in or has no such page. */
+function loginRequestSite(agentSlug: string, toolUseId: string): string | null {
+  const request = agentRegistry.get(agentSlug).inputs.get(toolUseId)
+  if (request?.kind !== 'browser_input' || request.payload.login !== true) return null
+  return typeof request.payload.loginUrl === 'string' ? siteOf(request.payload.loginUrl) : null
+}
+
 // GET /api/agents/:id/sessions/:sessionId/saved-browser-logins - The user's saved logins for the page's site
 agents.get('/:id/sessions/:sessionId/saved-browser-logins', AgentUser(), async (c) => {
   const toolUseId = c.req.query('toolUseId')
@@ -4198,9 +4205,15 @@ agents.get('/:id/sessions/:sessionId/saved-browser-logins', AgentUser(), async (
 
   const agentSlug = getAgentId(c)
   try {
-    const url = capturedBrowserInputUrl(agentSlug, toolUseId) ||
-      await refreshBrowserInputUrl(agentSlug, c.req.param('sessionId'), toolUseId)
-    const site = siteOf(url)
+    const request = agentRegistry.get(agentSlug).inputs.get(toolUseId)
+    if (request?.kind !== 'browser_input' || request.payload.login !== true) return c.json({ logins: [] })
+    // The card can ask before the harness has recorded the opening page; record it now, still at the start.
+    if (typeof request.payload.loginUrl !== 'string') {
+      agentRegistry.get(agentSlug).inputs.enrich(toolUseId, 'browser_input', {
+        loginUrl: await readCredentialBrowserUrl(agentSlug, c.req.param('sessionId')),
+      })
+    }
+    const site = loginRequestSite(agentSlug, toolUseId)
     if (!site) return c.json({ logins: [] })
     const client = agentRegistry.get(agentSlug).container
     const browserType = await browserTypeForSession(client, c.req.param('sessionId'))
@@ -4231,6 +4244,8 @@ agents.post(
     claimedToolUseId = body.toolUseId
 
     const sessionId = c.req.param('sessionId')
+    const site = loginRequestSite(agentSlug, body.toolUseId)
+    if (!site) return c.json({ error: 'Saved logins apply only to sign-in requests' }, 400)
     let applied: { site: string; linked: boolean }
     try {
       applied = await applyBrowserLogin({
@@ -4239,6 +4254,7 @@ agents.post(
         agentSlug,
         userId: getViewerUserId(c),
         credentialId: body.credentialId,
+        site,
       })
     } catch (error) {
       if (error instanceof BrowserLoginNotFoundError) return c.json({ error: 'Saved login not found' }, 404)

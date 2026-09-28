@@ -5289,6 +5289,28 @@ describe('browser credential broker routes', () => {
     expect(mockSaveLogin).toHaveBeenCalledWith(expect.objectContaining({ url: 'https://login.example.com/signin' }))
     expect(mockContainerFetch.mock.calls.map(([path]) => path)).toEqual(['/inputs/tool-login/resolve'])
   })
+
+  it('refuses to apply a saved login to a request that is not a sign-in', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tool-captcha',
+      kind: 'browser_input',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: { loginUrl: 'https://example.com/login' },
+    })
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/use-saved-browser-login',
+      { toolUseId: 'tool-captcha', credentialId: 'bc-1' },
+    )
+
+    expect(res.status).toBe(400)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
 })
 
 describe('decision routes settle their request immediately', () => {
