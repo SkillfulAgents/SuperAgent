@@ -102,6 +102,8 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
       requirements: z.unknown().optional(),
       /** Set for purpose "login": the card offers saving the login. */
       login: z.boolean().optional().catch(undefined),
+      /** Page a login request opened on; fixes the saved login's site. Never refreshed. */
+      loginUrl: z.string().optional().catch(undefined),
       // Captured by the host harness when the request opens. This is not part
       // of the model-facing tool input: the browser itself remains the source
       // of truth for credential scoping.

@@ -4260,14 +4260,13 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
     const sharedAgent = isAuthMode() && await countMembersWithMinRole(agentSlug, 'viewer') > 1
     const request = actor.inputs.get(toolUseId)
     if (saveLogin === true && !sharedAgent && request?.kind === 'browser_input' && request.payload.login === true) {
-      const url = capturedBrowserInputUrl(agentSlug, toolUseId) ||
-        await refreshBrowserInputUrl(agentSlug, sessionId, toolUseId).catch(() => null)
+      // The page the request opened on, not the current one, so a sign-in that ends on another site keeps its site.
       loginSave = await saveLoginAfterBrowserInput({
         client: actor.container,
         sessionId,
         agentSlug,
         userId: getViewerUserId(c),
-        url,
+        url: typeof request.payload.loginUrl === 'string' ? request.payload.loginUrl : null,
       })
     }
 
