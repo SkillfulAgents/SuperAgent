@@ -42,20 +42,19 @@ test.describe('Thinking Display', () => {
       await expect(page.getByTestId('thinking-block')).toHaveCount(3)
       await page.screenshot({ path: testInfo.outputPath('before-followup.png'), fullPage: true })
 
-      // The foreground result has landed, but the background job keeps the
-      // host active. The POST and session_active SSE therefore call this
-      // queued, while the runtime persists it as a new turn-starting message.
-      const sent = page.waitForResponse(response =>
-        response.url().endsWith(`${sessionUrl}/messages`) && response.request().method() === 'POST',
-      )
+      // A new foreground turn can start while background work keeps the
+      // app Working. Its old thinking must stay retired across that boundary.
       await sessionPage.sendMessage('status ?')
-      expect((await (await sent).json()).queued).toBe(true)
       await expect(sessionPage.getUserMessages().filter({ hasText: 'status ?' })).toBeVisible()
       await expect(page.getByTestId('turn-summary').last()).toBeVisible()
 
       const messagesResponse = await request.get(`${sessionUrl}/messages`)
       expect(messagesResponse.ok()).toBeTruthy()
       const transcript = await messagesResponse.json() as ApiMessageOrBoundary[]
+      const thinking = transcript.flatMap(message => message.type === 'assistant' ? message.thinking ?? [] : [])
+      expect(thinking).toHaveLength(3)
+      expect(new Set(thinking.map(block => block.id)).size).toBe(3)
+      for (const block of thinking) expect(block.id).toEqual(expect.stringMatching(/:0$/))
       const followup = transcript.find(message =>
         message.type === 'user' && (message.content as { text?: string }).text === 'status ?',
       )
@@ -72,6 +71,7 @@ test.describe('Thinking Display', () => {
         'xpath=//*[@data-testid="message-user" and contains(., "status ?")]/following::*[@data-testid="thinking-block"]',
       )
       await expect(cardsBelowFollowup).toHaveCount(0)
+      await expect(sessionPage.getActivityIndicator()).toContainText('Background command')
     } finally {
       await request.post(`${sessionUrl}/interrupt`, { data: { scope: 'all' } })
     }

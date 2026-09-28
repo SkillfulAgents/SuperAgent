@@ -5,15 +5,15 @@ persisted transcript, and Chromium UI. No mock runtime or intercepted responses.
 This makes billable LLM calls (a warm-up, a diagnostic, and a status follow-up).
 
 Prerequisites: Docker, installed workspace dependencies and Playwright Chromium,
-and a source install with an Anthropic key in `settings.json`. The default source
-is `~/Downloads/superagent-sdk257`; override it with `--source=/path/to/install`.
+and a source install with an Anthropic key in `settings.json`. Pass its directory
+explicitly with the required `--source=/path/to/install` argument.
 Only the key is copied into a private temporary directory, with a fresh database.
 The source install is read-only. The probe removes its own container and temporary
 credential directory on completion or failure.
 
 ```sh
 docker build -t superagent-container:thinking-followup agent-container
-npx tsx e2e/live/thinking-followup/run.ts --expect=fixed
+npx tsx e2e/live/thinking-followup/run.ts --source=/path/to/install --expect=fixed
 ```
 
 Optional arguments: `--image=...`, `--model=claude-sonnet-4-6`, `--port=3476`,
@@ -37,14 +37,3 @@ persisted transcript rather than assuming a fixed number.
 The output directory contains before/after screenshots, video, host logs, and
 `proof.json` with model, container image digest, session IDs, card counts, and
 sanitized SSE metadata. Proof excludes credentials and reasoning text.
-
-Validated on 2026-09-28 against renderer baseline `b254a55f1` and this fix, using
-`claude-sonnet-4-6` and the same container built from the checkout:
-
-| Run | Prior thinking cards | Current-turn thinking cards | Cards below follow-up | Resurrected cards | Background still active |
-| --- | ---: | ---: | ---: | ---: | --- |
-| Baseline | 1 | 0 | 1 | 1 | Yes |
-| Fixed | 1 | 0 | 0 | 0 | Yes |
-
-Container digest: `sha256:3310c5687c4a863a163dd01664832ddf35fbc61252939b6bfbeb1b4c2120028e`.
-The deterministic mock browser regression additionally covers three old cards.

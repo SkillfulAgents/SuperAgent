@@ -387,27 +387,28 @@ export class MultiPassThinkingScenario implements MockScenario {
         message: { content: userMessage },
         timestamp: new Date().toISOString(),
       })
-      client.emitStreamMessage(sessionId, {
-        type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'message_start' } },
-      })
     }, 10)
 
     let offset = 20
     for (const passText of this.passes) {
+      const messageId = `thinking-pass-${randomUUID()}`
       const passStart = offset
       const chunks = passText.split(' ')
       setTimeout(() => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
-          content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'thinking' } } },
+          content: { type: 'stream_event', event: { type: 'message_start', message: { id: messageId } } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } } },
         })
       }, passStart)
       chunks.forEach((word, i) => {
         setTimeout(() => {
           client.emitStreamMessage(sessionId, {
             type: 'stream_event',
-            content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: (i > 0 ? ' ' : '') + word } } },
+            content: { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: (i > 0 ? ' ' : '') + word } } },
           })
         }, passStart + 10 + i * this.chunkDelayMs)
       })
@@ -415,47 +416,57 @@ export class MultiPassThinkingScenario implements MockScenario {
       setTimeout(() => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
-          content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+          content: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
         })
         // Each pass persists as its own assistant entry, like the real CLI
         client.writeJsonlEntry(sessionId, {
           type: 'assistant',
           message: {
+            id: messageId,
             content: [{ type: 'thinking', thinking: passText, signature: 'mock-signature' }],
           },
           timestamp: new Date().toISOString(),
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_stop' } },
         })
       }, passEnd)
       offset = passEnd + this.interPassGapMs
     }
 
     setTimeout(() => {
-      client.emitStreamMessage(sessionId, {
-        type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
-      })
-      client.emitStreamMessage(sessionId, {
-        type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: this.responseText } } },
-      })
-      client.emitStreamMessage(sessionId, {
-        type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
-      })
-      client.emitStreamMessage(sessionId, {
-        type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'message_stop' } },
-      })
       if (this.waitForBackground) {
+        const messageId = `thinking-background-${randomUUID()}`
         const toolId = `thinking-background-tool-${randomUUID()}`
         const taskId = `thinking-background-task-${randomUUID()}`
+        const input = { command: 'sleep 600', run_in_background: true }
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_start', message: { id: messageId } } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_start', index: 0,
+            content_block: { type: 'tool_use', id: toolId, name: 'Bash', input: {} } } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_delta', index: 0,
+            delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+        })
         client.writeJsonlEntry(sessionId, {
           type: 'assistant',
-          message: { content: [{
-            type: 'tool_use', id: toolId, name: 'Bash',
-            input: { command: 'sleep 600', run_in_background: true },
-          }] },
+          message: { id: messageId, content: [{ type: 'tool_use', id: toolId, name: 'Bash', input }] },
           timestamp: new Date().toISOString(),
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_stop' } },
         })
         const result = {
           backgroundTaskId: taskId, stdout: '', stderr: '', interrupted: false, isImage: false,
@@ -473,10 +484,32 @@ export class MultiPassThinkingScenario implements MockScenario {
           content: { type: 'user', tool_use_result: result, message: { content } },
         })
       }
+      // The final response follows the tool result in both SSE and JSONL.
+      const messageId = `thinking-response-${randomUUID()}`
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start', message: { id: messageId } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: this.responseText } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+      })
       client.writeJsonlEntry(sessionId, {
         type: 'assistant',
-        message: { content: [{ type: 'text', text: this.responseText }] },
+        message: { id: messageId, content: [{ type: 'text', text: this.responseText }] },
         timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_stop' } },
       })
       client.emitStreamMessage(sessionId, {
         type: 'result',

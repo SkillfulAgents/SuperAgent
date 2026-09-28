@@ -14,7 +14,8 @@ const args = Object.fromEntries(process.argv.slice(2).map(arg => {
 }))
 const mode = z.enum(['bug', 'fixed']).parse(args.expect ?? 'fixed')
 const image = args.image ?? 'superagent-container:thinking-followup'
-const source = args.source ?? path.join(os.homedir(), 'Downloads/superagent-sdk257')
+const source = args.source
+assert(source, 'Pass --source=/path/to/install containing settings.json with an Anthropic API key')
 const port = Number(args.port ?? 3476)
 const base = `http://127.0.0.1:${port}`
 const runDir = path.resolve(args.output ?? `test-results/live-thinking-${mode}-${Date.now()}`)

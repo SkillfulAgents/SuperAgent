@@ -523,8 +523,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // Stable IDs can match anywhere in the loaded transcript: background work
   // keeps the session active across foreground turns, and a refetch can carry
   // both a block's persisted copy and the next turn's user message at once.
+  const hasLiveThinking = thinkingBlocks.length > 0
   const persistedThinkingIds = useMemo(() => {
     const ids = new Set<string>()
+    if (!hasLiveThinking) return ids
     for (const message of messages ?? []) {
       if (message.type !== 'assistant') continue
       for (const block of message.thinking ?? []) {
@@ -532,7 +534,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       }
     }
     return ids
-  }, [messages])
+  }, [messages, hasLiveThinking])
 
   // Text-prefix fallback stays within the current turn: the model can reuse
   // a stock opener in a genuinely new block, which must remain visible.
@@ -548,7 +550,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     )
     if (!displayableThinkingBlocks.length || !messages?.length) return displayableThinkingBlocks
 
-    const persisted: Array<{ id?: string; text: string }> = []
+    const persisted: Array<{ hasId: boolean; text: string }> = []
     let interrupted = false
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
@@ -565,7 +567,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         for (const t of (m as ApiMessage).thinking!) {
           if (typeof t?.text === 'string' && t.text.trim()) {
             persisted.push({
-              ...(typeof t.id === 'string' && t.id && { id: t.id }),
+              hasId: typeof t.id === 'string' && !!t.id,
               text: t.text.trim(),
             })
           }
@@ -586,7 +588,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       const matched = persisted.some(p => {
         // When both sides have an identity, text must not override it: models
         // legitimately reuse stock reasoning across different responses.
-        if (b.persistedId && p.id) return b.persistedId === p.id
+        if (b.persistedId && p.hasId) return false
         // Legacy runtime/transcript fallback. Prefix matching tolerates a live
         // stream that trails the completed transcript.
         return !!t && (p.text.startsWith(t) || t.startsWith(p.text))
