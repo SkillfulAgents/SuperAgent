@@ -8,6 +8,7 @@ import {
   removePeerUserMessage,
   clearPeerUserMessages,
   consumeDiscardedCommand,
+  consumeThinkingBlocks,
 } from '@renderer/hooks/use-message-stream'
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { classifyUserMessage, classifyUserText } from './user-message-kinds'
@@ -519,9 +520,24 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // takes over and the ephemeral one must not double-render. Modern runtimes
   // match by stable message-id + content-index identity. Text-prefix matching
   // remains only when either side predates that identity.
-  // Only the current turn's persisted thinking is compared — live blocks are
-  // reset on session_active, so a match against an older turn can only be a
-  // false positive (the model reusing a stock opener suppresses the live card).
+  // Stable IDs can match anywhere in the loaded transcript: background work
+  // keeps the session active across foreground turns, and a refetch can carry
+  // both a block's persisted copy and the next turn's user message at once.
+  const hasLiveThinking = thinkingBlocks.length > 0
+  const persistedThinkingIds = useMemo(() => {
+    const ids = new Set<string>()
+    if (!hasLiveThinking) return ids
+    for (const message of messages ?? []) {
+      if (message.type !== 'assistant') continue
+      for (const block of message.thinking ?? []) {
+        if (block.id && block.text.trim()) ids.add(block.id)
+      }
+    }
+    return ids
+  }, [messages, hasLiveThinking])
+
+  // Text-prefix fallback stays within the current turn: the model can reuse
+  // a stock opener in a genuinely new block, which must remain visible.
   const unpersistedThinkingBlocks = useMemo(() => {
     if (!thinkingBlocks.length) return thinkingBlocks
 
@@ -534,7 +550,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     )
     if (!displayableThinkingBlocks.length || !messages?.length) return displayableThinkingBlocks
 
-    const persisted: Array<{ id?: string; text: string }> = []
+    const persisted: Array<{ hasId: boolean; text: string }> = []
     let interrupted = false
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
@@ -551,7 +567,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         for (const t of (m as ApiMessage).thinking!) {
           if (typeof t?.text === 'string' && t.text.trim()) {
             persisted.push({
-              ...(typeof t.id === 'string' && t.id && { id: t.id }),
+              hasId: typeof t.id === 'string' && !!t.id,
               text: t.text.trim(),
             })
           }
@@ -567,11 +583,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // discarded whatever the leftover live blocks hold, so they'd strand.
     if (!isActive && (persisted.length || interrupted)) return []
     return displayableThinkingBlocks.filter(b => {
+      if (b.persistedId && persistedThinkingIds.has(b.persistedId)) return false
       const t = b.text.trim()
       const matched = persisted.some(p => {
         // When both sides have an identity, text must not override it: models
         // legitimately reuse stock reasoning across different responses.
-        if (b.persistedId && p.id) return b.persistedId === p.id
+        if (b.persistedId && p.hasId) return false
         // Legacy runtime/transcript fallback. Prefix matching tolerates a live
         // stream that trails the completed transcript.
         return !!t && (p.text.startsWith(t) || t.startsWith(p.text))
@@ -579,7 +596,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       if (matched) return false
       return true
     })
-  }, [messages, thinkingBlocks, isActive])
+  }, [messages, thinkingBlocks, isActive, persistedThinkingIds])
+
+  // Handoff is permanent. Filtering alone leaves completed live text in the
+  // shared stream store, where it can reappear when its old turn folds or its
+  // persisted messages leave the loaded page. Cleanup also covers legacy
+  // blocks matched by text and discarded empty/interrupted blocks.
+  useEffect(() => {
+    const visibleIds = new Set(unpersistedThinkingBlocks.map(block => block.id))
+    const consumed = thinkingBlocks
+      .filter(block => block.endedAt !== null && !visibleIds.has(block.id))
+      .map(block => block.id)
+    if (consumed.length) consumeThinkingBlocks(sessionId, consumed)
+  }, [sessionId, thinkingBlocks, unpersistedThinkingBlocks])
 
   // Filter streaming tool uses to only those NOT yet in persisted messages
   const unpersistedStreamingToolUses = useMemo(() => {

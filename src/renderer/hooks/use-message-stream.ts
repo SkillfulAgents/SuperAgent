@@ -1439,6 +1439,20 @@ export function consumeDiscardedCommand(sessionId: string, uuid: string): void {
   }
 }
 
+// Once the transcript owns a completed thinking card, retire its live copy.
+// Otherwise a later turn boundary or page eviction can make it look unmatched
+// again. Keep open blocks until thinking_stop so later deltas still append to
+// the same episode; MessageList already hides live cards with persisted copies.
+export function consumeThinkingBlocks(sessionId: string, ids: readonly number[]): void {
+  const current = sessionThinking.get(sessionId)
+  if (!current || ids.length === 0) return
+  const consumed = new Set(ids)
+  const blocks = current.blocks.filter(block => block.endedAt === null || !consumed.has(block.id))
+  if (blocks.length === current.blocks.length) return
+  sessionThinking.set(sessionId, { ...current, blocks })
+  streamListeners.get(sessionId)?.forEach(listener => listener())
+}
+
 export function removePeerUserMessage(sessionId: string, uuid: string): void {
   const current = streamStates.get(sessionId)
   if (current && current.peerUserMessages.some((p) => p.uuid === uuid)) {

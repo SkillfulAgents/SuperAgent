@@ -375,7 +375,9 @@ export class MultiPassThinkingScenario implements MockScenario {
     private chunkDelayMs = 200,
     /** Gap between a pass ending and the next one starting. The real CLI can
      * emit thinking_stop and the next thinking_start nearly back-to-back. */
-    private interPassGapMs = 100
+    private interPassGapMs = 100,
+    /** Keep the session active after its foreground result, until stopped. */
+    private waitForBackground = false,
   ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
@@ -385,27 +387,28 @@ export class MultiPassThinkingScenario implements MockScenario {
         message: { content: userMessage },
         timestamp: new Date().toISOString(),
       })
-      client.emitStreamMessage(sessionId, {
-        type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'message_start' } },
-      })
     }, 10)
 
     let offset = 20
     for (const passText of this.passes) {
+      const messageId = `thinking-pass-${randomUUID()}`
       const passStart = offset
       const chunks = passText.split(' ')
       setTimeout(() => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
-          content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'thinking' } } },
+          content: { type: 'stream_event', event: { type: 'message_start', message: { id: messageId } } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } } },
         })
       }, passStart)
       chunks.forEach((word, i) => {
         setTimeout(() => {
           client.emitStreamMessage(sessionId, {
             type: 'stream_event',
-            content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: (i > 0 ? ' ' : '') + word } } },
+            content: { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: (i > 0 ? ' ' : '') + word } } },
           })
         }, passStart + 10 + i * this.chunkDelayMs)
       })
@@ -413,41 +416,100 @@ export class MultiPassThinkingScenario implements MockScenario {
       setTimeout(() => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
-          content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+          content: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
         })
         // Each pass persists as its own assistant entry, like the real CLI
         client.writeJsonlEntry(sessionId, {
           type: 'assistant',
           message: {
+            id: messageId,
             content: [{ type: 'thinking', thinking: passText, signature: 'mock-signature' }],
           },
           timestamp: new Date().toISOString(),
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_stop' } },
         })
       }, passEnd)
       offset = passEnd + this.interPassGapMs
     }
 
     setTimeout(() => {
+      if (this.waitForBackground) {
+        const messageId = `thinking-background-${randomUUID()}`
+        const toolId = `thinking-background-tool-${randomUUID()}`
+        const taskId = `thinking-background-task-${randomUUID()}`
+        const input = { command: 'sleep 600', run_in_background: true }
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_start', message: { id: messageId } } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_start', index: 0,
+            content_block: { type: 'tool_use', id: toolId, name: 'Bash', input: {} } } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_delta', index: 0,
+            delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+        })
+        client.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: { id: messageId, content: [{ type: 'tool_use', id: toolId, name: 'Bash', input }] },
+          timestamp: new Date().toISOString(),
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_stop' } },
+        })
+        const result = {
+          backgroundTaskId: taskId, stdout: '', stderr: '', interrupted: false, isImage: false,
+        }
+        const content = [{ type: 'tool_result', tool_use_id: toolId, content: `Command running in background with ID: ${taskId}.` }]
+        client.writeJsonlEntry(sessionId, {
+          type: 'user',
+          toolUseResult: result,
+          message: { content },
+          timestamp: new Date().toISOString(),
+        })
+        client.registerBackgroundTask(sessionId, taskId)
+        client.emitStreamMessage(sessionId, {
+          type: 'user',
+          content: { type: 'user', tool_use_result: result, message: { content } },
+        })
+      }
+      // The final response follows the tool result in both SSE and JSONL.
+      const messageId = `thinking-response-${randomUUID()}`
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+        content: { type: 'stream_event', event: { type: 'message_start', message: { id: messageId } } },
       })
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: this.responseText } } },
+        content: { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } } },
       })
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+        content: { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: this.responseText } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { id: messageId, content: [{ type: 'text', text: this.responseText }] },
+        timestamp: new Date().toISOString(),
       })
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'message_stop' } },
-      })
-      client.writeJsonlEntry(sessionId, {
-        type: 'assistant',
-        message: { content: [{ type: 'text', text: this.responseText }] },
-        timestamp: new Date().toISOString(),
       })
       client.emitStreamMessage(sessionId, {
         type: 'result',
@@ -1938,6 +2000,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'Done with the marathon of thinking passes — here is the answer.',
       15,
       10
+    )],
+    // Foreground completion with a pending task: a follow-up starts a new
+    // runtime turn while the host still reports the session as active.
+    ['think then wait for background', new MultiPassThinkingScenario(
+      ['Inspect the inputs.', 'Prepare the job.', 'Check its progress.'],
+      'Thinking finished; waiting for the background job.',
+      150,
+      100,
+      true,
     )],
     // Several thinking passes persisted one-by-one — an interruptible thinking turn
     ['think in passes', new MultiPassThinkingScenario(
