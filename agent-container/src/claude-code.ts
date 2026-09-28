@@ -2293,24 +2293,23 @@ export class ClaudeCodeProcess extends EventEmitter {
     // Abort the current query
     this.abortController!.abort();
 
-    // Drain SDK teardown before replacing a transcript or resuming it. The
-    // message iterator can finish before the child has flushed and exited.
-    await this.queryInstance?.return(undefined);
+    // Let the message loop consume the abort's terminal frames — the
+    // error_during_execution result and the idle that settles the tracker —
+    // before tearing the iterator down. Calling return() first ends the
+    // iteration at once and drops whatever the CLI wrote in response to the
+    // abort, which left every hard-interrupted session busy forever, beyond
+    // the reaper (session-gc-durability.e2e.test.ts guards this). Bounded, as
+    // in stop(); the generation guard covers the timeout path.
+    if (this.processingDone) {
+      await Promise.race([
+        this.processingDone.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    }
 
-    // Wait for the current processing to stop
-    await new Promise<void>((resolve) => {
-      const checkInterval = setInterval(() => {
-        if (!this.isProcessing) {
-          clearInterval(checkInterval);
-          resolve();
-        }
-      }, 50);
-      // Timeout after 5 seconds
-      setTimeout(() => {
-        clearInterval(checkInterval);
-        resolve();
-      }, 5000);
-    });
+    // Then drain SDK teardown before replacing a transcript or resuming it:
+    // the message iterator can finish before the child has flushed and exited.
+    await this.queryInstance?.return(undefined);
 
     // The SDK's own terminal lifecycle frames died with the query, so emit
     // them ourselves.
