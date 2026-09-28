@@ -13,6 +13,7 @@ import { DeclineButton } from '@renderer/components/messages/decline-button'
 import { linkify } from '@renderer/lib/linkify'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useBrowserInputActions, useCanSaveBrowserLogin } from '@renderer/hooks/use-browser-input-actions'
+import { useSavedLogins } from '@renderer/hooks/use-saved-logins'
 import { cn } from '@shared/lib/utils/cn'
 import {
   AlertDialog,
@@ -80,10 +81,18 @@ export function BrowserTrayContent({
     onResolved: (toolUseId) => stream.dismissBrowserInputRequest(toolUseId),
   })
 
-  // Unchecking applies to one request; the next sign-in starts checked again.
-  const [saveLoginOffFor, setSaveLoginOffFor] = useState<string | null>(null)
-  const saveLogin = saveLoginOffFor !== latestRequest?.toolUseId
-  const canSaveLogin = useCanSaveBrowserLogin(agentSlug, latestRequest?.login === true)
+  const isLogin = latestRequest?.login === true
+  const canSaveLogin = useCanSaveBrowserLogin(agentSlug, isLogin)
+  const savedLogins = useSavedLogins(agentSlug, sessionId, latestRequest?.toolUseId ?? null, isLogin)
+  const savedLogin = savedLogins.logins?.[0]
+  // Saving over an existing login is opt-in, so a failed sign-in cannot replace a working one. Choices last one request.
+  const [saveChoice, setSaveChoice] = useState<{ toolUseId: string; save: boolean } | null>(null)
+  const saveLogin = saveChoice?.toolUseId === latestRequest?.toolUseId ? saveChoice.save : !savedLogin
+  const [otherAccountFor, setOtherAccountFor] = useState<string | null>(null)
+  const otherAccount = otherAccountFor === latestRequest?.toolUseId
+  // Same rule as the chat card: with a saved login, offer only that until the user picks another account.
+  const showManualSignIn = !isLogin || otherAccount || savedLogins.logins?.length === 0
+  const busy = submittingAction !== null || savedLogins.applyingId !== null
 
   // History is authoritative once received; older containers only provide tab URLs.
   const viewingTab = stream.tabs.find((tab) => tab.targetId === stream.viewingTargetId)
@@ -161,20 +170,33 @@ export function BrowserTrayContent({
                 <span className="text-xs font-medium text-foreground flex-1 truncate">
                   {latestRequest.message ? linkify(latestRequest.message) : 'Your input needed'}
                 </span>
-                {latestRequest.login && canSaveLogin && (
+                {isLogin && savedLogin && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => setOtherAccountFor(otherAccount ? null : latestRequest.toolUseId)}
+                    disabled={busy}
+                    data-testid="browser-tray-other-account"
+                  >
+                    {otherAccount ? 'Use saved login' : 'Log in with another account'}
+                  </Button>
+                )}
+                {isLogin && canSaveLogin && showManualSignIn && (
                   <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
                     <Checkbox
                       checked={saveLogin}
-                      onCheckedChange={(checked) => setSaveLoginOffFor(checked === true ? null : latestRequest.toolUseId)}
-                      disabled={submittingAction !== null}
+                      onCheckedChange={(checked) => setSaveChoice({ toolUseId: latestRequest.toolUseId, save: checked === true })}
+                      disabled={busy}
                       data-testid="browser-tray-save-login"
                     />
-                    Save login
+                    {savedLogin ? 'Replace saved login' : 'Save login'}
                   </label>
                 )}
                 <DeclineButton
                   onDecline={(reason) => decline(latestRequest.toolUseId, reason)}
-                  disabled={submittingAction !== null}
+                  disabled={busy}
                   label="Decline"
                   showIcon={false}
                   size="sm"
@@ -184,17 +206,32 @@ export function BrowserTrayContent({
                   className="h-7 text-xs border-border text-foreground hover:bg-muted"
                   data-testid="browser-tray-decline-btn"
                 />
-                <Button
-                  onClick={() => complete(latestRequest.toolUseId, { saveLogin: latestRequest.login === true && canSaveLogin && saveLogin })}
-                  loading={submittingAction === 'completing'}
-                  disabled={submittingAction !== null}
-                  size="sm"
-                  className="h-7 text-xs bg-blue-600 text-white hover:bg-blue-700"
-                >
-                  Done
-                </Button>
+                {showManualSignIn ? (
+                  <Button
+                    onClick={() => complete(latestRequest.toolUseId, { saveLogin: isLogin && canSaveLogin && saveLogin })}
+                    loading={submittingAction === 'completing'}
+                    disabled={busy}
+                    size="sm"
+                    className="h-7 text-xs bg-blue-600 text-white hover:bg-blue-700"
+                  >
+                    Done
+                  </Button>
+                ) : savedLogin && (
+                  <Button
+                    onClick={() => void savedLogins.apply(savedLogin.id)}
+                    loading={savedLogins.applyingId !== null}
+                    disabled={busy}
+                    size="sm"
+                    className="h-7 text-xs bg-blue-600 text-white hover:bg-blue-700"
+                    data-testid="browser-tray-use-saved-login"
+                  >
+                    Use saved login
+                  </Button>
+                )}
               </div>
-              {actionError && <p className="mt-1 px-1 text-2xs text-destructive">{actionError}</p>}
+              {(actionError || savedLogins.error) && (
+                <p className="mt-1 px-1 text-2xs text-destructive">{actionError || savedLogins.error}</p>
+              )}
             </div>
           )}
         </div>

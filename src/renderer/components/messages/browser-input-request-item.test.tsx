@@ -17,6 +17,21 @@ vi.mock('@renderer/lib/api', () => ({
 vi.mock('./browser-credential-picker', () => ({
   BrowserCredentialPicker: () => null,
 }))
+const savedLoginPicker = vi.hoisted(() => ({ count: 0 }))
+vi.mock('@renderer/hooks/use-saved-logins', () => ({
+  useSavedLogins: (_a: string, _s: string, _t: string, enabled: boolean) => ({
+    logins: enabled
+      ? Array.from({ length: savedLoginPicker.count }, (_, i) => ({ id: `bc-${i}`, name: 'example.com', site: 'example.com', capturedAt: '' }))
+      : [],
+    applyingId: null,
+    applied: false,
+    error: null,
+    apply: vi.fn(),
+  }),
+}))
+vi.mock('./saved-login-picker', () => ({
+  SavedLoginPicker: () => <div data-testid="saved-login-picker-stub" />,
+}))
 
 // A promise we resolve by hand, so a test can observe the component WHILE a
 // request is in flight (proves the second call awaits the first, and that
@@ -71,6 +86,7 @@ const ok = () => ({ ok: true, json: () => Promise.resolve({}) })
 
 describe('BrowserInputRequestItem', () => {
   beforeEach(() => {
+    savedLoginPicker.count = 0
     vi.clearAllMocks()
   })
 
@@ -307,6 +323,28 @@ describe('BrowserInputRequestItem', () => {
     expect(opts.method).toBe('POST')
     expect(JSON.parse(opts.body)).toEqual({ toolUseId: 'tu-1', saveLogin: false })
     expect(defaultProps.onComplete).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers only saved logins until the user chooses another account', async () => {
+    savedLoginPicker.count = 1
+    const user = userEvent.setup()
+    render(<BrowserInputRequestItem {...defaultProps} requirements={['Enter email']} login />)
+
+    await waitFor(() => expect(screen.getByTestId('browser-input-other-account')).toHaveTextContent('Log in with another account'))
+    expect(screen.getByTestId('saved-login-picker-stub')).toBeInTheDocument()
+    expect(screen.queryByTestId('browser-input-complete-btn')).toBeNull()
+    expect(screen.queryByTestId('browser-input-save-login')).toBeNull()
+    expect(screen.getByTestId('browser-input-decline-btn')).toBeInTheDocument()
+    expect(screen.queryByText('Enter email')).toBeNull()
+
+    await user.click(screen.getByTestId('browser-input-other-account'))
+    expect(screen.getByText('Enter email')).toBeInTheDocument()
+    expect(screen.queryByTestId('saved-login-picker-stub')).toBeNull()
+    expect(screen.getByTestId('browser-input-complete-btn')).toBeInTheDocument()
+    // Replacing a working saved login is opt-in.
+    expect(screen.getByTestId('browser-input-save-login')).not.toBeChecked()
+    expect(screen.getByText('Replace my saved login for example.com')).toBeInTheDocument()
+    expect(screen.getByTestId('browser-input-other-account')).toHaveTextContent('Use saved login')
   })
 
   it('saves a sign-in by default and lets the user opt out', async () => {

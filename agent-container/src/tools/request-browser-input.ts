@@ -66,9 +66,11 @@ Example:
           type: 'text' as const,
           text: completion === 'credentials_filled'
             ? 'Credentials have been filled into the browser. Click the login or sign-in button to continue. If 2FA or another manual step appears, call request_browser_input again.'
-            : args.purpose === 'login'
-              ? 'The user finished this sign-in step. Take a browser snapshot to confirm you are signed in. If another sign-in step remains (for example 2FA), call request_browser_input again with purpose "login".'
-              : 'User has completed the requested browser interaction. Take a browser snapshot to see the current state.',
+            : completion === 'saved_login_applied'
+              ? 'The user applied a saved login to this site and the current page was reloaded. Take a snapshot to confirm you are signed in. If a login page is still shown, navigate to the page you need (browser_open on the URL already open does not reload it). If you are still signed out, call request_browser_input again with purpose "login".'
+              : args.purpose === 'login'
+                ? 'The user finished this sign-in step. Take a browser snapshot to confirm you are signed in. If another sign-in step remains (for example 2FA), call request_browser_input again with purpose "login".'
+                : 'User has completed the requested browser interaction. Take a browser snapshot to see the current state.',
         }],
       }
     } catch (error: unknown) {
