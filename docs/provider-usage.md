@@ -30,6 +30,14 @@ balances. Built-in adapters:
   OAuth bearer and the same client headers as inference. Shows the 5-hour, weekly and
   monthly `used_ratio` windows that are present. `limit_month_code` is not a second
   total, and the count-based `limits` rows duplicate the ratio windows.
+- MiniMax: `GET https://api.minimax.io/v1/token_plan/remains` or
+  `https://api.minimaxi.com/v1/token_plan/remains`, OAuth bearer. Each model row
+  has a 5-hour and a weekly window. Explicit `*_remaining_percent` values take
+  precedence, including when counts are absent or zero. Without a valid percentage,
+  `*_usage_count` is treated as a legacy remaining count when the total is positive.
+  Windows marked unlimited or outside the plan (`*_status: 3`) and windows without
+  usable quota data are omitted. Messages calls use `x-api-key` instead; this read
+  does not.
 - Platform: existing `/v1/billing` service, with the requesting member's
   attribution. Shows seat consumption when its initial allowance is known,
   remaining seat credits, and separately labeled organization credits. No seat
