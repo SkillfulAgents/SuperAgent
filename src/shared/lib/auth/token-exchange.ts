@@ -9,6 +9,7 @@ import { getAuth } from './index'
 import { getAppBaseUrl } from './config'
 import { verifyOidcJwt } from './oidc-jwt'
 import { getAuthProviderIssuer, isAuthProviderEnabled } from './provider-config'
+import { applyPlatformRole } from './platform-role'
 import {
   InstalledClientSessionError,
   mintInstalledClientSession,
@@ -327,6 +328,7 @@ export async function exchangeDeploymentGrant(
   const ctx = await auth.$context
 
   const user = await resolveUser(ctx, claims)
+  await applyPlatformRole(user.id, claims.role)
 
   let session: Awaited<ReturnType<typeof mintInstalledClientSession>>['session']
   try {

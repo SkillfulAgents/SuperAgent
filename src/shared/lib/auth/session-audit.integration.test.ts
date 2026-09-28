@@ -204,10 +204,12 @@ describe('admin impersonation', () => {
 
   async function seedAdminAndTarget(): Promise<{ adminId: string; targetId: string }> {
     const auth = authModule.getAuth()
-    // First user is promoted to admin by the user.create.after hook.
+    // This deployment is platform-controlled, where no first-user bootstrap
+    // runs, so the admin role is seeded directly.
     await auth.api.signUpEmail({
       body: { email: 'admin@example.com', password: PASSWORD, name: 'Admin' },
     })
+    sqlite.prepare(`UPDATE user SET role = 'admin' WHERE email = ?`).run('admin@example.com')
     await auth.api.signUpEmail({
       body: { email: 'target@example.com', password: PASSWORD, name: 'Target' },
     })
@@ -216,6 +218,13 @@ describe('admin impersonation', () => {
         .id
     return { adminId: row('admin@example.com'), targetId: row('target@example.com') }
   }
+
+  it('does not promote the first user on a platform-controlled deployment', async () => {
+    await authModule.getAuth().api.signUpEmail({
+      body: { email: 'first@example.com', password: PASSWORD, name: 'First' },
+    })
+    expect(sqlite.prepare(`SELECT role FROM user WHERE email = ?`).get('first@example.com')).toEqual({ role: 'user' })
+  })
 
   it('credits the impersonating admin as the actor and keeps the target in details', async () => {
     const { adminId, targetId } = await seedAdminAndTarget()
@@ -359,6 +368,7 @@ describe('persisted creation method', () => {
     await auth.api.signUpEmail({
       body: { email: 'admin2@example.com', password: PASSWORD, name: 'Admin' },
     })
+    sqlite.prepare(`UPDATE user SET role = 'admin' WHERE email = ?`).run('admin2@example.com')
     await auth.api.signUpEmail({
       body: { email: 'target2@example.com', password: PASSWORD, name: 'Target' },
     })

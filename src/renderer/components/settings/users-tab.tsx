@@ -205,7 +205,7 @@ export function UsersTab({ platformControlled = false, platformInviteHref }: Use
           <span className="text-sm font-medium">Users</span>
           {platformControlled ? (
             <p className="text-xs text-muted-foreground mt-0.5">
-              Invite members on Platform. Role, ban, and remove stay here.
+              Invite members and set roles on Platform. Ban and remove stay here.
             </p>
           ) : null}
         </div>
