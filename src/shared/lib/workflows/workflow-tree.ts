@@ -178,22 +178,19 @@ function joinAgents(input: {
 
     let chosen: ParsedScript['agentCalls'][number] | null = null
     let captures: string[] = []
-    let resolved: WorkflowAgentNode['resolved'] = 'prompt-regex'
-
     if (candidates.length === 1) {
       chosen = candidates[0].call
       captures = candidates[0].captures
-    } else if (candidates.length > 1) {
-      // Ambiguous: prefer a not-yet-used call site (disambiguates repeated prompts).
+    } else if (candidates.length > 1 && new Set(candidates.map(({ call }) => call.phase ?? call.sourcePhase)).size === 1) {
+      // Multiple matching calls within the same phase can share a prompt. Across
+      // different phases, arrival order cannot disambiguate a parallel fan-out.
       const unused = candidates.find((c) => !usedCallIndices.has(c.call.sourceIndex))
       const pick = unused ?? candidates[0]
       chosen = pick.call
       captures = pick.captures
-    } else {
-      // 2) fallback: next unused call site in source order (keeps the script's phase).
-      chosen = script.agentCalls.find((c) => !usedCallIndices.has(c.sourceIndex)) ?? null
-      resolved = 'ordinal-fallback'
     }
+    // No trustworthy match means no phase. Assigning the next unused call site
+    // sends the second/third child of a fan-out into unrelated later phases.
     if (chosen) usedCallIndices.add(chosen.sourceIndex)
 
     nodes.push({
@@ -202,7 +199,7 @@ function joinAgents(input: {
       phase: chosen ? chosen.phase ?? chosen.sourcePhase : null,
       status: st.status, // 'running' may be promoted to 'failed' once transcript stats are layered on
       result: displayAgentResult(st.result),
-      resolved,
+      resolved: chosen ? 'prompt-regex' : 'unresolved',
     })
   })
 

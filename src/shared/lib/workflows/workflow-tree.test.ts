@@ -145,6 +145,60 @@ async function scaffold(opts: {
 }
 
 describe('buildWorkflowTree — synthetic edge cases', () => {
+  it('keeps Scope and every search agent in their actual phases in the bundled deep-research script', async () => {
+    const script = await fs.readFile(path.join(__dirname, '../../../../agent-container/plugin/workflows/deep-research.js'), 'utf8')
+    const agents = [
+      { agentId: 'scope', firstPrompt: 'Decompose this research question into complementary search angles.\n\n## Question\nB2B advertising\n\n## Task\nGenerate 5 search angles.' },
+      ...Array.from({ length: 5 }, (_, i) => ({ agentId: `search${i}`, firstPrompt: `## Web Searcher: Angle ${i}\n\nResearch question: "B2B advertising"\n\nSearch query: ads` })),
+      { agentId: 'fetch', firstPrompt: '## Source Extractor\n\nResearch question: "B2B advertising"\n\nFetch this source.' },
+      { agentId: 'verify', firstPrompt: '## Adversarial Claim Verifier (voter 1/3)\n\nBe SKEPTICAL.' },
+      { agentId: 'synthesize', firstPrompt: '## Synthesis: research report\n\n**Question:** B2B advertising\n\nConfirmed claims.' },
+    ]
+    const root = await scaffold({
+      script,
+      journal: agents.map(({ agentId }) => ({ type: 'started', key: `v2:${agentId}`, agentId })),
+      agents,
+    })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
+    expect(tree!.agents.map(a => [a.agentId, a.phase])).toEqual([
+      ['scope', 'Scope'],
+      ...Array.from({ length: 5 }, (_, i) => [`search${i}`, 'Search']),
+      ['fetch', 'Fetch'], ['verify', 'Verify'], ['synthesize', 'Synthesize'],
+    ])
+  })
+
+  it('leaves unmatched agents ungrouped instead of assigning unused phases by arrival order', async () => {
+    const root = await scaffold({
+      script: 'await agent(makePrompt(item), { label: "search", phase: "Search" }); await agent("Verify evidence", { label: "verify", phase: "Verify" })',
+      journal: [
+        { type: 'started', key: 'v2:1', agentId: 'scope' },
+        { type: 'started', key: 'v2:2', agentId: 'search' },
+        { type: 'started', key: 'v2:3', agentId: 'verify' },
+      ],
+      agents: [
+        { agentId: 'scope', firstPrompt: 'Scope this question' },
+        { agentId: 'search', firstPrompt: 'Search for evidence' },
+        { agentId: 'verify', firstPrompt: 'Verify evidence' },
+      ],
+    })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
+    expect(tree!.agents).toMatchObject([
+      { agentId: 'scope', phase: null, resolved: 'unresolved' },
+      { agentId: 'search', phase: null, resolved: 'unresolved' },
+      { agentId: 'verify', phase: 'Verify', resolved: 'prompt-regex' },
+    ])
+  })
+
+  it('does not guess between different phases when their prompt patterns are ambiguous', async () => {
+    const root = await scaffold({
+      script: 'await agent("Review evidence", { phase: "Search" }); await agent("Review evidence", { phase: "Verify" })',
+      journal: [{ type: 'started', key: 'v2:1', agentId: 'a' }],
+      agents: [{ agentId: 'a', firstPrompt: 'Review evidence' }],
+    })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
+    expect(tree!.agents[0]).toMatchObject({ phase: null, resolved: 'unresolved' })
+  })
+
   it('resolves a templated label from the prompt capture (fact:${p} → fact:Mars)', async () => {
     const script = [
       "export const meta = { name: 'planets', description: 'd', phases: [{ title: 'Gather' }] }",

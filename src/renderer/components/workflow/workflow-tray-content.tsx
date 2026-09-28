@@ -102,7 +102,7 @@ export function overlayLiveStatus(
       phase: live.phase ?? null,
       status: live.status,
       result: live.result,
-      resolved: 'ordinal-fallback',
+      resolved: 'unresolved',
       prompt: live.prompt ?? '',
       model: live.model ?? null,
       tokens: live.tokens ?? 0,
@@ -323,7 +323,7 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
         )}
 
         {groups.map((group, gi) => (
-          <div key={group.title ?? `__ungrouped-${gi}`} className="space-y-1.5">
+          <div key={group.title ?? `__ungrouped-${gi}`} className="space-y-1.5" data-testid="workflow-phase-group" data-phase={group.title ?? undefined}>
             {group.title && (
               <div className="flex items-baseline gap-2 px-1">
                 <span className="text-xs font-medium text-foreground/80">{group.title}</span>

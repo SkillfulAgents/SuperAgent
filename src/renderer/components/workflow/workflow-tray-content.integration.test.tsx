@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { WorkflowRunLive } from '@renderer/hooks/use-message-stream'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
@@ -81,6 +81,34 @@ function startAgent() {
 }
 
 describe('workflow preview with slow or unavailable disk reconstruction', () => {
+  it('keeps Scope and all five Search agents under the runtime phases when disk assignments disagree', async () => {
+    const liveAgents: WorkflowRunLive['agents'] = {
+      scope: { status: 'done', result: 'Five angles', label: 'scope', phase: 'Scope' },
+    }
+    for (let i = 0; i < 5; i++) {
+      liveAgents[`search${i}`] = { status: 'running', result: null, label: `search:angle ${i}`, phase: 'Search' }
+    }
+    liveRun = { ...liveRun, agents: liveAgents }
+    render(tray())
+    requests[0].resolve({
+      ...emptyTree,
+      phases: ['Scope', 'Search', 'Fetch', 'Verify', 'Synthesize'].map(title => ({ title })),
+      agents: Object.entries(liveAgents).map(([agentId, agent], index) => ({
+        agentId, label: agent.label!, phase: ['Search', 'Fetch', 'Verify', 'Search', 'Search', 'Search'][index],
+        status: agent.status, result: agent.result, resolved: 'ordinal-fallback',
+        prompt: '', toolCount: 0, tokens: 0, durationMs: null, model: null,
+      })),
+    })
+    await flush()
+    const groups = screen.getAllByTestId('workflow-phase-group')
+    const group = (phase: string) => within(groups.find(el => el.dataset.phase === phase)!)
+    expect(group('Scope').getAllByTestId('workflow-agent-row')).toHaveLength(1)
+    expect(group('Scope').getByText('scope')).toBeInTheDocument()
+    expect(group('Search').getAllByTestId('workflow-agent-row')).toHaveLength(5)
+    expect(group('Fetch').queryAllByTestId('workflow-agent-row')).toHaveLength(0)
+    expect(group('Verify').queryAllByTestId('workflow-agent-row')).toHaveLength(0)
+  })
+
   it('shows live agents while the first tree request is still pending, then survives its failure', async () => {
     const view = render(tray())
     expect(requests).toHaveLength(1)

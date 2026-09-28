@@ -103,6 +103,23 @@ describe('overlayLiveStatus', () => {
 })
 
 describe('overlayLiveStatus — labels', () => {
+  it('prefers the runtime phase when disk inference puts the agent in a different phase', () => {
+    const out = overlayLiveStatus([
+      node({ agentId: 'scope', label: 'search:', phase: 'Search' }),
+      node({ agentId: 'search1', label: 'fetch:', phase: 'Fetch' }),
+      node({ agentId: 'search2', label: 'v', phase: 'Verify' }),
+    ], {
+      scope: { status: 'done', result: null, label: 'scope', phase: 'Scope' },
+      search1: { status: 'done', result: null, label: 'search:one', phase: 'Search' },
+      search2: { status: 'running', result: null, label: 'search:two', phase: 'Search' },
+    })
+    expect(out.map(({ label, phase }) => ({ label, phase }))).toEqual([
+      { label: 'scope', phase: 'Scope' },
+      { label: 'search:one', phase: 'Search' },
+      { label: 'search:two', phase: 'Search' },
+    ])
+  })
+
   it('prefers the wire label over the disk re-join (which can degrade to "agent N")', () => {
     const out = overlayLiveStatus([node({ label: 'agent 1' })], {
       a: { status: 'running', result: null, label: 'qualify:closera' },
