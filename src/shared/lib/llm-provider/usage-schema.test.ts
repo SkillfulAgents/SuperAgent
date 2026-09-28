@@ -69,7 +69,7 @@ describe('partial allowance payloads', () => {
     ])
     expect(parseKimiUsage({}).status).toBe('unavailable')
   })
-  it('reads MiniMax Token Plan remaining counts as used percentages and skips windows without a total', () => {
+  it('reads legacy MiniMax remaining counts and skips windows without usable quota data', () => {
     const start = Date.parse('2026-09-24T18:00:00Z')
     const snapshot = parseMinimaxUsage({ model_remains: [
       { model_name: 'MiniMax-M3', start_time: start, end_time: start + 5 * 3_600_000, current_interval_usage_count: 75, current_interval_total_count: 100, current_interval_status: 1, current_weekly_usage_count: 990, current_weekly_total_count: 1000, current_weekly_status: 1, weekly_end_time: Date.parse('2026-10-01T00:00:00Z') },
@@ -80,5 +80,41 @@ describe('partial allowance payloads', () => {
       { kind: 'window', id: '0-weekly', label: 'MiniMax-M3 · Weekly', usedPercent: 1, resetsAt: '2026-10-01T00:00:00.000Z' },
     ])
     expect(parseMinimaxUsage({}).status).toBe('unavailable')
+  })
+  it.each([{}, { current_interval_total_count: 0, current_interval_usage_count: 0, current_weekly_total_count: 0, current_weekly_usage_count: 0 }])('keeps MiniMax percentage-only windows with absent or zero counts (%j)', counts => {
+    const snapshot = parseMinimaxUsage({ model_remains: [{
+      model_name: 'general', ...counts,
+      current_interval_remaining_percent: 94, current_weekly_remaining_percent: 98,
+    }] })
+    expect(snapshot.status).toBe('available')
+    expect(snapshot.limits).toEqual([
+      { kind: 'window', id: '0-interval', label: 'general · 5-hour', usedPercent: 6 },
+      { kind: 'window', id: '0-weekly', label: 'general · Weekly', usedPercent: 2 },
+    ])
+  })
+  it('prefers MiniMax remaining percentages over ambiguous or inconsistent usage counts', () => {
+    const snapshot = parseMinimaxUsage({ model_remains: [{
+      model_name: 'video',
+      current_interval_total_count: 5, current_interval_usage_count: 0, current_interval_remaining_percent: 100,
+      current_weekly_total_count: 10, current_weekly_usage_count: 7, current_weekly_remaining_percent: 40,
+    }] })
+    expect(snapshot.limits).toMatchObject([{ usedPercent: 0 }, { usedPercent: 60 }])
+  })
+  it('preserves an explicitly exhausted MiniMax percentage', () => {
+    expect(parseMinimaxUsage({ model_remains: [{ model_name: 'general', current_interval_remaining_percent: 0 }] }).limits)
+      .toEqual([{ kind: 'window', id: '0-interval', label: 'general · 5-hour', usedPercent: 100 }])
+  })
+  it.each([null, 'invalid', -1, NaN])('falls back to legacy MiniMax counts for an invalid remaining percentage (%j)', remainingPercent => {
+    const snapshot = parseMinimaxUsage({ model_remains: [{
+      model_name: 'general', current_interval_total_count: 100, current_interval_usage_count: 75,
+      current_interval_remaining_percent: remainingPercent,
+    }] })
+    expect(snapshot.limits).toMatchObject([{ usedPercent: 25 }])
+  })
+  it('omits MiniMax windows explicitly marked unlimited or outside the plan even with percentages', () => {
+    expect(parseMinimaxUsage({ model_remains: [
+      { model_name: 'general', current_weekly_total_count: 100, current_weekly_usage_count: 100, current_weekly_remaining_percent: 100, current_weekly_status: 3 },
+      { model_name: 'video', current_interval_total_count: 0, current_interval_usage_count: 0, current_interval_remaining_percent: 100, current_interval_status: 3, current_weekly_total_count: 0, current_weekly_usage_count: 0, current_weekly_remaining_percent: 100, current_weekly_status: 3 },
+    ] }).limits).toEqual([])
   })
 })

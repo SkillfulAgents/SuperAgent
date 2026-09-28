@@ -99,20 +99,31 @@ const minimaxRemainSchema = z.object({
   model_name: z.string().min(1),
   end_time: count, weekly_end_time: count,
   current_interval_total_count: count, current_interval_usage_count: count,
+  current_interval_remaining_percent: percent, current_interval_status: count,
   current_weekly_total_count: count, current_weekly_usage_count: count,
+  current_weekly_remaining_percent: percent, current_weekly_status: count,
 })
 export const minimaxUsageSchema = z.object({ model_remains: z.array(minimaxRemainSchema).nullish().catch(undefined) })
 
-// Follows the official MiniMax CLI: `*_usage_count` is the remaining count and times are Unix ms.
-// Zero totals mean unlimited or not in the plan, so those windows have no bar.
+// Prefer explicit percentages: counts may be absent, zero, or report used rather than remaining.
+// Without a percentage, retain the legacy remaining-count interpretation. Times are Unix ms.
 export function parseMinimaxUsage(raw: unknown): ProviderUsage {
   const remains = minimaxUsageSchema.parse(raw).model_remains ?? []
   const limits: UsageLimit[] = remains.flatMap((model, index) => [
-    { id: 'interval', label: '5-hour', remaining: model.current_interval_usage_count, total: model.current_interval_total_count, end: model.end_time },
-    { id: 'weekly', label: 'Weekly', remaining: model.current_weekly_usage_count, total: model.current_weekly_total_count, end: model.weekly_end_time },
-  ].flatMap(({ id, label, remaining, total, end }): UsageLimit[] => remaining == null || !total || total <= 0 ? [] : [{
-    kind: 'window', id: `${index}-${id}`, label: `${model.model_name} · ${label}`,
-    usedPercent: Math.max(0, total - remaining) / total * 100, ...(end && end > 0 ? { resetsAt: new Date(end).toISOString() } : {}),
-  }]))
+    { id: 'interval', label: '5-hour', remaining: model.current_interval_usage_count, total: model.current_interval_total_count,
+      remainingPercent: model.current_interval_remaining_percent, status: model.current_interval_status, end: model.end_time },
+    { id: 'weekly', label: 'Weekly', remaining: model.current_weekly_usage_count, total: model.current_weekly_total_count,
+      remainingPercent: model.current_weekly_remaining_percent, status: model.current_weekly_status, end: model.weekly_end_time },
+  ].flatMap(({ id, label, remaining, total, remainingPercent, status, end }): UsageLimit[] => {
+    // Status 3 denotes unlimited quota, or a bucket outside the account's plan.
+    if (status === 3) return []
+    const usedPercent = remainingPercent != null ? Math.max(0, 100 - remainingPercent)
+      : remaining != null && total != null && total > 0 ? Math.max(0, total - remaining) / total * 100 : undefined
+    if (usedPercent == null) return []
+    return [{
+      kind: 'window', id: `${index}-${id}`, label: `${model.model_name} · ${label}`, usedPercent,
+      ...(end && end > 0 ? { resetsAt: new Date(end).toISOString() } : {}),
+    }]
+  }))
   return usageSnapshot(limits)
 }
