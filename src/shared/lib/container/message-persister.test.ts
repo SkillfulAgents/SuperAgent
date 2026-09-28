@@ -1926,7 +1926,7 @@ describe('MessagePersister', () => {
         usage: { total_tokens: 100, tool_uses: 2, duration_ms: 5000 },
         workflow_progress: [
           { type: 'workflow_phase', index: 1, title: 'Wait' },
-          { type: 'workflow_agent', agentId: 'ag1', label: 'agent-A', phaseTitle: 'Wait', state: 'progress', tokens: 50, toolCalls: 1, lastToolName: 'Bash', lastToolSummary: 'sleep 40' },
+          { type: 'workflow_agent', agentId: 'ag1', label: 'agent-A', phaseTitle: 'Wait', model: 'claude-sonnet-5', promptPreview: 'Wait for the results', state: 'progress', tokens: 50, toolCalls: 1, lastToolName: 'Bash', lastToolSummary: 'sleep 40' },
           { type: 'workflow_agent', agentId: 'ag2', label: 'agent-B', phaseTitle: 'Wait', state: 'done', tokens: 60, toolCalls: 0 },
         ],
       })
@@ -1934,7 +1934,7 @@ describe('MessagePersister', () => {
       expect(wp).toHaveLength(1)
       expect(wp[0].usage).toEqual({ totalTokens: 100, toolUses: 2, durationMs: 5000 })
       expect(wp[0].agents).toHaveLength(2) // phase entries filtered out
-      expect(wp[0].agents[0]).toMatchObject({ agentId: 'ag1', label: 'agent-A', phase: 'Wait', state: 'progress', tokens: 50, toolCalls: 1, lastTool: 'sleep 40' })
+      expect(wp[0].agents[0]).toMatchObject({ agentId: 'ag1', label: 'agent-A', phase: 'Wait', model: 'claude-sonnet-5', prompt: 'Wait for the results', state: 'progress', tokens: 50, toolCalls: 1, lastTool: 'sleep 40' })
       expect(wp[0].agents[1]).toMatchObject({ agentId: 'ag2', state: 'done', lastTool: null })
 
       // Launch turn ends, but the workflow keeps running in the background.

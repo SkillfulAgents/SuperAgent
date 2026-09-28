@@ -3210,13 +3210,13 @@ describe('useMessageStream — workflow drawer reducers', () => {
       es().simulateMessage({
         type: 'workflow_progress',
         runId: 'wf_abc',
-        agents: [{ agentId: 'a1', label: 'boom', phase: 'Work', state: 'failed', tokens: 500, toolCalls: 3, lastTool: 'Bash throw' }],
+        agents: [{ agentId: 'a1', label: 'boom', phase: 'Work', model: 'claude-sonnet-5', prompt: 'Research Reddit ads', state: 'failed', tokens: 500, toolCalls: 3, lastTool: 'Bash throw' }],
         usage: { totalTokens: 900, toolUses: 5, durationMs: 1200 },
       })
     })
 
     expect(result.current.workflows[0].agents.a1).toMatchObject({
-      status: 'failed', tokens: 500, toolCount: 3, lastTool: 'Bash throw', label: 'boom', phase: 'Work',
+      status: 'failed', tokens: 500, toolCount: 3, lastTool: 'Bash throw', label: 'boom', phase: 'Work', model: 'claude-sonnet-5', prompt: 'Research Reddit ads',
     })
     expect(result.current.workflows[0].usage).toEqual({ totalTokens: 900, toolUses: 5, durationMs: 1200 })
   })
