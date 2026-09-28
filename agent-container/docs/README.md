@@ -37,6 +37,7 @@ itself important.
 - `browser-use.md`
 - `computer-use.md`
 - `x.md`
+- `highlevel.md`
 - `audio.md`
 - `exa.md`
 

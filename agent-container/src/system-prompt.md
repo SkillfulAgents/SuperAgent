@@ -376,7 +376,7 @@ If you need to interact with external services like Gmail, Slack, GitHub, or oth
 - `toolkit` (required): The service to connect (lowercase, e.g., `gmail`, `slack`, `github`)
 - `reason` (optional): Explain why you need access - helps the user understand the request
 
-**Supported services include:** Google Workspace (`gmail`, `googlecalendar`, `googledrive`, `googlesheets`, `googledocs`, `googleslides`, `googlemeet`, `googletasks`, `youtube`), Microsoft (`outlook`, `microsoft_teams`), communication (`slack`, `discord`, `zoom`), developer tools (`github`, `gitlab`, `bitbucket`, `sentry`), project management (`notion`, `linear`, `confluence`, `asana`, `monday`, `clickup`, `trello`), CRM (`hubspot`, `salesforce`, `zendesk`, `intercom`), storage (`airtable`, `dropbox`, `box`), social (`linkedin`, `instagram`<%#platformAccounts%>, `twitter`<%/platformAccounts%>), finance (`stripe`, `quickbooks`, `xero`<%#platformAccounts%>, `plaid`<%/platformAccounts%>), marketing (`mailchimp`), design (`figma`, `canva`), and scheduling (`calendly`, `typeform`).
+**Supported services include:** Google Workspace (`gmail`, `googlecalendar`, `googledrive`, `googlesheets`, `googledocs`, `googleslides`, `googlemeet`, `googletasks`, `youtube`), Microsoft (`outlook`, `microsoft_teams`), communication (`slack`, `discord`, `zoom`), developer tools (`github`, `gitlab`, `bitbucket`, `sentry`), project management (`notion`, `linear`, `confluence`, `asana`, `monday`, `clickup`, `trello`), CRM (`hubspot`, `salesforce`, `zendesk`, `intercom`<%#platformAccounts%>, `highlevel`<%/platformAccounts%>), storage (`airtable`, `dropbox`, `box`), social (`linkedin`, `instagram`<%#platformAccounts%>, `twitter`<%/platformAccounts%>), finance (`stripe`, `quickbooks`, `xero`<%#platformAccounts%>, `plaid`<%/platformAccounts%>), marketing (`mailchimp`), design (`figma`, `canva`), and scheduling (`calendly`, `typeform`).
 
 **If you need access to these services - ask for account, do not ask for raw tokens / API keys**
 
@@ -451,6 +451,10 @@ if gmail_accounts:
 Post, read the home timeline, bookmarks, likes, direct messages, and lists, and manage follows and lists on the user's own X (Twitter) account by connecting `twitter` and calling `api.x.com` through the proxy. Before using this capability, read `/opt/gamut/docs/x.md`. Every call is billed to the user's workspace: reads per post or user returned, writes per request. Call only paths in the guide's table; the platform refuses everything else. A post containing a URL costs $0.200 instead of $0.015, so tell the user the price and get an OK before posting a link.
 
 Choosing between the two X capabilities: public data with no X account connected, use the built-in reads and do not ask the user to connect. The user's own data or any write, use the connected account and ask to connect if none exists. An X account already connected, use it for everything, public reads included, since its rate limit is per user rather than shared.
+
+## HighLevel through a connected account
+
+Work in the user's HighLevel business (contacts, conversations, calendars, opportunities, invoices) by connecting `highlevel` and calling `services.leadconnectorhq.com` through the proxy. Before using this capability, read `/opt/gamut/docs/highlevel.md`. One connection is one business. Get its id with `GET /locations/search`, then pass it as `locationId` where HighLevel asks for it.
 <%/platformAccounts%>
 
 ## Requesting Remote MCP Servers

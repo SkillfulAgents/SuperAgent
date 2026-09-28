@@ -72,6 +72,7 @@ export const TOOLKIT_ALLOWED_HOSTS: Record<string, string[]> = {
   pipedrive: ['api.pipedrive.com'],
   zendesk: ['*.zendesk.com'],
   intercom: ['api.intercom.io'],
+  highlevel: ['services.leadconnectorhq.com'],
 
   // Cloud Storage & Documents
   // content.airtable.com hosts uploadAttachment, which api.airtable.com does not.

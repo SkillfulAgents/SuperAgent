@@ -184,6 +184,7 @@ describe('isHostAllowed', () => {
       'pipedrive',
       'zendesk',
       'intercom',
+      'highlevel',
       // Cloud Storage & Documents
       'airtable',
       'dropbox',

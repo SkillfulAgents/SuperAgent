@@ -267,6 +267,14 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     composioSlug: 'intercom',
     nangoSlug: 'intercom',
   },
+  {
+    slug: 'highlevel',
+    displayName: 'HighLevel',
+    icon: 'briefcase',
+    description: 'CRM: contacts, conversations, calendars',
+    composioSlug: 'highlevel',
+    platformOnly: true,
+  },
 
   // Cloud Storage & Documents
   {

@@ -19,6 +19,7 @@ interface ServiceInfo {
 const GAMUT_PLATFORM_ACCOUNTS: ServiceInfo[] = [
   { slug: 'twitter', displayName: 'X', category: 'Social Media', description: 'Posts, timelines, and direct messages' },
   { slug: 'plaid', displayName: 'Plaid', category: 'Finance', description: 'Bank accounts, balances, and transactions' },
+  { slug: 'highlevel', displayName: 'HighLevel', category: 'CRM & Sales', description: 'CRM: contacts, conversations, calendars' },
 ]
 
 export const SERVICES: ServiceInfo[] = [

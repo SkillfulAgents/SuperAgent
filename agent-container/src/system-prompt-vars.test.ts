@@ -122,6 +122,7 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('## X through a connected account')).toBe(composio)
     expect(out.includes('$0.200')).toBe(composio)
     expect(out.includes('public reads included')).toBe(composio)
+    expect(out.includes('/opt/gamut/docs/highlevel.md')).toBe(composio)
     expect(out.includes('/opt/gamut/docs/audio.md')).toBe(webhook)
     expect(out.includes('Never invent an OpenAI endpoint')).toBe(webhook)
     expect(out.includes('Before long recordings')).toBe(webhook)
@@ -248,6 +249,7 @@ describe('generateSystemPrompt rendering', () => {
       'browser-use.md',
       'computer-use.md',
       'x.md',
+      'highlevel.md',
       'audio.md',
       'exa.md',
     ]
