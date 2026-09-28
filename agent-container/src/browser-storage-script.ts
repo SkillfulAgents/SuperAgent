@@ -134,7 +134,7 @@ export const WRITE_ORIGIN_STORAGE_FUNCTION = `async function(data) {
     if (value && Object.getPrototypeOf(value) === Object.prototype) return Object.values(value).some((v) => contains(v, needle));
     return false;
   };
-  // The caller has already cleared this origin's IndexedDB via Storage.clearDataForOrigin.
+  // The caller has already deleted this origin's IndexedDB databases (except ones capture left out for size).
   localStorage.clear();
   for (const [key, value] of data.localStorage) localStorage.setItem(key, value);
 

@@ -6,7 +6,7 @@ import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 import { RequestError } from './request-error'
 import { DeclineButton } from './decline-button'
-import { useBrowserInputActions, useCanSaveBrowserLogin } from '@renderer/hooks/use-browser-input-actions'
+import { useBrowserInputActions, useCanSaveBrowserLogin, useOtherAgentMemberCount } from '@renderer/hooks/use-browser-input-actions'
 import { useSavedLogins } from '@renderer/hooks/use-saved-logins'
 import { linkify } from '@renderer/lib/linkify'
 import { cn } from '@shared/lib/utils/cn'
@@ -51,6 +51,7 @@ export function BrowserInputRequestItem({
   const [saveChoice, setSaveChoice] = useState<boolean | null>(null)
   const saveLogin = saveChoice ?? !hasSavedLogins
   const canSaveLogin = useCanSaveBrowserLogin(agentSlug, login && !readOnly)
+  const otherMembers = useOtherAgentMemberCount(agentSlug, login && !readOnly)
 
   // `requirements` is typed string[] but originates from model tool input, so a
   // malformed value (e.g. a bare string) can reach here. Normalize to an array
@@ -108,7 +109,7 @@ export function BrowserInputRequestItem({
       )}
 
       {login && !otherAccount && !readOnly && !isCompleted && (
-        <SavedLoginPicker savedLogins={savedLogins} disabled={status === 'submitting'} />
+        <SavedLoginPicker savedLogins={savedLogins} disabled={status === 'submitting'} otherMembers={otherMembers} />
       )}
 
       {showManualSignIn && !readOnly && !isCompleted && (

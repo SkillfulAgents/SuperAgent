@@ -385,10 +385,16 @@ export async function restoreSiteStorage(cdp: CdpClient, bundle: SiteStorageBund
   const sessionStorageSkipped: string[] = []
   for (const origin of bundle.origins) {
     const written = await withStubPage(cdp, origin.origin, async (sessionId) => {
-      // Browser-side clear force-closes open IndexedDB connections (e.g. the agent's own tab on this origin); an
+      // Browser-side delete force-closes open IndexedDB connections (e.g. the agent's own tab on this origin); an
       // in-page deleteDatabase would block on them. Sent on the tab's session so it targets the tab's browser
       // context: remote providers (Browserbase) keep pages out of the default one and fail a browser-level call.
-      await cdp.send('Storage.clearDataForOrigin', { origin: origin.origin, storageTypes: 'indexeddb' }, sessionId)
+      // Databases capture left out for size stay as they are: the bundle has nothing to put back.
+      const keep = new Set(origin.oversizedDatabases ?? [])
+      const { databaseNames } = await cdp.send<{ databaseNames: string[] }>(
+        'IndexedDB.requestDatabaseNames', { securityOrigin: origin.origin }, sessionId)
+      for (const databaseName of databaseNames) {
+        if (!keep.has(databaseName)) await cdp.send('IndexedDB.deleteDatabase', { securityOrigin: origin.origin, databaseName }, sessionId)
+      }
       return callInPage<{ localStorage: number; indexedDB: number; skippedRecords: number }>(
         cdp, sessionId, WRITE_ORIGIN_STORAGE_FUNCTION, [{ localStorage: origin.localStorage, indexedDB: origin.indexedDB }])
     })

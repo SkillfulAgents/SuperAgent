@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const complete = vi.fn()
 let canSaveLogin = true
+let otherMembers = 0
 const stream = {
   aspectRatio: '16 / 9',
   tabs: [],
@@ -44,6 +45,7 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
 vi.mock('@renderer/hooks/use-browser-input-actions', () => ({
   useBrowserInputActions: () => ({ status: 'idle', submittingAction: null, error: null, complete, decline: vi.fn() }),
   useCanSaveBrowserLogin: () => canSaveLogin,
+  useOtherAgentMemberCount: () => otherMembers,
 }))
 const savedLogins = vi.hoisted(() => ({ logins: [] as Array<{ id: string; name: string; site: string; capturedAt: string }>, apply: vi.fn() }))
 vi.mock('@renderer/hooks/use-saved-logins', () => ({
@@ -69,6 +71,7 @@ describe('browser tray save login', () => {
     savedLogins.apply.mockClear()
     savedLogins.logins = []
     canSaveLogin = true
+    otherMembers = 0
   })
 
   it('saves a sign-in by default and lets the user opt out', async () => {
@@ -109,6 +112,25 @@ describe('browser tray save login', () => {
     await user.click(screen.getByTestId('browser-tray-other-account'))
     expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument()
     expect(screen.getByTestId('browser-tray-other-account')).toHaveTextContent('Use saved login')
+  })
+
+  it('tells the user other members of a shared agent can use the saved login', () => {
+    otherMembers = 2
+    savedLogins.logins = [{ id: 'bc-1', name: 'supabase.com', site: 'supabase.com', capturedAt: '' }]
+    stream.pendingBrowserInputRequests = [{ toolUseId: 'tu-1', message: 'Sign in to Supabase.', requirements: [], login: true }]
+    renderTray()
+
+    expect(screen.getByTestId('browser-tray-shared-notice')).toHaveTextContent(
+      '2 other members can use this agent. It will stay signed in to supabase.com with your account.',
+    )
+  })
+
+  it('shows no shared-agent notice on an agent only the user can use', () => {
+    savedLogins.logins = [{ id: 'bc-1', name: 'supabase.com', site: 'supabase.com', capturedAt: '' }]
+    stream.pendingBrowserInputRequests = [{ toolUseId: 'tu-1', message: 'Sign in to Supabase.', requirements: [], login: true }]
+    renderTray()
+
+    expect(screen.queryByTestId('browser-tray-shared-notice')).toBeNull()
   })
 
   it('replaces an existing saved login only when the user opts in', async () => {

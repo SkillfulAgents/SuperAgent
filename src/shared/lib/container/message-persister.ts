@@ -5759,6 +5759,7 @@ ${continuation}`
           if (typeof context.url !== 'string') return
           userInputRequestManager.enrichOpenRequestPayload(toolUseId, 'browser_input', {
             browserContext: { url: context.url, capturedAt: Date.now() },
+            ...(login ? { loginUrl: context.url } : {}),
           }, agentSlug)
         }).catch((error: unknown) => {
           console.warn(

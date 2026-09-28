@@ -19,7 +19,7 @@ import { READ_ORIGIN_STORAGE_FUNCTION, WRITE_ORIGIN_STORAGE_FUNCTION, WRITE_SESS
 type Call = { method: string; params: any; sessionId?: string }
 
 /** Scripted CDP peer: records calls in order and drives stub-page navigation events. */
-function fakeCdp(options: { cookies?: any[]; pages?: Array<{ url: string; history?: string[] }>; read?: Record<string, unknown>; actualOrigin?: string } = {}) {
+function fakeCdp(options: { cookies?: any[]; pages?: Array<{ url: string; history?: string[] }>; read?: Record<string, unknown>; actualOrigin?: string; databases?: string[] } = {}) {
   const calls: Call[] = []
   const handlers = new Map<string, Set<(params: any, sessionId?: string) => void>>()
   const emit = (method: string, params: any, sessionId?: string) => {
@@ -31,6 +31,7 @@ function fakeCdp(options: { cookies?: any[]; pages?: Array<{ url: string; histor
       calls.push({ method, params, sessionId })
       switch (method) {
         case 'Storage.getCookies': return { cookies: options.cookies ?? [] }
+        case 'IndexedDB.requestDatabaseNames': return { databaseNames: options.databases ?? [] }
         case 'Target.getTargets': return { targetInfos: (options.pages ?? []).map((page, i) => ({ targetId: `page-${i}`, type: 'page', url: page.url })) }
         case 'Target.createTarget': return { targetId: `stub-${++targets}` }
         case 'Target.attachToTarget': return { sessionId: `session-${params.targetId}` }
@@ -185,14 +186,25 @@ describe('restoreSiteStorage', () => {
     expect(calls.at(-1)).toMatchObject({ method: 'Target.closeTarget', params: { targetId: 'stub-1' } })
   })
 
-  it('clears IndexedDB on the stub tab\'s session before writing through it', async () => {
-    const { client, calls } = fakeCdp()
+  it('deletes IndexedDB databases on the stub tab\'s session before writing through it', async () => {
+    const { client, calls } = fakeCdp({ databases: ['auth', 'prefs'] })
     await restoreSiteStorage(client, bundle)
-    const clear = calls.findIndex((call) => call.method === 'Storage.clearDataForOrigin')
+    const deletes = calls.filter((call) => call.method === 'IndexedDB.deleteDatabase')
     const write = calls.findIndex((call) => call.params.functionDeclaration === WRITE_ORIGIN_STORAGE_FUNCTION)
-    expect(clear).toBeGreaterThanOrEqual(0)
-    expect(calls[clear]).toMatchObject({ params: { origin: 'https://example.org', storageTypes: 'indexeddb' }, sessionId: 'session-stub-1' })
-    expect(clear).toBeLessThan(write)
+    expect(deletes).toEqual([
+      { method: 'IndexedDB.deleteDatabase', params: { securityOrigin: 'https://example.org', databaseName: 'auth' }, sessionId: 'session-stub-1' },
+      { method: 'IndexedDB.deleteDatabase', params: { securityOrigin: 'https://example.org', databaseName: 'prefs' }, sessionId: 'session-stub-1' },
+    ])
+    expect(calls.lastIndexOf(deletes[1])).toBeLessThan(write)
+  })
+
+  it('keeps databases capture left out for size, since the bundle cannot put them back', async () => {
+    const { client, calls } = fakeCdp({ databases: ['auth', 'message-cache'] })
+    await restoreSiteStorage(client, {
+      ...bundle,
+      origins: bundle.origins.map((origin) => ({ ...origin, oversizedDatabases: ['message-cache'] })),
+    })
+    expect(calls.filter((call) => call.method === 'IndexedDB.deleteDatabase').map((call) => call.params.databaseName)).toEqual(['auth'])
   })
 
   it('hides the stub tab from tab listings only while it is open', async () => {

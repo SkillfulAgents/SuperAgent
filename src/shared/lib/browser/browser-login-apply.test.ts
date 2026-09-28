@@ -63,13 +63,19 @@ function restoredBundles(client: ReturnType<typeof fakeClient>) {
     .map(([, init]) => JSON.parse((init as RequestInit).body as string).bundle)
 }
 
-const input = { sessionId: 'sess-1', agentSlug: 'agent-a', userId: 'alice', credentialId: 'bc-1' }
+const input = { sessionId: 'sess-1', agentSlug: 'agent-a', userId: 'alice', credentialId: 'bc-1', site: 'example.com' }
 
 describe('applyBrowserLogin', () => {
   beforeEach(() => {
     getOwnedBrowserLogin.mockReset().mockResolvedValue(credential)
     mapAgentToBrowserLogin.mockReset().mockResolvedValue(undefined)
     mockSettings.app.hostBrowserProvider = undefined
+  })
+
+  it('does not touch the browser for a login saved for another site', async () => {
+    const client = fakeClient([200])
+    await expect(applyBrowserLogin({ ...input, client, site: 'other.com' })).rejects.toBeInstanceOf(BrowserLoginNotFoundError)
+    expect(client.fetch).not.toHaveBeenCalled()
   })
 
   it('restores the saved login, reloads the page, then maps the agent to it', async () => {

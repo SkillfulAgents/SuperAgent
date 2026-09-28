@@ -39,9 +39,11 @@ export async function applyBrowserLogin(input: {
   agentSlug: string
   userId: string | null
   credentialId: string
+  /** Site of the sign-in page; a login saved for another site is not applied. */
+  site: string
 }): Promise<{ site: string; linked: boolean }> {
   const credential = await getOwnedBrowserLogin(input.userId, input.credentialId)
-  if (!credential) throw new BrowserLoginNotFoundError()
+  if (!credential || credential.site !== input.site) throw new BrowserLoginNotFoundError()
   if (credential.browserType !== await browserTypeForSession(input.client, input.sessionId)) throw new BrowserLoginNotFoundError()
   const { site } = credential
   const bundle = decryptBrowserBundle(credential.bundle, credential)

@@ -163,6 +163,11 @@ const mockCredentialSuggest = vi.fn()
 const mockCredentialRetrieve = vi.fn()
 const mockCredentialBeginPairing = vi.fn()
 const mockCredentialCompletePairing = vi.fn()
+const mockSaveLogin = vi.hoisted(() => vi.fn(async () => 'saved' as const))
+vi.mock('@shared/lib/browser/browser-login-save', () => ({
+  saveLoginAfterBrowserInput: mockSaveLogin,
+}))
+
 vi.mock('../credentials/credential-broker', () => ({
   credentialBroker: {
     suggest: (...args: unknown[]) => mockCredentialSuggest(...args),
@@ -5253,6 +5258,58 @@ describe('browser credential broker routes', () => {
     expect(await res.json()).toEqual({ success: true })
     expect(countMembersWithMinRole).toHaveBeenCalledWith('test-agent', 'viewer')
     expect(mockContainerFetch.mock.calls.map(([path]) => path)).toEqual(['/inputs/tool-login/resolve'])
+  })
+
+  it('saves the login under the page the request opened on, not the current page', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tool-login',
+      kind: 'browser_input',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {
+        login: true,
+        loginUrl: 'https://login.example.com/signin',
+        // Stale context from a sign-in that ended on another site.
+        browserContext: { url: 'https://app.other.test/home', capturedAt: 0 },
+      },
+    })
+    mockContainerFetch.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/complete-browser-input',
+      { toolUseId: 'tool-login', saveLogin: true },
+    )
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, loginSave: 'saved' })
+    expect(mockSaveLogin).toHaveBeenCalledWith(expect.objectContaining({ url: 'https://login.example.com/signin' }))
+    expect(mockContainerFetch.mock.calls.map(([path]) => path)).toEqual(['/inputs/tool-login/resolve'])
+  })
+
+  it('refuses to apply a saved login to a request that is not a sign-in', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tool-captcha',
+      kind: 'browser_input',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: { loginUrl: 'https://example.com/login' },
+    })
+
+    const res = await postJson(
+      app,
+      '/api/agents/test-agent/sessions/sess-1/use-saved-browser-login',
+      { toolUseId: 'tool-captcha', credentialId: 'bc-1' },
+    )
+
+    expect(res.status).toBe(400)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
   })
 })
 
