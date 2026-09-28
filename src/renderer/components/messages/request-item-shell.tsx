@@ -17,6 +17,10 @@ export const THEME_CLASSES: Record<RequestTheme, { waitBadge: string }> = {
 // fully opaque so message content cannot bleed through interactive controls.
 const REQUEST_CARD_CLASS = 'border rounded-[12px] bg-card shadow-md text-sm'
 
+// When the title and the header controls do not fit on one line, the controls wrap above the title.
+// With the wrap reversed, items-end is the top edge, so a single line still aligns to the top.
+const HEADER_ROW_CLASS = 'flex flex-wrap-reverse items-end gap-x-3 gap-y-2'
+
 interface CompletedConfig {
   icon: ReactNode
   label: ReactNode
@@ -88,13 +92,14 @@ export function RequestItemShell({
   }
 
   const titleNode = (
-    <div className="flex flex-1 min-w-0 items-start gap-2">
+    // 8rem: a lone close button fits beside the title, the wider paging wraps above it.
+    <div className="flex min-w-0 grow basis-32 items-start gap-2">
       {icon && (
         <span className="mt-0.5 shrink-0 text-muted-foreground [&_svg]:h-4 [&_svg]:w-4">
           {icon}
         </span>
       )}
-      <div className="flex-1 min-w-0 text-sm font-medium leading-5 text-foreground whitespace-pre-line">
+      <div className="flex-1 min-w-0 break-words text-sm font-medium leading-5 text-foreground whitespace-pre-line">
         {typeof title === 'string' ? linkify(title) : title}
       </div>
     </div>
@@ -110,9 +115,9 @@ export function RequestItemShell({
       <div className={REQUEST_CARD_CLASS} {...dataAttrs}>
         <div className="flex items-start gap-3 p-4">
           <div className="flex-1 min-w-0">
-            <div className="flex items-start justify-between gap-3">
+            <div className={HEADER_ROW_CLASS}>
               {titleNode}
-              <span className={cn('text-xs shrink-0', themeClasses.waitBadge)}>
+              <span className={cn('ml-auto text-xs shrink-0', themeClasses.waitBadge)}>
                 {waitingText}
               </span>
             </div>
@@ -192,10 +197,10 @@ export function RequestItemShell({
     >
       <div className="min-h-0 overflow-y-auto p-4" data-request-item-body>
         <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-3">
+          <div className={HEADER_ROW_CLASS}>
             {titleNode}
             {(headerRightContent || showStopButton) && (
-              <div className="flex items-center shrink-0">
+              <div className="ml-auto flex items-center shrink-0">
                 {headerRightContent}
                 {showStopButton && (
                   <>

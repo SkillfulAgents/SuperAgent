@@ -494,8 +494,8 @@ export function ConnectedAccountRequestItem({
         </div>
       ) : (
         <div className="pt-3">
-          <div className="flex items-center justify-between gap-3 rounded-[12px] border border-border bg-white pl-[10px] pr-3 py-2 dark:bg-background">
-            <div className="flex items-center gap-2 text-sm text-foreground/80">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[12px] border border-border bg-white pl-[10px] pr-3 py-2 dark:bg-background">
+            <div className="flex min-w-0 grow basis-40 items-center gap-2 text-sm text-foreground/80">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
                 <ServiceIcon slug={toolkit} fallback="request" className="h-6 w-6" />
               </div>
@@ -688,28 +688,31 @@ function AccountOption({
   const connectedAgo = formatDistanceToNow(connectedDate, { addSuffix: true })
   const [menuOpen, setMenuOpen] = useState(false)
   const selectable = !disabled && account.status === 'active'
+  const rowReconnect = account.status !== 'active' && reconnect ? reconnect : null
 
   if (isEditing) {
     return (
       <div
         className={cn(
-          'flex items-center gap-2 rounded-[12px] border px-4 py-2',
+          'flex flex-wrap items-center gap-2 rounded-[12px] border px-4 py-2',
           'border-border bg-white dark:bg-background'
         )}
       >
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
-          <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
+        <div className="flex min-w-0 max-w-[344px] grow basis-40 items-center gap-2">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
+            <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
+          </div>
+          <Input
+            value={editName}
+            onChange={(e) => onEditNameChange(e.target.value)}
+            className="h-7 flex-1 text-sm"
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onSaveEdit()
+              if (e.key === 'Escape') onCancelEdit()
+            }}
+          />
         </div>
-        <Input
-          value={editName}
-          onChange={(e) => onEditNameChange(e.target.value)}
-          className="h-7 max-w-[296px] flex-1 text-sm"
-          autoFocus
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') onSaveEdit()
-            if (e.key === 'Escape') onCancelEdit()
-          }}
-        />
         <Button
           size="xs"
           variant="default"
@@ -736,7 +739,7 @@ function AccountOption({
   return (
     <div
       className={cn(
-        'group flex items-center gap-2 rounded-[12px] border pl-3 pr-4 py-2 cursor-pointer transition-colors',
+        'group flex flex-wrap items-center gap-2 rounded-[12px] border pl-3 pr-4 py-2 cursor-pointer transition-colors',
         selected
           ? 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40'
           : 'border-border bg-white hover:bg-muted/40 dark:bg-background',
@@ -752,29 +755,31 @@ function AccountOption({
         }
       }}
     >
-      {account.status !== 'active' && reconnect ? (
-        <RowReconnectButton reconnect={reconnect} disabled={disabled} />
-      ) : (
-        <input
-          type="checkbox"
-          checked={selected}
-          disabled={!selectable}
-          onChange={() => selectable && onToggle()}
-          onClick={(e) => e.stopPropagation()}
-          className="mx-1 shrink-0"
-        />
-      )}
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
-        <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1">
-          <span className="truncate text-sm font-normal text-foreground">{account.displayName}</span>
-          <AccountStatusBadge status={account.status} />
+      {rowReconnect ? <RowReconnectButton reconnect={rowReconnect} disabled={disabled} /> : null}
+      {/* The checkbox shares the account's readable width so it never wraps away from the account it selects. */}
+      <div className="flex min-w-0 grow basis-40 items-center gap-2">
+        {rowReconnect ? null : (
+          <input
+            type="checkbox"
+            checked={selected}
+            disabled={!selectable}
+            onChange={() => selectable && onToggle()}
+            onClick={(e) => e.stopPropagation()}
+            className="mx-1 shrink-0"
+          />
+        )}
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
+          <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
         </div>
-        <p className="truncate text-xs text-muted-foreground">connected {connectedAgo}</p>
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-x-1">
+            <span className="truncate text-sm font-normal text-foreground">{account.displayName}</span>
+            <AccountStatusBadge status={account.status} />
+          </div>
+          <p className="truncate text-xs text-muted-foreground">connected {connectedAgo}</p>
+        </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2 self-center">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 self-center whitespace-nowrap">
         {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
         <span onClick={(e) => e.stopPropagation()}>
           <PolicySummaryPill

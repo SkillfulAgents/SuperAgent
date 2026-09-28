@@ -157,7 +157,7 @@ export function SessionChatColumn({
                     registerSnapshot={staleSession.registerSnapshot}
                     suspended={pendingRequestCount > 0 || displaced}
                   />
-                  <div className="relative isolate flex items-center justify-between gap-1.5 overflow-hidden px-6 py-3">
+                  <div className="relative isolate flex flex-wrap items-center justify-between gap-x-1.5 gap-y-0.5 overflow-hidden px-6 py-3">
                     <div
                       aria-hidden="true"
                       className="pointer-events-none absolute inset-y-0 left-0 z-0 w-[52%] bg-gradient-to-r from-background via-background/75 to-transparent backdrop-blur-[2px]"
@@ -178,7 +178,7 @@ export function SessionChatColumn({
                       <TooltipProvider delayDuration={0}>
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <div className="relative z-10 flex cursor-default items-center gap-1.5">
+                            <div className="relative z-10 flex cursor-default items-center gap-1.5 whitespace-nowrap">
                               <span className="text-xs text-muted-foreground">Context Usage</span>
                               <DonutChart
                                 percent={contextPercent}
@@ -197,13 +197,13 @@ export function SessionChatColumn({
                       <span className="relative z-10" />
                     )}
                     {voiceModeActive ? (
-                      <span className="relative z-10 flex items-center gap-1 text-xs text-muted-foreground" data-testid="voice-mode-hint">
+                      <span className="relative z-10 flex items-center gap-1 whitespace-nowrap text-xs text-muted-foreground" data-testid="voice-mode-hint">
                         <span>Speak or</span>
                         <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">Space</kbd>
                         <span>to Interrupt</span>
                       </span>
                     ) : (
-                      <span className="relative z-10 flex items-center gap-1 text-xs text-muted-foreground">
+                      <span className="relative z-10 flex items-center gap-1 whitespace-nowrap text-xs text-muted-foreground">
                         <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>
                         <span>Send</span>
                         <span className="mx-1">·</span>

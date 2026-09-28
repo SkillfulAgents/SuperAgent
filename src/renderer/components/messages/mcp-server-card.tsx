@@ -126,6 +126,7 @@ export function McpServerCard({
           onClick={(e) => {
             e.stopPropagation()
           }}
+          data-testid={`mcp-server-menu-${server.id}`}
         >
           <MoreVertical className="h-3.5 w-3.5" />
         </Button>
@@ -155,19 +156,21 @@ export function McpServerCard({
 
   const editChildren = (
     <>
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
-        <McpSourceIcon slug={serverSlug} />
+      <div className="flex min-w-0 max-w-[344px] grow basis-40 items-center gap-2">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+          <McpSourceIcon slug={serverSlug} />
+        </div>
+        <Input
+          value={editName}
+          onChange={(e) => onEditNameChange(e.target.value)}
+          className="h-7 flex-1 text-sm"
+          autoFocus
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onSaveEdit()
+            if (e.key === 'Escape') onCancelEdit()
+          }}
+        />
       </div>
-      <Input
-        value={editName}
-        onChange={(e) => onEditNameChange(e.target.value)}
-        className="h-7 max-w-[296px] flex-1 text-sm"
-        autoFocus
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') onSaveEdit()
-          if (e.key === 'Escape') onCancelEdit()
-        }}
-      />
       <Button
         size="sm"
         variant="default"
@@ -197,7 +200,7 @@ export function McpServerCard({
     // the single-card variant wraps the flex row in an inner div.
     if (onToggle) {
       return (
-        <div className="flex items-center gap-2 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
+        <div className="flex flex-wrap items-center gap-2 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
           {editChildren}
         </div>
       )
@@ -205,30 +208,48 @@ export function McpServerCard({
 
     return (
       <div className="rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {editChildren}
         </div>
       </div>
     )
   }
 
+  const canToggle = !disabled && !needsReauth
+  const rowReconnect = needsReauth && reconnectButton ? reconnectButton : null
+  // The checkbox shares the server's readable width so it never wraps away from the server it selects.
+  const checkbox = onToggle && !rowReconnect ? (
+    <input
+      type="checkbox"
+      checked={selected ?? false}
+      disabled={disabled || needsReauth}
+      onChange={() => canToggle && onToggle()}
+      onClick={(e) => e.stopPropagation()}
+      className="mx-1 shrink-0"
+    />
+  ) : null
+
   const displayContent = (
     <>
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
-        <McpSourceIcon slug={serverSlug} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1">
-          <p className="truncate text-sm font-normal text-foreground">
-            {server.name}
-          </p>
-          <McpStatusPill status={server.status} errorMessage={server.errorMessage} />
+      {rowReconnect}
+      <div className="flex min-w-0 grow basis-40 items-center gap-2">
+        {checkbox}
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+          <McpSourceIcon slug={serverSlug} />
         </div>
-        <p className="truncate text-xs text-muted-foreground">
-          {server.url}
-        </p>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-1">
+            <p className="truncate text-sm font-normal text-foreground">
+              {server.name}
+            </p>
+            <McpStatusPill status={server.status} errorMessage={server.errorMessage} />
+          </div>
+          <p className="truncate text-xs text-muted-foreground">
+            {server.url}
+          </p>
+        </div>
       </div>
-      <div className="ml-3 flex shrink-0 items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 whitespace-nowrap">
         {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
         <span onClick={(e) => e.stopPropagation()}>
           <ToolPolicySummaryPill
@@ -243,7 +264,6 @@ export function McpServerCard({
 
   // Selectable variant (used in lists with multiple servers)
   if (onToggle) {
-    const canToggle = !disabled && !needsReauth
     return (
       <div
         role="button"
@@ -256,25 +276,13 @@ export function McpServerCard({
           }
         }}
         className={cn(
-          'group flex w-full cursor-pointer items-center gap-2 rounded-[12px] border pl-3 pr-4 py-3 text-left transition-colors',
+          'group flex w-full cursor-pointer flex-wrap items-center gap-2 rounded-[12px] border pl-3 pr-4 py-3 text-left transition-colors',
           selected
             ? 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40'
             : 'border-border bg-white hover:bg-muted/40 dark:bg-background',
           needsReauth ? 'cursor-default' : disabled && 'cursor-not-allowed opacity-70'
         )}
       >
-        {needsReauth && reconnectButton ? (
-          reconnectButton
-        ) : (
-          <input
-            type="checkbox"
-            checked={selected ?? false}
-            disabled={disabled || needsReauth}
-            onChange={() => canToggle && onToggle()}
-            onClick={(e) => e.stopPropagation()}
-            className="mx-1 shrink-0"
-          />
-        )}
         {displayContent}
       </div>
     )
@@ -283,8 +291,7 @@ export function McpServerCard({
   // Static display variant (single selected server)
   return (
     <div className="group rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
-      <div className="flex items-center gap-2">
-        {needsReauth && reconnectButton ? reconnectButton : null}
+      <div className="flex flex-wrap items-center gap-2">
         {displayContent}
       </div>
     </div>

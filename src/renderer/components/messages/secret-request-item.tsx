@@ -168,7 +168,7 @@ export function SecretRequestItem({
       </div>
 
       {/* Action row */}
-      <RequestItemActions className="items-center justify-between">
+      <RequestItemActions className="items-center">
         <TooltipProvider delayDuration={200}>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -190,7 +190,7 @@ export function SecretRequestItem({
           </Tooltip>
         </TooltipProvider>
 
-        <div className="flex justify-end gap-2">
+        <div className="ml-auto flex flex-wrap justify-end gap-2">
           <DeclineButton
             onDecline={handleDecline}
             disabled={status === 'submitting'}
