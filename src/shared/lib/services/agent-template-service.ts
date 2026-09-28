@@ -7,7 +7,7 @@
  * Two kinds of storage meet here. The skillset cache (a git clone under the
  * data dir) is a directory on this machine, read and written with `fs`. The
  * agent workspace is reached only through the agent actor: its files by
- * operation (`files`) and its `CLAUDE.md` and template metadata as
+ * operation (`files`) and its instructions and template metadata as
  * configuration documents (`config`), all addressed by workspace path.
  */
 
@@ -266,7 +266,7 @@ function joinTreePath(dir: string, name: string): string {
  * to its root.
  *
  * Inclusion rules:
- * - `CLAUDE.md` and other non-excluded root files are included
+ * - `AGENTS.md` and other non-excluded root files are included
  * - `.claude/skills/**` is included
  * - Everything else under `.claude/` is excluded (debug, todos, projects, state files)
  * - `.browser-profile/`, `uploads/` are excluded entirely
@@ -569,9 +569,9 @@ export async function exportAgentTemplate(agentSlug: string, signal?: AbortSigna
     }
 
     const actor = agentRegistry.get(agentSlug)
-    const claudeMdContent = await actor.config.get('instructions')
-    if (!claudeMdContent) {
-      throw new Error('CLAUDE.md not found in agent workspace')
+    const instructionsContent = await actor.config.get('instructions')
+    if (!instructionsContent) {
+      throw new Error('Agent instructions not found in agent workspace')
     }
 
     const templateFiles = await walkTemplateFiles(workspaceTree(actor.files))
@@ -663,7 +663,7 @@ export function validateTemplateEntries(
   }
 
   if (!findInstructionsEntry(realEntries, stripPrefix)) {
-    return { valid: false, error: 'CLAUDE.md not found in template', fileCount: realEntries.length, stripPrefix }
+    return { valid: false, error: 'Agent instructions not found in template', fileCount: realEntries.length, stripPrefix }
   }
 
   return { valid: true, fileCount: realEntries.length, stripPrefix }
@@ -683,10 +683,10 @@ export async function validateAgentTemplate(zip: TemplateZipSource, mode: 'templ
     const result = validateTemplateEntries(reader.entries, mode)
     if (!result.valid) return { ...result, agentName: undefined }
 
-    const claudeMdFileName = findInstructionsEntry(reader.entries, result.stripPrefix)!.fileName
+    const instructionsFileName = findInstructionsEntry(reader.entries, result.stripPrefix)!.fileName
 
-    const claudeMdBuf = await reader.readEntry(claudeMdFileName)
-    const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdBuf.toString('utf-8'))
+    const instructionsBytes = await reader.readEntry(instructionsFileName)
+    const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(instructionsBytes.toString('utf-8'))
     const agentName = frontmatter.name || undefined
 
     return { valid: true, agentName, fileCount: result.fileCount, stripPrefix: result.stripPrefix }
@@ -723,10 +723,10 @@ export async function importAgentFromTemplate(
       throw new Error(validation.error || 'Invalid template')
     }
 
-    // Read CLAUDE.md to extract agent name
-    const claudeMdFileName = findInstructionsEntry(reader.entries, validation.stripPrefix)!.fileName
-    const claudeMdBuf = await reader.readEntry(claudeMdFileName)
-    const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdBuf.toString('utf-8'))
+    // Read the instructions to extract the agent name
+    const instructionsFileName = findInstructionsEntry(reader.entries, validation.stripPrefix)!.fileName
+    const instructionsBytes = await reader.readEntry(instructionsFileName)
+    const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(instructionsBytes.toString('utf-8'))
     const agentName = frontmatter.name || undefined
 
     const effectiveName = nameOverride?.trim() || agentName
@@ -772,7 +772,7 @@ export async function importAgentFromTemplate(
     await normalizeTemplateInstructions(actor.files, reader.entries.map((entry) =>
       (stripPrefix ? entry.fileName.replace(stripPrefix, '') : entry.fileName).replace(/^\.\//, ''),
     ))
-    // The template's CLAUDE.md replaced the one the agent was created with:
+    // The template instructions replaced the defaults the agent was created with:
     // take the name (unless overridden) and description it carries, and
     // write the identity back into it.
     await adoptAgentIdentityFromWorkspace(agent.slug, { name: nameOverride })
@@ -834,7 +834,7 @@ export async function installAgentFromSkillset(
   await copyHostDirIntoWorkspace(actor.files, agentDirInRepo, '', { followSymlinks: true })
   await normalizeTemplateInstructions(actor.files, await fs.promises.readdir(agentDirInRepo))
 
-  // The template's CLAUDE.md overwrites the one createAgentFromExistingWorkspace
+  // The template instructions overwrite the defaults createAgentFromExistingWorkspace
   // wrote: keep the chosen name and the install time, take the description
   // the template carries, and write the identity back into the document.
   await adoptAgentIdentityFromWorkspace(agent.slug, { name: agentName })
@@ -901,7 +901,7 @@ export async function updateAgentFromSkillset(
 
   // Walk the template source and copy files, preserving .env/session-metadata
   await copyTemplateFiles(agentDirInRepo, actor.files)
-  // The template's CLAUDE.md replaced the projection; the agent keeps its name.
+  // The template instructions replaced the projection; the agent keeps its name.
   await writeAgentIdentityProjection(agentSlug)
 
   // Recompute hash
@@ -1196,7 +1196,7 @@ function updateAgentFrontmatterVersion(content: string, newVersion: string): str
 async function collectAgentFilesForPlatform(
   files: FileOps,
   agentPathInRepo: string,
-  options?: { claudeMdContent?: string },
+  options?: { instructionsContent?: string },
 ): Promise<Array<{ path: string; content: string }>> {
   const templateFiles = await walkTemplateFiles(workspaceTree(files))
   const normalizedRoot = agentTemplateRoot(agentPathInRepo)
@@ -1205,8 +1205,8 @@ async function collectAgentFilesForPlatform(
   return await Promise.all(templateFiles.map(async (workspacePath) => {
     const templatePath = templatePathOf(workspacePath, templateFiles)
     const repoPath = `${normalizedRoot}/${templatePath}`
-    if (workspacePath === instructionsPath && options?.claudeMdContent !== undefined) {
-      return { path: repoPath, content: options.claudeMdContent }
+    if (workspacePath === instructionsPath && options?.instructionsContent !== undefined) {
+      return { path: repoPath, content: options.instructionsContent }
     }
 
     const bytes = await files.getDoc(workspacePath)
@@ -1340,7 +1340,7 @@ export async function refreshAgentTemplates(
           }
           if (await directoryExists(agentDirInRepo)) {
             await copyTemplateFiles(agentDirInRepo, actor.files)
-            // The merged template's CLAUDE.md replaced the projection; the
+            // The merged template instructions replaced the projection; the
             // agent keeps its name, and the hash records what is on disk.
             await writeAgentIdentityProjection(slug)
             meta.originalContentHash = await computeWorkspaceTemplateHash(actor.files)
@@ -1373,7 +1373,7 @@ export async function refreshAgentTemplates(
         && currentHash !== meta.originalContentHash
         && repoHash !== meta.originalContentHash) {
       await copyTemplateFiles(agentDirInRepo, actor.files)
-      // Same as above: restore the identity projection the upstream CLAUDE.md
+      // Same as above: restore the identity projection the upstream instructions
       // overwrote, then record the hash of the workspace as it now is, not
       // the repo's, so the projection does not read as a local change.
       await writeAgentIdentityProjection(slug)
@@ -1431,7 +1431,7 @@ async function generateAgentPRSuggestions(
 
 Current version: ${meta.installedVersion}
 
-Modified CLAUDE.md:
+Modified agent instructions:
 \`\`\`
 ${modifiedContent}
 \`\`\`
@@ -1472,7 +1472,7 @@ Rules for the version bump:
 }
 
 async function generateAgentPublishSuggestions(
-  claudeMdContent: string,
+  instructionsContent: string,
   agentName: string,
 ): Promise<{ suggestedTitle: string; suggestedBody: string; suggestedVersion: string }> {
   const fallback = {
@@ -1496,13 +1496,13 @@ async function generateAgentPublishSuggestions(
       messages: [
         {
           role: 'user',
-          content: `You are reviewing a new agent template (CLAUDE.md) being submitted to a shared skillset repository. Generate a PR title, description, and version.
+          content: `You are reviewing a new agent template (AGENTS.md) being submitted to a shared skillset repository. Generate a PR title, description, and version.
 
 Agent name: ${agentName}
 
-CLAUDE.md content:
+Agent instructions:
 \`\`\`
-${claudeMdContent}
+${instructionsContent}
 \`\`\`
 
 Generate:
@@ -1587,13 +1587,13 @@ export async function createAgentPR(
   }
 
   const actor = agentRegistry.get(agentSlug)
-  const claudeMdContent = await actor.config.get('instructions')
-  if (!claudeMdContent) {
-    throw new Error('CLAUDE.md not found')
+  const instructionsContent = await actor.config.get('instructions')
+  if (!instructionsContent) {
+    throw new Error('Agent instructions not found')
   }
-  const nextClaudeMdContent = options.newVersion
-    ? updateAgentFrontmatterVersion(claudeMdContent, options.newVersion)
-    : claudeMdContent
+  const nextInstructionsContent = options.newVersion
+    ? updateAgentFrontmatterVersion(instructionsContent, options.newVersion)
+    : instructionsContent
   const targetName = path.basename(agentTemplateRoot(meta.agentPath))
 
   const metaRef = toSkillsetRefFromMeta(meta)
@@ -1601,7 +1601,7 @@ export async function createAgentPR(
   const repoDir = getSkillsetRepoDirForRef(metaRef)
 
   const files = await collectAgentFilesForPlatform(actor.files, meta.agentPath, {
-    claudeMdContent: nextClaudeMdContent,
+    instructionsContent: nextInstructionsContent,
   })
 
   const deletePaths = retiredTemplatePaths(files, meta.agentPath)
@@ -1640,7 +1640,7 @@ export async function createAgentPR(
     if (await directoryExists(agentDirInRepo)) {
       await copyTemplateFiles(agentDirInRepo, actor.files)
     } else {
-      await actor.config.put('instructions', nextClaudeMdContent)
+      await actor.config.put('instructions', nextInstructionsContent)
     }
     meta.originalContentHash = await computeWorkspaceTemplateHash(actor.files)
     meta.pendingQueueItemId = undefined
@@ -1678,17 +1678,17 @@ export async function getAgentPublishInfo(
     throw new Error('Agent already belongs to a skillset - use Open PR instead')
   }
 
-  const claudeMdContent = await agentRegistry.get(agentSlug).config.get('instructions')
-  if (!claudeMdContent) {
-    throw new Error('CLAUDE.md not found')
+  const instructionsContent = await agentRegistry.get(agentSlug).config.get('instructions')
+  if (!instructionsContent) {
+    throw new Error('Agent instructions not found')
   }
 
   await getSkillsetProvider(skillsetConfig.provider).ensurePublishPreconditions(toSkillsetRefFromConfig(skillsetConfig))
 
-  const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdContent)
+  const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(instructionsContent)
   const agentName = frontmatter.name || agentSlug
 
-  const suggestions = await generateAgentPublishSuggestions(claudeMdContent, agentName)
+  const suggestions = await generateAgentPublishSuggestions(instructionsContent, agentName)
 
   return {
     agentName,
@@ -1707,16 +1707,16 @@ export async function publishAgentToSkillset(
   options: { title: string; body: string; newVersion?: string },
 ): Promise<{ prUrl?: string; successMessage: string }> {
   const actor = agentRegistry.get(agentSlug)
-  let claudeMdContent = await actor.config.get('instructions')
-  if (!claudeMdContent) {
-    throw new Error('CLAUDE.md not found')
+  let instructionsContent = await actor.config.get('instructions')
+  if (!instructionsContent) {
+    throw new Error('Agent instructions not found')
   }
 
   if (options.newVersion) {
-    claudeMdContent = updateAgentFrontmatterVersion(claudeMdContent, options.newVersion)
+    instructionsContent = updateAgentFrontmatterVersion(instructionsContent, options.newVersion)
   }
 
-  const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdContent)
+  const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(instructionsContent)
   const agentName = frontmatter.name || agentSlug
   const description = frontmatter.description || ''
   const version = options.newVersion || '1.0.0'
@@ -1744,7 +1744,7 @@ export async function publishAgentToSkillset(
 
   // Prepare agent template files + updated index.json
   const files = await collectAgentFilesForPlatform(actor.files, agentPathInRepo, {
-    claudeMdContent,
+    instructionsContent,
   })
   if (!index.agents) {
     index.agents = []
@@ -1790,7 +1790,7 @@ export async function publishAgentToSkillset(
     if (await directoryExists(agentDirInRepo)) {
       await copyTemplateFiles(agentDirInRepo, actor.files)
     } else {
-      await actor.config.put('instructions', claudeMdContent)
+      await actor.config.put('instructions', instructionsContent)
     }
     metadata.originalContentHash = await computeWorkspaceTemplateHash(actor.files)
   }

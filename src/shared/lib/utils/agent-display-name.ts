@@ -1,7 +1,7 @@
 import { parseMarkdownWithFrontmatter } from './file-storage'
 
 /**
- * The agent's display name from its instructions document (`CLAUDE.md`), or
+ * The agent's display name from its instructions document (`AGENTS.md`), or
  * undefined when the document is absent or names nothing. The frontmatter
  * parser coerces YAML-ambiguous scalars ("123", "true") to number or boolean;
  * those are still legitimate display names, so they are coerced back.

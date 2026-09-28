@@ -519,7 +519,7 @@ export const dataMigrations = sqliteTable('data_migrations', {
 })
 
 // Agents - which agents exist and what they are called. The row is the
-// authority for name and description; the agent's CLAUDE.md keeps a
+// authority for name and description; the agent's AGENTS.md keeps a
 // frontmatter projection of them that the host writes on create and rename.
 // Placement says where the workspace lives: `runtime` is 'local' for a
 // directory under the agents data directory, and `workspace_handle` is the

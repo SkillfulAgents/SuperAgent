@@ -148,7 +148,7 @@ export interface AgentIdentityChanges {
  * writing an agent's contents goes through its actor.
  *
  * The catalog is the authority for an agent's name and description. The
- * agent's `CLAUDE.md` carries a frontmatter projection of them, written by
+ * agent's `AGENTS.md` carries a frontmatter projection of them, written by
  * the host, so the agent still sees who it is and exports still carry it.
  */
 export interface AgentCatalog {

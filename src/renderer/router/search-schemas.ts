@@ -4,7 +4,7 @@ import { TEMPLATE_SLUG_RE } from '@shared/lib/signup-handoff-params'
 
 /**
  * Zod schemas for the router's URL boundary (search params + the settings tab
- * path param). Per CLAUDE.md, every value decoded from the URL is validated here
+ * path param). Per AGENTS.md, every value decoded from the URL is validated here
  * before it reaches a route component.
  */
 

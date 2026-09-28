@@ -61,7 +61,7 @@ import { createAgentFromExistingWorkspace, getAgentWithStatus } from '@shared/li
 import { getAgentDir, getAgentSessionsDir, getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
-const MINIMAL_CLAUDE_MD = `---
+const MINIMAL_INSTRUCTIONS = `---
 name: Test Agent
 createdAt: '2026-01-01T00:00:00.000Z'
 ---
@@ -105,7 +105,7 @@ function nextAgentIs(slug: string): void {
 /** A full `.agent` archive carrying one session: metadata entry + transcript. */
 function archiveWithSession(sessionId: string, name = 'Restored session'): Promise<Buffer> {
   return createZipBuffer({
-    'CLAUDE.md': MINIMAL_CLAUDE_MD,
+    'AGENTS.md': MINIMAL_INSTRUCTIONS,
     'session-metadata.json': JSON.stringify({
       [sessionId]: { name, createdAt: '2026-08-28T12:00:00.000Z' },
     }),

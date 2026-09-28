@@ -21,7 +21,7 @@ import { xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
 import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 
 // ============================================================================
-// Zod schemas (boundary validation per CLAUDE.md)
+// Zod schemas (boundary validation per AGENTS.md)
 // ============================================================================
 
 export const xAgentOperationSchema = z.enum(['list', 'read', 'invoke'])

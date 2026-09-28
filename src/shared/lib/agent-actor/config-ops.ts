@@ -67,15 +67,16 @@ export function createConfigOps(files: FileOps, hooks: ConfigOpsHooks = {}): Con
 
   const pathOf = async (id: ConfigDocId): Promise<string> => {
     const spec = configDocSpec(id)
-    if (spec.kind !== 'text' || spec.fallbackPath === undefined || await files.stat(spec.path)) return spec.path
-    return spec.fallbackPath
+    if (spec.kind === 'text' && spec.legacyPath !== undefined && await files.stat(spec.legacyPath)) return spec.legacyPath
+    return spec.path
   }
 
   const get = async <K extends ConfigDocId>(id: K): Promise<ConfigDoc<K> | null> => {
     await hooks.beforeGet?.(id)
     const spec = configDocSpec(id)
-    let bytes = await files.getDoc(spec.path)
-    if (bytes === null && spec.kind === 'text' && spec.fallbackPath !== undefined) bytes = await files.getDoc(spec.fallbackPath)
+    const legacy = spec.kind === 'text' && spec.legacyPath !== undefined
+      ? await files.getDoc(spec.legacyPath) : null
+    const bytes = legacy ?? await files.getDoc(spec.path)
     return bytes === null ? null : decode(id, bytes)
   }
 

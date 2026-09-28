@@ -12,16 +12,16 @@ let handle: TestDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 import { createAgentCatalog } from './agent-catalog'
-import { AGENT_ID_LENGTH, ensureDirectory, getAgentDir, getAgentClaudeMdPath } from '@shared/lib/utils/file-storage'
+import { AGENT_ID_LENGTH, ensureDirectory, getAgentDir, getAgentInstructionsPath } from '@shared/lib/utils/file-storage'
 import type { AgentCatalog } from './types'
 
 let dataDir: string
 let previousDataDir: string | undefined
 let catalog: AgentCatalog
 
-async function writeAgentDirectory(slug: string, claudeMd: string | null): Promise<void> {
+async function writeAgentDirectory(slug: string, instructions: string | null): Promise<void> {
   await ensureDirectory(path.join(getAgentDir(slug), 'workspace'))
-  if (claudeMd !== null) await fs.promises.writeFile(getAgentClaudeMdPath(slug), claudeMd)
+  if (instructions !== null) await fs.promises.writeFile(getAgentInstructionsPath(slug), instructions)
 }
 
 async function rowFor(slug: string) {

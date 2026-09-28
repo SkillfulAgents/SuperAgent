@@ -19,7 +19,7 @@ import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '@shared/lib/db/schema'
-import { SAMPLE_CLAUDE_MD } from './__fixtures__/test-data'
+import { SAMPLE_INSTRUCTIONS } from './__fixtures__/test-data'
 
 // Mock the container host before importing the service.
 // Use vi.hoisted so mock variables exist when vi.mock is hoisted.
@@ -90,15 +90,15 @@ describe('agent-service deleteAgent — container stop failure (SUP-209)', () =>
   })
 
   // Helper mirrors the harness in agent-service.test.ts
-  async function createTestAgent(slug: string, claudeMdContent: string) {
+  async function createTestAgent(slug: string, instructionsContent: string) {
     const workspaceDir = path.join(testDir, 'agents', slug, 'workspace')
     await fs.promises.mkdir(workspaceDir, { recursive: true })
-    await fs.promises.writeFile(path.join(workspaceDir, 'CLAUDE.md'), claudeMdContent)
+    await fs.promises.writeFile(path.join(workspaceDir, 'AGENTS.md'), instructionsContent)
     await importAgentDirectories(testDb)
   }
 
   it('does not delete the workspace when stopping the container fails', async () => {
-    await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+    await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
     mockStopContainer.mockRejectedValueOnce(
       new Error('runtime wedged: cannot stop container')
     )
@@ -116,7 +116,7 @@ describe('agent-service deleteAgent — container stop failure (SUP-209)', () =>
   })
 
   it('still deletes the agent when the container stop is a benign no-op', async () => {
-    await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+    await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
     // Default mock resolves: an already-stopped/missing container stops without
     // throwing. The happy path must still remove the workspace.

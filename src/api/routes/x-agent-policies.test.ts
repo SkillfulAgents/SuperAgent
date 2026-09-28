@@ -72,7 +72,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: vi.fn(async () => true),
   getAgent: (...args: unknown[]) => mockGetAgent(...args),
   // The policy routes read identity from the catalog record; project the
-  // CLAUDE.md-shaped fixtures the tests hand getAgent.
+  // AGENTS.md-shaped fixtures the tests hand getAgent.
   getAgentRecord: async (...args: unknown[]) => {
     const agent = (await mockGetAgent(...args)) as { slug: string; frontmatter: { name: string } } | null
     return agent ? { slug: agent.slug, name: agent.frontmatter.name, createdAt: new Date(0), placement: { runtime: 'local', workspaceHandle: null } } : null
@@ -83,8 +83,8 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   updateAgent: vi.fn(),
   deleteAgent: vi.fn(),
   createAgentFromExistingWorkspace: vi.fn(),
-  setAgentClaudeMdContent: vi.fn(),
-  getAgentClaudeMdContent: vi.fn(),
+  setAgentInstructionsContent: vi.fn(),
+  getAgentInstructionsContent: vi.fn(),
 }))
 
 vi.mock('@shared/lib/container/container-host', async () => {

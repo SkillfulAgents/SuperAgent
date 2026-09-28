@@ -13,7 +13,7 @@ function formatMb(bytes: number): string {
 /**
  * Classify an opened .agent/.skill package straight from disk, in the main
  * process — the bytes never cross to the renderer just to answer "agent or
- * skill?". Routing is content-based (root CLAUDE.md → agent template, root
+ * skill?". Routing is content-based (root AGENTS.md → agent template, root
  * SKILL.md → skill); the extension only ORDERS the validators, so the right
  * diagnostic surfaces for a broken package and a pathological zip carrying
  * both root markers resolves to what its name claims. A renamed file still
