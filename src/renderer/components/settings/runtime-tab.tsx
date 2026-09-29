@@ -946,7 +946,7 @@ export function RuntimeTab() {
         <div className="space-y-0.5">
           <Label className="text-base">Custom Environment Variables</Label>
           <p className="text-xs text-muted-foreground">
-            Set shared environment variables for agent tools and the Claude Code CLI. Changes apply to new sessions. Configure LLM credentials and endpoints on each connection in Settings → LLM → Edit connection → Custom environment variables.
+            Set shared environment variables for agent tools and the agent runtime. Changes apply to new sessions. Configure LLM credentials and endpoints on each connection in Settings → LLM → Edit connection → Custom environment variables.
           </p>
         </div>
 
