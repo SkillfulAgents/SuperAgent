@@ -155,6 +155,7 @@ export function renderPendingRequest(
           key={d.key}
           reviewId={d.reviewId}
           accountId={d.accountId}
+          reviewType={d.reviewType}
           toolkit={d.toolkit}
           method={d.method}
           targetPath={d.targetPath}

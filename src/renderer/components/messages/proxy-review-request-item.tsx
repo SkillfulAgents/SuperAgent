@@ -10,6 +10,7 @@ import {
 } from '@renderer/components/ui/collapsible'
 import { cn } from '@shared/lib/utils/cn'
 import { getScopeLabel, type ScopeLabel } from '@shared/lib/proxy/scope-metadata'
+import type { ProxyReviewType } from '@shared/lib/proxy/review-display'
 import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import { Markdown } from '@renderer/components/ui/markdown'
 import { RequestItemShell } from './request-item-shell'
@@ -22,6 +23,11 @@ const LABEL_RANK: Record<ScopeLabel, number> = { read: 0, write: 1, destructive:
 interface ProxyReviewRequestItemProps {
   reviewId: string
   accountId: string
+  /**
+   * Stamped by the proxy that raised the review. When absent (envelopes from
+   * before the stamp) the `tools/call` path prefix is the only hint left.
+   */
+  reviewType?: ProxyReviewType
   toolkit: string
   method: string
   targetPath: string
@@ -39,6 +45,7 @@ type RequestStatus = 'pending' | 'submitting' | 'allowed' | 'denied'
 export function ProxyReviewRequestItem({
   reviewId,
   accountId,
+  reviewType,
   toolkit,
   method,
   targetPath,
@@ -67,7 +74,13 @@ export function ProxyReviewRequestItem({
     .map((s) => getScopeLabel(toolkit, s))
     .filter((l): l is ScopeLabel => !!l)
     .sort((a, b) => LABEL_RANK[a] - LABEL_RANK[b])[0]
-  const isApiReview = !targetPath.startsWith('tools/call')
+  // Never infer from the path when the review says what it is: an MCP call
+  // whose JSON-RPC method is not `tools/call` has a bare method path, and
+  // treating it as an API review sent the MCP server id to the API-scope
+  // policy table (FOREIGN KEY failure on "always allow").
+  const resolvedReviewType: ProxyReviewType =
+    reviewType ?? (targetPath.startsWith('tools/call') ? 'mcp' : 'api')
+  const isApiReview = resolvedReviewType === 'api'
 
   // Clean up timer on unmount
   useEffect(() => {
@@ -119,7 +132,7 @@ export function ProxyReviewRequestItem({
             decision,
             scope,
             accountId,
-            reviewType: targetPath.startsWith('tools/call') ? 'mcp' : 'api',
+            reviewType: resolvedReviewType,
           }),
         }
       )

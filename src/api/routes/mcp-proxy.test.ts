@@ -2016,6 +2016,41 @@ describe('mcp-proxy route', () => {
       })
       expect(res.status).toBe(200)
       expect(mockRequestReview).toHaveBeenCalledOnce()
+      // The review is stamped as an MCP review so "always allow" lands in
+      // mcpToolPolicies no matter what the request path looks like.
+      expect(mockRequestReview).toHaveBeenCalledWith(
+        expect.objectContaining({ reviewType: 'mcp', accountId: 'mcp-1', targetPath: 'tools/call: search' }),
+        expect.anything(),
+      )
+    })
+
+    it('a non-protocol method that is not tools/call still raises an MCP-stamped review', async () => {
+      // Regression: Railway's server sent `subscriptions/listen`. It is not a
+      // protocol method, so it goes to policy → review, but with no tool name
+      // the review's path is the bare method and used to be mistaken for an
+      // API review downstream (FOREIGN KEY failure on "always allow").
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'review',
+        matchedScopes: [],
+        scopeDescriptions: {},
+        resolvedFrom: 'global_default',
+      })
+      mockRequestReview.mockResolvedValue('allow')
+
+      const body = JSON.stringify({ jsonrpc: '2.0', method: 'subscriptions/listen', params: {}, id: 1 })
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body,
+      })
+      expect(res.status).toBe(200)
+      expect(mockResolveMcpPolicy).toHaveBeenCalledWith('mcp-1', null, expect.anything())
+      expect(mockRequestReview).toHaveBeenCalledOnce()
+      expect(mockRequestReview).toHaveBeenCalledWith(
+        expect.objectContaining({ reviewType: 'mcp', accountId: 'mcp-1', targetPath: 'subscriptions/listen', matchedScopes: [] }),
+        expect.anything(),
+      )
     })
 
     it('protocol methods (tools/list, initialize, etc.) skip policy enforcement', async () => {

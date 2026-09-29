@@ -279,6 +279,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     try {
       const decision = await agentRegistry.get(agentSlug).inputs.reviews.request({
         accountId,
+        reviewType: 'api',
         toolkit: account.toolkitSlug,
         method,
         targetPath,

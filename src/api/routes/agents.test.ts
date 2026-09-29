@@ -557,6 +557,12 @@ vi.mock('@shared/lib/proxy/host-url', () => ({
   getAppPort: () => 3000,
 }))
 
+const mockCaptureException = vi.fn()
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: (...args: unknown[]) => mockCaptureException(...args),
+  captureMessage: vi.fn(),
+}))
+
 const mockGetPendingReviewsForAgent = vi.fn((_slug: string) => [] as any[])
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
@@ -7403,9 +7409,12 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
     mockDbInsertTable.mockReset()
     mockDbOnConflictDoUpdate.mockReset()
     mockDbSelectFrom.mockReset()
-    // Default account/MCP lookup: a row owned by the test user. The API-scope
-    // branch reads this to enforce ownership and validate the scope; the MCP
-    // branch reads it to enforce MCP-server ownership.
+    mockCaptureException.mockReset()
+    mockGetPendingReviewsForAgent.mockReturnValue([])
+    // Default account/MCP lookup: a row owned by the test user. Both branches
+    // read it to prove the FOREIGN KEY target exists; the API-scope branch
+    // also validates the scope against its toolkit and, in auth mode, both
+    // enforce ownership.
     mockDbSelectFrom.mockReturnValue({
       where: () => ({ limit: () => Promise.resolve([{ userId: 'test-user-id', toolkitSlug: 'gmail' }]) }),
     })
@@ -7612,11 +7621,11 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
     )
   })
 
-  it('persists an MCP policy when the server is not found (auth mode, no owner to mismatch)', async () => {
-    mockIsAuthMode.mockReturnValue(true)
-    // Ownership lookup finds no such MCP server — the `&&` short-circuit means
-    // there is no owner to mismatch, so the upsert proceeds (mirrors the API
-    // branch). A dangling mcpId is a harmless dead row, not an auth bypass.
+  it('refuses an MCP policy when the server no longer exists — the FK target is gone', async () => {
+    // mcpToolPolicies.mcpId REFERENCES remote_mcp_servers, so a dangling id
+    // is not a harmless dead row: SQLite rejects the insert with a bare
+    // "FOREIGN KEY constraint failed". Say so before the write, and not with
+    // a 404, which the card reads as "already resolved" and dismisses as allowed.
     mockDbSelectFrom.mockReturnValueOnce({
       where: () => ({ limit: () => Promise.resolve([]) }),
     })
@@ -7628,10 +7637,131 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
       reviewType: 'mcp',
     })
 
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/MCP server no longer exists/)
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it('refuses an API policy when the connected account no longer exists', async () => {
+    mockDbSelectFrom.mockReturnValueOnce({
+      where: () => ({ limit: () => Promise.resolve([]) }),
+    })
+
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: '*',
+      accountId: 'account-gone',
+      reviewType: 'api',
+    })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/Connected account no longer exists/)
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it('rejects an MCP policy with no server id instead of inserting a null FK', async () => {
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: '*',
+      accountId: '',
+      reviewType: 'mcp',
+    })
+
+    expect(res.status).toBe(400)
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  // Regression: an MCP call whose JSON-RPC method is not `tools/call` (Railway
+  // sent `subscriptions/listen`) renders with a bare method path. The card
+  // used to infer "api" from that path, and "Always allow all Railway
+  // requests" then wrote the MCP server's id into apiScopePolicies, whose
+  // accountId REFERENCES connected_accounts → "FOREIGN KEY constraint failed".
+  // The pending review is stamped with its type at creation and wins over
+  // whatever the client claims.
+  it('routes to mcpToolPolicies when the pending review is stamped mcp, even if the client says api', async () => {
+    mockGetPendingReviewsForAgent.mockReturnValue([{
+      id: 'review-1', agentSlug: 'my-agent', accountId: 'mcp-railway', reviewType: 'mcp',
+      toolkit: 'Railway', method: 'POST', targetPath: 'subscriptions/listen',
+      matchedScopes: [], scopeDescriptions: {},
+    }])
+
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: '*',
+      accountId: 'mcp-railway',
+      reviewType: 'api',
+    })
+
     expect(res.status).toBe(200)
+    expect(mockDbInsertTable).toHaveBeenCalledWith({ mcpId: 'mcp_id', toolName: 'tool_name' })
+    expect(mockDbInsertTable).not.toHaveBeenCalledWith({ accountId: 'account_id', scope: 'scope' })
     expect(mockDbInsertValues).toHaveBeenCalledWith(
-      expect.objectContaining({ mcpId: 'mcp-server-unknown', toolName: 'some_tool' })
+      expect.objectContaining({ mcpId: 'mcp-railway', toolName: '*', decision: 'allow' })
     )
+  })
+
+  it('routes to apiScopePolicies when the pending review is stamped api, even if the client says mcp', async () => {
+    mockGetPendingReviewsForAgent.mockReturnValue([{
+      id: 'review-1', agentSlug: 'my-agent', accountId: 'account-123', reviewType: 'api',
+      toolkit: 'gmail', method: 'GET', targetPath: 'gmail/v1/users/me/messages',
+      matchedScopes: ['gmail.readonly'], scopeDescriptions: {},
+    }])
+
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: 'gmail.readonly',
+      accountId: 'account-123',
+      reviewType: 'mcp',
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockDbInsertTable).toHaveBeenCalledWith({ accountId: 'account_id', scope: 'scope' })
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ accountId: 'account-123', scope: 'gmail.readonly', decision: 'allow' })
+    )
+  })
+
+  it('falls back to the client-declared type for a pending review without a stamp', async () => {
+    // Envelopes registered before the stamp existed carry no reviewType.
+    mockGetPendingReviewsForAgent.mockReturnValue([{
+      id: 'review-1', agentSlug: 'my-agent', accountId: 'mcp-server-123',
+      toolkit: 'linear', method: 'POST', targetPath: 'tools/call: list_issues',
+      matchedScopes: ['list_issues'], scopeDescriptions: {},
+    }])
+
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: 'list_issues',
+      accountId: 'mcp-server-123',
+      reviewType: 'mcp',
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockDbInsertTable).toHaveBeenCalledWith({ mcpId: 'mcp_id', toolName: 'tool_name' })
+  })
+
+  it('reports a failed policy write to error reporting and surfaces the message', async () => {
+    // Nothing else records this failure: the card shows it inline and the
+    // route swallows it into a 500 body, which is how it stayed invisible in
+    // Sentry until a user emailed a screenshot.
+    mockDbOnConflictDoUpdate.mockRejectedValueOnce(new Error('FOREIGN KEY constraint failed'))
+
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: '*',
+      accountId: 'mcp-server-123',
+      reviewType: 'mcp',
+    })
+
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toBe('Failed to save policy: FOREIGN KEY constraint failed')
+    expect(mockCaptureException).toHaveBeenCalledOnce()
+    const [err, context] = mockCaptureException.mock.calls[0]
+    expect((err as Error).message).toBe('FOREIGN KEY constraint failed')
+    expect(context).toEqual(expect.objectContaining({
+      tags: expect.objectContaining({ component: 'proxy-review', operation: 'save-policy', reviewType: 'mcp' }),
+      extra: expect.objectContaining({ agentSlug: 'my-agent', reviewId: 'review-1', scope: '*' }),
+    }))
   })
 
   it('rejects an API policy on an account the user does not own (auth mode)', async () => {

@@ -1139,6 +1139,12 @@ describe('proxy policy enforcement', () => {
     )
     expect(res.status).toBe(200)
     expect(mockRequestReview).toHaveBeenCalledOnce()
+    // Stamped as an API review: "always allow" must write apiScopePolicies
+    // keyed by this connected account, never the MCP table.
+    expect(mockRequestReview).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewType: 'api', accountId: 'acc-123' }),
+      expect.anything(),
+    )
   })
 
   it('review → user denies → returns 403, error: "denied_by_user"', async () => {

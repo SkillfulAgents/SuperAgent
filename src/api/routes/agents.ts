@@ -7563,33 +7563,55 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
   const now = new Date()
 
+  // Which policy table this decision belongs to. The pending review is
+  // authoritative: the proxy that raised it stamped `reviewType` at creation.
+  // The client's claim is only a fallback for envelopes written before the
+  // stamp existed — the card used to infer "mcp" from a `tools/call` path
+  // prefix, so an MCP call whose JSON-RPC method was anything else (e.g.
+  // Railway's `subscriptions/listen`) was sent as an API-scope policy with
+  // the MCP server's id, and failed apiScopePolicies' FOREIGN KEY against
+  // connected_accounts.
+  const reviewType: 'api' | 'mcp' | 'xagent' =
+    body.reviewType === 'xagent' && body.xAgent
+      ? 'xagent'
+      : pendingReview?.reviewType ?? (body.reviewType === 'mcp' ? 'mcp' : 'api')
+
   // Persist the policy FIRST. The review is only resolved after the write commits,
   // so any concurrent /invoke (or other gated call) that runs after this point
   // will see the new policy on its eval and not create a duplicate review.
   // If the write fails, surface the error instead of silently degrading to "Allow Once" —
   // the user thinks they enabled "always" and would otherwise have no idea it didn't stick.
   try {
-    if (body.reviewType === 'xagent' && body.xAgent) {
+    if (reviewType === 'xagent' && body.xAgent) {
       // X-Agent review — save to xAgentPolicies. The "caller" is the agent the
       // review is attached to (slug), not the target.
       const { setPolicy: setAgentPolicy } = await import('@shared/lib/services/x-agent-policy-service')
       await setAgentPolicy(slug, body.xAgent.operation, body.xAgent.targetSlug, policyDecision)
-    } else if (body.reviewType === 'mcp') {
+    } else if (reviewType === 'mcp') {
       // MCP tool review — save to mcpToolPolicies
       // accountId is actually the mcpId for MCP reviews.
+      // Both policy tables carry a FOREIGN KEY to their owner row, so confirm
+      // the row exists up front and answer with a message the card can show,
+      // rather than letting SQLite's bare "FOREIGN KEY constraint failed"
+      // surface. A 4xx other than 404 on purpose: the card reads 404 as
+      // "already resolved elsewhere" and would dismiss itself as allowed.
+      if (!body.accountId) {
+        return c.json({ error: 'Missing MCP server id' }, 400)
+      }
+      const [mcpServer] = await db
+        .select({ userId: remoteMcpServers.userId })
+        .from(remoteMcpServers)
+        .where(eq(remoteMcpServers.id, body.accountId))
+        .limit(1)
+      if (!mcpServer) {
+        return c.json({ error: 'MCP server no longer exists; the policy was not saved' }, 400)
+      }
       // Verify MCP-server ownership before persisting, mirroring the API-scope
       // branch below: AgentUser() only proves a role on the URL agent, so
       // without this an authenticated user could write a policy onto an MCP
       // server owned by someone else by passing its mcpId here.
-      if (body.accountId && isAuthMode()) {
-        const [mcpServer] = await db
-          .select({ userId: remoteMcpServers.userId })
-          .from(remoteMcpServers)
-          .where(eq(remoteMcpServers.id, body.accountId))
-          .limit(1)
-        if (mcpServer && mcpServer.userId !== getCurrentUserId(c)) {
-          return c.json({ error: 'Forbidden: you do not own this MCP server' }, 403)
-        }
+      if (isAuthMode() && mcpServer.userId !== getCurrentUserId(c)) {
+        return c.json({ error: 'Forbidden: you do not own this MCP server' }, 403)
       }
 
       await db.insert(mcpToolPolicies).values({
@@ -7607,18 +7629,23 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
       // API scope review — save to apiScopePolicies.
       // Look up the account once: we need its owner (to enforce the auth-mode
       // ownership check) and its toolkit (to validate the scope below).
-      let toolkitSlug: string | undefined
-      if (body.accountId) {
-        const [acct] = await db
-          .select({ userId: connectedAccounts.userId, toolkitSlug: connectedAccounts.toolkitSlug })
-          .from(connectedAccounts)
-          .where(eq(connectedAccounts.id, body.accountId))
-          .limit(1)
-        if (isAuthMode() && acct && acct.userId !== getCurrentUserId(c)) {
-          return c.json({ error: 'Forbidden: you do not own this account' }, 403)
-        }
-        toolkitSlug = acct?.toolkitSlug
+      if (!body.accountId) {
+        return c.json({ error: 'Missing connected account id' }, 400)
       }
+      const [acct] = await db
+        .select({ userId: connectedAccounts.userId, toolkitSlug: connectedAccounts.toolkitSlug })
+        .from(connectedAccounts)
+        .where(eq(connectedAccounts.id, body.accountId))
+        .limit(1)
+      // Same FOREIGN KEY reasoning as the MCP branch: say what is missing
+      // instead of letting the insert fail.
+      if (!acct) {
+        return c.json({ error: 'Connected account no longer exists; the policy was not saved' }, 400)
+      }
+      if (isAuthMode() && acct.userId !== getCurrentUserId(c)) {
+        return c.json({ error: 'Forbidden: you do not own this account' }, 403)
+      }
+      const toolkitSlug = acct.toolkitSlug
 
       // Validate the scope against the toolkit's known scope set ∪ sentinels.
       // The in-session "Allow all <label>" action legitimately sends the
@@ -7644,6 +7671,14 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     }
   } catch (err) {
     console.error('Failed to save policy on always-allow:', err)
+    // The user sees this as an inline card error and nothing else records it,
+    // so report it: a persistence failure here means "always" silently did
+    // not stick, which is exactly the class of bug support only hears about
+    // from screenshots.
+    captureException(err, {
+      tags: { component: 'proxy-review', operation: 'save-policy', reviewType },
+      extra: { agentSlug: slug, reviewId, scope: body.scope, accountId: body.accountId },
+    })
     return c.json(
       { error: `Failed to save policy: ${err instanceof Error ? err.message : 'unknown error'}` },
       500,
