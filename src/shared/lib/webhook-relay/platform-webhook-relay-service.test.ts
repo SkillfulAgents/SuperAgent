@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
 import type { RealtimeConfig } from '@shared/lib/services/supabase-realtime-client'
-import type { PlatformClaim } from './platform-relay-client'
+import { PlatformRelayError, type PlatformClaim } from './platform-relay-client'
 import { WebhookRelayUnavailableError } from './errors'
 import {
   PlatformWebhookRelayService,
@@ -19,7 +19,7 @@ import { LOCAL_RELAY_SCOPE, type RelayAcceptResult, type RelayConsumer, type Rel
 // Fakes
 // ============================================================================
 
-/** The platform queue: claims are final and scoped by member + endpoint ids, as on the proxy. */
+/** The platform queue: claims are scoped by member + endpoint ids, as on the proxy; `expireLease` hands one out again. */
 class FakePlatform {
   pending = new Map<string, RelayEvent[]>()
   claims: Array<{ scope: string; endpointIds: string[] }> = []
@@ -27,6 +27,7 @@ class FakePlatform {
   failingScopes = new Set<string>()
   failAcks = 0
   failAckScopes = new Set<string>()
+  ackError: Error | null = null
   ackGate: Promise<void> | null = null
   signals: AbortSignal[] = []
   realtimeEnabled = true
@@ -42,6 +43,11 @@ class FakePlatform {
     }
     this.pending.set(scope, [...(this.pending.get(scope) ?? []), ...added])
     return added
+  }
+
+  /** A claim not acked within its lease is handed out again. */
+  expireLease(scope: string, event: RelayEvent): void {
+    this.pending.set(scope, [...(this.pending.get(scope) ?? []), event])
   }
 
   claim = vi.fn(async (scope: string, endpointIds: readonly string[], signal?: AbortSignal): Promise<PlatformClaim> => {
@@ -65,6 +71,7 @@ class FakePlatform {
   acknowledge = vi.fn(async (scope: string, ids: readonly string[]) => {
     if (this.ackGate) await this.ackGate
     if (this.failAckScopes.has(scope)) throw new Error(`ack failed for ${scope}`)
+    if (this.ackError) throw this.ackError
     if (this.failAcks > 0) {
       this.failAcks--
       throw new Error('ack failed')
@@ -444,6 +451,56 @@ describe('PlatformWebhookRelayService', () => {
       await settle()
       expect(platform.acks).toEqual([])
 
+      await vi.advanceTimersByTimeAsync(5_000)
+      await settle()
+      expect(platform.ackedIds()).toEqual([event.id])
+    })
+
+    it('does not offer an event again when its lease expires while its ack is pending', async () => {
+      startRelay({ tickMs: 1_000, retryDelaysMs: [60_000] })
+      platform.realtimeEnabled = false
+      platform.failAcks = 1
+      const [event] = platform.add('sub_a', 'whep_one')
+      const c = consumer(['whep_one'])
+      relay.register(c)
+      await settle()
+      expect(c.accept).toHaveBeenCalledTimes(1)
+      expect(platform.acks).toEqual([])
+
+      platform.expireLease('sub_a', event)
+      await vi.advanceTimersByTimeAsync(1_000)
+      await settle()
+      expect(platform.pending.get('sub_a')).toEqual([])
+      expect(c.accept).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(60_000)
+      await settle()
+      expect(platform.acks).toEqual([{ scope: 'sub_a', ids: [event.id] }])
+      expect(c.accept).toHaveBeenCalledTimes(1)
+    })
+
+    it('drops acks the platform rejects for good instead of retrying them', async () => {
+      startRelay({ retryDelaysMs: [5_000], tickMs: 60 * 60_000 })
+      platform.ackError = new PlatformRelayError(403, 'Webhook relay /ack failed with 403: Forbidden')
+      platform.add('sub_a', 'whep_one')
+      relay.register(consumer(['whep_one']))
+      await settle()
+      expect(platform.acknowledge).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(60_000)
+      await settle()
+      expect(platform.acknowledge).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps retrying acks rejected with 401, which the client also raises while no token is loaded', async () => {
+      startRelay({ retryDelaysMs: [5_000], tickMs: 60 * 60_000 })
+      platform.ackError = new PlatformRelayError(401, 'Platform access token not available')
+      const [event] = platform.add('sub_a', 'whep_one')
+      relay.register(consumer(['whep_one']))
+      await settle()
+      expect(platform.acknowledge).toHaveBeenCalledTimes(1)
+
+      platform.ackError = null
       await vi.advanceTimersByTimeAsync(5_000)
       await settle()
       expect(platform.ackedIds()).toEqual([event.id])

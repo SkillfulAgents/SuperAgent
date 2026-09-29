@@ -9,9 +9,11 @@
  * and acknowledged by a separate worker once the consumer settles them
  * (anything but `retry`).
  *
- * Claims are final on the platform today: an event claimed but not settled
- * before the process exits is not redelivered (SUP-931). `retry` events stay
- * in memory and are offered again with backoff until they settle.
+ * A claim is a 5-minute lease on the platform (SUP-931): an event not acked
+ * in time is handed out again, up to 3 claims, so one claimed but not settled
+ * before the process exits comes back. A re-leased event that is still queued
+ * or already settled here is skipped. `retry` events stay in memory and are
+ * offered again with backoff until they settle.
  */
 
 import pLimit from 'p-limit'
@@ -24,7 +26,7 @@ import type {
   WebhookFilterTestResult,
 } from '@shared/lib/services/webhook-endpoint-schema'
 import { WebhookRelayUnavailableError } from './errors'
-import type { PlatformClaim } from './platform-relay-client'
+import { isPermanentRelayError, type PlatformClaim } from './platform-relay-client'
 import { platformRealtimeRecordSchema } from './platform-relay-schema'
 import {
   LOCAL_RELAY_SCOPE,
@@ -742,14 +744,16 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
         continue
       }
       if (owner.queuedIds.has(event.id)) continue
+      // Settled here, but the platform re-leased it because the ack is late.
+      if (this.pendingAcks.get(scope)?.has(event.id)) continue
       owner.queue.push({ event, scope })
       owner.queuedIds.add(event.id)
       touched.add(owner)
     }
     if (unowned > 0) {
       // Only for an endpoint the claim didn't ask for. Nothing delivered it,
-      // so it isn't acknowledged: once claims lease (SUP-931) it returns to
-      // the queue.
+      // so it isn't acknowledged: its lease expires and it returns to the
+      // queue (SUP-931).
       console.warn(`[WebhookRelay] Leaving ${unowned} claimed event(s) unacknowledged: no consumer asked for them in scope ${scope}`)
     }
     for (const state of touched) this.pump(state)
@@ -832,9 +836,9 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   // Acknowledgement
   // ==========================================================================
 
-  // Never dropped: a scope whose acks pile up stops being claimed instead
-  // (isClaimable), which bounds this by maxPendingAcks plus what consumers
-  // already hold.
+  // Dropped only when the platform rejects them for good: a scope whose acks
+  // pile up stops being claimed instead (isClaimable), which bounds this by
+  // maxPendingAcks plus what consumers already hold.
   private queueAck(scope: RelayScope, eventId: string): void {
     const pending = this.pendingAcks.get(scope) ?? new Set<string>()
     pending.add(eventId)
@@ -867,8 +871,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
         // Rotate to the back, so one busy scope can't keep the others waiting.
         this.pendingAcks.delete(ackScope)
         this.pendingAcks.set(ackScope, pending)
-        try {
-          await this.request((signal) => this.deps.acknowledge(ackScope, ids, signal))
+        const release = () => {
           for (const id of ids) pending.delete(id)
           if (pending.size === 0) this.pendingAcks.delete(ackScope)
           this.ackBackoff.delete(ackScope)
@@ -876,7 +879,16 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
             this.ackHeldBack.delete(ackScope)
             this.wake()
           }
+        }
+        try {
+          await this.request((signal) => this.deps.acknowledge(ackScope, ids, signal))
+          release()
         } catch (error) {
+          if (isPermanentRelayError(error)) {
+            console.warn(`[WebhookRelay] Dropping ${ids.length} ack(s) for scope ${ackScope}; the platform rejected them: ${errorMessage(error)}`)
+            release()
+            continue
+          }
           const attempt = this.ackBackoff.get(ackScope)?.attempt ?? 0
           const delay = this.retryDelaysMs[Math.min(attempt, this.retryDelaysMs.length - 1)]
           this.ackBackoff.set(ackScope, { attempt: attempt + 1, retryAt: Date.now() + delay })

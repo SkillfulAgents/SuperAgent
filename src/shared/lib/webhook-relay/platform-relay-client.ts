@@ -26,6 +26,14 @@ export class PlatformRelayError extends Error {
   }
 }
 
+// A 4xx the same request will keep getting. 401 is excluded because this
+// client raises it itself while no platform token is loaded.
+export function isPermanentRelayError(error: unknown): boolean {
+  if (!(error instanceof PlatformRelayError)) return false
+  const { status } = error
+  return status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429
+}
+
 export interface PlatformClaim {
   events: RelayEvent[]
   /** Rows the platform claimed, including any that failed validation. */
@@ -67,7 +75,7 @@ async function relayPost(
   return response
 }
 
-/** Claims pending events for these endpoints. A claim is final: unacknowledged events are not redelivered (SUP-931). */
+/** Claims pending events for these endpoints. A claim is a 5-minute lease: unacknowledged events are handed out again (SUP-931). */
 export async function claimPlatformRelayEvents(
   scope: RelayScope,
   endpointIds: readonly string[],
