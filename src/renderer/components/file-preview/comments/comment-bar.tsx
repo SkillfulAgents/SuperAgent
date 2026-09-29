@@ -4,7 +4,7 @@ import { Button } from '@renderer/components/ui/button'
 import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
 import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
 import { focusSessionComposer } from '@renderer/components/messages/composer-focus'
-import { formatMediaTime } from './format-media-time'
+import { formatCommentTime } from './format-media-time'
 import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface CommentBarProps {
@@ -51,7 +51,7 @@ export function formatComments(filePath: string, comments: FileComment[]): strin
       const pos = comment.x != null && comment.y != null
         ? ` at position (${Math.round(comment.x)}%, ${Math.round(comment.y)}%)`
         : ''
-      lines.push(`At ${formatMediaTime(comment.timestamp)}${pos}:`)
+      lines.push(`At ${formatCommentTime(comment.timestamp)}${pos}:`)
       lines.push(comment.text)
     } else if (comment.x != null && comment.y != null) {
       lines.push(`At position (${Math.round(comment.x)}%, ${Math.round(comment.y)}%):`)
@@ -100,14 +100,14 @@ export function CommentBar({ comments, filePath, agentSlug, sessionId }: Comment
               )}
               {comment.timestamp != null && (
                 <div className="text-muted-foreground/70">
-                  At {formatMediaTime(comment.timestamp)}
+                  At {formatCommentTime(comment.timestamp)}
                   {comment.x != null && comment.y != null && <span> &middot; ({Math.round(comment.x)}%, {Math.round(comment.y)}%)</span>}
                 </div>
               )}
               {comment.timestamp == null && comment.x != null && comment.y != null && (
                 <div className="text-muted-foreground/70">({Math.round(comment.x)}%, {Math.round(comment.y)}%)</div>
               )}
-              <div className="text-foreground">{comment.text}</div>
+              <div className="text-foreground whitespace-pre-wrap">{comment.text}</div>
             </div>
             <button
               onClick={() => removeComment(filePath, agentSlug, comment.id)}

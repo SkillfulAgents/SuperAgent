@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { AudioLines, MessageSquarePlus, Pause, Play } from 'lucide-react'
 import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
 import { CommentOverlay } from '../comments/comment-overlay'
-import { formatMediaTime } from '../comments/format-media-time'
+import { formatCommentTime, formatMediaTime } from '../comments/format-media-time'
 import { createFallbackWaveform, createWaveformPeaks } from './audio-waveform'
 import { useMediaKeys } from './use-media-keys'
 import { PlaybackSpeedSelect } from './playback-speed'
@@ -291,8 +291,8 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
                 onClick={() => seekTo(comment.timestamp)}
                 className="absolute -top-2 z-30 flex h-4 w-4 -translate-x-1/2 items-center justify-center rounded-full bg-primary text-[9px] font-medium text-primary-foreground shadow ring-2 ring-background transition-transform hover:scale-110"
                 style={{ left: `${comment.ratio * 100}%` }}
-                title={`Comment at ${formatMediaTime(comment.timestamp)}`}
-                aria-label={`Seek to comment ${index + 1} at ${formatMediaTime(comment.timestamp)}`}
+                title={`Comment at ${formatCommentTime(comment.timestamp)}`}
+                aria-label={`Seek to comment ${index + 1} at ${formatCommentTime(comment.timestamp)}`}
               >
                 {index + 1}
               </button>
@@ -332,7 +332,7 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
                   Add Comment
                 </button>
                 <div className="text-center text-[9px] tabular-nums text-muted-foreground">
-                  {formatMediaTime(hoverTime)}
+                  {formatCommentTime(hoverTime)}
                 </div>
               </div>
             )}

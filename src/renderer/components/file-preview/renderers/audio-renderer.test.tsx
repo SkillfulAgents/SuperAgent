@@ -103,7 +103,7 @@ describe('AudioRenderer', () => {
     fireEvent.pointerMove(screen.getByTestId('audio-waveform'), { clientX: 40 })
 
     expect(screen.getByTestId('audio-hover-add-comment')).toBeVisible()
-    expect(screen.getByText('0:00', { selector: 'div.text-center' })).toBeVisible()
+    expect(screen.getByText('0:00.00', { selector: 'div.text-center' })).toBeVisible()
   })
 
   it('keeps the hover affordance open while the pointer moves to it', () => {
@@ -196,7 +196,7 @@ describe('AudioRenderer', () => {
     await user.click(screen.getByTestId('audio-add-comment'))
 
     expect(HTMLMediaElement.prototype.pause).toHaveBeenCalled()
-    expect(screen.getByText('At 0:00')).toBeVisible()
+    expect(screen.getByText('At 0:00.00')).toBeVisible()
 
     await user.type(screen.getByPlaceholderText('Add your comment...'), 'Reduce the background noise')
     await user.click(screen.getByRole('button', { name: 'Add' }))
@@ -224,7 +224,7 @@ describe('AudioRenderer', () => {
 
     render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
 
-    expect(screen.getByRole('button', { name: 'Seek to comment 1 at 0:12' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Seek to comment 1 at 0:12.00' })).toBeVisible()
   })
 
   it('clears media state when switching between audio files', async () => {
