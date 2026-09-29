@@ -89,7 +89,7 @@ export function BrowserTrayContent({
   const savedLogin = savedLogins.logins?.[0]
   // Saving over an existing login is opt-in, so a failed sign-in cannot replace a working one. Choices last one request.
   const [saveChoice, setSaveChoice] = useState<{ toolUseId: string; save: boolean } | null>(null)
-  const saveLogin = saveChoice?.toolUseId === latestRequest?.toolUseId ? saveChoice.save : !savedLogin
+  const saveLogin = saveChoice && saveChoice.toolUseId === latestRequest?.toolUseId ? saveChoice.save : !savedLogin
   const [otherAccountFor, setOtherAccountFor] = useState<string | null>(null)
   const otherAccount = otherAccountFor === latestRequest?.toolUseId
   // Same rule as the chat card: with a saved login, offer only that until the user picks another account.

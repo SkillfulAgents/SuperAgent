@@ -55,6 +55,7 @@ vi.mock('@renderer/hooks/use-browser-input-actions', () => ({
     decline: vi.fn(),
   }),
   useCanSaveBrowserLogin: () => false,
+  useOtherAgentMemberCount: () => 0,
 }))
 const historyMessages: ApiMessage[] = []
 vi.mock('@renderer/hooks/use-messages', () => ({ useMessages: () => ({ data: historyMessages }) }))
