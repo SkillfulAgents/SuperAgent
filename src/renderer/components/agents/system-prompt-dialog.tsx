@@ -47,7 +47,7 @@ export function SystemPromptDialog({ agent, open, onOpenChange }: SystemPromptDi
         <DialogHeader>
           <DialogTitle>System Prompt</DialogTitle>
           <DialogDescription>
-            Custom instructions added to this agent's system prompt.
+            Custom instructions added to the system prompt for this agent.
           </DialogDescription>
         </DialogHeader>
         <div className="relative">
