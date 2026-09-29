@@ -8528,6 +8528,48 @@ describe('MessagePersister', () => {
       expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
     })
 
+    it('sends the whole live list with every frame that changes it', () => {
+      // Clients replace their copy with it, so a frame one of them missed
+      // cannot leave a stale row (or Stop-dialog entry) behind.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-1' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-2' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-2', content: 'Running' }] },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'bg-1' }, { task_id: 'bg-2', task_type: 'local_bash', description: 'Watch the build' }],
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bg-2' }] })
+
+      const ids = (e: Record<string, unknown>) => (e.backgroundTasks as Array<{ taskId: string }>).map(t => t.taskId)
+      const listFrames = sseEvents.filter(e =>
+        ['background_task_started', 'background_task_updated', 'background_task_completed', 'session_waiting_background'].includes(e.type as string))
+      expect(listFrames.map(e => [e.type, ids(e)])).toEqual([
+        ['background_task_started', ['bg-1']],
+        ['background_task_started', ['bg-1', 'bg-2']],
+        ['background_task_updated', ['bg-1', 'bg-2']],
+        // Once when the turn's output ends, again when the runtime reports idle.
+        ['session_waiting_background', ['bg-1', 'bg-2']],
+        ['session_waiting_background', ['bg-1', 'bg-2']],
+        ['background_task_completed', ['bg-2']],
+      ])
+      expect(listFrames[2].backgroundTasks).toEqual([
+        expect.objectContaining({ taskId: 'bg-1' }),
+        expect.objectContaining({ taskId: 'bg-2', taskType: 'local_bash', description: 'Watch the build' }),
+      ])
+    })
+
     it('backstop: session_state_changed running does not clear pending tasks', () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({
