@@ -1121,6 +1121,11 @@ export class SessionManager extends EventEmitter {
     return sessionData.process.isRunning();
   }
 
+  // Read-only: no resume and no lastActivity touch, so polling it cannot hold off idle eviction.
+  getSessionSettled(sessionId: string): boolean | null {
+    return this.sessions.get(sessionId)?.settlement.isSettled() ?? null;
+  }
+
   /**
    * Terminal frames of the session's most recent turn, for a WebSocket
    * subscriber that attached after the turn already ended. Empty when the

@@ -134,6 +134,14 @@ app.get('/sessions/:id', async (c) => {
   });
 });
 
+app.get('/sessions/:id/settlement', (c) => {
+  const settled = sessionManager.getSessionSettled(c.req.param('id'));
+  if (settled === null) {
+    return c.json({ error: 'Session not found' }, 404);
+  }
+  return c.json({ settled });
+});
+
 // Persisted "Allow for this session" review grants. The host consults this when
 // its in-memory grant mirror is cold (fresh host process against a live
 // container) before broadcasting a review card the container isn't waiting on.

@@ -74,6 +74,12 @@ vi.mock('@shared/lib/config/settings', () => ({
   },
 }))
 
+const mockCaptureException = vi.fn()
+vi.mock('@shared/lib/error-reporting', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/error-reporting')>()),
+  captureException: (...args: unknown[]) => mockCaptureException(...args),
+}))
+
 const mockReaddir = vi.fn()
 const mockStat = vi.fn()
 vi.mock('fs', () => ({
@@ -955,6 +961,113 @@ describe('MessagePersister', () => {
       })
 
       expect(mockAppendInformationalEntry).not.toHaveBeenCalled()
+    })
+  })
+
+  // ============================================================================
+  // Stalled stream: working on a silent socket while the container has settled
+  // ============================================================================
+
+  describe('stalled stream reattach', () => {
+    const QUIET_MS = 60_000
+    const afterQuiet = () => Date.now() + QUIET_MS + 1_000
+    const settlementResponse = (status: number, body: unknown) =>
+      vi.mocked(mockClient.fetch).mockResolvedValue(new Response(JSON.stringify(body), { status }))
+
+    it('resubscribes a settled session whose SDK process stays alive between turns, and the replay settles it', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      // The container finished the turn but keeps the SDK loop alive: GET /sessions/:id would say isRunning: true.
+      vi.mocked(mockClient.getSession).mockResolvedValue({
+        id: SESSION_ID, createdAt: '', lastActivity: '', workingDirectory: '/workspace', isRunning: true,
+      })
+      settlementResponse(200, { settled: true })
+      sseEvents.length = 0
+
+      const reattached = await messagePersister.reattachStalledSessions(AGENT_SLUG, QUIET_MS, afterQuiet())
+
+      expect(reattached).toEqual([SESSION_ID])
+      expect(mockCaptureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Session stream went silent after its turn settled' }),
+        {
+          tags: { component: 'container', operation: 'stalled-stream-reattach', containerRunner: 'unknown' },
+          extra: { agentId: AGENT_SLUG, sessionId: SESSION_ID, silentMs: expect.any(Number) },
+        },
+      )
+      expect(mockClient.fetch).toHaveBeenCalledWith(`/sessions/${SESSION_ID}/settlement`, { signal: expect.any(AbortSignal) })
+      expect(mockClient.getSession).not.toHaveBeenCalled()
+      expect(mockClient.subscribeToStream).toHaveBeenCalledTimes(2)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 42_000, num_turns: 3,
+        usage: { input_tokens: 10, output_tokens: 20 },
+        replayed: true,
+      })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle', replayed: true })
+
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(sseEvents.some((e) => e.type === 'session_idle')).toBe(true)
+    })
+
+    it.each([
+      { label: 'the turn is not settled', status: 200, body: { settled: false } },
+      { label: 'an older image without the settlement route', status: 404, body: { error: 'Not Found' } },
+    ])('leaves the stream alone when $label', async ({ status, body }) => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      settlementResponse(status, body)
+
+      const reattached = await messagePersister.reattachStalledSessions(AGENT_SLUG, QUIET_MS, afterQuiet())
+
+      expect(reattached).toEqual([])
+      expect(mockCaptureException).not.toHaveBeenCalled()
+      expect(mockClient.fetch).toHaveBeenCalledWith(`/sessions/${SESSION_ID}/settlement`, { signal: expect.any(AbortSignal) })
+      expect(mockClient.subscribeToStream).toHaveBeenCalledTimes(1)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('does not ask the container while a send is still on its way', async () => {
+      settlementResponse(200, { settled: true })
+      let deliver!: () => void
+      const pendingSend = messagePersister.withSessionSend(AGENT_SLUG, SESSION_ID, mockClient,
+        () => new Promise<void>(resolve => { deliver = resolve }))
+      await vi.waitFor(() => expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true))
+
+      const reattached = await messagePersister.reattachStalledSessions(AGENT_SLUG, QUIET_MS, afterQuiet())
+
+      expect(reattached).toEqual([])
+      expect(mockClient.fetch).not.toHaveBeenCalled()
+      deliver()
+      await pendingSend
+    })
+
+    it('gives up on a container that does not answer the probe', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => AbortSignal.abort(new DOMException('timed out', 'TimeoutError')))
+      // Never answers; only an abort signal can end the probe.
+      vi.mocked(mockClient.fetch).mockImplementation((_path, init) => new Promise((_resolve, reject) => {
+        const signal = init?.signal
+        if (signal?.aborted) reject(signal.reason)
+        signal?.addEventListener('abort', () => reject(signal.reason))
+      }))
+
+      const reattached = await messagePersister.reattachStalledSessions(AGENT_SLUG, QUIET_MS, afterQuiet())
+
+      timeout.mockRestore()
+
+      expect(reattached).toEqual([])
+      expect(mockClient.subscribeToStream).toHaveBeenCalledTimes(1)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('does not ask the container while frames are still arriving', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({ type: 'assistant', message: { role: 'assistant', content: 'still working' } })
+
+      const reattached = await messagePersister.reattachStalledSessions(AGENT_SLUG, QUIET_MS)
+
+      expect(reattached).toEqual([])
+      expect(mockClient.fetch).not.toHaveBeenCalled()
     })
   })
 
