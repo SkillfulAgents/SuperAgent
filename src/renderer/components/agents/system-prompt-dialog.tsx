@@ -47,7 +47,7 @@ export function SystemPromptDialog({ agent, open, onOpenChange }: SystemPromptDi
         <DialogHeader>
           <DialogTitle>System Prompt</DialogTitle>
           <DialogDescription>
-            Custom instructions that will be appended to the default Claude Code system prompt.
+            Custom instructions added to this agent's system prompt.
           </DialogDescription>
         </DialogHeader>
         <div className="relative">
