@@ -88,6 +88,14 @@ describe('browser tray save login', () => {
     expect(complete).toHaveBeenLastCalledWith('tu-1', { saveLogin: false })
   })
 
+  it('renders with no pending request', () => {
+    stream.pendingBrowserInputRequests = []
+    renderTray()
+
+    expect(screen.getByTestId('browser-drawer-panel')).toBeInTheDocument()
+    expect(screen.queryByTestId('browser-tray-save-login')).toBeNull()
+  })
+
   it('offers no save option for other requests', async () => {
     const user = userEvent.setup()
     stream.pendingBrowserInputRequests = [{ toolUseId: 'tu-1', message: 'Solve the CAPTCHA.', requirements: [] }]
