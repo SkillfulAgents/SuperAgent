@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { MessageSquarePlus } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useFilePreview } from '@renderer/context/file-preview-context'
@@ -26,6 +26,19 @@ export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEd
       textareaRef.current.focus()
     }
   }, [isEditing])
+
+  // Slide the overlay left, before it paints, so it ends 8px inside the pane that clips it.
+  // Re-runs when the editor opens or its anchor moves.
+  const overlayRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const overlay = overlayRef.current
+    let pane = overlay?.parentElement
+    while (pane && getComputedStyle(pane).overflowX === 'visible') pane = pane.parentElement
+    if (!overlay || !pane) return
+    overlay.style.marginLeft = ''
+    const right = pane.getBoundingClientRect().left + pane.clientWidth - 8
+    overlay.style.marginLeft = `${Math.min(0, right - overlay.getBoundingClientRect().right)}px`
+  }, [isEditing, selection.rect.x])
 
   const handleAdd = () => {
     if (!commentText.trim()) return
@@ -59,6 +72,7 @@ export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEd
   if (!isEditing) {
     return (
       <div
+        ref={overlayRef}
         data-comment-overlay
         className="absolute z-30"
         style={{ left: selection.rect.x, top: selection.rect.y + 4 }}
@@ -76,9 +90,10 @@ export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEd
 
   return (
     <div
+      ref={overlayRef}
       data-comment-overlay
       className="absolute z-30 w-64"
-      style={{ left: Math.min(selection.rect.x, 200), top: selection.rect.y + 4 }}
+      style={{ left: selection.rect.x, top: selection.rect.y + 4 }}
     >
       <div className="rounded-lg border border-border bg-popover p-2 shadow-lg space-y-2">
         {selection.text && (
