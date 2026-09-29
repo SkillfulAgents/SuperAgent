@@ -161,6 +161,16 @@ describe('workflow preview with slow or unavailable disk reconstruction', () => 
     expect(requests).toHaveLength(2)
   })
 
+  it('fetches an already-completed run once', async () => {
+    startAgent()
+    liveRun = { ...liveRun, completedAt: Date.now(), agents: { a1: { ...liveRun.agents.a1, status: 'done' } } }
+    render(tray())
+    requests[0].resolve(emptyTree)
+    await flush()
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+    expect(requests).toHaveLength(1)
+  })
+
   it('fetches final disk results when completion races the initial request', async () => {
     startAgent()
     const view = render(tray())

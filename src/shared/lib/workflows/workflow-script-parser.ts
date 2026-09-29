@@ -23,6 +23,9 @@ import type { ParsedAgentCall, ParsedScript, WorkflowPhase } from './workflow-sc
 
 const IDENT_RE = /[A-Za-z0-9_$]/
 
+/** Regex source for a prompt the scanner cannot read: it never matches. */
+export const OPAQUE_PROMPT_REGEX = '(?!)'
+
 function isIdentChar(ch: string | undefined): boolean {
   return ch !== undefined && IDENT_RE.test(ch)
 }
@@ -234,7 +237,7 @@ function parsePromptArg(argSrc: string, helpers: Map<string, string>): { promptR
     const pattern = helpers.get(call[1])
     if (pattern) return { promptRegexSource: pattern, holeExprs: [] }
   }
-  return { promptRegexSource: '(?!)', holeExprs: [] }
+  return { promptRegexSource: OPAQUE_PROMPT_REGEX, holeExprs: [] }
 }
 
 /**

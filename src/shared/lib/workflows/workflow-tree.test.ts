@@ -169,7 +169,7 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
 
   it('leaves unmatched agents ungrouped instead of assigning unused phases by arrival order', async () => {
     const root = await scaffold({
-      script: 'await agent(makePrompt(item), { label: "search", phase: "Search" }); await agent("Verify evidence", { label: "verify", phase: "Verify" })',
+      script: 'await agent(makePrompt(item), { label: "search", phase: "Search" }); await agent(scopePrompt, { phase: "Scope" }); await agent("Verify evidence", { label: "verify", phase: "Verify" })',
       journal: [
         { type: 'started', key: 'v2:1', agentId: 'scope' },
         { type: 'started', key: 'v2:2', agentId: 'search' },
@@ -185,6 +185,28 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
     expect(tree!.agents).toMatchObject([
       { agentId: 'scope', phase: null, resolved: 'unresolved' },
       { agentId: 'search', phase: null, resolved: 'unresolved' },
+      { agentId: 'verify', phase: 'Verify', resolved: 'prompt-regex' },
+    ])
+  })
+
+  it('puts agents from unreadable prompts in the phase those calls all share', async () => {
+    const root = await scaffold({
+      script: 'await Promise.all(args.items.map(i => agent(i.prompt, { label: "search", phase: "Search" }))); await agent("Verify evidence", { phase: "Verify" })',
+      journal: [
+        { type: 'started', key: 'v2:1', agentId: 'a' },
+        { type: 'started', key: 'v2:2', agentId: 'b' },
+        { type: 'started', key: 'v2:3', agentId: 'verify' },
+      ],
+      agents: [
+        { agentId: 'a', firstPrompt: 'Search for Mars' },
+        { agentId: 'b', firstPrompt: 'Search for Venus' },
+        { agentId: 'verify', firstPrompt: 'Verify evidence' },
+      ],
+    })
+    const tree = await buildWorkflowTree({ files: new LocalFileOps(() => root), transcriptsDir: '', sessionId: 's1', runId: 'wf_test' })
+    expect(tree!.agents).toMatchObject([
+      { agentId: 'a', label: 'search', phase: 'Search', resolved: 'opaque-phase' },
+      { agentId: 'b', label: 'search', phase: 'Search', resolved: 'opaque-phase' },
       { agentId: 'verify', phase: 'Verify', resolved: 'prompt-regex' },
     ])
   })

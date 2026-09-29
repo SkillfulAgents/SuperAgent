@@ -216,15 +216,23 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
   const refetchTree = treeQuery.refetch
   const isFetchingTree = treeQuery.isFetching
   const reconciledCompletion = useRef<string | null>(null)
+  const sawActiveRun = useRef<string | null>(null)
   useEffect(() => {
-    if (!selectedRunId || completedAt === undefined || isFetchingTree) return
+    if (!selectedRunId) return
+    if (completedAt === undefined) {
+      if (liveRun) sawActiveRun.current = selectedRunId
+      return
+    }
+    if (isFetchingTree) return
     const key = `${selectedRunId}:${completedAt}`
     if (reconciledCompletion.current === key) return
     reconciledCompletion.current = key
+    // Opened on an already-finished run: the mount fetch is already final.
+    if (sawActiveRun.current !== selectedRunId) return
     // Wait out any pre-completion request, then fetch a fresh snapshot. Simply
     // refetching during the initial load reuses that older in-flight request.
     refetchTree({ cancelRefetch: false })
-  }, [completedAt, selectedRunId, refetchTree, isFetchingTree])
+  }, [completedAt, selectedRunId, refetchTree, isFetchingTree, liveRun])
 
   const groups = useMemo<PhaseGroup[]>(() => {
     const phaseOrder = treeQuery.data?.phases ?? []
