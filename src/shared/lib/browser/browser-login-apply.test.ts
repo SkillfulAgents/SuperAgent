@@ -210,7 +210,7 @@ describe('syncAgentBrowserLogins', () => {
     expect(calledActions(client)).toEqual(['status', 'restore', 'run'])
   })
 
-  it('retries a browser-open event that arrives while a sync is in progress', async () => {
+  it('runs a browser-open event that arrives mid-sync afterwards, and settles each call after its own run', async () => {
     mapAgentToBrowserLogin.mockReset().mockResolvedValue(undefined)
     listOutdatedAgentBrowserLogins.mockReset().mockResolvedValueOnce([credential]).mockResolvedValueOnce([])
     const client = fakeClient([200])
@@ -225,10 +225,14 @@ describe('syncAgentBrowserLogins', () => {
 
     const first = syncAgentBrowserLogins(client, 'agent-sync-retry', 'sess-1')
     await vi.waitFor(() => expect(restores).toBe(1))
-    await syncAgentBrowserLogins(client, 'agent-sync-retry', 'sess-1')
-    release()
-    await first
+    let secondSettled = false
+    const second = syncAgentBrowserLogins(client, 'agent-sync-retry', 'sess-1').then(() => { secondSettled = true })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(secondSettled).toBe(false)
+    expect(listOutdatedAgentBrowserLogins).toHaveBeenCalledTimes(1)
 
+    release()
+    await Promise.all([first, second])
     expect(listOutdatedAgentBrowserLogins).toHaveBeenCalledTimes(2)
     expect(mapAgentToBrowserLogin).toHaveBeenCalledTimes(1)
   })

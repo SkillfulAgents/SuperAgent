@@ -2984,8 +2984,15 @@ class MessagePersister {
         })
         const client = content.active === true ? this.containerClients.get(ctx.key) : undefined
         if (client) {
+          // browser_open waits for this reply, so send it whatever the sync did.
+          const loginSyncId = typeof content.loginSyncId === 'string' ? content.loginSyncId : null
           void syncAgentBrowserLogins(client, agentSlug, sessionId).catch((error: unknown) => {
             console.warn('[MessagePersister] Failed to sync saved browser logins:', error instanceof Error ? error.message : error)
+          }).finally(() => {
+            if (!loginSyncId) return
+            void client.fetch(`/browser/login-sync/${encodeURIComponent(loginSyncId)}/done`, { method: 'POST' }).catch((error: unknown) => {
+              console.warn('[MessagePersister] Failed to report saved login sync:', error instanceof Error ? error.message : error)
+            })
           })
         }
         break

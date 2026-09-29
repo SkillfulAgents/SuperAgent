@@ -24,6 +24,9 @@ type MockFn = (...args: any[]) => any
 
 // Mock external dependencies before importing (same seam set as
 // message-persister.test.ts — the persister pulls these in at module load).
+const mockSyncBrowserLogins = vi.hoisted(() => vi.fn(async () => {}))
+vi.mock('@shared/lib/browser/browser-login-apply', () => ({ syncAgentBrowserLogins: mockSyncBrowserLogins }))
+
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   createScheduledTask: vi.fn(() => Promise.resolve('task_new_id')),
   createSessionWake: vi.fn(() => Promise.resolve({ taskId: 'wake_new_id', replaced: null })),
@@ -473,6 +476,29 @@ describe('pending user-input request lifecycle (characterization)', () => {
     expect(mockClient.fetch).toHaveBeenCalledWith(
       `/browser/credential-context?sessionId=${SESSION_ID}`,
     )
+  })
+
+  it('tells browser_open when saved logins are synced, even when the sync fails', async () => {
+    let finishSync!: () => void
+    mockSyncBrowserLogins.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSync = resolve }))
+    mockSyncBrowserLogins.mockRejectedValueOnce(new Error('restore failed'))
+    vi.mocked(mockClient.fetch).mockResolvedValue({ ok: true, json: async () => ({ success: true }) } as unknown as Response)
+
+    mockClient._sendMessage({ type: 'browser_active', active: true, loginSyncId: 'sync-1' })
+    await vi.waitFor(() => expect(mockSyncBrowserLogins).toHaveBeenCalledWith(mockClient, AGENT_SLUG, SESSION_ID))
+    expect(mockClient.fetch).not.toHaveBeenCalledWith('/browser/login-sync/sync-1/done', { method: 'POST' })
+    finishSync()
+    await vi.waitFor(() => expect(mockClient.fetch).toHaveBeenCalledWith('/browser/login-sync/sync-1/done', { method: 'POST' }))
+
+    mockClient._sendMessage({ type: 'browser_active', active: true, loginSyncId: 'sync-2' })
+    await vi.waitFor(() => expect(mockClient.fetch).toHaveBeenCalledWith('/browser/login-sync/sync-2/done', { method: 'POST' }))
+  })
+
+  it('does not report a sync to a container that is not waiting for one', async () => {
+    mockClient._sendMessage({ type: 'browser_active', active: true })
+    await vi.waitFor(() => expect(mockSyncBrowserLogins).toHaveBeenCalled())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(vi.mocked(mockClient.fetch).mock.calls.some(([path]) => String(path).startsWith('/browser/login-sync/'))).toBe(false)
   })
 
   it('records the page a sign-in request opened on, and only for sign-ins', async () => {

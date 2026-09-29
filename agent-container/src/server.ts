@@ -57,6 +57,7 @@ import {
   isStorageStubTarget,
   runBrowserStorage,
 } from './browser-storage';
+import { finishHostLoginSync, startHostLoginSync } from './browser-login-sync';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
 
@@ -1147,7 +1148,11 @@ async function stopHostBrowserIfNeeded(location: BrowserRuntimeLocation | null):
 
 // Broadcast a browser_active event to the owning session's WebSocket subscribers.
 // Callers releasing a lock can supply the pre-release owner explicitly.
-function broadcastBrowserEvent(active: boolean, targetSessionId: string | null = browserState.sessionId): void {
+function broadcastBrowserEvent(
+  active: boolean,
+  targetSessionId: string | null = browserState.sessionId,
+  loginSyncId?: string,
+): void {
   if (!targetSessionId) return;
 
   // Broadcast through the session manager's subscriber system
@@ -1155,6 +1160,8 @@ function broadcastBrowserEvent(active: boolean, targetSessionId: string | null =
     type: 'browser_active',
     active,
     timestamp: new Date().toISOString(),
+    // The host syncs saved logins on this event and reports back to /browser/login-sync/:id/done.
+    ...(loginSyncId ? { loginSyncId } : {}),
   });
 }
 
@@ -1293,8 +1300,10 @@ app.post('/browser/open', async (c) => {
       const fallback = await execBrowser(['get', 'url'], cdpUrl);
       if (fallback.exitCode === 0 && fallback.stdout.trim()) observeUrl(fallback.stdout.trim());
     }
-    broadcastBrowserEvent(true);
-    // Before responding, so the reload lands before the agent starts using the page.
+    // Before responding, so any restore and reload land before the agent starts using the page.
+    const loginSync = startHostLoginSync();
+    broadcastBrowserEvent(true, browserState.sessionId, loginSync?.id);
+    await loginSync?.done;
     await applyPendingSessionStorageAfterOpen();
 
     return c.json({ success: true, location, switchedFrom, page, launched });
@@ -2753,6 +2762,11 @@ for (const action of ['capture', 'restore', 'clear'] as const) {
     }
   });
 }
+
+// POST /browser/login-sync/:id/done - The host finished syncing saved logins for a browser_open
+app.post('/browser/login-sync/:id/done', (c) => {
+  return c.json({ success: finishHostLoginSync(c.req.param('id')) });
+});
 
 /** Helper to build a CDP message, adding sessionId when in session mode */
 function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params?: Record<string, unknown>): string {
