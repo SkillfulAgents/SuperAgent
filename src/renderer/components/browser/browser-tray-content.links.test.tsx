@@ -55,6 +55,7 @@ vi.mock('@renderer/hooks/use-browser-input-actions', () => ({
     complete: vi.fn(),
     decline: vi.fn(),
   }),
+  useCanSaveBrowserLogin: () => false,
 }))
 
 vi.mock('@renderer/lib/api', () => ({
