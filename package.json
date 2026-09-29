@@ -68,6 +68,7 @@
     "@skillful-agents/agent-computer": "^0.0.15",
     "@slack/bolt": "^4.7.0",
     "archiver": "^7.0.1",
+    "beautiful-mermaid": "^1.1.3",
     "better-sqlite3": "^12.8.0",
     "chrono-node": "^2.9.0",
     "cron-parser": "^5.5.0",
