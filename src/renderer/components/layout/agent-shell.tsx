@@ -87,7 +87,7 @@ export function AgentShell() {
   })
 
   const onMessageSent = useCallback(
-    (content: string, localId: string, queued: boolean) => {
+    (content: string, localId: string, queued: boolean, afterMessageId?: string) => {
       if (!activeSessionId) return
       const existing = pendingMessagesRef.current.get(activeSessionId) ?? []
       pendingMessagesRef.current.set(activeSessionId, [
@@ -97,6 +97,7 @@ export function AgentShell() {
           text: content,
           sentAt: Date.now(),
           queued,
+          afterMessageId,
           sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
         },
       ])

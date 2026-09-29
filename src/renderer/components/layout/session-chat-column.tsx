@@ -31,7 +31,7 @@ interface SessionChatColumnProps {
   llmProviderId?: string | null
   model?: string
   onPendingMessageAppeared: (localId: string) => void
-  onMessageSent: (content: string, localId: string, queued: boolean) => void
+  onMessageSent: (content: string, localId: string, queued: boolean, afterMessageId?: string) => void
   onMessageUuidAssigned: (localId: string, uuid: string, queued: boolean) => void
   onMessageFailed: (localId: string) => void
   lastActivityAt?: Date | null

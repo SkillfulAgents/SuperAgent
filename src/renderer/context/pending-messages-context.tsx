@@ -11,7 +11,7 @@ import type { SessionUsage } from '@shared/lib/types/agent'
  */
 export interface PendingMessagesContextValue {
   getPendingMessages: (sessionId: string | null) => PendingMessage[]
-  onMessageSent: (content: string, localId: string, queued: boolean) => void
+  onMessageSent: (content: string, localId: string, queued: boolean, afterMessageId?: string) => void
   onMessageUuidAssigned: (localId: string, uuid: string, queued: boolean) => void
   onPendingMessageAppeared: (localId: string) => void
   /** `voiceMode` opens the new session's composer listening, with no ghost for the notice that started it. */

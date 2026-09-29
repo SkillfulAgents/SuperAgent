@@ -11,7 +11,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from 'react'
 import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
-import type { PendingMessage } from './pending-message'
+import { isTurnStartingPendingMessage, type PendingMessage } from './pending-message'
 
 // On very long threads we render only a trailing window of messages to keep the
 // DOM small. Sessions with <= BASE_WINDOW visible items render in full, so small
@@ -183,11 +183,12 @@ interface MessageListScrollOptions<T> {
   /** The scroll container mounts only after these resolve — observers re-attach on them. */
   isLoading: boolean
   error: unknown
+  /** The full transcript: judges whether a new send starts a turn, and marks a layout commit. */
+  messages: ReadonlyArray<{ id: string; type: string; queued?: boolean }> | undefined
   /**
    * Never read — effect dependencies only. Each marks a commit that can change
    * transcript layout, after which the turn reserve must re-sync.
    */
-  messages: unknown
   streamingMessage: unknown
   streamingToolUses: unknown
   thinkingBlocks: unknown
@@ -804,7 +805,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       if (!seen.has(pending.localId)) {
         seen.add(pending.localId)
         hasNewSend = true
-        if (!pending.queued) newestTurnStart = pending
+        if (isTurnStartingPendingMessage(pending, messages ?? [])) newestTurnStart = pending
       }
     }
 

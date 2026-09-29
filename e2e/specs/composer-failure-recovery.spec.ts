@@ -195,4 +195,57 @@ test.describe('Composer failure recovery', () => {
     // ~1.5s and was still present at this point)
     await expect(sessionPage.getMessageInput()).toHaveText('')
   })
+
+  test('a delivered send is not returned to the composer while the live stream is silent', async ({ page }) => {
+    // The client only learns the session went active from the live stream.
+    // With the stream down (a reconnect gap, a proxy error), a delivered
+    // send reads idle with no transcript copy yet. Only its id in the
+    // transcript decides its fate, so the text must stay out while the agent
+    // answers it.
+    await page.route('**/sessions/*/stream', (route) => route.abort())
+    // Transcript reads (GET; the send is a POST on the same URL shape) are held
+    // while the bubble waits, so no read can resolve it before the check below.
+    // The trailing * covers the ?limit= query string.
+    let releaseTranscript = () => {}
+    let transcriptHeld: Promise<void> | null = null
+    await page.route('**/sessions/*/messages*', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      if (transcriptHeld) await transcriptHeld
+      await route.continue()
+    })
+    // page.clock drives the page's timers, so the check below needs no real sleep
+    await page.clock.install()
+    await page.reload()
+    await sessionPage.waitForInputEnabled()
+    transcriptHeld = new Promise((resolve) => { releaseTranscript = resolve })
+
+    const text = 'delivered while the stream was silent'
+    const bubble = page.getByTestId('pending-user-message')
+    try {
+      await sessionPage.typeMessage(text)
+      const accepted = page.waitForResponse(
+        (res) => res.request().method() === 'POST' && /\/sessions\/[^/]+\/messages$/.test(res.url())
+      )
+      await sessionPage.getSendButton().click()
+      await accepted
+
+      // Accepted, then five seconds idle: the bubble still waits and the text stays out
+      await expect(bubble).toBeVisible()
+      await page.clock.runFor(5_000)
+      await expect(bubble).toBeVisible()
+      await expect(sessionPage.getMessageInput()).toHaveText('')
+    } finally {
+      transcriptHeld = null
+      releaseTranscript()
+    }
+
+    // With reads flowing again, the transcript resolves the bubble into the
+    // delivered message, with its answer
+    await expect(bubble).toHaveCount(0, { timeout: 30000 })
+    await sessionPage.expectUserMessage(text, 1)
+    await expect(
+      sessionPage.getAssistantMessages().filter({ hasText: 'This is a mock response from the E2E test container.' })
+    ).toHaveCount(2, { timeout: 30000 })
+    await expect(sessionPage.getMessageInput()).toHaveText('')
+  })
 })

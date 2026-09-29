@@ -483,7 +483,7 @@ describe('MessageInput', () => {
     await user.keyboard('{Enter}')
 
     await waitFor(() => {
-      expect(onMessageSent).toHaveBeenCalledWith('Follow up', expect.any(String), true)
+      expect(onMessageSent).toHaveBeenCalledWith('Follow up', expect.any(String), true, undefined)
     })
     await waitFor(() => {
       expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith({
@@ -526,6 +526,7 @@ describe('MessageInput', () => {
   it('submits message on Enter key', async () => {
     const user = userEvent.setup()
     const onMessageSent = vi.fn()
+    mockMessages.push({ id: 'm-last', type: 'assistant', content: { text: 'Earlier answer' }, toolCalls: [] })
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" onMessageSent={onMessageSent} />
     )
@@ -535,7 +536,8 @@ describe('MessageInput', () => {
     await user.keyboard('{Enter}')
 
     await waitFor(() => {
-      expect(onMessageSent).toHaveBeenCalledWith('Hello world', expect.any(String), false)
+      // The bubble anchors on the newest transcript entry the composer held
+      expect(onMessageSent).toHaveBeenCalledWith('Hello world', expect.any(String), false, 'm-last')
     })
     await waitFor(() => {
       expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
@@ -1217,7 +1219,7 @@ describe('MessageInput', () => {
     await user.keyboard('{Enter}')
 
     await waitFor(() => {
-      expect(onMessageSent).toHaveBeenCalledWith('Hello', expect.any(String), false)
+      expect(onMessageSent).toHaveBeenCalledWith('Hello', expect.any(String), false, undefined)
     })
     await waitFor(() => {
       expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
