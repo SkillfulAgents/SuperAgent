@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ully executed browser tools (3 tool calls)\n- The browser opened, navigated to the specified URL\n- The page title was correctly retrieved as \"Example Domain\"\n- The browser session was properly closed\n- The response was delivered and displayed in the chat interface\n\nNo bugs were found during testing.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 130511,
+  "sessionId": "2230d0f2-a3e8-482a-bb7b-e5535f721c56",
+  "cost": {
+    "inputTokens": 680,
+    "outputTokens": 25136,
+    "cacheCreationTokens": 114838,
+    "cacheReadTokens": 2453829,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.51529
+  }
+}
