@@ -19,6 +19,11 @@ function fileTab(page: import('@playwright/test').Page, fileName: string) {
   return page.getByTestId('file-tab').filter({ hasText: fileName })
 }
 
+async function rightEdge(locator: import('@playwright/test').Locator): Promise<number> {
+  const box = (await locator.boundingBox())!
+  return Math.round(box.x + box.width)
+}
+
 async function getLatestAgentSlug(page: import('@playwright/test').Page): Promise<string> {
   const breadcrumb = page.locator('[data-testid="agent-breadcrumb"]')
   const agentName = await breadcrumb.textContent() || ''
@@ -307,9 +312,29 @@ test.describe('File Preview', () => {
     const csv = page.getByTestId('csv-renderer')
     await expect(csv).toBeVisible({ timeout: 10000 })
 
+    // Near the pane's right edge, the Comment button and the editor it opens both
+    // slide left to end 8px inside the pane. At 800px the drawer is the compact overlay
+    // and slides in with a transform, so wait for its left edge to land.
+    const containerX = (await page.getByTestId('file-preview-container').boundingBox())!.x
+    await expect.poll(async () => (await page.getByTestId('tray-drawer').boundingBox())?.x).toBe(containerX)
+    const overlay = page.locator('[data-comment-overlay]')
+    const paneRight = await rightEdge(csv)
+    await csv.getByRole('cell', { name: '30', exact: true }).click()
+    await expect(overlay).toBeVisible()
+    expect(await rightEdge(overlay)).toBe(paneRight - 8)
+    // Moved to a cell with room, the open button follows the click and stops shifting.
+    const aliceBox = (await csv.getByRole('cell', { name: 'alice@example.com' }).boundingBox())!
+    const aliceX = Math.round(aliceBox.x + aliceBox.width / 2)
+    await page.mouse.click(aliceX, aliceBox.y + aliceBox.height / 2)
+    await expect.poll(async () => Math.round((await overlay.boundingBox())!.x)).toBe(aliceX)
+    await csv.getByRole('cell', { name: '30', exact: true }).click()
+    await overlay.getByRole('button', { name: 'Comment' }).click()
+    await expect(page.getByPlaceholder('Add your comment...')).toBeVisible()
+    expect(await rightEdge(overlay)).toBe(paneRight - 8)
+    await overlay.getByRole('button', { name: 'Cancel' }).click()
+
     // Click a data cell → comment affordance appears.
     await csv.getByRole('cell', { name: 'alice@example.com' }).click()
-    const overlay = page.locator('[data-comment-overlay]')
     await overlay.getByRole('button', { name: 'Comment' }).click()
 
     // Add a comment for that cell.
@@ -411,10 +436,26 @@ test.describe('File Preview', () => {
     await expect(page.getByTestId('video-renderer')).toBeVisible({ timeout: 10000 })
     await expect(page.getByTestId('video-element')).toBeVisible()
 
+    // The editor fits itself to the pane as it opens, so let the drawer finish sliding in.
+    // 450 is the default width. Its pane is too narrow for an editor centred on the
+    // 300px frame.
+    await expect.poll(async () => (await page.getByTestId('tray-drawer').boundingBox())?.width).toBe(450)
+    const overlay = page.locator('[data-comment-overlay]')
+
+    // Opened near the frame's left edge, the editor fits and stays at the click.
+    const frameBox = (await page.getByTestId('video-element').boundingBox())!
+    const clickX = Math.round(frameBox.x + 5)
+    await page.mouse.click(clickX, frameBox.y + frameBox.height / 2)
+    await expect(overlay).toBeVisible()
+    expect(Math.round((await overlay.boundingBox())!.x)).toBe(clickX)
+    await overlay.getByRole('button', { name: 'Cancel' }).click()
+
     // The Add Comment button opens the editor directly and pins the timestamp.
     await page.getByTestId('video-add-comment').click()
-    const overlay = page.locator('[data-comment-overlay]')
     await expect(overlay.getByText('At 0:00.00', { exact: false })).toBeVisible({ timeout: 5000 })
+    // The undecoded clip keeps the default 300px frame, so the editor at its centre
+    // would run past the pane. It slides left to end 8px inside the pane instead.
+    expect(await rightEdge(overlay)).toBe(await rightEdge(page.getByTestId('video-renderer')) - 8)
 
     await page.getByPlaceholder('Add your comment...').fill('Trim the intro here')
     await overlay.getByRole('button', { name: 'Add' }).click()
