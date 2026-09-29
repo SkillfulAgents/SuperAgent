@@ -5,6 +5,7 @@ import {
   listOutdatedAgentBrowserLogins,
   mapAgentToBrowserLogin,
 } from '@shared/lib/services/browser-credential-service'
+import { isAuthMode } from '@shared/lib/auth/mode'
 import { decryptBrowserBundle } from './browser-vault-crypto'
 import { browserTypeForSession, storageRequest, type ContainerFetch } from './browser-storage-client'
 
@@ -97,6 +98,12 @@ export async function clearSiteInAgentBrowser(client: ContainerFetch, site: stri
  * the cookies the site has refreshed since.
  */
 export async function syncAgentBrowserLogins(client: ContainerFetch, agentSlug: string, sessionId: string): Promise<void> {
+  // On a shared agent a member applied the login for this one time; a newer version needs them to apply it again.
+  // Loaded lazily: the members service pulls in user profiles, which the message persister does not otherwise need.
+  if (isAuthMode()) {
+    const { countMembersWithMinRole } = await import('@shared/lib/services/agent-members-service')
+    if (await countMembersWithMinRole(agentSlug, 'viewer') > 1) return
+  }
   if (syncing.has(agentSlug)) {
     pendingSync.set(agentSlug, { client, sessionId })
     return

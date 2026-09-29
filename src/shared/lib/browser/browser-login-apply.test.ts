@@ -12,6 +12,9 @@ vi.mock('@shared/lib/services/browser-credential-service', () => ({
 const mockSettings = vi.hoisted(() => ({ app: { hostBrowserProvider: undefined as 'chrome' | undefined } }))
 vi.mock('@shared/lib/config/settings', () => ({ getSettings: () => mockSettings }))
 vi.mock('./browser-vault-crypto', () => ({ decryptBrowserBundle: () => savedBundle }))
+const mockAuthMode = vi.hoisted(() => ({ enabled: false, members: 1 }))
+vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => mockAuthMode.enabled }))
+vi.mock('@shared/lib/services/agent-members-service', () => ({ countMembersWithMinRole: async () => mockAuthMode.members }))
 
 import {
   applyBrowserLogin,
@@ -163,6 +166,23 @@ describe('clearSiteInAgentBrowser', () => {
 })
 
 describe('syncAgentBrowserLogins', () => {
+  beforeEach(() => {
+    mockAuthMode.enabled = false
+    mockAuthMode.members = 1
+  })
+
+  it('leaves a shared agent\'s browser alone', async () => {
+    mockAuthMode.enabled = true
+    mockAuthMode.members = 2
+    listOutdatedAgentBrowserLogins.mockReset().mockResolvedValue([credential])
+    const client = fakeClient([200])
+
+    await syncAgentBrowserLogins(client, 'agent-shared', 'sess-1')
+
+    expect(client.fetch).not.toHaveBeenCalled()
+    expect(listOutdatedAgentBrowserLogins).not.toHaveBeenCalled()
+  })
+
   it('applies newer versions, records them and reloads once', async () => {
     mapAgentToBrowserLogin.mockReset().mockResolvedValue(undefined)
     listOutdatedAgentBrowserLogins.mockResolvedValue([credential])
