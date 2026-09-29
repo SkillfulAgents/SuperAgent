@@ -18,6 +18,8 @@ interface AudioRendererProps {
 interface PendingComment {
   timestamp: number
   rect: DOMRect
+  /** Opened with M: the editor starts the mic. */
+  listen: boolean
 }
 
 type AudioComment = FileComment & { timestamp: number }
@@ -146,7 +148,7 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
     setCurrentTime(nextTime)
   }, [maxSeek])
 
-  const beginComment = useCallback((timestamp: number) => {
+  const beginComment = useCallback((timestamp: number, listen = false) => {
     const audio = audioRef.current
     const timeline = timelineRef.current
     if (!audio || !timeline) return
@@ -158,13 +160,14 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
     setPending({
       timestamp: lockedTime,
       rect: new DOMRect(x, timelineRect.height, 0, 0),
+      listen,
     })
     clearHoverCloseTimer()
     setHoverTime(null)
   }, [clearHoverCloseTimer, maxSeek])
 
   // Read the media clock, not the last rendered time, which can trail a seek.
-  const commentAtPlayhead = () => beginComment(audioRef.current?.currentTime ?? 0)
+  const commentAtPlayhead = (listen = false) => beginComment(audioRef.current?.currentTime ?? 0, listen)
 
   const { rate, setRate, togglePlay } = useMediaKeys(audioRef, {
     onComment: commentsEnabled && !pending ? commentAtPlayhead : undefined,
@@ -343,6 +346,7 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
                 filePath={filePath}
                 agentSlug={agentSlug}
                 autoEdit
+                autoListen={pending.listen}
                 onClose={() => setPending(null)}
               />
             )}
@@ -366,7 +370,7 @@ export function AudioRenderer({ url, filePath, agentSlug, commentsEnabled = true
           {commentsEnabled && (
             <button
               type="button"
-              onClick={commentAtPlayhead}
+              onClick={() => commentAtPlayhead()}
               disabled={pending != null}
               className="ml-auto flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
               data-testid="audio-add-comment"

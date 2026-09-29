@@ -9,7 +9,7 @@ export type MediaKeyAction =
   | { type: 'seek'; seconds: number }
   | { type: 'step'; direction: 1 | -1 }
   | { type: 'rate'; direction: 1 | -1 }
-  | { type: 'comment' }
+  | { type: 'comment'; listen: boolean }
 
 /**
  * The player action a key press asks for (YouTube's keys), or null when the
@@ -33,7 +33,8 @@ export function mediaKeyAction(event: KeyboardEvent): MediaKeyAction | null {
     case '.': return event.shiftKey ? { type: 'rate', direction: 1 } : { type: 'step', direction: 1 }
     case '<': return { type: 'rate', direction: -1 }
     case '>': return { type: 'rate', direction: 1 }
-    case 'c': case 'C': return { type: 'comment' }
+    case 'c': case 'C': return { type: 'comment', listen: false }
+    case 'm': case 'M': return { type: 'comment', listen: true }
     default: return null
   }
 }
@@ -55,7 +56,7 @@ interface MediaKeysOptions {
   /** Seconds one frame lasts. Video passes it, so a step pauses and moves one frame; audio steps 5 s. */
   frameStep?: () => number
   /** Opens a comment at the playhead; absent while comments are off or one is already open. */
-  onComment?: () => void
+  onComment?: (listen: boolean) => void
 }
 
 /**
@@ -90,7 +91,7 @@ export function useMediaKeys(mediaRef: RefObject<HTMLMediaElement | null>, optio
       const inPlayer = event.target instanceof Node && media.closest('[data-media-player]')?.contains(event.target)
       if (event.key === ' ' && !inPlayer && isAnyVoiceModeActive()) return
       event.preventDefault()
-      // Holding Space or C toggles or opens once.
+      // Holding a play or comment key toggles or opens once.
       if (event.repeat && (action.type === 'toggle' || action.type === 'comment')) return
       switch (action.type) {
         case 'toggle':
@@ -110,7 +111,7 @@ export function useMediaKeys(mediaRef: RefObject<HTMLMediaElement | null>, optio
           break
         }
         case 'comment':
-          onComment?.()
+          onComment?.(action.listen)
           break
       }
     }

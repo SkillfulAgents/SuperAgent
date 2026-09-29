@@ -22,7 +22,8 @@ describe('mediaKeyAction', () => {
     expect(press(',')).toEqual({ type: 'step', direction: -1 })
     expect(press('>', { shiftKey: true })).toEqual({ type: 'rate', direction: 1 })
     expect(press(',', { shiftKey: true })).toEqual({ type: 'rate', direction: -1 })
-    expect(press('C')).toEqual({ type: 'comment' })
+    expect(press('C')).toEqual({ type: 'comment', listen: false })
+    expect(press('m')).toEqual({ type: 'comment', listen: true })
     expect(press('x')).toBeNull()
   })
 
