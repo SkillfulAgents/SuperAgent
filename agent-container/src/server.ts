@@ -750,6 +750,7 @@ import { capBrowserOutput, redactCdpUrls, describeExecFailure, BROWSER_EXEC_TIME
 import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
 import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
 import { formatStatusLine, waitForLoaded } from './page-status';
+import { activeTabAddress, resolveErrorPageUrl } from './error-page-url';
 import { observeAction, pressPolicy, ACTION_POLICIES, type ActionEffect, type ActionPolicy } from './action-settle';
 import {
   observeUrl, resetUrlTracking,
@@ -847,11 +848,29 @@ async function execBrowser(
   }
 }
 
+/**
+ * The URL the agent is shown: the page's own, except on Chrome's error page,
+ * where it is the address that failed to load (error-page-url.ts).
+ */
+function addressBarUrl(url: string): Promise<string> {
+  return resolveErrorPageUrl(url, async () => activeTabAddress(
+    await tabManager.queryTabs(),
+    getAllPageTargets,
+    (left, right) => tabManager.urlsMatch(left, right),
+  ));
+}
+
+/** An observation whose URL is the address bar's (see addressBarUrl). */
+async function withAddressBarUrl(obs: PageObservation): Promise<PageObservation> {
+  const url = await addressBarUrl(obs.url);
+  return url === obs.url ? obs : { ...obs, url };
+}
+
 /** Read the current URL after an action and build the navigation digest. */
 async function observeUrlDigest(): Promise<UrlDigest | null> {
   const r = await execBrowser(['get', 'url'], browserState.cdpUrl || undefined);
   if (r.exitCode !== 0 || !r.stdout.trim()) return null;
-  return observeUrl(r.stdout.trim());
+  return observeUrl(await addressBarUrl(r.stdout.trim()));
 }
 
 /** Run a page-observer script in the active page; null when the page cannot be read. */
@@ -863,7 +882,8 @@ async function observePage(script: string): Promise<string | null> {
 /** One observation of the current page. */
 async function observeNow(opts: { previewChars?: number } = {}): Promise<PageObservation> {
   const out = await observePage(observerScript(opts));
-  return (out === null ? null : parseObservation(out)) ?? EMPTY_OBSERVATION;
+  const obs = out === null ? null : parseObservation(out);
+  return obs ? withAddressBarUrl(obs) : EMPTY_OBSERVATION;
 }
 
 /**
@@ -884,7 +904,7 @@ async function runWithEffect(
     policy,
   });
   if (settled.result.exitCode !== 0) return { result: settled.result, digest: null, effect: null, settleMs: 0 };
-  const digest = settled.after?.url ? observeUrl(settled.after.url) : await observeUrlDigest();
+  const digest = settled.after?.url ? observeUrl(await addressBarUrl(settled.after.url)) : await observeUrlDigest();
   const effect = digest?.navigated ? null : settled.effect;
   return { result: settled.result, digest, effect, settleMs: settled.waitedMs };
 }
@@ -1277,7 +1297,7 @@ app.post('/browser/open', async (c) => {
       observeUrl(page.url);
     } else {
       const fallback = await execBrowser(['get', 'url'], cdpUrl);
-      if (fallback.exitCode === 0 && fallback.stdout.trim()) observeUrl(fallback.stdout.trim());
+      if (fallback.exitCode === 0 && fallback.stdout.trim()) observeUrl(await addressBarUrl(fallback.stdout.trim()));
     }
     broadcastBrowserEvent(true);
 
@@ -1451,7 +1471,7 @@ app.post('/browser/snapshot', async (c) => {
       const out = await observePage(observerScript({ previewChars: THIN_TREE_PREVIEW_CHARS }));
       return out === null ? null : parseObservation(out);
     });
-    const probe = observed ?? EMPTY_OBSERVATION;
+    const probe = observed ? await withAddressBarUrl(observed) : EMPTY_OBSERVATION;
 
     // The snapshot has its own cap (capSnapshot) that reports the true size;
     // the exec-level cap must not truncate first.
@@ -1648,7 +1668,8 @@ app.post('/browser/wait', async (c) => {
     // answer in time simply yields no page line.
     const probePage = async (): Promise<{ url: string; readyState: string } | null> => {
       const probe = await execBrowser(['eval', WAIT_PAGE_PROBE_SCRIPT], browserState.cdpUrl || undefined, { timeoutMs: WAIT_PAGE_PROBE_TIMEOUT_MS });
-      return probe.exitCode === 0 ? parseWaitPageProbe(probe.stdout) : null;
+      const page = probe.exitCode === 0 ? parseWaitPageProbe(probe.stdout) : null;
+      return page ? { ...page, url: await addressBarUrl(page.url) } : null;
     };
 
     if (result.exitCode !== 0) {
@@ -2052,8 +2073,14 @@ app.post('/browser/run', async (c) => {
       tabInfo = await tabManager.detectNewTab();
     }
 
+    // `get url` on Chrome's error page reads chrome-error://; report the
+    // address that failed instead, as every other URL the agent sees does.
+    const output = verb === 'get' && commandArgs[1]?.toLowerCase() === 'url' && commandArgs.length === 2
+      ? await addressBarUrl(result.stdout)
+      : result.stdout;
+
     notifyBrowserAction();
-    return c.json({ success: true, output: result.stdout, ...(tabInfo && { tabInfo }) });
+    return c.json({ success: true, output, ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error running command:', error);
     return c.json({ error: error.message || 'Failed to run browser command' }, 500);
