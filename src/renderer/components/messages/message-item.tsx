@@ -5,6 +5,7 @@ import { CodeCopyButton } from './code-copy-button'
 import { useBlockBreakout } from './use-block-breakout'
 import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
+import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { ToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
@@ -150,9 +151,11 @@ const SETTLED_MARKDOWN_COMPONENTS: Components = {
     const source = mermaidSource(node)
     if (source === null) return codeBlock
     return (
-      <Suspense fallback={codeBlock}>
-        <MermaidDiagram source={source} fallback={codeBlock} />
-      </Suspense>
+      <ErrorBoundary fallback={codeBlock}>
+        <Suspense fallback={codeBlock}>
+          <MermaidDiagram source={source} fallback={codeBlock} />
+        </Suspense>
+      </ErrorBoundary>
     )
   },
 }

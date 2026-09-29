@@ -817,12 +817,26 @@ describe('MessageItem', () => {
       render(<MessageItem message={msg} />)
 
       const diagram = await screen.findByTestId('mermaid-diagram')
-      const svg = diagram.querySelector('svg')
+      const shadow = diagram.querySelector('.w-max')!.shadowRoot!
+      const svg = shadow.querySelector('svg')
       expect(svg).not.toBeNull()
-      expect(diagram).toHaveTextContent('Request')
+      expect(shadow.textContent).toContain('Request')
       // The app's own --accent is a bare HSL triplet; inheriting it made arrowheads black.
       expect(svg!.getAttribute('style')).toContain('--accent:hsl(var(--brand))')
+      // --border:hsl(var(--border)) would reference itself and be dropped by CSS.
+      expect(svg!.getAttribute('style')).not.toContain('--border:')
       expect(diagram.closest('pre')).toBeNull()
+    })
+
+    it('keeps the diagram stylesheet inside its shadow root', async () => {
+      const msg = createAssistantMessage({ content: { text: FLOW } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      const diagram = await screen.findByTestId('mermaid-diagram')
+      const style = diagram.querySelector('.w-max')!.shadowRoot!.querySelector('style')
+      expect(style).not.toBeNull()
+      expect(style!.textContent).not.toContain('@import')
+      expect(container.querySelector('style')).toBeNull()
     })
 
     it('keeps an unsupported diagram type as a code block', async () => {
