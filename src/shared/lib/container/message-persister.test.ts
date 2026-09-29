@@ -4639,6 +4639,31 @@ describe('MessagePersister', () => {
         expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
       })
 
+      it('stops everything when the only open work is ambient', async () => {
+        // Ambient tasks (housekeeping, live-update watchers) are hidden from
+        // clients, so there is no row to stop them from: a turn stop would
+        // leave the session pinned. The cancel asks for the full stop.
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        mockClient._sendMessage({
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [{ task_id: 'watcher', task_type: 'local_bash', description: 'Watch for updates', ambient: true }],
+        })
+        simulateToolUse('AskUserQuestion', 'q-ambient', {
+          questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
+        })
+        mockContainerClientFetch.mockClear()
+        answerInterruptWith(false)
+        try {
+          await messagePersister.cancelAwaitingInput(AGENT_SLUG, SESSION_ID)
+        } finally {
+          mockContainerClientFetch.mockImplementation(() => Promise.resolve({ ok: true }))
+        }
+
+        expect(interruptCall()?.[1]).toMatchObject({ method: 'POST', body: JSON.stringify({ scope: 'all' }) })
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      })
+
       it('drops background tasks when the container had to restart the process', async () => {
         messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
         startBackgroundTask('bg-1')
@@ -8683,11 +8708,15 @@ describe('MessagePersister', () => {
         expect(shown()).toEqual(['server'])
         expect(frames()).toEqual([['background_task_started', 'server']])
 
-        // Still live work: the session waits on it rather than settling.
+        expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(false)
+
+        // Still live work: the session waits on it rather than settling —
+        // and with nothing left to show, a stop must escalate to reach it.
         mockClient._sendMessage({ type: 'result', subtype: 'success' })
         level([{ task_id: 'watcher', ambient: true }])
         mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
         expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+        expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(true)
 
         // Flips: to activity (the flag may simply be absent) and back.
         sseEvents.length = 0

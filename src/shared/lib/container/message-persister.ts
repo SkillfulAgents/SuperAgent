@@ -1330,11 +1330,12 @@ class MessagePersister {
   }
 
   /**
-   * True when every open background task is one the host never tracked: the
-   * SDK's `background_tasks_changed` snapshot lists work, but the incremental
-   * map — the list clients see and the per-task Stop buttons come from — is
-   * empty. This covers tasks whose incremental launch signal was malformed or
-   * missed while the runtime's snapshot still names them.
+   * True when background work keeps the session open but none of it is a task
+   * clients can see — the list the rows, the Stop dialog and the per-task Stop
+   * buttons come from is empty. Today that is ambient work (housekeeping,
+   * live-update watchers), which the SDK tells hosts not to show; before the
+   * level set registered every task it lists, it was also work no launch
+   * signal registered.
    *
    * A stop scoped to the turn cannot end such a session: the container keeps
    * the process (and the task) and the union keeps the session active, with
@@ -1344,7 +1345,7 @@ class MessagePersister {
   hasOnlyUntrackedBackgroundWork(agentSlug: string, sessionId: string): boolean {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state) return false
-    return state.activeBackgroundTasks.size === 0 && this.openBackgroundWorkCount(state) > 0
+    return this.getActiveBackgroundTasks(agentSlug, sessionId).length === 0 && this.openBackgroundWorkCount(state) > 0
   }
 
   /**
