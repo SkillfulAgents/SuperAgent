@@ -25,6 +25,7 @@ interface ProxyReviewRequestItemProps {
   toolkit: string
   method: string
   targetPath: string
+  reviewType: 'api' | 'mcp'
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
   displayText?: string
@@ -42,6 +43,7 @@ export function ProxyReviewRequestItem({
   toolkit,
   method,
   targetPath,
+  reviewType,
   matchedScopes,
   scopeDescriptions,
   displayText,
@@ -67,7 +69,7 @@ export function ProxyReviewRequestItem({
     .map((s) => getScopeLabel(toolkit, s))
     .filter((l): l is ScopeLabel => !!l)
     .sort((a, b) => LABEL_RANK[a] - LABEL_RANK[b])[0]
-  const isApiReview = !targetPath.startsWith('tools/call')
+  const isApiReview = reviewType === 'api'
 
   // Clean up timer on unmount
   useEffect(() => {
@@ -119,7 +121,7 @@ export function ProxyReviewRequestItem({
             decision,
             scope,
             accountId,
-            reviewType: targetPath.startsWith('tools/call') ? 'mcp' : 'api',
+            reviewType,
           }),
         }
       )

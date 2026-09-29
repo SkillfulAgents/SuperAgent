@@ -59,6 +59,7 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
     targetPath,
     matchedScopes: Array.isArray(p.matchedScopes) ? (p.matchedScopes as string[]) : [],
     scopeDescriptions,
+    ...(p.reviewType === 'mcp' ? { reviewType: 'mcp' as const } : {}),
     ...(endpointDescription !== undefined ? { endpointDescription } : {}),
     ...(p.xAgent && typeof p.xAgent === 'object'
       ? { xAgent: p.xAgent as ReviewDetails['xAgent'] }

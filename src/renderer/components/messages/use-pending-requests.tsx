@@ -230,6 +230,7 @@ export interface PendingReview {
   toolkit: string
   method: string
   targetPath: string
+  reviewType: 'api' | 'mcp'
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
   displayText?: string
@@ -346,6 +347,7 @@ export function reviewFromEnvelope(
     toolkit: payload.toolkit,
     method: payload.method,
     targetPath: payload.targetPath,
+    reviewType: payload.reviewType === 'mcp' ? 'mcp' : 'api',
     matchedScopes: Array.isArray(payload.matchedScopes)
       ? payload.matchedScopes.filter((s): s is string => typeof s === 'string')
       : [],
@@ -568,7 +570,7 @@ export type PendingRequestDescriptor =
   | { kind: 'script_run'; key: string; toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell'; onComplete: () => void }
   | { kind: 'computer_use'; key: string; toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; onComplete: () => void }
   | { kind: 'capability_review'; key: string; toolUseId: string; capability: 'subagents' | 'workflows'; toolName: string; input: Record<string, unknown>; onComplete: () => void }
-  | { kind: 'proxy_review'; key: string; reviewId: string; accountId: string; toolkit: string; method: string; targetPath: string; matchedScopes: string[]; scopeDescriptions: Record<string, string>; displayText?: string; onComplete: () => void }
+  | { kind: 'proxy_review'; key: string; reviewId: string; accountId: string; toolkit: string; method: string; targetPath: string; reviewType: 'api' | 'mcp'; matchedScopes: string[]; scopeDescriptions: Record<string, string>; displayText?: string; onComplete: () => void }
   | { kind: 'x_agent_review'; key: string; reviewId: string; xAgent: NonNullable<PendingReview['xAgent']>; onComplete: () => void }
   | { kind: 'account_reauth_required'; key: string; proxyRequestId: string; accountId: string; toolkit: string; accountStatus: 'expired' | 'revoked'; onComplete: () => void }
   | { kind: 'mcp_reauth_required'; key: string; proxyRequestId: string; mcpId: string; mcpName: string; authType: 'none' | 'oauth' | 'bearer'; onComplete: () => void }
@@ -920,6 +922,7 @@ export function usePendingRequests({
           toolkit: review.toolkit,
           method: review.method,
           targetPath: review.targetPath,
+          reviewType: review.reviewType,
           matchedScopes: review.matchedScopes,
           scopeDescriptions: review.scopeDescriptions,
           displayText: review.displayText,

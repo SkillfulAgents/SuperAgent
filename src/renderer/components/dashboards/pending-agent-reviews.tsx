@@ -111,6 +111,7 @@ export function PendingAgentReviews({ agentSlug, readOnly, onReviewResolved }: P
             toolkit={review.toolkit}
             method={review.method}
             targetPath={review.targetPath}
+            reviewType={review.reviewType}
             matchedScopes={review.matchedScopes}
             scopeDescriptions={review.scopeDescriptions}
             displayText={review.displayText}

@@ -158,6 +158,7 @@ export function renderPendingRequest(
           toolkit={d.toolkit}
           method={d.method}
           targetPath={d.targetPath}
+          reviewType={d.reviewType}
           matchedScopes={d.matchedScopes}
           scopeDescriptions={d.scopeDescriptions}
           displayText={d.displayText}

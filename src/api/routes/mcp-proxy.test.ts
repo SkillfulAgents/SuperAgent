@@ -2045,6 +2045,7 @@ describe('mcp-proxy route', () => {
       'logging/setLevel',
       'completion/complete',
       'roots/list',
+      'subscriptions/listen',
       'ping',
       // MCP 2026-07-28 era probe, sent by CLI 2.1.274+ before `initialize`.
       'server/discover',
@@ -2092,6 +2093,11 @@ describe('mcp-proxy route', () => {
       })
       expect(mockResolveMcpPolicy).toHaveBeenCalledOnce()
       expect(mockRequestReview).toHaveBeenCalledOnce()
+      // Non-tools/call paths must still be saved as MCP policies, not API scopes.
+      expect(mockRequestReview).toHaveBeenCalledWith(
+        expect.objectContaining({ targetPath: method, reviewType: 'mcp' }),
+        expect.anything(),
+      )
     })
 
     it('audit log includes policyDecision and matchedTool', async () => {

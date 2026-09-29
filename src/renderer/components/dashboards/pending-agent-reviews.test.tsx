@@ -13,8 +13,8 @@ vi.mock('@renderer/hooks/use-pending-user-requests', () => ({
 }))
 
 vi.mock('@renderer/components/messages/proxy-review-request-item', () => ({
-  ProxyReviewRequestItem: ({ reviewId }: { reviewId: string }) => (
-    <div data-testid={`proxy-review-${reviewId}`} />
+  ProxyReviewRequestItem: ({ reviewId, reviewType }: { reviewId: string; reviewType: string }) => (
+    <div data-testid={`proxy-review-${reviewId}`} data-review-type={reviewType} />
   ),
 }))
 vi.mock('@renderer/components/messages/x-agent-review-request-item', () => ({
@@ -87,6 +87,30 @@ describe('PendingAgentReviews', () => {
     expect(screen.getByTestId('proxy-review-rev-proxy-1')).toBeTruthy()
     expect(screen.getByTestId('xagent-review-rev-xagent-1')).toBeTruthy()
     expect(mockUsePendingUserRequests).toHaveBeenCalledWith('agent-a', undefined)
+  })
+
+  it('passes the review type from the payload instead of inferring it from the path', () => {
+    mockUsePendingUserRequests.mockReturnValue({
+      data: [
+        envelope({ id: 'rev-api' }),
+        envelope({
+          id: 'rev-mcp',
+          payload: {
+            accountId: 'mcp-railway',
+            toolkit: 'Railway',
+            method: 'POST',
+            targetPath: 'subscriptions/listen',
+            reviewType: 'mcp',
+          },
+        }),
+      ],
+      refetch: vi.fn(),
+    })
+
+    render(<PendingAgentReviews agentSlug="agent-a" />)
+
+    expect(screen.getByTestId('proxy-review-rev-api').getAttribute('data-review-type')).toBe('api')
+    expect(screen.getByTestId('proxy-review-rev-mcp').getAttribute('data-review-type')).toBe('mcp')
   })
 
   it('renders account and MCP re-auth cards from the agent-scoped snapshot', () => {

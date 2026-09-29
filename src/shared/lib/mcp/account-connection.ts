@@ -51,7 +51,7 @@ class AccountMcpConnection implements McpConnection {
       const decision = await agentRegistry.get(this.agentSlug).inputs.reviews.request({
         accountId: this.row.id, toolkit: this.row.name, method: call.method,
         targetPath: call.requestPath, matchedScopes: policy.matchedScopes,
-        scopeDescriptions: policy.scopeDescriptions,
+        scopeDescriptions: policy.scopeDescriptions, reviewType: 'mcp',
       }, call.signal)
       return decision === 'deny'
         ? { ok: false, reason: 'denied' }

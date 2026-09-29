@@ -414,6 +414,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     'logging/setLevel',
     'completion/complete',
     'roots/list',
+    'subscriptions/listen',
   ])
   // GET/HEAD requests are SSE transport setup — always protocol-level.
   // All `notifications/*` are fire-and-forget protocol chatter with no data transfer.

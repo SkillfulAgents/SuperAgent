@@ -12,6 +12,8 @@ export interface ReviewDetails {
   targetPath: string
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
+  /** Which policy table an "always" decision is saved to. Absent means 'api'. */
+  reviewType?: 'api' | 'mcp'
   /**
    * Description of the matched API endpoint (what the current call does).
    * Preferred over scopeDescriptions when generating the prompt headline.
