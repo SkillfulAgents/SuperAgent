@@ -4,7 +4,8 @@ import { serve } from '@hono/node-server';
 // Captures SUPERAGENT_HOST_TOKEN and strips it from process.env — import early
 // so no later module can snapshot an environment that still contains it.
 import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
-import { SessionManager, SessionBusyError, isSdkSessionNotFound } from './session-manager';
+import { SessionManager, SessionBusyError, isSdkSessionNotFound, type UndeliveredTurnReport } from './session-manager';
+import { notifyUndeliveredTurn } from './host-events';
 import { sessionCreationFailure } from './session-creation-error';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
@@ -78,6 +79,19 @@ process.on('unhandledRejection', (reason: unknown) => {
 
 const app = new Hono();
 const sessionManager = new SessionManager();
+
+sessionManager.on('undelivered-turn', (report: UndeliveredTurnReport) => {
+  console.error(
+    `[Session ${report.sessionId}] Turn ended (${report.resultSubtype ?? 'unknown'}) with no stream subscriber; ` +
+    `the last one closed at ${report.closedAt}, ${report.msSinceClose}ms earlier (code=${report.closeCode}, ` +
+    `reason=${report.closeReason || 'none'}, age=${report.socketAgeMs}ms, idle=${report.idleMsBeforeClose}ms, ` +
+    `error=${report.socketError ?? 'none'})`,
+  );
+  void notifyUndeliveredTurn(report).catch((error) => {
+    console.warn(`[Session ${report.sessionId}] Failed to report undelivered turn:`, error);
+  });
+});
+
 const WORKSPACE_DOWNLOADS_DIR = '/workspace/downloads';
 
 // The agent's own Bash can reach this API (shared network namespace), so every
@@ -2290,10 +2304,15 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
     timestamp: new Date(),
   }));
 
+  const connectedAt = Date.now();
+  let lastSentAt = connectedAt;
+  let socketError: string | undefined;
+
   // Subscribe to session events (SDK messages)
   const unsubscribe = sessionManager.subscribe(sessionId, (message) => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
+      lastSentAt = Date.now();
     }
   });
 
@@ -2332,14 +2351,28 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
   });
 
   // Handle connection close
-  ws.on('close', () => {
-    console.log(`WebSocket connection closed for session ${sessionId}`);
+  ws.on('close', (code: number, reason: Buffer) => {
     unsubscribe();
+    const now = Date.now();
+    const close = {
+      code,
+      reason: reason.toString(),
+      socketAgeMs: now - connectedAt,
+      idleMsBeforeClose: now - lastSentAt,
+      socketError,
+    };
+    console.log(
+      `WebSocket connection closed for session ${sessionId} (code=${close.code}, reason=${close.reason || 'none'}, ` +
+      `turnInFlight=${sessionManager.isTurnInFlight(sessionId)}, age=${close.socketAgeMs}ms, ` +
+      `idle=${close.idleMsBeforeClose}ms, error=${socketError ?? 'none'})`,
+    );
+    sessionManager.noteStreamClosed(sessionId, close);
   });
 
   // Handle errors
-  ws.on('error', (error: Error) => {
+  ws.on('error', (error: Error & { code?: string }) => {
     console.error(`WebSocket error for session ${sessionId}:`, error);
+    socketError = error.code ?? error.message;
     unsubscribe();
   });
 
