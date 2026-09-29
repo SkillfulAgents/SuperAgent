@@ -30,14 +30,12 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread, useForkSession, useForkAndCompact, useIsForking } from '@renderer/hooks/use-sessions'
+import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread, useForkSession, useForkAndCompact, useIsForking, useSessionRawLog } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useUser } from '@renderer/context/user-context'
 import { Trash2, ClipboardCopy, Download, Pencil, Eye, Split, Minimize2 } from 'lucide-react'
-import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
-import { downloadBlob } from '@renderer/lib/download'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
 
 type UsageState =
@@ -101,6 +99,7 @@ export function SessionContextMenu({
   const forkSession = useForkSession()
   const forkAndCompact = useForkAndCompact()
   const isForking = useIsForking(sessionId)
+  const rawLog = useSessionRawLog()
   // Unread dots are suppressed while working or awaiting. Fork is refused
   // while the transcript is open (active or still streaming).
   const hideUnread = activity.isActive || activity.isAwaitingInput
@@ -147,44 +146,8 @@ export function SessionContextMenu({
     }
   }
 
-  const fetchRawLog = async (): Promise<Response> => {
-    const response = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/raw-log`)
-    if (!response.ok) {
-      throw new Error('Failed to fetch raw log')
-    }
-    return response
-  }
-
-  const handleCopyRawLog = async () => {
-    const toastId = toast.loading('Copying raw log')
-    try {
-      const text = await (await fetchRawLog()).text()
-      await navigator.clipboard.writeText(text)
-      toast.success('Copied', { id: toastId })
-    } catch (error) {
-      console.error('Failed to copy raw log:', error)
-      toast.error('Could not copy raw log', {
-        id: toastId,
-        description: error instanceof Error ? error.message : undefined,
-      })
-    }
-  }
-
-  const handleDownloadRawLog = async () => {
-    const toastId = toast.loading('Downloading raw log')
-    try {
-      const response = await fetchRawLog()
-      const base = sessionName.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
-      await downloadBlob(response, `${base || sessionId}.jsonl`)
-      toast.dismiss(toastId)
-    } catch (error) {
-      console.error('Failed to download raw log:', error)
-      toast.error('Could not download raw log', {
-        id: toastId,
-        description: error instanceof Error ? error.message : undefined,
-      })
-    }
-  }
+  const handleCopyRawLog = () => rawLog.mutate({ agentSlug, sessionId, sessionName, copy: true })
+  const handleDownloadRawLog = () => rawLog.mutate({ agentSlug, sessionId, sessionName, copy: false })
 
   const handleMenuOpenChange = (open: boolean) => {
     if (!open) return

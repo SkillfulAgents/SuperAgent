@@ -2,7 +2,7 @@ import { Power, Square, Clock, Loader2, Zap, MoreVertical } from 'lucide-react'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useAgent, type useStartAgent, type useStopAgent } from '@renderer/hooks/use-agents'
-import { useIsForking, useSessions, useSession } from '@renderer/hooks/use-sessions'
+import { useIsSessionBusy, useSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useWebhookTrigger } from '@renderer/hooks/use-webhook-triggers'
 import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
@@ -10,7 +10,7 @@ import { useRemoteMcps } from '@renderer/hooks/use-remote-mcps'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
-import { ForkingSpinner } from '@renderer/components/agents/status-indicators'
+import { BusySpinner } from '@renderer/components/agents/status-indicators'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { Separator } from '@renderer/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
@@ -65,7 +65,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
   const { data: agent } = useAgent(slug)
   const { data: sessions } = useSessions(slug)
   const { data: session } = useSession(sessionId, slug)
-  const isForking = useIsForking(sessionId)
+  const isBusy = useIsSessionBusy(sessionId)
   const { data: scheduledTask } = useScheduledTask(scheduledTaskId)
   const { data: webhookTrigger } = useWebhookTrigger(webhookTriggerId)
   const hasActiveSessions = sessions?.some((s) => s.isActive) || (agent?.hasActiveSessions ?? false)
@@ -209,7 +209,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
                 {session?.name || 'Loading...'}
               </span>
             </SessionContextMenu>
-            {isForking && <ForkingSpinner className="ml-1.5 inline-block" />}
+            {isBusy && <BusySpinner className="ml-1.5 inline-block" />}
             {session?.forkedFromSessionId && (
               <ForkedFromIndicator
                 agentSlug={slug}

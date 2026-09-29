@@ -1,14 +1,10 @@
-import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
-import { AppPage } from '../pages/app.page'
+import { test, expect } from '@playwright/test'
 import {
-  createAgent,
-  createSession,
   listSessions,
   listSessionMessages,
   messageContentIncludes,
-  openAgentSession,
+  createAndOpenIdleSession,
   uniqueName,
-  waitForSessionIdle,
   type TestSession,
 } from '../helpers/agents'
 
@@ -18,21 +14,8 @@ import {
  * mock runtime, which copies the JSONL the way the SDK does.
  */
 test.describe('Fork Session', () => {
-  async function fixture(page: Page, request: APIRequestContext, testInfo: TestInfo) {
-    const agent = await createAgent(request, uniqueName(testInfo, 'Fork Agent'))
-    const message = `Forkable message ${uniqueName(testInfo, 'm')}`
-    const session = await createSession(request, agent, message)
-    await waitForSessionIdle(request, agent, session)
-
-    const appPage = new AppPage(page)
-    await appPage.goto()
-    await appPage.waitForAgentsLoaded()
-    await openAgentSession(page, agent, session)
-    return { agent, session, message }
-  }
-
   test('forks from the sidebar menu and lands in the copy', async ({ page, request }, testInfo) => {
-    const { agent, session: created, message } = await fixture(page, request, testInfo)
+    const { agent, session: created, message } = await createAndOpenIdleSession(page, request, testInfo, 'Fork Agent')
     // The create response always says "New Session"; naming lands asynchronously.
     // Read the settled name (and the source's message list) before forking.
     const session = (await listSessions(request, agent)).find((s) => s.id === created.id)!
@@ -79,7 +62,7 @@ test.describe('Fork Session', () => {
   })
 
   test('carries the source composer draft and leaves the source draft in place', async ({ page, request }, testInfo) => {
-    const { session } = await fixture(page, request, testInfo)
+    const { session } = await createAndOpenIdleSession(page, request, testInfo, 'Fork Agent')
     const draft = `Unsent fork draft ${uniqueName(testInfo, 'd')}`
     const input = page.locator('[data-testid="message-input"]')
     await input.pressSequentially(draft)
@@ -99,7 +82,7 @@ test.describe('Fork Session', () => {
   })
 
   test('spins at every visible spot for the source until the fork lands', async ({ page, request }, testInfo) => {
-    const { session } = await fixture(page, request, testInfo)
+    const { session } = await createAndOpenIdleSession(page, request, testInfo, 'Fork Agent')
     // Hold the fork open, as a sleeping agent's container wake does.
     let releaseFork!: () => void
     const held = new Promise<void>((resolve) => { releaseFork = resolve })
@@ -109,8 +92,8 @@ test.describe('Fork Session', () => {
     })
 
     const row = page.locator(`[data-testid="session-item-${session.id}"]`)
-    const rowSpinner = row.getByRole('img', { name: 'forking' })
-    const breadcrumbSpinner = page.locator('[data-testid="breadcrumb-trail"]').getByRole('img', { name: 'forking' })
+    const rowSpinner = row.getByRole('img', { name: 'busy' })
+    const breadcrumbSpinner = page.locator('[data-testid="breadcrumb-trail"]').getByRole('img', { name: 'busy' })
     await expect(row).toBeVisible({ timeout: 15000 })
     await expect(rowSpinner).toHaveCount(0)
     await expect(breadcrumbSpinner).toHaveCount(0)
@@ -125,7 +108,7 @@ test.describe('Fork Session', () => {
     await page.keyboard.press('Escape')
     await page.locator('[data-testid="agent-breadcrumb"]').click()
     const listRow = page.locator('div[role="button"]').filter({ has: page.getByTestId(`session-row-menu-${session.id}`) })
-    const listSpinner = listRow.getByRole('img', { name: 'forking' })
+    const listSpinner = listRow.getByRole('img', { name: 'busy' })
     await expect(listSpinner).toBeVisible()
 
     releaseFork()
@@ -138,7 +121,7 @@ test.describe('Fork Session', () => {
   })
 
   test('Fork & Summarize sends /compact into the copy and leaves the source alone', async ({ page, request }, testInfo) => {
-    const { agent, session: created } = await fixture(page, request, testInfo)
+    const { agent, session: created } = await createAndOpenIdleSession(page, request, testInfo, 'Fork Agent')
     const session = (await listSessions(request, agent)).find((s) => s.id === created.id)!
     const sourceBefore = await listSessionMessages(request, agent, session)
 

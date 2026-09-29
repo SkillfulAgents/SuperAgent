@@ -1,4 +1,5 @@
 import { expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
+import { AppPage } from '../pages/app.page'
 
 export interface TestAgent {
   slug: string
@@ -508,4 +509,18 @@ export async function openAgentSession(
   throw lastError instanceof Error
     ? lastError
     : new Error(`Could not open session "${session.id}" for agent "${agent.name}" (${agent.slug})`)
+}
+
+/** A new agent with one idle session, opened in the app. */
+export async function createAndOpenIdleSession(page: Page, request: APIRequestContext, testInfo: TestInfo, agentName: string) {
+  const agent = await createAgent(request, uniqueName(testInfo, agentName))
+  const message = `${agentName} message ${uniqueName(testInfo, 'm')}`
+  const session = await createSession(request, agent, message)
+  await waitForSessionIdle(request, agent, session)
+
+  const appPage = new AppPage(page)
+  await appPage.goto()
+  await appPage.waitForAgentsLoaded()
+  await openAgentSession(page, agent, session)
+  return { agent, session, message }
 }

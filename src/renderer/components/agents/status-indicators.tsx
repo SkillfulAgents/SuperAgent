@@ -23,9 +23,9 @@ export function AwaitingDot() {
   )
 }
 
-export function ForkingSpinner({ className }: { className?: string }) {
+export function BusySpinner({ className }: { className?: string }) {
   return (
-    <Loader2 className={cn('h-3 w-3 shrink-0 animate-spin text-muted-foreground', className)} role="img" aria-label="forking" />
+    <Loader2 className={cn('h-3 w-3 shrink-0 animate-spin text-muted-foreground', className)} role="img" aria-label="busy" />
   )
 }
 

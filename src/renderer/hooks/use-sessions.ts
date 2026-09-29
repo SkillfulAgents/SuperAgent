@@ -1,5 +1,7 @@
 import { apiFetch, apiJson } from '@renderer/lib/api'
+import { downloadBlob } from '@renderer/lib/download'
 import { useCallback } from 'react'
+import { toast } from 'sonner'
 import { useQuery, useMutation, useMutationState, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -267,21 +269,54 @@ export function useClearSessionUnread() {
   )
 }
 
-const FORK_SESSION_KEY = ['fork-session']
+const SESSION_WORK_KEY = ['session-work']
+const FORK_SESSION_KEY = [...SESSION_WORK_KEY, 'fork']
 
-function forkSourceId(variables: unknown): string | null {
+function sessionIdOf(variables: unknown): string | null {
   return typeof variables === 'object' && variables !== null && 'sessionId' in variables && typeof variables.sessionId === 'string'
     ? variables.sessionId
     : null
 }
 
+function useIsPending(mutationKey: string[], sessionId: string | null): boolean {
+  const pending = useMutationState({
+    filters: { mutationKey, status: 'pending' },
+    select: (mutation) => sessionIdOf(mutation.state.variables),
+  })
+  return sessionId !== null && pending.includes(sessionId)
+}
+
 /** True while a fork of this session is in flight (a sleeping agent's fork waits for its container to wake). */
 export function useIsForking(sessionId: string | null): boolean {
-  const forking = useMutationState({
-    filters: { mutationKey: FORK_SESSION_KEY, status: 'pending' },
-    select: (mutation) => forkSourceId(mutation.state.variables),
+  return useIsPending(FORK_SESSION_KEY, sessionId)
+}
+
+/** True while any mutation keyed under SESSION_WORK_KEY is in flight for this session. */
+export function useIsSessionBusy(sessionId: string | null): boolean {
+  return useIsPending(SESSION_WORK_KEY, sessionId)
+}
+
+/** Copy a session's raw log to the clipboard, or download it as a .jsonl file. */
+export function useSessionRawLog() {
+  return useMutation({
+    mutationKey: [...SESSION_WORK_KEY, 'raw-log'],
+    networkMode: 'always',
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ agentSlug, sessionId, sessionName, copy }: { agentSlug: string; sessionId: string; sessionName: string; copy: boolean }) => {
+      const response = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/raw-log`)
+      if (!response.ok) throw new Error('Failed to fetch raw log')
+      if (copy) return navigator.clipboard.writeText(await response.text())
+      const base = sessionName.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+      return downloadBlob(response, `${base || sessionId}.jsonl`)
+    },
+    onSuccess: (_, { copy }) => {
+      if (copy) toast.success('Copied')
+    },
+    onError: (error, { copy }) => {
+      console.error(`Failed to ${copy ? 'copy' : 'download'} raw log:`, error)
+      toast.error(`Could not ${copy ? 'copy' : 'download'} raw log`, { description: error.message })
+    },
   })
-  return sessionId !== null && forking.includes(sessionId)
 }
 
 export function useForkSession() {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, act, waitFor } from '@testing-library/react'
+import { screen, act, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState, type ReactNode } from 'react'
 import { AgentHome } from './agent-home'
@@ -63,13 +63,16 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 // Default to "loaded, empty" — most tests don't care. Specific tests that need
 // a non-empty list override mockSessionsData before rendering.
 let mockSessionsData: unknown = []
+const mockBusy = { value: false }
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
   // The session list rows now render SessionContextMenu, which reads these.
   useSetSessionMarkedUnread: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useForkSession: () => ({ mutate: vi.fn(), isPending: false }),
   useForkAndCompact: () => ({ mutate: vi.fn(), isPending: false }),
+  useIsSessionBusy: () => mockBusy.value,
   useIsForking: () => false,
+  useSessionRawLog: () => ({ mutate: vi.fn() }),
   useCreateSession: () => mockCreateSession,
   useSessions: () => ({ data: mockSessionsData }),
   useDeleteSession: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
@@ -260,6 +263,7 @@ describe('AgentHome', () => {
     mockCanAdminAgent = false
     capturedComposerOptions = undefined
     mockSessionsData = []
+    mockBusy.value = false
     mockJustCreatedSlug = null
     mockPendingAgentHomeAction = null
   })
@@ -271,6 +275,35 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
+  })
+
+  it.each([
+    { busy: true, state: { isAwaitingInput: true, isActive: true }, shown: ['needs input'] },
+    { busy: true, state: { isActive: true }, shown: ['working'] },
+    { busy: true, state: {}, shown: ['busy'] },
+    { busy: false, state: {}, shown: [] },
+  ])('a session list row with busy=$busy shows $shown', ({ busy, state, shown }) => {
+    mockBusy.value = busy
+    mockSessionsData = [{
+      id: 'status-session',
+      agentSlug: testAgent.slug,
+      name: 'Status session',
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      messageCount: 1,
+      ...state,
+    }]
+
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    const row = screen.getAllByRole('button').find((el) => el.textContent?.includes('Status session'))
+    expect(row).toBeDefined()
+    const indicators = within(row!).queryAllByRole('img')
+      .map((el) => el.getAttribute('aria-label'))
+      .filter((label) => label === 'needs input' || label === 'working' || label === 'busy')
+    expect(indicators).toEqual(shown)
   })
 
   it('orders sessions by last activity rather than creation time', () => {

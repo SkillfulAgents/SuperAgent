@@ -81,10 +81,11 @@ vi.mock('@renderer/hooks/use-agent-members', () => ({
 }))
 
 const mockUseSessions = vi.fn()
+const mockBusy = { value: false }
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useSessions: (slug: string | null) => mockUseSessions(slug),
   useCreateSession: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useIsForking: () => false,
+  useIsSessionBusy: () => mockBusy.value,
 }))
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -233,6 +234,7 @@ vi.mock('@renderer/components/agents/agent-status', () => ({
 vi.mock('@renderer/components/agents/status-indicators', () => ({
   WorkingDots: () => <span data-testid="working-dots" />,
   AwaitingDot: () => <span data-testid="awaiting-dot" />,
+  BusySpinner: () => <span data-testid="busy-spinner" />,
 }))
 
 vi.mock('@renderer/components/agents/agent-context-menu', () => ({
@@ -418,6 +420,7 @@ const localStorageStub = {
 }
 
 beforeEach(() => {
+  mockBusy.value = false
   mockUseSettings.mockReturnValue({ data: { llmProvider: 'anthropic', apiKeyStatus: { anthropic: { isConfigured: true } } } })
   mockUseModelSettings.mockReturnValue({ data: { connections: [], defaultSelection: null } })
   vi.clearAllMocks()
@@ -701,6 +704,24 @@ describe('AppSidebar — agent rows', () => {
     const sessionItem = screen.getByTestId('session-item-session-1')
     expect(sessionItem).toHaveAttribute('data-to', '/agents/$slug/sessions/$sessionId')
     expect(sessionItem).toHaveAttribute('data-params', JSON.stringify({ slug: 'test-agent', sessionId: 'session-1' }))
+  })
+
+  it.each([
+    { busy: true, state: { isAwaitingInput: true, isActive: true }, shown: ['awaiting-dot'] },
+    { busy: true, state: { isActive: true }, shown: ['working-dots'] },
+    { busy: true, state: {}, shown: ['busy-spinner'] },
+    { busy: false, state: {}, shown: [] },
+  ])('a session row with busy=$busy shows $shown', ({ busy, state, shown }) => {
+    mockBusy.value = busy
+    mockRouteParams = { slug: 'test-agent' }
+    mockUseSessions.mockImplementation((slug: string | null) => ({
+      data: slug === 'test-agent' ? [makeSession(state)] : [],
+      isLoading: false,
+    }))
+    renderWithProviders(<AppSidebar />)
+    const row = screen.getByTestId('session-item-session-1')
+    const indicators = row.querySelectorAll('[data-testid="busy-spinner"], [data-testid="awaiting-dot"], [data-testid="working-dots"]')
+    expect([...indicators].map((el) => el.getAttribute('data-testid'))).toEqual(shown)
   })
 
   it('shows an unread dot on a session sub-item with hasUnreadNotifications', () => {

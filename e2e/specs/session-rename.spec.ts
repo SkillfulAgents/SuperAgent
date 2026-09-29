@@ -1,13 +1,10 @@
-import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import {
-  createAgent,
-  createSession,
+  createAndOpenIdleSession,
   expectSessionNamed,
   openAgentSession,
   uniqueName,
-  waitForSessionIdle,
-  type TestAgent,
   type TestSession,
 } from '../helpers/agents'
 
@@ -20,28 +17,6 @@ import {
  * which is what regressed in production.
  */
 test.describe('Session Rename (names must persist)', () => {
-  async function createSessionFixture(
-    page: Page,
-    request: APIRequestContext,
-    testInfo: TestInfo,
-    label: string,
-  ): Promise<{ agent: TestAgent; session: TestSession }> {
-    const agent = await createAgent(request, uniqueName(testInfo, label))
-    const session = await createSession(
-      request,
-      agent,
-      `Create a renameable session for ${uniqueName(testInfo, 'Session Message')}`,
-    )
-    await waitForSessionIdle(request, agent, session)
-
-    const appPage = new AppPage(page)
-    await appPage.goto()
-    await appPage.waitForAgentsLoaded()
-    await openAgentSession(page, agent, session)
-
-    return { agent, session }
-  }
-
   async function renameSessionInSidebar(page: Page, session: Pick<TestSession, 'id'>, newName: string) {
     const sessionItem = page.locator(`[data-testid="session-item-${session.id}"]`)
     await expect(sessionItem).toBeVisible({ timeout: 15000 })
@@ -58,7 +33,7 @@ test.describe('Session Rename (names must persist)', () => {
   }
 
   test('renames a session and the new name survives a reload', async ({ page, request }, testInfo) => {
-    const { agent, session } = await createSessionFixture(page, request, testInfo, 'Session Rename Once')
+    const { agent, session } = await createAndOpenIdleSession(page, request, testInfo, 'Session Rename Once')
     const newName = uniqueName(testInfo, 'Renamed Session')
 
     await renameSessionInSidebar(page, session, newName)
@@ -75,7 +50,7 @@ test.describe('Session Rename (names must persist)', () => {
   })
 
   test('a second rename overwrites the first and also persists', async ({ page, request }, testInfo) => {
-    const { agent, session } = await createSessionFixture(page, request, testInfo, 'Session Rename Twice')
+    const { agent, session } = await createAndOpenIdleSession(page, request, testInfo, 'Session Rename Twice')
 
     // Two successive read-modify-write cycles on the same metadata file — the
     // second must not be lost and must not clobber the file.
