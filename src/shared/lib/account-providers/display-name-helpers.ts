@@ -179,6 +179,30 @@ async function resolvePlaidDisplayName(
   }
 }
 
+// Name a HighLevel connection after its business, e.g. "Acme Dental".
+async function resolveHighLevelDisplayName(
+  makeApiCall: MakeApiCallFn,
+  connectionId: string,
+): Promise<string | null> {
+  try {
+    const response = await makeApiCall({
+      providerConnectionId: connectionId,
+      toolkitSlug: 'highlevel',
+      targetUrl: 'https://services.leadconnectorhq.com/locations/search',
+      method: 'GET',
+      headers: new Headers({ Version: '2021-07-28' }),
+      body: null,
+    })
+    if (!response.ok) return null
+    const list = await response.json()
+    const business = isRecord(list) && Array.isArray(list.locations) ? list.locations[0] : undefined
+    return isRecord(business) && typeof business.name === 'string' && business.name ? business.name : null
+  } catch (error) {
+    console.warn('Could not fetch the HighLevel business for display name:', error)
+    return null
+  }
+}
+
 export async function resolveDisplayName(
   makeApiCall: MakeApiCallFn,
   connectionId: string,
@@ -196,6 +220,9 @@ export async function resolveDisplayName(
   } else if (slug === 'plaid') {
     const institution = await resolvePlaidDisplayName(makeApiCall, connectionId)
     if (institution) return institution
+  } else if (slug === 'highlevel') {
+    const business = await resolveHighLevelDisplayName(makeApiCall, connectionId)
+    if (business) return business
   }
 
   return fallbackName

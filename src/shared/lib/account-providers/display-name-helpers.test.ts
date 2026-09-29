@@ -55,3 +55,23 @@ describe('resolveDisplayName for plaid', () => {
     expect(makeApiCall).not.toHaveBeenCalled()
   })
 })
+
+describe('resolveDisplayName for highlevel', () => {
+  it('names the connection after its business', async () => {
+    const makeApiCall = vi.fn(async (_call: Call) => jsonResponse({ locations: [{ id: 'l1', name: 'Acme Dental' }] }))
+    await expect(resolveDisplayName(makeApiCall, 'ca_1', 'highlevel', 'HighLevel')).resolves.toBe('Acme Dental')
+
+    expect(makeApiCall.mock.calls.map(([call]) => call.targetUrl)).toEqual([
+      'https://services.leadconnectorhq.com/locations/search',
+    ])
+    expect(makeApiCall.mock.calls[0][0].headers.get('Version')).toBe('2021-07-28')
+  })
+
+  it('keeps the fallback name when the list is refused or the shape is unexpected', async () => {
+    const refused = vi.fn(async () => jsonResponse({ message: 'Forbidden' }, 403))
+    await expect(resolveDisplayName(refused, 'ca_1', 'highlevel', 'HighLevel')).resolves.toBe('HighLevel')
+
+    const empty = vi.fn(async () => jsonResponse({ locations: [] }))
+    await expect(resolveDisplayName(empty, 'ca_1', 'highlevel', 'HighLevel')).resolves.toBe('HighLevel')
+  })
+})

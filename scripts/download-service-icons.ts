@@ -20,7 +20,7 @@ const ALL_SLUGS = [
   'slack', 'discord', 'github', 'gitlab', 'bitbucket', 'sentry', 'datadog',
   'pagerduty', 'notion', 'linear', 'jira', 'confluence', 'asana', 'monday',
   'clickup', 'trello', 'hubspot', 'salesforce', 'pipedrive', 'zendesk',
-  'intercom', 'airtable', 'dropbox', 'box', 'docusign', 'twitter',
+  'intercom', 'highlevel', 'airtable', 'dropbox', 'box', 'docusign', 'twitter',
   'linkedin', 'instagram', 'shopify', 'stripe', 'quickbooks', 'xero',
   'mailchimp', 'figma', 'calendly', 'typeform', 'zoom', 'gong',
   // MCP servers (unique ones not already above)

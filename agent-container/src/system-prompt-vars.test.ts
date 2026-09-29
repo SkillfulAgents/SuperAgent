@@ -122,6 +122,7 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('## X through a connected account')).toBe(composio)
     expect(out.includes('$0.200')).toBe(composio)
     expect(out.includes('public reads included')).toBe(composio)
+    expect(out.includes('run `ls /opt/gamut/docs`')).toBe(composio)
     expect(out.includes('/opt/gamut/docs/audio.md')).toBe(webhook)
     expect(out.includes('Never invent an OpenAI endpoint')).toBe(webhook)
     expect(out.includes('Before long recordings')).toBe(webhook)
@@ -276,6 +277,8 @@ describe('generateSystemPrompt rendering', () => {
             for (const match of out.matchAll(/\/opt\/gamut\/docs\/([\w./-]+\.md)/g)) {
               referenced.add(match[1])
             }
+            // Connected-service guides are found by listing the directory, not by path.
+            if (out.includes('run `ls /opt/gamut/docs`')) referenced.add('gohighlevel.md')
           }
         }
       }

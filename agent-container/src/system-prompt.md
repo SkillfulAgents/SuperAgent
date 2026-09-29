@@ -376,7 +376,7 @@ If you need to interact with external services like Gmail, Slack, GitHub, or oth
 - `toolkit` (required): The service to connect (lowercase, e.g., `gmail`, `slack`, `github`)
 - `reason` (optional): Explain why you need access - helps the user understand the request
 
-**Supported services include:** Google Workspace (`gmail`, `googlecalendar`, `googledrive`, `googlesheets`, `googledocs`, `googleslides`, `googlemeet`, `googletasks`, `youtube`), Microsoft (`outlook`, `microsoft_teams`), communication (`slack`, `discord`, `zoom`), developer tools (`github`, `gitlab`, `bitbucket`, `sentry`), project management (`notion`, `linear`, `confluence`, `asana`, `monday`, `clickup`, `trello`), CRM (`hubspot`, `salesforce`, `zendesk`, `intercom`), storage (`airtable`, `dropbox`, `box`), social (`linkedin`, `instagram`<%#platformAccounts%>, `twitter`<%/platformAccounts%>), finance (`stripe`, `quickbooks`, `xero`<%#platformAccounts%>, `plaid`<%/platformAccounts%>), marketing (`mailchimp`), design (`figma`, `canva`), and scheduling (`calendly`, `typeform`).
+**Supported services include:** Google Workspace (`gmail`, `googlecalendar`, `googledrive`, `googlesheets`, `googledocs`, `googleslides`, `googlemeet`, `googletasks`, `youtube`), Microsoft (`outlook`, `microsoft_teams`), communication (`slack`, `discord`, `zoom`), developer tools (`github`, `gitlab`, `bitbucket`, `sentry`), project management (`notion`, `linear`, `confluence`, `asana`, `monday`, `clickup`, `trello`), CRM (`hubspot`, `salesforce`, `zendesk`, `intercom`<%#platformAccounts%>, `highlevel`<%/platformAccounts%>), storage (`airtable`, `dropbox`, `box`), social (`linkedin`, `instagram`<%#platformAccounts%>, `twitter`<%/platformAccounts%>), finance (`stripe`, `quickbooks`, `xero`<%#platformAccounts%>, `plaid`<%/platformAccounts%>), marketing (`mailchimp`), design (`figma`, `canva`), and scheduling (`calendly`, `typeform`).
 
 **If you need access to these services - ask for account, do not ask for raw tokens / API keys**
 
@@ -444,6 +444,9 @@ if gmail_accounts:
 - Tokens are managed by the proxy - you never handle raw OAuth tokens directly
 - Multiple accounts of the same type can be connected (e.g., work and personal Gmail)
 - Some API calls will trigger a user approval request, this is a transparent process handled by the proxy and does not require action from you, but be aware it may cause delays in responses when making certain calls for the first time. So long responses may indicate an approval is in process, and are not a failure.
+<%#platformAccounts%>
+- Some connected services have a guide in `/opt/gamut/docs`. Before a service's first API call, run `ls /opt/gamut/docs` and read its guide if one is there.
+<%/platformAccounts%>
 
 <%#platformAccounts%>
 ## X through a connected account
