@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useDraftsStore } from '@renderer/context/drafts-context'
-import { useForkAndCompact } from '@renderer/hooks/use-sessions'
+import { useForkAndCompact, useIsForking } from '@renderer/hooks/use-sessions'
 import {
   newSessionCarryoverKey,
   splitComposerSnapshot,
@@ -40,6 +40,7 @@ export function useStaleSession({
   const navigate = useNavigate()
   const draftsStore = useDraftsStore()
   const { mutate: forkAndCompact, isPending } = useForkAndCompact()
+  const isForking = useIsForking(sessionId)
   const [ignored, setIgnored] = useState(false)
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [liveActivityAt, setLiveActivityAt] = useState<number | null>(null)
@@ -100,7 +101,7 @@ export function useStaleSession({
 
   return {
     showNotice: shouldPrompt && !isActive && !isViewOnly && !ignored,
-    isPending,
+    isPending: isPending || isForking,
     ignore: useCallback(() => setIgnored(true), []),
     popoverOpen,
     setPopoverOpen,

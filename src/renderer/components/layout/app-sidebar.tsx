@@ -50,7 +50,7 @@ import {
 } from '@renderer/components/runtime/runtime-status-banners'
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
 import { useAgents, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
-import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
+import { useIsForking, useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings, useModelSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
@@ -59,7 +59,7 @@ import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
-import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { WorkingDots, AwaitingDot, ForkingSpinner } from '@renderer/components/agents/status-indicators'
 import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
@@ -200,6 +200,7 @@ function SessionSubItem({
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
   const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
+  const isForking = useIsForking(session.id)
   // Pending-wake (long sleep) indicator: shown alongside the unread dot, but
   // suppressed while the session is actively working/awaiting (momentarily
   // redundant — the session clearly isn't asleep).
@@ -262,7 +263,9 @@ function SessionSubItem({
                     <MoonStar className="h-3 w-3 text-muted-foreground" />
                   </span>
                 )}
-                {isAwaitingInput ? (
+                {isForking ? (
+                  <ForkingSpinner />
+                ) : isAwaitingInput ? (
                   <AwaitingDot />
                 ) : isWorking ? (
                   <WorkingDots />

@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { MessageSquare, ChevronLeft, ChevronRight, MoreVertical, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
-import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { WorkingDots, AwaitingDot, ForkingSpinner } from '@renderer/components/agents/status-indicators'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { Button } from '@renderer/components/ui/button'
 import {
@@ -14,6 +14,7 @@ import {
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useNavigate } from '@tanstack/react-router'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
+import { useIsForking } from '@renderer/hooks/use-sessions'
 import { sortSessionsByActivity, type SessionSortOrder } from '@shared/lib/session-ordering'
 
 interface SessionItem {
@@ -140,6 +141,7 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
   const { selectedAgentSlug } = useRouteLocation()
   const navigate = useNavigate()
   const agentSlug = agentSlugProp ?? selectedAgentSlug
+  const isForking = useIsForking(session.id)
   const selectSession = (id: string) => {
     if (agentSlug) {
       void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: id } })
@@ -162,7 +164,9 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
       {showIcon && <MessageSquare className="h-4 w-4 text-muted-foreground shrink-0" />}
       <div className="flex-1 min-w-0">
         <div className={`text-xs truncate flex items-center gap-2 ${dateAsTitle ? 'font-normal' : 'font-medium'}`}>
-          {session.isAwaitingInput ? (
+          {isForking ? (
+            <ForkingSpinner />
+          ) : session.isAwaitingInput ? (
             <AwaitingDot />
           ) : session.isActive ? (
             <WorkingDots />

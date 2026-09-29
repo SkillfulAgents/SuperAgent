@@ -10,6 +10,7 @@ import {
 } from '@renderer/lib/new-session-carryover'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import { useStaleSession } from './use-stale-session'
+import { useForkSession } from './use-sessions'
 
 const { navigate, apiFetch } = vi.hoisted(() => ({ navigate: vi.fn(), apiFetch: vi.fn() }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -57,7 +58,7 @@ function renderStale(overrides: Partial<Parameters<typeof useStaleSession>[0]> =
     contextUsage: staleUsage,
     ...overrides,
   }
-  return renderHook(() => ({ stale: useStaleSession(args), store: useDraftsStore() }), { wrapper: Wrapper })
+  return renderHook(() => ({ stale: useStaleSession(args), store: useDraftsStore(), menuFork: useForkSession() }), { wrapper: Wrapper })
 }
 
 describe('useStaleSession', () => {
@@ -155,6 +156,21 @@ describe('useStaleSession', () => {
         body: JSON.stringify({ content: '/compact' }),
       }],
     ])
+  })
+
+  it('is pending while a fork of the session started from a menu is in flight', async () => {
+    let releaseFork!: () => void
+    const forkPending = new Promise<void>((resolve) => { releaseFork = resolve })
+    apiFetch.mockImplementation(async () => {
+      await forkPending
+      return forkResponse
+    })
+    const { result } = renderStale()
+    expect(result.current.stale.isPending).toBe(false)
+    act(() => result.current.menuFork.mutate({ sessionId: 'session-1', agentSlug: 'abc123def4' }))
+    await waitFor(() => expect(result.current.stale.isPending).toBe(true))
+    await act(async () => releaseFork())
+    await waitFor(() => expect(result.current.stale.isPending).toBe(false))
   })
 
   it.each(['fork', 'compact'] as const)('allows retry after a failed %s request', async (failure) => {

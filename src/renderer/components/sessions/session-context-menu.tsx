@@ -30,7 +30,7 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread, useForkSession, useForkAndCompact } from '@renderer/hooks/use-sessions'
+import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread, useForkSession, useForkAndCompact, useIsForking } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useUser } from '@renderer/context/user-context'
@@ -100,10 +100,11 @@ export function SessionContextMenu({
   const canUse = canUseAgent(agentSlug)
   const forkSession = useForkSession()
   const forkAndCompact = useForkAndCompact()
+  const isForking = useIsForking(sessionId)
   // Unread dots are suppressed while working or awaiting. Fork is refused
   // while the transcript is open (active or still streaming).
   const hideUnread = activity.isActive || activity.isAwaitingInput
-  const forkDisabled = activity.isActive || activity.isStreaming || forkSession.isPending || forkAndCompact.isPending
+  const forkDisabled = activity.isActive || activity.isStreaming || isForking
 
   const handleDelete = async () => {
     setIsDeleting(true)

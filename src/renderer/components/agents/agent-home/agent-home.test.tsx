@@ -69,6 +69,7 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   useSetSessionMarkedUnread: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useForkSession: () => ({ mutate: vi.fn(), isPending: false }),
   useForkAndCompact: () => ({ mutate: vi.fn(), isPending: false }),
+  useIsForking: () => false,
   useCreateSession: () => mockCreateSession,
   useSessions: () => ({ data: mockSessionsData }),
   useDeleteSession: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),

@@ -45,6 +45,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useSessions: () => ({ data: [] }),
+  useIsForking: () => false,
   useSession: () => ({
     data: {
       id: 'session-1',

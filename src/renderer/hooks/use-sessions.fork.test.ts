@@ -4,7 +4,7 @@ import { act, renderHook } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DraftsProvider, useDraftsStore } from '@renderer/context/drafts-context'
-import { useForkAndCompact, useForkSession } from './use-sessions'
+import { useForkAndCompact, useForkSession, useIsForking } from './use-sessions'
 
 const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -88,6 +88,31 @@ describe('useForkSession', () => {
     expect(mockNavigate).not.toHaveBeenCalled()
     expect(err).toHaveBeenCalledWith('Failed to fork session:', expect.any(Error))
     err.mockRestore()
+  })
+
+  it('marks only the source as forking while the fork waits, and clears it when the fork fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // Held open: a sleeping agent's fork waits here while the container wakes.
+    let failFork!: () => void
+    mockApiFetch.mockImplementation(() => new Promise((resolve) => {
+      failFork = () => resolve({ ok: false, text: async () => JSON.stringify({ error: 'Session not found' }) })
+    }))
+    const { result } = renderHook(
+      () => ({ fork: useForkSession(), source: useIsForking('src-1'), other: useIsForking('src-2') }),
+      { wrapper },
+    )
+    expect(result.current.source).toBe(false)
+    let forked!: Promise<unknown>
+    act(() => {
+      forked = result.current.fork.mutateAsync({ sessionId: 'src-1', agentSlug: 'agent-a' }).catch(() => {})
+    })
+    await vi.waitFor(() => expect(result.current.source).toBe(true))
+    expect(result.current.other).toBe(false)
+    await act(async () => {
+      failFork()
+      await forked
+    })
+    await vi.waitFor(() => expect(result.current.source).toBe(false))
   })
 })
 

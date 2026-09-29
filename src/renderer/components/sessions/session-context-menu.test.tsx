@@ -150,8 +150,9 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   useDeleteSession: () => ({ mutateAsync: vi.fn() }),
   useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSetSessionMarkedUnread: () => ({ mutateAsync: mockSetMarkedUnread, isPending: false }),
-  useForkSession: () => ({ mutate: mockFork, isPending: false }),
-  useForkAndCompact: () => ({ mutate: mockForkAndCompact, isPending: mockForkPending.value }),
+  useForkSession: () => ({ mutate: mockFork }),
+  useForkAndCompact: () => ({ mutate: mockForkAndCompact }),
+  useIsForking: () => mockForkPending.value,
 }))
 
 const mockCanAdminAgent = vi.fn(() => true)
@@ -426,7 +427,7 @@ describe('Fork Session item', () => {
     expect(screen.getByTestId('fork-session-trigger')).toHaveAttribute('data-disabled')
   })
 
-  it('disables the submenu and both rows while a fork-and-compact is in flight', () => {
+  it('disables the submenu and both rows while a fork of this session is in flight', () => {
     mockForkPending.value = true
     renderMenu()
     expect(screen.getByTestId('fork-session-trigger')).toHaveAttribute('data-disabled')

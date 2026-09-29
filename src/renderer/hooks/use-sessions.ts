@@ -1,6 +1,6 @@
 import { apiFetch, apiJson } from '@renderer/lib/api'
 import { useCallback } from 'react'
-import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useMutationState, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useDraftsStore, snapshotSessionDraft, seedSessionDraft } from '@renderer/context/drafts-context'
@@ -267,6 +267,23 @@ export function useClearSessionUnread() {
   )
 }
 
+const FORK_SESSION_KEY = ['fork-session']
+
+function forkSourceId(variables: unknown): string | null {
+  return typeof variables === 'object' && variables !== null && 'sessionId' in variables && typeof variables.sessionId === 'string'
+    ? variables.sessionId
+    : null
+}
+
+/** True while a fork of this session is in flight (a sleeping agent's fork waits for its container to wake). */
+export function useIsForking(sessionId: string | null): boolean {
+  const forking = useMutationState({
+    filters: { mutationKey: FORK_SESSION_KEY, status: 'pending' },
+    select: (mutation) => forkSourceId(mutation.state.variables),
+  })
+  return sessionId !== null && forking.includes(sessionId)
+}
+
 export function useForkSession() {
   const queryClient = useQueryClient()
   const draftsStore = useDraftsStore()
@@ -274,6 +291,7 @@ export function useForkSession() {
   const { track } = useAnalyticsTracking()
 
   return useMutation({
+    mutationKey: FORK_SESSION_KEY,
     mutationFn: async ({ sessionId, agentSlug }: { sessionId: string; agentSlug: string }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/fork`, { method: 'POST' })
       if (!res.ok) {

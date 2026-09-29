@@ -98,6 +98,45 @@ test.describe('Fork Session', () => {
     await expect(page.locator('[data-testid="message-input"]')).toHaveText(draft)
   })
 
+  test('spins at every visible spot for the source until the fork lands', async ({ page, request }, testInfo) => {
+    const { session } = await fixture(page, request, testInfo)
+    // Hold the fork open, as a sleeping agent's container wake does.
+    let releaseFork!: () => void
+    const held = new Promise<void>((resolve) => { releaseFork = resolve })
+    await page.route(`**/sessions/${session.id}/fork`, async (route) => {
+      await held
+      await route.continue()
+    })
+
+    const row = page.locator(`[data-testid="session-item-${session.id}"]`)
+    const rowSpinner = row.getByRole('img', { name: 'forking' })
+    const breadcrumbSpinner = page.locator('[data-testid="breadcrumb-trail"]').getByRole('img', { name: 'forking' })
+    await expect(row).toBeVisible({ timeout: 15000 })
+    await expect(rowSpinner).toHaveCount(0)
+    await expect(breadcrumbSpinner).toHaveCount(0)
+    await row.click({ button: 'right' })
+    await page.locator('[data-testid="fork-session-trigger"]').hover()
+    await page.locator('[data-testid="fork-session-item"]').click()
+
+    await expect(rowSpinner).toBeVisible()
+    await expect(breadcrumbSpinner).toBeVisible()
+    await page.locator('[data-testid="session-breadcrumb"]').click({ button: 'right' })
+    await expect(page.locator('[data-testid="fork-session-trigger"]:visible')).toHaveAttribute('data-disabled', '')
+    await page.keyboard.press('Escape')
+    await page.locator('[data-testid="agent-breadcrumb"]').click()
+    const listRow = page.locator('div[role="button"]').filter({ has: page.getByTestId(`session-row-menu-${session.id}`) })
+    const listSpinner = listRow.getByRole('img', { name: 'forking' })
+    await expect(listSpinner).toBeVisible()
+
+    releaseFork()
+    await expect(page).toHaveURL(/\/sessions\//, { timeout: 15000 })
+    await expect(page).not.toHaveURL(new RegExp(`/sessions/${session.id}$`))
+    await expect(rowSpinner).toHaveCount(0)
+    await page.locator('[data-testid="agent-breadcrumb"]').click()
+    await expect(listRow).toBeVisible()
+    await expect(listSpinner).toHaveCount(0)
+  })
+
   test('Fork & Summarize sends /compact into the copy and leaves the source alone', async ({ page, request }, testInfo) => {
     const { agent, session: created } = await fixture(page, request, testInfo)
     const session = (await listSessions(request, agent)).find((s) => s.id === created.id)!

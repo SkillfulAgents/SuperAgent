@@ -1,3 +1,6 @@
+import { Loader2 } from 'lucide-react'
+import { cn } from '@shared/lib/utils/cn'
+
 export function WorkingDots({ dotClassName = 'bg-green-500' }: { dotClassName?: string } = {}) {
   return (
     <span className="inline-flex items-center gap-0.5 shrink-0" role="img" aria-label="working">
@@ -17,6 +20,12 @@ export function AwaitingDot() {
       <span className="animate-ping absolute inline-flex h-1.5 w-1.5 rounded-full bg-orange-500 opacity-75" />
       <span className="relative inline-flex rounded-full bg-orange-500 h-1.5 w-1.5" />
     </span>
+  )
+}
+
+export function ForkingSpinner({ className }: { className?: string }) {
+  return (
+    <Loader2 className={cn('h-3 w-3 shrink-0 animate-spin text-muted-foreground', className)} role="img" aria-label="forking" />
   )
 }
 
