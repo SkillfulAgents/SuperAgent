@@ -54,6 +54,7 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
   return {
     agentSlug: entry.scope.agentSlug ?? '',
     accountId: typeof p.accountId === 'string' ? p.accountId : '',
+    ...(p.reviewType === 'api' || p.reviewType === 'mcp' ? { reviewType: p.reviewType } : {}),
     toolkit,
     method,
     targetPath,

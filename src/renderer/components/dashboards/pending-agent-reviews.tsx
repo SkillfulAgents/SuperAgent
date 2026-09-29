@@ -108,6 +108,7 @@ export function PendingAgentReviews({ agentSlug, readOnly, onReviewResolved }: P
             key={review.id}
             reviewId={review.id}
             accountId={review.accountId}
+            reviewType={review.reviewType}
             toolkit={review.toolkit}
             method={review.method}
             targetPath={review.targetPath}

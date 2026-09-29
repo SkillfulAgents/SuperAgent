@@ -1,4 +1,5 @@
 import { xAgentFileTransferSchema, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
+import type { ProxyReviewType } from '@shared/lib/proxy/review-display'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
@@ -227,6 +228,8 @@ export interface PendingReview {
   id: string
   agentSlug: string
   accountId: string
+  /** Which policy table "always" writes to; absent on pre-stamp envelopes. */
+  reviewType?: ProxyReviewType
   toolkit: string
   method: string
   targetPath: string
@@ -343,6 +346,9 @@ export function reviewFromEnvelope(
     id: request.id,
     agentSlug: request.scope.agentSlug ?? '',
     accountId: payload.accountId,
+    ...(payload.reviewType === 'api' || payload.reviewType === 'mcp'
+      ? { reviewType: payload.reviewType }
+      : {}),
     toolkit: payload.toolkit,
     method: payload.method,
     targetPath: payload.targetPath,
@@ -568,7 +574,7 @@ export type PendingRequestDescriptor =
   | { kind: 'script_run'; key: string; toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell'; onComplete: () => void }
   | { kind: 'computer_use'; key: string; toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; onComplete: () => void }
   | { kind: 'capability_review'; key: string; toolUseId: string; capability: 'subagents' | 'workflows'; toolName: string; input: Record<string, unknown>; onComplete: () => void }
-  | { kind: 'proxy_review'; key: string; reviewId: string; accountId: string; toolkit: string; method: string; targetPath: string; matchedScopes: string[]; scopeDescriptions: Record<string, string>; displayText?: string; onComplete: () => void }
+  | { kind: 'proxy_review'; key: string; reviewId: string; accountId: string; reviewType?: ProxyReviewType; toolkit: string; method: string; targetPath: string; matchedScopes: string[]; scopeDescriptions: Record<string, string>; displayText?: string; onComplete: () => void }
   | { kind: 'x_agent_review'; key: string; reviewId: string; xAgent: NonNullable<PendingReview['xAgent']>; onComplete: () => void }
   | { kind: 'account_reauth_required'; key: string; proxyRequestId: string; accountId: string; toolkit: string; accountStatus: 'expired' | 'revoked'; onComplete: () => void }
   | { kind: 'mcp_reauth_required'; key: string; proxyRequestId: string; mcpId: string; mcpName: string; authType: 'none' | 'oauth' | 'bearer'; onComplete: () => void }
@@ -917,6 +923,7 @@ export function usePendingRequests({
           key: review.id,
           reviewId: review.id,
           accountId: review.accountId,
+          reviewType: review.reviewType,
           toolkit: review.toolkit,
           method: review.method,
           targetPath: review.targetPath,

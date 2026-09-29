@@ -138,6 +138,7 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
     kind: z.literal('proxy_review'),
     payload: z.looseObject({
       accountId: lenientString,
+      reviewType: z.enum(['api', 'mcp']).optional().catch(undefined),
       toolkit: lenientString,
       method: lenientString,
       targetPath: lenientString,

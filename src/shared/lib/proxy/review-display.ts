@@ -4,9 +4,19 @@
  */
 import type { XAgentReview } from './x-agent-review'
 
+/**
+ * Which policy table an "always allow/deny" on this review writes to.
+ * `api` reviews carry a connected-account id; `mcp` reviews carry a remote
+ * MCP server id. Stamped at creation so no reader has to infer it from the
+ * request path (an MCP call that is not `tools/call` looks like an API path).
+ */
+export type ProxyReviewType = 'api' | 'mcp'
+
 export interface ReviewDetails {
   agentSlug: string
   accountId: string
+  /** Absent only on envelopes written before the field existed. */
+  reviewType?: ProxyReviewType
   toolkit: string
   method: string
   targetPath: string

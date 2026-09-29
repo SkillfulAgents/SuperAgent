@@ -849,6 +849,7 @@ describe('usePendingRequests', () => {
         'review-1',
         {
           accountId: 'acct-1',
+          reviewType: 'api',
           toolkit: 'github',
           method: 'POST',
           targetPath: '/repos/me/secret',
@@ -866,8 +867,35 @@ describe('usePendingRequests', () => {
     const matches = ofKind(result.current.items, 'proxy_review')
     expect(matches).toHaveLength(1)
     expect(matches[0].reviewId).toBe('review-1')
+    expect(matches[0].reviewType).toBe('api')
     expect(matches[0].displayText).toBe('Push to private repo')
     expect(matches[0].scopeDescriptions).toEqual({ 'repo:write': 'Write to repos' })
+  })
+
+  it('carries the mcp review stamp through to the card and drops an unknown one', () => {
+    // The card must not have to guess the policy table from the path: an MCP
+    // method other than tools/call has a bare method path (Railway sent
+    // `subscriptions/listen`) and guessing "api" from it broke "always allow".
+    mockUnified.data = [
+      unified(
+        'proxy_review',
+        'review-mcp',
+        { accountId: 'mcp-1', reviewType: 'mcp', toolkit: 'Railway', method: 'POST', targetPath: 'subscriptions/listen', matchedScopes: [], scopeDescriptions: {} },
+        { agentScoped: true },
+      ),
+      unified(
+        'proxy_review',
+        'review-legacy',
+        { accountId: 'acct-2', reviewType: 'bogus', toolkit: 'github', method: 'GET', targetPath: '/user', matchedScopes: [], scopeDescriptions: {} },
+        { agentScoped: true },
+      ),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const byId = Object.fromEntries(ofKind(result.current.items, 'proxy_review').map((d) => [d.reviewId, d]))
+    expect(byId['review-mcp'].reviewType).toBe('mcp')
+    expect(byId['review-legacy'].reviewType).toBeUndefined()
   })
 
   it('emits an x_agent_review descriptor when xAgent metadata is present', () => {

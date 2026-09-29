@@ -2016,6 +2016,40 @@ describe('mcp-proxy route', () => {
       })
       expect(res.status).toBe(200)
       expect(mockRequestReview).toHaveBeenCalledOnce()
+      // The review is stamped as an MCP review so "always allow" lands in
+      // mcpToolPolicies no matter what the request path looks like.
+      expect(mockRequestReview).toHaveBeenCalledWith(
+        expect.objectContaining({ reviewType: 'mcp', accountId: 'mcp-1', targetPath: 'tools/call: search' }),
+        expect.anything(),
+      )
+    })
+
+    it('a non-protocol method that is not tools/call still raises an MCP-stamped review', async () => {
+      // Regression: a reviewed non-tools/call method has no tool name, so the
+      // review's path is the bare method and used to be mistaken for an API
+      // review downstream (FOREIGN KEY failure on "always allow").
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'review',
+        matchedScopes: [],
+        scopeDescriptions: {},
+        resolvedFrom: 'global_default',
+      })
+      mockRequestReview.mockResolvedValue('allow')
+
+      const body = JSON.stringify({ jsonrpc: '2.0', method: 'resources/read', params: { uri: 'file://a.txt' }, id: 1 })
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body,
+      })
+      expect(res.status).toBe(200)
+      expect(mockResolveMcpPolicy).toHaveBeenCalledWith('mcp-1', null, expect.anything())
+      expect(mockRequestReview).toHaveBeenCalledOnce()
+      expect(mockRequestReview).toHaveBeenCalledWith(
+        expect.objectContaining({ reviewType: 'mcp', accountId: 'mcp-1', targetPath: 'resources/read', matchedScopes: [] }),
+        expect.anything(),
+      )
     })
 
     it('protocol methods (tools/list, initialize, etc.) skip policy enforcement', async () => {
@@ -2048,6 +2082,8 @@ describe('mcp-proxy route', () => {
       'ping',
       // MCP 2026-07-28 era probe, sent by CLI 2.1.274+ before `initialize`.
       'server/discover',
+      // MCP 2026-07-28 notification stream (Railway sends it).
+      'subscriptions/listen',
     ])('discovery/protocol method "%s" skips policy enforcement and review', async (method) => {
       setupSuccessPath()
       // Force policy to "review" — if the method weren't whitelisted, requestReview would fire.

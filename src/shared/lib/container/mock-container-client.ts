@@ -1491,6 +1491,7 @@ export class ProxyReviewScenario implements MockScenario {
       reviewManager.requestReview({
         agentSlug,
         accountId,
+        reviewType: 'api',
         toolkit: this.toolkit,
         method: this.method,
         targetPath: this.targetPath,
@@ -1568,6 +1569,7 @@ export class MixedPendingRequestsScenario implements MockScenario {
       reviewManager.requestReview({
         agentSlug,
         accountId,
+        reviewType: 'api',
         toolkit: 'slack',
         method: 'POST',
         targetPath: 'api/chat.postMessage',
