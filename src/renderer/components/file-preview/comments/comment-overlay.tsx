@@ -4,7 +4,7 @@ import { Button } from '@renderer/components/ui/button'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { isComposing, isSubmitEnter } from '@renderer/lib/enter-key'
 import type { TextSelectionInfo } from './use-text-selection'
-import { formatMediaTime } from './format-media-time'
+import { formatCommentTime } from './format-media-time'
 
 interface CommentOverlayProps {
   selection: TextSelectionInfo
@@ -88,7 +88,7 @@ export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEd
         )}
         {selection.timestamp != null && (
           <div className="text-xs text-muted-foreground bg-muted/50 rounded p-1.5">
-            At {formatMediaTime(selection.timestamp)}
+            At {formatCommentTime(selection.timestamp)}
             {selection.x != null && selection.y != null && (
               <span> &middot; ({Math.round(selection.x)}%, {Math.round(selection.y)}%)</span>
             )}
