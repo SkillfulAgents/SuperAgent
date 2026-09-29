@@ -433,6 +433,8 @@ function parseSessionInfo(
   const recorded = parseStoredDate(metadata?.createdAt)
   if (recorded) {
     createdAt = recorded
+    // At least as recent as its registration (a fork's copied history predates it).
+    if (recorded > lastActivityAt) lastActivityAt = recorded
   }
 
   // Generate name from first user message if no custom name
