@@ -351,6 +351,22 @@ describe('parseBackgroundTasksChanged', () => {
     expect(parsed!.tasks[0]).toEqual({ task_id: 'a' });
   });
 
+  it('keeps the ambient flag (SDK >= 0.3.284), dropping a malformed one', () => {
+    const parsed = parseBackgroundTasksChanged({
+      tasks: [{ task_id: 'w', ambient: true }, { task_id: 'x', ambient: 'yes' }],
+    });
+    expect(parsed!.tasks).toEqual([{ task_id: 'w', ambient: true }, { task_id: 'x' }]);
+  });
+
+  it('an ambient task still blocks settlement — it is live work, just not activity', () => {
+    const tracker = settledTracker({ wakeGraceMs: 0 });
+    tracker.handleMessage(
+      { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'w', ambient: true }] },
+      T0
+    );
+    expect(tracker.isSettled(T0)).toBe(false);
+  });
+
   it('rejects frames without a valid tasks array', () => {
     expect(parseBackgroundTasksChanged({})).toBeNull();
     expect(parseBackgroundTasksChanged({ tasks: 'nope' })).toBeNull();

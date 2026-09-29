@@ -8664,6 +8664,45 @@ describe('MessagePersister', () => {
         ])
       })
 
+      it('keeps ambient tasks out of the client list, including when the flag flips', () => {
+        // SDK >= 0.3.284 marks housekeeping tasks and live-update watchers
+        // `ambient`: "hosts should exclude them from activity indicators".
+        const level = (tasks: Array<{ task_id: string; ambient?: boolean }>) => mockClient._sendMessage({
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: tasks.map((t) => ({ task_type: 'local_bash', description: `Task ${t.task_id}`, ...t })),
+        })
+        const shown = () => messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map(t => t.taskId)
+        const frames = () => sseEvents
+          .filter(e => typeof e.type === 'string' && e.type.startsWith('background_task_'))
+          .map(e => [e.type, e.taskId])
+
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        sseEvents.length = 0
+        level([{ task_id: 'watcher', ambient: true }, { task_id: 'server' }])
+        expect(shown()).toEqual(['server'])
+        expect(frames()).toEqual([['background_task_started', 'server']])
+
+        // Still live work: the session waits on it rather than settling.
+        mockClient._sendMessage({ type: 'result', subtype: 'success' })
+        level([{ task_id: 'watcher', ambient: true }])
+        mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+
+        // Flips: to activity (the flag may simply be absent) and back.
+        sseEvents.length = 0
+        level([{ task_id: 'watcher' }])
+        expect(shown()).toEqual(['watcher'])
+        level([{ task_id: 'watcher', ambient: true }])
+        expect(shown()).toEqual([])
+        // Its end is not news to clients once it is ambient again.
+        level([])
+        expect(frames()).toEqual([
+          ['background_task_started', 'watcher'],
+          ['background_task_completed', 'watcher'],
+        ])
+      })
+
       it('clears once the task is stopped', () => {
         messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
         launchFromSubagent('nested-1')

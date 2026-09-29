@@ -120,6 +120,12 @@ interface BackgroundTaskInfo {
   taskType?: string
   /** The SDK's description from its level set — the label when the transcript has none. */
   description?: string
+  /**
+   * The SDK's `ambient` flag (>= 0.3.284): a housekeeping task or live-update
+   * watcher. Kept here because it is live work for settling, but never sent
+   * to clients as a row — the SDK says hosts exclude these from activity.
+   */
+  ambient?: boolean
   toolUseId?: string
   workflowName?: string
   runId?: string
@@ -1359,7 +1365,9 @@ class MessagePersister {
   getActiveBackgroundTasks(agentSlug: string, sessionId: string): ActiveBackgroundTaskSnapshot[] {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state) return []
-    return Array.from(state.activeBackgroundTasks.entries()).map(([taskId, info]) => backgroundTaskSnapshot(taskId, info))
+    return Array.from(state.activeBackgroundTasks.entries())
+      .filter(([, info]) => !info.ambient)
+      .map(([taskId, info]) => backgroundTaskSnapshot(taskId, info))
   }
 
   getActiveSubagents(agentSlug: string, sessionId: string): ActiveSubagentSnapshot[] {
@@ -2766,6 +2774,9 @@ class MessagePersister {
                 description: task.description,
                 isSubagent: task.task_type === 'local_agent' ? true : undefined,
                 isWorkflow: task.task_type === 'local_workflow' ? true : undefined,
+                // Always set: the level set is the authority on the flag, and
+                // a flip back to activity may arrive as an absent field.
+                ambient: task.ambient === true,
               })
             }
           }
@@ -3434,8 +3445,18 @@ class MessagePersister {
     }
     state.activeBackgroundTasks.set(taskId, next)
 
+    // Clients only ever see activity. An ambient task is still live work (it
+    // counts toward settling) but is not a row: one turning ambient leaves the
+    // client list, one turning back joins it.
+    const wasShown = !!existing && !existing.ambient
+    const isShown = !next.ambient
+    if (!wasShown && !isShown) return
+    if (wasShown && !isShown) {
+      this.broadcastBackgroundTaskEnded(agentSlug, sessionId, state, taskId)
+      return
+    }
     const snapshot = backgroundTaskSnapshot(taskId, next)
-    if (existing) {
+    if (wasShown) {
       const before = backgroundTaskSnapshot(taskId, existing)
       const changed = (Object.keys(snapshot) as Array<keyof ActiveBackgroundTaskSnapshot>)
         .some((key) => snapshot[key] !== before[key])
@@ -3449,6 +3470,11 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       taskId,
     })
+  }
+
+  private broadcastBackgroundTaskEnded(agentSlug: string, sessionId: string, state: StreamingState, taskId: string): void {
+    this.broadcastToSSE(agentSlug, sessionId, { type: 'background_task_completed', taskId })
+    this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
   }
 
   // Clear a finished background task (backgrounded Bash OR a dynamic workflow),
@@ -3566,8 +3592,8 @@ class MessagePersister {
     const info = state.activeBackgroundTasks.get(taskId)
     if (!info) return false
     state.activeBackgroundTasks.delete(taskId)
-    this.broadcastToSSE(agentSlug, sessionId, { type: 'background_task_completed', taskId })
-    this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+    // An ambient task was never shown, so its end is not news to clients.
+    if (!info.ambient) this.broadcastBackgroundTaskEnded(agentSlug, sessionId, state, taskId)
     // Use the real on-disk runId (learned from the tool result), NOT the task_id.
     if (info.isWorkflow && info.runId) {
       this.broadcastToSSE(agentSlug, sessionId, { type: 'workflow_completed', runId: info.runId })
