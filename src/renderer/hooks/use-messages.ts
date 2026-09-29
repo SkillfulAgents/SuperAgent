@@ -495,37 +495,35 @@ export function useSubagentMessages(
 /**
  * The per-agent tree (phases + agent status/label/result) for a dynamic-workflow
  * run, joined host-side from on-disk artifacts. Disk is the source of truth (so
- * this survives reload); the drawer overlays live SSE status patches and triggers
- * a refetch via the returned `refetch` when a workflow_agent_updated arrives.
+ * this survives reload). Live agents render independently; disk reconciliation
+ * runs less often once they arrive, and the drawer refetches on completion.
  */
 export function useWorkflowTree(
   sessionId: string | null,
   agentSlug: string | null,
   runId: string | null,
-  opts?: { active?: boolean }
+  opts?: { active?: boolean; hasLiveAgents?: boolean }
 ) {
   return useQuery<WorkflowTree>({
     queryKey: ['workflow-tree', sessionId, agentSlug, runId],
     queryFn: async ({ signal }) => {
       const res = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/tree`,
-        // The route answers in milliseconds from local disk; a request that hangs
-        // (stalled connection, host busy) must fail fast so the poll below retries
-        // it instead of pinning the drawer on "Loading…".
+        // Reconstruction can be slow for large transcripts. Bound the request;
+        // live events keep the preview usable while disk details are unavailable.
         { signal: AbortSignal.any([signal, AbortSignal.timeout(WORKFLOW_TREE_TIMEOUT_MS)]) }
       )
       if (!res.ok) throw new Error('Failed to fetch workflow tree')
       return res.json()
     },
     enabled: !!sessionId && !!agentSlug && !!runId,
-    // While the run is active, poll: right after launch the on-disk dir doesn't exist yet
-    // (the tree route 404s), and new agents/labels appear as the run progresses. Stops once
-    // the workflow completes (SSE-driven refetch handles the final state).
-    refetchInterval: opts?.active ? 2000 : false,
+    // Before live agents arrive, poll for launch/reload recovery. Once they do,
+    // reconcile at a much lower rate: this route scans every agent transcript.
+    refetchInterval: opts?.active ? (opts.hasLiveAgents ? 30_000 : 2000) : false,
     // No built-in retries: the poll IS the retry. Query retries back off
     // exponentially (1s, 2s, 4s, 8s, 16s) and the whole sequence renders as the
     // initial "Loading…" state, so a launch-window 404 would hide behind a
-    // half-minute spinner instead of surfacing as "Starting workflow…" at once.
+    // half-minute spinner instead of surfacing the unavailable details.
     retry: false,
   })
 }

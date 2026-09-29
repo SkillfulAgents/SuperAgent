@@ -158,8 +158,8 @@ function closeOpenThinkingBlocks(blocks: ThinkingBlock[]): ThinkingBlock[] {
 
 // Live state for dynamic-workflow (`Workflow` tool) runs in this session. Kept
 // outside StreamState (like thinking/slash commands) so the ~15 full state-rebuild
-// sites don't thread it through. A workflow's per-agent tree lives on disk (fetched
-// via the tree route); this holds only the wire-driven live signals: the
+// sites don't thread it through. Live agents render without waiting for the disk
+// tree (which enriches them and survives reload). This holds the wire signals: the
 // runId↔Workflow-tool link (for click-through), per-agent status patches (from the
 // journal tailer), and completion. Stored as immutable arrays so the hook's
 // reference-equality check skips re-render on non-workflow events.
@@ -174,6 +174,8 @@ export interface WorkflowAgentLive {
   lastTool?: string | null
   label?: string
   phase?: string | null
+  model?: string | null
+  prompt?: string
 }
 export interface WorkflowRunLive {
   toolUseId: string
@@ -764,7 +766,7 @@ function getOrCreateEventSource(
         const run = runs.find(r => r.runId === data.runId)
         if (run) {
           const agents = { ...run.agents }
-          for (const a of (data.agents ?? []) as Array<{ agentId: string; label?: string; phase?: string | null; state: string; tokens?: number; toolCalls?: number; lastTool?: string | null }>) {
+          for (const a of (data.agents ?? []) as Array<{ agentId: string; label?: string; phase?: string | null; model?: string | null; prompt?: string; state: string; tokens?: number; toolCalls?: number; lastTool?: string | null }>) {
             const prev = agents[a.agentId]
             agents[a.agentId] = {
               status: mergeAgentStatus(prev?.status, mapWorkflowAgentState(a.state)),
@@ -774,6 +776,8 @@ function getOrCreateEventSource(
               lastTool: a.lastTool ?? prev?.lastTool ?? null,
               label: a.label ?? prev?.label,
               phase: a.phase ?? prev?.phase ?? null,
+              model: a.model ?? prev?.model,
+              prompt: a.prompt ?? prev?.prompt,
             }
           }
           sessionWorkflows.set(sessionId, runs.map(r => r.runId === data.runId ? { ...r, agents, usage: data.usage ?? r.usage } : r))

@@ -3566,6 +3566,8 @@ class MessagePersister {
         agentId: e.agentId as string,
         label: typeof e.label === 'string' ? e.label : undefined,
         phase: typeof e.phaseTitle === 'string' ? e.phaseTitle : null,
+        model: typeof e.model === 'string' ? e.model : undefined,
+        prompt: typeof e.promptPreview === 'string' ? e.promptPreview : undefined,
         state: typeof e.state === 'string' ? e.state : 'progress',
         tokens: typeof e.tokens === 'number' ? e.tokens : 0,
         toolCalls: typeof e.toolCalls === 'number' ? e.toolCalls : 0,

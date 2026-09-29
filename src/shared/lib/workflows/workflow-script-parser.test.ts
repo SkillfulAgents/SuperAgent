@@ -63,6 +63,38 @@ describe('parseWorkflowScript — real capture-probe fixture', () => {
 })
 
 describe('parseWorkflowScript — synthetic edge cases', () => {
+  it('matches the full runtime prompt when a literal prefix is concatenated with dynamic text', () => {
+    const parsed = parseWorkflowScript('phase("Scope"); await agent("Decompose the question:\\n" + question + "\\nReturn angles.", { label: "scope" })')
+    const pattern = new RegExp(parsed.agentCalls[0].promptRegexSource)
+    expect(pattern.test('Decompose the question:\nB2B advertising\nReturn angles.')).toBe(true)
+    expect(pattern.test('Search the web for B2B advertising')).toBe(false)
+  })
+
+  it('does not treat an opaque prompt or a fully dynamic template as matching every agent', () => {
+    const parsed = parseWorkflowScript('await agent(makePrompt(item), { phase: "Search" }); await agent(`${question}`, { phase: "Verify" })')
+    for (const call of parsed.agentCalls) {
+      expect(new RegExp(call.promptRegexSource).test('Unrelated scope prompt')).toBe(false)
+    }
+  })
+
+  it('does not recover template captures from an unknown concatenated suffix', () => {
+    const [call] = parseWorkflowScript('await agent(`Research ${topic}` + instructions, { label: `search:${topic}` })').agentCalls
+    expect(new RegExp(call.promptRegexSource).test('Research Reddit ads. Find sources.')).toBe(true)
+    expect(call.holeExprs).toEqual([])
+  })
+
+  it('recognizes literal prefixes of simple prompt helpers without executing them', () => {
+    const parsed = parseWorkflowScript([
+      'const SEARCH = angle => "Search: " + angle.query',
+      'const FETCH = (source, angle) => "Extract: " + source.url + angle',
+      'await agent(SEARCH(angle), { phase: "Search" })',
+      'await agent(FETCH(source, angle), { phase: "Fetch" })',
+    ].join('\n'))
+    expect(new RegExp(parsed.agentCalls[0].promptRegexSource).test('Search: Reddit ads')).toBe(true)
+    expect(new RegExp(parsed.agentCalls[0].promptRegexSource).test('Extract: https://example.com')).toBe(false)
+    expect(new RegExp(parsed.agentCalls[1].promptRegexSource).test('Extract: https://example.com')).toBe(true)
+  })
+
   it('handles parallel(map(...)) with templated label sharing the prompt var', () => {
     const src = [
       "export const meta = { name: 'planets', description: 'd', phases: [{ title: 'Gather' }] }",
