@@ -78,6 +78,28 @@ describe('labelBackgroundTasks', () => {
     expect(tasks.every((t) => t.detail === null)).toBe(true)
   })
 
+  it("uses the runtime's description when the transcript has no launch", () => {
+    // A subagent launched it, or its launch predates the loaded transcript.
+    const [task] = labelBackgroundTasks(
+      [{ taskId: 'nested-1', startedAt: 1, taskType: 'local_bash', description: 'Serve local assets' }],
+      [message([])] as never,
+    )
+    expect(task).toMatchObject({ title: 'Background command', detail: 'Serve local assets' })
+  })
+
+  it('prefers the launching call over the runtime description', () => {
+    const [task] = labelBackgroundTasks(
+      [{ taskId: 'agent-1', startedAt: 1, isSubagent: true, description: 'Runtime wording' }],
+      [message([{
+        id: 'tc1',
+        name: 'Agent',
+        input: { subagent_type: 'Explore', description: 'Find the config loader' },
+        subagent: { agentId: 'agent-1', status: 'async_launched' },
+      }])] as never,
+    )
+    expect(task).toMatchObject({ title: 'Explore', detail: 'Find the config loader' })
+  })
+
   it('returns nothing for no tasks without touching the transcript', () => {
     expect(labelBackgroundTasks([], [message([])] as never)).toEqual([])
   })

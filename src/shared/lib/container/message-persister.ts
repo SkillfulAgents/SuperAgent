@@ -112,6 +112,40 @@ interface SubagentStreamingState {
   completed?: boolean
 }
 
+interface BackgroundTaskInfo {
+  startedAt: number
+  isWorkflow?: boolean
+  isSubagent?: boolean
+  /** The SDK's task_type from its level set (local_bash, local_agent, local_workflow, …). */
+  taskType?: string
+  /** The SDK's description from its level set — the label when the transcript has none. */
+  description?: string
+  toolUseId?: string
+  workflowName?: string
+  runId?: string
+}
+
+/** A live background task as clients see it (SSE frames and the connected snapshot). */
+export interface ActiveBackgroundTaskSnapshot {
+  taskId: string
+  startedAt: number
+  isWorkflow?: boolean
+  isSubagent?: boolean
+  taskType?: string
+  description?: string
+}
+
+function backgroundTaskSnapshot(taskId: string, info: BackgroundTaskInfo): ActiveBackgroundTaskSnapshot {
+  return {
+    taskId,
+    startedAt: info.startedAt,
+    isWorkflow: info.isWorkflow,
+    isSubagent: info.isSubagent,
+    taskType: info.taskType,
+    description: info.description,
+  }
+}
+
 export interface ActiveSubagentSnapshot {
   parentToolId: string
   agentId: string | null
@@ -308,10 +342,11 @@ interface StreamingState {
   // For workflows we also carry the launching tool's id, the meta.name, and — once the
   // Workflow tool result arrives — the real on-disk runId (`wf_…`), which is DISTINCT from
   // the task_id and is the name of the `subagents/workflows/<runId>` dir.
-  activeBackgroundTasks: Map<
-    string,
-    { startedAt: number; isWorkflow?: boolean; isSubagent?: boolean; toolUseId?: string; workflowName?: string; runId?: string }
-  >
+  // Every task the SDK's level set lists is registered here too (see
+  // upsertBackgroundTask), carrying the SDK's task_type and description, so
+  // each live task has a row and a Stop-dialog entry even when no launch
+  // signal of ours ever registered it.
+  activeBackgroundTasks: Map<string, BackgroundTaskInfo>
   // Latest system/background_tasks_changed snapshot (SDK >= 0.3.203): the full
   // authoritative set of live background task ids. null until the first frame
   // (older runtimes never send one — all gates then fall back to the
@@ -1321,15 +1356,10 @@ class MessagePersister {
     return state.turnGeneration + (startPending ? 1 : 0)
   }
 
-  getActiveBackgroundTasks(agentSlug: string, sessionId: string): Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> {
+  getActiveBackgroundTasks(agentSlug: string, sessionId: string): ActiveBackgroundTaskSnapshot[] {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state) return []
-    return Array.from(state.activeBackgroundTasks.entries()).map(([taskId, info]) => ({
-      taskId,
-      startedAt: info.startedAt,
-      isWorkflow: info.isWorkflow,
-      isSubagent: info.isSubagent,
-    }))
+    return Array.from(state.activeBackgroundTasks.entries()).map(([taskId, info]) => backgroundTaskSnapshot(taskId, info))
   }
 
   getActiveSubagents(agentSlug: string, sessionId: string): ActiveSubagentSnapshot[] {
@@ -2394,20 +2424,8 @@ class MessagePersister {
         {
           const tur = content.tool_use_result as Record<string, unknown> | undefined
           const bgId = (tur?.backgroundTaskId ?? tur?.background_task_id) as string | undefined
-          if (bgId && typeof bgId === 'string' && !state.activeBackgroundTasks.has(bgId)) {
-            const startedAt = Date.now()
-            state.activeBackgroundTasks.set(bgId, { startedAt })
-            this.broadcastToSSE(agentSlug, sessionId, {
-              type: 'background_task_started',
-              taskId: bgId,
-              startedAt,
-            })
-            this.broadcastGlobal({
-              type: 'background_task_started',
-              sessionId,
-              agentSlug: state.agentSlug,
-              taskId: bgId,
-            })
+          if (bgId && typeof bgId === 'string') {
+            this.upsertBackgroundTask(sessionId, state, bgId, {})
           }
         }
 
@@ -2536,16 +2554,15 @@ class MessagePersister {
           // workflow-specific handling is needed anywhere else.
           if (content.task_type === 'local_workflow') {
             const workflowTaskId = content.task_id as string | undefined
-            if (workflowTaskId && !state.activeBackgroundTasks.has(workflowTaskId)) {
-              const startedAt = Date.now()
-              state.activeBackgroundTasks.set(workflowTaskId, {
-                startedAt,
+            if (workflowTaskId) {
+              // Merges into the entry the level set may already have created
+              // (it leads task_started): the launch's toolUseId is how the
+              // tool result below finds this workflow's runId.
+              this.upsertBackgroundTask(sessionId, state, workflowTaskId, {
                 isWorkflow: true,
                 toolUseId,
                 workflowName: typeof content.workflow_name === 'string' ? content.workflow_name : undefined,
               })
-              this.broadcastToSSE(agentSlug, sessionId, { type: 'background_task_started', taskId: workflowTaskId, startedAt, isWorkflow: true })
-              this.broadcastGlobal({ type: 'background_task_started', sessionId, agentSlug: state.agentSlug, taskId: workflowTaskId })
               // NOTE: we do NOT emit workflow_started or start the journal tailer yet — the
               // real on-disk runId (`wf_…`, the name of the subagents/workflows/<runId> dir)
               // is NOT the task_id; it only appears in the Workflow tool RESULT, which the
@@ -2737,6 +2754,19 @@ class MessagePersister {
                 )
                 this.clearBackgroundTask(agentSlug, sessionId, state, taskId)
               }
+            }
+            // And the other direction: every task the SDK lists is a task the
+            // user can see and stop, whether or not a launch signal of ours
+            // registered it — a subagent's own background command, a subagent
+            // whose `completed` did not end it. The SDK's type and description
+            // label the row when the transcript has no launching call.
+            for (const task of snapshot.tasks) {
+              this.upsertBackgroundTask(sessionId, state, task.task_id, {
+                taskType: task.task_type,
+                description: task.description,
+                isSubagent: task.task_type === 'local_agent' ? true : undefined,
+                isWorkflow: task.task_type === 'local_workflow' ? true : undefined,
+              })
             }
           }
         } else if (content.subtype === 'memory_recall') {
@@ -3378,29 +3408,46 @@ class MessagePersister {
     agentId: string,
     toolUseId: string,
   ): void {
-    const { agentSlug } = state
-    if (state.activeBackgroundTasks.has(agentId)) return
+    // isSubagent lets the renderer fold these into the named subagent row
+    // when one represents this work in the activity tray.
+    this.upsertBackgroundTask(sessionId, state, agentId, { isSubagent: true, toolUseId })
+  }
 
-    const startedAt = Date.now()
-    state.activeBackgroundTasks.set(agentId, {
-      startedAt,
-      isSubagent: true,
-      toolUseId,
-    })
-    // isSubagent lets the renderer skip these in the generic
-    // "N background processes" row — the named subagent row
-    // already represents this work in the activity tray.
-    this.broadcastToSSE(agentSlug, sessionId, {
-      type: 'background_task_started',
-      taskId: agentId,
-      startedAt,
-      isSubagent: true,
-    })
+  /**
+   * Register a live background task, or merge what a later signal knows into
+   * the entry an earlier one created. The level set and the per-task launch
+   * signals (task_started, the tool result) each know part of a task, and
+   * either may arrive first. Clients hear about it when it is new or when
+   * something they render changed.
+   */
+  private upsertBackgroundTask(
+    sessionId: string,
+    state: StreamingState,
+    taskId: string,
+    patch: Omit<BackgroundTaskInfo, 'startedAt'>,
+  ): void {
+    const { agentSlug } = state
+    const existing = state.activeBackgroundTasks.get(taskId)
+    const next: BackgroundTaskInfo = { ...existing, startedAt: existing?.startedAt ?? Date.now() }
+    for (const [key, value] of Object.entries(patch) as Array<[keyof typeof patch, unknown]>) {
+      if (value !== undefined) (next as unknown as Record<string, unknown>)[key] = value
+    }
+    state.activeBackgroundTasks.set(taskId, next)
+
+    const snapshot = backgroundTaskSnapshot(taskId, next)
+    if (existing) {
+      const before = backgroundTaskSnapshot(taskId, existing)
+      const changed = (Object.keys(snapshot) as Array<keyof ActiveBackgroundTaskSnapshot>)
+        .some((key) => snapshot[key] !== before[key])
+      if (changed) this.broadcastToSSE(agentSlug, sessionId, { type: 'background_task_updated', ...snapshot })
+      return
+    }
+    this.broadcastToSSE(agentSlug, sessionId, { type: 'background_task_started', ...snapshot })
     this.broadcastGlobal({
       type: 'background_task_started',
       sessionId,
       agentSlug: state.agentSlug,
-      taskId: agentId,
+      taskId,
     })
   }
 

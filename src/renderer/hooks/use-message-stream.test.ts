@@ -2854,6 +2854,33 @@ describe('useMessageStream', () => {
     expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-2', startedAt: 2000 }])
   })
 
+  it('merges background_task_updated into the task in place', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-1', startedAt: 1000 })
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-2', startedAt: 2000 })
+      // The runtime's task list names the first task after it started.
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_updated',
+        taskId: 'bg-1',
+        startedAt: 1000,
+        taskType: 'local_bash',
+        description: 'Run the dev server',
+      })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([
+      { taskId: 'bg-1', startedAt: 1000, taskType: 'local_bash', description: 'Run the dev server' },
+      { taskId: 'bg-2', startedAt: 2000 },
+    ])
+  })
+
   it('restores background tasks from connected event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(

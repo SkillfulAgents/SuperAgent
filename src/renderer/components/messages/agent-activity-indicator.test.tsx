@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AgentActivityIndicator } from './agent-activity-indicator'
+import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 
@@ -28,7 +29,7 @@ const mockStreamState = {
   activeSubagents: [] as any[],
   completedSubagents: null as Set<string> | null,
   slashCommands: [],
-  backgroundTasks: [] as Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }>,
+  backgroundTasks: [] as BackgroundTaskRef[],
 }
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -823,29 +824,86 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByTestId('stop-task-button')).toHaveAttribute('aria-label', expect.stringMatching(/^Retry:/))
   })
 
-  it('hides the background rows when the only task is a background subagent', () => {
-    // A background subagent already renders as a named subagent row; a row
-    // here too would show the same work twice.
+  it('folds a background subagent into its named subagent row', () => {
+    // The named row already represents it; a background row too would show
+    // the same work twice.
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
-      { taskId: 'a1b2c3', startedAt: Date.now() - 5000, isSubagent: true },
+      { taskId: 'agent-bg', startedAt: Date.now() - 5000, isSubagent: true },
     ]
+    mockStreamState.activeSubagents = [
+      { parentToolId: 'tc-bg', agentId: 'agent-bg', progressSummary: null },
+    ]
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-bg',
+        name: 'Agent',
+        input: { subagent_type: 'Explore', description: 'Map the repo' },
+        subagent: { agentId: 'agent-bg', status: 'async_launched' },
+      }],
+      createdAt: new Date(),
+    })
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getAllByTestId('subagent-activity-row')).toHaveLength(1)
     expect(screen.queryByTestId('background-task-row')).not.toBeInTheDocument()
   })
 
-  it('lists only non-subagent tasks when background subagents and bash tasks mix', () => {
+  it('gives a background subagent with no named row a row of its own', () => {
+    // Launched in an earlier turn (or by another subagent): no subagent row
+    // represents it, but the runtime lists it, so it must be visible and
+    // stoppable. Labelled from the runtime's description.
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
-      { taskId: 'a1b2c3', startedAt: Date.now() - 5000, isSubagent: true },
+      { taskId: 'a1b2c3', startedAt: Date.now() - 5000, isSubagent: true, taskType: 'local_agent', description: 'Implement attribution changes' },
       { taskId: 'bg-1', startedAt: Date.now() - 3000 },
     ]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getAllByTestId('background-task-row')).toHaveLength(1)
+    const rows = screen.getAllByTestId('background-task-row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toHaveAttribute('data-task-id', 'a1b2c3')
+    expect(rows[0]).toHaveTextContent('Background agent')
+    expect(rows[0]).toHaveTextContent('Implement attribution changes')
+  })
+
+  it('keeps a completed subagent row live while the runtime still lists its task', () => {
+    // A subagent reports completion when its own turn ends; background work
+    // it started (a dev server) keeps it a live task until the runtime drops it.
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'agent-done', startedAt: Date.now() - 5000, isSubagent: true },
+    ]
+    mockStreamState.activeSubagents = [
+      { parentToolId: 'tc-done', agentId: 'agent-done', progressSummary: null },
+    ]
+    mockStreamState.completedSubagents = new Set(['tc-done'])
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-done',
+        name: 'Agent',
+        input: { subagent_type: 'general-purpose', description: 'Implement attribution changes' },
+        subagent: { agentId: 'agent-done', status: 'async_launched' },
+      }],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    const row = screen.getByTestId('subagent-activity-row')
+    expect(row).toHaveAttribute('data-tracer-live', 'true')
+    expect(row).toHaveTextContent('background work still running')
+    expect(row).not.toHaveTextContent('✓')
+    expect(screen.getByTestId('stop-task-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('background-task-row')).not.toBeInTheDocument()
   })
 
   it('collapses activity details into an active-only summary', () => {
@@ -855,7 +913,7 @@ describe('AgentActivityIndicator', () => {
       { taskId: 'bg-1', startedAt: Date.now() - 5000 },
       { taskId: 'bg-2', startedAt: Date.now() - 4000 },
       { taskId: 'wf-1', startedAt: Date.now() - 3000, isWorkflow: true },
-      { taskId: 'subagent-bg', startedAt: Date.now() - 2000, isSubagent: true },
+      { taskId: 'agent-running', startedAt: Date.now() - 2000, isSubagent: true },
     ]
     mockStreamState.activeSubagents = [
       { parentToolId: 'tc-running', agentId: 'agent-running', progressSummary: null },
