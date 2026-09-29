@@ -807,4 +807,42 @@ describe('MessageItem', () => {
       expect(screen.queryByRole('link', { name: /raise spend limit/i })).not.toBeInTheDocument()
     })
   })
+
+  describe('mermaid code fences', () => {
+    const fence = (source: string) => '```mermaid\n' + source + '\n```'
+    const FLOW = fence('graph LR\n  Request --> Response')
+
+    it('renders a settled mermaid fence as a themed diagram', async () => {
+      const msg = createAssistantMessage({ content: { text: `Here is the flow:\n\n${FLOW}` } })
+      render(<MessageItem message={msg} />)
+
+      const diagram = await screen.findByTestId('mermaid-diagram')
+      const svg = diagram.querySelector('svg')
+      expect(svg).not.toBeNull()
+      expect(diagram).toHaveTextContent('Request')
+      // The app's own --accent is a bare HSL triplet; inheriting it made arrowheads black.
+      expect(svg!.getAttribute('style')).toContain('--accent:hsl(var(--brand))')
+      expect(diagram.closest('pre')).toBeNull()
+    })
+
+    it('keeps an unsupported diagram type as a code block', async () => {
+      const pie = fence('pie title Pets\n  "Dogs" : 3\n  "Cats" : 2')
+      const msg = createAssistantMessage({ content: { text: `${FLOW}\n\n${pie}` } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      await screen.findByTestId('mermaid-diagram')
+      expect(screen.getAllByTestId('mermaid-diagram')).toHaveLength(1)
+      expect(container.querySelector('pre')).toHaveTextContent('pie title Pets')
+    })
+
+    it('keeps the fence still streaming in as a code block', async () => {
+      const text = FLOW + '\n\n```mermaid\ngraph LR\n  Draft --> Final'
+      const msg = createAssistantMessage({ content: { text } })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+
+      await screen.findByTestId('mermaid-diagram')
+      expect(screen.getAllByTestId('mermaid-diagram')).toHaveLength(1)
+      expect(container.querySelector('pre')).toHaveTextContent('Draft --> Final')
+    })
+  })
 })

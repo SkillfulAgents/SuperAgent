@@ -15,6 +15,8 @@ const THEME = {
   fg: 'hsl(var(--foreground))',
   muted: 'hsl(var(--muted-foreground))',
   border: 'hsl(var(--border))',
+  // Must be set: an unset --accent inherits the app's bare HSL triplet, an invalid color, and arrowheads turn black.
+  accent: 'hsl(var(--brand))',
   transparent: true,
 }
 
