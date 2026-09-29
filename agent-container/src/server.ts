@@ -52,6 +52,7 @@ import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-pro
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
+import { mountVolumes, mountedVolumeIds, parseVolumes } from './volume-mounts';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -105,9 +106,16 @@ app.use('*', async (c, next) => {
   return next();
 });
 
+// Volumes mount at boot. Until they settle, /health holds the host's start check.
+let volumesSettled = false;
+const volumesMounted = mountVolumes(parseVolumes(process.env.SUPERAGENT_VOLUMES)).then(() => {
+  volumesSettled = true;
+});
+
 // Health check endpoint
 app.get('/health', (c) => {
-  return c.json({ status: 'ok', timestamp: new Date().toISOString() });
+  if (!volumesSettled) return c.json({ status: 'starting' }, 503);
+  return c.json({ status: 'ok', timestamp: new Date().toISOString(), volumes: mountedVolumeIds() });
 });
 
 // Session endpoints
@@ -3275,11 +3283,15 @@ function handleBrowserStreamConnection(ws: WebSocket) {
 // until a session has been created here at least once. Kicked off before the
 // dashboard scan below: on a cold container the two compete for the same two
 // CPUs, and only this one is in front of a waiting user.
-sessionManager.prewarmFromLastProfile();
+// Both wait for volumes to mount: the warm CLI keeps the prompt it starts with, which lists them.
+volumesMounted.then(() => {
+  if (isShuttingDown) return;
+  sessionManager.prewarmFromLastProfile();
 
-// Start dashboard processes asynchronously (don't block server startup)
-dashboardManager.scanAndStartAll().catch((error) => {
-  console.error('[DashboardManager] Failed to scan and start dashboards:', error);
+  // Start dashboard processes asynchronously (don't block server startup)
+  dashboardManager.scanAndStartAll().catch((error) => {
+    console.error('[DashboardManager] Failed to scan and start dashboards:', error);
+  });
 });
 
 // Sweep abandoned input requests. Entries the host never answers (session

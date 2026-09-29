@@ -19,7 +19,7 @@ const volumesEnvSchema = z.array(
 
 type ContainerMount = z.infer<typeof volumesEnvSchema>[number];
 
-let mountedPaths: string[] = [];
+let mounted: ContainerMount[] = [];
 
 export function parseVolumes(raw: string | undefined): ContainerMount[] {
   if (!raw) return [];
@@ -52,7 +52,7 @@ export async function untilMountAnswers(mountPath: string, unmountedDev: number,
   await fs.promises.readdir(mountPath);
 }
 
-async function mountVolume({ volumeId, name }: ContainerMount): Promise<string | null> {
+async function mountVolume({ volumeId, name }: ContainerMount): Promise<boolean> {
   const mountPath = path.join(MOUNTS_DIR, name);
   let rclone: ChildProcess | undefined;
   let timer: NodeJS.Timeout | undefined;
@@ -73,12 +73,12 @@ async function mountVolume({ volumeId, name }: ContainerMount): Promise<string |
         timer = setTimeout(() => reject(new Error('mount timed out')), MOUNT_TIMEOUT_MS);
       }),
     ]);
-    return mountPath;
+    return true;
   } catch (error) {
     console.error(`[volumes] Leaving out ${mountPath}:`, error);
     rclone?.kill();
     await execFileAsync('fusermount3', ['-uz', mountPath]).catch(() => {});
-    return null;
+    return false;
   } finally {
     settled = true;
     clearTimeout(timer);
@@ -86,10 +86,14 @@ async function mountVolume({ volumeId, name }: ContainerMount): Promise<string |
 }
 
 export async function mountVolumes(mounts: ContainerMount[]): Promise<void> {
-  const paths = await Promise.all(mounts.map(mountVolume));
-  mountedPaths = paths.filter((p) => p !== null);
+  const ok = await Promise.all(mounts.map(mountVolume));
+  mounted = mounts.filter((_, i) => ok[i]);
 }
 
 export function mountedVolumePaths(): string[] {
-  return mountedPaths;
+  return mounted.map((m) => path.join(MOUNTS_DIR, m.name));
+}
+
+export function mountedVolumeIds(): string[] {
+  return mounted.map((m) => m.volumeId);
 }
