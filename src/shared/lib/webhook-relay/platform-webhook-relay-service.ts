@@ -373,8 +373,8 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
         this.releaseOwnership(state)
         this.consumers.delete(state.id)
         // Nothing more is claimed for it, but what was already claimed,
-        // queued or still in flight, is delivered first: those events exist
-        // nowhere else (SUP-931).
+        // queued or still in flight, is delivered first: until their lease
+        // expires (SUP-931) those events exist nowhere else.
         state.draining = true
         this.drainingConsumers.add(state)
         this.finishIfDrained(state)
@@ -547,8 +547,8 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
    * With `late`, the deadline only stops the waiting: the request keeps
    * going, rejects with RequestDeadlineError, and its eventual outcome goes
    * to `late`. A claim needs that, because the platform may already have
-   * claimed the rows (claims are final until SUP-931), and cancelling would
-   * lose them. Anything else is cancelled at the deadline.
+   * claimed the rows, and cancelling would leave them unreachable until their
+   * lease expires (SUP-931). Anything else is cancelled at the deadline.
    */
   private request<T>(
     fn: (signal: AbortSignal) => Promise<T>,
