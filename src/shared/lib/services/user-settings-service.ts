@@ -167,6 +167,9 @@ export const userSettingsSchema = z.object({
   // Home graph view: the "Details" toggle (pin every resource's detail card
   // + count chips open). Absent = off.
   graphShowDetails: z.boolean().optional(),
+  // Todo board prototype: shows its sidebar entry. Absent = off, so it only
+  // appears for people who opt in from Settings → General.
+  todoBoardEnabled: z.boolean().optional(),
   // Home page widget grid: per-card position + footprint in grid cells,
   // keyed by card id (agent slug or dashboard key). Absent = never customized
   // (the board auto-packs responsively until the user drags/resizes).

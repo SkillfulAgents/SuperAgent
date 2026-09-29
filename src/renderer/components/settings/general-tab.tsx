@@ -309,6 +309,22 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
               disabled={isUserSettingsLoading || keepAwakeLoading}
             />
           )}
+          {/* Opt-in prototype; renders on every target so web deployments can enable it too. */}
+          <SettingRow
+            name="Todo board (prototype)"
+            subtitle="Show the Todo board in the sidebar: drafts, what needs you, and what agents are working on. Uses sample data for now."
+            htmlFor="todo-board"
+            right={
+              <Switch
+                id="todo-board"
+                checked={!!userSettings?.todoBoardEnabled}
+                onCheckedChange={(checked: boolean) => {
+                  updateUserSettings.mutate({ todoBoardEnabled: checked })
+                }}
+                disabled={isUserSettingsLoading}
+              />
+            }
+          />
         </div>
       </div>
 

@@ -22,6 +22,14 @@ const NotificationDetailRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/notification-detail-route'),
   'NotificationDetailRoute',
 )
+const TodoRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/todo-route'),
+  'TodoRoute',
+)
+const TodoItemRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/todo-route'),
+  'TodoItemRoute',
+)
 const ExploreRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/explore-route'),
   'ExploreRoute',
@@ -100,6 +108,20 @@ export const notificationDetailRoute = createRoute({
   path: 'notifications/$id',
   params: { parse: (raw) => ({ id: z.string().min(1).parse(raw.id) }) },
   component: NotificationDetailRoute,
+})
+
+export const todoRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'todo',
+  component: TodoRoute,
+})
+
+// One item of work, previewed like its session, with a back button to the list.
+export const todoItemRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'todo/$itemId',
+  params: { parse: (raw) => ({ itemId: z.string().min(1).parse(raw.itemId) }) },
+  component: TodoItemRoute,
 })
 
 export const exploreRoute = createRoute({
@@ -277,6 +299,8 @@ export const routeTree = rootRoute.addChildren([
     homeRoute,
     notificationsRoute,
     notificationDetailRoute,
+    todoRoute,
+    todoItemRoute,
     exploreRoute,
     exploreCategoryRoute,
     exploreTemplateRoute,

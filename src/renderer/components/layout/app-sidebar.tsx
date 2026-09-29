@@ -1,9 +1,10 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, Compass, MoonStar } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
+import { useTodoBoard } from '@renderer/components/todo/todo-store'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
@@ -694,6 +695,30 @@ export const AgentMenuItem = React.memo(AgentMenuItemInner)
 if (__RENDER_TRACKING__) {
   (SessionSubItem as any).whyDidYouRender = true;
   (AgentMenuItem as any).whyDidYouRender = true
+}
+
+/**
+ * The work space entry. Like Notifications, it carries a dot when something
+ * wants you — here, an agent blocked on you — so it is visible from anywhere.
+ */
+function TodoMenuButton({ isActive }: { isActive: boolean }) {
+  const needsYou = useTodoBoard().cards.filter(
+    (c) => c.column === 'attention' && c.attentionReason !== 'review',
+  ).length
+  return (
+    <SidebarMenuButton asChild isActive={isActive} data-testid="todo-button">
+      <AppLink to="/todo">
+        <ListTodo className="h-4 w-4" />
+        <span>Todo</span>
+        {needsYou > 0 && (
+          <span
+            className="ml-auto h-1.5 w-1.5 rounded-full bg-orange-500"
+            aria-label={`${needsYou} waiting on you`}
+          />
+        )}
+      </AppLink>
+    </SidebarMenuButton>
+  )
 }
 
 function NotificationsMenuButton() {
@@ -1546,6 +1571,12 @@ export function AppSidebar() {
                 <SidebarMenuItem>
                   <NotificationsMenuButton />
                 </SidebarMenuItem>
+                {/* Opt-in prototype: Settings → General → Todo board. */}
+                {userSettings?.todoBoardEnabled && (
+                  <SidebarMenuItem>
+                    <TodoMenuButton isActive={pathname === '/todo' || pathname.startsWith('/todo/')} />
+                  </SidebarMenuItem>
+                )}
                 {hasMarketplace && (
                   <SidebarMenuItem>
                     <SidebarMenuButton

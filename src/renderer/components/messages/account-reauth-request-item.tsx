@@ -21,6 +21,12 @@ interface AccountReauthRequestItemProps {
   agentSlug: string
   readOnly?: boolean
   onComplete: () => void
+  /** Replaces the OAuth reconnect flow: resolve true when the connection is
+   *  back. Also marks the account as the viewer's, since there is no
+   *  connected-accounts record to check against. */
+  onReconnect?: () => boolean | Promise<boolean>
+  /** Replaces the proxy-request dismissal. */
+  onDismiss?: (reason?: string) => void | Promise<void>
 }
 
 export function AccountReauthRequestItem({
@@ -32,6 +38,8 @@ export function AccountReauthRequestItem({
   agentSlug,
   readOnly,
   onComplete,
+  onReconnect,
+  onDismiss,
 }: AccountReauthRequestItemProps) {
   const [replacing, setReplacing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -45,7 +53,7 @@ export function AccountReauthRequestItem({
   const providerName = getProvider(toolkit)?.displayName
     ?? `${toolkit.charAt(0).toUpperCase()}${toolkit.slice(1)}`
   const statusLabel = accountStatus === 'expired' ? 'expired' : 'been revoked'
-  const ownsAccount = connectedAccounts?.accounts.some((account) => account.id === accountId)
+  const ownsAccount = onReconnect ? true : connectedAccounts?.accounts.some((account) => account.id === accountId)
   const canReconnect = !readOnly && ownsAccount === true
   // Members can supply their own replacement without modifying the owner's credentials.
   const canDismiss = !readOnly
@@ -53,7 +61,7 @@ export function AccountReauthRequestItem({
   const handleReconnect = async () => {
     setError(null)
     const attempt = ++attemptRef.current
-    const succeeded = await reconnect(accountId, toolkit)
+    const succeeded = onReconnect ? await onReconnect() : await reconnect(accountId, toolkit)
     if (succeeded) {
       onComplete()
     } else if (attempt === attemptRef.current) {
@@ -70,7 +78,8 @@ export function AccountReauthRequestItem({
     setError(null)
     setDismissing(true)
     try {
-      await dismissReauthRequest({ agentSlug, requestId: proxyRequestId, reason })
+      if (onDismiss) await onDismiss(reason)
+      else await dismissReauthRequest({ agentSlug, requestId: proxyRequestId, reason })
       onComplete()
     } catch (dismissError) {
       setError(dismissError instanceof Error ? dismissError.message : 'Failed to dismiss the request')

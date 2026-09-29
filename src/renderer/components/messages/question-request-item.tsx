@@ -19,13 +19,22 @@ interface Question {
   multiSelect: boolean
 }
 
+/** What the card hands back: the answers keyed by question text, or a decline. */
+export type QuestionAnswer =
+  | { answers: Record<string, string> }
+  | { decline: true; declineReason: string }
+
 interface QuestionRequestItemProps {
   toolUseId: string
   questions: Question[]
-  sessionId: string
-  agentSlug: string
+  /** With `agentSlug`, answers post to the session endpoint. Omit both and pass `onAnswer` instead. */
+  sessionId?: string
+  agentSlug?: string
   readOnly?: boolean
   onComplete: () => void
+  /** Replaces the session endpoint: the answer (or decline) lands here. Lets the
+   *  same card serve a request that is not tied to a session. */
+  onAnswer?: (answer: QuestionAnswer) => void | Promise<void>
 }
 
 export function QuestionRequestItem({
@@ -35,6 +44,7 @@ export function QuestionRequestItem({
   agentSlug,
   readOnly,
   onComplete,
+  onAnswer,
 }: QuestionRequestItemProps) {
   // Track selected options for each question (key is question index)
   // For single select: string (selected label)
@@ -159,7 +169,11 @@ export function QuestionRequestItem({
     return (selection as string) || ''
   }
 
-  const postAnswer = async (body: Record<string, unknown>, signal: AbortSignal) => {
+  const postAnswer = async (body: QuestionAnswer, signal: AbortSignal) => {
+    if (onAnswer) {
+      await onAnswer(body)
+      return
+    }
     const response = await apiFetch(
       `/api/agents/${agentSlug}/sessions/${sessionId}/answer-question`,
       {

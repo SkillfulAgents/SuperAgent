@@ -8,15 +8,25 @@ import { DeclineButton } from './decline-button'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 
+export type ScriptRunGrant = 'once' | 'timed' | 'always'
+/** What the card hands back: an approval with its grant, or a denial. */
+export type ScriptRunDecision =
+  | { approved: true; grantType: ScriptRunGrant }
+  | { approved: false; reason: string }
+
 interface ScriptRunRequestItemProps {
   toolUseId: string
   script: string
   explanation: string
   scriptType: 'applescript' | 'shell' | 'powershell'
-  sessionId: string
-  agentSlug: string
+  /** With `agentSlug`, decisions post to the session endpoint. Omit both and pass `onDecide` instead. */
+  sessionId?: string
+  agentSlug?: string
   readOnly?: boolean
   onComplete: () => void
+  /** Replaces the session endpoint: the decision lands here. Lets the same
+   *  card serve a request that is not tied to a session. */
+  onDecide?: (decision: ScriptRunDecision) => void | Promise<void>
 }
 
 type RequestStatus = 'pending' | 'submitting' | 'executed' | 'denied'
@@ -36,16 +46,23 @@ export function ScriptRunRequestItem({
   agentSlug,
   readOnly,
   onComplete,
+  onDecide,
 }: ScriptRunRequestItemProps) {
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
   const [allowMenuOpen, setAllowMenuOpen] = useState(false)
 
-  const handleApprove = async (grantType: 'once' | 'timed' | 'always') => {
+  const handleApprove = async (grantType: ScriptRunGrant) => {
     setStatus('submitting')
     setError(null)
 
     try {
+      if (onDecide) {
+        await onDecide({ approved: true, grantType })
+        setStatus('executed')
+        onComplete()
+        return
+      }
       const response = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/run-script`,
         {
@@ -73,6 +90,12 @@ export function ScriptRunRequestItem({
     setError(null)
 
     try {
+      if (onDecide) {
+        await onDecide({ approved: false, reason: reason || 'User denied script execution' })
+        setStatus('denied')
+        onComplete()
+        return
+      }
       const response = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/run-script`,
         {
