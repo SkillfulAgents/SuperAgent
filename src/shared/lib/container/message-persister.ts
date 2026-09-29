@@ -2237,8 +2237,8 @@ class MessagePersister {
     // anything untracked.
     if (content.type === 'system') {
       const taskId = content.task_id as string | undefined
-      if (taskId && content.status) {
-        this.clearBackgroundTask(agentSlug, sessionId, state, taskId)
+      if (taskId && typeof content.status === 'string') {
+        this.retireBackgroundTask(agentSlug, sessionId, state, taskId, content.status)
       }
       // A task the user stopped (stop_task) may be the one terminal signal
       // the runtime does NOT follow with a wake turn: a completed task always
@@ -2593,7 +2593,7 @@ class MessagePersister {
           // Unconditional on map membership, same reason as the task_notification
           // path above: the id may only exist in the snapshot.
           if (taskId && isTerminal) {
-            this.clearBackgroundTask(agentSlug, sessionId, state, taskId)
+            this.retireBackgroundTask(agentSlug, sessionId, state, taskId, status!)
           }
           // A background *subagent* (task_type 'local_agent') settles via a
           // task_updated whose task_id equals the subagent's agentId. The busy
@@ -3482,6 +3482,32 @@ class MessagePersister {
       this.clearBackgroundTask(agentSlug, sessionId, state, taskId)
     }
     state.bgTasksSnapshot = null
+  }
+
+  // A per-task terminal signal, weighed against the SDK's level set. A
+  // `completed` for a task the snapshot still lists is not an end: a subagent
+  // reports `completed` when its own turn ends, but it stays a live task while
+  // background work it started (e.g. a dev server) keeps running — its
+  // notification says so ("stopped with background work of its own still
+  // running"), and stop_task still finds it. Retiring it here removed it from
+  // the rows and the Stop dialog while the snapshot's next change put it back
+  // in the union, pinning the session on work nobody could see. The snapshot
+  // drops it when it really ends, and the self-heal clears it then. The other
+  // terminal statuses (stopped, failed, killed) end the task outright.
+  private retireBackgroundTask(
+    agentSlug: string,
+    sessionId: string,
+    state: StreamingState,
+    taskId: string,
+    status: string,
+  ): void {
+    if (status === 'completed' && state.bgTasksSnapshot?.has(taskId)) {
+      console.log(
+        `[MessagePersister] ${taskId} reported completed but the SDK still lists it — keeping it open`
+      )
+      return
+    }
+    this.clearBackgroundTask(agentSlug, sessionId, state, taskId)
   }
 
   private clearBackgroundTask(agentSlug: string, sessionId: string, state: StreamingState, taskId: string): boolean {

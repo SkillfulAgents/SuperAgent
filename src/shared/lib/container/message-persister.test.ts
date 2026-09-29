@@ -8685,32 +8685,43 @@ describe('MessagePersister', () => {
     // These cover the three ways prod sessions got stuck that way.
     // ------------------------------------------------------------------
 
-    it('terminal task signal drains the snapshot when the removal frame never arrives', () => {
-      // Mirror image of the self-heal test above: there the per-task terminal
-      // signal was lost and the snapshot rescued the session; here the snapshot's
-      // removal frame is the one that never comes. A background subagent settles
-      // via task_notification carrying its agentId as task_id — the incremental
-      // map clears, but the stale snapshot id keeps the union non-zero.
-      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
-
-      // Background subagent launch: the ack registers it in the incremental map.
+    // A background subagent as the wire delivers it: the SDK announces the
+    // task (level + task_started), then the Agent tool's async-launch ack.
+    function launchBackgroundAgent(agentId: string) {
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: agentId, task_type: 'local_agent', description: 'Verify policies' }],
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: agentId,
+        tool_use_id: `tool-${agentId}`,
+        task_type: 'local_agent',
+        description: 'Verify policies',
+      })
       mockClient._sendMessage({
         type: 'user',
-        tool_use_result: { status: 'async_launched', isAsync: true, agentId: 'agent-bg-1' },
+        tool_use_result: { status: 'async_launched', isAsync: true, agentId },
         message: {
           content: [{
             type: 'tool_result',
-            tool_use_id: 'tool-agent-1',
+            tool_use_id: `tool-${agentId}`,
             content: 'Async agent launched successfully.',
           }],
         },
       })
-      // The SDK announces the same task in its level set.
-      mockClient._sendMessage({
-        type: 'system',
-        subtype: 'background_tasks_changed',
-        tasks: [{ task_id: 'agent-bg-1', task_type: 'local_agent', description: 'Verify policies' }],
-      })
+    }
+
+    it('a failed task drains the snapshot when the removal frame never arrives', () => {
+      // Mirror image of the self-heal test above: there the per-task terminal
+      // signal was lost and the snapshot rescued the session; here the snapshot's
+      // removal frame is the one that never comes. A task that ended outright
+      // (stopped, failed, killed) retires from both sides on its own signal.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      launchBackgroundAgent('agent-bg-1')
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map(t => t.taskId)).toEqual(['agent-bg-1'])
 
       // Turn ends while it runs → waiting, as designed.
       mockClient._sendMessage({ type: 'result', subtype: 'success' })
@@ -8719,14 +8730,14 @@ describe('MessagePersister', () => {
 
       sseEvents.length = 0
 
-      // The subagent finishes. Its terminal signal arrives; the removal snapshot does not.
+      // The subagent fails. Its terminal signal arrives; the removal snapshot does not.
       mockClient._sendMessage({
         type: 'system',
         subtype: 'task_notification',
         task_id: 'agent-bg-1',
-        tool_use_id: 'tool-agent-1',
-        status: 'completed',
-        summary: 'Agent finished',
+        tool_use_id: 'tool-agent-bg-1',
+        status: 'failed',
+        summary: 'Agent failed',
       })
       expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
 
@@ -8737,6 +8748,73 @@ describe('MessagePersister', () => {
       expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(0)
       expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
       expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it('a completed subagent the SDK still lists stays a tracked task until the snapshot drops it', () => {
+      // Seen in prod (2026-09-29): a background subagent notified `completed`
+      // ("stopped with background work of its own still running") while the
+      // dev servers it started kept it a live task — the SDK kept listing it
+      // and stop_task still found it. Retiring it on the notification removed
+      // it from the rows and the Stop dialog while the snapshot kept the
+      // session pinned "working" on nothing anyone could see.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      launchBackgroundAgent('agent-bg-1')
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'agent-bg-1',
+        tool_use_id: 'tool-agent-bg-1',
+        status: 'completed',
+        summary: 'Agent finished; its dev server is still running',
+      })
+
+      // Its own turn is done — the subagent row completes — but the task stays
+      // open, so the Stop dialog can still name it.
+      expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(1)
+      expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map(t => t.taskId)).toEqual(['agent-bg-1'])
+      expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(false)
+
+      // The wake turn ends with the task still live: still waiting.
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+
+      // The SDK drops it when its background work ends; the session settles.
+      sseEvents.length = 0
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+      expect(sseEvents.filter(e => e.type === 'background_task_completed').map(e => e.taskId)).toEqual(['agent-bg-1'])
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it('a completed task the SDK no longer lists retires on its notification', () => {
+      // The normal order: the snapshot drops the task, then the notification lands.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      launchBackgroundAgent('agent-bg-1')
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'agent-bg-1',
+        tool_use_id: 'tool-agent-bg-1',
+        status: 'completed',
+      })
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
     it('Stop drains the snapshot so later turns still settle', () => {
