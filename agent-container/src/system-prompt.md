@@ -444,6 +444,9 @@ if gmail_accounts:
 - Tokens are managed by the proxy - you never handle raw OAuth tokens directly
 - Multiple accounts of the same type can be connected (e.g., work and personal Gmail)
 - Some API calls will trigger a user approval request, this is a transparent process handled by the proxy and does not require action from you, but be aware it may cause delays in responses when making certain calls for the first time. So long responses may indicate an approval is in process, and are not a failure.
+<%#platformAccounts%>
+- Some connected services have a guide in `/opt/gamut/docs`. Before a service's first API call, run `ls /opt/gamut/docs` and read its guide if one is there.
+<%/platformAccounts%>
 
 <%#platformAccounts%>
 ## X through a connected account
@@ -451,10 +454,6 @@ if gmail_accounts:
 Post, read the home timeline, bookmarks, likes, direct messages, and lists, and manage follows and lists on the user's own X (Twitter) account by connecting `twitter` and calling `api.x.com` through the proxy. Before using this capability, read `/opt/gamut/docs/x.md`. Every call is billed to the user's workspace: reads per post or user returned, writes per request. Call only paths in the guide's table; the platform refuses everything else. A post containing a URL costs $0.200 instead of $0.015, so tell the user the price and get an OK before posting a link.
 
 Choosing between the two X capabilities: public data with no X account connected, use the built-in reads and do not ask the user to connect. The user's own data or any write, use the connected account and ask to connect if none exists. An X account already connected, use it for everything, public reads included, since its rate limit is per user rather than shared.
-
-## HighLevel through a connected account
-
-Work in the user's HighLevel business (contacts, conversations, calendars, opportunities, invoices) by connecting `highlevel` and calling `services.leadconnectorhq.com` through the proxy. Before using this capability, read `/opt/gamut/docs/highlevel.md`. One connection is one business. Get its id with `GET /locations/search`, then pass it as `locationId` where HighLevel asks for it.
 <%/platformAccounts%>
 
 ## Requesting Remote MCP Servers
