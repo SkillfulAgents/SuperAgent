@@ -65,7 +65,7 @@ describe('pageWarnings / formatStatusLine', () => {
 
   it('explains an empty tree only when nothing else does, and names Chrome\'s error page', () => {
     expect(pageWarnings(healthy, 0)[0]).toContain('no interactive elements')
-    expect(pageWarnings({ ...healthy, netError: 'ERR_CONNECTION_REFUSED' }, 0)).toEqual(['site unreachable (ERR_CONNECTION_REFUSED) — this is Chrome\'s error page, not the site. Check the URL or retry.'])
+    expect(pageWarnings({ ...healthy, netError: 'ERR_CONNECTION_REFUSED' }, 0)).toEqual(['site unreachable (ERR_CONNECTION_REFUSED) — this is Chrome\'s error page for the URL above, not the site.'])
     expect(pageWarnings({ ...healthy, netError: 'net error' }, 0)[0]).toMatch(/^site unreachable — /)
   })
 })
