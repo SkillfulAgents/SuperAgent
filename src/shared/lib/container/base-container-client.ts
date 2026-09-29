@@ -284,6 +284,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   protected config: ContainerConfig
   private wsConnections: Map<string, WebSocket> = new Map()
   private wsReadyRejectors = new WeakMap<WebSocket, (error: Error) => void>()
+  // A Lima port-forward can drop the guest side of a stream without the host
+  // socket ever seeing a close, leaving the session "working" forever.
+  protected streamHeartbeatIntervalMs = 30_000
 
   /** Whether this runner is eligible on the current platform. Override for platform-specific runners. */
   static isEligible(): boolean {
@@ -1688,6 +1691,23 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       ws.on('open', () => {
         console.log(`WebSocket connected for session ${sessionId}`)
+        let alive = true
+        ws.on('pong', () => { alive = true })
+        const heartbeat = setInterval(() => {
+          if (this.wsConnections.get(sessionId) !== ws || ws.readyState !== WebSocket.OPEN) {
+            clearInterval(heartbeat)
+            return
+          }
+          if (!alive) {
+            console.warn(`WebSocket for session ${sessionId} missed heartbeat, terminating`)
+            clearInterval(heartbeat)
+            ws.terminate()
+            return
+          }
+          alive = false
+          ws.ping()
+        }, this.streamHeartbeatIntervalMs)
+        heartbeat.unref?.()
       })
 
       ws.on('message', (data) => {
