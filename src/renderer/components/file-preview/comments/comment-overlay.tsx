@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { MessageSquarePlus } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { isComposing, isSubmitEnter } from '@renderer/lib/enter-key'
 import type { TextSelectionInfo } from './use-text-selection'
+import { useCommentMic } from './use-comment-mic'
 import { formatCommentTime } from './format-media-time'
 
 interface CommentOverlayProps {
@@ -13,13 +15,17 @@ interface CommentOverlayProps {
   onClose: () => void
   /** Skip the intermediate "Comment" button and open the editor immediately. */
   autoEdit?: boolean
+  /** Start the mic as the editor opens, when voice input is set up. */
+  autoListen?: boolean
 }
 
-export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEdit = false }: CommentOverlayProps) {
+export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEdit = false, autoListen = false }: CommentOverlayProps) {
   const [isEditing, setIsEditing] = useState(autoEdit)
   const [commentText, setCommentText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const { addComment } = useFilePreview()
+  const { voiceInput, listening, voiceModeOn } = useCommentMic(setCommentText, autoListen)
+  const canAdd = !voiceInput.isFinalizing && (!!commentText.trim() || voiceInput.isRecording)
 
   useEffect(() => {
     if (isEditing && textareaRef.current) {
@@ -40,12 +46,14 @@ export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEd
     overlay.style.marginLeft = `${Math.min(0, right - overlay.getBoundingClientRect().right)}px`
   }, [isEditing, selection.rect.x])
 
-  const handleAdd = () => {
-    if (!commentText.trim()) return
+  const handleAdd = async () => {
+    if (!canAdd) return
+    const text = listening ? (await voiceInput.stopRecording()) || commentText : commentText
+    if (!textareaRef.current || !text.trim()) return
     addComment({
       filePath,
       agentSlug,
-      text: commentText.trim(),
+      text: text.trim(),
       selectedText: selection.text || undefined,
       x: selection.x,
       y: selection.y,
@@ -61,9 +69,9 @@ export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEd
     if (isComposing(e.nativeEvent)) return
     if (isSubmitEnter(e.nativeEvent)) {
       e.preventDefault()
-      handleAdd()
+      void handleAdd()
     }
-    if (e.key === 'Escape') {
+    if (e.key === 'Escape' && !e.defaultPrevented) {
       e.preventDefault()
       onClose()
     }
@@ -131,15 +139,17 @@ export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEd
           className="w-full text-xs rounded border border-border bg-background p-2 resize-none focus:outline-none focus:ring-1 focus:ring-primary"
           rows={3}
         />
+        <VoiceInputError error={voiceInput.error} onDismiss={voiceInput.clearError} />
         <div className="flex justify-end gap-1">
+          <VoiceInputButton voiceInput={voiceInput} message={commentText} disabled={voiceModeOn} size="xs" />
           <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={onClose}>
             Cancel
           </Button>
           <Button
             size="sm"
             className="h-6 text-xs"
-            onClick={handleAdd}
-            disabled={!commentText.trim()}
+            onClick={() => void handleAdd()}
+            disabled={!canAdd}
           >
             Add
           </Button>

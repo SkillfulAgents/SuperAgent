@@ -9,6 +9,14 @@ import { FileRenderer } from './file-renderer'
 const addComment = vi.fn()
 let comments = new Map<string, FileComment[]>()
 
+// The comment box's mic needs app providers; the player only decides whether it listens.
+const startRecording = vi.hoisted(() => vi.fn(async () => {}))
+vi.mock('@renderer/hooks/use-voice-input', () => ({
+  useVoiceInput: () => ({ isRecording: false, isConnecting: false, isFinalizing: false, isSupported: true, error: null, clearError: () => {}, startRecording, stopRecording: async () => undefined }),
+  useIsVoiceConfigured: () => true,
+}))
+vi.mock('@renderer/components/ui/voice-input-button', () => ({ VoiceInputButton: () => null, VoiceInputError: () => null }))
+
 vi.mock('@renderer/context/file-preview-context', () => ({
   useFilePreview: () => ({
     commentsFor: (filePath: string, agentSlug: string) => comments.get(`${agentSlug}:${filePath}`) ?? [],
@@ -199,6 +207,8 @@ describe('AudioRenderer', () => {
     expect(screen.getByText('At 0:00.00')).toBeVisible()
 
     await user.type(screen.getByPlaceholderText('Add your comment...'), 'Reduce the background noise')
+    // Add Comment opens a plain box; only M opens one listening.
+    expect(startRecording).not.toHaveBeenCalled()
     await user.click(screen.getByRole('button', { name: 'Add' }))
 
     expect(addComment).toHaveBeenCalledWith({

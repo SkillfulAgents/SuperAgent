@@ -4,6 +4,7 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { mockSpeech } from '../helpers/speech'
 
 const e2eDataDir = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
 
@@ -477,6 +478,41 @@ test.describe('File Preview', () => {
     await expect(composer).toContainText('File feedback on clip.mp4:')
     await expect(composer).toContainText('At 0:00.00 at position (50%, 50%):')
     await expect(composer).toContainText('Trim the intro here')
+  })
+
+  test('M opens a video comment already listening, and Enter adds what was said', async ({ page }) => {
+    const speech = await mockSpeech(page, { supportsTts: false })
+    await appPage.goto()
+    await appPage.waitForAgentsLoaded()
+    await agentPage.createAgent(`VideoVoiceComment ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/clip.mp4', Buffer.from('00000018667479706d70343200000000', 'hex'))
+
+    await sessionPage.sendMessage('deliver video')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'clip.mp4').first().click()
+    await page.getByTestId('video-renderer').click({ position: { x: 5, y: 5 } })
+
+    await page.keyboard.press('m')
+    const overlay = page.locator('[data-comment-overlay]')
+    await expect(overlay.getByRole('button', { name: 'Stop recording' })).toBeVisible({ timeout: 10000 })
+    await expect.poll(() => speech.listen()).not.toBeNull()
+    speech.hear('Trim the intro')
+    const box = page.getByPlaceholder('Add your comment...')
+    await expect(box).toHaveValue('Trim the intro')
+
+    // Enter waits for the words still in flight when the mic stops.
+    speech.hearOnClose('Trim the intro here')
+    await box.press('Enter')
+    await expect(overlay).toHaveCount(0)
+    await expect(page.getByTestId('file-preview-tray').getByText('Trim the intro here')).toBeVisible()
+
+    // Cancel while recording releases the mic.
+    await page.keyboard.press('m')
+    await expect.poll(() => speech.micLive()).toBe(true)
+    await overlay.getByRole('button', { name: 'Cancel' }).click()
+    await expect.poll(() => speech.micLive()).toBe(false)
+    await expect.poll(() => speech.listen()).toBeNull()
   })
 
   test('renders an audio waveform and adds a timestamped comment from its hover affordance', async ({ page }) => {

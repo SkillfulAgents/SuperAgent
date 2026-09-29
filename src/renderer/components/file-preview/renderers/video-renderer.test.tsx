@@ -1,7 +1,15 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { VideoRenderer } from './video-renderer'
+
+// The comment box's mic needs app providers; the player only decides whether it listens.
+const startRecording = vi.hoisted(() => vi.fn(async () => {}))
+vi.mock('@renderer/hooks/use-voice-input', () => ({
+  useVoiceInput: () => ({ isRecording: false, isConnecting: false, isFinalizing: false, isSupported: true, error: null, clearError: () => {}, startRecording, stopRecording: async () => undefined }),
+  useIsVoiceConfigured: () => true,
+}))
+vi.mock('@renderer/components/ui/voice-input-button', () => ({ VoiceInputButton: () => null, VoiceInputError: () => null }))
 
 vi.mock('@renderer/context/file-preview-context', () => ({
   useFilePreview: () => ({ commentsFor: () => [], addComment: vi.fn() }),
@@ -21,6 +29,19 @@ describe('VideoRenderer keys', () => {
     fireEvent.keyDown(window, { key: 'c' })
 
     expect(screen.getByText('(25%, 30%)', { exact: false })).toBeInTheDocument()
+  })
+
+  it('opens a listening comment with M, a plain one with C', async () => {
+    startRecording.mockClear()
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    render(<VideoRenderer url="/clip.mp4" filePath="/workspace/clip.mp4" agentSlug="test-agent" />)
+    fireEvent.keyDown(window, { key: 'c' })
+    await act(() => new Promise((resolve) => setTimeout(resolve)))
+    expect(startRecording).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.keyDown(window, { key: 'm' })
+    await waitFor(() => expect(startRecording).toHaveBeenCalledTimes(1))
   })
 
   it('measures a frame from frames shown, never across a seek', () => {

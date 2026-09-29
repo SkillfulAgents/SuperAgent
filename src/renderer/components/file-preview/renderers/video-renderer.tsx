@@ -23,6 +23,8 @@ interface PendingComment {
   y: number
   /** Where to anchor the comment editor, in frame-local pixels. */
   rect: DOMRect
+  /** Opened with M: the editor starts the mic. */
+  listen: boolean
 }
 
 /** A video comment always carries a timestamp; x/y are present when placed in-frame. */
@@ -58,7 +60,7 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
 
   // Start a comment at the current frame: pause, lock the timestamp, drop the
   // draggable point. `xy` is the click position (frame %), or null to centre it.
-  const beginComment = useCallback((xy: { x: number; y: number } | null) => {
+  const beginComment = useCallback((xy: { x: number; y: number } | null, listen = false) => {
     const v = videoRef.current
     const frame = frameRef.current
     if (!v || !frame) return
@@ -71,6 +73,7 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
       x,
       y,
       rect: new DOMRect((x / 100) * frameRect.width, (y / 100) * frameRect.height, 0, 0),
+      listen,
     })
   }, [])
 
@@ -123,7 +126,7 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
 
   const { rate, setRate, togglePlay } = useMediaKeys(videoRef, {
     frameStep: () => (Number.isFinite(frameDurationRef.current) ? frameDurationRef.current : 1 / 30),
-    onComment: commentsEnabled && !pending ? () => beginComment(pointerRef.current) : undefined,
+    onComment: commentsEnabled && !pending ? (listen) => beginComment(pointerRef.current, listen) : undefined,
   })
 
   const handleBoxPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -211,6 +214,7 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
             filePath={filePath}
             agentSlug={agentSlug}
             autoEdit
+            autoListen={pending.listen}
             onClose={() => setPending(null)}
           />
         )}
