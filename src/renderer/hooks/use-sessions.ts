@@ -102,6 +102,8 @@ export function useCreateSession() {
       // Analytics-only: distinguishes auto-started sessions (template onboarding)
       // from user-typed ones. Not sent to the server.
       origin?: 'user' | 'onboarding'
+      // Analytics-only: the session was started from a voice entry point.
+      inputMode?: 'voice'
     }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
@@ -122,8 +124,10 @@ export function useCreateSession() {
     },
     onSuccess: (created, variables) => {
       const origin = variables.origin ?? 'user'
-      track('session_created', { origin })
-      track('message_sent', { origin })
+      const inputMode = variables.inputMode
+      track('session_created', { origin, ...(inputMode ? { input_mode: inputMode } : {}) })
+      // A voice-started session's first message is the entry marker, not something the person said.
+      track('message_sent', { origin, ...(inputMode ? { input_mode: 'voice_notice' } : {}) })
       const resolvedSlug = resolveAgentSlugFromCache(queryClient, variables.agentSlug)
       // Seed the caches from the response so the sidebar row and the session
       // view render immediately instead of waiting a refetch round-trip. The

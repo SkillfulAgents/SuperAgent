@@ -99,6 +99,8 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     agentDefaultsReady: agentPrefsFetched,
   })
   const textareaRef = useRef<HTMLDivElement>(null)
+  // Set by the voice-mode send path so message_sent can tell a spoken turn from a typed one.
+  const voiceSendRef = useRef(false)
   // Let out-of-tree components (file-preview comment bar) focus this composer.
   useEffect(() => registerSessionComposerFocus(sessionId, () => textareaRef.current?.focus()), [sessionId])
   const sendMessage = useSendMessage()
@@ -144,6 +146,8 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       // message uuid arrives with the POST response (the server always
       // generates it — a client-chosen id could forge attribution).
       const localId = crypto.randomUUID()
+      const inputMode = voiceSendRef.current ? 'voice' : 'text'
+      voiceSendRef.current = false
       // Mid-turn sends are queued by the agent loop (SDK streaming input) and
       // picked up after the current step. They must not carry model/effort —
       // a parameter change would interrupt/restart the in-flight query.
@@ -172,7 +176,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         onMessageFailed?.(localId)
         throw error
       }
-      track('message_sent', { origin: 'user' })
+      track('message_sent', { origin: 'user', input_mode: inputMode })
     }, [onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
     submitDisabled: sendMessage.isPending || isOffline || !isRuntimeReady,
     draftKey: `session:${sessionId}`,
@@ -380,7 +384,10 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     agentSlug,
     active: voiceModeOn && !isViewOnly,
     paused: suspended,
-    send: submitMessage,
+    send: (text) => {
+      voiceSendRef.current = true
+      return submitMessage(text).finally(() => { voiceSendRef.current = false })
+    },
     startWithAgentTurn: openedByVoice,
     history: voiceHistory,
   })

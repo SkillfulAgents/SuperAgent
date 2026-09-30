@@ -280,6 +280,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: VOICE_MODE_ENTERED_MESSAGE,
+        inputMode: 'voice',
         ...composerOptions.toRuntimeOptions(),
       })
       onSessionCreated(session.id, VOICE_MODE_ENTERED_MESSAGE, session.initialMessageUuid, { voiceMode: true })
