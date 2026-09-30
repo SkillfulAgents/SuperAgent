@@ -31,6 +31,7 @@ import {
 import { ensureLimaReady } from './lima-container-client'
 import type { ImagePullProgress, RuntimeReadiness } from './types'
 import { messagePersister } from './message-persister'
+import { WEBHOOK_RELAY_CHANGED_EVENT, watchWebhookRelay, type WebhookRelayService } from '@shared/lib/webhook-relay'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import path from 'path'
 import { getAgentWorkspaceDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
@@ -176,6 +177,23 @@ export class ContainerHost {
   /** Record every running agent as stale. */
   markAgentsStale(): void {
     for (const slug of this.getRunningAgentIds()) this.runtime(slug).markStale()
+  }
+
+  /** Record as stale every running agent whose webhook tools no longer match availability. */
+  reconcileWebhookRelay(available: boolean): void {
+    for (const slug of this.getRunningAgentIds()) this.runtime(slug).reconcileWebhookRelay(available)
+  }
+
+  /**
+   * Publishes the webhook relay's status to clients, and keeps running
+   * agents' webhook tools in step with it (their env says whether webhooks
+   * can be received).
+   */
+  watchWebhookRelay(relay: WebhookRelayService): () => void {
+    return watchWebhookRelay(relay, {
+      broadcast: (status) => messagePersister.broadcastGlobal({ type: WEBHOOK_RELAY_CHANGED_EVENT, status }),
+      reconcileAgents: (available) => this.reconcileWebhookRelay(available),
+    })
   }
 
   /**

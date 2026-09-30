@@ -2,6 +2,8 @@ import { isQueuedSessionSend } from './session-send-context'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ContainerClient, ContainerInfo, StreamMessage } from './types'
 import { WebSocketServer } from 'ws'
+import { describeWebhookRelayUnavailable } from '@shared/lib/webhook-relay/errors'
+import type { WebhookRelayUnavailableReason } from '@shared/lib/webhook-relay/types'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SchedMockFn = (...args: any[]) => any
@@ -139,7 +141,15 @@ const mockUpdateRelayEndpoint = vi.fn<MockFn>(() => Promise.resolve({}))
 const mockDisableRelayEndpoint = vi.fn<MockFn>(() => Promise.resolve())
 const mockListRelayEndpointEvents = vi.fn<MockFn>(() => Promise.resolve({ filterExp: null, events: [] }))
 const mockTestRelayEndpointFilter = vi.fn<MockFn>()
+// Receiving by default: the webhook tools gate on the relay's availability
+// (NOT on Composio mode — custom endpoints must work with a personal Composio
+// key).
+const mockRelayUnavailableReason = vi.fn(() => null as WebhookRelayUnavailableReason | null)
 vi.mock('@shared/lib/webhook-relay', () => ({
+  webhooksUnavailableMessage: (what: string) => {
+    const reason = mockRelayUnavailableReason()
+    return reason ? describeWebhookRelayUnavailable(what, reason) : null
+  },
   getWebhookRelay: () => ({
     createEndpoint: (...args: unknown[]) => mockCreateRelayEndpoint(...args),
     updateEndpoint: (...args: unknown[]) => mockUpdateRelayEndpoint(...args),
@@ -149,9 +159,6 @@ vi.mock('@shared/lib/webhook-relay', () => ({
   }),
 }))
 
-// Platform-authed by default: the create/update endpoint handlers gate on the
-// access token (NOT on Composio mode — custom endpoints must work with a
-// personal Composio key).
 const mockGetPlatformAccessToken = vi.fn(() => 'opaque_token' as string | null)
 const mockGetStoredPlatformMemberId = vi.fn(() => null as string | null)
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
@@ -6218,6 +6225,7 @@ describe('MessagePersister', () => {
 
       mockIsPlatformComposioActive.mockReturnValue(true)
       mockGetPlatformAccessToken.mockReturnValue('opaque_token')
+      mockRelayUnavailableReason.mockReturnValue(null)
       mockGetStoredPlatformMemberId.mockReturnValue(null)
       mockResolvePlatformMemberForCandidates.mockReturnValue(null)
       mockContainerClientFetch.mockResolvedValue({ ok: true })
@@ -6310,6 +6318,20 @@ describe('MessagePersister', () => {
             body: expect.stringContaining('only available with platform Composio'),
           }),
         )
+      })
+
+      it('rejects while the relay that delivers its events is unavailable', async () => {
+        mockRelayUnavailableReason.mockReturnValue('stopped')
+
+        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-norelay', {
+          connected_account_id: 'ca_1',
+          trigger_type: 'GMAIL_NEW_EMAIL',
+          prompt: 'Test',
+        })
+
+        const rejectCall = await flushHandlers('/inputs/tool-setup-norelay/reject')
+        expect(JSON.parse(rejectCall[1].body).reason).toBe('Webhook triggers are unavailable: the webhook relay is not running')
+        expect(mockEnableComposioTrigger).not.toHaveBeenCalled()
       })
 
       it('rejects when connected account not found', async () => {
@@ -6684,8 +6706,8 @@ describe('MessagePersister', () => {
         expect(mockDisableRelayEndpoint).toHaveBeenCalledWith(expect.any(String), ENDPOINT.id)
       })
 
-      it('rejects when there is no platform auth', async () => {
-        mockGetPlatformAccessToken.mockReturnValue(null)
+      it('rejects with the reason while the relay is unavailable', async () => {
+        mockRelayUnavailableReason.mockReturnValue('platform_disconnected')
 
         simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-5', {
           name: 'No platform',
@@ -6693,11 +6715,13 @@ describe('MessagePersister', () => {
         })
 
         const rejectCall = await flushHandlers('/inputs/tool-mint-5/reject')
-        expect(JSON.parse(rejectCall[1].body).reason).toContain('platform')
+        expect(JSON.parse(rejectCall[1].body).reason).toBe(
+          'Custom webhook endpoints are unavailable: the platform is not connected',
+        )
         expect(mockCreateRelayEndpoint).not.toHaveBeenCalled()
       })
 
-      it('mints with a personal Composio key as long as platform auth exists', async () => {
+      it('mints with a personal Composio key as long as the relay is available', async () => {
         // Custom endpoints live on the platform proxy, not Composio — a user
         // who brings their own Composio key must still be able to mint.
         mockIsPlatformComposioActive.mockReturnValue(false)
@@ -7063,7 +7087,7 @@ describe('MessagePersister', () => {
         expect(JSON.parse(rejectCall[1].body).reason).toContain('Unexpected token')
       })
 
-      it('rejects non-custom triggers and missing platform auth', async () => {
+      it('rejects non-custom triggers, and everything while the relay is unavailable', async () => {
         mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, kind: 'composio' })
         simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-5', {
           trigger_id: 'trigger_custom_1',
@@ -7071,7 +7095,7 @@ describe('MessagePersister', () => {
         await flushHandlers('/inputs/tool-insp-5/reject')
         expect(mockListRelayEndpointEvents).not.toHaveBeenCalled()
 
-        mockGetPlatformAccessToken.mockReturnValue(null)
+        mockRelayUnavailableReason.mockReturnValue('platform_disconnected')
         simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-6', {
           trigger_id: 'trigger_custom_1',
         })

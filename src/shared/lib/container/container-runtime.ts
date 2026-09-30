@@ -36,6 +36,7 @@ import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { mergeCustomEnvVars } from './reserved-env-vars'
 import { buildConnectedAccountsProjection, listAgentMcpConnections } from './connection-runtime-projections'
 import { recoverFromUnexpectedDeath } from './runtime-recovery'
@@ -117,6 +118,11 @@ export class ContainerRuntime {
    * every running runtime when a platform token changes; a stop clears it.
    */
   private stale = false
+  /**
+   * Whether webhooks could be received when this process built the
+   * container's env (WEBHOOK_RELAY_AVAILABLE); null until it has.
+   */
+  private webhookRelayAtStart: boolean | null = null
 
   constructor(
     readonly slug: string,
@@ -274,11 +280,24 @@ export class ContainerRuntime {
    */
   updateCachedStatus(status: 'running' | 'stopped', port: number | null): void {
     this.cached = { status, port, lastSyncedAt: Date.now() }
-    if (status === 'stopped') this.stale = false
+    if (status === 'stopped') {
+      this.stale = false
+      this.webhookRelayAtStart = null
+    }
   }
 
   markStale(): void {
     this.stale = true
+  }
+
+  /**
+   * Goes stale when the container's webhook tools no longer match whether
+   * webhooks can be received. A container this process didn't start is
+   * assumed to match the first availability it sees.
+   */
+  reconcileWebhookRelay(available: boolean): void {
+    if (this.webhookRelayAtStart === null) this.webhookRelayAtStart = available
+    else if (this.webhookRelayAtStart !== available) this.stale = true
   }
 
   isStale(): boolean {
@@ -594,10 +613,14 @@ export class ContainerRuntime {
       envVars['COMPOSIO_PLATFORM_MODE'] = 'true'
     }
 
-    // Custom webhook endpoints live on the platform proxy, not Composio: a
-    // user with platform auth plus a personal Composio key must still get
-    // the endpoint tools (mirrors the teardown gate in
-    // webhook-trigger-service).
+    // Webhook tools (custom endpoints, and Composio triggers with the flag
+    // above) follow the relay, not Composio mode: a personal Composio key
+    // must not take the endpoint tools away.
+    // Always set, so a container can tell "unavailable" from a host too old to say.
+    this.webhookRelayAtStart = getWebhookRelay().snapshot().available
+    envVars['WEBHOOK_RELAY_AVAILABLE'] = String(this.webhookRelayAtStart)
+
+    // Platform services (media, enrichment, search) only need the token.
     if (getPlatformAccessToken()) {
       envVars['PLATFORM_AUTH_ACTIVE'] = 'true'
     }
@@ -669,6 +692,9 @@ export class ContainerRuntime {
     // syncAgentStatus here — it is guarded against updates during startup.)
     const info = startedInfo ?? await client.getInfoFromRuntime()
     this.updateCachedStatus(info.status, info.port)
+    // Availability may have moved while the container started; the watcher
+    // only sees running agents, so this one checks itself.
+    if (info.status === 'running') this.reconcileWebhookRelay(getWebhookRelay().snapshot().available)
 
     // The start is the first mark on the idle clock: it floors stale session
     // timestamps from before the previous sleep. The alarm is armed by
@@ -768,6 +794,7 @@ export class ContainerRuntime {
     this.stopping = false
     this.starting = null
     this.stale = false
+    this.webhookRelayAtStart = null
   }
 
   /**

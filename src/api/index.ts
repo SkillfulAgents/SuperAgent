@@ -29,6 +29,7 @@ import homeGraph from './routes/home-graph'
 import homeCardHealth from './routes/home-card-health'
 import policies from './routes/policies'
 import runtimeStatusRouter from './routes/runtime-status'
+import webhookRelayRouter from './routes/webhook-relay'
 import firewallRouter from './routes/firewall'
 import voiceRouter from './routes/voice'
 import llmRouter from './routes/llm'
@@ -259,6 +260,7 @@ app.route('/api/home-graph', homeGraph)
 app.route('/api/home-card-health', homeCardHealth)
 app.route('/api/policies', policies)
 app.route('/api/runtime-status', runtimeStatusRouter)
+app.route('/api/webhook-relay', webhookRelayRouter)
 app.route('/api/firewall', firewallRouter)
 app.route('/api/admin/users', adminUsersRouter)
 app.route('/api/audit-log', auditLogRouter)

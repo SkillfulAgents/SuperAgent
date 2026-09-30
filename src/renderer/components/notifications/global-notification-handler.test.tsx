@@ -704,6 +704,19 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['platform-notifications'] })
   })
 
+  it('webhook_relay_changed replaces the cached relay status', () => {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+    const status = { available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null }
+
+    simulateSSEMessage(getLatestEventSource(), { type: 'webhook_relay_changed', status })
+
+    expect(queryClient.getQueryData(['webhook-relay'])).toEqual(status)
+  })
+
   it('platform_notification pops an OS notification whose click opens the detail route', async () => {
     const { showOSNotification } = await import('@renderer/lib/os-notifications')
     vi.mocked(showOSNotification).mockClear()

@@ -56,6 +56,8 @@ const RENAMED_PER_AGENT: Record<string, string> = {
 const HOST_METHODS = [
   'getRunningAgentIds',
   'markAgentsStale',
+  'reconcileWebhookRelay',
+  'watchWebhookRelay',
   'hasRunningAgents',
   'getReadiness',
   'resetReadiness',
