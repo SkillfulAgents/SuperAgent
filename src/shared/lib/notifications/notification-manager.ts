@@ -21,12 +21,12 @@ import {
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgentRecord } from '@shared/lib/services/agent-service'
-import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
+import { isHiddenAutomatedSession, isNoninteractiveSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
 import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { getNotificationChannels } from './channels'
-import { isNotificationTypeEnabled } from './notification-preferences'
+import { isNotificationTypeEnabled, SESSION_PROMOTING_NOTIFICATION_TYPES } from './notification-preferences'
 import type { NotificationEvent } from './notification-event'
 import { buildSessionCompleteBody } from './session-complete-summary'
 
@@ -36,6 +36,14 @@ interface SessionCompleteNotificationOptions {
   /** In-flight same-file byte-boundary snapshot for this completed turn. */
   responseTranscriptEndOffset?: Promise<number | null>
 }
+
+// `suppressed`: the session was promoted (visible) but the user's settings
+// disable this notification type, so nothing was delivered.
+export type NotificationOutcome = 'created' | 'suppressed'
+
+export type AgentNotifyResult =
+  | { ok: true; outcome: NotificationOutcome }
+  | { ok: false; reason: 'interactive_session' }
 
 type NotificationBody = string | {
   fallback: string
@@ -118,25 +126,23 @@ class NotificationManager {
     actions?: Array<{ text: string }>
     actionContext?: Record<string, unknown>
     extra?: Omit<Record<string, unknown>, 'type' | 'notificationType' | 'notificationId' | 'sessionId' | 'agentSlug' | 'title' | 'body' | 'actions' | 'actionContext'>
-  }): Promise<void> {
+  }): Promise<NotificationOutcome> {
     const { type, sessionId, agentSlug, title, body, actions, actionContext, extra } = params
 
-    // A blocked automated session must become visible: session lists exclude
-    // non-promoted automated sessions, so a session_waiting notification on one
-    // would raise unread indicators pointing at nothing — and could never be
-    // cleared. Promote first (idempotent, no-op for non-automated sessions),
+    // A blocked or self-reporting automated session must become visible:
+    // session lists exclude non-promoted automated sessions, so a notification
+    // on one would raise unread indicators pointing at nothing — and could never
+    // be cleared. Promote first (idempotent, no-op for non-automated sessions),
     // and before the settings check: visibility isn't a notification pref.
-    if (type === 'session_waiting') {
-      try {
-        await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId)
-      } catch (error) {
-        console.error('[NotificationManager] Failed to promote automated session:', error)
-      }
+    // A failed promotion propagates: reporting success on a session that
+    // stayed hidden would be a lie to the caller (notify_user relies on it).
+    if (SESSION_PROMOTING_NOTIFICATION_TYPES.has(type)) {
+      await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId)
     }
 
     // Skip if notification type is disabled in settings
     if (!(await this.isNotificationTypeEnabled(type))) {
-      return
+      return 'suppressed'
     }
 
     // Completion bodies can require one summarizer call. Resolve them only
@@ -185,6 +191,7 @@ class NotificationManager {
         console.error(`[NotificationManager] ${channel.id} delivery failed:`, error)
       })
     }
+    return 'created'
   }
 
   /**
@@ -319,6 +326,33 @@ class NotificationManager {
       title: 'Action Required',
       body: `${displayName} ${waitingMessage}`,
     })
+  }
+
+  // Agent-initiated `notify_user`: no input is awaited, the user just needs to see it.
+  async triggerAgentNotify(
+    sessionId: string,
+    agentSlug: string,
+    message: string,
+    title?: string,
+  ): Promise<AgentNotifyResult> {
+    // The container only offers notify_user in noninteractive sessions; this
+    // covers the window between a promotion and the container's re-query, and
+    // any host/container disagreement. An interactive session is already
+    // visible and the user reads its replies.
+    const meta = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
+    if (!isNoninteractiveSession(meta)) {
+      return { ok: false, reason: 'interactive_session' }
+    }
+
+    const displayName = await this.getAgentDisplayName(agentSlug)
+    const outcome = await this.triggerNotification({
+      type: 'session_notify',
+      sessionId,
+      agentSlug,
+      title: title?.trim() || `${displayName} needs your attention`,
+      body: message,
+    })
+    return { ok: true, outcome }
   }
 
   /**

@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
-import type { CreateSessionRequest } from './types';
+import { isNoninteractive, type CreateSessionRequest } from './types';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
 
 /**
@@ -13,10 +13,13 @@ import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagen
  * same warm process; anything else must spawn cold.
  *
  * Deliberately excludes the per-session parts — initialMessage, its uuid,
- * metadata, envVars — which are supplied after the process is claimed.
+ * metadata, envVars — which are supplied after the process is claimed. The
+ * one metadata bit that IS baked in is `noninteractive`: it decides the tool
+ * list and a prompt section at query creation.
  */
 export const warmProfileSchema = z.object({
   workingDirectory: z.string().optional(),
+  noninteractive: z.boolean().optional(),
   systemPrompt: z.string().optional(),
   modelPromptHints: z.array(z.string()).optional(),
   availableEnvVars: z.array(z.string()).optional(),
@@ -59,7 +62,8 @@ export function sessionProfileFromRequest(request: CreateSessionRequest): WarmPr
  * session's own shape.
  */
 export function nextWarmProfileFromRequest(request: CreateSessionRequest): WarmProfile {
-  return buildProfile(request, request.prewarmDefaults);
+  // Always warm interactive: unattended runs tolerate a cold start, people don't.
+  return { ...buildProfile(request, request.prewarmDefaults), noninteractive: false };
 }
 
 function buildProfile(
@@ -69,6 +73,7 @@ function buildProfile(
   const runtime = defaults?.llmRuntime ?? request.llmRuntime;
   return warmProfileSchema.parse({
     workingDirectory: request.workingDirectory,
+    noninteractive: isNoninteractive(request.metadata),
     systemPrompt: request.systemPrompt,
     modelPromptHints: runtime?.modelPromptHints ?? (defaults ? defaults.modelPromptHints : request.modelPromptHints),
     availableEnvVars: request.availableEnvVars,

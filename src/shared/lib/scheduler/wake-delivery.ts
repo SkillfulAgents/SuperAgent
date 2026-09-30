@@ -105,9 +105,12 @@ export async function deliverSessionWake(
     // starts a fresh turn instead of deadlocking behind the blocked tool.
     await actor.inputs.cancelAwaiting(sessionId)
 
+    // A wake is not a human reply: without `noninteractive` the container would
+    // treat it as one and drop the session's unattended mode.
     await actor.messages.withSend(sessionId, () =>
       actor.messages.send(sessionId, buildWakeMessage(task, trigger), randomUUID(), {
         shouldQuery: true,
+        noninteractive: true,
       }),
     )
 

@@ -7,7 +7,7 @@
  * for a session to run under a configuration it did not ask for.
  */
 import { describe, it, expect } from 'vitest'
-import { warmProfileKey, warmProfileSchema } from './warm-profile'
+import { nextWarmProfileFromRequest, sessionProfileFromRequest, warmProfileKey, warmProfileSchema } from './warm-profile'
 
 const base = warmProfileSchema.parse({ model: 'claude-opus-4-8', effort: 'high' })
 
@@ -85,5 +85,30 @@ describe('warmProfileKey', () => {
     const undef = warmProfileKey(warmProfileSchema.parse({ model: 'm', effort: undefined, speed: undefined }))
 
     expect(absent).toBe(undef)
+  })
+
+  // notify_user and the unattended prompt section are baked into the query,
+  // so an interactive session must never claim a process warmed unattended.
+  it('separates noninteractive from interactive profiles', () => {
+    const unattended = warmProfileKey(warmProfileSchema.parse({ ...base, noninteractive: true }))
+    const interactive = warmProfileKey(warmProfileSchema.parse({ ...base, noninteractive: false }))
+
+    expect(unattended).not.toBe(interactive)
+  })
+})
+
+describe('profiles from a create-session request', () => {
+  const request = { initialMessage: 'hi', model: 'm', metadata: { noninteractive: true } }
+
+  it('the session profile carries the request metadata flag', () => {
+    expect(sessionProfileFromRequest(request).noninteractive).toBe(true)
+    expect(sessionProfileFromRequest({ initialMessage: 'hi' }).noninteractive).toBe(false)
+  })
+
+  it('the next-warm profile is always interactive', () => {
+    expect(nextWarmProfileFromRequest(request).noninteractive).toBe(false)
+    expect(
+      nextWarmProfileFromRequest({ ...request, prewarmDefaults: { model: 'm' } }).noninteractive,
+    ).toBe(false)
   })
 })

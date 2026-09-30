@@ -86,17 +86,29 @@ describe('SessionManager.forkSession', () => {
     expect(persisted.get('src-1')).toEqual(source) // source untouched
   })
 
-  it('does not inherit isAutomated from the source', async () => {
-    persisted.set('src-1', { ...source, metadata: { isAutomated: true, other: 'keep' } })
+  it('does not inherit noninteractive from the source', async () => {
+    persisted.set('src-1', { ...source, metadata: { noninteractive: true, other: 'keep' } })
     sdkFork.mockResolvedValue({ sessionId: 'fork-1' })
 
     const id = await manager.forkSession('src-1')
 
     expect(id).toBe('fork-1')
     const record = persisted.get('fork-1')!
-    expect((record.metadata as { isAutomated?: boolean; other?: string }).isAutomated).toBeUndefined()
+    expect((record.metadata as { noninteractive?: boolean; other?: string }).noninteractive).toBeUndefined()
     expect((record.metadata as { other?: string }).other).toBe('keep')
-    expect((persisted.get('src-1')!.metadata as { isAutomated?: boolean }).isAutomated).toBe(true)
+    expect((persisted.get('src-1')!.metadata as { noninteractive?: boolean }).noninteractive).toBe(true)
+  })
+
+  it('does not inherit the legacy isAutomated spelling either', async () => {
+    persisted.set('src-1', { ...source, metadata: { isAutomated: true, other: 'keep' } })
+    sdkFork.mockResolvedValue({ sessionId: 'fork-1' })
+
+    await manager.forkSession('src-1')
+
+    const meta = persisted.get('fork-1')!.metadata as { isAutomated?: boolean; noninteractive?: boolean; other?: string }
+    expect(meta.isAutomated).toBeUndefined()
+    expect(meta.noninteractive).toBeUndefined()
+    expect(meta.other).toBe('keep')
   })
 
   it('returns null when the listing survived but the transcript was reaped', async () => {

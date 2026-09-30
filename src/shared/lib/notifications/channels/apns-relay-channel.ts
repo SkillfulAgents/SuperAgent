@@ -27,13 +27,19 @@ import type { NotificationEvent } from '../notification-event'
  * Typed against the union so a renamed or mistyped member fails typecheck
  * instead of silently never pushing.
  */
-const VISIBLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting'])
+const VISIBLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting', 'session_notify'])
 const SILENT_TYPES = new Set<NotificationType>([
   'session_complete',
   'session_waiting',
+  'session_notify',
   'session_scheduled',
   'session_webhook',
 ])
+// notify_user comes from a session nobody started from a phone (cron /
+// trigger), so there is no origin device to route the alert to. Its whole
+// point is to reach the user, so every eligible device gets the alert — the
+// same audience that sees the notification row in the app.
+const ALERT_ALL_DEVICES_TYPES = new Set<NotificationType>(['session_notify'])
 
 /** Relay wire contract: 1..50 pushes per request. */
 const MAX_PUSHES_PER_REQUEST = 50
@@ -74,7 +80,8 @@ interface RelayResult {
  * on iOS (no content-available → no background wake), so without the paired
  * silent push the one phone the user is actually holding would keep stale
  * widget snapshots until the app next opened. Sessions with no origin
- * (web/cron/webhook) are silent to everyone. An origin device whose owner
+ * (web/cron/webhook) are silent to everyone, except ALERT_ALL_DEVICES_TYPES
+ * which alert every eligible device. An origin device whose owner
  * disabled the type degrades to a background push — never to nothing, so the
  * widget still refreshes.
  */
@@ -171,7 +178,8 @@ export class ApnsRelayChannel implements NotificationChannel {
     }
 
     const isOrigin = device.mobileDeviceId != null && device.mobileDeviceId === originDeviceId
-    if (isOrigin && VISIBLE_TYPES.has(event.type)) {
+    const alertsThisDevice = isOrigin || ALERT_ALL_DEVICES_TYPES.has(event.type)
+    if (alertsThisDevice && VISIBLE_TYPES.has(event.type)) {
       // In local mode the single local user's settings govern every device —
       // including rows that retain a userId from a previous auth-mode life of
       // this database (that user's old per-user settings row is stale there).
