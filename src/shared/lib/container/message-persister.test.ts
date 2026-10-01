@@ -9208,6 +9208,20 @@ describe('MessagePersister', () => {
       ])
     })
 
+    it('keeps the last 20 discards for a browser that connects later, across a reattach', async () => {
+      for (let i = 0; i <= 18; i++) {
+        mockClient._sendMessage({ type: 'command_lifecycle', command_uuid: `d${i}`, state: 'discarded' })
+      }
+      messagePersister.broadcastDiscarded(AGENT_SLUG, SESSION_ID, ['d19', 'd20'])
+      // Stop cancels a message the agent already received: not a discard.
+      mockClient._sendMessage({ type: 'command_lifecycle', command_uuid: 'cancelled', state: 'cancelled' })
+      await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+
+      expect(messagePersister.getRecentDiscards(AGENT_SLUG, SESSION_ID)).toEqual(
+        Array.from({ length: 20 }, (_, i) => `d${i + 1}`),
+      )
+    })
+
     it('ignores a malformed background_tasks_changed frame instead of clearing running tasks', () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({
