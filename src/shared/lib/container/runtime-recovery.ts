@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import { addErrorBreadcrumb, captureException } from '@shared/lib/error-reporting'
 import type { ContainerClient } from './types'
+import { MessageNotAcceptedError } from './message-dispatch-error'
 import type { CoalescedUserMessage, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
 // Session lifecycle here: active --(unexpected death)--> isRecovering --> either
@@ -18,6 +19,7 @@ export type RuntimeRecoveryDeps = {
   settleRecoveringSessions: (sessionIds: string[]) => void
   markRecovered: (sessionIds: string[]) => void
   takeCoalescedUserMessages: (sessionId: string) => CoalescedUserMessage[]
+  broadcastDiscarded: (sessionId: string, uuids: string[]) => void
   isSessionRecovering: (sessionId: string) => boolean
   isSubscribed: (sessionId: string) => boolean
   subscribeToSession: (
@@ -280,6 +282,8 @@ async function deliverCoalescedMessages(
       // become a turn of its own now.
       await client.sendMessage(sessionId, message.text, message.uuid, { shouldQuery: message.shouldQuery ?? true })
     } catch (error) {
+      // Never accepted: report it discarded.
+      if (error instanceof MessageNotAcceptedError) deps.broadcastDiscarded(sessionId, [message.uuid])
       captureException(error, {
         tags: { area: 'container', op: 'runtime.recovery.deliverCoalesced' },
         extra: { agentId: deps.agentId, sessionId },
