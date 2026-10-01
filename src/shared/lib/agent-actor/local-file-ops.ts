@@ -39,12 +39,12 @@ export function createLocalFileOps(slug: string, deps: LocalFileOpsDeps): FileOp
 
 type ErrnoLike = { code?: string }
 
-function errnoCode(error: unknown): string | undefined {
+export function errnoCode(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null ? (error as ErrnoLike).code : undefined
 }
 
 /** Translate a filesystem error into the contract's error, or rethrow it. */
-function fromFsError(error: unknown): never {
+export function fromFsError(error: unknown): never {
   switch (errnoCode(error)) {
     // A link that loops (ELOOP) resolves to nothing trustworthy: the same as nothing there.
     case 'ENOENT':
@@ -53,6 +53,8 @@ function fromFsError(error: unknown): never {
       throw new WorkspaceFileError('not-found')
     case 'EEXIST':
       throw new WorkspaceFileError('already-exists')
+    case 'ENOTEMPTY':
+      throw new WorkspaceFileError('not-empty')
     case 'EISDIR':
       throw new WorkspaceFileError('not-a-file')
     case 'ENAMETOOLONG':
