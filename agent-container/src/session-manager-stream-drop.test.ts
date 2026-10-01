@@ -85,6 +85,7 @@ describe('SessionManager undelivered turn report', () => {
     manager.noteStreamClosed(id, droppedSocket)
 
     endTurn(proc)
+    settle(proc)
     expect(reports).toEqual([])
     await pastGrace()
 
@@ -102,6 +103,7 @@ describe('SessionManager undelivered turn report', () => {
     expect(Number.isNaN(Date.parse(reports[0].closedAt))).toBe(false)
 
     endTurn(proc)
+    settle(proc)
     await pastGrace()
     expect(reports).toHaveLength(1)
   })
@@ -164,6 +166,36 @@ describe('SessionManager undelivered turn report', () => {
     settle(proc)
     await pastGrace()
 
+    expect(reports).toHaveLength(1)
+  })
+
+  it('does not treat a stale idle before the result as the end of the turn', async () => {
+    const { id, proc } = await startTurn()
+    manager.subscribe(id, () => {})()
+    manager.noteStreamClosed(id, droppedSocket)
+
+    settle(proc)
+    await pastGrace()
+    expect(reports).toEqual([])
+
+    endTurn(proc)
+    settle(proc)
+    await pastGrace()
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toMatchObject({ sessionId: id, resultSubtype: 'success' })
+  })
+
+  it('does not treat a result before the final idle as the end of the turn', async () => {
+    const { id, proc } = await startTurn()
+    manager.subscribe(id, () => {})()
+    manager.noteStreamClosed(id, droppedSocket)
+
+    endTurn(proc)
+    await pastGrace()
+    expect(reports).toEqual([])
+
+    settle(proc)
+    await pastGrace()
     expect(reports).toHaveLength(1)
   })
 

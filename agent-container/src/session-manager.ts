@@ -1079,6 +1079,7 @@ export class SessionManager extends EventEmitter {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) return;
 
+    const wasBusy = sessionData.settlement.getState().runtime === 'busy';
     sessionData.settlement.handleMessage(message);
 
     // Release browser lock when an automated session's turn completes.
@@ -1092,13 +1093,13 @@ export class SessionManager extends EventEmitter {
       }
     }
 
-    // The host ends a turn on its result (errors) or final idle. A subscriber
-    // that left mid-turn, including between those two frames, and never came
-    // back means the host is still showing it as working (SUP-991).
+    // A subscriber that left mid-turn, including between the result and the
+    // final idle, and never came back means the host is still showing the turn
+    // as working (SUP-991). The turn ends when the settlement tracker leaves
+    // busy, not on any result or idle frame: a queued message's result and a
+    // stale idle both arrive mid-turn.
     const dropped = sessionData.streamDroppedMidTurn;
-    const frame = message as { type: string; subtype?: string; state?: string };
-    const endsTurn = frame.type === 'result' ||
-      (frame.type === 'system' && frame.subtype === 'session_state_changed' && frame.state === 'idle');
+    const endsTurn = wasBusy && sessionData.settlement.getState().runtime !== 'busy';
     if (endsTurn && dropped && sessionData.subscribers.size === 0) {
       sessionData.streamDroppedMidTurn = undefined;
       const report: UndeliveredTurnReport = {
