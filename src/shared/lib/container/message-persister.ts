@@ -231,6 +231,9 @@ const interruptContainerResponseSchema = z.object({
   processKept: z.boolean().optional(),
 })
 
+// The one user message a result answers (result.user_message_uuids). A batch fails it.
+const singleAnsweredUuidSchema = z.tuple([z.string()])
+
 // Frames that belong to the turn an interrupt just ended, as opposed to frames
 // about the runtime (results, system events, command lifecycle, capability
 // handshakes) that must land even after Stop. See handleMessage.
@@ -280,6 +283,7 @@ interface StreamingState {
   waitingBackground: boolean
   isRecovering: boolean // Mid-turn death claimed for resume; skip session_error until resume fails
   coalescedUserMessages?: CoalescedUserMessage[] // User texts sent while recovering; delivered with their uuids
+  promptBlockedByHook?: boolean // A UserPromptSubmit hook blocked the turn's prompt; cleared when a command starts and at the result
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
   agentSlug: string // The agent that owns this session; half of its registry key
   sessionId: string // The bare id, for payloads and disk paths
@@ -2167,6 +2171,9 @@ class MessagePersister {
     // Info-level chatter (non-blocking status lines) stays stream-only.
     if (!isBlocking && !isWarning) return
     const text = typeof content.content === 'string' ? content.content : ''
+    // The CLI's banner for a blocked prompt (exit 2 or decision "block"), which
+    // keeps the prompt out of the transcript. A "continue: false" stop writes it.
+    if (isBlocking && text.startsWith('UserPromptSubmit operation blocked by hook')) state.promptBlockedByHook = true
     if (!text) return
     if (!state.agentSlug) {
       console.warn(`[MessagePersister] Dropping informational banner for ${sessionId}: no agent slug`)
@@ -2819,6 +2826,7 @@ class MessagePersister {
         // dropped (nothing downstream can act without a uuid).
         const lifecycle = parseCommandLifecycle(content)
         if (lifecycle) {
+          if (lifecycle.state === 'started') state.promptBlockedByHook = false
           this.broadcastToSSE(agentSlug, sessionId, {
             type: 'command_lifecycle',
             commandUuid: lifecycle.commandUuid,
@@ -2901,7 +2909,15 @@ class MessagePersister {
           console.warn(
             `[MessagePersister] Session ${sessionId}: turn ended with no model turns (num_turns=0) — possible hook-blocked prompt`
           )
+          // A hook blocked the prompt: the one message this result answers never
+          // reached the model or the transcript, and never will. A blocked batch
+          // was not probed, so it waits.
+          const answered = singleAnsweredUuidSchema.safeParse(content.user_message_uuids)
+          if (state.promptBlockedByHook && answered.success) {
+            this.broadcastDiscarded(agentSlug, sessionId, answered.data)
+          }
         }
+        state.promptBlockedByHook = false
 
         // Extract and persist context usage from result event
         this.handleResultUsage(sessionId, state, content)
