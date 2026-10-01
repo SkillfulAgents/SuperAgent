@@ -62,7 +62,7 @@ import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-i
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
-import { parseByteRange } from '@shared/lib/utils/http-range'
+import { servedRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
@@ -6649,13 +6649,7 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     // doing, but not as an unvalidated rider on a leak fix.
     c.header('Cache-Control', 'private, no-store, max-age=0')
 
-    // Advertise range support so media players (e.g. <video>) can seek. When the
-    // client requests a byte range, serve just that slice as 206 Partial
-    // Content; otherwise stream the whole file.
-    c.header('Accept-Ranges', 'bytes')
-    const size = stat.size
-    const rangeHeader = c.req.header('range')
-    const parsedRange = rangeHeader ? parseByteRange(rangeHeader, size) : null
+    const served = servedRange(c.req.header('range'), stat.size)
 
     // Hono has no HEAD routing: its dispatcher answers a HEAD by running the
     // GET handler and dropping the body (`new Response(null, await dispatch(…,
@@ -6666,27 +6660,8 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     // the entire answer to a HEAD anyway; return before opening anything.
     // (`c.req.method` is the real method — the dispatcher overrides its routing
     // key, not the request.)
-    const bodyless = c.req.method === 'HEAD'
-
-    if (rangeHeader && !parsedRange) {
-      // Unsatisfiable range → 416 with the valid extent so the client can retry.
-      c.header('Content-Range', `bytes */${size}`)
-      return c.body(null, 416)
-    }
-
-    if (parsedRange) {
-      const { start, end } = parsedRange
-      c.header('Content-Range', `bytes ${start}-${end}/${size}`)
-      c.header('Content-Length', (end - start + 1).toString())
-      if (bodyless) return c.body(null, 206)
-      const chunk = await actor.files.read(resolved, { start, end })
-      return c.body(chunk, 206)
-    }
-
-    c.header('Content-Length', size.toString())
-    if (bodyless) return c.body(null)
-    const webStream = await actor.files.read(resolved)
-    return c.body(webStream)
+    if (served.status === 416 || c.req.method === 'HEAD') return c.body(null, served.status, served.headers)
+    return c.body(await actor.files.read(resolved, served.range ?? undefined), served.status, served.headers)
   } catch (error) {
     if (error instanceof WorkspaceFileError) {
       return c.json({ error: error.status === 400 ? 'Invalid path' : error.message }, error.status)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseByteRange } from './http-range'
+import { parseByteRange, servedRange } from './http-range'
 
 describe('parseByteRange', () => {
   const SIZE = 1000
@@ -56,5 +56,17 @@ describe('parseByteRange', () => {
   it('treats every range against an empty file as unsatisfiable', () => {
     expect(parseByteRange('bytes=0-0', 0)).toBeNull()
     expect(parseByteRange('bytes=-100', 0)).toBeNull()
+  })
+})
+
+describe('servedRange', () => {
+  it('answers a range with 206 and its slice, no range with 200, and an unsatisfiable one with 416', () => {
+    expect(servedRange('bytes=6-10', 11)).toEqual({
+      status: 206,
+      headers: { 'Accept-Ranges': 'bytes', 'Content-Range': 'bytes 6-10/11', 'Content-Length': '5' },
+      range: { start: 6, end: 10 },
+    })
+    expect(servedRange(undefined, 11)).toEqual({ status: 200, headers: { 'Accept-Ranges': 'bytes', 'Content-Length': '11' }, range: null })
+    expect(servedRange('bytes=20-30', 11)).toEqual({ status: 416, headers: { 'Accept-Ranges': 'bytes', 'Content-Range': 'bytes */11' }, range: null })
   })
 })

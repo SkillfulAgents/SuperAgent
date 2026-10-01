@@ -2211,6 +2211,32 @@ describe('path traversal security — GET /:id/files/*', () => {
     expect(mockCreateReadStream).not.toHaveBeenCalled()
   })
 
+  it('answers a file gone between the stat and the read with 404 and no range headers', async () => {
+    mockFsStat.mockResolvedValueOnce(fileStat(100)).mockRejectedValueOnce(enoent())
+
+    const res = await app.request('http://localhost/api/agents/test-agent/files/out/render.mp4', { headers: { Range: 'bytes=10-19' } })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'File not found' })
+    expect(res.headers.get('content-length')).toBeNull()
+    expect(res.headers.get('content-range')).toBeNull()
+  })
+
+  // Media players seek with byte ranges.
+  it('serves a byte range as 206 and an unsatisfiable one as 416', async () => {
+    mockFsStat.mockResolvedValue(fileStat(100))
+    mockCreateReadStream.mockReturnValueOnce(Readable.from([Buffer.alloc(10)]))
+
+    const partial = await app.request('http://localhost/api/agents/test-agent/files/out/render.mp4', { headers: { Range: 'bytes=10-19' } })
+    expect(partial.status).toBe(206)
+    expect(partial.headers.get('content-range')).toBe('bytes 10-19/100')
+    expect(partial.headers.get('content-length')).toBe('10')
+    expect(partial.headers.get('accept-ranges')).toBe('bytes')
+
+    const unsatisfiable = await app.request('http://localhost/api/agents/test-agent/files/out/render.mp4', { headers: { Range: 'bytes=200-300' } })
+    expect(unsatisfiable.status).toBe(416)
+    expect(unsatisfiable.headers.get('content-range')).toBe('bytes */100')
+  })
+
   // Hono has no HEAD routing: it answers a HEAD by running this GET handler and
   // throwing the body away. A stream opened here is never read and never
   // closed, so every HEAD of a file past the stream's 64KB high-water mark
