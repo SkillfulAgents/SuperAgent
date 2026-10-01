@@ -248,6 +248,18 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     })
   }, [messages, activeSubagents, completedSubagents])
 
+  // A subagent reports completion when its own turn ends, but the runtime
+  // keeps listing it while background work it started still runs. Its row
+  // stays live (with its stop control) until the runtime drops it.
+  const subagentRows = useMemo<ActivitySubagentItem[]>(() => {
+    const liveAgentTaskIds = new Set(backgroundTasks.filter((task) => task.isSubagent).map((task) => task.taskId))
+    return subagentItems.map((item) =>
+      item.status === 'completed' && item.taskId && liveAgentTaskIds.has(item.taskId)
+        ? { ...item, status: 'running' as const, progressSummary: 'background work still running' }
+        : item
+    )
+  }, [subagentItems, backgroundTasks])
+
   // Name each background task after the tool call that launched it (the
   // command, the subagent's description) so the rows say what would be stopped.
   const labeledBackgroundTasks = useMemo(
@@ -310,7 +322,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         revokeError,
         onRevoke: handleRevokeComputerUse,
       } : null}
-      subagents={subagentItems}
+      subagents={subagentRows}
       backgroundTasks={labeledBackgroundTasks}
       todos={todos}
       onStopTask={handleStopTask}

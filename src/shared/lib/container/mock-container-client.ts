@@ -1950,6 +1950,46 @@ export class BackgroundBashScenario implements MockScenario {
 }
 
 /**
+ * A background task only the runtime's level set names: a subagent started
+ * it, so no launch signal on the lead stream registers it (seen in prod as a
+ * dev server a subagent left running). The turn answers and ends; the task
+ * stays listed for holdMs, then the runtime drops it and the session settles.
+ */
+export class SnapshotOnlyBackgroundScenario implements MockScenario {
+  constructor(
+    private holdMs: number = 300_000,
+    private description: string = 'Serve the landing preview on :3100',
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const taskId = `bnested_${Date.now().toString(36)}`
+    const runtime = client.unguarded
+    runtime.registerBackgroundTask(sessionId, taskId)
+    runtime.emitStreamMessage(sessionId, {
+      type: 'system',
+      content: {
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: taskId, task_type: 'local_bash', description: this.description }],
+      },
+    })
+    new SimpleTextResponseScenario('The preview server is up; it keeps running in the background.')
+      .execute(sessionId, client, userMessage)
+
+    setTimeout(() => {
+      // Stopped in the meantime: the runtime already reported its end.
+      if (!runtime.isBackgroundTaskRunning(sessionId, taskId)) return
+      runtime.completeBackgroundTask(sessionId, taskId)
+      runtime.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: { type: 'system', subtype: 'background_tasks_changed', tasks: [] },
+      })
+      runtime.emitSessionState(sessionId, 'idle')
+    }, this.holdMs)
+  }
+}
+
+/**
  * Mock implementation of ContainerClient for E2E testing.
  * Simulates container behavior without requiring Docker/Podman.
  */
@@ -2045,6 +2085,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['run background slowly', new BackgroundBashScenario(6000, 'done sleeping')],
     // Register a background bash scenario for testing background task tracking
     ['run background', new BackgroundBashScenario(2000, 'done sleeping')],
+    // A task only the runtime's task list names (a subagent started it)
+    ['leave a preview server', new SnapshotOnlyBackgroundScenario()],
     // A workspace hook blocking the prompt before the model sees it
     ['trip the breaker', new HookBlockScenario('Circuit breaker: too many messages without operator input')],
     // Register a slow response scenario for cross-session tests

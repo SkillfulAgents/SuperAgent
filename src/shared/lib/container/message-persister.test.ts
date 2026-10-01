@@ -4613,10 +4613,10 @@ describe('MessagePersister', () => {
         expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
       })
 
-      it('stops everything when the only open background work is untracked', async () => {
-        // Same escalation as the interrupt route: the runtime lists a task the
-        // host never registered (a subagent launched it), so a turn stop would
-        // leave the session pinned. The cancel asks for the full stop.
+      it('spares a task only the runtime listed, like any other tracked task', async () => {
+        // A subagent launched it, so no launch signal registered it — but the
+        // runtime's snapshot does, which gives it a row and a per-task stop.
+        // A turn stop leaves it running instead of escalating to a full stop.
         messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
         mockClient._sendMessage({
           type: 'system',
@@ -4624,6 +4624,32 @@ describe('MessagePersister', () => {
           tasks: [{ task_id: 'nested-1', task_type: 'local_bash', description: 'Serve local assets' }],
         })
         simulateToolUse('AskUserQuestion', 'q-untracked', {
+          questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
+        })
+        mockContainerClientFetch.mockClear()
+        answerInterruptWith(true)
+        try {
+          await messagePersister.cancelAwaitingInput(AGENT_SLUG, SESSION_ID)
+        } finally {
+          mockContainerClientFetch.mockImplementation(() => Promise.resolve({ ok: true }))
+        }
+
+        expect(interruptCall()?.[1]).toMatchObject({ method: 'POST', body: JSON.stringify({ scope: 'turn' }) })
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map((t) => t.taskId)).toEqual(['nested-1'])
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+      })
+
+      it('stops everything when the only open work is ambient', async () => {
+        // Ambient tasks (housekeeping, live-update watchers) are hidden from
+        // clients, so there is no row to stop them from: a turn stop would
+        // leave the session pinned. The cancel asks for the full stop.
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        mockClient._sendMessage({
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [{ task_id: 'watcher', task_type: 'local_bash', description: 'Watch for updates', ambient: true }],
+        })
+        simulateToolUse('AskUserQuestion', 'q-ambient', {
           questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
         })
         mockContainerClientFetch.mockClear()
@@ -4636,7 +4662,6 @@ describe('MessagePersister', () => {
 
         expect(interruptCall()?.[1]).toMatchObject({ method: 'POST', body: JSON.stringify({ scope: 'all' }) })
         expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
-        expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(false)
       })
 
       it('drops background tasks when the container had to restart the process', async () => {
@@ -8503,6 +8528,48 @@ describe('MessagePersister', () => {
       expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
     })
 
+    it('sends the whole live list with every frame that changes it', () => {
+      // Clients replace their copy with it, so a frame one of them missed
+      // cannot leave a stale row (or Stop-dialog entry) behind.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-1' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-2' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-2', content: 'Running' }] },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'bg-1' }, { task_id: 'bg-2', task_type: 'local_bash', description: 'Watch the build' }],
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bg-2' }] })
+
+      const ids = (e: Record<string, unknown>) => (e.backgroundTasks as Array<{ taskId: string }>).map(t => t.taskId)
+      const listFrames = sseEvents.filter(e =>
+        ['background_task_started', 'background_task_updated', 'background_task_completed', 'session_waiting_background'].includes(e.type as string))
+      expect(listFrames.map(e => [e.type, ids(e)])).toEqual([
+        ['background_task_started', ['bg-1']],
+        ['background_task_started', ['bg-1', 'bg-2']],
+        ['background_task_updated', ['bg-1', 'bg-2']],
+        // Once when the turn's output ends, again when the runtime reports idle.
+        ['session_waiting_background', ['bg-1', 'bg-2']],
+        ['session_waiting_background', ['bg-1', 'bg-2']],
+        ['background_task_completed', ['bg-2']],
+      ])
+      expect(listFrames[2].backgroundTasks).toEqual([
+        expect.objectContaining({ taskId: 'bg-1' }),
+        expect.objectContaining({ taskId: 'bg-2', taskType: 'local_bash', description: 'Watch the build' }),
+      ])
+    })
+
     it('backstop: session_state_changed running does not clear pending tasks', () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({
@@ -8576,15 +8643,14 @@ describe('MessagePersister', () => {
     })
 
     // ------------------------------------------------------------------
-    // Work the host never tracked. A background Bash command a SUBAGENT
-    // launches returns its tool result on the sidechain, which registers
-    // nothing — but the runtime's snapshot lists it, so the union keeps the
-    // session in waiting-background with an empty task list. Seen in prod
+    // Work no launch signal of ours registered. A background Bash command a
+    // SUBAGENT launches returns its tool result on the sidechain, which
+    // registers nothing — only the runtime's snapshot lists it. Seen in prod
     // (2026-09-09): a subagent started a local asset server that never
-    // exited; Stop sent scope 'turn', the container kept the idle process,
-    // and nothing could retire the task. hasOnlyUntrackedBackgroundWork is
-    // the signal the stop paths escalate on.
-    describe('untracked background work (subagent-launched tasks)', () => {
+    // exited, and the session sat in waiting-background with an empty task
+    // list and nothing to stop. The snapshot now registers every task it
+    // lists, so the row, the Stop dialog entry and the per-task stop exist.
+    describe('snapshot-only background work (subagent-launched tasks)', () => {
       // The runtime's snapshot is the full live set, so a launch alongside
       // other open work lists every id (the self-heal retires what it omits).
       function launchFromSubagent(taskId: string, liveTaskIds: string[] = [taskId]) {
@@ -8601,9 +8667,14 @@ describe('MessagePersister', () => {
         })
       }
 
-      it('pins the session in waiting-background with an empty task list', () => {
+      it('lists the task, labelled from the snapshot, while the session waits on it', () => {
         messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        sseEvents.length = 0
         launchFromSubagent('nested-1')
+        expect(sseEvents.filter(e => e.type === 'background_task_started')).toEqual([
+          expect.objectContaining({ taskId: 'nested-1', taskType: 'local_bash', description: 'Serve local assets' }),
+        ])
+
         // The subagent finishes; the lead's turn ends; the runtime reports idle.
         mockClient._sendMessage({ type: 'result', subtype: 'success' })
         sseEvents.length = 0
@@ -8612,12 +8683,14 @@ describe('MessagePersister', () => {
         expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
         expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(1)
         expect(messagePersister.isSessionWaitingBackground(AGENT_SLUG, SESSION_ID)).toBe(true)
-        // What the UI (and the connected snapshot) get: nothing to stop.
-        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
-        expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(true)
+        // What the UI (and the connected snapshot) get: the task, by name.
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([
+          expect.objectContaining({ taskId: 'nested-1', taskType: 'local_bash', description: 'Serve local assets' }),
+        ])
+        expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(false)
       })
 
-      it('is not reported while a tracked task is open alongside', () => {
+      it('lists it alongside a task the lead launched', () => {
         messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
         mockClient._sendMessage({
           type: 'user',
@@ -8626,32 +8699,97 @@ describe('MessagePersister', () => {
         })
         launchFromSubagent('nested-1', ['bg-main', 'nested-1'])
 
-        // A tracked row exists, so the keep/kill dialog can be offered.
-        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map(t => t.taskId)).toEqual(['bg-main'])
-        expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(false)
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map(t => t.taskId)).toEqual(['bg-main', 'nested-1'])
       })
 
-      it('is not reported with no background work at all, nor for an unknown session', () => {
+      it('merges the snapshot into a task a launch signal registered first, without a second start', () => {
         messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
-        expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(false)
-        expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, 'nonexistent')).toBe(false)
+        sseEvents.length = 0
+        mockClient._sendMessage({
+          type: 'user',
+          tool_use_result: { backgroundTaskId: 'bg-main' },
+          message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+        })
+        mockClient._sendMessage({
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [{ task_id: 'bg-main', task_type: 'local_bash', description: 'Run the dev server' }],
+        })
+        // A repeat of the same level changes nothing and says nothing.
+        mockClient._sendMessage({
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [{ task_id: 'bg-main', task_type: 'local_bash', description: 'Run the dev server' }],
+        })
+
+        expect(sseEvents.filter(e => e.type === 'background_task_started').map(e => e.taskId)).toEqual(['bg-main'])
+        expect(sseEvents.filter(e => e.type === 'background_task_updated')).toEqual([
+          expect.objectContaining({ taskId: 'bg-main', taskType: 'local_bash', description: 'Run the dev server' }),
+        ])
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([
+          expect.objectContaining({ taskId: 'bg-main', description: 'Run the dev server' }),
+        ])
       })
 
-      it('clears once the untracked task is stopped', () => {
+      it('keeps ambient tasks out of the client list, including when the flag flips', () => {
+        // SDK >= 0.3.284 marks housekeeping tasks and live-update watchers
+        // `ambient`: "hosts should exclude them from activity indicators".
+        const level = (tasks: Array<{ task_id: string; ambient?: boolean }>) => mockClient._sendMessage({
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: tasks.map((t) => ({ task_type: 'local_bash', description: `Task ${t.task_id}`, ...t })),
+        })
+        const shown = () => messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map(t => t.taskId)
+        const frames = () => sseEvents
+          .filter(e => typeof e.type === 'string' && e.type.startsWith('background_task_'))
+          .map(e => [e.type, e.taskId])
+
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        sseEvents.length = 0
+        level([{ task_id: 'watcher', ambient: true }, { task_id: 'server' }])
+        expect(shown()).toEqual(['server'])
+        expect(frames()).toEqual([['background_task_started', 'server']])
+
+        expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(false)
+
+        // Still live work: the session waits on it rather than settling —
+        // and with nothing left to show, a stop must escalate to reach it.
+        mockClient._sendMessage({ type: 'result', subtype: 'success' })
+        level([{ task_id: 'watcher', ambient: true }])
+        mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+        expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(true)
+
+        // Flips: to activity (the flag may simply be absent) and back.
+        sseEvents.length = 0
+        level([{ task_id: 'watcher' }])
+        expect(shown()).toEqual(['watcher'])
+        level([{ task_id: 'watcher', ambient: true }])
+        expect(shown()).toEqual([])
+        // Its end is not news to clients once it is ambient again.
+        level([])
+        expect(frames()).toEqual([
+          ['background_task_started', 'watcher'],
+          ['background_task_completed', 'watcher'],
+        ])
+      })
+
+      it('clears once the task is stopped', () => {
         messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
         launchFromSubagent('nested-1')
         mockClient._sendMessage({ type: 'result', subtype: 'success' })
         mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
-        expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(true)
 
-        // The per-task stop route's answer retires the id from the snapshot too.
+        // The per-task stop route's answer retires the id from both sides.
+        sseEvents.length = 0
         mockClient._sendMessage({
           type: 'system', subtype: 'task_notification', task_id: 'nested-1', tool_use_id: 'sub-tool-nested-1', status: 'stopped',
         })
-        expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(false)
+        expect(sseEvents.filter(e => e.type === 'background_task_completed').map(e => e.taskId)).toEqual(['nested-1'])
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
       })
 
-      it('a full stop settles the session the turn stop could not', async () => {
+      it('a full stop settles the session', async () => {
         // markSessionInterrupted with processKept false is what a scope 'all'
         // stop produces: the snapshot is dropped and the session goes idle.
         messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
@@ -8659,18 +8797,17 @@ describe('MessagePersister', () => {
         mockClient._sendMessage({ type: 'result', subtype: 'success' })
         mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
 
-        // The turn-scoped stop (process kept) leaves it pinned...
+        // The turn-scoped stop (process kept) spares the task...
         sseEvents.length = 0
         await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: true })
         expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
         expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
 
-        // ...and the escalated full stop settles it.
+        // ...and the full stop settles it.
         sseEvents.length = 0
         await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: false })
         expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
         expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
-        expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(false)
       })
     })
 
@@ -8685,32 +8822,43 @@ describe('MessagePersister', () => {
     // These cover the three ways prod sessions got stuck that way.
     // ------------------------------------------------------------------
 
-    it('terminal task signal drains the snapshot when the removal frame never arrives', () => {
-      // Mirror image of the self-heal test above: there the per-task terminal
-      // signal was lost and the snapshot rescued the session; here the snapshot's
-      // removal frame is the one that never comes. A background subagent settles
-      // via task_notification carrying its agentId as task_id — the incremental
-      // map clears, but the stale snapshot id keeps the union non-zero.
-      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
-
-      // Background subagent launch: the ack registers it in the incremental map.
+    // A background subagent as the wire delivers it: the SDK announces the
+    // task (level + task_started), then the Agent tool's async-launch ack.
+    function launchBackgroundAgent(agentId: string) {
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: agentId, task_type: 'local_agent', description: 'Verify policies' }],
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: agentId,
+        tool_use_id: `tool-${agentId}`,
+        task_type: 'local_agent',
+        description: 'Verify policies',
+      })
       mockClient._sendMessage({
         type: 'user',
-        tool_use_result: { status: 'async_launched', isAsync: true, agentId: 'agent-bg-1' },
+        tool_use_result: { status: 'async_launched', isAsync: true, agentId },
         message: {
           content: [{
             type: 'tool_result',
-            tool_use_id: 'tool-agent-1',
+            tool_use_id: `tool-${agentId}`,
             content: 'Async agent launched successfully.',
           }],
         },
       })
-      // The SDK announces the same task in its level set.
-      mockClient._sendMessage({
-        type: 'system',
-        subtype: 'background_tasks_changed',
-        tasks: [{ task_id: 'agent-bg-1', task_type: 'local_agent', description: 'Verify policies' }],
-      })
+    }
+
+    it('a failed task drains the snapshot when the removal frame never arrives', () => {
+      // Mirror image of the self-heal test above: there the per-task terminal
+      // signal was lost and the snapshot rescued the session; here the snapshot's
+      // removal frame is the one that never comes. A task that ended outright
+      // (stopped, failed, killed) retires from both sides on its own signal.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      launchBackgroundAgent('agent-bg-1')
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map(t => t.taskId)).toEqual(['agent-bg-1'])
 
       // Turn ends while it runs → waiting, as designed.
       mockClient._sendMessage({ type: 'result', subtype: 'success' })
@@ -8719,14 +8867,14 @@ describe('MessagePersister', () => {
 
       sseEvents.length = 0
 
-      // The subagent finishes. Its terminal signal arrives; the removal snapshot does not.
+      // The subagent fails. Its terminal signal arrives; the removal snapshot does not.
       mockClient._sendMessage({
         type: 'system',
         subtype: 'task_notification',
         task_id: 'agent-bg-1',
-        tool_use_id: 'tool-agent-1',
-        status: 'completed',
-        summary: 'Agent finished',
+        tool_use_id: 'tool-agent-bg-1',
+        status: 'failed',
+        summary: 'Agent failed',
       })
       expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
 
@@ -8737,6 +8885,73 @@ describe('MessagePersister', () => {
       expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(0)
       expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
       expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it('a completed subagent the SDK still lists stays a tracked task until the snapshot drops it', () => {
+      // Seen in prod (2026-09-29): a background subagent notified `completed`
+      // ("stopped with background work of its own still running") while the
+      // dev servers it started kept it a live task — the SDK kept listing it
+      // and stop_task still found it. Retiring it on the notification removed
+      // it from the rows and the Stop dialog while the snapshot kept the
+      // session pinned "working" on nothing anyone could see.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      launchBackgroundAgent('agent-bg-1')
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'agent-bg-1',
+        tool_use_id: 'tool-agent-bg-1',
+        status: 'completed',
+        summary: 'Agent finished; its dev server is still running',
+      })
+
+      // Its own turn is done — the subagent row completes — but the task stays
+      // open, so the Stop dialog can still name it.
+      expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(1)
+      expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map(t => t.taskId)).toEqual(['agent-bg-1'])
+      expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(false)
+
+      // The wake turn ends with the task still live: still waiting.
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+
+      // The SDK drops it when its background work ends; the session settles.
+      sseEvents.length = 0
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+      expect(sseEvents.filter(e => e.type === 'background_task_completed').map(e => e.taskId)).toEqual(['agent-bg-1'])
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it('a completed task the SDK no longer lists retires on its notification', () => {
+      // The normal order: the snapshot drops the task, then the notification lands.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      launchBackgroundAgent('agent-bg-1')
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'agent-bg-1',
+        tool_use_id: 'tool-agent-bg-1',
+        status: 'completed',
+      })
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.hasOnlyUntrackedBackgroundWork(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
     it('Stop drains the snapshot so later turns still settle', () => {

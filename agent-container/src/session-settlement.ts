@@ -22,6 +22,9 @@ const backgroundTaskSchema = z.object({
   task_id: z.string(),
   task_type: z.string().optional().catch(undefined),
   description: z.string().optional().catch(undefined),
+  // SDK >= 0.3.284: housekeeping tasks and live-update watchers, which "hosts
+  // should exclude from activity indicators". Still live work for settlement.
+  ambient: z.boolean().optional().catch(undefined),
 });
 
 const backgroundTasksChangedSchema = z.object({
@@ -30,7 +33,7 @@ const backgroundTasksChangedSchema = z.object({
 
 export interface BackgroundTasksSnapshot {
   taskIds: Set<string>;
-  tasks: Array<{ task_id: string; task_type?: string; description?: string }>;
+  tasks: Array<{ task_id: string; task_type?: string; description?: string; ambient?: boolean }>;
 }
 
 /**
@@ -211,7 +214,7 @@ export class SessionSettlementTracker {
             typeof status === 'string' &&
             TERMINAL_TASK_UPDATED_STATUSES.has(status)
           ) {
-            this.removeTask(msg.task_id, now);
+            this.removeTask(msg.task_id, status, now);
           }
           return;
         }
@@ -221,7 +224,7 @@ export class SessionSettlementTracker {
             typeof msg.status === 'string' &&
             TERMINAL_TASK_NOTIFICATION_STATUSES.has(msg.status)
           ) {
-            this.removeTask(msg.task_id, now);
+            this.removeTask(msg.task_id, msg.status, now);
           }
           return;
         }
@@ -255,13 +258,19 @@ export class SessionSettlementTracker {
     }
   }
 
-  private removeTask(taskId: string, now: number): void {
+  private removeTask(taskId: string, status: string, now: number): void {
     const hadOpenWork = this.openBackgroundTaskCount > 0;
     this.edgeTaskIds.delete(taskId);
     // A terminal per-task signal normally trails the snapshot that already
     // dropped the task; if a snapshot was missed the union would pin, so the
-    // freshest information wins on both sides.
-    this.snapshotTaskIds?.delete(taskId);
+    // freshest information wins on both sides — except a `completed` for a
+    // task the snapshot still lists. A subagent reports `completed` when its
+    // own turn ends yet stays a live task while background work it started
+    // keeps running; retiring it here would let the reaper settle the session
+    // and kill that work. The snapshot drops it when it really ends.
+    if (!(status === 'completed' && this.snapshotTaskIds?.has(taskId))) {
+      this.snapshotTaskIds?.delete(taskId);
+    }
     this.noteIfDrained(hadOpenWork, now);
   }
 

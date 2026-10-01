@@ -12,6 +12,7 @@ import { useEffect } from 'react'
 import { setMarkdownComposerSelection } from './markdown-composer-editor'
 import { pendingAttachmentDropKey, type PendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import type { DataTransferResult } from '@renderer/lib/file-utils'
+import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
 
 // Mock hooks
 const mockSendMessage = {
@@ -89,7 +90,7 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
 const mockStreamState = {
   isActive: false,
   isWaitingBackground: false,
-  backgroundTasks: [] as Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }>,
+  backgroundTasks: [] as BackgroundTaskRef[],
   slashCommands: [] as Array<{ name: string; description: string; argumentHint: string }>,
 }
 

@@ -221,15 +221,41 @@ describe('SessionSettlementTracker — background_tasks_changed snapshots', () =
     // t2 was self-healed away by the stale snapshot — deliberate: the SDK's
     // full set is authoritative. t1 still blocks.
     expect(tracker.isSettled(T0)).toBe(false);
+    tracker.handleMessage(snapshot([]), T0);
     tracker.handleMessage(taskNotification('t1', 'completed'), T0);
     expect(tracker.isSettled(T0)).toBe(true);
   });
 
-  it('a terminal edge clears a task the (stale) snapshot still lists', () => {
+  it("a 'completed' for a task the snapshot still lists holds until the snapshot drops it", () => {
+    // Seen in prod (2026-09-29): a background subagent notified `completed`
+    // when its own turn ended, but the dev servers it had started kept it a
+    // live task — the SDK kept listing it and stop_task still found it.
+    // Settling here would let the reaper kill that work.
+    const tracker = settledTracker({ wakeGraceMs: 0 });
+    tracker.handleMessage(snapshot(['agent-1']), T0);
+    tracker.handleMessage(taskStarted('agent-1', 'local_agent'), T0);
+    tracker.handleMessage(taskNotification('agent-1', 'completed'), T0);
+    expect(tracker.isSettled(T0)).toBe(false);
+    expect(tracker.getState().openBackgroundTaskIds).toEqual(['agent-1']);
+    tracker.handleMessage(snapshot([]), T0);
+    expect(tracker.isSettled(T0)).toBe(true);
+  });
+
+  it.each([
+    ['task_notification', 'stopped'],
+    ['task_notification', 'failed'],
+    ['task_updated', 'killed'],
+    ['task_updated', 'failed'],
+  ])('%s %s clears a task the (stale) snapshot still lists', (frame, status) => {
+    // These end the task outright; if its removal snapshot is missed the
+    // union would otherwise pin the session.
     const tracker = settledTracker({ wakeGraceMs: 0 });
     tracker.handleMessage(snapshot(['t1']), T0);
     tracker.handleMessage(taskStarted('t1'), T0);
-    tracker.handleMessage(taskNotification('t1', 'completed'), T0); // no fresh snapshot seen
+    tracker.handleMessage(
+      frame === 'task_notification' ? taskNotification('t1', status) : taskUpdated('t1', status),
+      T0
+    );
     expect(tracker.isSettled(T0)).toBe(true);
   });
 
@@ -323,6 +349,22 @@ describe('parseBackgroundTasksChanged', () => {
     });
     expect(parsed).not.toBeNull();
     expect(parsed!.tasks[0]).toEqual({ task_id: 'a' });
+  });
+
+  it('keeps the ambient flag (SDK >= 0.3.284), dropping a malformed one', () => {
+    const parsed = parseBackgroundTasksChanged({
+      tasks: [{ task_id: 'w', ambient: true }, { task_id: 'x', ambient: 'yes' }],
+    });
+    expect(parsed!.tasks).toEqual([{ task_id: 'w', ambient: true }, { task_id: 'x' }]);
+  });
+
+  it('an ambient task still blocks settlement — it is live work, just not activity', () => {
+    const tracker = settledTracker({ wakeGraceMs: 0 });
+    tracker.handleMessage(
+      { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'w', ambient: true }] },
+      T0
+    );
+    expect(tracker.isSettled(T0)).toBe(false);
   });
 
   it('rejects frames without a valid tasks array', () => {
