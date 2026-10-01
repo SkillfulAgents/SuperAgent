@@ -1519,6 +1519,13 @@ class MessagePersister {
     return true
   }
 
+  /** Tell clients these messages will never run, so each sender gets its text back. */
+  broadcastDiscarded(agentSlug: string, sessionId: string, uuids: string[]): void {
+    for (const commandUuid of uuids) {
+      this.broadcastToSSE(agentSlug, sessionId, { type: 'command_lifecycle', commandUuid, state: 'discarded' })
+    }
+  }
+
   markRecovered(agentSlug: string, sessionIds: string[]): void {
     for (const sessionId of sessionIds) {
       const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
@@ -1543,6 +1550,7 @@ class MessagePersister {
           tags: { area: 'container', op: 'runtime.recovery.dropCoalesced' },
           extra: { sessionId, messageCount: dropped.length, messageLength },
         })
+        this.broadcastDiscarded(agentSlug, sessionId, dropped.map((message) => message.uuid))
       }
       state.coalescedUserMessages = undefined
       if (state.isActive && !state.isInterrupted) {
@@ -1658,6 +1666,7 @@ class MessagePersister {
       state.currentToolUse = null
       state.currentToolInput = ''
       state.isRecovering = false
+      this.broadcastDiscarded(agentSlug, sessionId, state.coalescedUserMessages?.map((message) => message.uuid) ?? [])
       state.coalescedUserMessages = undefined
       if (processKept) {
         // Foreground subagents died with the turn; background and resumed ones

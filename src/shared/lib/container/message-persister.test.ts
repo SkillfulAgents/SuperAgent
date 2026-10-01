@@ -3200,6 +3200,27 @@ describe('MessagePersister', () => {
     })
   })
 
+  describe('messages held during recovery', () => {
+    const hold = (...uuids: string[]) => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+      for (const uuid of uuids) {
+        expect(messagePersister.coalesceIfRecovering(AGENT_SLUG, SESSION_ID, { uuid, text: 'held' })).toBe(true)
+      }
+    }
+
+    it.each([
+      ['recovery gives up', () => messagePersister.settleRecoveringSessions(AGENT_SLUG, [SESSION_ID])],
+      ['the user stops the session', () => messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID)],
+    ] as const)('reports a held message discarded when %s', async (_case, drop) => {
+      hold('held-1', 'held-2')
+      await drop()
+      const discarded = sseEvents.filter(e => e.type === 'command_lifecycle' && e.state === 'discarded').map(e => e.commandUuid)
+      expect(discarded).toEqual(['held-1', 'held-2'])
+      expect(messagePersister.takeCoalescedUserMessages(AGENT_SLUG, SESSION_ID)).toEqual([])
+    })
+  })
+
   describe('provisional recovery activity', () => {
     it('reverts a silent cold attachment even when subscribing recreates the streaming state', async () => {
       messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
