@@ -1,17 +1,15 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionContextMenu } from './session-context-menu'
 
 const IDLE = { isActive: false, isAwaitingInput: false, isStreaming: false }
 
 const mockApiFetch = vi.fn()
 const mockDownloadBlob = vi.fn()
-const mockToastLoading = vi.fn<(...args: unknown[]) => string>(() => 'toast-raw-log')
-const mockToastSuccess = vi.fn()
 const mockToastError = vi.fn()
-const mockToastDismiss = vi.fn()
+const mockPreventDefault = vi.fn()
 const mockWriteText = vi.fn().mockResolvedValue(undefined)
 const {
   mockFork,
@@ -22,10 +20,8 @@ const {
   mockNavigate,
   mockStore,
   mockCanUse,
-  mockForkPending,
 } = vi.hoisted(() => {
   const mockCanUse = { value: true }
-  const mockForkPending = { value: false }
   return {
     mockFork: vi.fn(),
     mockForkAndCompact: vi.fn(),
@@ -35,7 +31,6 @@ const {
     mockNavigate: vi.fn(),
     mockStore: { get: vi.fn(), set: vi.fn() },
     mockCanUse,
-    mockForkPending,
   }
 })
 
@@ -49,10 +44,7 @@ vi.mock('@renderer/lib/download', () => ({
 
 vi.mock('sonner', () => ({
   toast: {
-    loading: (...args: unknown[]) => mockToastLoading(...args),
-    success: (...args: unknown[]) => mockToastSuccess(...args),
     error: (...args: unknown[]) => mockToastError(...args),
-    dismiss: (...args: unknown[]) => mockToastDismiss(...args),
   },
 }))
 
@@ -96,7 +88,7 @@ vi.mock('@renderer/components/ui/context-menu', () => ({
       data-disabled={disabled ? '' : undefined}
       disabled={disabled}
       onClick={disabled ? undefined : () => {
-        onSelect?.({ preventDefault() {} })
+        onSelect?.({ preventDefault: mockPreventDefault })
         onClick?.()
       }}
       {...props}
@@ -150,8 +142,8 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   useDeleteSession: () => ({ mutateAsync: vi.fn() }),
   useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSetSessionMarkedUnread: () => ({ mutateAsync: mockSetMarkedUnread, isPending: false }),
-  useForkSession: () => ({ mutate: mockFork, isPending: false }),
-  useForkAndCompact: () => ({ mutate: mockForkAndCompact, isPending: mockForkPending.value }),
+  useForkSession: () => ({ mutateAsync: mockFork }),
+  useForkAndCompact: () => ({ mutateAsync: mockForkAndCompact }),
 }))
 
 const mockCanAdminAgent = vi.fn(() => true)
@@ -389,8 +381,10 @@ describe('Fork Session item', () => {
     mockSeed.mockReset()
     mockSetQueryData.mockReset()
     mockNavigate.mockReset()
+    mockPreventDefault.mockClear()
     mockCanUse.value = true
-    mockForkPending.value = false
+    mockFork.mockResolvedValue(undefined)
+    mockForkAndCompact.mockResolvedValue(undefined)
     mockCanAdminAgent.mockReturnValue(true)
     mockCanUseAgent.mockReturnValue(true)
   })
@@ -426,14 +420,21 @@ describe('Fork Session item', () => {
     expect(screen.getByTestId('fork-session-trigger')).toHaveAttribute('data-disabled')
   })
 
-  it('disables the submenu and both rows while a fork-and-compact is in flight', () => {
-    mockForkPending.value = true
+  it('keeps the menu open and spins the clicked row until the copy opens', async () => {
+    let openCopy!: () => void
+    mockFork.mockReturnValue(new Promise<void>((resolve) => { openCopy = resolve }))
     renderMenu()
-    expect(screen.getByTestId('fork-session-trigger')).toHaveAttribute('data-disabled')
-    expect(screen.getByTestId('fork-session-item')).toHaveAttribute('data-disabled')
-    expect(screen.getByTestId('fork-summarize-session-item')).toHaveAttribute('data-disabled')
-    fireEvent.click(screen.getByTestId('fork-summarize-session-item'))
-    expect(mockForkAndCompact).not.toHaveBeenCalled()
+    const trigger = screen.getByText('row')
+    const item = screen.getByTestId('fork-session-item')
+    fireEvent.click(item)
+    expect(mockPreventDefault).toHaveBeenCalled()
+    expect(within(item).queryByRole('img', { name: 'in progress' })).not.toBeNull()
+    expect(within(screen.getByTestId('fork-summarize-session-item')).queryByRole('img', { name: 'in progress' })).toBeNull()
+    openCopy()
+    // The menu remounts closed once the copy opens.
+    await waitFor(() => expect(screen.getByText('row')).not.toBe(trigger))
+    expect(within(screen.getByTestId('fork-session-item')).queryByRole('img', { name: 'in progress' })).toBeNull()
+    expect(within(screen.getByTestId('fork-session-item')).queryByRole('img', { name: 'done' })).toBeNull()
   })
 
   it('disables both rows too when the source goes active with the submenu open', () => {
@@ -448,6 +449,18 @@ describe('Fork Session item', () => {
     expect(screen.getByTestId('fork-summarize-session-item')).toHaveAttribute('data-disabled')
     fireEvent.click(screen.getByTestId('fork-summarize-session-item'))
     expect(mockForkAndCompact).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['fork-session-item', mockFork],
+    ['fork-summarize-session-item', mockForkAndCompact],
+  ])('closes the menu when %s fails', async (testId, mock) => {
+    mock.mockRejectedValue(new Error('Failed to fork session'))
+    renderMenu()
+    const trigger = screen.getByText('row')
+    fireEvent.click(screen.getByTestId(testId))
+    await waitFor(() => expect(screen.getByText('row')).not.toBe(trigger))
+    expect(within(screen.getByTestId(testId)).queryByRole('img', { name: 'in progress' })).toBeNull()
   })
 
   it('forks; navigation, draft and cache seed live in the hook', async () => {
@@ -483,84 +496,93 @@ describe('SessionContextMenu raw log', () => {
     })
   })
 
-  it('copies the session transcript and updates the loading toast', async () => {
-    mockApiFetch.mockResolvedValue({ ok: true, text: async () => 'log-line\n' })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
 
-    render(
+  function renderMenu() {
+    return render(
       <SessionContextMenu sessionId="session-1" sessionName="Code PR Review" agentSlug="agent-1" activity={IDLE}>
         <button type="button">Code PR Review</button>
       </SessionContextMenu>,
     )
+  }
 
-    fireEvent.click(screen.getByTestId('copy-session-raw-log-item'))
+  it('copies with the menu open: spinner, then a check for 2s', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    mockApiFetch.mockResolvedValue({ ok: true, text: async () => 'log-line\n' })
+    renderMenu()
+    const item = screen.getByTestId('copy-session-raw-log-item')
 
-    await waitFor(() => {
-      expect(mockWriteText).toHaveBeenCalledWith('log-line\n')
-    })
-    expect(mockToastLoading).toHaveBeenCalledWith('Copying raw log')
-    expect(mockToastSuccess).toHaveBeenCalledWith('Copied', { id: 'toast-raw-log' })
+    fireEvent.click(item)
+    expect(mockPreventDefault).toHaveBeenCalled()
+    expect(within(item).queryByRole('img', { name: 'in progress' })).not.toBeNull()
+
+    await waitFor(() => expect(within(item).queryByRole('img', { name: 'done' })).not.toBeNull())
+    expect(mockWriteText).toHaveBeenCalledWith('log-line\n')
+    expect(within(item).queryByRole('img', { name: 'in progress' })).toBeNull()
+
+    act(() => { vi.advanceTimersByTime(2000) })
+    expect(within(item).queryByRole('img', { name: 'done' })).toBeNull()
+    expect(item.querySelector('.lucide-clipboard-copy')).not.toBeNull()
     expect(mockToastError).not.toHaveBeenCalled()
   })
 
-  it('toasts when copy fails', async () => {
+  it('ignores a second click while the copy is still running', async () => {
+    mockApiFetch.mockResolvedValue({ ok: true, text: async () => 'log-line\n' })
+    renderMenu()
+    const item = screen.getByTestId('copy-session-raw-log-item')
+
+    fireEvent.click(item)
+    fireEvent.click(item)
+
+    await waitFor(() => expect(within(item).queryByRole('img', { name: 'done' })).not.toBeNull())
+    expect(mockApiFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('toasts when copy fails, and shows no check', async () => {
     mockApiFetch.mockResolvedValue({ ok: false })
+    renderMenu()
+    const item = screen.getByTestId('copy-session-raw-log-item')
 
-    render(
-      <SessionContextMenu sessionId="session-1" sessionName="Code PR Review" agentSlug="agent-1" activity={IDLE}>
-        <button type="button">Code PR Review</button>
-      </SessionContextMenu>,
-    )
-
-    fireEvent.click(screen.getByTestId('copy-session-raw-log-item'))
+    fireEvent.click(item)
 
     await waitFor(() => {
       expect(mockToastError).toHaveBeenCalledWith('Could not copy raw log', {
-        id: 'toast-raw-log',
         description: 'Failed to fetch raw log',
       })
     })
+    await waitFor(() => expect(within(item).queryByRole('img', { name: 'in progress' })).toBeNull())
+    expect(within(item).queryByRole('img', { name: 'done' })).toBeNull()
     expect(mockWriteText).not.toHaveBeenCalled()
-    expect(mockToastSuccess).not.toHaveBeenCalled()
   })
 
-  it('downloads the session transcript as a jsonl file', async () => {
+  it('downloads the session transcript as a jsonl file, then shows a check', async () => {
     const response = { ok: true, text: async () => 'log-line\n' }
     mockApiFetch.mockResolvedValue(response)
+    renderMenu()
+    const item = screen.getByTestId('download-session-raw-log-item')
 
-    render(
-      <SessionContextMenu sessionId="session-1" sessionName="Code PR Review" agentSlug="agent-1" activity={IDLE}>
-        <button type="button">Code PR Review</button>
-      </SessionContextMenu>,
-    )
+    fireEvent.click(item)
 
-    fireEvent.click(screen.getByTestId('download-session-raw-log-item'))
-
-    await waitFor(() => {
-      expect(mockDownloadBlob).toHaveBeenCalledWith(response, 'Code-PR-Review.jsonl')
-    })
-    expect(mockToastLoading).toHaveBeenCalledWith('Downloading raw log')
-    expect(mockToastDismiss).toHaveBeenCalledWith('toast-raw-log')
-    expect(mockToastSuccess).not.toHaveBeenCalled()
+    await waitFor(() => expect(within(item).queryByRole('img', { name: 'done' })).not.toBeNull())
+    expect(mockDownloadBlob).toHaveBeenCalledWith(response, 'Code-PR-Review.jsonl')
   })
 
-  it('toasts when download fails', async () => {
+  it('toasts when download fails, and shows no check', async () => {
     mockApiFetch.mockResolvedValue({ ok: false })
+    renderMenu()
+    const item = screen.getByTestId('download-session-raw-log-item')
 
-    render(
-      <SessionContextMenu sessionId="session-1" sessionName="Code PR Review" agentSlug="agent-1" activity={IDLE}>
-        <button type="button">Code PR Review</button>
-      </SessionContextMenu>,
-    )
-
-    fireEvent.click(screen.getByTestId('download-session-raw-log-item'))
+    fireEvent.click(item)
 
     await waitFor(() => {
       expect(mockToastError).toHaveBeenCalledWith('Could not download raw log', {
-        id: 'toast-raw-log',
         description: 'Failed to fetch raw log',
       })
     })
+    await waitFor(() => expect(within(item).queryByRole('img', { name: 'in progress' })).toBeNull())
+    expect(within(item).queryByRole('img', { name: 'done' })).toBeNull()
     expect(mockDownloadBlob).not.toHaveBeenCalled()
-    expect(mockToastDismiss).not.toHaveBeenCalled()
   })
 })

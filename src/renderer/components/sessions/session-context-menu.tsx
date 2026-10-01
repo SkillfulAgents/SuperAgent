@@ -1,5 +1,5 @@
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -34,7 +34,7 @@ import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread, useF
 import { useNavigate } from '@tanstack/react-router'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useUser } from '@renderer/context/user-context'
-import { Trash2, ClipboardCopy, Download, Pencil, Eye, Split, Minimize2 } from 'lucide-react'
+import { Trash2, ClipboardCopy, Download, Pencil, Eye, Split, Minimize2, Loader2, Check, type LucideIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
 import { downloadBlob } from '@renderer/lib/download'
@@ -50,6 +50,44 @@ function formatCost(cost: number): string {
   if (cost > 0 && cost < 0.0001) return '<$0.0001'
   const digits = cost > 0 && cost < 0.01 ? 4 : 2
   return `$${cost.toFixed(digits)}`
+}
+
+type MenuActionStatus = 'idle' | 'running' | 'done'
+
+const DONE_MS = 2000
+
+/**
+ * Runs a menu item's action in place: the menu stays open and the item's icon
+ * spins until the action settles. With `showDone`, a check then shows for
+ * DONE_MS, for actions with nothing else on screen to confirm them. A failed
+ * action goes back to idle and reports its own error.
+ */
+function useMenuAction(action: () => Promise<unknown>, { showDone = false } = {}) {
+  const [status, setStatus] = useState<MenuActionStatus>('idle')
+
+  useEffect(() => {
+    if (status !== 'done') return
+    const timer = setTimeout(() => setStatus('idle'), DONE_MS)
+    return () => clearTimeout(timer)
+  }, [status])
+
+  const onSelect = (event: Event) => {
+    event.preventDefault()
+    if (status === 'running') return
+    setStatus('running')
+    action().then(
+      () => setStatus(showDone ? 'done' : 'idle'),
+      () => setStatus('idle'),
+    )
+  }
+
+  return { status, onSelect }
+}
+
+function MenuActionIcon({ icon: Icon, status }: { icon: LucideIcon; status: MenuActionStatus }) {
+  if (status === 'running') return <Loader2 className="h-4 w-4 mr-2 animate-spin" role="img" aria-label="in progress" />
+  if (status === 'done') return <Check className="h-4 w-4 mr-2 text-green-600 dark:text-green-400" role="img" aria-label="done" />
+  return <Icon className="h-4 w-4 mr-2" />
 }
 
 export interface SessionMenuActivity {
@@ -103,7 +141,7 @@ export function SessionContextMenu({
   // Unread dots are suppressed while working or awaiting. Fork is refused
   // while the transcript is open (active or still streaming).
   const hideUnread = activity.isActive || activity.isAwaitingInput
-  const forkDisabled = activity.isActive || activity.isStreaming || forkSession.isPending || forkAndCompact.isPending
+  const forkDisabled = activity.isActive || activity.isStreaming
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -120,9 +158,15 @@ export function SessionContextMenu({
     }
   }
 
-  // Both hooks log their own failures; `mutate` settles without throwing.
-  const handleFork = () => forkSession.mutate({ sessionId, agentSlug })
-  const handleForkAndCompact = () => forkAndCompact.mutate({ sessionId, agentSlug })
+  // Radix's context menu has no `open` prop, so a new key is how it closes
+  // once a fork settles. The key remounts the trigger too, which drops its
+  // focus and hover state.
+  const [menuKey, setMenuKey] = useState(0)
+  const closeMenu = () => setMenuKey((key) => key + 1)
+  // Both hooks log and toast their own failures. Fork & Summarize settles
+  // after the copy has opened, so its menu closes even if /compact fails.
+  const fork = useMenuAction(() => forkSession.mutateAsync({ sessionId, agentSlug }).finally(closeMenu))
+  const forkAndSummarize = useMenuAction(() => forkAndCompact.mutateAsync({ sessionId, agentSlug }).finally(closeMenu))
 
   const handleRename = async () => {
     const trimmed = newName.trim()
@@ -154,36 +198,32 @@ export function SessionContextMenu({
     return response
   }
 
-  const handleCopyRawLog = async () => {
-    const toastId = toast.loading('Copying raw log')
+  const copyRawLog = useMenuAction(async () => {
     try {
       const text = await (await fetchRawLog()).text()
       await navigator.clipboard.writeText(text)
-      toast.success('Copied', { id: toastId })
     } catch (error) {
       console.error('Failed to copy raw log:', error)
       toast.error('Could not copy raw log', {
-        id: toastId,
         description: error instanceof Error ? error.message : undefined,
       })
+      throw error
     }
-  }
+  }, { showDone: true })
 
-  const handleDownloadRawLog = async () => {
-    const toastId = toast.loading('Downloading raw log')
+  const downloadRawLog = useMenuAction(async () => {
     try {
       const response = await fetchRawLog()
       const base = sessionName.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
       await downloadBlob(response, `${base || sessionId}.jsonl`)
-      toast.dismiss(toastId)
     } catch (error) {
       console.error('Failed to download raw log:', error)
       toast.error('Could not download raw log', {
-        id: toastId,
         description: error instanceof Error ? error.message : undefined,
       })
+      throw error
     }
-  }
+  }, { showDone: true })
 
   const handleMenuOpenChange = (open: boolean) => {
     if (!open) return
@@ -209,7 +249,7 @@ export function SessionContextMenu({
 
   return (
     <>
-      <ContextMenu onOpenChange={handleMenuOpenChange}>
+      <ContextMenu key={menuKey} onOpenChange={handleMenuOpenChange}>
         <ContextMenuTrigger asChild>
           {children}
         </ContextMenuTrigger>
@@ -239,16 +279,16 @@ export function SessionContextMenu({
               </ContextMenuSubTrigger>
               <ContextMenuSubContent className="rounded-xl p-2" data-testid="fork-session-menu">
                 {/* Also on the rows: the source can go active while the submenu is open. */}
-                <ContextMenuItem data-testid="fork-session-item" disabled={forkDisabled} onClick={handleFork}>
-                  <Split className="h-4 w-4 mr-2" />
+                <ContextMenuItem data-testid="fork-session-item" disabled={forkDisabled} onSelect={fork.onSelect}>
+                  <MenuActionIcon icon={Split} status={fork.status} />
                   Fork
                 </ContextMenuItem>
                 <ContextMenuItem
                   data-testid="fork-summarize-session-item"
                   disabled={forkDisabled}
-                  onClick={handleForkAndCompact}
+                  onSelect={forkAndSummarize.onSelect}
                 >
-                  <Minimize2 className="h-4 w-4 mr-2" />
+                  <MenuActionIcon icon={Minimize2} status={forkAndSummarize.status} />
                   Fork &amp; Summarize
                 </ContextMenuItem>
               </ContextMenuSubContent>
@@ -262,12 +302,12 @@ export function SessionContextMenu({
               Mark as Unread
             </ContextMenuItem>
           )}
-          <ContextMenuItem onClick={handleCopyRawLog} data-testid="copy-session-raw-log-item">
-            <ClipboardCopy className="h-4 w-4 mr-2" />
+          <ContextMenuItem onSelect={copyRawLog.onSelect} data-testid="copy-session-raw-log-item">
+            <MenuActionIcon icon={ClipboardCopy} status={copyRawLog.status} />
             Copy Raw Log
           </ContextMenuItem>
-          <ContextMenuItem onClick={handleDownloadRawLog} data-testid="download-session-raw-log-item">
-            <Download className="h-4 w-4 mr-2" />
+          <ContextMenuItem onSelect={downloadRawLog.onSelect} data-testid="download-session-raw-log-item">
+            <MenuActionIcon icon={Download} status={downloadRawLog.status} />
             Download Raw Log
           </ContextMenuItem>
           {isOwner && (

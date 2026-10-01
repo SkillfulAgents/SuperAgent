@@ -324,8 +324,8 @@ export function useForkAndCompact() {
   const forkSession = useForkSession()
   const sendMessage = useSendMessage()
   return useMutation({
-    // Both inner mutations already log and toast their own failures; this
-    // one adds nothing, so callers use `mutate` and let it settle quietly.
+    // Both inner mutations already log and toast their own failures, so this
+    // one skips the global error toast.
     meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ sessionId, agentSlug }: { sessionId: string; agentSlug: string }) => {
       const fork = await forkSession.mutateAsync({ sessionId, agentSlug })

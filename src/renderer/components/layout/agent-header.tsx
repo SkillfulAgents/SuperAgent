@@ -191,6 +191,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
           <>
             <BreadcrumbSeparator />
             <SessionContextMenu
+              key={sessionId}
               sessionId={sessionId}
               sessionName={session?.name || 'Session'}
               agentSlug={slug}
