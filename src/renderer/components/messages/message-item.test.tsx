@@ -807,4 +807,56 @@ describe('MessageItem', () => {
       expect(screen.queryByRole('link', { name: /raise spend limit/i })).not.toBeInTheDocument()
     })
   })
+
+  describe('mermaid code fences', () => {
+    const fence = (source: string) => '```mermaid\n' + source + '\n```'
+    const FLOW = fence('graph LR\n  Request --> Response')
+
+    it('renders a settled mermaid fence as a themed diagram', async () => {
+      const msg = createAssistantMessage({ content: { text: `Here is the flow:\n\n${FLOW}` } })
+      render(<MessageItem message={msg} />)
+
+      const diagram = await screen.findByTestId('mermaid-diagram')
+      const shadow = diagram.querySelector('.w-max')!.shadowRoot!
+      const svg = shadow.querySelector('svg')
+      expect(svg).not.toBeNull()
+      expect(shadow.textContent).toContain('Request')
+      // The app's own --accent is a bare HSL triplet; inheriting it made arrowheads black.
+      expect(svg!.getAttribute('style')).toContain('--accent:hsl(var(--brand))')
+      // --border:hsl(var(--border)) would reference itself and be dropped by CSS.
+      expect(svg!.getAttribute('style')).not.toContain('--border:')
+      expect(diagram.closest('pre')).toBeNull()
+    })
+
+    it('keeps the diagram stylesheet inside its shadow root', async () => {
+      const msg = createAssistantMessage({ content: { text: FLOW } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      const diagram = await screen.findByTestId('mermaid-diagram')
+      const style = diagram.querySelector('.w-max')!.shadowRoot!.querySelector('style')
+      expect(style).not.toBeNull()
+      expect(style!.textContent).not.toContain('@import')
+      expect(container.querySelector('style')).toBeNull()
+    })
+
+    it('keeps an unsupported diagram type as a code block', async () => {
+      const pie = fence('pie title Pets\n  "Dogs" : 3\n  "Cats" : 2')
+      const msg = createAssistantMessage({ content: { text: `${FLOW}\n\n${pie}` } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      await screen.findByTestId('mermaid-diagram')
+      expect(screen.getAllByTestId('mermaid-diagram')).toHaveLength(1)
+      expect(container.querySelector('pre')).toHaveTextContent('pie title Pets')
+    })
+
+    it('keeps the fence still streaming in as a code block', async () => {
+      const text = FLOW + '\n\n```mermaid\ngraph LR\n  Draft --> Final'
+      const msg = createAssistantMessage({ content: { text } })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+
+      await screen.findByTestId('mermaid-diagram')
+      expect(screen.getAllByTestId('mermaid-diagram')).toHaveLength(1)
+      expect(container.querySelector('pre')).toHaveTextContent('Draft --> Final')
+    })
+  })
 })

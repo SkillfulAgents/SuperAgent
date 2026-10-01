@@ -1,8 +1,11 @@
 import { cn } from '@shared/lib/utils/cn'
-import { useState, useCallback, useRef, useLayoutEffect, useMemo, memo, type ReactNode } from 'react'
-import { Check, Copy, Link2 } from 'lucide-react'
+import { useCallback, useRef, useMemo, memo, lazy, Suspense, type ReactNode } from 'react'
+import { Link2 } from 'lucide-react'
+import { CodeCopyButton } from './code-copy-button'
+import { useBlockBreakout } from './use-block-breakout'
 import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
+import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { ToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
@@ -17,6 +20,7 @@ import { SentAttachmentChip, imageSizeForCount } from './sent-attachment-chip'
 import { isPreviewableImage } from '@renderer/lib/file-types'
 import { Markdown, type MarkdownProps } from '@renderer/components/ui/markdown'
 import type { Components } from 'react-markdown'
+import type { ElementContent } from 'hast'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
 import { isProviderFacingError } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
@@ -34,31 +38,13 @@ import { ReadAloudControls } from './read-aloud-controls'
 export type { ApiToolCall }
 
 function CodeBlock({ children }: { children: ReactNode }) {
-  const [copied, setCopied] = useState(false)
-
-  const handleCopy = useCallback(() => {
-    const text = extractText(children)
-    void navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }, [children])
-
+  const getText = useCallback(() => extractText(children), [children])
   return (
     <pre className={cn(
       'relative group rounded-md p-3 text-sm leading-relaxed border code-scrollbar',
       'bg-black/[0.03] dark:bg-white/[0.06] border-border/60 text-foreground'
     )}>
-      <button
-        onClick={handleCopy}
-        className={cn(
-          'absolute top-2 right-2 p-1 rounded',
-          'opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity',
-          'hover:bg-black/[0.1] dark:hover:bg-white/[0.15]',
-          'text-muted-foreground'
-        )}
-      >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-      </button>
+      <CodeCopyButton getText={getText} />
       {children}
     </pre>
   )
@@ -73,64 +59,11 @@ function extractText(node: ReactNode): string {
   return ''
 }
 
-// Side breathing room kept between an expanded table and the chat edges.
-const TABLE_BREAKOUT_GUTTER = 16
-
-// A wide (many-column) table shouldn't be crammed into the narrow readable text
-// column. Like Notion, we let a table that's wider than the column break out and
-// centre itself across the available chat width, scrolling horizontally only
-// once it still exceeds that. Narrow tables are left untouched in the normal
-// text flow. The breakout is measured rather than pure-CSS because the table is
-// nested several constrained, off-centre ancestors deep, so there is no static
-// containing block to anchor a symmetric breakout to. Only assistant messages
-// opt in (via `data-allow-table-breakout`); elsewhere the table just scrolls
-// inside its own column.
+// Wide tables break out of the readable column; see useBlockBreakout.
 function ExpandingTable({ children }: { children: ReactNode }) {
   const wrapperRef = useRef<HTMLDivElement>(null)
   const scrollerRef = useRef<HTMLDivElement>(null)
-
-  useLayoutEffect(() => {
-    const wrapper = wrapperRef.current
-    const scroller = scrollerRef.current
-    if (!wrapper || !scroller) return
-
-    const contentArea = wrapper.closest('[data-message-content-area]') as HTMLElement | null
-    const canBreakOut = !!wrapper.closest('[data-allow-table-breakout]')
-
-    const measure = () => {
-      // Always start from the natural in-flow geometry before deciding.
-      wrapper.style.width = ''
-      wrapper.style.marginLeft = ''
-
-      if (!contentArea || !canBreakOut) return
-
-      const columnWidth = wrapper.clientWidth
-      const naturalWidth = scroller.scrollWidth
-      // Only break out when the table genuinely wants more than the column.
-      if (naturalWidth <= columnWidth + 1) return
-
-      const available = contentArea.clientWidth - TABLE_BREAKOUT_GUTTER * 2
-      if (available <= columnWidth) return // window too narrow to gain anything
-
-      const target = Math.min(naturalWidth, available)
-      const areaLeft = contentArea.getBoundingClientRect().left + TABLE_BREAKOUT_GUTTER
-      const currentLeft = wrapper.getBoundingClientRect().left
-      const desiredLeft = areaLeft + (available - target) / 2
-
-      wrapper.style.width = `${target}px`
-      wrapper.style.marginLeft = `${desiredLeft - currentLeft}px`
-    }
-
-    measure()
-
-    if (!contentArea || typeof ResizeObserver === 'undefined') return
-    // Re-centre when the chat area resizes. Content changes (e.g. a table still
-    // streaming) re-run this effect via the `children` dependency, so we don't
-    // observe the table itself — that would risk a resize-observer feedback loop.
-    const observer = new ResizeObserver(() => measure())
-    observer.observe(contentArea)
-    return () => observer.disconnect()
-  }, [children])
+  useBlockBreakout(wrapperRef, scrollerRef, children)
 
   return (
     <div ref={wrapperRef} className="my-3" data-testid="markdown-table">
@@ -193,6 +126,40 @@ const MARKDOWN_COMPONENTS: Components = {
   ),
 }
 
+const MermaidDiagram = lazy(() => import('./mermaid-diagram').then(m => ({ default: m.MermaidDiagram })))
+
+function hastText(node: ElementContent): string {
+  if (node.type === 'text') return node.value
+  if (node.type === 'element') return node.children.map(hastText).join('')
+  return ''
+}
+
+function mermaidSource(pre: ElementContent | undefined): string | null {
+  const code = pre?.type === 'element' ? pre.children[0] : undefined
+  if (code?.type !== 'element' || code.tagName !== 'code') return null
+  const classes = code.properties.className
+  if (!Array.isArray(classes) || !classes.includes('language-mermaid')) return null
+  return hastText(code)
+}
+
+// Only settled blocks draw diagrams: a fence still streaming in the tail would
+// re-render an incomplete diagram on every delta, so it stays a code block.
+const SETTLED_MARKDOWN_COMPONENTS: Components = {
+  ...MARKDOWN_COMPONENTS,
+  pre: ({ children, node }) => {
+    const codeBlock = <CodeBlock>{children}</CodeBlock>
+    const source = mermaidSource(node)
+    if (source === null) return codeBlock
+    return (
+      <ErrorBoundary fallback={codeBlock}>
+        <Suspense fallback={codeBlock}>
+          <MermaidDiagram source={source} fallback={codeBlock} />
+        </Suspense>
+      </ErrorBoundary>
+    )
+  },
+}
+
 // A single markdown block. Memoized so that, while a response streams, each
 // already-settled block parses exactly once even though later deltas keep
 // re-rendering the parent MessageItem. See split-streaming-markdown.ts.
@@ -217,7 +184,7 @@ export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAl
   return (
     <Markdown
       rehypePlugins={rehypePlugins}
-      components={MARKDOWN_COMPONENTS}
+      components={SETTLED_MARKDOWN_COMPONENTS}
       imageAliases={embeddedImageAliases}
       agentSlug={agentSlug}
     >
