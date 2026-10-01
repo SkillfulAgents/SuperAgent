@@ -1,3 +1,5 @@
+import type { UndeliveredTurnReport } from './session-manager'
+
 /** Best-effort container → host events that keep renderer caches precise. */
 async function postHostEvent(event: string, body: Record<string, unknown>): Promise<boolean> {
   const baseUrl = process.env.SUPERAGENT_HOST_API_URL
@@ -54,4 +56,12 @@ export async function notifyWidgetSnapshotReady(
     htmlHash: snapshot.htmlHash,
     error: snapshot.lastError,
   })
+}
+
+/**
+ * A turn ended after its stream subscriber dropped mid-turn, so the host never
+ * saw it end. The host's socket may still read as open; only we can tell it.
+ */
+export async function notifyUndeliveredTurn(report: UndeliveredTurnReport): Promise<boolean> {
+  return postHostEvent('undelivered-turn', { ...report })
 }
