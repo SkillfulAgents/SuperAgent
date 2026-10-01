@@ -260,7 +260,7 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  private async createSessionWithInput(request: CreateSessionRequest, beforeSend: () => void): Promise<Session> {
+  private async createSessionWithInput(request: CreateSessionRequest, onQueued: () => void): Promise<Session> {
     if (!request.initialMessage) {
       throw new Error('initialMessage is required for createSession');
     }
@@ -367,10 +367,9 @@ export class SessionManager extends EventEmitter {
     try {
       await process.start();
 
-      // From here a rejection may come after the runtime queued the input.
-      beforeSend();
-      // Send the initial message - this triggers Claude to emit the session ID
-      await process.sendMessage(request.initialMessage, request.initialMessageUuid);
+      // Send the initial message - this triggers Claude to emit the session ID.
+      // Once it is queued, a rejection may come after the runtime took it.
+      await process.sendMessage(request.initialMessage, request.initialMessageUuid, { onQueued });
 
       // Wait for init to complete (session ID + slash commands)
       claudeSessionId = await initCompletePromise;
@@ -934,6 +933,22 @@ export class SessionManager extends EventEmitter {
     uuid?: UUID,
     options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
   ): Promise<void> {
+    let queued = false;
+    try {
+      await this.sendMessageWithInput(sessionId, content, uuid, options, () => { queued = true; });
+    } catch (error) {
+      if (!queued) throw new SessionInputNotAcceptedError(error);
+      throw error;
+    }
+  }
+
+  private async sendMessageWithInput(
+    sessionId: string,
+    content: string,
+    uuid: UUID | undefined,
+    options: Parameters<SessionManager['sendMessage']>[3],
+    onQueued: () => void,
+  ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
     // Try to resume if not in memory
@@ -987,7 +1002,7 @@ export class SessionManager extends EventEmitter {
     }
 
     // Send to Claude Code process (messages are stored via handleMessage)
-    await sessionData.process.sendMessage(content, uuid, options);
+    await sessionData.process.sendMessage(content, uuid, { ...options, onQueued });
   }
 
   /**

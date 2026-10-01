@@ -73,7 +73,8 @@ class MockClaudeProcess extends EventEmitter {
 
   async start(): Promise<void> {}
 
-  async sendMessage(): Promise<void> {
+  async sendMessage(_content?: string, _uuid?: string, options?: { onQueued?: () => void }): Promise<void> {
+    options?.onQueued?.()
     this.emit('claude-session-id', this.sessionId)
     this.emit('init-complete')
   }
@@ -145,6 +146,12 @@ describe('SessionManager pre-warm pool', () => {
     fs.rmSync(workDir, { recursive: true, force: true })
   })
 
+  it('reports a creation failure before the initial input is queued as rejected', async () => {
+    vi.spyOn(MockClaudeProcess.prototype, 'sendMessage').mockRejectedValueOnce(new Error('queue closed'))
+    const error = await manager.createSession(baseRequest).catch(error => error)
+    expect(sessionCreationFailure(error)).toEqual({ error: 'queue closed', inputAccepted: false })
+  })
+
   it('reports validation and process-start failures as rejected before any input submission', async () => {
     const invalid = await manager.createSession({ initialMessage: '' }).catch(error => error)
     expect(invalid).toBeInstanceOf(SessionInputNotAcceptedError)
@@ -162,15 +169,32 @@ describe('SessionManager pre-warm pool', () => {
   })
 
   it('recognizes a deferred SDK spawn failure even after stdin was queued', async () => {
-    vi.spyOn(MockClaudeProcess.prototype, 'sendMessage').mockImplementationOnce(async function (this: MockClaudeProcess) {
+    vi.spyOn(MockClaudeProcess.prototype, 'sendMessage').mockImplementationOnce(async function (this: MockClaudeProcess, _content?: string, _uuid?: string, options?: { onQueued?: () => void }) {
+      options?.onQueued?.()
       this.emit('error', Object.assign(new Error('spawn failed asynchronously'), { errorClass: 'executable_launch_failed', code: 'ENOENT' }))
     })
     const error = await manager.createSession(baseRequest).catch(error => error)
     expect(sessionCreationFailure(error)).toMatchObject({ inputAccepted: false, errorClass: 'executable_launch_failed', code: 'ENOENT' })
   })
 
+  it('reports a follow-up send as rejected only when it failed before the input was queued', async () => {
+    const session = await manager.createSession(baseRequest)
+    const send = vi.spyOn(MockClaudeProcess.prototype, 'sendMessage')
+    send.mockRejectedValueOnce(new Error('restart failed'))
+    const before = await manager.sendMessage(session.id, 'next').catch(error => error)
+    expect(sessionCreationFailure(before)).toEqual({ error: 'restart failed', inputAccepted: false })
+
+    send.mockImplementationOnce(async (_content?: string, _uuid?: string, options?: { onQueued?: () => void }) => {
+      options?.onQueued?.()
+      throw new Error('lost after queueing')
+    })
+    const after = await manager.sendMessage(session.id, 'next').catch(error => error)
+    expect(sessionCreationFailure(after)).toEqual({ error: 'lost after queueing' })
+  })
+
   it('does not claim rejection when init fails after the initial input was submitted', async () => {
-    vi.spyOn(MockClaudeProcess.prototype, 'sendMessage').mockImplementationOnce(async function (this: MockClaudeProcess) {
+    vi.spyOn(MockClaudeProcess.prototype, 'sendMessage').mockImplementationOnce(async function (this: MockClaudeProcess, _content?: string, _uuid?: string, options?: { onQueued?: () => void }) {
+      options?.onQueued?.()
       this.emit('error', new Error('init response lost'))
     })
     const error = await manager.createSession(baseRequest).catch(error => error)
