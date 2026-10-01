@@ -142,4 +142,31 @@ test.describe('Agent hooks', () => {
     // a lingering "Working..." here is the wedged-agent bug.
     await expect(page.getByText('Working...')).not.toBeVisible({ timeout: 10000 })
   })
+
+  test('a new chat whose first prompt a hook blocked returns it to the composer', async ({ page }) => {
+    // A real hook can end the turn before the browser opens the new chat's
+    // stream, so the server's discard reaches no one live. Holding the stream
+    // until the turn has ended makes the browser lose that race every time.
+    // The page clock is paused, so the client's idle grace cannot return the
+    // text either.
+    await page.clock.install()
+    await page.reload()
+    await agentPage.createAgent(`HookNewChat ${Date.now()}`)
+    await page.clock.pauseAt(new Date(Date.now() + 1000))
+    await page.route('**/sessions/*/stream', async (route) => {
+      const session = route.request().url().replace(/\/stream$/, '')
+      await expect.poll(async () => (await (await page.request.get(session)).json()).isActive, { timeout: 10000 }).toBe(false)
+      return route.continue()
+    })
+
+    const text = 'please trip the breaker, the text returns'
+    const created = page.waitForResponse(
+      (res) => res.request().method() === 'POST' && /\/sessions$/.test(res.url())
+    )
+    await sessionPage.sendMessage(text)
+    expect((await created).ok()).toBe(true)
+
+    await expect(sessionPage.getMessageInput()).toHaveText(text, { timeout: 10000 })
+    await expect(page.getByTestId('pending-user-message')).toHaveCount(0)
+  })
 })
