@@ -231,6 +231,14 @@ const interruptContainerResponseSchema = z.object({
   processKept: z.boolean().optional(),
 })
 
+// The CLI's result for a prompt a UserPromptSubmit hook blocked (exit 2 or
+// decision "block"), answering exactly one user message. A "continue: false"
+// stop writes the prompt and words its result differently.
+const hookBlockedPromptResultSchema = z.object({
+  result: z.string().startsWith('UserPromptSubmit operation blocked by hook'),
+  user_message_uuids: z.tuple([z.string()]),
+})
+
 // Frames that belong to the turn an interrupt just ended, as opposed to frames
 // about the runtime (results, system events, command lifecycle, capability
 // handshakes) that must land even after Stop. See handleMessage.
@@ -2901,6 +2909,10 @@ class MessagePersister {
           console.warn(
             `[MessagePersister] Session ${sessionId}: turn ended with no model turns (num_turns=0) — possible hook-blocked prompt`
           )
+          // A hook blocked the prompt: the message this result answers never
+          // reached the model and gets no message entry, and it never will.
+          const blocked = hookBlockedPromptResultSchema.safeParse(content)
+          if (blocked.success) this.broadcastDiscarded(agentSlug, sessionId, blocked.data.user_message_uuids)
         }
 
         // Extract and persist context usage from result event

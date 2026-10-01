@@ -421,6 +421,7 @@ const FIXTURE_EXPECTATIONS: FixtureExpectation[] = [
   { name: 'sdk272-bg-bash-premature-idle', settledAtEnd: true },
   { name: 'sdk272-bg-subagent-no-idle', settledAtEnd: true },
   { name: 'sdk272-bg-subagent-interrupt-noop', settledAtEnd: true },
+  { name: 'sdk284-hook-blocked-prompt', settledAtEnd: true },
   { name: 'sendmessage-resumed-subagent', settledAtEnd: true },
   { name: 'sequential-different-types', settledAtEnd: true },
   { name: 'single-subagent-progress', settledAtEnd: true },

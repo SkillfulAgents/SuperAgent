@@ -901,6 +901,33 @@ describe('MessagePersister', () => {
   // ============================================================================
 
   describe('informational system messages', () => {
+    // A UserPromptSubmit hook blocking a prompt: the prompt never reaches the
+    // model and gets no message entry. Result texts are the CLI's own.
+    const blockedText = 'UserPromptSubmit operation blocked by hook:\nno'
+    const lifecycle = (state: string) => (uuid: string) => ({ type: 'command_lifecycle', command_uuid: uuid, state })
+    const queued = lifecycle('queued')
+    const started = lifecycle('started')
+    const result = (numTurns: number, uuids: string[], extra = {}) => ({
+      type: 'result', subtype: 'success', is_error: false, num_turns: numTurns, result: blockedText, user_message_uuids: uuids, ...extra,
+    })
+    const discarded = () => sseEvents.filter(e => e.type === 'command_lifecycle' && e.state === 'discarded').map(e => e.commandUuid)
+
+    it.each([
+      ['a prompt hook blocked it before the model ran', [started('b1'), result(0, ['b1'])], ['b1']],
+      ['a late-joining host gets only the replayed result', [result(0, ['b1'], { replayed: true })], ['b1']],
+      ['a prompt queued mid-turn then ran alone and was blocked too', [started('a1'), queued('b1'), result(0, ['a1']), started('b1'), result(0, ['b1'])], ['a1', 'b1']],
+      ['the model ran and its reply starts with the hook text', [started('b1'), result(1, ['b1'])], []],
+      ['the turn had no model turns and no hook stopped it', [started('b1'), result(0, ['b1'], { result: '' })], []],
+      ['the zero-turn result is an error', [started('b1'), result(0, ['b1'], { is_error: true })], []],
+      ['the result names no messages (an older CLI)', [started('b1'), result(0, ['b1'], { user_message_uuids: undefined })], []],
+      ['the result answers a batch, whose other messages may have run', [started('b1'), result(0, ['b1', 'b2'])], []],
+      ['a "continue: false" hook stopped it, which writes the prompt', [started('b1'), result(0, ['b1'], { result: 'Operation stopped by hook: no' })], []],
+    ] as const)('when %s', (_case, frames, expected) => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      for (const frame of frames) mockClient._sendMessage(frame)
+      expect(discarded()).toEqual(expected)
+    })
+
     it('persists a warning banner to the transcript and broadcasts messages_updated', async () => {
       mockClient._sendMessage({
         type: 'system',
