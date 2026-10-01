@@ -1044,6 +1044,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         // agent's other sessions — cross-session messaging we neither want nor
         // surface. SendMessage stays: it is how a spawned subagent is continued.
         'ListAgents',
+        // claude.ai Artifacts: publishes pages to claude.ai and runs a
+        // persistent watcher on them. Our agents ship dashboards and files
+        // through their own tools. Also switched off in `settings` and the
+        // env below; this keeps it out of the tool list either way.
+        'Artifact',
         // Only meaningful under the CLI's bundled code-review skill, which
         // `disableBundledSkills` (below) removes — without it the tool is dead
         // weight in every session's tool list.
@@ -1096,6 +1101,16 @@ export class ClaudeCodeProcess extends EventEmitter {
         // Gamut plugin (`plugins` below); plugin skills and agent-created
         // skills under /workspace/.claude/skills are unaffected by this flag.
         disableBundledSkills: true,
+        // CLI features that default on "once available" and would run work of
+        // their own inside the session. Both start ambient background tasks:
+        // the SDK lists them in background_tasks_changed, so they keep the
+        // session "working" (and the container awake) with nothing in the UI.
+        // - auto-dream: background memory consolidation forks.
+        // - Artifacts: the claude.ai Artifact tool and its live-update watcher.
+        // Off explicitly so a future SDK bump or server-side flag can't turn
+        // them on under us.
+        autoDreamEnabled: false,
+        enableArtifact: false,
       },
       settingSources: ['user', 'project'],
       // The image-baked Gamut plugin: the dashboards + widgets skills and the
@@ -1160,6 +1175,10 @@ export class ClaudeCodeProcess extends EventEmitter {
         // self-updated. Pinned like the other vars here: customEnvVars is
         // spread above, so an agent cannot turn this back on.
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        // The env-layer off switch for claude.ai Artifacts (see `settings`
+        // above). Pinned here for the same reason: an agent's custom env vars
+        // cannot turn it back on.
+        CLAUDE_CODE_DISABLE_ARTIFACT: '1',
         // Explicit maxOutputTokens setting takes precedence over custom env var
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
         // Tell the SDK the real context window for non-Claude models (it
