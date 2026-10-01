@@ -3210,7 +3210,10 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
           isActive,
           isWaitingBackground,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
-          backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
+          // Always the array, even empty: an absent list reads as "unchanged" to
+          // a reconnecting client, which would keep tasks that ended while it
+          // was away.
+          backgroundTasks,
           activeSubagents,
         }),
         event: 'message',

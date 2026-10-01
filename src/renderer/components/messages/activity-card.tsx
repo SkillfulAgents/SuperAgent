@@ -33,7 +33,7 @@ export interface ActivityBackgroundTask {
   taskId: string
   startedAt: number
   isWorkflow?: boolean
-  /** Background subagents already render as named subagent rows — excluded here. */
+  /** A background subagent; folded into its named subagent row when one is shown. */
   isSubagent?: boolean
   /** What kind of work ("Background command"); the generic noun when absent. */
   title?: string
@@ -86,12 +86,18 @@ export function ActivityCard({
   const [isCollapsed, setIsCollapsed] = useState(false)
   const listRef = useRef<HTMLUListElement>(null)
 
-  // Background subagents are excluded: they already render as named subagent
-  // rows above, and counting them here would show the same work twice.
-  const visibleBackgroundTasks = backgroundTasks.filter((task) => !task.isSubagent)
+  // A background subagent with a named subagent row above is that row —
+  // listing it here too would show the same work twice. One without a row
+  // (launched in an earlier turn, or by another subagent) is still live work
+  // the runtime lists, so it gets a row of its own here.
+  const subagentRowTaskIds = new Set(subagents.map((item) => item.taskId).filter(Boolean))
+  const visibleBackgroundTasks = backgroundTasks.filter(
+    (task) => !task.isSubagent || !subagentRowTaskIds.has(task.taskId),
+  )
+  const backgroundAgentCount = visibleBackgroundTasks.filter((task) => task.isSubagent).length
   const backgroundWorkflowCount = visibleBackgroundTasks.filter((task) => task.isWorkflow).length
-  const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount
-  const activeSubagentCount = subagents.filter((item) => item.status === 'running').length
+  const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount - backgroundAgentCount
+  const activeSubagentCount = subagents.filter((item) => item.status === 'running').length + backgroundAgentCount
   const pendingTaskCount = todos?.filter((todo) => todo.status !== 'completed').length ?? 0
   // The tree is live work only — things running right now, hanging off the orb.
   // The plan is a different kind of thing (intent, not activity), so it sits

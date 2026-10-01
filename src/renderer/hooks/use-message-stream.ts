@@ -6,6 +6,7 @@ import type { SessionUsage } from '@shared/lib/types/agent'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
+import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { applySessionActivityStatus } from '@renderer/lib/agent-cache'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
@@ -74,7 +75,7 @@ interface StreamState {
   typingUser: { id: string; name?: string; image?: string | null } | null // User currently typing (auth mode shared agents)
   peerUserMessages: PeerUserMessage[] // Messages from other users not yet seen in fetched messages
   apiRetry: ApiRetryInfo | null // Non-null while API is retrying a transient error
-  backgroundTasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> // Active background Bash commands, dynamic workflows + background subagents
+  backgroundTasks: BackgroundTaskRef[] // Every live background task the runtime lists: Bash commands, dynamic workflows, background subagents
   isWaitingBackground: boolean // True when agent turn ended but background tasks are still running
   // Uuids of queued user messages the runtime reported dead (command_lifecycle
   // state discarded/cancelled — e.g. killed by an interrupt). MessageList
@@ -84,6 +85,16 @@ interface StreamState {
 }
 
 // Upsert a subagent entry in the array by parentToolId (immutable)
+/**
+ * The server's whole live task list, which it sends with every frame that
+ * changes it. Replacing ours with it — rather than applying the one change —
+ * means a frame this client missed cannot leave a task behind. Null when the
+ * frame carries none.
+ */
+function serverTaskList(data: { backgroundTasks?: unknown }): BackgroundTaskRef[] | null {
+  return Array.isArray(data.backgroundTasks) ? (data.backgroundTasks as BackgroundTaskRef[]) : null
+}
+
 function upsertSubagent(list: SubagentInfo[], entry: SubagentInfo): SubagentInfo[] {
   const idx = list.findIndex(s => s.parentToolId === entry.parentToolId)
   if (idx >= 0) {
@@ -632,7 +643,11 @@ function getOrCreateEventSource(
             })
             invalidateMessagesThrottled(queryClient, sessionId)
           } else {
-            streamStates.set(sessionId, { ...current, isWaitingBackground: true })
+            streamStates.set(sessionId, {
+              ...current,
+              backgroundTasks: serverTaskList(data) ?? current.backgroundTasks,
+              isWaitingBackground: true,
+            })
           }
         }
       }
@@ -698,18 +713,30 @@ function getOrCreateEventSource(
         }
       }
       // Background Bash task events
-      else if (data.type === 'background_task_started') {
+      else if (data.type === 'background_task_started' || data.type === 'background_task_updated') {
+        // Updated carries the same full entry once a later signal (the
+        // runtime's task list, a launch result) knows more about the task.
         if (current) {
-          const existing = current.backgroundTasks.filter(t => t.taskId !== data.taskId)
+          const task: BackgroundTaskRef = {
+            taskId: data.taskId,
+            startedAt: data.startedAt,
+            isWorkflow: data.isWorkflow,
+            isSubagent: data.isSubagent,
+            taskType: data.taskType,
+            description: data.description,
+          }
+          const index = current.backgroundTasks.findIndex(t => t.taskId === data.taskId)
           streamStates.set(sessionId, {
             ...current,
-            backgroundTasks: [...existing, { taskId: data.taskId, startedAt: data.startedAt, isWorkflow: data.isWorkflow, isSubagent: data.isSubagent }],
+            backgroundTasks: serverTaskList(data) ?? (index === -1
+              ? [...current.backgroundTasks, task]
+              : current.backgroundTasks.map((t, i) => (i === index ? task : t))),
           })
         }
       }
       else if (data.type === 'background_task_completed') {
         if (current) {
-          const backgroundTasks = current.backgroundTasks.filter(t => t.taskId !== data.taskId)
+          const backgroundTasks = serverTaskList(data) ?? current.backgroundTasks.filter(t => t.taskId !== data.taskId)
           streamStates.set(sessionId, {
             ...current,
             backgroundTasks,

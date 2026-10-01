@@ -2854,6 +2854,33 @@ describe('useMessageStream', () => {
     expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-2', startedAt: 2000 }])
   })
 
+  it('merges background_task_updated into the task in place', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-1', startedAt: 1000 })
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-2', startedAt: 2000 })
+      // The runtime's task list names the first task after it started.
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_updated',
+        taskId: 'bg-1',
+        startedAt: 1000,
+        taskType: 'local_bash',
+        description: 'Run the dev server',
+      })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([
+      { taskId: 'bg-1', startedAt: 1000, taskType: 'local_bash', description: 'Run the dev server' },
+      { taskId: 'bg-2', startedAt: 2000 },
+    ])
+  })
+
   it('restores background tasks from connected event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -2870,6 +2897,77 @@ describe('useMessageStream', () => {
     })
 
     expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-restore', startedAt: 500 }])
+  })
+
+  it('a reconnect with an empty list drops tasks that ended while the client was away', async () => {
+    // Seen in prod (2026-09-29): two finished subagents stayed in the Stop
+    // dialog because their completion frames were missed and the reconnect
+    // snapshot omitted the (empty) list.
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'agent-1', startedAt: 1000, isSubagent: true })
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'agent-2', startedAt: 2000, isSubagent: true })
+    })
+    expect(result.current.backgroundTasks).toHaveLength(2)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true, backgroundTasks: [] })
+    })
+    expect(result.current.backgroundTasks).toEqual([])
+  })
+
+  it('replaces its list with the one each task frame carries', async () => {
+    // A missed background_task_completed for bg-1 is healed by the next frame
+    // that touches the list, whichever task it is about.
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_started',
+        taskId: 'bg-1',
+        startedAt: 1000,
+        backgroundTasks: [{ taskId: 'bg-1', startedAt: 1000 }],
+      })
+      // bg-1 ends; its frame never reaches this client. bg-2 starts.
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_started',
+        taskId: 'bg-2',
+        startedAt: 2000,
+        backgroundTasks: [{ taskId: 'bg-2', startedAt: 2000 }],
+      })
+    })
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-2', startedAt: 2000 }])
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'session_waiting_background',
+        backgroundTaskCount: 1,
+        backgroundTasks: [{ taskId: 'bg-3', startedAt: 3000 }],
+      })
+    })
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-3', startedAt: 3000 }])
+    expect(result.current.isWaitingBackground).toBe(true)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_completed',
+        taskId: 'bg-3',
+        backgroundTasks: [],
+      })
+    })
+    expect(result.current.backgroundTasks).toEqual([])
+    expect(result.current.isWaitingBackground).toBe(false)
   })
 
   it('clears background tasks on session_idle', async () => {
