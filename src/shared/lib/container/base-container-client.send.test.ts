@@ -27,6 +27,9 @@ class Client extends BaseContainerClient {
 }
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 describe('runtime handoff rejection evidence', () => {
+  const dispatch = (operation: 'create' | 'send') => operation === 'create'
+    ? new Client().createSession({ initialMessage: 'first input' })
+    : new Client().sendMessage('session', 'follow-up')
   it('forwards the nonempty initial input and stable UUID to POST /sessions', async () => {
     const fetch = vi.fn(async (_url: string, request: RequestInit) => {
       const body = JSON.parse(request.body as string)
@@ -52,7 +55,7 @@ describe('runtime handoff rejection evidence', () => {
     expect(failure).toBeInstanceOf(Error)
     expect(failure).not.toBeInstanceOf(MessageNotAcceptedError)
   })
-  it.each([400, 500, 503])('preserves explicit runtime rejection evidence on HTTP %s', async status => {
+  it.each([400, 401, 500, 503])('preserves explicit runtime rejection evidence on HTTP %s', async status => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'startup failed', inputAccepted: false, code: 'EAGAIN', errorClass: 'executable_launch_failed' }, { status })))
     await expect(new Client().createSession({ initialMessage: 'first input' })).rejects.toMatchObject({ reason: 'rejected', status, containerErrorCode: 'EAGAIN', containerErrorClass: 'executable_launch_failed' })
   })
@@ -60,28 +63,37 @@ describe('runtime handoff rejection evidence', () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'spawn failed', errorClass: 'executable_launch_failed', code: 'EAGAIN' }, { status: 500 })))
     await expect(new Client().createSession({ initialMessage: 'first input' })).rejects.toMatchObject({ reason: 'rejected', status: 500, containerErrorClass: 'executable_launch_failed' })
   })
-  it('retries local request preparation failures without issuing HTTP', async () => {
+  it.each(['create', 'send'] as const)('retries %s request preparation failures without issuing HTTP', async operation => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
     vi.spyOn(settings, 'getAgentCapabilitySettings').mockImplementationOnce(() => { throw new Error('settings temporarily unavailable') })
-    await expect(new Client().createSession({ initialMessage: 'first input' })).rejects.toMatchObject({ reason: 'unavailable' })
+    await expect(dispatch(operation)).rejects.toMatchObject({ reason: 'unavailable' })
     expect(fetch).not.toHaveBeenCalled()
+  })
+  it('retries a send whose URL cannot be built, without issuing HTTP or leaving its timer', async () => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
+    vi.useFakeTimers()
+    try {
+      class NoUrlClient extends Client { protected override getBaseUrl(): string { throw new Error('no kubeconfig') } }
+      await expect(new NoUrlClient().sendMessage('session', 'follow-up')).rejects.toMatchObject({ reason: 'unavailable' })
+      expect(fetch).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
   it.each(['create', 'send'] as const)('retries %s provider resolution failures before input dispatch', async operation => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
     vi.spyOn(providerRuntime, 'connectionRuntime').mockRejectedValueOnce(new Error('provider temporarily unavailable'))
-    const client = new Client()
-    await expect(operation === 'create'
-      ? client.createSession({ initialMessage: 'first input' })
-      : client.sendMessage('session', 'follow-up')).rejects.toMatchObject({ reason: 'unavailable' })
+    await expect(dispatch(operation)).rejects.toMatchObject({ reason: 'unavailable' })
     expect(fetch).not.toHaveBeenCalled()
   })
-  it.each(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'])('recognizes %s as proof the creation request was not delivered', async code => {
+  it.each((['create', 'send'] as const).flatMap(operation => ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].map(code => [operation, code] as const)))('recognizes a %s request failing with %s as not delivered', async (operation, code) => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect'), { code }) }) }))
-    await expect(new Client().createSession({ initialMessage: 'first input' })).rejects.toMatchObject({ reason: 'unavailable' })
+    await expect(dispatch(operation)).rejects.toMatchObject({ reason: 'unavailable' })
   })
-  it.each(['ECONNRESET', 'ETIMEDOUT'])('keeps %s after dispatch ambiguous', async code => {
+  it.each((['create', 'send'] as const).flatMap(operation => ['ECONNRESET', 'ETIMEDOUT'].map(code => [operation, code] as const)))('keeps a %s request failing with %s after dispatch ambiguous', async (operation, code) => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('read'), { code }) }) }))
-    const error = await new Client().createSession({ initialMessage: 'first input' }).catch(error => error)
+    const error = await dispatch(operation).catch(error => error)
     expect(error).toBeInstanceOf(Error)
     expect(error).not.toBeInstanceOf(MessageNotAcceptedError)
   })
@@ -96,8 +108,14 @@ describe('runtime handoff rejection evidence', () => {
     await expect(new Client({ status: 'stopped', port: null }).sendMessage('session', 'message')).rejects.toMatchObject({ reason: 'unavailable' })
     expect(fetch).not.toHaveBeenCalled()
   })
-  it('marks the runtime session-lookup 404 as a definite rejection', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'Session not found' }, { status: 404 })))
+  it.each([400, 401, 500, 502])('honors an explicit not-accepted mark on a send, keeping HTTP %s', async status => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'not accepted', inputAccepted: false }, { status })))
+    const error = await new Client().sendMessage('session', 'message').catch(error => error)
+    expect(error).toBeInstanceOf(MessageNotAcceptedError)
+    expect(error).toMatchObject({ reason: 'rejected', status })
+  })
+  it.each(['Session not found', 'upstream fetch failed'])('marks the runtime session-lookup 404 (%j) as a definite rejection', async error => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error }, { status: 404 })))
     await expect(new Client().sendMessage('session', 'message')).rejects.toMatchObject({ reason: 'session-gone' })
   })
   it.each(['Session not found', 'Container is not running'])('keeps a 500 with %j ambiguous', async error => {
