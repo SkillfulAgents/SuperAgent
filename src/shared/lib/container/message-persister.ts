@@ -288,6 +288,7 @@ interface StreamingState {
   waitingBackground: boolean
   isRecovering: boolean // Mid-turn death claimed for resume; skip session_error until resume fails
   coalescedUserMessages?: CoalescedUserMessage[] // User texts sent while recovering; delivered with their uuids
+  recentDiscards?: string[] // Last discarded command uuids, sent to a client that connects later
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
   agentSlug: string // The agent that owns this session; half of its registry key
   sessionId: string // The bare id, for payloads and disk paths
@@ -435,6 +436,8 @@ const SECRET_BEARING_TOOL_NAMES = new Set([
 // (proxy caps at 2KB); cap harder here — this text lands in the agent's
 // context and 50 events × 2KB would crowd out the actual work.
 const INSPECT_BODY_PREVIEW_CHARS = 200
+
+const MAX_RECENT_DISCARDS = 20
 
 export function formatWebhookEventLine(event: WebhookEndpointEvent): string {
   const filterNote = event.filter
@@ -701,6 +704,7 @@ class MessagePersister {
       waitingBackground: prior?.waitingBackground ?? false,
       isRecovering: prior?.isRecovering ?? false,
       coalescedUserMessages: prior?.coalescedUserMessages,
+      recentDiscards: prior?.recentDiscards,
       isCompacting: false,
       agentSlug,
       lastContextWindow: 200_000,
@@ -1389,6 +1393,10 @@ class MessagePersister {
     return backgroundTaskList(state)
   }
 
+  getRecentDiscards(agentSlug: string, sessionId: string): string[] {
+    return this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))?.recentDiscards ?? []
+  }
+
   getActiveSubagents(agentSlug: string, sessionId: string): ActiveSubagentSnapshot[] {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state) return []
@@ -1529,6 +1537,8 @@ class MessagePersister {
 
   /** Tell clients these messages will never run, so each sender gets its text back. */
   broadcastDiscarded(agentSlug: string, sessionId: string, uuids: string[]): void {
+    const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
+    if (state) state.recentDiscards = [...(state.recentDiscards ?? []), ...uuids].slice(-MAX_RECENT_DISCARDS)
     for (const commandUuid of uuids) {
       this.broadcastToSSE(agentSlug, sessionId, { type: 'command_lifecycle', commandUuid, state: 'discarded' })
     }
@@ -2827,11 +2837,15 @@ class MessagePersister {
         // dropped (nothing downstream can act without a uuid).
         const lifecycle = parseCommandLifecycle(content)
         if (lifecycle) {
-          this.broadcastToSSE(agentSlug, sessionId, {
-            type: 'command_lifecycle',
-            commandUuid: lifecycle.commandUuid,
-            state: lifecycle.state,
-          })
+          if (lifecycle.state === 'discarded') {
+            this.broadcastDiscarded(agentSlug, sessionId, [lifecycle.commandUuid])
+          } else {
+            this.broadcastToSSE(agentSlug, sessionId, {
+              type: 'command_lifecycle',
+              commandUuid: lifecycle.commandUuid,
+              state: lifecycle.state,
+            })
+          }
         }
         break
       }
