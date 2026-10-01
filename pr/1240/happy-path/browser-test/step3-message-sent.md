@@ -1,0 +1,141 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e156]:
+            - link "Discover New Agents New" [ref=e157] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e158]
+              - generic [ref=e161]: Discover New Agents
+              - generic [ref=e162]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+            - button "New folder" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+            - list [ref=e49]:
+              - button "QA-20261001-191931-wrck Open QA-20261001-191931-wrck Collapse Browser Navigation and Page Title working" [ref=e357] [cursor=pointer]:
+                - generic [ref=e51]:
+                  - link "QA-20261001-191931-wrck" [ref=e52]:
+                    - /url: /agents/qa-20261001-191931-wrck-e66eq77mr4
+                    - generic [ref=e53]: QA-20261001-191931-wrck
+                  - link "Open QA-20261001-191931-wrck" [ref=e54]:
+                    - /url: /agents/qa-20261001-191931-wrck-e66eq77mr4
+                    - img "working" [ref=e358]:
+                      - img "working" [ref=e359]
+                  - button "Collapse" [expanded] [ref=e363]:
+                    - img [ref=e364]
+                - list [ref=e367]:
+                  - listitem [ref=e368]:
+                    - link "Browser Navigation and Page Title working" [ref=e369]:
+                      - /url: /agents/e66eq77mr4/sessions/0c9004f1-783e-4df7-8e1d-da6fd4343684
+                      - generic [ref=e371]: Browser Navigation and Page Title
+                      - img "working" [ref=e373]
+              - button "QA-20261001-191925-s9ii Open QA-20261001-191925-s9ii Expand" [ref=e377] [cursor=pointer]:
+                - generic [ref=e66]:
+                  - link "QA-20261001-191925-s9ii" [ref=e67]:
+                    - /url: /agents/qa-20261001-191925-s9ii-ssejn9pud6
+                    - generic [ref=e68]: QA-20261001-191925-s9ii
+                  - link "Open QA-20261001-191925-s9ii" [ref=e69]:
+                    - /url: /agents/qa-20261001-191925-s9ii-ssejn9pud6
+                    - img "working" [ref=e378]:
+                      - img "working" [ref=e379]
+                  - button "Expand" [ref=e383]:
+                    - img [ref=e384]
+          - status [ref=e163]
+      - generic [ref=e81]:
+        - button "Settings" [ref=e82] [cursor=pointer]:
+          - img [ref=e83]
+          - generic [ref=e86]: Settings
+        - button "0.5.35-rc.1" [ref=e87] [cursor=pointer]:
+          - generic [ref=e88]: 0.5.35-rc.1
+      - button "Toggle Sidebar" [ref=e89]
+    - main [ref=e90]:
+      - generic [ref=e168]:
+        - generic [ref=e169]:
+          - button "Toggle Sidebar" [ref=e170] [cursor=pointer]:
+            - img
+            - generic [ref=e171]: Toggle Sidebar
+          - generic [ref=e174]:
+            - link "QA-20261001-191931-wrck" [ref=e387]:
+              - /url: /agents/qa-20261001-191931-wrck-e66eq77mr4
+            - text: /Browser Navigation and Page Title
+          - generic [ref=e175]:
+            - generic [ref=e176]:
+              - img "working" [ref=e388]
+              - generic [ref=e186]: working
+            - button "Stop Agent" [ref=e188] [cursor=pointer]:
+              - img
+        - generic [ref=e394]:
+          - region "Messages" [ref=e396]:
+            - log [ref=e398]:
+              - time [ref=e400]: Today at 7:20 PM
+              - paragraph [ref=e405]:
+                - text: Open a browser and go to
+                - link "https://example.com" [ref=e406] [cursor=pointer]:
+                  - /url: https://example.com
+                - text: . Tell me the page title.
+              - button "Expand ToolSearch tool call" [ref=e444] [cursor=pointer]:
+                - img [ref=e445]
+                - generic [ref=e448]: ToolSearch
+                - generic [ref=e449]:
+                  - img [ref=e452]
+                  - img [ref=e455]
+          - generic [ref=e409]:
+            - generic [ref=e412]:
+              - generic [ref=e414]: Working...
+              - generic [ref=e415]: 3s
+            - generic [ref=e418]:
+              - generic [ref=e422]:
+                - textbox "Type your next message..." [ref=e425]:
+                  - text: Type your next message...
+                  - paragraph [ref=e426]
+                - generic [ref=e427]:
+                  - generic [ref=e428]:
+                    - button "Add files" [ref=e429] [cursor=pointer]:
+                      - img
+                    - 'button "Model and effort: Opus 5.5 · Medium. Click to change." [disabled]':
+                      - generic:
+                        - text: Opus 5.5
+                        - generic: · Medium
+                      - img
+                  - generic [ref=e430]:
+                    - button "Set up voice input" [ref=e431] [cursor=pointer]:
+                      - img
+                    - generic [ref=e433]:
+                      - button "Stop the agent" [ref=e434] [cursor=pointer]:
+                        - img
+                      - button "Queue message" [disabled]:
+                        - img
+              - generic [ref=e435]:
+                - generic [ref=e457]:
+                  - generic [ref=e458]: Context Usage
+                  - img [ref=e460]
+                - generic [ref=e436]:
+                  - generic [ref=e437]: ↵
+                  - generic [ref=e438]: Send
+                  - generic [ref=e439]: ·
+                  - generic [ref=e440]: ⇧↵
+                  - generic [ref=e441]: New line
+  - region "Notifications alt+T"
