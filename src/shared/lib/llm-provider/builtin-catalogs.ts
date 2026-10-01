@@ -667,6 +667,22 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
+    // Not isLatest: the bare `gpt` alias stays on GPT-5.6 Sol.
+    id: 'gpt-6.1-sol',
+    label: 'GPT-6.1 Sol',
+    blurb: 'OpenAI coding tier, served via Platform',
+    family: 'gpt',
+    icon: 'openai',
+    supportedEfforts: ALL_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: pricingFor('gpt-6.1-sol'),
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6.1-sol).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
     // Not isLatest: the bare `gpt` alias stays on Sol so alias users don't jump 2x in price.
     id: 'gpt-6-astra',
     label: 'GPT-6 Astra',
