@@ -133,3 +133,25 @@ describe('ClaudeCodeProcess session id exposure', () => {
     expect((calls[0].options.env as Record<string, string>).GAMUT_SESSION_ID).toBe('real-id')
   })
 })
+
+describe('ClaudeCodeProcess CLI feature opt-outs', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  // Both would start ambient background tasks of their own that keep the
+  // session "working" with nothing in the UI. See createQuery.
+  it('turns off auto-dream and claude.ai Artifacts at every layer, even against custom env vars', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'opt-outs',
+      workingDirectory: '/tmp',
+      customEnvVars: { CLAUDE_CODE_DISABLE_ARTIFACT: '0' },
+    })
+    await process.start()
+
+    const { options } = calls[0]
+    expect(options.settings).toMatchObject({ autoDreamEnabled: false, enableArtifact: false })
+    expect(options.disallowedTools).toContain('Artifact')
+    expect((options.env as Record<string, string>).CLAUDE_CODE_DISABLE_ARTIFACT).toBe('1')
+  })
+})
