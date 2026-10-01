@@ -152,6 +152,17 @@ function backgroundTaskSnapshot(taskId: string, info: BackgroundTaskInfo): Activ
   }
 }
 
+// The whole live list, sent with every frame that changes it: clients replace
+// their copy instead of applying the change, so one they missed (a dropped
+// connection, a backgrounded tab) cannot leave a stale row behind.
+// Ambient tasks (housekeeping, live-update watchers) are live work but not
+// activity, so they never appear in it.
+function backgroundTaskList(state: StreamingState): ActiveBackgroundTaskSnapshot[] {
+  return Array.from(state.activeBackgroundTasks.entries())
+    .filter(([, info]) => !info.ambient)
+    .map(([taskId, info]) => backgroundTaskSnapshot(taskId, info))
+}
+
 export interface ActiveSubagentSnapshot {
   parentToolId: string
   agentId: string | null
@@ -961,6 +972,7 @@ class MessagePersister {
         this.broadcastToSSE(agentSlug, sessionId, {
           type: 'session_waiting_background',
           backgroundTaskCount: openBackgroundWork,
+          backgroundTasks: backgroundTaskList(state),
         })
       } else {
         this.finalizeIdle(agentSlug, sessionId, state)
@@ -1366,9 +1378,7 @@ class MessagePersister {
   getActiveBackgroundTasks(agentSlug: string, sessionId: string): ActiveBackgroundTaskSnapshot[] {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state) return []
-    return Array.from(state.activeBackgroundTasks.entries())
-      .filter(([, info]) => !info.ambient)
-      .map(([taskId, info]) => backgroundTaskSnapshot(taskId, info))
+    return backgroundTaskList(state)
   }
 
   getActiveSubagents(agentSlug: string, sessionId: string): ActiveSubagentSnapshot[] {
@@ -2980,6 +2990,7 @@ class MessagePersister {
             this.broadcastToSSE(agentSlug, sessionId, {
               type: 'session_waiting_background',
               backgroundTaskCount: openBackgroundWork,
+              backgroundTasks: backgroundTaskList(state),
             })
           }
         }
@@ -3461,10 +3472,20 @@ class MessagePersister {
       const before = backgroundTaskSnapshot(taskId, existing)
       const changed = (Object.keys(snapshot) as Array<keyof ActiveBackgroundTaskSnapshot>)
         .some((key) => snapshot[key] !== before[key])
-      if (changed) this.broadcastToSSE(agentSlug, sessionId, { type: 'background_task_updated', ...snapshot })
+      if (changed) {
+        this.broadcastToSSE(agentSlug, sessionId, {
+          type: 'background_task_updated',
+          ...snapshot,
+          backgroundTasks: backgroundTaskList(state),
+        })
+      }
       return
     }
-    this.broadcastToSSE(agentSlug, sessionId, { type: 'background_task_started', ...snapshot })
+    this.broadcastToSSE(agentSlug, sessionId, {
+      type: 'background_task_started',
+      ...snapshot,
+      backgroundTasks: backgroundTaskList(state),
+    })
     this.broadcastGlobal({
       type: 'background_task_started',
       sessionId,
@@ -3474,7 +3495,11 @@ class MessagePersister {
   }
 
   private broadcastBackgroundTaskEnded(agentSlug: string, sessionId: string, state: StreamingState, taskId: string): void {
-    this.broadcastToSSE(agentSlug, sessionId, { type: 'background_task_completed', taskId })
+    this.broadcastToSSE(agentSlug, sessionId, {
+      type: 'background_task_completed',
+      taskId,
+      backgroundTasks: backgroundTaskList(state),
+    })
     this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
   }
 

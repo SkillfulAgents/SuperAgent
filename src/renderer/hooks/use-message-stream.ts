@@ -85,6 +85,16 @@ interface StreamState {
 }
 
 // Upsert a subagent entry in the array by parentToolId (immutable)
+/**
+ * The server's whole live task list, which it sends with every frame that
+ * changes it. Replacing ours with it — rather than applying the one change —
+ * means a frame this client missed cannot leave a task behind. Null when the
+ * frame carries none.
+ */
+function serverTaskList(data: { backgroundTasks?: unknown }): BackgroundTaskRef[] | null {
+  return Array.isArray(data.backgroundTasks) ? (data.backgroundTasks as BackgroundTaskRef[]) : null
+}
+
 function upsertSubagent(list: SubagentInfo[], entry: SubagentInfo): SubagentInfo[] {
   const idx = list.findIndex(s => s.parentToolId === entry.parentToolId)
   if (idx >= 0) {
@@ -633,7 +643,11 @@ function getOrCreateEventSource(
             })
             invalidateMessagesThrottled(queryClient, sessionId)
           } else {
-            streamStates.set(sessionId, { ...current, isWaitingBackground: true })
+            streamStates.set(sessionId, {
+              ...current,
+              backgroundTasks: serverTaskList(data) ?? current.backgroundTasks,
+              isWaitingBackground: true,
+            })
           }
         }
       }
@@ -714,15 +728,15 @@ function getOrCreateEventSource(
           const index = current.backgroundTasks.findIndex(t => t.taskId === data.taskId)
           streamStates.set(sessionId, {
             ...current,
-            backgroundTasks: index === -1
+            backgroundTasks: serverTaskList(data) ?? (index === -1
               ? [...current.backgroundTasks, task]
-              : current.backgroundTasks.map((t, i) => (i === index ? task : t)),
+              : current.backgroundTasks.map((t, i) => (i === index ? task : t))),
           })
         }
       }
       else if (data.type === 'background_task_completed') {
         if (current) {
-          const backgroundTasks = current.backgroundTasks.filter(t => t.taskId !== data.taskId)
+          const backgroundTasks = serverTaskList(data) ?? current.backgroundTasks.filter(t => t.taskId !== data.taskId)
           streamStates.set(sessionId, {
             ...current,
             backgroundTasks,
