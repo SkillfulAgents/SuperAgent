@@ -184,6 +184,7 @@ export class ContainerRuntime {
       settleRecoveringSessions: (ids) => messagePersister.settleRecoveringSessions(slug, ids),
       markRecovered: (ids) => messagePersister.markRecovered(slug, ids),
       takeCoalescedUserMessages: (id) => messagePersister.takeCoalescedUserMessages(slug, id),
+      broadcastDiscarded: (id, uuids) => messagePersister.broadcastDiscarded(slug, id, uuids),
       isSessionRecovering: (id) => messagePersister.isSessionRecovering(slug, id),
       isSubscribed: (id) => messagePersister.isSubscribed(slug, id),
       subscribeToSession: (sessionId, client, containerSessionId) =>

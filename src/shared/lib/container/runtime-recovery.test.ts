@@ -7,6 +7,7 @@ import {
 } from './runtime-recovery'
 import type { ContainerClient } from './types'
 import type { CoalescedUserMessage, UnexpectedDeathPlan } from './runtime-death'
+import { MessageNotAcceptedError } from './message-dispatch-error'
 
 vi.mock('@shared/lib/error-reporting', () => ({
   addErrorBreadcrumb: vi.fn(),
@@ -42,6 +43,7 @@ function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecove
   markRecovered: ReturnType<typeof vi.fn>
   subscribeToSession: ReturnType<typeof vi.fn>
   syncAgentStatus: ReturnType<typeof vi.fn>
+  broadcastDiscarded: ReturnType<typeof vi.fn>
 } {
   const sendMessage = vi.fn().mockResolvedValue(undefined)
   const observeUnexpectedDeath = vi.fn<(input?: unknown) => Promise<UnexpectedDeathPlan>>()
@@ -52,6 +54,7 @@ function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecove
   const markRecovered = vi.fn()
   const subscribeToSession = vi.fn().mockResolvedValue(undefined)
   const syncAgentStatus = vi.fn().mockResolvedValue(undefined)
+  const broadcastDiscarded = vi.fn()
   let recovering = new Set<string>()
 
   const client = {
@@ -89,6 +92,7 @@ function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecove
     isSubscribed: () => false,
     subscribeToSession,
     syncAgentStatus,
+    broadcastDiscarded,
     ...overrides,
   }
 
@@ -102,6 +106,7 @@ function createDeps(overrides: Partial<RuntimeRecoveryDeps> = {}): RuntimeRecove
     markRecovered,
     subscribeToSession,
     syncAgentStatus,
+    broadcastDiscarded,
   }
 }
 
@@ -188,6 +193,21 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(deps.sendMessage).toHaveBeenCalledWith('sess-1', 'keep going', TEST_MESSAGE_UUID, {
       shouldQuery: true,
     })
+  })
+
+  it.each([
+    ['provably never accepted', new MessageNotAcceptedError('session-gone', 'Session not found'), [['sess-1', [TEST_MESSAGE_UUID]]]],
+    ['an unknown outcome', new Error('request timed out'), []],
+  ] as const)('when a coalesced message\'s delivery was %s', async (_case, failure, discarded) => {
+    const deps = createDeps({
+      takeCoalescedUserMessages: (id) => (id === 'sess-1' ? coalescedKeepGoing() : []),
+    })
+    deps.observeUnexpectedDeath.mockResolvedValue({ action: 'ignore' })
+    deps.sendMessage.mockRejectedValueOnce(failure)
+
+    await recoverFromUnexpectedDeath(deps)
+
+    expect(deps.broadcastDiscarded.mock.calls).toEqual(discarded)
   })
 
   it('settles only the sessions the runtime did not report as live', async () => {
