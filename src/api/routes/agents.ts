@@ -200,6 +200,7 @@ import { stopInstanceOnAllProviders } from '../../main/host-browser'
 import { deleteBrowserProfile } from '../../main/host-browser/profile-maintenance'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { captureException } from '@shared/lib/error-reporting'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import * as fs from 'fs'
 import { Readable, pipeline } from 'stream'
 import pLimit from 'p-limit'
@@ -2075,17 +2076,17 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     try {
       agentRegistry.get(slug).sessions.markActive(sessionId)
       lifecycleStarted = true
-      await actor.sessions.subscribeStream(sessionId, sessionId)
+      await afterHandOff(() => actor.sessions.subscribeStream(sessionId, sessionId))
 
       // Record author for initial message after we know the sessionId
       if (isAuthMode()) {
         const userId = getCurrentUserId(c)
-        await db.insert(messageAuthor).values({
+        await afterHandOff(async () => db.insert(messageAuthor).values({
           id: initialMessageUuid,
           sessionId,
           agentSlug: slug,
           userId,
-        })
+        }))
       }
 
       await actor.sessions.register(sessionId, 'New Session', initialMetadata)
@@ -2663,6 +2664,32 @@ async function persistAndBroadcastUserMessage(
   })
 }
 
+/**
+ * Hand the message to the agent. Only proof the agent never got it fails the
+ * send. Any other failure answers 202: the agent may still run the message, so
+ * the client keeps waiting for it instead of returning its text.
+ */
+async function handOff(send: () => Promise<void>): Promise<201 | 202> {
+  try {
+    await send()
+    return 201
+  } catch (error) {
+    if (error instanceof MessageNotAcceptedError) throw error
+    console.error('Send outcome unknown:', error)
+    return 202
+  }
+}
+
+/** A step after the agent has the message: a failure is reported, never returned, since the agent may already be running it. */
+async function afterHandOff<T>(step: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await step()
+  } catch (error) {
+    captureException(error, { tags: { component: 'agents', operation: 'after-handoff' }, level: 'warning' })
+    return undefined
+  }
+}
+
 /** In an agent several people can message, name the sender for the agent, as chat integrations do. */
 async function attributedForAgent(c: Context, agentSlug: string, text: string): Promise<string> {
   // A slash command or system notice only keeps its meaning at the very start of the text.
@@ -2727,13 +2754,13 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       text: agentText,
       ...(runtimeOptions.shouldQuery === false ? { shouldQuery: false as const } : {}),
     })) {
-      await persistAndBroadcastUserMessage(c, {
+      await afterHandOff(() => persistAndBroadcastUserMessage(c, {
         messageUuid,
         sessionId,
         agentSlug,
         content: text,
         queued: true,
-      })
+      }))
       return c.json({ success: true, uuid: messageUuid, queued: true }, 201)
     }
 
@@ -2764,10 +2791,10 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         content: text,
         queued: false,
       })
-      await actor.messages.send(sessionId, agentText, messageUuid, { shouldQuery: false, preserveRuntime: true })
+      const status = await handOff(() => actor.messages.send(sessionId, agentText, messageUuid, { shouldQuery: false, preserveRuntime: true }))
       // No stream frames follow an append, so the warm summary is told directly.
       actor.sessions.recordActivity(sessionId)
-      return c.json({ success: true, uuid: messageUuid, queued: false }, 201)
+      return c.json({ success: status === 201, uuid: messageUuid, queued: false }, status)
     }
 
     return await withSessionSelection(agentSlug, sessionId, async () => {
@@ -2807,14 +2834,14 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         queued: wasQueued,
       })
 
-      await actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) })
+      const status = await handOff(() => actor.messages.send(sessionId, agentText, messageUuid, { ...runtimeOptions, ...(wasQueued ? { preserveRuntime: true } : {}) }))
       nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
       const updates: Partial<SessionMetadata> = {}
       if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
       if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
       // The container client stores the resolved pair, including inherited
       // fallback after deletion. Do not overwrite it with a stale request pair.
-      const effectiveMetadata = getSettings().llmDefault ? await actor.sessions.metadata(sessionId) : null
+      const effectiveMetadata = getSettings().llmDefault ? await afterHandOff(() => actor.sessions.metadata(sessionId)) : null
       if (!wasQueued && effectiveMetadata?.model) {
         updates.model = effectiveMetadata.model
         updates.llmProviderId = effectiveMetadata.llmProviderId
@@ -2858,7 +2885,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         }
       }
 
-      return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
+      return c.json({ success: status === 201, uuid: messageUuid, queued: wasQueued }, status)
     })
   } catch (error) {
     if (error instanceof LlmSelectionAccessError) return c.json({ error: error.message }, 404)
