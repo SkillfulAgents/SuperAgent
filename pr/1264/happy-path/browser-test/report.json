@@ -1,0 +1,26 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser navigation test verified - agent successfully opened browser, navigated to https://example.com, retrieved page title \"Example Domain\", and reported results correctly.",
+  "steps": [
+    "Navigated to http://localhost:47891 using Playwright - Successfully loaded Gamut application with title \"Gamut\"",
+    "Located and clicked agent \"QA-20261002-184341-v57v\" in sidebar - Successfully opened agent page, URL changed to /agents/qa-20261002-184341-v57v-a547z0cckk",
+    "Clicked on message input textbox - Textbox became active and ready for input",
+    "Typed message: \"Open a browser and go to https://example.com. Tell me the page title.\" - Message successfully entered into textbox",
+    "Clicked Send message button - Message successfully submitted, agent began processing",
+    "Waited 5 seconds for agent to process - Agent completed work in 13 seconds with 3 tool calls and 149,385 tokens used",
+    "Took screenshot of completed response - Response visible showing: \"The page title is \\\"Example Domain\\\". The page at https://example.com loaded normally, and I've closed the browser.\"",
+    "Verified response mentions \"Example Domain\" - ✓ Confirmed: Response contains exact text \"Example Domain\" as the page title, meeting verification requirement"
+  ],
+  "bugs": [],
+  "durationMs": 139918,
+  "sessionId": "48001b4d-7624-4337-93c8-5e9c4bad3c39",
+  "cost": {
+    "inputTokens": 482,
+    "outputTokens": 10615,
+    "cacheCreationTokens": 123423,
+    "cacheReadTokens": 1339149,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.341751
+  }
+}
