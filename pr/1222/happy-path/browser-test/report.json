@@ -1,23 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully executed all 5 steps: navigated to Gamut, opened the QA-20261002-215711-qprd agent, sent a browser navigation request, waited for response, and verified \"Example Domain\" was mentioned in the result.",
+  "reason": "Verified that the Gamut agent successfully navigates to https://example.com and reports the page title \"Example Domain\"",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page with two agents visible in the sidebar.",
-    "Step 2: Clicked on \"QA-20261002-215711-qprd\" agent in the sidebar — Successfully opened the agent's chat interface with input field and configuration panels visible on the right.",
-    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Successfully typed the message into the input field and clicked the Send button; message was posted to chat and agent status changed to \"working\".",
-    "Step 4: Waited for agent response (up to 3 minutes) — Agent completed processing in approximately 10 seconds. Response detection confirmed the response contains \"Example\".",
-    "Step 5: Verified response mentions \"Example Domain\" — Screenshot confirms complete response: \"The page title is 'Example Domain'. I loaded https://example.com in the browser and then closed it.\" The response metadata shows \"Worked for 10s · 3 tool calls · 149,109 tokens\", indicating the agent successfully used browser tools to navigate and retrieve the page title."
+    "Navigated to http://localhost:47891 — Page loaded successfully with the Gamut interface showing the agent list in the sidebar",
+    "Found and clicked the \"QA-20261002-224441-8iqd\" agent in the sidebar — Agent page opened, displaying the chat interface with an empty conversation",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message successfully entered in the textbox",
+    "Clicked the send button to submit the message — Message was sent and a new chat session was created (URL changed to session URL)",
+    "Waited up to 3 minutes for the agent's response — Agent responded within ~12 seconds with the correct information",
+    "Verified the response mentions \"Example Domain\" — Response clearly states: 'The page title is \"Example Domain\". The page at https://example.com loaded normally, and I closed the browser afterward.'",
+    "Took screenshot of the final response — Screenshot captured showing the complete conversation with the agent's response containing \"Example Domain\""
   ],
   "bugs": [],
-  "durationMs": 82059,
-  "sessionId": "14a7f88d-738c-4a9b-963d-d006e793f8f8",
+  "durationMs": 206559,
+  "sessionId": "28d82c87-6f5a-46a8-83c5-d1e0efb581be",
   "cost": {
-    "inputTokens": 484,
-    "outputTokens": 11761,
-    "cacheCreationTokens": 81009,
-    "cacheReadTokens": 1506020,
+    "inputTokens": 762,
+    "outputTokens": 18074,
+    "cacheCreationTokens": 93835,
+    "cacheReadTokens": 2453930,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.311152
+    "totalCostUsd": 0.453819
   }
 }
