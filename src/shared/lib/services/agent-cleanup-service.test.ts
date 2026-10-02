@@ -267,6 +267,25 @@ describe('agent-cleanup-service', () => {
       expect(accounts).toHaveLength(1)
     })
 
+    it('deletes agent browser credential mappings but keeps the credential', async () => {
+      const now = new Date()
+      testDb.insert(schema.browserCredentials).values({
+        id: 'bc-1', name: 'example.com', site: 'example.com', browserType: 'container',
+        bundle: 'v1:iv:tag:ciphertext', capturedAt: now, createdAt: now, updatedAt: now,
+      }).run()
+      for (const agentSlug of [AGENT_SLUG, OTHER_AGENT_SLUG]) {
+        testDb.insert(schema.agentBrowserCredentials).values({
+          agentSlug, credentialId: 'bc-1', site: 'example.com', appliedVersion: 1, createdAt: now, updatedAt: now,
+        }).run()
+      }
+
+      await cleanupAgentData(AGENT_SLUG)
+
+      expect(countRows(schema.agentBrowserCredentials, AGENT_SLUG)).toBe(0)
+      expect(countRows(schema.agentBrowserCredentials, OTHER_AGENT_SLUG)).toBe(1)
+      expect(testDb.select().from(schema.browserCredentials).all()).toHaveLength(1)
+    })
+
     it('cancels webhook triggers and cleans up Composio', async () => {
       insertConnectedAccount('acct-1')
       insertWebhookTrigger('wt-1', AGENT_SLUG, { composioTriggerId: 'ti_abc', status: 'active' })

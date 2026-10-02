@@ -5848,6 +5848,7 @@ ${continuation}`
         console.error('[MessagePersister] Browser input request missing message')
         return
       }
+      const login = input.purpose === 'login'
 
       this.registerStreamRequest(
         sessionId,
@@ -5858,6 +5859,7 @@ ${continuation}`
           // The model controls this field — coerce a non-array (e.g. a bare
           // string) to [] so no renderer calls `.map()` on a non-array.
           requirements: Array.isArray(input.requirements) ? input.requirements : [],
+          ...(login ? { login: true } : {}),
         },
         { agentSlug, parentToolUseId },
       )
@@ -5876,6 +5878,7 @@ ${continuation}`
           if (typeof context.url !== 'string') return
           userInputRequestManager.enrichOpenRequestPayload(toolUseId, 'browser_input', {
             browserContext: { url: context.url, capturedAt: Date.now() },
+            ...(login ? { loginUrl: context.url } : {}),
           }, agentSlug)
         }).catch((error: unknown) => {
           console.warn(

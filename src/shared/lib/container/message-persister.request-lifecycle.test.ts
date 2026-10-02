@@ -475,6 +475,31 @@ describe('pending user-input request lifecycle (characterization)', () => {
     )
   })
 
+  it('records the page a sign-in request opened on, and only for sign-ins', async () => {
+    vi.mocked(mockClient.fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ url: 'https://example.com/login' }),
+    } as unknown as Response)
+
+    simulateToolUse(
+      'mcp__user-input__request_browser_input',
+      'tool-sign-in',
+      { message: 'Please log in', requirements: [], purpose: 'login' },
+    )
+    simulateToolUse(
+      'mcp__user-input__request_browser_input',
+      'tool-captcha',
+      { message: 'Solve the CAPTCHA', requirements: [], purpose: 'other' },
+    )
+
+    await vi.waitFor(() => {
+      expect(userInputRequestManager.getOpenRequest('tool-sign-in')?.payload)
+        .toMatchObject({ login: true, loginUrl: 'https://example.com/login' })
+      expect(userInputRequestManager.getOpenRequest('tool-captcha')?.payload.browserContext).toBeDefined()
+    })
+    expect(userInputRequestManager.getOpenRequest('tool-captcha')?.payload).not.toHaveProperty('loginUrl')
+  })
+
   // ==========================================================================
   // Documented divergence: computer-use has route-driven clearing and
   // survives idle boundaries — the registry expresses this as a distinct

@@ -2,6 +2,7 @@ import { db } from '@shared/lib/db'
 import { batch } from '@shared/lib/db/batch'
 import {
   agentConnectedAccounts,
+  agentBrowserCredentials,
   webhookTriggers,
   chatIntegrations,
   scheduledTasks,
@@ -30,6 +31,7 @@ export async function cleanupAgentData(agentSlug: string): Promise<void> {
     db.delete(notifications).where(eq(notifications.agentSlug, agentSlug)),
     db.delete(sessionUnreadMarks).where(eq(sessionUnreadMarks.agentSlug, agentSlug)),
     db.delete(agentConnectedAccounts).where(eq(agentConnectedAccounts.agentSlug, agentSlug)),
+    db.delete(agentBrowserCredentials).where(eq(agentBrowserCredentials.agentSlug, agentSlug)),
     db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.agentSlug, agentSlug)),
     db.delete(proxyAuditLog).where(eq(proxyAuditLog.agentSlug, agentSlug)),
     db.delete(mcpAuditLog).where(eq(mcpAuditLog.agentSlug, agentSlug)),

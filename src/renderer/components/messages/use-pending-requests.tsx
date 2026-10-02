@@ -29,7 +29,7 @@ type PendingRequestBuckets = {
   questionRequests: { toolUseId: string; questions: Question[] }[]
   fileRequests: { toolUseId: string; description: string; fileTypes?: string }[]
   remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer'; clientId?: string; clientName?: string }[]
-  browserInputRequests: { toolUseId: string; message: string; requirements: string[] }[]
+  browserInputRequests: { toolUseId: string; message: string; requirements: string[]; login?: boolean }[]
   scriptRunRequests: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[]
   computerUseRequests: { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }[]
 }
@@ -163,6 +163,7 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         // so downstream `.map()` can't crash the request card. `|| []`
         // would let a non-empty string through.
         requirements: Array.isArray(input.requirements) ? input.requirements : [],
+        ...(input.purpose === 'login' ? { login: true } : {}),
       })
     }
   } else if (toolCall.name === 'mcp__user-input__request_script_run') {
@@ -440,6 +441,7 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
             toolUseId: request.id,
             message: payload.message,
             requirements: Array.isArray(payload.requirements) ? payload.requirements : [],
+            ...(payload.login === true ? { login: true } : {}),
           })
         }
         break
@@ -570,7 +572,7 @@ export type PendingRequestDescriptor =
   | { kind: 'remote_mcp'; key: string; toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer'; clientId?: string; clientName?: string; onComplete: () => void }
   | { kind: 'question'; key: string; toolUseId: string; questions: Question[]; onComplete: () => void }
   | { kind: 'file'; key: string; toolUseId: string; description: string; fileTypes?: string; onComplete: () => void }
-  | { kind: 'browser_input'; key: string; toolUseId: string; message: string; requirements: string[]; onComplete: () => void }
+  | { kind: 'browser_input'; key: string; toolUseId: string; message: string; requirements: string[]; login?: boolean; onComplete: () => void }
   | { kind: 'script_run'; key: string; toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell'; onComplete: () => void }
   | { kind: 'computer_use'; key: string; toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; onComplete: () => void }
   | { kind: 'capability_review'; key: string; toolUseId: string; capability: 'subagents' | 'workflows'; toolName: string; input: Record<string, unknown>; onComplete: () => void }
@@ -871,6 +873,7 @@ export function usePendingRequests({
         toolUseId: r.toolUseId,
         message: r.message,
         requirements: r.requirements,
+        login: r.login,
         onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }

@@ -100,6 +100,7 @@ export function renderPendingRequest(
           toolUseId={d.toolUseId}
           message={d.message}
           requirements={d.requirements}
+          login={d.login}
           sessionId={ctx.sessionId}
           agentSlug={ctx.agentSlug}
           readOnly={ctx.readOnly}

@@ -217,6 +217,41 @@ export const agentConnectedAccounts = sqliteTable(
   })
 )
 
+// Browser credentials - saved per-site browser logins (encrypted storage bundles)
+export const browserCredentials = sqliteTable('browser_credentials', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }), // Owner in auth mode, null in non-auth mode
+  name: text('name').notNull(), // Display name; defaults to site
+  site: text('site').notNull(), // Registrable domain (eTLD+1), e.g. 'linkedin.com'
+  browserType: text('browser_type', { enum: ['container', 'chrome', 'browserbase', 'platform'] }).notNull(),
+  bundle: text('bundle').notNull(), // 'v1:<iv>:<tag>:<ciphertext>', AES-256-GCM, AAD = id + site
+  version: integer('version').notNull().default(1), // Bumped on each in-place update
+  capturedAt: integer('captured_at', { mode: 'timestamp_ms' }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  userSiteIdx: index('browser_credentials_user_site_idx').on(table.userId, table.site),
+  // One saved login per owner, site and browser type; coalesce makes non-auth mode's NULL owner count as one owner.
+  ownerSiteTypeUnique: uniqueIndex('browser_credentials_owner_site_type_unique')
+    .on(sql`coalesce(user_id, '')`, table.site, table.browserType),
+}))
+
+// Agent browser credentials - which saved login an agent uses for a site
+// Note: agentSlug references the agent's directory name, not a DB foreign key
+export const agentBrowserCredentials = sqliteTable('agent_browser_credentials', {
+  agentSlug: text('agent_slug').notNull(),
+  credentialId: text('credential_id')
+    .notNull()
+    .references(() => browserCredentials.id, { onDelete: 'cascade' }),
+  site: text('site').notNull(), // Copied from the credential so the PK can enforce one login per agent per site
+  appliedVersion: integer('applied_version').notNull(), // Credential version currently in this agent's browser
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.agentSlug, table.site] }),
+  credentialIdx: index('agent_browser_credentials_credential_idx').on(table.credentialId),
+}))
+
 // Scheduled tasks - tasks scheduled by agents for future execution
 export const scheduledTasks = sqliteTable('scheduled_tasks', {
   id: text('id').primaryKey(),
@@ -812,6 +847,10 @@ export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
 export type AgentConnectedAccount = typeof agentConnectedAccounts.$inferSelect
 export type NewAgentConnectedAccount = typeof agentConnectedAccounts.$inferInsert
+export type BrowserCredential = typeof browserCredentials.$inferSelect
+export type NewBrowserCredential = typeof browserCredentials.$inferInsert
+export type AgentBrowserCredential = typeof agentBrowserCredentials.$inferSelect
+export type NewAgentBrowserCredential = typeof agentBrowserCredentials.$inferInsert
 export type ScheduledTask = typeof scheduledTasks.$inferSelect
 export type NewScheduledTask = typeof scheduledTasks.$inferInsert
 export type Notification = typeof notifications.$inferSelect
