@@ -95,6 +95,8 @@ export function BrowserTrayContent({
   // Same rule as the chat card: with a saved login, offer only that until the user picks another account.
   const showManualSignIn = !isLogin || otherAccount || savedLogins.logins?.length === 0
   const busy = submittingAction !== null || savedLogins.applyingId !== null
+  // The saved login is in the browser but the request is still open; Done completes it without applying again.
+  const completeAfterApply = savedLogins.applied && !savedLogins.settled
 
   // History is authoritative once received; older containers only provide tab URLs.
   const viewingTab = stream.tabs.find((tab) => tab.targetId === stream.viewingTargetId)
@@ -208,9 +210,9 @@ export function BrowserTrayContent({
                   className="h-7 text-xs border-border text-foreground hover:bg-muted"
                   data-testid="browser-tray-decline-btn"
                 />
-                {showManualSignIn ? (
+                {showManualSignIn || completeAfterApply ? (
                   <Button
-                    onClick={() => complete(latestRequest.toolUseId, { saveLogin: isLogin && canSaveLogin && saveLogin })}
+                    onClick={() => complete(latestRequest.toolUseId, { saveLogin: !completeAfterApply && isLogin && canSaveLogin && saveLogin })}
                     loading={submittingAction === 'completing'}
                     disabled={busy}
                     size="sm"
@@ -220,9 +222,10 @@ export function BrowserTrayContent({
                   </Button>
                 ) : savedLogin && (
                   <Button
-                    onClick={() => void savedLogins.apply(savedLogin.id)}
+                    onClick={() => void savedLogins.apply(savedLogin.id, otherMembers !== 0)}
                     loading={savedLogins.applyingId !== null}
-                    disabled={busy}
+                    // Until the member count is known, applying could skip the shared-agent notice.
+                    disabled={busy || otherMembers === null}
                     size="sm"
                     className="h-7 text-xs bg-blue-600 text-white hover:bg-blue-700"
                     data-testid="browser-tray-use-saved-login"
@@ -231,7 +234,7 @@ export function BrowserTrayContent({
                   </Button>
                 )}
               </div>
-              {savedLogin && !showManualSignIn && otherMembers > 0 && (
+              {savedLogin && !showManualSignIn && !completeAfterApply && otherMembers !== null && otherMembers > 0 && (
                 <p className="mt-1 px-1 text-2xs text-muted-foreground" data-testid="browser-tray-shared-notice">
                   {sharedLoginNotice(otherMembers, savedLogin.site)}
                 </p>

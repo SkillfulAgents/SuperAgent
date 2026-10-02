@@ -46,13 +46,7 @@ function fakeCdp(options: { cookies?: any[]; pages?: Array<{ url: string; histor
             emit('Page.loadEventFired', {}, sessionId)
           })
           return {}
-        case 'Runtime.evaluate': {
-          if (params.expression === 'location.origin') {
-            const index = Number(sessionId?.replace('session-page-', ''))
-            return { result: { value: options.actualOrigin ?? new URL(options.pages![index].url).origin } }
-          }
-          return { result: { objectId: 'global' } }
-        }
+        case 'Runtime.evaluate': return { result: { objectId: 'global' } }
         case 'Runtime.callFunctionOn':
           if (params.functionDeclaration === READ_ORIGIN_STORAGE_FUNCTION) {
             return { result: { value: { localStorage: [['token', 'secret-token']], indexedDB: [], oversizedDatabases: [], unsupported: [], ...options.read } } }
@@ -60,6 +54,8 @@ function fakeCdp(options: { cookies?: any[]; pages?: Array<{ url: string; histor
           if (params.functionDeclaration === WRITE_ORIGIN_STORAGE_FUNCTION) {
             return { result: { value: { localStorage: params.arguments[0].value.localStorage.length, indexedDB: 0, skippedRecords: 0 } } }
           }
+          // sessionStorage functions check the tab's origin in the page and return null when it has navigated away.
+          if (options.actualOrigin && params.arguments[0].value !== options.actualOrigin) return { result: { value: null } }
           return { result: { value: [] } }
         default: return {}
       }
@@ -174,16 +170,19 @@ describe('restoreSiteStorage', () => {
     ])
   })
 
-  it('serves only the stub document on the helper tab and closes it', async () => {
+  it('serves only the stub document on helper tabs, bypassing service workers, and closes them', async () => {
     const { client, calls } = fakeCdp()
     await restoreSiteStorage(client, bundle)
+    const created = calls.filter((call) => call.method === 'Target.createTarget')
     const fetchCalls = calls.filter((call) => call.method.startsWith('Fetch.') && call.method !== 'Fetch.enable')
-    expect(fetchCalls).toEqual([
+    expect(fetchCalls).toEqual(created.flatMap(() => [
       expect.objectContaining({ method: 'Fetch.failRequest', params: expect.objectContaining({ requestId: 'favicon' }) }),
       expect.objectContaining({ method: 'Fetch.fulfillRequest', params: expect.objectContaining({ requestId: 'stub' }) }),
-    ])
-    expect(calls.find((call) => call.method === 'Target.createTarget')?.params).toMatchObject({ background: true })
-    expect(calls.at(-1)).toMatchObject({ method: 'Target.closeTarget', params: { targetId: 'stub-1' } })
+    ]))
+    expect(created.every((call) => call.params.background === true)).toBe(true)
+    expect(calls.filter((call) => call.method === 'Network.setBypassServiceWorker')).toHaveLength(created.length)
+    expect(calls.filter((call) => call.method === 'Target.closeTarget').map((call) => call.params.targetId))
+      .toEqual(created.map((_call, i) => `stub-${i + 1}`))
   })
 
   it('deletes IndexedDB databases on the stub tab\'s session before writing through it', async () => {
@@ -191,9 +190,10 @@ describe('restoreSiteStorage', () => {
     await restoreSiteStorage(client, bundle)
     const deletes = calls.filter((call) => call.method === 'IndexedDB.deleteDatabase')
     const write = calls.findIndex((call) => call.params.functionDeclaration === WRITE_ORIGIN_STORAGE_FUNCTION)
+    const writeSession = calls[write].sessionId
     expect(deletes).toEqual([
-      { method: 'IndexedDB.deleteDatabase', params: { securityOrigin: 'https://example.org', databaseName: 'auth' }, sessionId: 'session-stub-1' },
-      { method: 'IndexedDB.deleteDatabase', params: { securityOrigin: 'https://example.org', databaseName: 'prefs' }, sessionId: 'session-stub-1' },
+      { method: 'IndexedDB.deleteDatabase', params: { securityOrigin: 'https://example.org', databaseName: 'auth' }, sessionId: writeSession },
+      { method: 'IndexedDB.deleteDatabase', params: { securityOrigin: 'https://example.org', databaseName: 'prefs' }, sessionId: writeSession },
     ])
     expect(calls.lastIndexOf(deletes[1])).toBeLessThan(write)
   })
@@ -210,14 +210,18 @@ describe('restoreSiteStorage', () => {
   it('hides the stub tab from tab listings only while it is open', async () => {
     const { client } = fakeCdp()
     const send = client.send.bind(client)
+    let writeTarget = ''
     let hiddenDuringWrite = false
     client.send = async (method, params, sessionId) => {
-      if (params?.functionDeclaration === WRITE_ORIGIN_STORAGE_FUNCTION) hiddenDuringWrite = isStorageStubTarget('stub-1')
+      if (params?.functionDeclaration === WRITE_ORIGIN_STORAGE_FUNCTION) {
+        writeTarget = sessionId!.replace('session-', '')
+        hiddenDuringWrite = isStorageStubTarget(writeTarget)
+      }
       return send(method, params, sessionId)
     }
     await restoreSiteStorage(client, bundle)
     expect(hiddenDuringWrite).toBe(true)
-    expect(isStorageStubTarget('stub-1')).toBe(false)
+    expect(isStorageStubTarget(writeTarget)).toBe(false)
   })
 
   it('reports sessionStorage it could not restore because no tab of that origin is open', async () => {
@@ -281,7 +285,6 @@ describe('clearSiteStorage', () => {
     expect(await clearSiteStorage(client, 'example.org', ['https://example.org']))
       .toEqual({ skipped: ['https://example.org'] })
 
-    expect(calls.some((call) => call.params.functionDeclaration === WRITE_SESSION_STORAGE_FUNCTION)).toBe(false)
     expect(calls.some((call) => call.method === 'Page.reload')).toBe(false)
   })
 })
@@ -306,7 +309,7 @@ describe('pending sessionStorage', () => {
     const { client, calls } = fakeCdp({ pages: [{ url: 'https://app.example.org/home' }] })
     expect(await applyPendingSessionStorage(client)).toEqual(['https://app.example.org'])
     expect(calls.find((call) => call.params.functionDeclaration === WRITE_SESSION_STORAGE_FUNCTION)?.params.arguments)
-      .toEqual([{ value: [['tab', 'x']] }])
+      .toEqual([{ value: 'https://app.example.org' }, { value: [['tab', 'x']] }])
     expect(calls.some((call) => call.method === 'Page.reload')).toBe(true)
     expect(hasPendingSessionStorage()).toBe(false)
   })

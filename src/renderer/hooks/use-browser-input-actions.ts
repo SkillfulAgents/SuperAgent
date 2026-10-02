@@ -22,11 +22,15 @@ export function useCanSaveBrowserLogin(agentSlug: string, enabled: boolean): boo
   return !isAuthMode || members.data?.length === 1
 }
 
-/** Members of the agent besides the caller, who could use a login applied to it; 0 outside auth mode. */
-export function useOtherAgentMemberCount(agentSlug: string, enabled: boolean): number {
+/**
+ * Members of the agent besides the caller, who could use a login applied to it: 0 outside auth mode, null while the
+ * member list is loading or failed, so a shared agent is never mistaken for a personal one.
+ */
+export function useOtherAgentMemberCount(agentSlug: string, enabled: boolean): number | null {
   const { isAuthMode } = useUser()
   const members = useAgentMembers(agentSlug, enabled)
-  return isAuthMode ? Math.max(0, (members.data?.length ?? 1) - 1) : 0
+  if (!isAuthMode) return 0
+  return members.data ? Math.max(0, members.data.length - 1) : null
 }
 
 interface UseBrowserInputActionsArgs {

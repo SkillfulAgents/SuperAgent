@@ -1,5 +1,5 @@
 import crypto from 'crypto'
-import { and, desc, eq, gt, inArray } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf } from '@shared/lib/db/batch'
 import {
@@ -26,7 +26,6 @@ export interface SaveBrowserLoginInput {
 export interface SaveBrowserLoginResult {
   status: 'created' | 'updated'
   credentialId: string
-  version: number
 }
 
 /**
@@ -40,7 +39,7 @@ export async function saveBrowserLogin(input: SaveBrowserLoginInput): Promise<Sa
   const now = new Date()
 
   const existing = await db
-    .select({ id: browserCredentials.id, version: browserCredentials.version })
+    .select({ id: browserCredentials.id })
     .from(browserCredentials)
     .where(and(
       eq(browserCredentials.site, site),
@@ -50,12 +49,13 @@ export async function saveBrowserLogin(input: SaveBrowserLoginInput): Promise<Sa
     .get()
 
   const id = existing?.id ?? crypto.randomUUID()
-  const version = existing ? existing.version + 1 : 1
   const encrypted = encryptBrowserBundle(bundle, { id, site })
+  // Concurrent saves each bump the version in SQL; the mapping reads the version its own batch committed.
+  const committedVersion = sql<number>`(select ${browserCredentials.version} from ${browserCredentials} where ${browserCredentials.id} = ${id})`
   await batch([
     existing
       ? db.update(browserCredentials)
-        .set({ bundle: encrypted, version, capturedAt: now, updatedAt: now })
+        .set({ bundle: encrypted, version: sql`${browserCredentials.version} + 1`, capturedAt: now, updatedAt: now })
         .where(eq(browserCredentials.id, id))
       : db.insert(browserCredentials).values({
         id,
@@ -64,19 +64,19 @@ export async function saveBrowserLogin(input: SaveBrowserLoginInput): Promise<Sa
         site,
         browserType,
         bundle: encrypted,
-        version,
+        version: 1,
         capturedAt: now,
         createdAt: now,
         updatedAt: now,
       }),
     db.insert(agentBrowserCredentials)
-      .values({ agentSlug, credentialId: id, site, appliedVersion: version, createdAt: now, updatedAt: now })
+      .values({ agentSlug, credentialId: id, site, appliedVersion: committedVersion, createdAt: now, updatedAt: now })
       .onConflictDoUpdate({
         target: [agentBrowserCredentials.agentSlug, agentBrowserCredentials.site],
-        set: { credentialId: id, appliedVersion: version, updatedAt: now },
+        set: { credentialId: id, appliedVersion: committedVersion, updatedAt: now },
       }),
   ])
-  return { status: existing ? 'updated' : 'created', credentialId: id, version }
+  return { status: existing ? 'updated' : 'created', credentialId: id }
 }
 
 /** Saved logins the user can offer for `site` in a browser of `browserType`; metadata only. */

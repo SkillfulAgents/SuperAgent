@@ -9,12 +9,12 @@ export function sharedLoginNotice(otherMembers: number, site: string): string {
 interface SavedLoginPickerProps {
   savedLogins: SavedLogins
   disabled?: boolean
-  /** Other members of the agent; when any, the picker says they can use the applied login. */
-  otherMembers?: number
+  /** Other members of the agent; when any, the picker says they can use the applied login. Null while unknown. */
+  otherMembers: number | null
 }
 
-export function SavedLoginPicker({ savedLogins, disabled, otherMembers = 0 }: SavedLoginPickerProps) {
-  const { logins, applyingId, applied, error, apply } = savedLogins
+export function SavedLoginPicker({ savedLogins, disabled, otherMembers }: SavedLoginPickerProps) {
+  const { logins, applyingId, applied, settled, error, apply } = savedLogins
   if (!logins || logins.length === 0) return null
 
   return (
@@ -23,14 +23,14 @@ export function SavedLoginPicker({ savedLogins, disabled, otherMembers = 0 }: Sa
         <Vault className="h-3.5 w-3.5" />
         Use a saved login
       </div>
-      {!applied && otherMembers > 0 && (
+      {!applied && otherMembers !== null && otherMembers > 0 && (
         <p className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground" data-testid="saved-login-shared-notice">
           <Users className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           {sharedLoginNotice(otherMembers, logins[0].site)}
         </p>
       )}
       {applied ? (
-        <p className="mt-2 text-xs text-muted-foreground">Saved login applied. The agent will check that it is signed in.</p>
+        settled && <p className="mt-2 text-xs text-muted-foreground">Saved login applied. The agent will check that it is signed in.</p>
       ) : (
         <div className="mt-2 space-y-1.5">
           {logins.map((login) => (
@@ -38,8 +38,9 @@ export function SavedLoginPicker({ savedLogins, disabled, otherMembers = 0 }: Sa
               key={login.id}
               type="button"
               className="flex w-full items-center gap-3 rounded-md border border-border bg-background px-2.5 py-2 text-left hover:bg-muted disabled:opacity-50"
-              onClick={() => apply(login.id)}
-              disabled={disabled || applyingId !== null}
+              onClick={() => apply(login.id, otherMembers !== 0)}
+              // Until the member count is known, applying could skip the shared-agent notice.
+              disabled={disabled || applyingId !== null || otherMembers === null}
               data-testid={`saved-login-${login.id}`}
             >
               <span className="min-w-0 flex-1">

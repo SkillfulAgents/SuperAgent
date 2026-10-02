@@ -52,6 +52,8 @@ export function BrowserInputRequestItem({
   const saveLogin = saveChoice ?? !hasSavedLogins
   const canSaveLogin = useCanSaveBrowserLogin(agentSlug, login && !readOnly)
   const otherMembers = useOtherAgentMemberCount(agentSlug, login && !readOnly)
+  // The saved login is in the browser but the request is still open; Done completes it without applying again.
+  const completeAfterApply = savedLogins.applied && !savedLogins.settled
 
   // `requirements` is typed string[] but originates from model tool input, so a
   // malformed value (e.g. a bare string) can reach here. Normalize to an array
@@ -160,9 +162,9 @@ export function BrowserInputRequestItem({
           data-testid="browser-input-decline-btn"
         />
 
-        {showManualSignIn && (
+        {(showManualSignIn || completeAfterApply) && (
           <Button
-            onClick={() => complete(toolUseId, { saveLogin: login && canSaveLogin && saveLogin })}
+            onClick={() => complete(toolUseId, { saveLogin: !completeAfterApply && login && canSaveLogin && saveLogin })}
             loading={submittingAction === 'completing'}
             disabled={status === 'submitting'}
             size="xs"
