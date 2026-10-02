@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import {
   DndContext,
@@ -250,17 +250,22 @@ function DoneColumn({ open, view, doneCount, archivedCount, onOpen, onCollapse, 
   )
 }
 
-/** The open columns, in board order. Done and Archived share the folding column. */
+/**
+ * The open columns, in board order. Done and Archived share the folding
+ * column. Needs you holds everything waiting on the person: blocked work
+ * (needs input) first, then work with updates to look at. Each group is
+ * ordered, and dragged, on its own.
+ */
 const LANES = [
-  { column: 'drafts', label: 'Drafts', dot: 'bg-muted-foreground/40', empty: 'Write down what you want done. Start it when it is ready.' },
-  { column: 'working', label: 'Working', dot: 'bg-sky-500', empty: 'No agents are working on anything right now.' },
-  { column: 'needs_input', label: 'Needs input', dot: 'bg-orange-500', empty: 'Nothing is waiting on you.' },
-  { column: 'has_updates', label: 'Has updates', dot: 'bg-violet-500', empty: 'Nothing new to look at.' },
-] as const satisfies readonly { column: TodoColumn; label: string; dot: string; empty: string }[]
+  { id: 'drafts', columns: ['drafts'], label: 'Drafts', dot: 'bg-muted-foreground/40', empty: 'Write down what you want done. Start it when it is ready.' },
+  { id: 'needs_you', columns: ['needs_input', 'has_updates'], label: 'Needs you', dot: 'bg-orange-500', empty: 'Nothing is waiting on you.' },
+  { id: 'working', columns: ['working'], label: 'Working', dot: 'bg-sky-500', empty: 'No agents are working on anything right now.' },
+] as const satisfies readonly { id: string; columns: readonly TodoColumn[]; label: string; dot: string; empty: string }[]
 
 /**
- * The Todo board. Drafts, then started work where its session is — working,
- * needing input, or with updates to look at — and Done folded to the side.
+ * The Todo board. Drafts, then what needs you (blocked work, then work
+ * with updates to look at), then what agents are working on, and Done
+ * folded to the side.
  * A draft opens its dialog; anything started opens its session.
  */
 export function TodoBoard() {
@@ -314,7 +319,8 @@ export function TodoBoard() {
 
   // The columns in order, as the keyboard walks them. Done joins only when open.
   const finishedList = showArchived ? columns.archived : columns.done
-  const lanes = [...LANES.map((lane) => columns[lane.column]), ...(doneOpen ? [finishedList] : [])]
+  const laneCards = (lane: (typeof LANES)[number]) => lane.columns.flatMap((column) => columns[column])
+  const lanes = [...LANES.map(laneCards), ...(doneOpen ? [finishedList] : [])]
   const locate = (id: string | null) => {
     if (!id) return null
     for (let lane = 0; lane < lanes.length; lane++) {
@@ -447,12 +453,12 @@ export function TodoBoard() {
           <div className="flex h-full min-w-[960px] gap-3">
             {LANES.map((lane) => (
               <Column
-                key={lane.column}
+                key={lane.id}
                 label={lane.label}
                 dot={lane.dot}
-                count={columns[lane.column].length}
-                testId={`todo-column-${lane.column}`}
-                action={lane.column === 'drafts' ? (
+                count={laneCards(lane).length}
+                testId={`todo-column-${lane.id}`}
+                action={lane.id === 'drafts' ? (
                   <ShortcutTooltip label="New draft" keys={['C']}>
                     <Button
                       variant="ghost"
@@ -468,8 +474,8 @@ export function TodoBoard() {
                   </ShortcutTooltip>
                 ) : undefined}
               >
-                {columns[lane.column].length > 0
-                  ? cards(columns[lane.column])
+                {laneCards(lane).length > 0
+                  ? lane.columns.map((column) => <Fragment key={column}>{cards(columns[column])}</Fragment>)
                   : !isPending && <Empty>{lane.empty}</Empty>}
               </Column>
             ))}

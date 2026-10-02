@@ -7,14 +7,23 @@ import type { TodoCardAction } from './todo-card-action'
 import { ShortcutTooltip } from './todo-shortcuts'
 import { ago, when, type TodoAgent } from './todo-shared'
 
-/** What a Needs input card is waiting for, as a pill at the end of its metadata row. */
+const PILL = 'ml-auto inline-flex h-5 shrink-0 items-center rounded-full px-2 text-[11px]'
+
+/**
+ * What a card in Needs you wants: blocked work says what it is waiting for
+ * (orange); work with output to look at says so (blue).
+ */
 function AskPill({ todo }: { todo: TodoView }) {
+  if (todo.column === 'has_updates') {
+    return (
+      <span className={cn(PILL, 'bg-blue-500/10 text-blue-700 dark:text-blue-400')} data-testid="todo-card-updates">
+        Has updates
+      </span>
+    )
+  }
   if (todo.column !== 'needs_input' || !todo.ask) return null
   return (
-    <span
-      className="ml-auto inline-flex h-5 shrink-0 items-center rounded-full bg-orange-500/10 px-2 text-[11px] text-orange-700 dark:text-orange-400"
-      data-testid="todo-card-ask"
-    >
+    <span className={cn(PILL, 'bg-orange-500/10 text-orange-700 dark:text-orange-400')} data-testid="todo-card-ask">
       {TODO_ASK_LABELS[todo.ask]}
     </span>
   )

@@ -74,8 +74,20 @@ describe('TodoBoard', () => {
     renderWithProviders(<TodoBoard />)
     expect(within(screen.getByTestId('todo-column-drafts')).getByText('Task a')).toBeInTheDocument()
     expect(within(screen.getByTestId('todo-column-working')).getByText('Task b')).toBeInTheDocument()
-    expect(within(screen.getByTestId('todo-column-needs_input')).getByText('Task c')).toBeInTheDocument()
-    expect(within(screen.getByTestId('todo-column-has_updates')).getByText('Task d')).toBeInTheDocument()
+    const needsYou = within(screen.getByTestId('todo-column-needs_you'))
+    expect(needsYou.getAllByTestId('todo-card').map((card) => card.dataset.todoId)).toEqual(['c', 'd'])
+  })
+
+  it('lists blocked work above work with updates, and says which is which', () => {
+    state.todos = [
+      todo({ id: 'u', column: 'has_updates', position: 9 }),
+      todo({ id: 'q', column: 'needs_input', position: 1, ask: 'answer' }),
+    ]
+    renderWithProviders(<TodoBoard />)
+    const needsYou = within(screen.getByTestId('todo-column-needs_you'))
+    expect(needsYou.getAllByTestId('todo-card').map((card) => card.dataset.todoId)).toEqual(['q', 'u'])
+    expect(needsYou.getByTestId('todo-card-ask')).toHaveTextContent('Needs answer')
+    expect(needsYou.getByTestId('todo-card-updates')).toHaveTextContent('Has updates')
   })
 
   it('labels what a Needs input card is waiting for', () => {
