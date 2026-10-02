@@ -1,5 +1,5 @@
 import { Suspense, type ReactNode } from 'react'
-import { Bolt, Cuboid, Bell, Layers, BarChart3, Blocks, Users, Shield, Route, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, Search, Smartphone, Sparkle, Workflow } from 'lucide-react'
+import { Bolt, Cuboid, Bell, FlaskConical, Layers, BarChart3, Blocks, Users, Shield, Route, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, Search, Smartphone, Sparkle, Workflow } from 'lucide-react'
 import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup } from '@renderer/components/settings/settings-page'
 import { lazyRouteComponent, type LinkProps } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
@@ -34,6 +34,7 @@ const PlatformTab = lazyRouteComponent(() => import('./platform-tab'), 'Platform
 const ComputerUseTab = lazyRouteComponent(() => import('./computer-use-tab'), 'ComputerUseTab')
 const CapabilitiesTab = lazyRouteComponent(() => import('./capabilities-tab'), 'CapabilitiesTab')
 const AuditLogTab = lazyRouteComponent(() => import('./audit-log-tab'), 'AuditLogTab')
+const ExperimentsTab = lazyRouteComponent(() => import('./experiments-tab'), 'ExperimentsTab')
 
 function deferredTab(content: ReactNode): ReactNode {
   return (
@@ -87,6 +88,8 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
     { id: 'general', label: 'General', icon: <Bolt className="h-4 w-4" />, render: () => deferredTab(<GeneralTab onOpenWizard={onOpenWizard} />) },
     { id: 'notifications', label: 'Notifications', icon: <Bell className="h-4 w-4" />, render: () => deferredTab(<NotificationsTab />) },
     { id: 'platform', label: 'Account', icon: <BadgeCheck className="h-4 w-4" />, render: () => deferredTab(<PlatformTab readOnly={isAuthMode} />) },
+    // Everyone: each switch is the viewer's own.
+    { id: 'experiments', label: 'Experiments', icon: <FlaskConical className="h-4 w-4" />, render: () => deferredTab(<ExperimentsTab />) },
     ...(isAuthMode && showAdminSettings ? [{ id: 'analytics', label: 'Analytics', icon: <Activity className="h-4 w-4" />, render: () => deferredTab(<AnalyticsTab />) }] : []),
     ...(showAuthAdmin
       ? [

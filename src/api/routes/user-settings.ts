@@ -3,6 +3,7 @@ import { Authenticated } from '../middleware/auth'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import {
   agentFolderSettingsWriteSchema,
+  experimentSettingsWriteSchema,
   getUserSettings,
   updateUserSettings,
   userVoiceSettingsWriteSchema,
@@ -35,6 +36,10 @@ userSettingsRouter.put('/', async (c) => {
   const voiceFields = userVoiceSettingsWriteSchema.safeParse(body)
   if (!voiceFields.success) {
     return c.json({ error: 'Invalid voice settings' }, 400)
+  }
+  // The stored switch map keeps unknown ids; a write may not add them.
+  if (!experimentSettingsWriteSchema.safeParse(body).success) {
+    return c.json({ error: 'Invalid experiment settings' }, 400)
   }
   // Which voice ids exist is the configured provider's business.
   const ttsVoice = voiceFields.data.voice?.ttsVoice

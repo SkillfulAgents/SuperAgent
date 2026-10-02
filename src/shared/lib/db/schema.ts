@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { sqliteTable, text, integer, uniqueIndex, index, check, primaryKey } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey } from 'drizzle-orm/sqlite-core'
 import { AGENT_INTEGRATION_PROVIDERS } from '@shared/lib/agent-integrations/provider-types'
 
 // =============================================================================
@@ -807,6 +807,52 @@ export const auditLog = sqliteTable('audit_log', {
   userIdIdx: index('audit_log_user_id_idx').on(table.userId),
 }))
 
+/**
+ * Todos — the Todo board experiment. One row per item a person put on their
+ * board: a draft they are still writing, then, once they start it, the
+ * session an agent is running it in.
+ *
+ * `status` is what the person decided: `draft` until started, `active` while
+ * the work is theirs to watch, then `done` and `archived`. Where an active
+ * item sits on the board (working, needs input, has updates) is not stored:
+ * the list endpoint reads it live from the session.
+ *
+ * Personal, like `session_unread_marks`: `user_id` is plain text with no FK
+ * because local mode has no user rows (the `'local'` sentinel). `agent_slug`
+ * has no FK either — agent deletion and session deletion unlink rows through
+ * todo-service instead, so an item outlives the agent it was given to.
+ */
+export const todos = sqliteTable('todos', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  title: text('title').notNull(),
+  description: text('description').notNull().default(''),
+  agentSlug: text('agent_slug'),
+  sessionId: text('session_id'),
+  status: text('status', { enum: ['draft', 'active', 'done', 'archived'] }).notNull().default('draft'),
+  // Where it sits in its column: highest first. New items and items that
+  // change status land on top (the time, in ms); dragging puts one between
+  // its new neighbours.
+  position: real('position').notNull(),
+  // A start in progress: the tab that claimed it creates the session, then
+  // links it with this token. Only one claim holds at a time, so two tabs
+  // can't both start the agent. A claim older than START_CLAIM_TTL_MS has
+  // lapsed (its tab went away mid-start).
+  startClaim: text('start_claim'),
+  startClaimedAt: integer('start_claimed_at', { mode: 'timestamp_ms' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  startedAt: integer('started_at', { mode: 'timestamp_ms' }),
+  completedAt: integer('completed_at', { mode: 'timestamp_ms' }),
+}, (table) => ({
+  userIdx: index('todos_user_idx').on(table.userId),
+  // Session and agent deletion find the rows that point at them.
+  agentSessionIdx: index('todos_agent_session_idx').on(table.agentSlug, table.sessionId),
+  // A session id is unique only within an agent, so it never stands alone;
+  // and only started work has one.
+  sessionCheck: check('todos_session_check', sql`${table.sessionId} is null or (${table.agentSlug} is not null and ${table.status} <> 'draft')`),
+}))
+
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
@@ -857,3 +903,4 @@ export type ChatIntegrationAccess = typeof chatIntegrationAccess.$inferSelect
 export type NewChatIntegrationAccess = typeof chatIntegrationAccess.$inferInsert
 export type AuditLogEntry = typeof auditLog.$inferSelect
 export type NewAuditLogEntry = typeof auditLog.$inferInsert
+export type TodoRow = typeof todos.$inferSelect

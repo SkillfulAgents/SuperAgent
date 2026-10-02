@@ -21,6 +21,7 @@ import { DashboardHeaderActions } from '@renderer/components/dashboards/dashboar
 import type { ContainerStatus } from '@shared/lib/container/types'
 import { ScrollAwareNavTitle } from './scroll-aware-title'
 import { ForkedFromIndicator } from './forked-from-indicator'
+import { TodoSessionBack, TodoSessionControls } from '@renderer/components/todo/todo-session-chrome'
 
 interface AgentHeaderProps {
   slug: string
@@ -77,6 +78,8 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
 
   return (
     <>
+      {/* A session that is a Todo board item: back to the board. */}
+      {sessionId && <TodoSessionBack agentSlug={slug} sessionId={sessionId} />}
       <div className="min-w-0 flex-1" data-testid="breadcrumb-drag-area">
         <HoverScrollText
           className="w-fit max-w-full app-no-drag"
@@ -273,6 +276,8 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
         </HoverScrollText>
       </div>
       <div className="flex items-center gap-0 md:gap-2 shrink-0 app-no-drag">
+        {/* …and the board's stepper and the item's action. */}
+        {sessionId && <TodoSessionControls agentSlug={slug} sessionId={sessionId} />}
         <DashboardHeaderActions agentSlug={slug} dashboardSlug={dashboardSlug} />
         {dashboardHeader?.actions && (
           <Separator orientation="vertical" className="hidden h-5 md:block" />

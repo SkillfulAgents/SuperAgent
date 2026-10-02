@@ -144,6 +144,7 @@ import { widgetRefreshService } from '@shared/lib/services/widget-refresh-servic
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
+import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
@@ -3150,6 +3151,8 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     // A mark left behind would be an unreachable row: nothing lists the
     // session any more, so nothing could ever clear it.
     await deleteSessionUnreadMarks(agentSlug, [sessionId])
+    // A Todo board item started in it goes back to Drafts (or, if finished, keeps its place).
+    await unlinkTodosFromSessions(agentSlug, [sessionId])
 
     return c.body(null, 204)
   } catch (error) {

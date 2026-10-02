@@ -22,6 +22,10 @@ const NotificationDetailRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/notification-detail-route'),
   'NotificationDetailRoute',
 )
+const TodoRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/todo-route'),
+  'TodoRoute',
+)
 const ExploreRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/explore-route'),
   'ExploreRoute',
@@ -100,6 +104,14 @@ export const notificationDetailRoute = createRoute({
   path: 'notifications/$id',
   params: { parse: (raw) => ({ id: z.string().min(1).parse(raw.id) }) },
   component: NotificationDetailRoute,
+})
+
+// The Todo board (the `todo-board` experiment); the route renders a pointer
+// to Settings → Experiments when the experiment is off.
+export const todoRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'todo',
+  component: TodoRoute,
 })
 
 export const exploreRoute = createRoute({
@@ -277,6 +289,7 @@ export const routeTree = rootRoute.addChildren([
     homeRoute,
     notificationsRoute,
     notificationDetailRoute,
+    todoRoute,
     exploreRoute,
     exploreCategoryRoute,
     exploreTemplateRoute,

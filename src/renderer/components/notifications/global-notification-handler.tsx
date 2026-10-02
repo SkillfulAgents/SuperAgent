@@ -51,6 +51,7 @@ import {
   USER_ACTIONABLE_NOTIFICATION_TYPES,
 } from '@shared/lib/notifications/notification-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
 import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
 
 // Queries whose fetch runs an LLM completion server-side. Everything else is
@@ -471,6 +472,8 @@ export function GlobalNotificationHandler() {
             } else {
               queryClient.invalidateQueries({ queryKey: ['sessions'] })
             }
+            // Todo board columns are live session state.
+            queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
             // Agent list + detail includes pre-aggregated session status (hasActiveSessions, etc.)
             queryClient.invalidateQueries({ queryKey: ['agents'] })
             if (eventAgentSlug) {

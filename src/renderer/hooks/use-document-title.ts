@@ -67,6 +67,7 @@ const SETTINGS_TAB_TITLES = {
   skillsets: 'Skillsets',
   analytics: 'Analytics',
   'audit-log': 'Audit Log',
+  experiments: 'Experiments',
   admin: 'Admin',
   users: 'Users',
   auth: 'Auth',
