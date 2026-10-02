@@ -865,6 +865,7 @@ async function writeFileAtomicWith(
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
     }
   }
+  let claimed = false
   try {
     // 'wx' = O_EXCL: never reuse a stray temp file. Unique name makes this safe.
     const handle = await fs.promises.open(tmpPath, 'wx', options?.mode ?? 0o666)
@@ -886,13 +887,19 @@ async function writeFileAtomicWith(
       await handle.close()
     }
     if (options?.overwrite === false) {
-      await fs.promises.link(tmpPath, filePath)
-      await fs.promises.unlink(tmpPath)
-    } else {
-      await renameWithRetry(tmpPath, filePath)
+      // Claim the name with an exclusive create (EEXIST when taken), then the
+      // rename replaces that empty claim. This needs no hard link, which S3
+      // Files refuses. A writer that writes the name between claim and rename
+      // is replaced.
+      await fs.promises.writeFile(filePath, '', { flag: 'wx' })
+      claimed = true
     }
+    await renameWithRetry(tmpPath, filePath)
   } catch (err) {
     await fs.promises.rm(tmpPath, { force: true }).catch(() => {})
+    // Remove the claim only while it is still empty.
+    const claim = claimed ? await fs.promises.lstat(filePath).catch(() => null) : null
+    if (claim?.size === 0) await fs.promises.rm(filePath, { force: true }).catch(() => {})
     throw err
   }
   if (options?.fsync !== false) await fsyncDir(dir)
