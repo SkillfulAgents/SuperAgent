@@ -444,6 +444,13 @@
     "cacheCreation1h": 0.2,
     "cacheRead": 0.010000000000000002
   },
+  "glm-5.3": {
+    "input": 1.4,
+    "output": 4.4,
+    "cacheCreation": 1.4,
+    "cacheCreation1h": 2.8,
+    "cacheRead": 0.26
+  },
   "glm-5.3-flash": {
     "input": 0.15,
     "output": 0.5,

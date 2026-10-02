@@ -789,6 +789,19 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     pricing: pricingFor('glm-5.3-flash'),
   },
   {
+    id: 'glm-5.3',
+    label: 'GLM-5.3 Standard',
+    blurb: 'Z.AI GLM, served via Platform',
+    family: 'glm',
+    icon: 'zai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: false,
+    contextWindow: 1_048_576,
+    pricing: pricingFor('glm-5.3'),
+  },
+  {
     // Bare id matches the platform proxy's deepseek-* → fireworks route.
     id: 'deepseek-v4.1-flash',
     label: 'DeepSeek V4.1 Flash',
