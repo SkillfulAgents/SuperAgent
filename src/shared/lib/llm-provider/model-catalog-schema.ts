@@ -49,8 +49,8 @@ export const modelDefinitionSchema = z.object({
   family: z.string().optional(),
   /** This id is what the bare `family` alias resolves to (newest in the family). */
   isLatest: z.boolean().optional(),
-  /** Also expose as a subagent model when it is not the family's `isLatest`. */
-  subagent: z.boolean().optional(),
+  /** Older bare names that resolve like `family`, e.g. 'gpt' after the GPT tier split. */
+  familyAliases: z.array(z.string().min(1)).optional(),
   /** Concrete model selected when switching to this model vendor in the picker. */
   isDefault: z.boolean().optional(),
   // Omit/undefined ⇒ supported (Claude). false ⇒ OpenRouter non-Claude, etc.

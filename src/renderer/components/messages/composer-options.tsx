@@ -74,7 +74,7 @@ export function findCatalogModel(
   if (!selection) return undefined
   return (
     catalog.find((m) => m.id === selection) ??
-    catalog.find((m) => m.family === selection && m.isLatest)
+    catalog.find((m) => m.isLatest && (m.family === selection || m.familyAliases?.includes(selection)))
   )
 }
 

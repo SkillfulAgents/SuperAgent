@@ -17,6 +17,10 @@ function capitalize(s: string): string {
 // Acronym families that shouldn't be title-cased (e.g. 'gpt' → 'GPT', not 'Gpt').
 const FAMILY_LABELS: Record<string, string> = {
   gpt: 'GPT',
+  'gpt-astra': 'GPT Astra',
+  'gpt-sol': 'GPT Sol',
+  'gpt-terra': 'GPT Terra',
+  'gpt-luna': 'GPT Luna',
   glm: 'GLM',
   deepseek: 'DeepSeek',
   muse: 'Muse Spark',
@@ -64,17 +68,27 @@ export function vendorDefault(
 /**
  * Families whose entries are versions of one product line. These collapse to a
  * single row ("Opus") with per-version pin chips revealed on hover/selection.
- * Families outside this set (e.g. 'gpt', where each entry is a distinct tier)
+ * Families outside this set (e.g. 'glm', where each entry is a distinct tier)
  * keep one row per concrete model.
  */
-const LINEAGE_FAMILIES = new Set(['fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse', 'muse-contributor'])
+const LINEAGE_FAMILIES = new Set([
+  'fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse', 'muse-contributor',
+  'gpt-astra', 'gpt-sol', 'gpt-terra', 'gpt-luna',
+])
 
-/** Chip label for a version: its label minus the family prefix ("Opus 4.8" → "4.8"). */
+/**
+ * Chip label for a version: its label minus the family name, as a prefix
+ * ("Opus 4.8" → "4.8") or as separate words ("GPT-6.1 Sol" in "GPT Sol" → "6.1").
+ */
 function versionChipLabel(label: string, familyName: string): string {
   if (label.toLowerCase().startsWith(familyName.toLowerCase())) {
     return label.slice(familyName.length).trim() || label
   }
-  return label
+  let rest = label
+  for (const word of familyName.split(/\s+/)) {
+    rest = rest.replace(new RegExp(`\\b${word}\\b`, 'i'), ' ')
+  }
+  return rest.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '') || label
 }
 
 /**
@@ -206,7 +220,7 @@ export function findCatalogModel(
   if (!selection) return undefined
   return (
     catalog.find((m) => m.id === selection) ??
-    catalog.find((m) => m.family === selection && m.isLatest)
+    catalog.find((m) => m.isLatest && (m.family === selection || m.familyAliases?.includes(selection)))
   )
 }
 
@@ -499,8 +513,9 @@ export function ModelFamilyList({
     loose.sort(comparePriceDesc)
     return { families: groups, standalone: loose }
   }, [catalog, activeVendor])
-  const isLatestSelected = offerLatest && value !== undefined && families.some((g) => g.family === value)
-  const selectedFamily = isLatestSelected ? value : resolved?.family
+  // A bare alias resolves to a latest entry without naming it.
+  const isLatestSelected = offerLatest && !!resolved?.isLatest && value !== resolved.id
+  const selectedFamily = resolved?.family
 
   // `native`/undefined means no host vendor — only then surface the model's native gap.
   const webVendorSet = !!webProvider && webProvider !== 'native'

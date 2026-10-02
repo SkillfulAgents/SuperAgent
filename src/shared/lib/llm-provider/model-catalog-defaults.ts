@@ -47,7 +47,7 @@ export const GENERIC_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
 
 export const GROK_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'grok', summarizerModel: 'grok', browserModel: 'grok', dashboardBuilderModel: 'grok' }
 
-export const CODEX_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'gpt', summarizerModel: 'gpt', browserModel: 'gpt', dashboardBuilderModel: 'gpt' }
+export const CODEX_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'gpt-sol', summarizerModel: 'gpt-sol', browserModel: 'gpt-sol', dashboardBuilderModel: 'gpt-sol' }
 
 export const KIMI_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'kimi', summarizerModel: 'kimi', browserModel: 'kimi', dashboardBuilderModel: 'kimi' }
 

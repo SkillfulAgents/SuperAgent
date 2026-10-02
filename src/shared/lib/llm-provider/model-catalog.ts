@@ -99,7 +99,7 @@ export function resolveModelForProvider(
   // exact concrete id (pin/passthrough), else bare family alias → its isLatest id
   const resolveExactOrAlias = (s: string): string | undefined => {
     if (catalog.some(model => model.id === s)) return s
-    return catalog.find(model => model.family === s && model.isLatest)?.id
+    return catalog.find(model => model.isLatest && (model.family === s || model.familyAliases?.includes(s)))?.id
   }
 
   // 1 & 2.

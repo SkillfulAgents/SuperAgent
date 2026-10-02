@@ -310,6 +310,43 @@ describe('ModelFamilyList', () => {
     expect(onPick).toHaveBeenLastCalledWith('muse-spark-1.2')
   })
 
+  it('renders the GPT tiers as lineage rows, strongest first, with bare-version chips', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    // Mirrors the Platform catalog: one family per OpenAI tier.
+    const gptTiers: ModelDefinition[] = [
+      { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', family: 'gpt-luna', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 1, outputPerMtok: 6 } },
+      { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', family: 'gpt-terra', isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 2.5, outputPerMtok: 15 } },
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt-sol', familyAliases: ['gpt'], icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 5, outputPerMtok: 30 } },
+      { id: 'gpt-6-luna', label: 'GPT-6 Luna', family: 'gpt-luna', isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 0.1, outputPerMtok: 0.5 } },
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', family: 'gpt-sol', familyAliases: ['gpt'], isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 2, outputPerMtok: 10 } },
+      { id: 'gpt-6-astra', label: 'GPT-6 Astra', family: 'gpt-astra', isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 10, outputPerMtok: 50 } },
+    ]
+    const { container } = render(<ModelFamilyList catalog={gptTiers} value="gpt-6.1-sol" onPick={onPick} />)
+    expect(testIds(container).filter((id) => /^model-family-gpt-[a-z]+$/.test(id))).toEqual([
+      'model-family-gpt-astra',
+      'model-family-gpt-sol',
+      'model-family-gpt-terra',
+      'model-family-gpt-luna',
+    ])
+    expect(screen.getByTestId('model-family-gpt-sol')).toHaveTextContent('GPT Sol')
+    expect(screen.getByTestId('model-pinned-gpt-6.1-sol')).toHaveTextContent(/^6\.1$/)
+    expect(screen.getByTestId('model-pinned-gpt-5.6-sol')).toHaveTextContent(/^5\.6$/)
+    await user.click(screen.getByTestId('model-family-gpt-luna'))
+    expect(onPick).toHaveBeenLastCalledWith('gpt-6-luna')
+  })
+
+  it('shows a stored legacy family alias as that family\'s latest', () => {
+    const catalog: ModelDefinition[] = [
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt-sol', familyAliases: ['gpt'], icon: 'openai', supportedEfforts: STD },
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', family: 'gpt-sol', familyAliases: ['gpt'], isLatest: true, icon: 'openai', supportedEfforts: STD },
+    ]
+    expect(findCatalogModel('gpt', catalog)?.id).toBe('gpt-6.1-sol')
+    render(<ModelFamilyList catalog={catalog} value="gpt" onPick={vi.fn()} offerLatest />)
+    expect(screen.getByTestId('model-latest-chip-gpt-sol').className).toContain('shadow-sm')
+    expect(screen.getByTestId('model-pinned-gpt-6.1-sol').className).not.toContain('shadow-sm')
+  })
+
   it('offers a per-family "latest" alias row in settings mode', async () => {
     const user = userEvent.setup()
     const onPick = vi.fn()

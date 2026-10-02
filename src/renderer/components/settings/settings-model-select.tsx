@@ -142,8 +142,8 @@ export function ModelPickerPopover({
 }: ModelPickerPopoverProps) {
   // Resolve the current selection for the trigger label.
   const resolved = findCatalogModel(model, catalog)
-  const isLatestSelected = model !== undefined && catalog.some((m) => m.family === model)
-  const selectedFamily = isLatestSelected ? model : resolved?.family
+  const isLatestSelected = !!resolved?.isLatest && model !== resolved.id
+  const selectedFamily = resolved?.family
 
   useEffortClamp(includeEffort ? resolved : undefined, effort, onEffortChange)
   useSpeedClamp(includeSpeed ? resolved : undefined, speed, onSpeedChange)

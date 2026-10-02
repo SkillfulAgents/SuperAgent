@@ -22,7 +22,7 @@ const ALL_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const STANDARD_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 // Sonnet 4.6 / Opus 4.6: Anthropic accepts max but rejects xhigh (400).
 const CLAUDE_4_6_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'max']
-// gpt-5.4/5.5, grok-4.6/4.7, muse-spark ≤1.2: xhigh accepted, max rejected or clamped.
+// grok-4.6/4.7, muse-spark ≤1.2: xhigh accepted, max rejected or clamped.
 const XHIGH_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh']
 // kimi-k3 on Fireworks' Anthropic wire: two real tiers, max ≈ 2.4× high (measured 2026-09-18).
 const KIMI_K3_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'max']
@@ -109,7 +109,7 @@ export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption
     subdescription: 'A premium choice for the hardest agent work.',
   },
   {
-    model: 'gpt',
+    model: 'gpt-sol',
     label: 'GPT',
     resolveLabelFromCatalog: true,
     tag: 'OpenAI flagship',
@@ -557,43 +557,22 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
   },
 ]
 
+/**
+ * OpenAI names GPT models version-then-tier ("GPT-6.1 Sol"), so each tier is
+ * its own family: the bare `gpt-sol` alias rides Sol releases the way `opus`
+ * rides Opus. `gpt` predates the split and still resolves to Sol.
+ */
+const GPT_ASTRA = { family: 'gpt-astra', icon: 'openai' }
+const GPT_SOL = { family: 'gpt-sol', familyAliases: ['gpt'], icon: 'openai' }
+const GPT_TERRA = { family: 'gpt-terra', icon: 'openai' }
+const GPT_LUNA = { family: 'gpt-luna', icon: 'openai' }
+
 const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
-  {
-    id: 'gpt-5.4',
-    label: 'GPT-5.4',
-    blurb: 'OpenAI, served via Platform',
-    family: 'gpt',
-    icon: 'openai',
-    supportedEfforts: XHIGH_EFFORTS,
-    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
-    ...PLATFORM_RESPONSES_WEB,
-    pricing: pricingFor('gpt-5.4'),
-    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.4).
-    contextWindow: 1_050_000,
-    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
-    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
-  },
-  {
-    id: 'gpt-5.5',
-    label: 'GPT-5.5',
-    blurb: 'OpenAI, served via Platform',
-    family: 'gpt',
-    icon: 'openai',
-    supportedEfforts: XHIGH_EFFORTS,
-    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
-    ...PLATFORM_RESPONSES_WEB,
-    pricing: pricingFor('gpt-5.5'),
-    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
-    contextWindow: 1_050_000,
-    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
-    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
-  },
   {
     id: 'gpt-5.6-luna',
     label: 'GPT-5.6 Luna',
     blurb: 'OpenAI fastest tier, served via Platform',
-    family: 'gpt',
-    icon: 'openai',
+    ...GPT_LUNA,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
@@ -607,8 +586,8 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     id: 'gpt-5.6-terra',
     label: 'GPT-5.6 Terra',
     blurb: 'OpenAI balanced tier, served via Platform',
-    family: 'gpt',
-    icon: 'openai',
+    ...GPT_TERRA,
+    isLatest: true,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
@@ -619,14 +598,11 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
-    // OpenAI's `gpt-5.6` alias routes here; the bare `gpt` family alias follows suit.
     id: 'gpt-5.6-sol',
     label: 'GPT-5.6 Sol',
     blurb: 'OpenAI flagship, served via Platform',
-    family: 'gpt',
-    isLatest: true,
+    ...GPT_SOL,
     isDefault: true,
-    icon: 'openai',
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
@@ -640,9 +616,8 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     id: 'gpt-6-luna',
     label: 'GPT-6 Luna',
     blurb: 'OpenAI efficient tier, served via Platform',
-    family: 'gpt',
-    subagent: true,
-    icon: 'openai',
+    ...GPT_LUNA,
+    isLatest: true,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
@@ -656,9 +631,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     id: 'gpt-6-sol',
     label: 'GPT-6 Sol',
     blurb: 'OpenAI coding tier, served via Platform',
-    family: 'gpt',
-    subagent: true,
-    icon: 'openai',
+    ...GPT_SOL,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
@@ -669,13 +642,11 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
-    // Not isLatest: the bare `gpt` alias stays on GPT-5.6 Sol; `subagent` still exposes it to subagents.
     id: 'gpt-6.1-sol',
     label: 'GPT-6.1 Sol',
     blurb: 'OpenAI coding tier, served via Platform',
-    family: 'gpt',
-    subagent: true,
-    icon: 'openai',
+    ...GPT_SOL,
+    isLatest: true,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
@@ -686,13 +657,11 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
-    // Not isLatest: the bare `gpt` alias stays on Sol so alias users don't jump 2x in price.
     id: 'gpt-6-astra',
     label: 'GPT-6 Astra',
     blurb: 'OpenAI frontier, served via Platform',
-    family: 'gpt',
-    subagent: true,
-    icon: 'openai',
+    ...GPT_ASTRA,
+    isLatest: true,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
