@@ -605,8 +605,6 @@ describe('getEffectiveCatalog', () => {
 
 describe('getModelContextWindow', () => {
   it('returns the catalog window for Platform GPT models', () => {
-    expect(getModelContextWindow('gpt-5.5', 'platform')).toBe(1_050_000)
-    expect(getModelContextWindow('gpt-5.4', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-5.6-sol', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-6-sol', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-6.1-sol', 'platform')).toBe(1_050_000)
@@ -639,8 +637,8 @@ describe('getModelContextWindowMap', () => {
     expect(map['grok-4.7']).toBe(500_000)
     expect(map['grok-4.6']).toBe(500_000)
     expect(map['grok-4.5']).toBe(500_000)
-    expect(map['gpt-5.5']).toBe(1_050_000)
-    expect(map['gpt-5.4']).toBe(1_050_000)
+    expect(map['gpt-5.6-sol']).toBe(1_050_000)
+    expect(map['gpt-6-sol']).toBe(1_050_000)
   })
 
   it('omits Claude models (no catalog window; the SDK supplies theirs)', () => {
@@ -652,7 +650,7 @@ describe('getModelContextWindowMap', () => {
 describe('getModelPromptHints', () => {
   it('returns GPT-specific tool guidance for Platform and OpenRouter GPT models', () => {
     for (const [providerId, modelId] of [
-      ['platform', 'gpt-5.5'],
+      ['platform', 'gpt-5.6-sol'],
       ['openrouter', 'openai/gpt-5.5'],
     ] as const) {
       const hints = getModelPromptHints(modelId, providerId)
@@ -755,7 +753,9 @@ describe('resolveModelForProvider', () => {
     expect(resolveModelForProvider('deepseek-v4.1-flash', 'platform', 'agent')).toBe(
       'deepseek-v4.1-flash',
     )
-    expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.6-sol')
+    expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-6.1-sol')
+    expect(resolveModelForProvider('gpt-sol', 'platform', 'agent')).toBe('gpt-6.1-sol')
+    // Removed from the catalog, but a stored pin still passes through to the proxy.
     expect(resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
     expect(resolveModelForProvider('gpt-5.6-luna', 'platform', 'agent')).toBe('gpt-5.6-luna')
     expect(resolveModelForProvider('grok', 'platform', 'agent')).toBe('grok-4.7')
