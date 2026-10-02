@@ -138,43 +138,104 @@ describe('profile avatar API', () => {
   })
 })
 
+/** Serve discovery and a token endpoint whose id_token carries `claims()` at call time. */
+function stubPlatformIssuer(claims: () => Record<string, unknown>) {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (url === `${issuer}/.well-known/openid-configuration`) {
+      return Response.json({ issuer, authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token` })
+    }
+    if (url === `${issuer}/token`) {
+      const idToken = await new SignJWT({ email_verified: true, ...claims() })
+        .setProtectedHeader({ alg: 'HS256' }).setIssuer(issuer).setAudience('test-client').setIssuedAt().setExpirationTime('5m')
+        .sign(new TextEncoder().encode('test-only-signing-key-with-32-bytes'))
+      return Response.json({ access_token: 'test-access', token_type: 'Bearer', id_token: idToken, expires_in: 3600 })
+    }
+    throw new Error(`Unexpected fetch: ${url}`)
+  }))
+}
+
+/** Drive the real sign-in → callback round trip for the platform provider. */
+async function signInThroughCallback() {
+  const auth = authModule.getAuth()
+  const start = await auth.handler(new Request(`${base}/api/auth/sign-in/oauth2`, {
+    method: 'POST', headers: { 'content-type': 'application/json', origin: base },
+    body: JSON.stringify({ providerId: 'platform', callbackURL: `${base}/` }),
+  }))
+  expect(start.status).toBe(200)
+  const state = new URL((await start.json()).url).searchParams.get('state')!
+  const cookie = start.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ')
+  const finish = await auth.handler(new Request(`${base}/api/auth/oauth2/callback/platform?${new URLSearchParams({ code: 'test-code', state, iss: issuer })}`, { headers: { cookie } }))
+  expect(finish.headers.get('location')).toBe(`${base}/`)
+}
+
 describe('browser OIDC image propagation', () => {
   it('persists and refreshes the actual callback image while preserving a workspace override and member identity', async () => {
     let picture = 'https://example.com/first.png'
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-      if (url === `${issuer}/.well-known/openid-configuration`) {
-        return Response.json({ issuer, authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token` })
-      }
-      if (url === `${issuer}/token`) {
-        const idToken = await new SignJWT({ sub: 'sub_member_one', name: 'Ada Lovelace', email: 'ada@example.com', email_verified: true, picture })
-          .setProtectedHeader({ alg: 'HS256' }).setIssuer(issuer).setAudience('test-client').setIssuedAt().setExpirationTime('5m')
-          .sign(new TextEncoder().encode('test-only-signing-key-with-32-bytes'))
-        return Response.json({ access_token: 'test-access', token_type: 'Bearer', id_token: idToken, expires_in: 3600 })
-      }
-      throw new Error(`Unexpected fetch: ${url}`)
-    }))
-    async function callback() {
-      const auth = authModule.getAuth()
-      const start = await auth.handler(new Request(`${base}/api/auth/sign-in/oauth2`, {
-        method: 'POST', headers: { 'content-type': 'application/json', origin: base },
-        body: JSON.stringify({ providerId: 'platform', callbackURL: `${base}/` }),
-      }))
-      expect(start.status).toBe(200)
-      const state = new URL((await start.json()).url).searchParams.get('state')!
-      const cookie = start.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ')
-      const finish = await auth.handler(new Request(`${base}/api/auth/oauth2/callback/platform?${new URLSearchParams({ code: 'test-code', state, iss: issuer })}`, { headers: { cookie } }))
-      expect(finish.headers.get('location')).toBe(`${base}/`)
-    }
+    stubPlatformIssuer(() => ({ sub: 'sub_member_one', name: 'Ada Lovelace', email: 'ada@example.com', picture }))
     try {
-      await callback()
+      await signInThroughCallback()
       expect(sqlite.prepare('SELECT image FROM user').get()).toEqual({ image: picture })
       const override = '/api/profile/images/00000000-0000-4000-8000-000000000001.png'
       sqlite.prepare('UPDATE user SET avatar_override = ?').run(override)
       picture = 'https://example.com/new.png'
-      await callback()
+      await signInThroughCallback()
       expect(sqlite.prepare('SELECT image, avatar_override FROM user').get()).toEqual({ image: picture, avatar_override: override })
       expect(sqlite.prepare('SELECT account_id FROM account').all()).toEqual([{ account_id: 'sub_member_one' }])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('browser OIDC role', () => {
+  const ORG = 'org_role_test'
+  const CLAIMS = 'https://platform.skillfulagents.dev/claims'
+  const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url')
+  const roleOf = (email: string) => (sqlite.prepare('SELECT role FROM user WHERE email = ?').get(email) as { role: string }).role
+
+  it('copies the platform role at account creation and at every repeat sign-in on a platform-controlled deployment', async () => {
+    vi.stubEnv('PLATFORM_TOKEN', `${b64({ alg: 'RS256' })}.${b64({ orgId: ORG })}.sig`)
+    let member: { sub: string; email: string; role?: string } = { sub: 'sub_one', email: 'one@example.com', role: 'member' }
+    stubPlatformIssuer(() => ({ sub: member.sub, name: member.email, email: member.email, [`${CLAIMS}/org_id`]: ORG, [`${CLAIMS}/role`]: member.role }))
+    try {
+      await signInThroughCallback()
+      expect(roleOf('one@example.com')).toBe('user')
+      member = { sub: 'sub_two', email: 'two@example.com', role: 'admin' }
+      await signInThroughCallback()
+      expect(roleOf('two@example.com')).toBe('admin')
+      member = { sub: 'sub_two', email: 'two@example.com', role: 'member' }
+      await signInThroughCallback()
+      expect(roleOf('two@example.com')).toBe('user')
+      // Removed and re-invited: a new platform identity links to the same user,
+      // whose older platform account still holds an admin id_token.
+      member = { sub: 'sub_two', email: 'two@example.com', role: 'admin' }
+      await signInThroughCallback()
+      member = { sub: 'sub_two_reinvited', email: 'two@example.com', role: 'member' }
+      await signInThroughCallback()
+      expect(roleOf('two@example.com')).toBe('user')
+      expect(sqlite.prepare(`SELECT count(*) AS n FROM account WHERE provider_id = 'platform' AND user_id = (SELECT id FROM user WHERE email = ?)`).get('two@example.com')).toEqual({ n: 2 })
+      member = { sub: 'sub_two_reinvited', email: 'two@example.com', role: 'member' }
+      await signInThroughCallback()
+      expect(roleOf('two@example.com')).toBe('user')
+      // A token without a role claim demotes rather than keeping the old role.
+      member = { sub: 'sub_two_reinvited', email: 'two@example.com', role: 'admin' }
+      await signInThroughCallback()
+      expect(roleOf('two@example.com')).toBe('admin')
+      member = { sub: 'sub_two_reinvited', email: 'two@example.com' }
+      await signInThroughCallback()
+      expect(roleOf('two@example.com')).toBe('user')
+    } finally {
+      vi.unstubAllGlobals()
+      vi.stubEnv('PLATFORM_TOKEN', '')
+    }
+  })
+
+  it('keeps first-user bootstrap and ignores the role claim on a self-hosted deployment', async () => {
+    stubPlatformIssuer(() => ({ sub: 'sub_one', name: 'One', email: 'one@example.com', [`${CLAIMS}/role`]: 'member' }))
+    try {
+      await signInThroughCallback()
+      expect(roleOf('one@example.com')).toBe('admin')
     } finally {
       vi.unstubAllGlobals()
     }
