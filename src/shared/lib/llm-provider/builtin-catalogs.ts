@@ -562,10 +562,10 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
  * its own family: the bare `gpt-sol` alias rides Sol releases the way `opus`
  * rides Opus. `gpt` predates the split and still resolves to Sol.
  */
-const GPT_ASTRA = { family: 'gpt-astra', icon: 'openai' }
-const GPT_SOL = { family: 'gpt-sol', familyAliases: ['gpt'], icon: 'openai' }
-const GPT_TERRA = { family: 'gpt-terra', icon: 'openai' }
 const GPT_LUNA = { family: 'gpt-luna', icon: 'openai' }
+const GPT_TERRA = { family: 'gpt-terra', icon: 'openai' }
+const GPT_SOL = { family: 'gpt-sol', familyAliases: ['gpt'], icon: 'openai' }
+const GPT_ASTRA = { family: 'gpt-astra', icon: 'openai' }
 
 const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   {
@@ -578,6 +578,21 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     ...PLATFORM_RESPONSES_WEB,
     pricing: pricingFor('gpt-5.6-luna'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-luna).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
+    id: 'gpt-6-luna',
+    label: 'GPT-6 Luna',
+    blurb: 'OpenAI efficient tier, served via Platform',
+    ...GPT_LUNA,
+    isLatest: true,
+    supportedEfforts: ALL_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: pricingFor('gpt-6-luna'),
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6-luna).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
@@ -607,21 +622,6 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     ...PLATFORM_RESPONSES_WEB,
     pricing: pricingFor('gpt-5.6-sol'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-sol).
-    contextWindow: 1_050_000,
-    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
-    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
-  },
-  {
-    id: 'gpt-6-luna',
-    label: 'GPT-6 Luna',
-    blurb: 'OpenAI efficient tier, served via Platform',
-    ...GPT_LUNA,
-    isLatest: true,
-    supportedEfforts: ALL_EFFORTS,
-    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
-    ...PLATFORM_RESPONSES_WEB,
-    pricing: pricingFor('gpt-6-luna'),
-    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6-luna).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,

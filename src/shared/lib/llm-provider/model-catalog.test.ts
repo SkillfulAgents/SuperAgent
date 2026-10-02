@@ -307,8 +307,8 @@ describe('getProviderCatalog', () => {
     // Each OpenAI tier is its own family, so each bare alias rides its own tier.
     const gptLatest = catalog.filter((m) => m.family?.startsWith('gpt-') && m.isLatest)
     expect(gptLatest.map((m) => [m.family, m.id])).toEqual([
-      ['gpt-terra', 'gpt-5.6-terra'],
       ['gpt-luna', 'gpt-6-luna'],
+      ['gpt-terra', 'gpt-5.6-terra'],
       ['gpt-sol', 'gpt-6.1-sol'],
       ['gpt-astra', 'gpt-6-astra'],
     ])
