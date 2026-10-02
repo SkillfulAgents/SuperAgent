@@ -23,11 +23,18 @@ const CODEC = `
 export const READ_ORIGIN_STORAGE_FUNCTION = `async function() {
   ${CODEC}
   const unsupported = new Set();
-  const encode = async (value) => {
+  // ancestors: objects on the path to this value; IndexedDB accepts cycles, which cannot be serialized.
+  const encode = async (value, ancestors = new Set()) => {
     if (value === undefined) return { $t: 'undefined' };
     if (typeof value === 'bigint') return { $t: 'bigint', v: String(value) };
     if (typeof value === 'number' && !Number.isFinite(value)) return { $t: 'number', v: String(value) };
     if (value === null || typeof value !== 'object') return value;
+    if (ancestors.has(value)) {
+      unsupported.add('cycle');
+      return { $t: 'unsupported', type: 'cycle' };
+    }
+    const inner = new Set(ancestors).add(value);
+    const child = (v) => encode(v, inner);
     if (value instanceof Date) return { $t: 'date', v: value.getTime() };
     if (value instanceof ArrayBuffer) return { $t: 'arraybuffer', v: toBase64(new Uint8Array(value)) };
     if (ArrayBuffer.isView(value)) {
@@ -37,14 +44,14 @@ export const READ_ORIGIN_STORAGE_FUNCTION = `async function() {
       return { $t: 'file', name: value.name, type: value.type, lastModified: value.lastModified, v: toBase64(new Uint8Array(await value.arrayBuffer())) };
     }
     if (value instanceof Blob) return { $t: 'blob', type: value.type, v: toBase64(new Uint8Array(await value.arrayBuffer())) };
-    if (value instanceof Map) return { $t: 'map', v: await Promise.all([...value].map(async ([k, v]) => [await encode(k), await encode(v)])) };
-    if (value instanceof Set) return { $t: 'set', v: await Promise.all([...value].map(encode)) };
+    if (value instanceof Map) return { $t: 'map', v: await Promise.all([...value].map(async ([k, v]) => [await child(k), await child(v)])) };
+    if (value instanceof Set) return { $t: 'set', v: await Promise.all([...value].map(child)) };
     if (value instanceof RegExp) return { $t: 'regexp', source: value.source, flags: value.flags };
-    if (Array.isArray(value)) return Promise.all(value.map(encode));
+    if (Array.isArray(value)) return Promise.all(value.map(child));
     const proto = Object.getPrototypeOf(value);
     if (proto === Object.prototype || proto === null) {
       const out = {};
-      for (const [k, v] of Object.entries(value)) out[k] = await encode(v);
+      for (const [k, v] of Object.entries(value)) out[k] = await child(v);
       return Object.prototype.hasOwnProperty.call(out, '$t') ? { $t: 'object', v: out } : out;
     }
     // e.g. a non-extractable CryptoKey: it cannot leave this browser.
@@ -185,7 +192,10 @@ export const WRITE_ORIGIN_STORAGE_FUNCTION = `async function(data) {
   return { localStorage: data.localStorage.length, indexedDB: data.indexedDB.length, skippedRecords };
 }`
 
-export const READ_SESSION_STORAGE_FUNCTION = `function() {
+// sessionStorage functions get the origin the tab was chosen for and do nothing (null) if it has navigated
+// away since: the check and the access run in one task, so no navigation can come between them.
+export const READ_SESSION_STORAGE_FUNCTION = `function(expectedOrigin) {
+  if (location.origin !== expectedOrigin) return null;
   const entries = [];
   for (let i = 0; i < sessionStorage.length; i++) {
     const key = sessionStorage.key(i);
@@ -194,7 +204,8 @@ export const READ_SESSION_STORAGE_FUNCTION = `function() {
   return entries;
 }`
 
-export const WRITE_SESSION_STORAGE_FUNCTION = `function(entries) {
+export const WRITE_SESSION_STORAGE_FUNCTION = `function(expectedOrigin, entries) {
+  if (location.origin !== expectedOrigin) return null;
   sessionStorage.clear();
   for (const [key, value] of entries) sessionStorage.setItem(key, value);
   return entries.length;

@@ -35,7 +35,7 @@ describe('saveLoginAfterBrowserInput', () => {
 
   it('captures the site of the page the request opened on and saves it', async () => {
     const client = fakeClient({ capture: [bundle], status: [containerBrowser] })
-    saveBrowserLogin.mockResolvedValue({ status: 'created', credentialId: 'bc-1', version: 1 })
+    saveBrowserLogin.mockResolvedValue({ status: 'created', credentialId: 'bc-1' })
 
     expect(await saveLoginAfterBrowserInput({ ...request, client })).toBe('saved')
     expect(client.fetch).toHaveBeenCalledWith('/browser/storage/capture', expect.objectContaining({
@@ -48,7 +48,7 @@ describe('saveLoginAfterBrowserInput', () => {
 
   it('reports an overwritten login as updated', async () => {
     const client = fakeClient({ capture: [bundle], status: [containerBrowser] })
-    saveBrowserLogin.mockResolvedValue({ status: 'updated', credentialId: 'bc-1', version: 2 })
+    saveBrowserLogin.mockResolvedValue({ status: 'updated', credentialId: 'bc-1' })
 
     expect(await saveLoginAfterBrowserInput({ ...request, client })).toBe('updated')
   })
@@ -56,7 +56,7 @@ describe('saveLoginAfterBrowserInput', () => {
   it('uses the active container browser even when Chrome is configured', async () => {
     mockSettings.app.hostBrowserProvider = 'chrome'
     const client = fakeClient({ capture: [bundle], status: [containerBrowser] })
-    saveBrowserLogin.mockResolvedValue({ status: 'created', credentialId: 'bc-1', version: 1 })
+    saveBrowserLogin.mockResolvedValue({ status: 'created', credentialId: 'bc-1' })
 
     await saveLoginAfterBrowserInput({ ...request, client })
     expect(saveBrowserLogin).toHaveBeenCalledWith(expect.objectContaining({ browserType: 'container' }))
@@ -65,7 +65,7 @@ describe('saveLoginAfterBrowserInput', () => {
   it('uses the configured provider for an active host browser', async () => {
     mockSettings.app.hostBrowserProvider = 'chrome'
     const client = fakeClient({ capture: [bundle], status: [{ ...containerBrowser, location: 'host' }] })
-    saveBrowserLogin.mockResolvedValue({ status: 'created', credentialId: 'bc-1', version: 1 })
+    saveBrowserLogin.mockResolvedValue({ status: 'created', credentialId: 'bc-1' })
 
     await saveLoginAfterBrowserInput({ ...request, client })
     expect(saveBrowserLogin).toHaveBeenCalledWith(expect.objectContaining({ browserType: 'chrome' }))
