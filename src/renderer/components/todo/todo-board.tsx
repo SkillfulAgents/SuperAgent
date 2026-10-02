@@ -48,7 +48,9 @@ function SortableCard({ todo, children }: { todo: TodoView; children: ReactNode 
   return (
     <div
       ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
+      // Translate only: Transform would also scale the card to the size of
+      // the one it's over, stretching cards of different heights.
+      style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(isDragging && 'relative z-10 opacity-80')}
       data-testid="todo-sortable"
       {...listeners}
