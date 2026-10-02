@@ -655,9 +655,20 @@ describe('session-service', () => {
 
       const session = await getSession(createLocalSessionStore('test-agent'), 'test-session')
 
-      // Registration time wins (it is what the list already shows); lastActivity
-      // still comes from the transcript.
+      // Registration time wins (it is what the list already shows). Registered
+      // after the last message, as a fork is, lastActivity is registration too.
       expect(session?.createdAt.toISOString()).toBe('2026-01-24T01:31:30.000Z')
+      expect(session?.lastActivityAt.toISOString()).toBe('2026-01-24T01:31:30.000Z')
+    })
+
+    it('keeps the last transcript message as lastActivity when it follows registration', async () => {
+      await createSessionFile('test-agent', 'test-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'test-session': { name: 'Named', createdAt: '2026-01-24T01:30:50.000Z' },
+      })
+
+      const session = await getSession(createLocalSessionStore('test-agent'), 'test-session')
+
       expect(session?.lastActivityAt.toISOString()).toBe('2026-01-24T01:31:19.827Z')
     })
 
