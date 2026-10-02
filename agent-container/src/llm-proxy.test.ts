@@ -280,6 +280,27 @@ describe('embedded provider proxy', () => {
     await expect(client(handle).messages.create(prompt)).rejects.toThrow('not supported with a ChatGPT account')
   })
 
+  it.each([
+    ['a string error field', (res: ServerResponse) => json(res, { error: 'Your Grok CLI version (1.0.4) is outdated.' }, 426)],
+    ['a plain-text body', (res: ServerResponse) => { res.writeHead(426, { 'content-type': 'text/plain' }); res.end('Your Grok CLI version (1.0.4) is outdated.') }],
+  ])('keeps the vendor message from %s', async (_name, send) => {
+    const base = await upstream((_body, _req, res) => send(res))
+    const handle = await proxy(base, 'responses', { config: { adapter: 'grok', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', generation: 0 } } })
+    await expect(client(handle).messages.create(prompt)).rejects.toThrow('Your Grok CLI version (1.0.4) is outdated.')
+  })
+
+  it('pins Grok turns to their conversation', async () => {
+    const seen: unknown[] = []
+    const base = await upstream((_body, req, res) => {
+      seen.push(req.headers['x-grok-conv-id'])
+      json(res, { id: 'r', model: 'test', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }], usage: { input_tokens: 3, output_tokens: 1 } })
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'grok', baseUrl: base, format: 'responses', headers: {}, credential: { accessToken: 'key', generation: 0 } } })
+    await client(handle).messages.create(prompt, { headers: { 'X-Claude-Code-Session-Id': 'session-a' } })
+    await client(handle).messages.create(prompt)
+    expect(seen).toEqual(['session-a', undefined])
+  })
+
   it('rejects truncated non-streaming Codex responses', async () => {
     const base = await upstream((_body, _req, res) => {
       res.writeHead(200, { 'content-type': 'text/event-stream' })
