@@ -16,6 +16,7 @@ const RuntimeTab = lazyRouteComponent(() => import('./runtime-tab'), 'RuntimeTab
 const AccountProviderTab = lazyRouteComponent(() => import('./account-provider-tab'), 'AccountProviderTab')
 const NotificationsTab = lazyRouteComponent(() => import('./notifications-tab'), 'NotificationsTab')
 const BrowserTab = lazyRouteComponent(() => import('./browser-tab'), 'BrowserTab')
+const SavedBrowserLoginsSettings = lazyRouteComponent(() => import('./saved-browser-logins-settings'), 'SavedBrowserLoginsSettings')
 const SkillsetsTab = lazyRouteComponent(() => import('./skillsets-tab'), 'SkillsetsTab')
 const UsageTab = lazyRouteComponent(() => import('./usage-tab'), 'UsageTab')
 const ConnectionsTab = lazyRouteComponent(() => import('./connections-tab'), 'ConnectionsTab')
@@ -139,7 +140,9 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
           ...(canUseHostFeatures() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Mouse className="h-4 w-4" />, render: () => deferredTab(<ComputerUseTab />) }] : []),
           { id: 'capabilities', label: 'Subagents', icon: <Workflow className="h-4 w-4" />, render: () => deferredTab(<CapabilitiesTab />) },
         ]
-      : []),
+      // Saved browser logins belong to each user, so members get the Browser Use
+      // tab with only that section; the rest of the tab stays admin-only.
+      : [{ id: 'browser', label: 'Browser Use', icon: <MousePointer2 className="h-4 w-4" />, render: () => deferredTab(<SavedBrowserLoginsSettings />) }]),
     // Everyone: the tab carries each person's own read-aloud voice; the
     // provider and key sections inside it are admin-gated.
     { id: 'llm', label: 'Model Providers', icon: <Sparkle className="h-4 w-4" />, render: () => deferredTab(<LlmTab />) },

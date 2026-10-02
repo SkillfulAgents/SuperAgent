@@ -533,6 +533,9 @@ export class ContainerRuntime {
     // strips this from its env before spawning the CLI.
     envVars['SUPERAGENT_HOST_TOKEN'] = getOrCreateHostToken(slug)
 
+    // Tells browser_open this host reports when saved logins are synced, so it waits for that before returning.
+    envVars['SUPERAGENT_BROWSER_LOGIN_SYNC'] = '1'
+
     // Fetch connected accounts for this agent
     const accountMappings = await db
       .select({

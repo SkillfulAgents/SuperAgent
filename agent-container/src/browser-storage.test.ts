@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  applyPendingSessionStorage,
   candidateOrigins,
   captureSiteStorage,
+  clearPendingSessionStorage,
+  clearSiteStorage,
+  hasPendingSessionStorage,
   hostBelongsToSite,
   isStorageStubTarget,
   restoreSiteStorage,
@@ -10,12 +14,12 @@ import {
   type CdpClient,
 } from './browser-storage'
 import type { SiteStorageBundle } from './browser-storage-bundle'
-import { READ_ORIGIN_STORAGE_FUNCTION, WRITE_ORIGIN_STORAGE_FUNCTION } from './browser-storage-script'
+import { READ_ORIGIN_STORAGE_FUNCTION, WRITE_ORIGIN_STORAGE_FUNCTION, WRITE_SESSION_STORAGE_FUNCTION } from './browser-storage-script'
 
 type Call = { method: string; params: any; sessionId?: string }
 
 /** Scripted CDP peer: records calls in order and drives stub-page navigation events. */
-function fakeCdp(options: { cookies?: any[]; pages?: Array<{ url: string; history?: string[] }>; read?: Record<string, unknown>; databases?: string[] } = {}) {
+function fakeCdp(options: { cookies?: any[]; pages?: Array<{ url: string; history?: string[] }>; read?: Record<string, unknown>; actualOrigin?: string; databases?: string[] } = {}) {
   const calls: Call[] = []
   const handlers = new Map<string, Set<(params: any, sessionId?: string) => void>>()
   const emit = (method: string, params: any, sessionId?: string) => {
@@ -50,6 +54,8 @@ function fakeCdp(options: { cookies?: any[]; pages?: Array<{ url: string; histor
           if (params.functionDeclaration === WRITE_ORIGIN_STORAGE_FUNCTION) {
             return { result: { value: { localStorage: params.arguments[0].value.localStorage.length, indexedDB: 0, skippedRecords: 0 } } }
           }
+          // sessionStorage functions check the tab's origin in the page and return null when it has navigated away.
+          if (options.actualOrigin && params.arguments[0].value !== options.actualOrigin) return { result: { value: null } }
           return { result: { value: [] } }
         default: return {}
       }
@@ -130,6 +136,16 @@ describe('runBrowserStorage', () => {
     const result = await runBrowserStorage('capture', { sessionId: 's', site: 'example.org' }, { ...allow, connect: async () => client })
     expect(result.success).toBe(true)
     expect(client.close).toHaveBeenCalled()
+  })
+
+  it('refuses to clear another site or a browser owned by another session', async () => {
+    const connect = vi.fn()
+    const body = { sessionId: 's', site: 'example.org', origins: ['https://other.org'] }
+    expect(await runBrowserStorage('clear', body, { ...allow, connect })).toMatchObject({ success: false, status: 400 })
+    expect(await runBrowserStorage('clear', { ...body, origins: ['https://example.org'] }, {
+      ...allow, validateSession: () => 'Browser is owned by another session', connect,
+    })).toMatchObject({ success: false, status: 409 })
+    expect(connect).not.toHaveBeenCalled()
   })
 })
 
@@ -229,5 +245,83 @@ describe('captureSiteStorage', () => {
     })
     const bundle = await captureSiteStorage(client, 'example.org')
     expect(bundle.origins.map((origin) => origin.origin)).toEqual(['https://app.example.org', 'https://www.example.org'])
+  })
+})
+
+describe('clearSiteStorage', () => {
+  it('clears closed saved origins, every open site tab and cookies, but not other sites', async () => {
+    const { client, calls } = fakeCdp({
+      cookies: [cdpCookie({}), cdpCookie({ domain: '.other.org' })],
+      pages: [
+        { url: 'https://www.example.org/one' },
+        { url: 'https://www.example.org/two' },
+        { url: 'https://other.org/' },
+      ],
+    })
+
+    const result = await clearSiteStorage(client, 'example.org', ['https://auth.example.org'])
+
+    expect(result).toEqual({ skipped: [] })
+    expect(calls.filter((call) => call.method === 'Storage.setCookies').map((call) => call.params.cookies))
+      .toEqual([[expect.objectContaining({ domain: '.example.org', value: '', expires: 1 })]])
+    expect(calls.filter((call) => call.method === 'Storage.clearDataForOrigin').every((call) => call.sessionId === 'session-stub-1')).toBe(true)
+    expect(calls.filter((call) => call.method === 'Storage.clearDataForOrigin').map((call) => call.params))
+      .toEqual([
+        { origin: 'https://auth.example.org', storageTypes: 'local_storage,indexeddb' },
+        { origin: 'https://example.org', storageTypes: 'local_storage,indexeddb' },
+        { origin: 'https://www.example.org', storageTypes: 'local_storage,indexeddb' },
+      ])
+    expect(calls.filter((call) => call.params.functionDeclaration === WRITE_SESSION_STORAGE_FUNCTION)).toHaveLength(2)
+    expect(calls.filter((call) => call.method === 'Page.reload')).toHaveLength(2)
+    expect(calls.filter((call) => call.method === 'Target.createTarget')).toHaveLength(1)
+    expect(calls.filter((call) => call.method === 'Target.closeTarget')).toHaveLength(1)
+  })
+
+  it('does not touch a tab that navigated to another site before clearing session storage', async () => {
+    const { client, calls } = fakeCdp({
+      pages: [{ url: 'https://example.org/' }], actualOrigin: 'https://other.org',
+    })
+
+    expect(await clearSiteStorage(client, 'example.org', ['https://example.org']))
+      .toEqual({ skipped: ['https://example.org'] })
+
+    expect(calls.some((call) => call.method === 'Page.reload')).toBe(false)
+  })
+})
+
+describe('pending sessionStorage', () => {
+  const bundle: SiteStorageBundle = {
+    version: 1,
+    site: 'example.org',
+    capturedAt: '2026-09-28T00:00:00.000Z',
+    cookies: [],
+    origins: [{ origin: 'https://app.example.org', localStorage: [], indexedDB: [], sessionStorage: [['tab', 'x']], unsupported: [] }],
+  }
+
+  it('writes saved sessionStorage into the first tab that shows its origin, once', async () => {
+    clearPendingSessionStorage()
+    await restoreSiteStorage(fakeCdp().client, bundle)
+    expect(hasPendingSessionStorage()).toBe(true)
+
+    const unrelated = fakeCdp({ pages: [{ url: 'https://other.org/' }] })
+    expect(await applyPendingSessionStorage(unrelated.client)).toEqual([])
+
+    const { client, calls } = fakeCdp({ pages: [{ url: 'https://app.example.org/home' }] })
+    expect(await applyPendingSessionStorage(client)).toEqual(['https://app.example.org'])
+    expect(calls.find((call) => call.params.functionDeclaration === WRITE_SESSION_STORAGE_FUNCTION)?.params.arguments)
+      .toEqual([{ value: 'https://app.example.org' }, { value: [['tab', 'x']] }])
+    expect(calls.some((call) => call.method === 'Page.reload')).toBe(true)
+    expect(hasPendingSessionStorage()).toBe(false)
+  })
+
+  it('drops pending sessionStorage when the site is cleared or the browser closes', async () => {
+    clearPendingSessionStorage()
+    await restoreSiteStorage(fakeCdp().client, bundle)
+    await clearSiteStorage(fakeCdp().client, 'example.org', [])
+    expect(hasPendingSessionStorage()).toBe(false)
+
+    await restoreSiteStorage(fakeCdp().client, bundle)
+    clearPendingSessionStorage()
+    expect(hasPendingSessionStorage()).toBe(false)
   })
 })

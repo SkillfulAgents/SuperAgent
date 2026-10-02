@@ -26,7 +26,7 @@ export async function browserTypeForSession(client: ContainerFetch, sessionId: s
 
 export async function storageRequest(
   client: ContainerFetch,
-  action: 'capture' | 'restore',
+  action: 'capture' | 'restore' | 'clear',
   body: object,
 ): Promise<unknown> {
   const response = await client.fetch(`/browser/storage/${action}`, {

@@ -45,3 +45,4 @@ src/shared/lib/container/base-container-client.llm-provider.test.ts
 src/shared/lib/llm-provider/connection-credentials.test.ts
 src/shared/lib/db/data-migrations/0005-rename-claude-md-to-agents-md.test.ts
 src/shared/lib/services/browser-credential-service.test.ts
+src/api/routes/browser-logins.test.ts

@@ -19,10 +19,16 @@ vi.mock('../db', () => ({
 }))
 
 import {
+  deleteBrowserLogin,
   getOwnedBrowserLogin,
   listBrowserLogins,
+  listManagedBrowserLogins,
+  listOutdatedAgentBrowserLogins,
   mapAgentToBrowserLogin,
+  markAgentBrowserLoginSynced,
+  renameBrowserLogin,
   saveBrowserLogin,
+  unmapBrowserLogin,
 } from './browser-credential-service'
 
 function bundleFor(site: string, theme: string): SiteStorageBundle {
@@ -162,6 +168,85 @@ describe('saveBrowserLogin', () => {
 
     expect(await mapping('agent-a', 'example.com')).toMatchObject({ credentialId: second.credentialId, appliedVersion: 1 })
     expect(first.credentialId).not.toBe(second.credentialId)
+  })
+
+  it('lists the caller\'s logins with the agents using them', async () => {
+    await testDb.insert(schema.agents).values({ slug: 'agent-a', name: 'Research', createdAt: new Date(0) })
+    const saved = await saveBrowserLogin({
+      userId: 'alice', agentSlug: 'agent-a', browserType: 'container', bundle: bundleFor('example.com', 'dark'),
+    })
+    await mapAgentToBrowserLogin({ agentSlug: 'agent-b', credentialId: saved.credentialId, site: 'example.com', version: 1 })
+    await saveBrowserLogin({ userId: 'bob', agentSlug: 'agent-c', browserType: 'container', bundle: bundleFor('example.com', 'dark') })
+
+    const [login, ...rest] = await listManagedBrowserLogins('alice')
+    expect(rest).toHaveLength(0)
+    expect(login).toMatchObject({ id: saved.credentialId, site: 'example.com', version: 1 })
+    expect(login).not.toHaveProperty('bundle')
+    expect(login.agents).toEqual(expect.arrayContaining([
+      { slug: 'agent-a', name: 'Research' },
+      { slug: 'agent-b', name: 'agent-b' },
+    ]))
+  })
+
+  it('renames, unmaps and deletes only the caller\'s logins', async () => {
+    const saved = await saveBrowserLogin({
+      userId: 'alice', agentSlug: 'agent-a', browserType: 'container', bundle: bundleFor('example.com', 'dark'),
+    })
+    await mapAgentToBrowserLogin({ agentSlug: 'agent-b', credentialId: saved.credentialId, site: 'example.com', version: 1 })
+
+    expect(await renameBrowserLogin('bob', saved.credentialId, 'Stolen')).toBe(false)
+    expect(await renameBrowserLogin('alice', saved.credentialId, 'Work')).toBe(true)
+    expect((await getOwnedBrowserLogin('alice', saved.credentialId))?.name).toBe('Work')
+
+    expect(await unmapBrowserLogin('bob', saved.credentialId, 'agent-b')).toBeNull()
+    expect(await unmapBrowserLogin('alice', saved.credentialId, 'agent-b'))
+      .toEqual({ site: 'example.com', origins: ['https://example.com'] })
+    expect(await mapping('agent-b', 'example.com')).toBeUndefined()
+
+    expect(await deleteBrowserLogin('bob', saved.credentialId)).toBeNull()
+    expect(await deleteBrowserLogin('alice', saved.credentialId)).toEqual({
+      site: 'example.com', origins: ['https://example.com'], agentSlugs: ['agent-a'],
+    })
+    expect(await credentials()).toHaveLength(0)
+    expect(await mapping('agent-a', 'example.com')).toBeUndefined()
+  })
+
+  it('deletes a login whose bundle no longer decrypts', async () => {
+    const saved = await saveBrowserLogin({
+      userId: 'alice', agentSlug: 'agent-a', browserType: 'container', bundle: bundleFor('example.com', 'dark'),
+    })
+    fs.writeFileSync(path.join(dataDir, 'browser-vault.key'), Buffer.alloc(32, 7).toString('base64'))
+
+    expect(await deleteBrowserLogin('alice', saved.credentialId)).toEqual({
+      site: 'example.com', origins: [], agentSlugs: ['agent-a'],
+    })
+    expect(await credentials()).toHaveLength(0)
+  })
+
+  it('lists mapped logins with a newer version than the agent has', async () => {
+    const saved = await saveBrowserLogin({
+      userId: null, agentSlug: 'agent-a', browserType: 'container', bundle: bundleFor('example.com', 'dark'),
+    })
+    await mapAgentToBrowserLogin({ agentSlug: 'agent-b', credentialId: saved.credentialId, site: 'example.com', version: 1 })
+    await saveBrowserLogin({ userId: null, agentSlug: 'agent-a', browserType: 'container', bundle: bundleFor('example.com', 'light') })
+
+    expect(await listOutdatedAgentBrowserLogins('agent-a', 'container')).toEqual([])
+    expect((await listOutdatedAgentBrowserLogins('agent-b', 'container')).map((row) => row.version)).toEqual([2])
+    expect(await listOutdatedAgentBrowserLogins('agent-b', 'chrome')).toEqual([])
+  })
+
+  it('records a synced version only while the agent is still mapped to the login', async () => {
+    const saved = await saveBrowserLogin({
+      userId: null, agentSlug: 'agent-a', browserType: 'container', bundle: bundleFor('example.com', 'dark'),
+    })
+    const synced = { agentSlug: 'agent-a', credentialId: saved.credentialId, site: 'example.com', version: 2 }
+
+    expect(await markAgentBrowserLoginSynced(synced)).toBe(true)
+    expect(await mapping('agent-a', 'example.com')).toMatchObject({ appliedVersion: 2 })
+
+    await unmapBrowserLogin(null, saved.credentialId, 'agent-a')
+    expect(await markAgentBrowserLoginSynced(synced)).toBe(false)
+    expect(await mapping('agent-a', 'example.com')).toBeUndefined()
   })
 
   it('keeps one login per owner, site and browser type when two saves race', async () => {
