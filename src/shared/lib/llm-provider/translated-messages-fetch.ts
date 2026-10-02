@@ -5,6 +5,8 @@ import { expandDeferredTools } from '../../../../agent-container/src/llm-proxy-t
 interface TranslationOptions {
   headers?: Record<string, string>
   upstreamRequest?: (body: Record<string, unknown>) => Record<string, unknown>
+  /** Sends the translated request; lets a provider retry on vendor-specific statuses. */
+  fetch?: (url: string, init: RequestInit) => Promise<Response>
 }
 
 /** Host-side helpers and dashboard shims use the same wire codecs as agents. */
@@ -34,7 +36,7 @@ export function translatedMessagesFetch(baseUrl: string, apiKey: string, format:
     const translated = format === 'responses'
       ? messagesRequestToResponses(body, { reasoningReplayScope: scope }).body
       : messagesRequestToChatCompletions(body, { tokenLimitField })
-    const response = await fetch(`${baseUrl}/${format === 'responses' ? 'responses' : 'chat/completions'}`, {
+    const response = await (translation.fetch ?? fetch)(`${baseUrl}/${format === 'responses' ? 'responses' : 'chat/completions'}`, {
       method: 'POST', redirect: 'error', signal: init?.signal,
       headers: { 'content-type': 'application/json', ...translation.headers, authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(translation.upstreamRequest?.(translated) ?? translated),
