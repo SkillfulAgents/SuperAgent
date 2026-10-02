@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { UserInputRequestKind } from '@shared/lib/user-input/request-schema'
 
 /**
  * The Todo board's shapes, shared by the API and the renderer.
@@ -64,6 +65,45 @@ export const TODO_TRANSITIONS: Record<TodoStatusChange, readonly TodoStatus[]> =
   archived: ['done'],
 }
 
+/**
+ * What a Needs input item is waiting for, grouped the way a person acts on
+ * it: answer a question, allow something, reconnect an account that
+ * expired, connect one it never had, or hand over a detail (a secret, a
+ * file, something typed into the browser).
+ */
+export const TODO_ASKS = ['answer', 'permission', 'reconnect', 'connect', 'info'] as const
+export type TodoAsk = (typeof TODO_ASKS)[number]
+
+const ASK_BY_KIND: Record<UserInputRequestKind, TodoAsk> = {
+  question: 'answer',
+  script_run: 'permission',
+  computer_use: 'permission',
+  capability_review: 'permission',
+  proxy_review: 'permission',
+  x_agent_review: 'permission',
+  account_reauth_required: 'reconnect',
+  mcp_reauth_required: 'reconnect',
+  connected_account: 'connect',
+  remote_mcp: 'connect',
+  secret: 'info',
+  file: 'info',
+  browser_input: 'info',
+}
+
+/** The ask for a session's open requests: the oldest one that blocks it. */
+export function todoAskFor(requests: readonly { kind: UserInputRequestKind; blocking: boolean; autoApproved: boolean }[]): TodoAsk | null {
+  const waiting = requests.find((r) => r.blocking && !r.autoApproved)
+  return waiting ? ASK_BY_KIND[waiting.kind] : null
+}
+
+export const TODO_ASK_LABELS: Record<TodoAsk, string> = {
+  answer: 'Needs answer',
+  permission: 'Permission',
+  reconnect: 'Reconnect',
+  connect: 'Connect',
+  info: 'Needs info',
+}
+
 /** What the list endpoint returns per item. Times are epoch milliseconds. */
 export interface TodoView {
   id: string
@@ -73,6 +113,8 @@ export interface TodoView {
   sessionId: string | null
   status: TodoStatus
   column: TodoColumn
+  /** For an item in Needs input: what it is waiting for, when known. */
+  ask: TodoAsk | null
   createdAt: number
   updatedAt: number
   startedAt: number | null

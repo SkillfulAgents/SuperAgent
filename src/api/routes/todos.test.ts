@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   // user → agents they can read
   readable: new Map<string, Set<string>>(),
   sessions: new Map<string, { isActive: boolean; isAwaitingInput: boolean }>(),
+  requests: new Map<string, { kind: string; blocking: boolean; autoApproved: boolean }[]>(),
 }))
 
 vi.mock('@shared/lib/db', () => ({ get db() { return state.db } }))
@@ -41,6 +42,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
         isActive: (id: string) => state.sessions.get(`${slug}/${id}`)?.isActive ?? false,
         isAwaitingInput: (id: string) => state.sessions.get(`${slug}/${id}`)?.isAwaitingInput ?? false,
       },
+      inputs: { snapshot: (id: string) => state.requests.get(`${slug}/${id}`) ?? [] },
     }),
   },
 }))
@@ -79,6 +81,7 @@ beforeEach(async () => {
   state.agents = new Set(['agent-a', 'agent-b'])
   state.readable = new Map([['alice', new Set(['agent-a', 'agent-b'])], ['bob', new Set(['agent-a'])]])
   state.sessions = new Map()
+  state.requests = new Map()
 })
 
 afterEach(async () => {
@@ -179,6 +182,17 @@ describe('board columns', () => {
 
     state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
     expect(await column()).toBe('has_updates')
+  })
+
+  it('say what a Needs input item is waiting for', async () => {
+    const todo = await startDraft()
+    const listed = async () => (await (await call('')).json()).todos.find((t: { id: string }) => t.id === todo.id)
+
+    state.requests.set('agent-a/session-1', [{ kind: 'script_run', blocking: true, autoApproved: false }])
+    expect((await listed()).ask).toBeNull() // still working: the column decides first
+
+    state.sessions.set('agent-a/session-1', { isActive: true, isAwaitingInput: true })
+    expect(await listed()).toMatchObject({ column: 'needs_input', ask: 'permission' })
   })
 
   it('stop reading the session of an agent the person lost access to', async () => {

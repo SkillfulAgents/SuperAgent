@@ -1,11 +1,24 @@
 import { Check, Loader2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
-import { todoDisplayTitle } from '@shared/lib/todos/todo-schema'
+import { TODO_ASK_LABELS, todoDisplayTitle } from '@shared/lib/todos/todo-schema'
 import { Button } from '@renderer/components/ui/button'
 import type { TodoView } from '@renderer/hooks/use-todos'
 import type { TodoCardAction } from './todo-card-action'
 import { ShortcutTooltip } from './todo-shortcuts'
 import { TodoAgentAvatar, ago, when, type TodoAgent } from './todo-shared'
+
+/** What a Needs input card is waiting for, as a pill at the end of its metadata row. */
+function AskPill({ todo }: { todo: TodoView }) {
+  if (todo.column !== 'needs_input' || !todo.ask) return null
+  return (
+    <span
+      className="ml-auto inline-flex h-5 shrink-0 items-center rounded-full bg-orange-500/10 px-2 text-[11px] text-orange-700 dark:text-orange-400"
+      data-testid="todo-card-ask"
+    >
+      {TODO_ASK_LABELS[todo.ask]}
+    </span>
+  )
+}
 
 /**
  * A board card: the title, then one metadata row — the agent first, then what
@@ -105,6 +118,8 @@ export function TodoBoardCard({ todo, agent, action, starting, onOpen, selected,
             )
           )}
 
+
+          <AskPill todo={todo} />
 
           {todo.column === 'working' && (
             <>

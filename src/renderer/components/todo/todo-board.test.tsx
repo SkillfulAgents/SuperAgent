@@ -42,6 +42,7 @@ function todo(partial: Partial<TodoView> & Pick<TodoView, 'id' | 'column'>): Tod
     updatedAt: Date.now(),
     startedAt: null,
     completedAt: null,
+    ask: null,
     ...partial,
   }
 }
@@ -66,6 +67,18 @@ describe('TodoBoard', () => {
     expect(within(screen.getByTestId('todo-column-working')).getByText('Task b')).toBeInTheDocument()
     expect(within(screen.getByTestId('todo-column-needs_input')).getByText('Task c')).toBeInTheDocument()
     expect(within(screen.getByTestId('todo-column-has_updates')).getByText('Task d')).toBeInTheDocument()
+  })
+
+  it('labels what a Needs input card is waiting for', () => {
+    state.todos = [
+      todo({ id: 'q', column: 'needs_input', ask: 'answer' }),
+      todo({ id: 'p', column: 'needs_input', ask: 'permission' }),
+      todo({ id: 'r', column: 'needs_input', ask: 'reconnect' }),
+    ]
+    renderWithProviders(<TodoBoard />)
+    expect(screen.getAllByTestId('todo-card-ask').map((pill) => pill.textContent)).toEqual(
+      expect.arrayContaining(['Needs answer', 'Permission', 'Reconnect']),
+    )
   })
 
   it('names an untitled item from its description', () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createTodoSchema, deriveTodoTitle, todoColumn, todoDisplayTitle, todoPrompt } from './todo-schema'
+import { createTodoSchema, deriveTodoTitle, todoAskFor, todoColumn, todoDisplayTitle, todoPrompt } from './todo-schema'
 
 describe('todoColumn', () => {
   it('puts stored statuses in their own columns', () => {
@@ -56,5 +56,33 @@ describe('createTodoSchema', () => {
     expect(createTodoSchema.safeParse({ title: ' ', description: ' ' }).success).toBe(false)
     expect(createTodoSchema.safeParse({ title: 'x' }).success).toBe(true)
     expect(createTodoSchema.safeParse({ title: '', description: 'x' }).success).toBe(true)
+  })
+})
+
+describe('todoAskFor', () => {
+  const wait = (kind: Parameters<typeof todoAskFor>[0][number]['kind'], extra: Partial<{ blocking: boolean; autoApproved: boolean }> = {}) =>
+    ({ kind, blocking: true, autoApproved: false, ...extra })
+
+  it('groups request kinds into what the person does about them', () => {
+    expect(todoAskFor([wait('question')])).toBe('answer')
+    expect(todoAskFor([wait('script_run')])).toBe('permission')
+    expect(todoAskFor([wait('proxy_review')])).toBe('permission')
+    expect(todoAskFor([wait('account_reauth_required')])).toBe('reconnect')
+    expect(todoAskFor([wait('connected_account')])).toBe('connect')
+    expect(todoAskFor([wait('secret')])).toBe('info')
+  })
+
+  it('names the oldest request that actually blocks', () => {
+    expect(todoAskFor([
+      wait('script_run', { autoApproved: true }),
+      wait('file', { blocking: false }),
+      wait('account_reauth_required'),
+      wait('question'),
+    ])).toBe('reconnect')
+  })
+
+  it('is unknown when nothing blocks', () => {
+    expect(todoAskFor([])).toBeNull()
+    expect(todoAskFor([wait('question', { blocking: false })])).toBeNull()
   })
 })

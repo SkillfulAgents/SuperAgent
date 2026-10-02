@@ -30,6 +30,7 @@ import { isExperimentEnabled } from '@shared/lib/services/user-settings-service'
 import {
   createTodoSchema,
   startTodoSchema,
+  todoAskFor,
   todoColumn,
   todoStatusChangeSchema,
   updateTodoSchema,
@@ -50,12 +51,13 @@ todosRouter.use('*', async (c, next) => {
 function toView(row: TodoRow, readableAgents: ReadonlySet<string>): TodoView {
   // Session state is live, not stored. An agent the person can no longer
   // read tells them nothing about its session.
-  const sessions = row.agentSlug && row.sessionId && readableAgents.has(row.agentSlug)
-    ? agentRegistry.get(row.agentSlug).sessions
+  const actor = row.agentSlug && row.sessionId && readableAgents.has(row.agentSlug)
+    ? agentRegistry.get(row.agentSlug)
     : null
-  const session = sessions && row.sessionId
-    ? { isActive: sessions.isActive(row.sessionId), isAwaitingInput: sessions.isAwaitingInput(row.sessionId) }
+  const session = actor && row.sessionId
+    ? { isActive: actor.sessions.isActive(row.sessionId), isAwaitingInput: actor.sessions.isAwaitingInput(row.sessionId) }
     : null
+  const column = todoColumn(row.status, session)
   return {
     id: row.id,
     title: row.title,
@@ -63,7 +65,10 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>): TodoView {
     agentSlug: row.agentSlug,
     sessionId: row.sessionId,
     status: row.status,
-    column: todoColumn(row.status, session),
+    column,
+    // The same open requests that make the session await input (its own,
+    // plus the agent-scoped ones that block every session of the agent).
+    ask: column === 'needs_input' && actor && row.sessionId ? todoAskFor(actor.inputs.snapshot(row.sessionId)) : null,
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
     startedAt: row.startedAt?.getTime() ?? null,
