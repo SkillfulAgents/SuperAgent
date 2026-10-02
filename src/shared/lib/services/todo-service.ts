@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf } from '@shared/lib/db/batch'
 import { todos, type TodoRow } from '@shared/lib/db/schema'
@@ -22,7 +22,7 @@ export type TodoWriteFailure = 'not_found' | 'conflict'
 export type TodoWriteResult = { ok: true; todo: TodoRow } | { ok: false; reason: TodoWriteFailure }
 
 export async function listTodos(userId: string): Promise<TodoRow[]> {
-  return db.select().from(todos).where(eq(todos.userId, userId)).orderBy(desc(todos.updatedAt)).all()
+  return db.select().from(todos).where(eq(todos.userId, userId)).orderBy(desc(todos.position)).all()
 }
 
 export async function getTodo(userId: string, id: string): Promise<TodoRow | undefined> {
@@ -39,6 +39,7 @@ export async function createTodo(userId: string, input: CreateTodoInput): Promis
     agentSlug: input.agentSlug ?? null,
     sessionId: null,
     status: 'draft',
+    position: now.getTime(),
     createdAt: now,
     updatedAt: now,
     startedAt: null,
@@ -83,7 +84,7 @@ export async function startTodo(userId: string, id: string, agentSlug: string, s
   const now = new Date()
   const result = await db
     .update(todos)
-    .set({ status: 'active', sessionId, startedAt: now, updatedAt: now })
+    .set({ status: 'active', sessionId, startedAt: now, updatedAt: now, position: now.getTime() })
     .where(and(
       eq(todos.id, id),
       eq(todos.userId, userId),
@@ -94,7 +95,10 @@ export async function startTodo(userId: string, id: string, agentSlug: string, s
   return changesOf(result) > 0 ? reread(userId, id) : failure(userId, id)
 }
 
-/** Moves a started item along: done, archived, or back on the board. See TODO_TRANSITIONS. */
+/**
+ * Moves an item along: done, archived, or back on the board. See
+ * TODO_TRANSITIONS. It lands at the top of its new column.
+ */
 export async function setTodoStatus(userId: string, id: string, status: TodoStatusChange): Promise<TodoWriteResult> {
   const now = new Date()
   const result = await db
@@ -102,6 +106,7 @@ export async function setTodoStatus(userId: string, id: string, status: TodoStat
     .set({
       status,
       updatedAt: now,
+      position: now.getTime(),
       // Done keeps the time it was finished through archiving; reopening clears it.
       ...(status === 'done' ? { completedAt: now } : status === 'active' ? { completedAt: null } : {}),
     })
@@ -112,7 +117,21 @@ export async function setTodoStatus(userId: string, id: string, status: TodoStat
       // Only started work can be finished: a draft that lost its session
       // (the session or agent was deleted) went back to draft, not here.
       ...(status === 'active' ? [isNotNull(todos.sessionId)] : []),
+      // Unarchiving goes back where the item came from: Done only for work
+      // that was started, Drafts only for work that never was.
+      ...(status === 'done' ? [isNotNull(todos.startedAt)] : []),
+      ...(status === 'draft' ? [isNull(todos.startedAt)] : []),
     ))
+    .run()
+  return changesOf(result) > 0 ? reread(userId, id) : failure(userId, id)
+}
+
+/** Puts an item at a new place in its column. Nothing else about it changes. */
+export async function moveTodo(userId: string, id: string, position: number): Promise<TodoWriteResult> {
+  const result = await db
+    .update(todos)
+    .set({ position })
+    .where(and(eq(todos.id, id), eq(todos.userId, userId)))
     .run()
   return changesOf(result) > 0 ? reread(userId, id) : failure(userId, id)
 }

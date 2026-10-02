@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b20f0572-1f9b-4fb0-9d95-139770f5e8f1",
+  "id": "b4fd5db3-32b1-4a6c-9c17-522505a6c66f",
   "prevId": "a159db8c-3b67-4318-a520-408d6323ff89",
   "tables": {
     "agent_acl": {
@@ -2998,6 +2998,13 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'draft'"
+        },
+        "position": {
+          "name": "position",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
         },
         "created_at": {
           "name": "created_at",

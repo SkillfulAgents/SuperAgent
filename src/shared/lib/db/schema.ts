@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { sqliteTable, text, integer, uniqueIndex, index, check, primaryKey } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey } from 'drizzle-orm/sqlite-core'
 import { AGENT_INTEGRATION_PROVIDERS } from '@shared/lib/agent-integrations/provider-types'
 
 // =============================================================================
@@ -830,6 +830,10 @@ export const todos = sqliteTable('todos', {
   agentSlug: text('agent_slug'),
   sessionId: text('session_id'),
   status: text('status', { enum: ['draft', 'active', 'done', 'archived'] }).notNull().default('draft'),
+  // Where it sits in its column: highest first. New items and items that
+  // change status land on top (the time, in ms); dragging puts one between
+  // its new neighbours.
+  position: real('position').notNull(),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   startedAt: integer('started_at', { mode: 'timestamp_ms' }),

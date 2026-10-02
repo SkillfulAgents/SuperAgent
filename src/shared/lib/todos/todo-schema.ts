@@ -7,8 +7,12 @@ import type { UserInputRequestKind } from '@shared/lib/user-input/request-schema
  * An item's `status` is what the person decided and is stored:
  *
  *   draft ──start──▶ active ──mark done──▶ done ──archive──▶ archived
- *                      ▲                    │ ▲                  │
- *                      └──────reopen────────┘ └────unarchive─────┘
+ *     │                ▲                    │ ▲                  │
+ *     │                └──────reopen────────┘ └────unarchive─────┘
+ *     └──archive──▶ archived ──unarchive──▶ draft
+ *
+ * Unarchiving puts an item back where it was archived from: Drafts if it
+ * was never started, Done if it was.
  *
  * Its board `column` is derived. A draft, a done item and an archived one sit
  * in the column of the same name; an active item sits wherever its session
@@ -53,16 +57,58 @@ export type UpdateTodoInput = z.infer<typeof updateTodoSchema>
 /** Links a draft to the session its agent was just started in. */
 export const startTodoSchema = z.object({ sessionId: z.string().trim().min(1).max(200) }).strict()
 
-/** The statuses a person can move an item to after it has started. */
-export const todoStatusChangeSchema = z.object({ status: z.enum(['active', 'done', 'archived']) }).strict()
+/** The statuses a person can move an item to. Starting is its own endpoint. */
+export const todoStatusChangeSchema = z.object({ status: z.enum(['draft', 'active', 'done', 'archived']) }).strict()
 export type TodoStatusChange = z.infer<typeof todoStatusChangeSchema>['status']
 
-/** Which statuses each target can be reached from. Starting is its own endpoint. */
+/**
+ * Which statuses each target can be reached from. Unarchiving also depends
+ * on whether the item was ever started: back to Drafts if not, Done if so.
+ */
 export const TODO_TRANSITIONS: Record<TodoStatusChange, readonly TodoStatus[]> = {
+  // Unarchive a draft that was never started.
+  draft: ['archived'],
   // Reopen: back on the board from Done.
   active: ['done'],
   done: ['active', 'archived'],
-  archived: ['done'],
+  archived: ['draft', 'done'],
+}
+
+/** Where unarchiving puts an item back. */
+export function todoUnarchiveStatus(todo: { startedAt: number | null }): 'draft' | 'done' {
+  return todo.startedAt === null ? 'draft' : 'done'
+}
+
+/** Puts an item at a place in its column. */
+export const moveTodoSchema = z.object({ position: z.number().finite() }).strict()
+
+/** Board order within a column: highest position first. */
+export function byBoardOrder(a: { position: number }, b: { position: number }): number {
+  return b.position - a.position
+}
+
+/**
+ * The position that puts an item between `above` and `below` (either may be
+ * missing, at the top or bottom of the column).
+ */
+export function positionBetween(above: { position: number } | undefined, below: { position: number } | undefined): number | null {
+  if (above && below) return (above.position + below.position) / 2
+  if (above) return above.position - 1
+  if (below) return below.position + 1
+  return null
+}
+
+/**
+ * The new position for `movedId` dropped onto `overId`'s place in `column`
+ * (in board order): it takes that place and the cards between shift by one,
+ * as in a sortable list. Null when nothing moves.
+ */
+export function positionAfterDrop<T extends { id: string; position: number }>(column: readonly T[], movedId: string, overId: string): number | null {
+  const from = column.findIndex((t) => t.id === movedId)
+  const to = column.findIndex((t) => t.id === overId)
+  if (from === -1 || to === -1 || from === to) return null
+  const rest = column.filter((_, i) => i !== from)
+  return positionBetween(rest[to - 1], rest[to])
 }
 
 /**
@@ -113,6 +159,8 @@ export interface TodoView {
   sessionId: string | null
   status: TodoStatus
   column: TodoColumn
+  /** Its place in its column, highest first. */
+  position: number
   /** For an item in Needs input: what it is waiting for, when known. */
   ask: TodoAsk | null
   createdAt: number

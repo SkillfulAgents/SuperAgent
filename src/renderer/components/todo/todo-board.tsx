@@ -1,20 +1,62 @@
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type CollisionDetection,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
+import { CSS } from '@dnd-kit/utilities'
 import { ChevronsRight, SquarePen } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
-import type { TodoColumn } from '@shared/lib/todos/todo-schema'
+import { byBoardOrder, positionAfterDrop, type TodoColumn } from '@shared/lib/todos/todo-schema'
 import { Button } from '@renderer/components/ui/button'
-import { useStartingTodoIds, useTodos, type TodoView } from '@renderer/hooks/use-todos'
+import { useMoveTodo, useStartingTodoIds, useTodos, type TodoView } from '@renderer/hooks/use-todos'
 import { TodoBoardCard } from './todo-board-card'
 import { TodoDraftDialog, type TodoDraftTarget } from './todo-draft-dialog'
-import { cardActionFor, useTodoActionRunners } from './todo-card-action'
+import { archiveDraftAction, cardActionFor, useTodoActionRunners } from './todo-card-action'
 import { ShortcutTooltip, ShortcutsDialog, usePlainKeys } from './todo-shortcuts'
 import { useTodoAgents } from './todo-shared'
 
 // Whether Done was open, so coming back from a session keeps it.
 let doneOpenMemo = false
 
-const byNewest = (a: TodoView, b: TodoView) => b.updatedAt - a.updatedAt
+// Hoisted: useSensor memoizes on the options object (see app-sidebar.tsx).
+// The distance keeps a click on a card a click.
+const POINTER_SENSOR_OPTIONS = { activationConstraint: { distance: 5 } }
+
+/** Cards reorder within their own column only: other columns are not drop targets. */
+const sameColumnOnly: CollisionDetection = (args) =>
+  closestCenter({
+    ...args,
+    droppableContainers: args.droppableContainers.filter(
+      (container) => container.data.current?.column === args.active.data.current?.column,
+    ),
+  })
+
+/** A card that can be dragged up or down its column. */
+function SortableCard({ todo, children }: { todo: TodoView; children: ReactNode }) {
+  const { setNodeRef, listeners, transform, transition, isDragging } = useSortable({
+    id: todo.id,
+    data: { column: todo.column },
+  })
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={cn(isDragging && 'relative z-10 opacity-80')}
+      data-testid="todo-sortable"
+      {...listeners}
+    >
+      {children}
+    </div>
+  )
+}
 
 function Column({ label, dot, count, action, children, testId }: {
   label: string
@@ -225,6 +267,8 @@ export function TodoBoard() {
   const { bySlug } = useTodoAgents()
   const runners = useTodoActionRunners()
   const starting = useStartingTodoIds()
+  const moveTodo = useMoveTodo()
+  const sensors = useSensors(useSensor(PointerSensor, POINTER_SENSOR_OPTIONS))
 
   const [doneOpen, setDoneOpenState] = useState(doneOpenMemo)
   const setDoneOpen = (open: boolean) => {
@@ -240,7 +284,7 @@ export function TodoBoard() {
   const gPressedAt = useRef(0)
 
   const columns = useMemo(() => {
-    const of = (column: TodoColumn) => (todos ?? []).filter((t) => t.column === column).sort(byNewest)
+    const of = (column: TodoColumn) => (todos ?? []).filter((t) => t.column === column).sort(byBoardOrder)
     return {
       drafts: of('drafts'),
       working: of('working'),
@@ -346,8 +390,9 @@ export function TodoBoard() {
       if (!starting.has(todo.id)) open(todo)
       return true
     }
-    const action = cardActionFor(todo, runners, open)
-    if (action && !starting.has(todo.id) && key.toUpperCase() === action.shortcut) {
+    const action = [cardActionFor(todo, runners, open), archiveDraftAction(todo, runners)]
+      .find((a) => a?.shortcut === key.toUpperCase())
+    if (action && !starting.has(todo.id)) {
       // The card leaves its column; keep the selection moving down it.
       const list = lanes[at.lane]
       const next = list[at.row + 1] ?? list[at.row - 1]
@@ -358,19 +403,32 @@ export function TodoBoard() {
     return false
   }, !draft && !shortcutsOpen)
 
-  const cards = (list: TodoView[]) =>
-    list.map((todo) => (
-      <TodoBoardCard
-        key={todo.id}
-        todo={todo}
-        agent={todo.agentSlug ? bySlug.get(todo.agentSlug) : undefined}
-        action={cardActionFor(todo, runners, open)}
-        starting={starting.has(todo.id)}
-        onOpen={open}
-        selected={todo.id === selectedId}
-        onHover={(t) => setSelectedId(t.id)}
-      />
-    ))
+  const cards = (list: TodoView[]) => (
+    <SortableContext items={list.map((todo) => todo.id)} strategy={verticalListSortingStrategy}>
+      {list.map((todo) => (
+        <SortableCard key={todo.id} todo={todo}>
+          <TodoBoardCard
+            todo={todo}
+            agent={todo.agentSlug ? bySlug.get(todo.agentSlug) : undefined}
+            action={cardActionFor(todo, runners, open)}
+            starting={starting.has(todo.id)}
+            onOpen={open}
+            selected={todo.id === selectedId}
+            onHover={(t) => setSelectedId(t.id)}
+          />
+        </SortableCard>
+      ))}
+    </SortableContext>
+  )
+
+  // A drop puts the card between its new neighbours. Only its order changes.
+  const onDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return
+    const column = active.data.current?.column as TodoColumn | undefined
+    if (!column || over.data.current?.column !== column) return
+    const position = positionAfterDrop(columns[column], String(active.id), String(over.id))
+    if (position !== null) moveTodo.mutate({ id: String(active.id), position })
+  }
 
   if (error) {
     return (
@@ -383,48 +441,50 @@ export function TodoBoard() {
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="todo-board" aria-busy={isPending || undefined}>
       <div className="min-h-0 flex-1 overflow-x-auto p-6">
-        <div className="flex h-full min-w-[960px] gap-3">
-          {LANES.map((lane) => (
-            <Column
-              key={lane.column}
-              label={lane.label}
-              dot={lane.dot}
-              count={columns[lane.column].length}
-              testId={`todo-column-${lane.column}`}
-              action={lane.column === 'drafts' ? (
-                <ShortcutTooltip label="New draft" keys={['C']}>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground"
-                    aria-label="New draft"
-                    aria-keyshortcuts="C"
-                    onClick={newDraft}
-                    data-testid="todo-new-draft"
-                  >
-                    <SquarePen className="h-4 w-4" />
-                  </Button>
-                </ShortcutTooltip>
-              ) : undefined}
-            >
-              {columns[lane.column].length > 0
-                ? cards(columns[lane.column])
-                : !isPending && <Empty>{lane.empty}</Empty>}
-            </Column>
-          ))}
+        <DndContext sensors={sensors} collisionDetection={sameColumnOnly} modifiers={[restrictToVerticalAxis]} onDragEnd={onDragEnd}>
+          <div className="flex h-full min-w-[960px] gap-3">
+            {LANES.map((lane) => (
+              <Column
+                key={lane.column}
+                label={lane.label}
+                dot={lane.dot}
+                count={columns[lane.column].length}
+                testId={`todo-column-${lane.column}`}
+                action={lane.column === 'drafts' ? (
+                  <ShortcutTooltip label="New draft" keys={['C']}>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-muted-foreground"
+                      aria-label="New draft"
+                      aria-keyshortcuts="C"
+                      onClick={newDraft}
+                      data-testid="todo-new-draft"
+                    >
+                      <SquarePen className="h-4 w-4" />
+                    </Button>
+                  </ShortcutTooltip>
+                ) : undefined}
+              >
+                {columns[lane.column].length > 0
+                  ? cards(columns[lane.column])
+                  : !isPending && <Empty>{lane.empty}</Empty>}
+              </Column>
+            ))}
 
-          <DoneColumn
-            open={doneOpen}
-            view={showArchived ? 'archived' : 'done'}
-            doneCount={columns.done.length}
-            archivedCount={columns.archived.length}
-            onOpen={() => setDoneOpen(true)}
-            onCollapse={collapseDone}
-            onView={(v) => setShowArchived(v === 'archived')}
-          >
-            {finishedList.length > 0 ? cards(finishedList) : <Empty>{showArchived ? 'Nothing archived.' : 'Nothing finished yet.'}</Empty>}
-          </DoneColumn>
-        </div>
+            <DoneColumn
+              open={doneOpen}
+              view={showArchived ? 'archived' : 'done'}
+              doneCount={columns.done.length}
+              archivedCount={columns.archived.length}
+              onOpen={() => setDoneOpen(true)}
+              onCollapse={collapseDone}
+              onView={(v) => setShowArchived(v === 'archived')}
+            >
+              {finishedList.length > 0 ? cards(finishedList) : <Empty>{showArchived ? 'Nothing archived.' : 'Nothing finished yet.'}</Empty>}
+            </DoneColumn>
+          </div>
+        </DndContext>
       </div>
 
       <TodoDraftDialog target={draft} onClose={closeDraft} />

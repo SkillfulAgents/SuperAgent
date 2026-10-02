@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createTodoSchema, deriveTodoTitle, todoAskFor, todoColumn, todoDisplayTitle, todoPrompt } from './todo-schema'
+import { createTodoSchema, deriveTodoTitle, positionAfterDrop, todoAskFor, todoUnarchiveStatus, todoColumn, todoDisplayTitle, todoPrompt } from './todo-schema'
 
 describe('todoColumn', () => {
   it('puts stored statuses in their own columns', () => {
@@ -84,5 +84,40 @@ describe('todoAskFor', () => {
   it('is unknown when nothing blocks', () => {
     expect(todoAskFor([])).toBeNull()
     expect(todoAskFor([wait('question', { blocking: false })])).toBeNull()
+  })
+})
+
+describe('positionAfterDrop', () => {
+  // Board order: highest position first.
+  const column = [{ id: 'a', position: 40 }, { id: 'b', position: 30 }, { id: 'c', position: 20 }, { id: 'd', position: 10 }]
+
+  it('moves a card to the top, above the old first', () => {
+    expect(positionAfterDrop(column, 'c', 'a')).toBe(41)
+  })
+
+  it('moves a card to the bottom, below the old last', () => {
+    expect(positionAfterDrop(column, 'a', 'd')).toBe(9)
+  })
+
+  it('moves a card down between the dropped-on card and the next', () => {
+    // a onto c: b, c, a, d
+    expect(positionAfterDrop(column, 'a', 'c')).toBe(15)
+  })
+
+  it('moves a card up between the previous card and the dropped-on one', () => {
+    // d onto b: a, d, b, c
+    expect(positionAfterDrop(column, 'd', 'b')).toBe(35)
+  })
+
+  it('does nothing for a drop in place or an unknown card', () => {
+    expect(positionAfterDrop(column, 'b', 'b')).toBeNull()
+    expect(positionAfterDrop(column, 'x', 'b')).toBeNull()
+  })
+})
+
+describe('todoUnarchiveStatus', () => {
+  it('puts back a never-started draft as a draft, and started work as done', () => {
+    expect(todoUnarchiveStatus({ startedAt: null })).toBe('draft')
+    expect(todoUnarchiveStatus({ startedAt: 1 })).toBe('done')
   })
 })

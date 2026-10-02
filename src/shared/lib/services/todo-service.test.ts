@@ -11,6 +11,7 @@ import {
   deleteTodo,
   getTodo,
   listTodos,
+  moveTodo,
   setTodoStatus,
   startTodo,
   unlinkAgentStatements,
@@ -61,13 +62,34 @@ describe('drafts', () => {
     expect(unassigned.ok && unassigned.todo.agentSlug).toBeNull()
   })
 
-  it('list newest change first', async () => {
+  it('list newest first, and editing one does not move it', async () => {
     const first = await createTodo(ME, { title: 'First', description: '' })
     await new Promise((resolve) => setTimeout(resolve, 5))
     await createTodo(ME, { title: 'Second', description: '' })
-    await new Promise((resolve) => setTimeout(resolve, 5))
     await updateDraft(ME, first.id, { title: 'First, edited' })
-    expect((await listTodos(ME)).map((t) => t.title)).toEqual(['First, edited', 'Second'])
+    expect((await listTodos(ME)).map((t) => t.title)).toEqual(['Second', 'First, edited'])
+  })
+})
+
+describe('ordering', () => {
+  it('puts an item where it was dragged', async () => {
+    const a = await createTodo(ME, { title: 'A', description: '' })
+    const b = await createTodo(ME, { title: 'B', description: '' })
+    const moved = await moveTodo(ME, a.id, b.position + 1)
+    expect(moved.ok && moved.todo.position).toBe(b.position + 1)
+    expect((await listTodos(ME)).map((t) => t.title)).toEqual(['A', 'B'])
+  })
+
+  it('moves only the person\'s own items', async () => {
+    const todo = await createTodo(ME, { title: 'Mine', description: '' })
+    expect(await moveTodo(SOMEONE_ELSE, todo.id, 1)).toEqual({ ok: false, reason: 'not_found' })
+  })
+
+  it('a status change lands the item on top of its new column', async () => {
+    const todo = await startedTodo()
+    await moveTodo(ME, todo.id, 0)
+    const done = await setTodoStatus(ME, todo.id, 'done')
+    expect(done.ok && done.todo.position).toBeGreaterThan(1_000_000)
   })
 })
 
@@ -112,10 +134,33 @@ describe('status changes', () => {
     expect(reopened.ok && reopened.todo).toMatchObject({ status: 'active', completedAt: null })
   })
 
-  it('a draft cannot be marked done or archived', async () => {
+  it('a draft cannot be marked done', async () => {
     const draft = await createTodo(ME, { title: 'Draft', description: '' })
     expect(await setTodoStatus(ME, draft.id, 'done')).toEqual({ ok: false, reason: 'conflict' })
-    expect(await setTodoStatus(ME, draft.id, 'archived')).toEqual({ ok: false, reason: 'conflict' })
+    expect(await setTodoStatus(ME, draft.id, 'active')).toEqual({ ok: false, reason: 'conflict' })
+  })
+
+  it('a draft archives, and unarchives back to Drafts, never to Done', async () => {
+    const draft = await createTodo(ME, { title: 'Draft', description: '', agentSlug: 'agent-a' })
+    const archived = await setTodoStatus(ME, draft.id, 'archived')
+    expect(archived.ok && archived.todo).toMatchObject({ status: 'archived', startedAt: null, completedAt: null })
+    expect(await setTodoStatus(ME, draft.id, 'done')).toEqual({ ok: false, reason: 'conflict' })
+    const back = await setTodoStatus(ME, draft.id, 'draft')
+    expect(back.ok && back.todo).toMatchObject({ status: 'draft', agentSlug: 'agent-a' })
+    expect((await startTodo(ME, draft.id, 'agent-a', 'session-1')).ok).toBe(true)
+  })
+
+  it('archived work that was started unarchives to Done, never to Drafts', async () => {
+    const todo = await startedTodo()
+    await setTodoStatus(ME, todo.id, 'done')
+    await setTodoStatus(ME, todo.id, 'archived')
+    expect(await setTodoStatus(ME, todo.id, 'draft')).toEqual({ ok: false, reason: 'conflict' })
+    expect((await setTodoStatus(ME, todo.id, 'done')).ok).toBe(true)
+  })
+
+  it('only an archived item goes back to Drafts', async () => {
+    const todo = await startedTodo()
+    expect(await setTodoStatus(ME, todo.id, 'draft')).toEqual({ ok: false, reason: 'conflict' })
   })
 
   it('active work goes to done before archive', async () => {

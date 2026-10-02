@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   calls: [] as { path: string; method: string; body: unknown }[],
   createSession: vi.fn(),
   toastError: vi.fn(),
+  moveOk: true,
 }))
 
 vi.mock('sonner', () => ({ toast: { error: state.toastError } }))
@@ -22,6 +23,9 @@ vi.mock('@renderer/lib/api', () => ({
     if (path === '/api/todos' && method === 'GET') {
       return new Response(JSON.stringify({ todos: [{ id: 't1', column: 'drafts' }] }))
     }
+    if (path === '/api/todos/t1/position' && state.moveOk) {
+      return new Response(JSON.stringify({ id: 't1', column: 'drafts', position: body.position }))
+    }
     if (path === '/api/todos/t1/start') {
       return new Response(JSON.stringify({ id: 't1', column: 'working', sessionId: body.sessionId }))
     }
@@ -29,10 +33,9 @@ vi.mock('@renderer/lib/api', () => ({
   },
 }))
 
-import { useStartTodo, useStartingTodoIds, useTodos } from './use-todos'
+import { TODOS_QUERY_KEY, useMoveTodo, useStartTodo, useStartingTodoIds, useTodos, type TodoView } from './use-todos'
 
-function wrapper() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+function wrapper(client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
   return function Wrapper({ children }: { children: ReactNode }) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>
   }
@@ -43,6 +46,7 @@ beforeEach(() => {
   state.calls = []
   state.createSession.mockReset()
   state.toastError.mockReset()
+  state.moveOk = true
 })
 
 describe('useTodos', () => {
@@ -110,5 +114,30 @@ describe('useStartTodo', () => {
     unmount()
     rejectSession(new Error('The agent could not start'))
     await waitFor(() => expect(state.toastError).toHaveBeenCalledWith('The agent could not start'))
+  })
+})
+
+describe('useMoveTodo', () => {
+  const board = () => [{ id: 't1', column: 'drafts', position: 1 }, { id: 't2', column: 'drafts', position: 2 }] as TodoView[]
+  const client = () => new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } })
+
+  it('moves the card at once and keeps it there', async () => {
+    const qc = client()
+    qc.setQueryData(TODOS_QUERY_KEY, board())
+    const { result } = renderHook(() => useMoveTodo(), { wrapper: wrapper(qc) })
+    result.current.mutate({ id: 't1', position: 3 })
+    await waitFor(() => expect(qc.getQueryData<TodoView[]>(TODOS_QUERY_KEY)?.[0].position).toBe(3))
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(state.calls).toContainEqual({ path: '/api/todos/t1/position', method: 'POST', body: { position: 3 } })
+  })
+
+  it('says so and reloads the board when the move fails', async () => {
+    state.moveOk = false
+    const qc = client()
+    qc.setQueryData(TODOS_QUERY_KEY, board())
+    const { result } = renderHook(() => useMoveTodo(), { wrapper: wrapper(qc) })
+    result.current.mutate({ id: 't1', position: 3 })
+    await waitFor(() => expect(state.toastError).toHaveBeenCalledWith('nope'))
+    expect(qc.getQueryState(TODOS_QUERY_KEY)?.isInvalidated).toBe(true)
   })
 })

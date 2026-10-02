@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, screen, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { TodoView } from '@shared/lib/todos/todo-schema'
 
@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   todos: [] as TodoView[],
   navigate: vi.fn(),
   setStatus: vi.fn(),
+  move: vi.fn(),
   start: vi.fn(),
   starting: new Set<string>(),
 }))
@@ -24,6 +25,7 @@ vi.mock('@renderer/hooks/use-todos', () => ({
   useStartingTodoIds: () => state.starting,
   useStartTodo: () => ({ mutate: state.start }),
   useSetTodoStatus: () => ({ mutate: state.setStatus }),
+  useMoveTodo: () => ({ mutate: state.move }),
   useCreateTodo: () => ({ mutateAsync: vi.fn() }),
   useUpdateTodo: () => ({ mutateAsync: vi.fn() }),
   useDeleteTodo: () => ({ mutate: vi.fn() }),
@@ -39,6 +41,7 @@ function todo(partial: Partial<TodoView> & Pick<TodoView, 'id' | 'column'>): Tod
     agentSlug: 'analyst',
     sessionId: status === 'draft' ? null : `session-${partial.id}`,
     status,
+    position: 0,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     startedAt: null,
@@ -52,6 +55,7 @@ beforeEach(() => {
   state.todos = []
   state.navigate.mockReset()
   state.setStatus.mockReset()
+  state.move.mockReset()
   state.start.mockReset()
   state.starting = new Set()
 })
@@ -112,14 +116,14 @@ describe('TodoBoard', () => {
     state.todos = [todo({ id: 'b', column: 'has_updates' })]
     const { unmount } = renderWithProviders(<TodoBoard />)
     fireEvent.click(screen.getByTestId('todo-action-done'))
-    expect(state.setStatus).toHaveBeenCalledWith({ id: 'b', status: 'done' }, expect.anything())
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'b', status: 'done' })
     unmount()
 
     state.todos = [todo({ id: 'e', column: 'done' })]
     renderWithProviders(<TodoBoard />)
     fireEvent.click(screen.getByRole('button', { name: 'Show Done, 1 items' }))
     fireEvent.click(screen.getByTestId('todo-action-archive'))
-    expect(state.setStatus).toHaveBeenCalledWith({ id: 'e', status: 'archived' }, expect.anything())
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'e', status: 'archived' })
   })
 
   it('starts a draft that has an agent from its card', () => {
@@ -161,5 +165,51 @@ describe('TodoBoard', () => {
     fireEvent.mouseEnter(document.querySelector('[data-todo-id="d"]')!)
     fireEvent.keyDown(window, { key: 'ArrowRight' })
     expect(document.querySelector('[data-todo-id="z"]')).toHaveAttribute('data-selected', 'true')
+  })
+
+  it('orders each column as it was arranged, not by when it changed', () => {
+    state.todos = [
+      todo({ id: 'low', column: 'drafts', position: 1, updatedAt: 9_000 }),
+      todo({ id: 'high', column: 'drafts', position: 2, updatedAt: 1_000 }),
+    ]
+    renderWithProviders(<TodoBoard />)
+    const ids = within(screen.getByTestId('todo-column-drafts')).getAllByTestId('todo-card').map((card) => card.dataset.todoId)
+    expect(ids).toEqual(['high', 'low'])
+  })
+
+  it('archives a selected draft with E', () => {
+    state.todos = [todo({ id: 'a', column: 'drafts' })]
+    renderWithProviders(<TodoBoard />)
+    fireEvent.mouseEnter(screen.getByTestId('todo-card'))
+    fireEvent.keyDown(window, { key: 'e' })
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'a', status: 'archived' })
+  })
+
+  it('unarchives a draft to Drafts and started work to Done', () => {
+    state.todos = [
+      todo({ id: 'never', column: 'archived', startedAt: null, sessionId: null }),
+      todo({ id: 'ran', column: 'archived', startedAt: 1_000 }),
+    ]
+    renderWithProviders(<TodoBoard />)
+    const show = screen.queryByRole('button', { name: /^Show Done/ })
+    if (show) fireEvent.click(show)
+    fireEvent.click(screen.getByTestId('todo-archive-tab'))
+
+    const card = (id: string) => document.querySelector(`[data-todo-id="${id}"]`) as HTMLElement
+    expect(within(card('never')).getByText(/^Draft, archived/)).toBeInTheDocument()
+    fireEvent.click(within(card('never')).getByTestId('todo-action-unarchive'))
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'never', status: 'draft' })
+    fireEvent.mouseEnter(card('ran'))
+    fireEvent.keyDown(window, { key: 'u' })
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'ran', status: 'done' })
+  })
+
+  it('archives a draft from its dialog', async () => {
+    state.todos = [todo({ id: 'a', column: 'drafts', description: 'The brief' })]
+    renderWithProviders(<TodoBoard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Task a' }))
+    fireEvent.click(screen.getByTestId('todo-draft-archive'))
+    await waitFor(() => expect(state.setStatus).toHaveBeenCalledWith({ id: 'a', status: 'archived' }))
+    expect(screen.queryByTestId('todo-draft-dialog')).not.toBeInTheDocument()
   })
 })

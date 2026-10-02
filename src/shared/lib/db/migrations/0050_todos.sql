@@ -6,6 +6,7 @@ CREATE TABLE `todos` (
 	`agent_slug` text,
 	`session_id` text,
 	`status` text DEFAULT 'draft' NOT NULL,
+	`position` real NOT NULL,
 	`created_at` integer NOT NULL,
 	`updated_at` integer NOT NULL,
 	`started_at` integer,

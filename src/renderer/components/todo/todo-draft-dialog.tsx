@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronDown, Maximize2, Minimize2, Play, Plus, Trash2, X } from 'lucide-react'
+import { Archive, ChevronDown, Maximize2, Minimize2, Play, Plus, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
 import { deriveTodoTitle, TODO_TITLE_MAX } from '@shared/lib/todos/todo-schema'
@@ -11,6 +11,7 @@ import { useVoiceInput } from '@renderer/hooks/use-voice-input'
 import {
   useCreateTodo,
   useDeleteTodo,
+  useSetTodoStatus,
   useStartTodo,
   useStartingTodoIds,
   useUpdateTodo,
@@ -92,6 +93,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
   const createTodo = useCreateTodo()
   const updateTodo = useUpdateTodo()
   const deleteTodo = useDeleteTodo()
+  const setTodoStatus = useSetTodoStatus()
   const startTodo = useStartTodo()
   // A draft opened from the board is never mid-start (its card doesn't open
   // then), but its start may begin elsewhere while this is open.
@@ -194,8 +196,19 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
     if (timerRef.current !== null) window.clearTimeout(timerRef.current)
     timerRef.current = null
     savedRef.current = fieldsRef.current
-    if (id) deleteTodo.mutate(id, { onError: failed })
+    if (id) deleteTodo.mutate(id)
     onClose()
+  }
+
+  // Saves what was typed, then archives: the draft can come back from Archived.
+  const archive = async () => {
+    try {
+      const id = await save()
+      if (id) setTodoStatus.mutate({ id, status: 'archived' })
+      onClose()
+    } catch (error) {
+      failed(error)
+    }
   }
 
   return (
@@ -218,6 +231,21 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
         <DialogDescription className="sr-only">Write the task, pick an agent, and start it when it is ready.</DialogDescription>
 
         <div className="-mr-1.5 -mt-1 flex shrink-0 items-center gap-0.5">
+          {initial && (
+            <ShortcutTooltip label="Archive draft">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-muted-foreground"
+                aria-label="Archive draft"
+                onClick={() => void archive()}
+                disabled={alreadyStarting}
+                data-testid="todo-draft-archive"
+              >
+                <Archive className="h-3.5 w-3.5" />
+              </Button>
+            </ShortcutTooltip>
+          )}
           {initial && (
             <ShortcutTooltip label="Delete draft">
               <Button

@@ -30,6 +30,10 @@ async function send<T>(path: string, method: string, body: unknown, fallback: st
   return res.json() as Promise<T>
 }
 
+function showError(error: Error) {
+  toast.error(error.message || 'Something went wrong')
+}
+
 /** Replace one item in the cached board, or add it when it is new. */
 function putTodo(queryClient: QueryClient, todo: TodoView) {
   queryClient.setQueryData<TodoView[]>(TODOS_QUERY_KEY, (current) => {
@@ -83,6 +87,30 @@ export function useSetTodoStatus() {
     mutationFn: ({ id, status }: { id: string; status: TodoStatusChange }) =>
       send<TodoView>(`/api/todos/${id}/status`, 'POST', { status }, 'Failed to update the todo'),
     onSuccess: (todo) => putTodo(queryClient, todo),
+    // Here, not per call: the draft dialog archives as it closes.
+    onError: showError,
+  })
+}
+
+/**
+ * Puts an item at a new place in its column. The board moves it straight
+ * away; a failure puts the board back the way the server has it.
+ */
+export function useMoveTodo() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, position }: { id: string; position: number }) =>
+      send<TodoView>(`/api/todos/${id}/position`, 'POST', { position }, 'Failed to move the todo'),
+    onMutate: async ({ id, position }) => {
+      await queryClient.cancelQueries({ queryKey: TODOS_QUERY_KEY })
+      queryClient.setQueryData<TodoView[]>(TODOS_QUERY_KEY, (current) =>
+        current?.map((t) => (t.id === id ? { ...t, position } : t)))
+    },
+    onSuccess: (todo) => putTodo(queryClient, todo),
+    onError: (error) => {
+      showError(error)
+      void queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
+    },
   })
 }
 
@@ -97,6 +125,8 @@ export function useDeleteTodo() {
     onSuccess: (id) => {
       queryClient.setQueryData<TodoView[]>(TODOS_QUERY_KEY, (current) => current?.filter((t) => t.id !== id))
     },
+    // Here, not per call: the draft dialog deletes as it closes.
+    onError: showError,
   })
 }
 
@@ -125,7 +155,8 @@ export function useStartingTodoIds(): Set<string> {
  *
  * Failures toast from here rather than from each `mutate` call: the draft
  * dialog closes as soon as it starts, and a call's own callbacks don't run
- * once its component is gone.
+ * once its component is gone. The other mutations the dialog fires as it
+ * closes do the same.
  */
 export function useStartTodo() {
   const queryClient = useQueryClient()
@@ -146,7 +177,7 @@ export function useStartTodo() {
       }
     },
     onSuccess: (todo) => putTodo(queryClient, todo),
-    onError: (error) => toast.error(error.message || 'Something went wrong'),
+    onError: showError,
     onSettled: () => queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY }),
   })
 }

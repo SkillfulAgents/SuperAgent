@@ -21,6 +21,7 @@ import {
   deleteTodo,
   getTodo,
   listTodos,
+  moveTodo,
   setTodoStatus,
   startTodo,
   updateDraft,
@@ -29,6 +30,7 @@ import {
 import { isExperimentEnabled } from '@shared/lib/services/user-settings-service'
 import {
   createTodoSchema,
+  moveTodoSchema,
   startTodoSchema,
   todoAskFor,
   todoColumn,
@@ -66,6 +68,7 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>): TodoView {
     sessionId: row.sessionId,
     status: row.status,
     column,
+    position: row.position,
     // The same open requests that make the session await input (its own,
     // plus the agent-scoped ones that block every session of the agent).
     ask: column === 'needs_input' && actor && row.sessionId ? todoAskFor(actor.inputs.snapshot(row.sessionId)) : null,
@@ -98,7 +101,7 @@ async function canAssign(c: Context, agentSlug: string): Promise<boolean> {
   return (await agentExists(agentSlug)) && (await getReadableAgentIds(c, [agentSlug])).has(agentSlug)
 }
 
-// GET /api/todos — the person's board, newest change first.
+// GET /api/todos — the person's board, in board order.
 todosRouter.get('/', async (c) => {
   const rows = await listTodos(getCurrentUserId(c))
   const agentSlugs = [...new Set(rows.flatMap((row) => (row.agentSlug ? [row.agentSlug] : [])))]
@@ -144,11 +147,18 @@ todosRouter.post('/:id/start', async (c) => {
   return respond(c, await startTodo(userId, todo.id, todo.agentSlug, input.sessionId))
 })
 
-// POST /api/todos/:id/status — mark done, archive, or put back on the board.
+// POST /api/todos/:id/status — mark done, archive, unarchive, or put back on the board.
 todosRouter.post('/:id/status', async (c) => {
   const input = await parseBody(c, todoStatusChangeSchema)
   if (!input) return c.json({ error: 'Invalid status' }, 400)
   return respond(c, await setTodoStatus(getCurrentUserId(c), c.req.param('id'), input.status))
+})
+
+// POST /api/todos/:id/position — reorder within its column.
+todosRouter.post('/:id/position', async (c) => {
+  const input = await parseBody(c, moveTodoSchema)
+  if (!input) return c.json({ error: 'Invalid position' }, 400)
+  return respond(c, await moveTodo(getCurrentUserId(c), c.req.param('id'), input.position))
 })
 
 // DELETE /api/todos/:id — take it off the board. Its session, if any, stays.

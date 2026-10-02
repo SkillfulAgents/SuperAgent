@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import type { LucideIcon } from 'lucide-react'
-import { Archive, Check, Play } from 'lucide-react'
-import { toast } from 'sonner'
+import { Archive, ArchiveRestore, Check, Play } from 'lucide-react'
+import { todoUnarchiveStatus, type TodoStatusChange } from '@shared/lib/todos/todo-schema'
 import { useSetTodoStatus, useStartTodo, type TodoView } from '@renderer/hooks/use-todos'
 
 export interface TodoCardAction {
@@ -9,9 +9,9 @@ export interface TodoCardAction {
   Icon: LucideIcon
   run: () => void
   /** What the action does to the item. */
-  kind: 'start' | 'done' | 'archive'
+  kind: 'start' | 'done' | 'archive' | 'unarchive'
   /** Its single-key shortcut, the same wherever the item shows it. */
-  shortcut: 'S' | 'D' | 'E'
+  shortcut: 'S' | 'D' | 'E' | 'U'
   testId: string
   /** Extra icon classes: Play is drawn filled and a step smaller. `!` because Button sizes every icon to 16px. */
   iconClass?: string
@@ -19,30 +19,25 @@ export interface TodoCardAction {
 
 export interface TodoActionRunners {
   start: (todo: TodoView) => void
-  setStatus: (todo: TodoView, status: 'done' | 'archived') => void
+  setStatus: (todo: TodoView, status: TodoStatusChange) => void
 }
 
-function failed(error: unknown) {
-  toast.error(error instanceof Error ? error.message : 'Something went wrong')
-}
-
-/** The mutations behind the card actions, with failures surfaced as toasts. */
+/** The mutations behind the card actions. Each reports its own failures. */
 export function useTodoActionRunners(): TodoActionRunners {
   const startTodo = useStartTodo()
   const setTodoStatus = useSetTodoStatus()
   return useMemo(() => ({
-    // useStartTodo reports its own failures.
     start: (todo) => startTodo.mutate(todo),
-    setStatus: (todo, status) => setTodoStatus.mutate({ id: todo.id, status }, { onError: failed }),
+    setStatus: (todo, status) => setTodoStatus.mutate({ id: todo.id, status }),
   // The mutate functions are stable; the mutation objects are not.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [startTodo.mutate, setTodoStatus.mutate])
 }
 
 /**
- * The one action an item offers for where it is: start a draft, finish work
- * in flight, archive what is done. Archived items have none. A draft with
- * no agent yet opens instead, since starting needs one.
+ * The one action an item's card offers for where it is: start a draft,
+ * finish work in flight, archive what is done, unarchive what is archived.
+ * A draft with no agent yet opens instead, since starting needs one.
  */
 export function cardActionFor(
   todo: TodoView | undefined,
@@ -68,6 +63,22 @@ export function cardActionFor(
     case 'done':
       return { label: 'Archive', Icon: Archive, kind: 'archive', shortcut: 'E', testId: 'todo-action-archive', run: () => runners.setStatus(todo, 'archived') }
     case 'archived':
-      return null
+      return {
+        label: 'Unarchive',
+        Icon: ArchiveRestore,
+        kind: 'unarchive',
+        shortcut: 'U',
+        testId: 'todo-action-unarchive',
+        run: () => runners.setStatus(todo, todoUnarchiveStatus(todo)),
+      }
   }
+}
+
+/**
+ * Archiving a draft: not the card's one action (that is Start), so it is
+ * offered by the E shortcut and in the draft dialog instead.
+ */
+export function archiveDraftAction(todo: TodoView | undefined, runners: TodoActionRunners): TodoCardAction | null {
+  if (todo?.column !== 'drafts') return null
+  return { label: 'Archive', Icon: Archive, kind: 'archive', shortcut: 'E', testId: 'todo-action-archive', run: () => runners.setStatus(todo, 'archived') }
 }

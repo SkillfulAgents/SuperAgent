@@ -215,10 +215,39 @@ describe('status changes', () => {
     expect(await reopened.json()).toMatchObject({ status: 'active', column: 'working' })
   })
 
+  it('archives a draft and puts it back in Drafts', async () => {
+    const draft = await createDraft()
+    const archived = await call(`/${draft.id}/status`, 'POST', { status: 'archived' })
+    expect(await archived.json()).toMatchObject({ status: 'archived', column: 'archived' })
+    const back = await call(`/${draft.id}/status`, 'POST', { status: 'draft' })
+    expect(await back.json()).toMatchObject({ status: 'draft', column: 'drafts' })
+  })
+
   it('refuses a move the item cannot make', async () => {
     const draft = await createDraft()
     expect((await call(`/${draft.id}/status`, 'POST', { status: 'done' })).status).toBe(409)
-    expect((await call(`/${draft.id}/status`, 'POST', { status: 'draft' })).status).toBe(400)
+    expect((await call(`/${draft.id}/status`, 'POST', { status: 'draft' })).status).toBe(409)
+    expect((await call(`/${draft.id}/status`, 'POST', { status: 'started' })).status).toBe(400)
     expect((await call('/missing/status', 'POST', { status: 'done' })).status).toBe(404)
+  })
+})
+
+describe('ordering', () => {
+  it('lists in board order and moves an item where it was dragged', async () => {
+    const older = await createDraft({ title: 'Older' })
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const newer = await createDraft({ title: 'Newer' })
+    const titles = async () => (await (await call('')).json()).todos.map((t: { title: string }) => t.title)
+    expect(await titles()).toEqual(['Newer', 'Older'])
+
+    const moved = await call(`/${older.id}/position`, 'POST', { position: newer.position + 1 })
+    expect(await moved.json()).toMatchObject({ id: older.id, position: newer.position + 1 })
+    expect(await titles()).toEqual(['Older', 'Newer'])
+  })
+
+  it('refuses a position that is not a number, and another person\'s item', async () => {
+    const draft = await createDraft()
+    expect((await call(`/${draft.id}/position`, 'POST', { position: 'top' })).status).toBe(400)
+    expect((await call(`/${draft.id}/position`, 'POST', { position: 1 }, 'bob')).status).toBe(404)
   })
 })

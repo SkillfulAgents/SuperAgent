@@ -137,7 +137,10 @@ export function TodoBoardCard({ todo, agent, action, starting, onOpen, selected,
           )}
 
           {todo.column === 'archived' && (
-            <span className="ml-auto min-w-0 truncate">Archived {ago(todo.updatedAt)}</span>
+            <span className="ml-auto min-w-0 truncate">
+              {/* A draft archived before it was ever started says so. */}
+              {todo.startedAt === null ? 'Draft, archived' : 'Archived'} {ago(todo.updatedAt)}
+            </span>
           )}
         </p>
       </div>
