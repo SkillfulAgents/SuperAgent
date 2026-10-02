@@ -48,6 +48,16 @@ describe('WebTab', () => {
     vi.clearAllMocks()
   })
 
+  it('selects Parallel without asking for a key or a Gamut account', async () => {
+    setup({ webProvider: 'parallel', webProviderIsDefault: false, connected: false })
+    render(<WebTab />)
+    const card = screen.getByRole('radio', { name: /Parallel/i })
+    expect(card).toBeChecked()
+    expect(screen.queryByTestId('api-key-input')).not.toBeInTheDocument()
+    await userEvent.click(card)
+    expect(mutateMock).toHaveBeenCalledWith({ webProvider: 'parallel' })
+  })
+
   it('marks "(default)" on the selected card only when isDefault', () => {
     setup({ webProvider: 'platform', webProviderIsDefault: true, connected: true })
     const { unmount } = render(<WebTab />)
