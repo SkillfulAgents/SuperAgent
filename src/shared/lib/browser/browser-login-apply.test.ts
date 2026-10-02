@@ -23,15 +23,13 @@ function bundle(theme: string) {
   }
 }
 const savedBundle = bundle('saved')
-const currentBundle = bundle('current')
 const credential = { id: 'bc-1', site: 'example.com', browserType: 'container', version: 3, bundle: 'v1:…' }
 
 function fakeClient(restoreStatuses: number[], location: 'host' | 'container' = 'container') {
   const fetch = vi.fn(async (path: string, _init?: RequestInit) => {
     const action = path.split('/').pop()
     const status = action === 'restore' ? restoreStatuses.shift() ?? 200 : 200
-    const body = action === 'capture' ? currentBundle
-      : action === 'status' ? { active: true, sessionId: 'sess-1', location } : {}
+    const body = action === 'status' ? { active: true, sessionId: 'sess-1', location } : {}
     return { ok: status === 200, status, json: async () => body } as unknown as Response
   })
   return { fetch }
@@ -67,8 +65,8 @@ describe('applyBrowserLogin', () => {
 
     await expect(applyBrowserLogin({ ...input, client })).resolves.toEqual({ site: 'example.com', linked: true })
 
-    expect(calledActions(client)).toEqual(['status', 'capture', 'restore', 'run'])
-    expect(JSON.parse((client.fetch.mock.calls[3][1] as RequestInit).body as string)).toEqual({ sessionId: 'sess-1', args: ['reload'] })
+    expect(calledActions(client)).toEqual(['status', 'restore', 'run'])
+    expect(JSON.parse((client.fetch.mock.calls[2][1] as RequestInit).body as string)).toEqual({ sessionId: 'sess-1', args: ['reload'] })
 
     expect(getOwnedBrowserLogin).toHaveBeenCalledWith('alice', 'bc-1')
     expect(restoredBundles(client)).toEqual([savedBundle])
@@ -77,12 +75,12 @@ describe('applyBrowserLogin', () => {
     })
   })
 
-  it('puts the previous state back and does not map when restore fails', async () => {
-    const client = fakeClient([500, 200])
+  it('neither reloads nor maps when restore fails (the container puts the previous state back)', async () => {
+    const client = fakeClient([500])
 
     await expect(applyBrowserLogin({ ...input, client })).rejects.toThrow('restore failed')
 
-    expect(restoredBundles(client)).toEqual([savedBundle, currentBundle])
+    expect(restoredBundles(client)).toEqual([savedBundle])
     expect(calledActions(client)).not.toContain('run')
     expect(mapAgentToBrowserLogin).not.toHaveBeenCalled()
   })
@@ -101,7 +99,7 @@ describe('applyBrowserLogin', () => {
 
     getOwnedBrowserLogin.mockResolvedValueOnce({ ...credential, browserType: 'chrome' })
     await expect(applyBrowserLogin({ ...input, client })).rejects.toBeInstanceOf(BrowserLoginNotFoundError)
-    expect(calledActions(client)).not.toContain('capture')
+    expect(calledActions(client)).not.toContain('restore')
     expect(calledActions(client)).not.toContain('restore')
   })
 
@@ -120,6 +118,6 @@ describe('applyBrowserLogin', () => {
     const client = fakeClient([200], 'host')
 
     await expect(applyBrowserLogin({ ...input, client })).resolves.toEqual({ site: 'example.com', linked: true })
-    expect(calledActions(client)).toEqual(['status', 'capture', 'restore', 'run'])
+    expect(calledActions(client)).toEqual(['status', 'restore', 'run'])
   })
 })

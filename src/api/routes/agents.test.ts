@@ -5311,6 +5311,31 @@ describe('browser credential broker routes', () => {
     expect(res.status).toBe(400)
     expect(mockContainerFetch).not.toHaveBeenCalled()
   })
+
+  it('refuses a personal login on a shared agent until the caller acknowledges other members can use it', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(countMembersWithMinRole).mockResolvedValueOnce(2)
+    userInputRequestManager.reset()
+    userInputRequestManager.register({
+      id: 'tool-captcha',
+      kind: 'browser_input',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: { loginUrl: 'https://example.com/login' },
+    })
+    const path = '/api/agents/test-agent/sessions/sess-1/use-saved-browser-login'
+
+    const refused = await postJson(app, path, { toolUseId: 'tool-captcha', credentialId: 'bc-1' })
+    expect(refused.status).toBe(409)
+    expect(countMembersWithMinRole).toHaveBeenLastCalledWith('test-agent', 'viewer')
+
+    // Acknowledged, the request goes on to the usual checks (this one is not a sign-in).
+    const acknowledged = await postJson(app, path, { toolUseId: 'tool-captcha', credentialId: 'bc-1', sharedAgentAcknowledged: true })
+    expect(acknowledged.status).toBe(400)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    mockIsAuthMode.mockReturnValue(false)
+  })
 })
 
 describe('decision routes settle their request immediately', () => {

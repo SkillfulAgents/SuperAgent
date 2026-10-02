@@ -3988,6 +3988,11 @@ const browserCredentialAutofillBodySchema = z.object({
   credentialId: z.string().min(1),
 }).strict()
 
+const useSavedBrowserLoginBodySchema = browserCredentialAutofillBodySchema.extend({
+  // The caller saw that other members of this agent can use a login applied to it.
+  sharedAgentAcknowledged: z.boolean().optional(),
+}).strict()
+
 function capturedBrowserInputUrl(agentSlug: string, toolUseId: string, now = Date.now()): string | null {
   const request = agentRegistry.get(agentSlug).inputs.get(toolUseId)
   if (!request || request.kind !== 'browser_input') return null
@@ -4229,7 +4234,7 @@ agents.get('/:id/sessions/:sessionId/saved-browser-logins', AgentUser(), async (
 agents.post(
   '/:id/sessions/:sessionId/use-saved-browser-login',
   AgentUser(),
-  zValidator('json', browserCredentialAutofillBodySchema),
+  zValidator('json', useSavedBrowserLoginBodySchema),
   async (c) => {
   let claimedToolUseId: string | null = null
   try {
@@ -4237,6 +4242,9 @@ agents.post(
     const gated = gateRequestDecision(c, body.toolUseId, 'browser_input')
     if (gated) return gated
     const agentSlug = getAgentId(c)
+    if (!body.sharedAgentAcknowledged && isAuthMode() && await countMembersWithMinRole(agentSlug, 'viewer') > 1) {
+      return c.json({ error: 'Other members of this agent can use this login; confirm before applying it' }, 409)
+    }
     const actor = agentRegistry.get(agentSlug)
     if (!actor.inputs.claim(body.toolUseId)) {
       return c.json({ error: 'This browser request is already being handled' }, 409)

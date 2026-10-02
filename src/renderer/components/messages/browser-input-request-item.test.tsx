@@ -17,14 +17,15 @@ vi.mock('@renderer/lib/api', () => ({
 vi.mock('./browser-credential-picker', () => ({
   BrowserCredentialPicker: () => null,
 }))
-const savedLoginPicker = vi.hoisted(() => ({ count: 0 }))
+const savedLoginPicker = vi.hoisted(() => ({ count: 0, applied: false, settled: false }))
 vi.mock('@renderer/hooks/use-saved-logins', () => ({
   useSavedLogins: (_a: string, _s: string, _t: string, enabled: boolean) => ({
     logins: enabled
       ? Array.from({ length: savedLoginPicker.count }, (_, i) => ({ id: `bc-${i}`, name: 'example.com', site: 'example.com', capturedAt: '' }))
       : [],
     applyingId: null,
-    applied: false,
+    applied: savedLoginPicker.applied,
+    settled: savedLoginPicker.settled,
     error: null,
     apply: vi.fn(),
   }),
@@ -86,7 +87,7 @@ const ok = () => ({ ok: true, json: () => Promise.resolve({}) })
 
 describe('BrowserInputRequestItem', () => {
   beforeEach(() => {
-    savedLoginPicker.count = 0
+    Object.assign(savedLoginPicker, { count: 0, applied: false, settled: false })
     vi.clearAllMocks()
   })
 
@@ -345,6 +346,19 @@ describe('BrowserInputRequestItem', () => {
     expect(screen.getByTestId('browser-input-save-login')).not.toBeChecked()
     expect(screen.getByText('Replace my saved login for example.com')).toBeInTheDocument()
     expect(screen.getByTestId('browser-input-other-account')).toHaveTextContent('Use saved login')
+  })
+
+  it('offers Done, without saving, when a saved login was applied but the request is still open', async () => {
+    Object.assign(savedLoginPicker, { count: 1, applied: true, settled: false })
+    const user = userEvent.setup()
+    mockApiFetch.mockResolvedValue(ok())
+    render(<BrowserInputRequestItem {...defaultProps} login />)
+
+    await user.click(screen.getByTestId('browser-input-complete-btn'))
+
+    await waitFor(() => expect(screen.getByText('Completed')).toBeInTheDocument())
+    expect(mockApiFetch.mock.calls.map(([url]) => url)).toEqual([COMPLETE_URL])
+    expect(JSON.parse(mockApiFetch.mock.calls[0][1].body)).toEqual({ toolUseId: 'tu-1', saveLogin: false })
   })
 
   it('saves a sign-in by default and lets the user opt out', async () => {
