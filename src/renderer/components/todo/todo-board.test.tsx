@@ -19,7 +19,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
   useNavigate: () => state.navigate,
 }))
 vi.mock('@renderer/hooks/use-agents', () => ({
-  useAgents: () => ({ data: [{ slug: 'analyst', name: 'Analyst' }] }),
+  useAgents: () => ({ data: [{ slug: 'analyst', name: 'Analyst' }, { slug: 'ops', name: 'Ops' }] }),
 }))
 vi.mock('@renderer/hooks/use-todos', () => ({
   useTodos: () => ({ data: state.todos, isPending: false, error: null }),
@@ -232,5 +232,18 @@ describe('TodoBoard', () => {
     fireEvent.click(screen.getByTestId('todo-draft-close'))
     landB()
     await waitFor(() => expect(state.update).toHaveBeenLastCalledWith(expect.objectContaining({ title: 'A' })))
+  })
+
+  it('gives a draft to an agent by name', async () => {
+    state.update.mockResolvedValue(undefined)
+    state.todos = [todo({ id: 'a', column: 'drafts' })]
+    renderWithProviders(<TodoBoard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Task a' }))
+    const trigger = screen.getByTestId('todo-assign-agent')
+    expect(trigger).toHaveTextContent('Analyst')
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
+    expect(screen.getByRole('menuitemradio', { name: 'Analyst' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Ops' }))
+    expect(screen.getByTestId('todo-assign-agent')).toHaveTextContent('Ops')
   })
 })

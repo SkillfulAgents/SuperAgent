@@ -5,7 +5,7 @@ import { Button } from '@renderer/components/ui/button'
 import type { TodoView } from '@renderer/hooks/use-todos'
 import type { TodoCardAction } from './todo-card-action'
 import { ShortcutTooltip } from './todo-shortcuts'
-import { TodoAgentAvatar, ago, when, type TodoAgent } from './todo-shared'
+import { ago, when, type TodoAgent } from './todo-shared'
 
 /** What a Needs input card is waiting for, as a pill at the end of its metadata row. */
 function AskPill({ todo }: { todo: TodoView }) {
@@ -96,10 +96,7 @@ export function TodoBoardCard({ todo, agent, action, starting, onOpen, selected,
 
         <p className="flex h-5 min-w-0 items-center gap-1.5 overflow-hidden text-xs text-muted-foreground">
           {agent && (
-            <span className="flex min-w-[2.5rem] items-center gap-1.5 truncate text-foreground/80">
-              <TodoAgentAvatar agent={agent} size={14} />
-              <span className="truncate">{agent.name}</span>
-            </span>
+            <span className="min-w-[2.5rem] truncate text-foreground/80">{agent.name}</span>
           )}
 
           {todo.column === 'drafts' && (

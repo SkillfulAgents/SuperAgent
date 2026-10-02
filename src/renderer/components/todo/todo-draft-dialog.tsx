@@ -17,7 +17,7 @@ import {
   type TodoView,
 } from '@renderer/hooks/use-todos'
 import { MOD, ShortcutTooltip } from './todo-shortcuts'
-import { AgentPicker, TodoAgentAvatar, useTodoAgents } from './todo-shared'
+import { AgentPicker, useTodoAgents } from './todo-shared'
 
 /** Which draft the dialog shows: a new one (not saved until there is something in it) or a saved one. */
 export type TodoDraftTarget = { kind: 'new' } | { kind: 'existing'; todo: TodoView }
@@ -315,8 +315,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
           onPick={(picked) => change({ agentSlug: picked.slug })}
           trigger={
             agent ? (
-              <Button variant="outline" size="sm" className="h-8 gap-1.5 pl-1.5 text-xs" data-testid="todo-assign-agent">
-                <TodoAgentAvatar agent={agent} size={20} />
+              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" data-testid="todo-assign-agent">
                 <span className="max-w-[12rem] truncate">{agent.name}</span>
                 <ChevronDown className="h-3 w-3 text-muted-foreground" />
               </Button>
