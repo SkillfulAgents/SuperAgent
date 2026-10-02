@@ -1,6 +1,6 @@
 import { CredentialRefreshError } from './credential-refresh-error'
 import { normalizeCodexRequest, codexCacheId, collectCodexResponse, CodexResponseError } from './llm-proxy-codex'
-import { normalizeGrokResponses } from './llm-proxy-grok'
+import { normalizeGrokResponses, withGrokClientVersion } from './llm-proxy-grok'
 import { isKimiPlanLimit } from './llm-proxy-kimi'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, createHash } from 'node:crypto'
@@ -47,6 +47,8 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
   let refreshing: Promise<ProxyCredential> | undefined
   let refreshFailure: { error: CredentialRefreshError; generation: number; retryAt: number } | undefined
   const key = randomBytes(32).toString('hex')
+  // Learned from Grok's 426 and kept for the rest of this proxy's sessions.
+  const grokVersion = { current: config.headers['x-grok-client-version'] ?? '' }
   const active = new Set<AbortController>()
   async function refresh(previous: ProxyCredential, rejected: boolean): Promise<void> {
     if (!options.refreshCredential) return
@@ -127,6 +129,7 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
           method: 'POST', redirect: 'error', signal: abort.signal,
           headers: { 'content-type': 'application/json', ...(format === 'messages' ? { 'anthropic-version': '2023-06-01' } : {}),
             ...config.headers, ...(config.adapter === 'codex' && credential.accountId ? { 'ChatGPT-Account-ID': credential.accountId } : {}),
+            ...(config.adapter === 'grok' && grokVersion.current ? { 'x-grok-client-version': grokVersion.current } : {}),
             ...(codexCache ? { 'session-id': codexCache } : {}),
             // Grok CLI pins a conversation to the server holding its cache with this header.
             ...(config.adapter === 'grok' && sessionId ? { 'x-grok-conv-id': sessionId } : {}),
@@ -137,7 +140,7 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       }
       if (credential.expiresAt !== undefined && credential.expiresAt <= Date.now() + 30_000) await refresh(credential, false)
       const sent = credential
-      let upstream = await request()
+      let upstream = config.adapter === 'grok' ? await withGrokClientVersion(grokVersion, () => request()) : await request()
       // Only a pre-stream authentication rejection may replay a request. No quota,
       // network or mid-stream retries, and the app remains the refresh authority.
       let rejection: unknown
