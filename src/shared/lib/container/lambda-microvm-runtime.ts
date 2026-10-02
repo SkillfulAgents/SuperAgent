@@ -481,10 +481,17 @@ export class LocalAuthForwardProxy {
     const deadline = Date.now() + RESUME_KICK_TIMEOUT_MS
     const rateLimitDeadline = Date.now() + INGRESS_RATE_LIMIT_RETRY_BUDGET_MS
     let rateLimitAttempts = 0
+    // A sent request may have reached the agent unless the gateway answered 429.
+    // Until one has, a refusal says the input never landed, as the agent's own
+    // create errors do.
+    let mayHaveForwarded = false
+    const refuse = (error: string, status = 502) => {
+      if (!res.headersSent) res.writeHead(status, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error, ...(mayHaveForwarded ? {} : { inputAccepted: false }) }))
+    }
     for (;;) {
       if (!this.server) {
-        if (!res.headersSent) res.writeHead(502)
-        res.end()
+        refuse('microvm proxy stopped')
         return
       }
       let auth: Record<string, string>
@@ -492,18 +499,20 @@ export class LocalAuthForwardProxy {
         auth = await this.authHeaders()
       } catch (error) {
         captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' }, extra: { endpoint: this.options.endpoint } })
-        if (!res.headersSent) res.writeHead(502)
-        res.end('microvm auth token unavailable')
+        refuse('microvm auth token unavailable')
         return
       }
       const headers = { ...this.forwardableHeaders(req.headers), host: this.options.endpoint, ...auth }
       let upstreamRes: http.IncomingMessage
+      let sent = false
       try {
-        upstreamRes = await this.forwardOnce(req.method ?? 'GET', req.url ?? '/', headers, body)
+        const session = await this.ensureHttp2()
+        sent = true
+        upstreamRes = await this.forwardOnceH2(session, req.method ?? 'GET', req.url ?? '/', headers, body)
       } catch (error) {
+        if (sent) mayHaveForwarded = true
         if (!this.server) {
-          if (!res.headersSent) res.writeHead(502)
-          res.end()
+          refuse('microvm proxy stopped')
           return
         }
         // Connection error = VM still waking; retry within the resume budget.
@@ -512,10 +521,10 @@ export class LocalAuthForwardProxy {
           continue
         }
         captureException(error, { tags: { area: 'container', op: 'microvm.proxy.request' }, extra: { endpoint: this.options.endpoint, path: req.url } })
-        if (!res.headersSent) res.writeHead(502)
-        res.end()
+        refuse('microvm upstream unreachable')
         return
       }
+      if (upstreamRes.statusCode !== 429) mayHaveForwarded = true
       // 502 from the endpoint = VM resuming; drain and retry within the budget.
       if (upstreamRes.statusCode === 502 && Date.now() < deadline) {
         upstreamRes.resume()
@@ -527,6 +536,11 @@ export class LocalAuthForwardProxy {
         await new Promise((r) => setTimeout(r, ingressRateLimitDelayMs(rateLimitAttempts)))
         rateLimitAttempts++
         continue
+      }
+      if (upstreamRes.statusCode === 429) {
+        upstreamRes.resume()
+        refuse('microvm ingress rate limited', 429)
+        return
       }
       res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers)
       await pipeline(upstreamRes, res)

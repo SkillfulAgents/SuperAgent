@@ -162,6 +162,21 @@ describe('ClaudeCodeProcess stop/restart teardown race', () => {
     expect(proc.isRunning()).toBe(false)
   })
 
+  it('reports a message queued only once it is in the queue', async () => {
+    const proc = new ClaudeCodeProcess({ sessionId: 's5b', workingDirectory: '/tmp' })
+    await proc.start()
+    const queued = vi.fn()
+    await proc.sendMessage('a real turn', undefined, { onQueued: queued })
+    expect(queued).toHaveBeenCalledOnce()
+
+    // A stop racing the send can close the queue while the session still reads ready.
+    ;(Reflect.get(proc, 'messageQueue') as { close(): void }).close()
+    const refused = vi.fn()
+    await expect(proc.sendMessage('straggler', undefined, { onQueued: refused })).rejects.toThrow('MessageQueue is closed')
+    expect(refused).not.toHaveBeenCalled()
+    await proc.dispose()
+  })
+
   it('every sendMessage emits outbound-message (settlement visibility for bypass callers)', async () => {
     const proc = new ClaudeCodeProcess({ sessionId: 's6', workingDirectory: '/tmp' })
     await proc.start()

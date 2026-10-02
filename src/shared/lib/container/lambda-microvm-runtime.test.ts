@@ -1494,10 +1494,48 @@ describe('LocalAuthForwardProxy', () => {
     expect(mint).toHaveBeenCalledTimes(1)
   })
 
-  it('returns 502 when minting the auth token fails', async () => {
+  it('returns 502 when minting the auth token fails, marked as not accepted since nothing was forwarded', async () => {
     const port = await makeProxy(async () => { throw new Error('token unavailable') }).start()
     const res = await httpGet(port, '/sessions')
     expect(res.status).toBe(502)
+    expect(JSON.parse(res.body)).toMatchObject({ inputAccepted: false })
+  })
+
+  it.each([
+    ['failed in flight', (stream: H2Stream) => process.nextTick(() => stream.emit('error', new Error('stream reset')))],
+    ['got a gateway 502', (stream: H2Stream) => h2Respond(stream, 502, '')],
+  ] as const)('does not mark a refusal as not accepted once a sent request %s', async (_case, answer) => {
+    let requests = 0
+    installH2((_headers, stream) => { requests++; answer(stream) })
+    const proxy = makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' }))
+    const port = await proxy.start()
+    const pending = httpGet(port, '/sessions/s1/messages')
+    await vi.waitFor(() => expect(requests).toBeGreaterThan(0))
+    proxy.stop()
+    const res = await pending
+    expect(res.status).toBe(502)
+    expect(res.body).toBe(JSON.stringify({ error: 'microvm proxy stopped' }))
+  })
+
+  it('marks a refusal as not accepted when the connection never opened', async () => {
+    http2ConnectImpl = () => {
+      http2ConnectCalls++
+      return {
+        ...mockH2Session(() => {}),
+        once(ev: string, cb: (error: Error) => void) {
+          if (ev === 'error') process.nextTick(() => cb(new Error('connect ECONNREFUSED')))
+          return this
+        },
+      }
+    }
+    const proxy = makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' }))
+    const port = await proxy.start()
+    const pending = httpGet(port, '/sessions/s1/messages')
+    await vi.waitFor(() => expect(http2ConnectCalls).toBeGreaterThan(0))
+    proxy.stop()
+    const res = await pending
+    expect(res.status).toBe(502)
+    expect(JSON.parse(res.body)).toMatchObject({ inputAccepted: false })
   })
 
   it('forwards WebSocket upgrades to TLS upstream with sec-websocket + injected auth headers', async () => {
@@ -1606,6 +1644,43 @@ describe('LocalAuthForwardProxy', () => {
     expect(res.status).toBe(200)
     expect(res.body).toBe('UPSTREAM_OK')
     expect(calls).toBe(2)
+  })
+
+  it('answers an ingress 429 past the retry budget as not accepted, since the gateway forwarded nothing', async () => {
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now')
+    installH2((_headers, stream) => {
+      clock.mockReturnValue(now + 10_000)
+      h2Respond(stream, 429, 'Rate limit exceeded')
+    })
+    try {
+      const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+      const res = await httpGet(port, '/sessions/s1/messages')
+      expect(res.status).toBe(429)
+      expect(JSON.parse(res.body)).toMatchObject({ inputAccepted: false })
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('leaves an ingress 429 past the budget unmarked after a gateway 502', async () => {
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now')
+    let calls = 0
+    installH2((_headers, stream) => {
+      calls++
+      if (calls === 1) return h2Respond(stream, 502, '')
+      clock.mockReturnValue(now + 10_000)
+      h2Respond(stream, 429, 'Rate limit exceeded')
+    })
+    try {
+      const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+      const res = await httpGet(port, '/sessions/s1/messages')
+      expect(res.status).toBe(429)
+      expect(res.body).toBe(JSON.stringify({ error: 'microvm ingress rate limited' }))
+    } finally {
+      clock.mockRestore()
+    }
   })
 
   it('multiplexes HTTP requests on one HTTP/2 session', async () => {
