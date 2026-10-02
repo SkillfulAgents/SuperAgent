@@ -1,5 +1,5 @@
 import { CredentialRefreshError } from './credential-refresh-error'
-import { normalizeCodexRequest, codexCacheId, collectCodexResponse, normalizeCodexError, CodexResponseError } from './llm-proxy-codex'
+import { normalizeCodexRequest, codexCacheId, collectCodexResponse, CodexResponseError } from './llm-proxy-codex'
 import { normalizeGrokResponses } from './llm-proxy-grok'
 import { isKimiPlanLimit } from './llm-proxy-kimi'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -128,6 +128,8 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
           headers: { 'content-type': 'application/json', ...(format === 'messages' ? { 'anthropic-version': '2023-06-01' } : {}),
             ...config.headers, ...(config.adapter === 'codex' && credential.accountId ? { 'ChatGPT-Account-ID': credential.accountId } : {}),
             ...(codexCache ? { 'session-id': codexCache } : {}),
+            // Grok CLI pins a conversation to the server holding its cache with this header.
+            ...(config.adapter === 'grok' && sessionId ? { 'x-grok-conv-id': sessionId } : {}),
             ...(config.credentialHeader ? { [config.credentialHeader]: credential.accessToken } : {}),
             authorization: `Bearer ${credential.accessToken}` },
           body: JSON.stringify(upstreamBody),
@@ -140,7 +142,7 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       // network or mid-stream retries, and the app remains the refresh authority.
       let rejection: unknown
       if (upstream.status === 401 && options.refreshCredential) {
-        rejection = await upstream.json().catch(() => ({}))
+        rejection = upstreamErrorBody(await upstream.text().catch(() => ''))
         if (!(config.adapter === 'kimi' && isKimiPlanLimit(rejection))) {
           rejection = undefined
           await refresh(sent, true)
@@ -148,8 +150,8 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
         }
       }
       if (!upstream.ok) {
-        const error = rejection ?? await upstream.json().catch(() => ({}))
-        sendJson(res, upstream.status, responsesErrorToMessagesError(config.adapter === 'codex' ? normalizeCodexError(error) : error, upstream.status)); return
+        const error = rejection ?? upstreamErrorBody(await upstream.text().catch(() => ''))
+        sendJson(res, upstream.status, responsesErrorToMessagesError(error, upstream.status)); return
       }
       if (validated.data.stream) {
         if (!upstream.body) throw new Error('Missing upstream stream')
@@ -200,6 +202,20 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
   res.end(JSON.stringify(body))
 }
+/** Vendors disagree on error envelopes: {error: {message}}, {error: "…"} (Grok),
+ * {detail: "…"} (Codex) or plain text. Keep their message instead of "Upstream error".
+ */
+export function upstreamErrorBody(text: string): unknown {
+  let body: unknown
+  try { body = JSON.parse(text) } catch {
+    const message = text.trim().slice(0, 1000)
+    return message ? { error: { message } } : {}
+  }
+  const value = body !== null && typeof body === 'object' ? body as Json : {}
+  const message = typeof value.error === 'string' ? value.error : typeof value.detail === 'string' ? value.detail : undefined
+  return message ? { error: { message } } : body
+}
+
 /** The SDK names its session in a header and again in metadata.user_id (a JSON string). */
 function requestSessionId(req: IncomingMessage, body: Json): string | undefined {
   const header = req.headers['x-claude-code-session-id']

@@ -44,14 +44,6 @@ export async function collectCodexResponse(response: Response, abort: AbortContr
   throw new Error('Codex stream ended without a completed response')
 }
 
-/** Codex also uses a FastAPI-style detail envelope for unsupported models. */
-export function normalizeCodexError(body: unknown): unknown {
-  if (body && typeof body === 'object' && 'detail' in body && typeof body.detail === 'string') {
-    return { error: { message: body.detail } }
-  }
-  return body
-}
-
 const record = (value: unknown): Json => value !== null && typeof value === 'object' ? value as Json : {}
 
 /** Preserve completed SSE failures for callers expecting a JSON Messages reply. */
