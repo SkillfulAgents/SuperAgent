@@ -330,7 +330,8 @@ export function TodoBoard() {
       // Walking right off the last open column opens Done.
       const doneLane = LANES.length
       for (let lane = at.lane + horizontal; lane >= 0 && lane <= doneLane; lane += horizontal) {
-        const list = lane === doneLane ? columns.done : lanes[lane]
+        // An open Done column walks whichever list it shows (Done or Archived).
+        const list = lane === doneLane ? (doneOpen ? finishedList : columns.done) : lanes[lane]
         if (!list || list.length === 0) continue
         if (lane === doneLane && !doneOpen) setDoneOpen(true)
         select(list[Math.min(at.row, list.length - 1)])
@@ -342,7 +343,7 @@ export function TodoBoard() {
     const todo = at ? lanes[at.lane][at.row] : undefined
     if (!todo || !at) return false
     if (key === 'Enter' || key === 'o' || key === 'O') {
-      open(todo)
+      if (!starting.has(todo.id)) open(todo)
       return true
     }
     const action = cardActionFor(todo, runners, open)

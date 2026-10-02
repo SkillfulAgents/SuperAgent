@@ -8,8 +8,10 @@ const state = vi.hoisted(() => ({
   experimentOn: true,
   calls: [] as { path: string; method: string; body: unknown }[],
   createSession: vi.fn(),
+  toastError: vi.fn(),
 }))
 
+vi.mock('sonner', () => ({ toast: { error: state.toastError } }))
 vi.mock('./use-experiment', () => ({ useExperiment: () => state.experimentOn }))
 vi.mock('./use-sessions', () => ({ useCreateSession: () => ({ mutateAsync: state.createSession }) }))
 vi.mock('@renderer/lib/api', () => ({
@@ -40,6 +42,7 @@ beforeEach(() => {
   state.experimentOn = true
   state.calls = []
   state.createSession.mockReset()
+  state.toastError.mockReset()
 })
 
 describe('useTodos', () => {
@@ -83,5 +86,29 @@ describe('useStartTodo', () => {
     await waitFor(() => expect(result.current.starting.has('t1')).toBe(true))
     resolveSession({ id: 'session-1' })
     await waitFor(() => expect(result.current.starting.has('t1')).toBe(false))
+  })
+
+  it('starts a draft only once while its first start is in flight', async () => {
+    let resolveSession: (value: { id: string }) => void = () => {}
+    state.createSession.mockReturnValue(new Promise((resolve) => { resolveSession = resolve }))
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    const brief = { id: 't1', title: 'x', description: '', agentSlug: 'analyst' }
+
+    const first = result.current.mutateAsync(brief)
+    await expect(result.current.mutateAsync(brief)).rejects.toThrow('This is already starting')
+    resolveSession({ id: 'session-1' })
+    await first
+    expect(state.createSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('still reports a failure after the component that started it is gone', async () => {
+    let rejectSession: (error: Error) => void = () => {}
+    state.createSession.mockReturnValue(new Promise((_, reject) => { rejectSession = reject }))
+    const { result, unmount } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+
+    result.current.mutate({ id: 't1', title: 'x', description: '', agentSlug: 'analyst' })
+    unmount()
+    rejectSession(new Error('The agent could not start'))
+    await waitFor(() => expect(state.toastError).toHaveBeenCalledWith('The agent could not start'))
   })
 })

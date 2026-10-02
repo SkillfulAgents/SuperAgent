@@ -41,8 +41,9 @@ export function TodoBoardCard({ todo, agent, action, starting, onOpen, selected,
   const title = todoDisplayTitle(todo)
   const finished = todo.column === 'done' || todo.column === 'archived'
   const sep = <span aria-hidden="true">·</span>
-  // Finished work whose session was deleted has nothing left to open.
-  const openable = todo.column === 'drafts' || !!todo.sessionId
+  // Finished work whose session was deleted has nothing left to open, and a
+  // draft mid-start has no draft left to edit and no session yet to open.
+  const openable = !starting && (todo.column === 'drafts' || !!todo.sessionId)
   const shownAction = starting ? null : action
 
   return (

@@ -31,7 +31,8 @@ export function useTodoActionRunners(): TodoActionRunners {
   const startTodo = useStartTodo()
   const setTodoStatus = useSetTodoStatus()
   return useMemo(() => ({
-    start: (todo) => startTodo.mutate(todo, { onError: failed }),
+    // useStartTodo reports its own failures.
+    start: (todo) => startTodo.mutate(todo),
     setStatus: (todo, status) => setTodoStatus.mutate({ id: todo.id, status }, { onError: failed }),
   // The mutate functions are stable; the mutation objects are not.
   // eslint-disable-next-line react-hooks/exhaustive-deps

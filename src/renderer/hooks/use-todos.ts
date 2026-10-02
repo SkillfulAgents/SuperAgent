@@ -1,4 +1,5 @@
 import { useMutation, useMutationState, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
 import type {
   CreateTodoInput,
@@ -101,6 +102,9 @@ export function useDeleteTodo() {
 
 const START_TODO_MUTATION_KEY = ['start-todo'] as const
 
+/** Drafts whose start has begun creating a session, so a second start can't make another. */
+const claimedStarts = new Set<string>()
+
 /**
  * Ids of the drafts being started right now, from any component. Starting
  * can take a while (the agent's container may have to boot first), so the
@@ -118,6 +122,10 @@ export function useStartingTodoIds(): Set<string> {
  * Hands a draft to its agent: a new session with the brief as its first
  * message, through the same endpoint the composer uses, then the link from
  * the item to that session. Resolves with the started item.
+ *
+ * Failures toast from here rather than from each `mutate` call: the draft
+ * dialog closes as soon as it starts, and a call's own callbacks don't run
+ * once its component is gone.
  */
 export function useStartTodo() {
   const queryClient = useQueryClient()
@@ -126,10 +134,19 @@ export function useStartTodo() {
     mutationKey: START_TODO_MUTATION_KEY,
     mutationFn: async (todo: Pick<TodoView, 'id' | 'title' | 'description' | 'agentSlug'>) => {
       if (!todo.agentSlug) throw new Error('Pick an agent to start this')
-      const session = await createSession.mutateAsync({ agentSlug: todo.agentSlug, message: todoPrompt(todo) })
-      return send<TodoView>(`/api/todos/${todo.id}/start`, 'POST', { sessionId: session.id }, 'The session started, but the todo could not be linked to it')
+      // The server refuses a second link, but not a second session: stop a
+      // repeat start here before it hands the agent the same brief twice.
+      if (claimedStarts.has(todo.id)) throw new Error('This is already starting')
+      claimedStarts.add(todo.id)
+      try {
+        const session = await createSession.mutateAsync({ agentSlug: todo.agentSlug, message: todoPrompt(todo) })
+        return await send<TodoView>(`/api/todos/${todo.id}/start`, 'POST', { sessionId: session.id }, 'The session started, but the todo could not be linked to it')
+      } finally {
+        claimedStarts.delete(todo.id)
+      }
     },
     onSuccess: (todo) => putTodo(queryClient, todo),
+    onError: (error) => toast.error(error.message || 'Something went wrong'),
     onSettled: () => queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY }),
   })
 }

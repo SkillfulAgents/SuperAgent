@@ -12,6 +12,7 @@ import {
   useCreateTodo,
   useDeleteTodo,
   useStartTodo,
+  useStartingTodoIds,
   useUpdateTodo,
   type TodoView,
 } from '@renderer/hooks/use-todos'
@@ -92,6 +93,9 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
   const updateTodo = useUpdateTodo()
   const deleteTodo = useDeleteTodo()
   const startTodo = useStartTodo()
+  // A draft opened from the board is never mid-start (its card doesn't open
+  // then), but its start may begin elsewhere while this is open.
+  const alreadyStarting = useStartingTodoIds().has(initial?.id ?? '')
 
   const [fields, setFields] = useState<DraftFields>(() => ({
     title: initial?.title ?? '',
@@ -158,7 +162,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
   })
 
   const agent = fields.agentSlug ? bySlug.get(fields.agentSlug) : undefined
-  const canStart = !!agent && !!(fields.title.trim() || fields.description.trim())
+  const canStart = !!agent && !alreadyStarting && !!(fields.title.trim() || fields.description.trim())
 
   const start = async () => {
     if (!canStart) return
@@ -170,7 +174,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
     try {
       const id = await save()
       if (!id) return
-      startTodo.mutate({ id, ...fieldsRef.current }, { onError: failed })
+      startTodo.mutate({ id, ...fieldsRef.current })
       onClose()
     } catch (error) {
       failed(error)

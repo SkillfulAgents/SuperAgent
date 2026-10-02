@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   navigate: vi.fn(),
   setStatus: vi.fn(),
   start: vi.fn(),
+  starting: new Set<string>(),
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
@@ -20,7 +21,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 }))
 vi.mock('@renderer/hooks/use-todos', () => ({
   useTodos: () => ({ data: state.todos, isPending: false, error: null }),
-  useStartingTodoIds: () => new Set<string>(),
+  useStartingTodoIds: () => state.starting,
   useStartTodo: () => ({ mutate: state.start }),
   useSetTodoStatus: () => ({ mutate: state.setStatus }),
   useCreateTodo: () => ({ mutateAsync: vi.fn() }),
@@ -52,6 +53,7 @@ beforeEach(() => {
   state.navigate.mockReset()
   state.setStatus.mockReset()
   state.start.mockReset()
+  state.starting = new Set()
 })
 
 describe('TodoBoard', () => {
@@ -124,7 +126,7 @@ describe('TodoBoard', () => {
     state.todos = [todo({ id: 'a', column: 'drafts' })]
     renderWithProviders(<TodoBoard />)
     fireEvent.click(screen.getByTestId('todo-action-start'))
-    expect(state.start).toHaveBeenCalledWith(expect.objectContaining({ id: 'a', agentSlug: 'analyst' }), expect.anything())
+    expect(state.start).toHaveBeenCalledWith(expect.objectContaining({ id: 'a', agentSlug: 'analyst' }))
   })
 
   it('opens a draft with no agent instead of starting it', () => {
@@ -133,5 +135,31 @@ describe('TodoBoard', () => {
     fireEvent.click(screen.getByTestId('todo-action-start'))
     expect(state.start).not.toHaveBeenCalled()
     expect(screen.getByTestId('todo-draft-dialog')).toBeInTheDocument()
+  })
+
+  it('does not open a draft while it is starting', () => {
+    state.todos = [todo({ id: 'a', column: 'drafts' })]
+    state.starting = new Set(['a'])
+    renderWithProviders(<TodoBoard />)
+    expect(screen.queryByRole('button', { name: 'Open Task a' })).not.toBeInTheDocument()
+    fireEvent.mouseEnter(screen.getByTestId('todo-card'))
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(screen.queryByTestId('todo-draft-dialog')).not.toBeInTheDocument()
+  })
+
+  it('walks the keyboard into Archived when that is what Done shows', () => {
+    state.todos = [
+      todo({ id: 'd', column: 'has_updates' }),
+      todo({ id: 'e', column: 'done' }),
+      todo({ id: 'z', column: 'archived' }),
+    ]
+    renderWithProviders(<TodoBoard />)
+    const show = screen.queryByRole('button', { name: /^Show Done/ })
+    if (show) fireEvent.click(show)
+    fireEvent.click(screen.getByTestId('todo-archive-tab'))
+
+    fireEvent.mouseEnter(document.querySelector('[data-todo-id="d"]')!)
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+    expect(document.querySelector('[data-todo-id="z"]')).toHaveAttribute('data-selected', 'true')
   })
 })
