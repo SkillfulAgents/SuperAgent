@@ -89,11 +89,14 @@ export class OpenAILiveConversation {
       this.audio = audio
       audio.muted = this.outputMuted
       this.context = new AudioContext()
-      await this.context.resume()
-      if (this.closed) return
+      // The microphone first: a session opened from the agent home starts
+      // here with no user gesture, and Safari leaves resume() pending until
+      // one arrives — or until the page is capturing.
       const microphone = await acquireMicStream()
       if (this.closed) { microphone.getTracks().forEach((track) => track.stop()); return }
       this.microphone = microphone
+      await this.context.resume()
+      if (this.closed) return
       this.analyser = this.context.createAnalyser()
       this.analyser.fftSize = 2048
       this.context.createMediaStreamSource(microphone).connect(this.analyser)

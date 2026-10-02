@@ -75,6 +75,24 @@ describe('Live WebRTC lifecycle', () => {
     adapter.close()
   })
 
+  it('asks for the microphone before resuming audio, which Safari holds without a gesture', async () => {
+    // A session opened from the agent home starts with no user gesture: Safari
+    // leaves resume() pending until the page is capturing.
+    let capturing = false
+    mocks.mic.mockImplementation(async () => {
+      capturing = true
+      return { getAudioTracks: () => [track], getTracks: () => [track] }
+    })
+    vi.stubGlobal('AudioContext', class extends FakeAudioContext {
+      resume = vi.fn(() => capturing ? Promise.resolve() : new Promise<void>(() => {}))
+    })
+    const { adapter } = setup()
+    await adapter.start()
+    expect(mocks.mic).toHaveBeenCalledOnce()
+    expect(FakePeer.last.setRemoteDescription).toHaveBeenCalledWith({ type: 'answer', sdp: 'answer' })
+    adapter.close()
+  })
+
   it('waits for session.started and never sends the WebSocket session.start command', async () => {
     const { adapter, callbacks } = setup()
     adapter.setPaused(true)
