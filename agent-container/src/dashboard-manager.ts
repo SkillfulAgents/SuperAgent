@@ -361,26 +361,35 @@ class DashboardManager {
         console.error(`[DashboardManager] Log stream error for ${slug}:`, error)
       })
 
-      // Run bun install: always when forced (deps may have changed), else
-      // only if node_modules is missing or package.json is newer than it
-      await this.runBunInstallIfNeeded(
-        dashboardDir,
-        info.logStream,
-        forceInstall,
-        () => { info.startupPhase = 'installing-dependencies' },
-      )
-
-      // Start the dashboard server
-      info.startupPhase = 'starting-server'
-      const dashboardBasePath = getDashboardBasePath(slug)
       // Boot/crash-restart path: sources only change through agent-initiated
       // starts (which pass forceInstall and always run the full start script),
       // so a fresh dist/ can serve directly and skip the template's
       // unconditional Vite rebuild.
       const skipBuild = !forceInstall && this.canSkipTemplateBuild(dashboardDir)
-      if (skipBuild) {
-        info.logStream?.write('[DashboardManager] dist up-to-date, skipping build (bun run serve.js)\n')
+      // The template's serve.js only needs Node built-ins, so a skipped build
+      // needs no deps either. Cloud VMs wake with an empty node_modules, where
+      // this install was the whole wait. After a recent crash, install anyway:
+      // an agent-edited serve.js may import packages.
+      const recentlyCrashed = info.restartTimestamps.length > 0
+      if (skipBuild && !recentlyCrashed) {
+        info.logStream?.write('[DashboardManager] dist up-to-date, skipping install and build (bun run serve.js)\n')
+      } else {
+        // Run bun install: always when forced (deps may have changed), else
+        // only if node_modules is missing or package.json is newer than it
+        await this.runBunInstallIfNeeded(
+          dashboardDir,
+          info.logStream,
+          forceInstall,
+          () => { info.startupPhase = 'installing-dependencies' },
+        )
+        if (skipBuild) {
+          info.logStream?.write('[DashboardManager] dist up-to-date, skipping build (bun run serve.js)\n')
+        }
       }
+
+      // Start the dashboard server
+      info.startupPhase = 'starting-server'
+      const dashboardBasePath = getDashboardBasePath(slug)
       const proc = spawn('bun', skipBuild ? ['run', 'serve.js'] : ['run', 'start'], {
         cwd: dashboardDir,
         env: {
