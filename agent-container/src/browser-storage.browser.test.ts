@@ -4,7 +4,14 @@ import os from 'os'
 import path from 'path'
 import { chromium, type BrowserContext } from 'playwright-core'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { captureSiteStorage, clearPendingSessionStorage, connectCdp, restoreSiteStorage, type CdpClient } from './browser-storage'
+import {
+  applyPendingSessionStorage,
+  captureSiteStorage,
+  clearPendingSessionStorage,
+  connectCdp,
+  restoreSiteStorage,
+  type CdpClient,
+} from './browser-storage'
 import type { SiteStorageBundle } from './browser-storage-bundle'
 import { WRITE_ORIGIN_STORAGE_FUNCTION } from './browser-storage-script'
 import { resolveChromiumExecutable } from './dashboard-screenshot'
@@ -232,6 +239,35 @@ describe('sessionStorage', () => {
     expect(await evaluate(tab, 'location.origin')).toBe(originOf('other-site.localhost'))
     expect(await evaluate(tab, `sessionStorage.getItem('token')`)).toBeNull()
     expect(result.sessionStorageSkipped).toEqual([originOf(`app.${SITE}`)])
+  })
+})
+
+describe('pending sessionStorage', () => {
+  const pendingBundle = () => bundleFor([{ ...localToken(`app.${SITE}`, 'account-b'), sessionStorage: [['token', 'secret']] }])
+
+  it('writes saved entries into a tab opened on the origin after the restore', async () => {
+    await restoreSiteStorage(cdp, pendingBundle())
+    const tab = await openTab(`app.${SITE}`)
+
+    expect(await applyPendingSessionStorage(cdp)).toEqual([originOf(`app.${SITE}`)])
+    await waitForLoad(tab, `${originOf(`app.${SITE}`)}/app`)
+    expect(await evaluate(tab, `sessionStorage.getItem('token')`)).toBe('secret')
+  })
+
+  it('keeps entries pending when the tab navigated to another site before the write', async () => {
+    await restoreSiteStorage(cdp, pendingBundle())
+    const tab = await openTab(`app.${SITE}`)
+    const other = `${originOf('other-site.localhost')}/landing`
+    const navigatesFirst = interceptOnce(
+      (method, params) => method === 'Target.attachToTarget' && params.targetId === tab,
+      async () => {
+        await evaluate(tab, `location.href = ${JSON.stringify(other)}`).catch(() => {})
+        await waitForLoad(tab, other)
+      },
+    )
+
+    expect(await applyPendingSessionStorage(navigatesFirst)).toEqual([])
+    expect(await evaluate(tab, `sessionStorage.getItem('token')`)).toBeNull()
   })
 })
 

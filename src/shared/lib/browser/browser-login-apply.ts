@@ -3,6 +3,7 @@ import {
   getOwnedBrowserLogin,
   listOutdatedAgentBrowserLogins,
   mapAgentToBrowserLogin,
+  markAgentBrowserLoginSynced,
 } from '@shared/lib/services/browser-credential-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { decryptBrowserBundle } from './browser-vault-crypto'
@@ -10,7 +11,22 @@ import { browserTypeForSession, storageRequest, type ContainerFetch } from './br
 
 export class BrowserLoginNotFoundError extends Error {}
 
-const syncQueues = new Map<string, Promise<void>>()
+const agentBrowserQueues = new Map<string, Promise<void>>()
+
+/**
+ * Run saved-login work on one agent's browser and mapping after the agent's
+ * earlier such work, so a sync cannot restore a login that a concurrent
+ * stop-using or delete removed, or overwrite one being applied.
+ */
+export function withAgentBrowserLock<T>(agentSlug: string, work: () => Promise<T>): Promise<T> {
+  const run = (agentBrowserQueues.get(agentSlug) ?? Promise.resolve()).then(work)
+  const queued = run.then(() => {}, () => {})
+  agentBrowserQueues.set(agentSlug, queued)
+  void queued.then(() => {
+    if (agentBrowserQueues.get(agentSlug) === queued) agentBrowserQueues.delete(agentSlug)
+  })
+  return run
+}
 
 function logError(message: string, error: unknown): void {
   console.error(`[browser-vault] ${message}:`, error instanceof Error ? error.message : 'unknown error')
@@ -32,7 +48,11 @@ async function reloadPage(client: ContainerFetch, sessionId: string): Promise<vo
  * only after the browser write succeeded; `linked: false` means the browser
  * has the login but the mapping could not be stored.
  */
-export async function applyBrowserLogin(input: {
+export function applyBrowserLogin(input: ApplyBrowserLoginInput): Promise<{ site: string; linked: boolean }> {
+  return withAgentBrowserLock(input.agentSlug, () => applyUnlocked(input))
+}
+
+interface ApplyBrowserLoginInput {
   client: ContainerFetch
   sessionId: string
   agentSlug: string
@@ -40,7 +60,9 @@ export async function applyBrowserLogin(input: {
   credentialId: string
   /** Site of the sign-in page; a login saved for another site is not applied. */
   site: string
-}): Promise<{ site: string; linked: boolean }> {
+}
+
+async function applyUnlocked(input: ApplyBrowserLoginInput): Promise<{ site: string; linked: boolean }> {
   const credential = await getOwnedBrowserLogin(input.userId, input.credentialId)
   if (!credential || credential.site !== input.site) throw new BrowserLoginNotFoundError()
   if (credential.browserType !== await browserTypeForSession(input.client, input.sessionId)) throw new BrowserLoginNotFoundError()
@@ -88,13 +110,7 @@ export async function clearSiteInAgentBrowser(client: ContainerFetch, site: stri
  * can wait for it.
  */
 export function syncAgentBrowserLogins(client: ContainerFetch, agentSlug: string, sessionId: string): Promise<void> {
-  const run = (syncQueues.get(agentSlug) ?? Promise.resolve()).then(() => runSync(client, agentSlug, sessionId))
-  const queued = run.catch(() => {})
-  syncQueues.set(agentSlug, queued)
-  void queued.then(() => {
-    if (syncQueues.get(agentSlug) === queued) syncQueues.delete(agentSlug)
-  })
-  return run
+  return withAgentBrowserLock(agentSlug, () => runSync(client, agentSlug, sessionId))
 }
 
 async function runSync(client: ContainerFetch, agentSlug: string, sessionId: string): Promise<void> {
@@ -109,9 +125,11 @@ async function runSync(client: ContainerFetch, agentSlug: string, sessionId: str
   for (const credential of await listOutdatedAgentBrowserLogins(agentSlug, browserType)) {
     try {
       const bundle = decryptBrowserBundle(credential.bundle, credential)
+      // Restore rolls a failed write back in the container, so a failure leaves the previous login, not a mix.
       await storageRequest(client, 'restore', { sessionId, bundle })
-      await mapAgentToBrowserLogin({ agentSlug, credentialId: credential.id, site: credential.site, version: credential.version })
       applied++
+      // Updates the mapping only if it still exists; a sync never re-creates one.
+      await markAgentBrowserLoginSynced({ agentSlug, credentialId: credential.id, site: credential.site, version: credential.version })
     } catch (error) {
       logError(`Could not sync ${credential.site}`, error)
     }

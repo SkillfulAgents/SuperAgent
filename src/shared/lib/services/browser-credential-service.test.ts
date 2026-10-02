@@ -25,6 +25,7 @@ import {
   listManagedBrowserLogins,
   listOutdatedAgentBrowserLogins,
   mapAgentToBrowserLogin,
+  markAgentBrowserLoginSynced,
   renameBrowserLogin,
   saveBrowserLogin,
   unmapBrowserLogin,
@@ -234,6 +235,10 @@ describe('saveBrowserLogin', () => {
     expect(await listOutdatedAgentBrowserLogins('agent-b', 'chrome')).toEqual([])
   })
 
+  it('records a synced version only while the agent is still mapped to the login', async () => {
+    const saved = await saveBrowserLogin({
+      userId: null, agentSlug: 'agent-a', browserType: 'container', bundle: bundleFor('example.com', 'dark'),
+    })
     const synced = { agentSlug: 'agent-a', credentialId: saved.credentialId, site: 'example.com', version: 2 }
 
     expect(await markAgentBrowserLoginSynced(synced)).toBe(true)

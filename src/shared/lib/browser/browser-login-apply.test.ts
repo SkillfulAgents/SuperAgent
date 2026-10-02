@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const getOwnedBrowserLogin = vi.hoisted(() => vi.fn())
 const mapAgentToBrowserLogin = vi.hoisted(() => vi.fn())
+const markAgentBrowserLoginSynced = vi.hoisted(() => vi.fn())
 const listOutdatedAgentBrowserLogins = vi.hoisted(() => vi.fn())
 vi.mock('@shared/lib/services/browser-credential-service', () => ({
   getOwnedBrowserLogin,
   mapAgentToBrowserLogin,
+  markAgentBrowserLoginSynced,
   listOutdatedAgentBrowserLogins,
   saveBrowserLogin: vi.fn(),
 }))
@@ -182,7 +184,7 @@ describe('syncAgentBrowserLogins', () => {
   })
 
   it('applies newer versions, records them and reloads once', async () => {
-    mapAgentToBrowserLogin.mockReset().mockResolvedValue(undefined)
+    markAgentBrowserLoginSynced.mockReset().mockResolvedValue(undefined)
     listOutdatedAgentBrowserLogins.mockResolvedValue([credential])
     const client = fakeClient([200])
 
@@ -190,26 +192,26 @@ describe('syncAgentBrowserLogins', () => {
 
     expect(restoredBundles(client)).toEqual([savedBundle])
     expect(calledActions(client)).toEqual(['status', 'restore', 'run'])
-    expect(mapAgentToBrowserLogin).toHaveBeenCalledWith({
+    expect(markAgentBrowserLoginSynced).toHaveBeenCalledWith({
       agentSlug: 'agent-sync', credentialId: 'bc-1', site: 'example.com', version: 3,
     })
   })
 
   it('records the version when sessionStorage had no open tab, so the next open does not overwrite cookies again', async () => {
-    mapAgentToBrowserLogin.mockReset().mockResolvedValue(undefined)
+    markAgentBrowserLoginSynced.mockReset().mockResolvedValue(undefined)
     listOutdatedAgentBrowserLogins.mockResolvedValue([credential])
     const client = fakeClient([200], undefined, [{ sessionStorageSkipped: ['https://example.com'] }])
 
     await syncAgentBrowserLogins(client, 'agent-sync', 'sess-1')
 
-    expect(mapAgentToBrowserLogin).toHaveBeenCalledWith({
+    expect(markAgentBrowserLoginSynced).toHaveBeenCalledWith({
       agentSlug: 'agent-sync', credentialId: 'bc-1', site: 'example.com', version: 3,
     })
     expect(calledActions(client)).toEqual(['status', 'restore', 'run'])
   })
 
   it('runs a browser-open event that arrives mid-sync afterwards, and settles each call after its own run', async () => {
-    mapAgentToBrowserLogin.mockReset().mockResolvedValue(undefined)
+    markAgentBrowserLoginSynced.mockReset().mockResolvedValue(undefined)
     listOutdatedAgentBrowserLogins.mockReset().mockResolvedValueOnce([credential]).mockResolvedValueOnce([])
     const client = fakeClient([200])
     const fetch = client.fetch.getMockImplementation()!
@@ -232,7 +234,7 @@ describe('syncAgentBrowserLogins', () => {
     release()
     await Promise.all([first, second])
     expect(listOutdatedAgentBrowserLogins).toHaveBeenCalledTimes(2)
-    expect(mapAgentToBrowserLogin).toHaveBeenCalledTimes(1)
+    expect(markAgentBrowserLoginSynced).toHaveBeenCalledTimes(1)
   })
 
   it('selects only credentials for the active browser provider', async () => {
@@ -244,13 +246,13 @@ describe('syncAgentBrowserLogins', () => {
   })
 
   it('does not record a version whose restore failed', async () => {
-    mapAgentToBrowserLogin.mockReset().mockResolvedValue(undefined)
+    markAgentBrowserLoginSynced.mockReset().mockResolvedValue(undefined)
     listOutdatedAgentBrowserLogins.mockResolvedValue([credential])
     const client = fakeClient([500])
 
     await syncAgentBrowserLogins(client, 'agent-sync', 'sess-1')
 
-    expect(mapAgentToBrowserLogin).not.toHaveBeenCalled()
+    expect(markAgentBrowserLoginSynced).not.toHaveBeenCalled()
     expect(calledActions(client)).not.toContain('run')
   })
 })

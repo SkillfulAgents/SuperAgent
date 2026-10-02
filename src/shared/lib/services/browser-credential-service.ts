@@ -134,6 +134,28 @@ export async function mapAgentToBrowserLogin(input: {
     .run()
 }
 
+/**
+ * Record that a sync put `version` of the credential into the agent's browser,
+ * only while the agent is still mapped to that credential. Returns false when
+ * the mapping was removed or replaced meanwhile.
+ */
+export async function markAgentBrowserLoginSynced(input: {
+  agentSlug: string
+  credentialId: string
+  site: string
+  version: number
+}): Promise<boolean> {
+  const result = await db.update(agentBrowserCredentials)
+    .set({ appliedVersion: input.version, updatedAt: new Date() })
+    .where(and(
+      eq(agentBrowserCredentials.agentSlug, input.agentSlug),
+      eq(agentBrowserCredentials.site, input.site),
+      eq(agentBrowserCredentials.credentialId, input.credentialId),
+    ))
+    .run()
+  return changesOf(result) > 0
+}
+
 /** Origins to clear when signing agents out; a bundle that no longer decrypts must not block deletion. */
 function storedOrigins(credential: BrowserCredential): string[] {
   try {
