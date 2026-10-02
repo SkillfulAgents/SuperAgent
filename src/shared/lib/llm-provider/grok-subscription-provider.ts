@@ -12,7 +12,7 @@ import type { LlmProxyConfig, ProxyCredential } from '../../../../agent-containe
 import { inferErrorStatus, extractErrorMessage } from './error-presentation'
 
 export const GROK_SUBSCRIPTION_BASE_URL = 'https://cli-chat-proxy.grok.com'
-export const GROK_CLIENT_HEADERS = { 'x-grok-client-mode': 'cli', 'x-grok-client-version': '1.0.4' }
+export const GROK_CLIENT_HEADERS = { 'x-grok-client-mode': 'cli', 'x-grok-client-version': '1.0.13' }
 // Media must use the subscription proxy: api.x.ai bills the developer account
 // and rejects subscribers with a 403 spending limit (CLIProxyAPI #5335).
 const GROK_MEDIA_BASE_URL = `${GROK_SUBSCRIPTION_BASE_URL}/v1`
