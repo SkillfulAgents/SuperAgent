@@ -15,6 +15,7 @@ import {
 } from '@shared/lib/db/schema'
 import { eq, and, inArray } from 'drizzle-orm'
 import { cancelWebhookTriggerWithCleanup } from '@shared/lib/services/webhook-trigger-service'
+import { unlinkAgentStatements } from '@shared/lib/services/todo-service'
 
 export async function cleanupAgentData(agentSlug: string): Promise<void> {
   await cleanupWebhookTriggers(agentSlug)
@@ -35,6 +36,8 @@ export async function cleanupAgentData(agentSlug: string): Promise<void> {
     db.delete(mcpAuditLog).where(eq(mcpAuditLog.agentSlug, agentSlug)),
     db.delete(agentAcl).where(eq(agentAcl.agentSlug, agentSlug)),
     db.delete(messageAuthor).where(eq(messageAuthor.agentSlug, agentSlug)),
+    // Todo board items outlive the agent: they let go of it instead.
+    ...unlinkAgentStatements(agentSlug),
   ])
 }
 

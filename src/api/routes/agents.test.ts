@@ -547,6 +547,10 @@ vi.mock('@shared/lib/services/session-unread-service', () => ({
   deleteSessionUnreadMarks: vi.fn(() => Promise.resolve(0)),
 }))
 
+vi.mock('@shared/lib/services/todo-service', () => ({
+  unlinkTodosFromSessions: vi.fn(() => Promise.resolve()),
+}))
+
 vi.mock('@shared/lib/services/agent-integration-message-service', () => ({
   annotateIntegrationMessages: vi.fn(() => Promise.resolve()),
   hasIntegrationMessages: vi.fn(() => Promise.resolve(false)),
@@ -752,6 +756,7 @@ import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesB
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
+import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { AgentInputRequests } from '@shared/lib/user-input/agent-input-requests'
@@ -4840,6 +4845,15 @@ describe('DELETE /:id/sessions/:sessionId', () => {
 
     expect(res.status).toBe(204)
     expect(deleteSessionUnreadMarks).toHaveBeenCalledWith('test-agent', ['sess-1'])
+  })
+
+  it('lets go of the deleted session on every Todo board', async () => {
+    vi.mocked(deleteSession).mockResolvedValue(true)
+
+    const res = await deleteReq(app, URL)
+
+    expect(res.status).toBe(204)
+    expect(unlinkTodosFromSessions).toHaveBeenCalledWith('test-agent', ['sess-1'])
   })
 
   it('deletes a dangling session whose transcript JSONL is gone (no getSession gate)', async () => {

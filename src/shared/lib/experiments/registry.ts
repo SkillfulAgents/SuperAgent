@@ -11,4 +11,10 @@ export interface ExperimentDefinition {
   description: string
 }
 
-export const EXPERIMENTS = [] as const satisfies readonly ExperimentDefinition[]
+export const EXPERIMENTS = [
+  {
+    id: 'todo-board',
+    name: 'Todo board',
+    description: 'Adds Todo to the sidebar: a board where you write down tasks, hand them to agents, and follow what is working, what needs your input, and what is done.',
+  },
+] as const satisfies readonly ExperimentDefinition[]

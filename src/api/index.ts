@@ -24,6 +24,7 @@ import usage from './routes/usage'
 import remoteMcps from './routes/remote-mcps'
 import commonMcpServers from './routes/common-mcp-servers'
 import userSettingsRouter from './routes/user-settings'
+import todosRouter from './routes/todos'
 import profileRouter from './routes/profile'
 import homeGraph from './routes/home-graph'
 import homeCardHealth from './routes/home-card-health'
@@ -254,6 +255,7 @@ app.route('/api/usage', usage)
 app.route('/api/remote-mcps', remoteMcps)
 app.route('/api/common-mcp-servers', commonMcpServers)
 app.route('/api/user-settings', userSettingsRouter)
+app.route('/api/todos', todosRouter)
 app.route('/api/profile', profileRouter)
 app.route('/api/home-graph', homeGraph)
 app.route('/api/home-card-health', homeCardHealth)
