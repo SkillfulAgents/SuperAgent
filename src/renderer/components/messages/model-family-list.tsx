@@ -9,6 +9,7 @@ import {
 } from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
+import { compareModelDisplayOrder } from '@shared/lib/llm-provider/model-display-order'
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1)
@@ -88,7 +89,7 @@ function lineBase(label: string): string {
   return match ? match[1] : label
 }
 
-/** Partition models into label-derived lines, strongest line first (ties keep first appearance). */
+/** Partition models into label-derived lines, newest generation first within a product. */
 function splitIntoLines(models: ModelDefinition[]): { base: string; models: ModelDefinition[] }[] {
   const byBase = new Map<string, ModelDefinition[]>()
   for (const m of models) {
@@ -98,31 +99,12 @@ function splitIntoLines(models: ModelDefinition[]): { base: string; models: Mode
   }
   return [...byBase.entries()]
     .map(([base, lineModels]) => ({ base, models: lineModels }))
-    .sort((a, b) => comparePriceDesc(strongestOf(a.models), strongestOf(b.models)))
+    .sort((a, b) => compareModelDisplayOrder(a.models[0], b.models[0]))
 }
 
 /** The entry a row picks: the declared latest, else the first (newest) listed. */
 function latestOf(models: ModelDefinition[]): ModelDefinition {
   return models.find((m) => m.isLatest) ?? models[0]
-}
-
-// Rows list strongest-first, using price as the proxy: output rate, then input
-// rate, descending. Unpriced entries sink to the bottom; on a price tie the
-// family's latest wins, then catalog order.
-function comparePriceDesc(a: ModelDefinition, b: ModelDefinition): number {
-  const ap = a.pricing
-  const bp = b.pricing
-  if (!ap || !bp) return (bp ? 1 : 0) - (ap ? 1 : 0)
-  return (
-    bp.outputPerMtok - ap.outputPerMtok ||
-    bp.inputPerMtok - ap.inputPerMtok ||
-    Number(!!b.isLatest) - Number(!!a.isLatest)
-  )
-}
-
-/** The priciest member — what ranks a collapsed row among its siblings. */
-function strongestOf(models: ModelDefinition[]): ModelDefinition {
-  return models.reduce((best, m) => (comparePriceDesc(m, best) < 0 ? m : best))
 }
 
 /** Row-suffix slug for a line base: "GPT-5.6" → "gpt-5.6". */
@@ -435,8 +417,8 @@ function LineRow({
  * …) collapse to one row with per-version pin chips revealed on hover/selection,
  * and non-lineage models whose labels share a versioned base ("GPT-5.6
  * Sol/Terra/Luna") collapse the same way; remaining models render one row each.
- * Rows list strongest-first, ranked by each row's priciest model; version chips
- * within a row stay newest-first. When `offerLatest` is set,
+ * Rows and version chips follow the curated generation and variant order.
+ * When `offerLatest` is set,
  * rows carry an explicit "Latest" chip storing the bare alias (rides upgrades) —
  * lit when the alias is the stored selection, while a lit version chip means a
  * pin; row clicks store the alias too. Otherwise labels pick the latest concrete
@@ -490,13 +472,11 @@ export function ModelFamilyList({
     const groups: FamilyGroup[] = order.map((family) => ({
       family,
       displayName: familyDisplayName(family),
-      // Catalogs are authored oldest→newest; show versions newest-first.
-      versions: [...byFamily.get(family)!].reverse(),
+      versions: [...byFamily.get(family)!].sort(compareModelDisplayOrder),
       lineage: LINEAGE_FAMILIES.has(family),
     }))
-    // Strongest family first, ranked by its priciest version.
-    groups.sort((a, b) => comparePriceDesc(strongestOf(a.versions), strongestOf(b.versions)))
-    loose.sort(comparePriceDesc)
+    groups.sort((a, b) => compareModelDisplayOrder(a.versions[0], b.versions[0]))
+    loose.sort(compareModelDisplayOrder)
     return { families: groups, standalone: loose }
   }, [catalog, activeVendor])
   const isLatestSelected = offerLatest && value !== undefined && families.some((g) => g.family === value)
