@@ -1,0 +1,24 @@
+{
+  "storyId": "agent-chat",
+  "passed": true,
+  "reason": "QA test for agent interaction: navigated to app, opened agent, sent math question, received correct response",
+  "steps": [
+    "Step 1 - Navigate to http://localhost:47891 - Successfully loaded the app homepage with sidebar containing agents",
+    "Step 2 - Found and clicked on \"QA-20261002-215508-k7oa\" agent in the sidebar - Successfully navigated to the agent page",
+    "Step 3 - Verified agent status - Status showed \"idle\" when the page loaded (expected state)",
+    "Step 4 - Sent message \"Hello! What is 2+2?\" - Message successfully typed and sent via the Send button; page navigated to chat session \"Math Question Session\"",
+    "Step 5 - Waited for response - Agent status changed to \"working\" and activity indicator appeared; response arrived within seconds (well under 3 minute limit); activity indicator disappeared when response was ready",
+    "Step 6 - Verified response mentions \"4\" and took screenshot - Agent response clearly displays \"2 + 2 = 4.\" confirming correct answer is present; status returned to \"idle\""
+  ],
+  "bugs": [],
+  "durationMs": 82751,
+  "sessionId": "0f138c8e-15fa-4191-bacf-1eb3edbdc801",
+  "cost": {
+    "inputTokens": 480,
+    "outputTokens": 13273,
+    "cacheCreationTokens": 143978,
+    "cacheReadTokens": 1518522,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.39867
+  }
+}

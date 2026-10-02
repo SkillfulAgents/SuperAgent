@@ -1,0 +1,124 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e1279] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e157]:
+            - link "Discover New Agents New" [ref=e158] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e159]
+              - generic [ref=e162]: Discover New Agents
+              - generic [ref=e163]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+            - button "New folder" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+            - list [ref=e49]:
+              - button "QA-20261002-215509-7hvj Open QA-20261002-215509-7hvj Expand" [ref=e365] [cursor=pointer]:
+                - generic [ref=e51]:
+                  - link "QA-20261002-215509-7hvj" [ref=e52]:
+                    - /url: /agents/qa-20261002-215509-7hvj-y7735hnlzh
+                    - generic [ref=e53]: QA-20261002-215509-7hvj
+                  - link "Open QA-20261002-215509-7hvj" [ref=e54]:
+                    - /url: /agents/qa-20261002-215509-7hvj-y7735hnlzh
+                    - img "idle" [ref=e1280]:
+                      - img [ref=e1281]
+                  - button "Expand" [ref=e368]:
+                    - img [ref=e369]
+              - button "QA-20261002-215508-k7oa Open QA-20261002-215508-k7oa Collapse Math Question Session" [ref=e1365] [cursor=pointer]:
+                - generic [ref=e66]:
+                  - link "QA-20261002-215508-k7oa" [ref=e67]:
+                    - /url: /agents/qa-20261002-215508-k7oa-734jin7dli
+                    - generic [ref=e68]: QA-20261002-215508-k7oa
+                  - link "Open QA-20261002-215508-k7oa" [ref=e69]:
+                    - /url: /agents/qa-20261002-215508-k7oa-734jin7dli
+                    - img "idle" [ref=e1366]:
+                      - img [ref=e1367]
+                  - button "Collapse" [expanded] [ref=e1296]:
+                    - img [ref=e1297]
+                - list [ref=e1300]:
+                  - listitem [ref=e1301]:
+                    - link "Math Question Session" [ref=e1376]:
+                      - /url: /agents/734jin7dli/sessions/5d4fa56b-a303-4651-9fb2-49ab682e0307
+                      - generic [ref=e1304]: Math Question Session
+          - status [ref=e80]
+      - generic [ref=e82]:
+        - button "Settings" [ref=e83] [cursor=pointer]:
+          - img [ref=e84]
+          - generic [ref=e87]: Settings
+        - button "0.5.36-rc.1" [ref=e88] [cursor=pointer]:
+          - generic [ref=e89]: 0.5.36-rc.1
+      - button "Toggle Sidebar" [ref=e90]
+    - main [ref=e91]:
+      - generic [ref=e1089]:
+        - generic [ref=e1090]:
+          - button "Toggle Sidebar" [ref=e1091] [cursor=pointer]:
+            - img
+            - generic [ref=e1092]: Toggle Sidebar
+          - generic [ref=e1095]:
+            - link "QA-20261002-215508-k7oa" [ref=e1311]:
+              - /url: /agents/qa-20261002-215508-k7oa-734jin7dli
+            - text: /Math Question Session
+          - generic [ref=e1096]:
+            - generic [ref=e1097]:
+              - img [ref=e1377]
+              - generic [ref=e1107]: idle
+            - button "Stop Agent" [ref=e1109] [cursor=pointer]:
+              - img
+        - generic [ref=e1318]:
+          - region "Messages" [ref=e1320]:
+            - log [ref=e1322]:
+              - time [ref=e1324]: Today at 9:56 PM
+              - paragraph [ref=e1329]: Hello! What is 2+2?
+              - paragraph [ref=e1390]: 2 + 2 = 4.
+          - generic [ref=e1341]:
+            - generic [ref=e1345]:
+              - textbox "Type a message..." [ref=e1391]:
+                - text: Type a message...
+                - paragraph [ref=e1349]
+              - generic [ref=e1350]:
+                - generic [ref=e1351]:
+                  - button "Add files" [ref=e1352] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5.5 · Medium. Click to change." [ref=e1392] [cursor=pointer]':
+                    - generic [ref=e1393]:
+                      - text: Opus 5.5
+                      - generic [ref=e1394]: · Medium
+                    - img
+                - generic [ref=e1353]:
+                  - button "Set up voice input" [ref=e1354] [cursor=pointer]:
+                    - img
+                  - button "Send message" [disabled]:
+                    - img
+            - generic [ref=e1358]:
+              - generic [ref=e1395]:
+                - generic [ref=e1396]: Context Usage
+                - img [ref=e1398]
+              - generic [ref=e1359]:
+                - generic [ref=e1360]: ↵
+                - generic [ref=e1361]: Send
+                - generic [ref=e1362]: ·
+                - generic [ref=e1363]: ⇧↵
+                - generic [ref=e1364]: New line
+  - region "Notifications alt+T"

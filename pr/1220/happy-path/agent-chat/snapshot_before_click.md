@@ -1,0 +1,109 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e157]:
+            - link "Discover New Agents New" [ref=e158] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e159]
+              - generic [ref=e162]: Discover New Agents
+              - generic [ref=e163]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+            - button "New folder" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+            - list [ref=e49]:
+              - button "QA-20261002-215509-7hvj Open QA-20261002-215509-7hvj" [ref=e50] [cursor=pointer]:
+                - generic [ref=e51]:
+                  - link "QA-20261002-215509-7hvj" [ref=e52]:
+                    - /url: /agents/qa-20261002-215509-7hvj-y7735hnlzh
+                    - generic [ref=e53]: QA-20261002-215509-7hvj
+                  - link "Open QA-20261002-215509-7hvj" [ref=e54]:
+                    - /url: /agents/qa-20261002-215509-7hvj-y7735hnlzh
+                    - img "idle" [ref=e55]:
+                      - img [ref=e56]
+              - button "QA-20261002-215508-k7oa Open QA-20261002-215508-k7oa" [ref=e65] [cursor=pointer]:
+                - generic [ref=e66]:
+                  - link "QA-20261002-215508-k7oa" [ref=e67]:
+                    - /url: /agents/qa-20261002-215508-k7oa-734jin7dli
+                    - generic [ref=e68]: QA-20261002-215508-k7oa
+                  - link "Open QA-20261002-215508-k7oa" [ref=e69]:
+                    - /url: /agents/qa-20261002-215508-k7oa-734jin7dli
+                    - img "idle" [ref=e70]:
+                      - img [ref=e71]
+          - status [ref=e80]
+      - generic [ref=e82]:
+        - button "Settings" [ref=e83] [cursor=pointer]:
+          - img [ref=e84]
+          - generic [ref=e87]: Settings
+        - button "0.5.36-rc.1" [ref=e88] [cursor=pointer]:
+          - generic [ref=e89]: 0.5.36-rc.1
+      - button "Toggle Sidebar" [ref=e90]
+    - main [ref=e91]:
+      - generic [ref=e92]:
+        - generic [ref=e93]:
+          - button "Toggle Sidebar" [ref=e94] [cursor=pointer]:
+            - img
+            - generic [ref=e95]: Toggle Sidebar
+          - button "Search agents and sessions... Ctrl+K" [ref=e97] [cursor=pointer]:
+            - img [ref=e98]
+            - generic [ref=e101]: Search agents and sessions...
+            - generic [ref=e102]: Ctrl+K
+          - generic [ref=e103]:
+            - button "Card view" [pressed] [ref=e104] [cursor=pointer]:
+              - img [ref=e105]
+            - button "Graph view" [ref=e110] [cursor=pointer]:
+              - img [ref=e111]
+        - generic [ref=e120]:
+          - generic [ref=e121]:
+            - generic [ref=e122]:
+              - heading "Your Agents" [level=2] [ref=e123]
+              - button "Agent layout options" [ref=e124] [cursor=pointer]:
+                - img [ref=e125]
+            - button "New Agent" [ref=e129] [cursor=pointer]:
+              - img
+              - text: New Agent
+          - generic [ref=e130]:
+            - generic [ref=e133]:
+              - link "Open QA-20261002-215509-7hvj" [ref=e134] [cursor=pointer]:
+                - /url: /agents/qa-20261002-215509-7hvj-y7735hnlzh
+              - generic [ref=e136]:
+                - generic [ref=e137]: Idle
+                - button "Stop agent" [ref=e138] [cursor=pointer]:
+                  - img [ref=e139]
+              - generic:
+                - generic: QA-20261002-215509-7hvj
+                - generic: Last run never
+            - generic [ref=e146]:
+              - link "Open QA-20261002-215508-k7oa" [ref=e147] [cursor=pointer]:
+                - /url: /agents/qa-20261002-215508-k7oa-734jin7dli
+              - generic [ref=e149]:
+                - generic [ref=e150]: Idle
+                - button "Stop agent" [ref=e151] [cursor=pointer]:
+                  - img [ref=e152]
+              - generic:
+                - generic: QA-20261002-215508-k7oa
+                - generic: Last run never
+  - region "Notifications alt+T"
