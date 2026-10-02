@@ -106,6 +106,15 @@ const GROUPS: { title: string; rows: { label: string; keys: string[][] }[] }[] =
     ],
   },
   {
+    title: 'Session (started from the board)',
+    rows: [
+      { label: 'Next / previous that needs you', keys: [['J'], ['K']] },
+      { label: 'Mark done', keys: [['D']] },
+      { label: 'Archive (once done)', keys: [['E']] },
+      { label: 'Back to board', keys: [['Esc']] },
+    ],
+  },
+  {
     title: 'Draft',
     rows: [
       { label: 'Start', keys: [[MOD, 'Enter']] },
