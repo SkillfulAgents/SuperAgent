@@ -177,7 +177,11 @@ describe('workspace file transfer', () => {
     expect(await fs.promises.readdir(path.join(workspace, 'nested'))).toEqual([])
   })
 
-  it('selects extension-preserving collision names without overwriting', async () => {
+  it('selects extension-preserving collision names without overwriting or hard links', async () => {
+    // S3 Files (cloud /workspace) rejects every link() with EMLINK.
+    const link = vi.spyOn(fs.promises, 'link').mockRejectedValue(
+      Object.assign(new Error('EMLINK: too many links, link'), { code: 'EMLINK' }),
+    )
     await fs.promises.writeFile(path.join(workspace, 'report.pdf'), 'first')
     const result = await writeWorkspaceFile('report.pdf', Readable.from('second'), {
       workspaceRoot: workspace,
@@ -188,13 +192,15 @@ describe('workspace file transfer', () => {
     expect(await fs.promises.readFile(path.join(workspace, 'report.pdf'), 'utf8')).toBe('first')
     expect(await fs.promises.readFile(result.localPath, 'utf8')).toBe('second')
     expect((await fs.promises.readdir(workspace)).sort()).toEqual(['report-1.pdf', 'report.pdf'])
+    expect(link).not.toHaveBeenCalled()
   })
 
   it.each([true, false])('handles a publication race with collisionSafe=%s', async (collisionSafe) => {
-    const link = fs.promises.link.bind(fs.promises)
-    vi.spyOn(fs.promises, 'link').mockImplementationOnce(async (source, target) => {
-      await fs.promises.writeFile(target, 'racing writer')
-      return link(source, target)
+    const writeFile = fs.promises.writeFile.bind(fs.promises)
+    vi.spyOn(fs.promises, 'writeFile').mockImplementationOnce(async (target, data, options) => {
+      expect(options).toMatchObject({ flag: 'wx' })
+      await writeFile(target, 'racing writer')
+      return writeFile(target, data, options)
     })
     const writing = writeWorkspaceFile('report.pdf', Readable.from('payload'), {
       workspaceRoot: workspace, collisionSafe, overwrite: false,
@@ -208,6 +214,22 @@ describe('workspace file transfer', () => {
     }
     expect(await fs.promises.readFile(path.join(workspace, 'report.pdf'), 'utf8')).toBe('racing writer')
     expect((await fs.promises.readdir(workspace)).some((name) => name.startsWith('.'))).toBe(false)
+  })
+
+  it.each([
+    ['removes an empty claim', '', []],
+    ['keeps a claim another writer filled', 'racing writer', ['report.pdf']],
+  ])('%s when publication fails', async (_case, racing, remaining) => {
+    vi.spyOn(fs.promises, 'rename').mockImplementationOnce(async (_source, target) => {
+      expect(await fs.promises.readFile(target, 'utf8')).toBe('')
+      if (racing) await fs.promises.writeFile(target, racing)
+      throw Object.assign(new Error('EIO: i/o error, rename'), { code: 'EIO' })
+    })
+    await expect(writeWorkspaceFile('report.pdf', Readable.from('payload'), {
+      workspaceRoot: workspace, overwrite: false,
+    })).rejects.toMatchObject({ code: 'EIO' })
+    expect(await fs.promises.readdir(workspace)).toEqual(remaining)
+    if (racing) expect(await fs.promises.readFile(path.join(workspace, 'report.pdf'), 'utf8')).toBe(racing)
   })
 
 })
