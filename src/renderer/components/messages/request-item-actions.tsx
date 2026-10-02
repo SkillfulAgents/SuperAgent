@@ -17,7 +17,7 @@ export function RequestItemActions({ children, className, inline }: RequestItemA
   if (inline) {
     return (
       <div
-        className={cn('flex justify-end gap-2 pt-4', className)}
+        className={cn('flex flex-wrap justify-end gap-2 pt-4', className)}
         data-request-item-actions="inline"
       >
         {children}
@@ -30,7 +30,7 @@ export function RequestItemActions({ children, className, inline }: RequestItemA
       className="shrink-0 flex flex-col gap-2 border-t border-border bg-background p-4"
       data-request-item-actions="footer"
     >
-      <div className={cn('flex justify-end gap-2', className)}>{children}</div>
+      <div className={cn('flex flex-wrap justify-end gap-2', className)}>{children}</div>
       {error ? <RequestError message={error} className="mt-0" /> : null}
     </div>
   )

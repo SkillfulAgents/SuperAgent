@@ -77,29 +77,35 @@ function TurnSummaryRow({
   expanded: boolean
   onToggle: () => void
 }) {
+  const pieces = [
+    `Worked for ${formatElapsed(turn.elapsedMs)}`,
+    `${turn.toolCallCount} ${turn.toolCallCount === 1 ? 'tool call' : 'tool calls'}`,
+    ...(turn.hasTokenUsage ? [`${turn.tokenCount.toLocaleString('en-US')} tokens`] : []),
+  ]
   return (
     <div className="flex items-center gap-3 border-b border-border text-muted-foreground">
       <button
         type="button"
-        className="flex min-w-0 flex-1 items-center gap-1.5 py-3 text-left text-sm tabular-nums transition-colors hover:text-foreground"
+        className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 py-3 text-left text-sm tabular-nums transition-colors hover:text-foreground"
         onClick={onToggle}
         aria-expanded={expanded}
         aria-label={expanded ? 'Collapse completed turn work' : 'Expand completed turn work'}
         data-testid="turn-summary"
       >
-        <span>Worked for {formatElapsed(turn.elapsedMs)}</span>
-        <span aria-hidden="true">·</span>
-        <span>{turn.toolCallCount} {turn.toolCallCount === 1 ? 'tool call' : 'tool calls'}</span>
-        {turn.hasTokenUsage && (
-          <>
-            <span aria-hidden="true">·</span>
-            <span>{turn.tokenCount.toLocaleString('en-US')} tokens</span>
-          </>
-        )}
-        <ChevronRight
-          className={`h-4 w-4 shrink-0 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
-          aria-hidden="true"
-        />
+        {/* The dot and chevron ride inside their piece, so a wrapped line never starts with either. */}
+        {pieces.map((piece, i) => (
+          <span key={piece} className="flex items-center gap-1.5 whitespace-nowrap">
+            <span>{piece}</span>
+            {i < pieces.length - 1 ? (
+              <span aria-hidden="true">·</span>
+            ) : (
+              <ChevronRight
+                className={`h-4 w-4 shrink-0 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
+                aria-hidden="true"
+              />
+            )}
+          </span>
+        ))}
       </button>
     </div>
   )

@@ -73,10 +73,10 @@ export function StaleSessionNotice({
   return (
     <div data-testid="stale-toast" className="mx-auto mb-2 w-full max-w-[740px] px-4">
       <div
-        className="flex items-center justify-between gap-4 rounded-2xl bg-muted/80 p-4 backdrop-blur-md"
+        className="flex flex-wrap items-center gap-x-4 gap-y-3 rounded-2xl bg-muted/80 p-4 backdrop-blur-md"
         data-testid="stale-toast-card"
       >
-        <div className="flex min-w-0 max-w-[60%] flex-col gap-0.5">
+        <div className="flex min-w-0 grow basis-40 flex-col gap-0.5">
           <p className="flex items-center gap-1.5 text-sm font-medium">
             Start a new conversation
             <TooltipProvider delayDuration={200}>
@@ -111,7 +111,7 @@ export function StaleSessionNotice({
             This conversation has gotten long — a fresh one will be faster and cheaper.
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Button
             type="button"
             variant="outline"

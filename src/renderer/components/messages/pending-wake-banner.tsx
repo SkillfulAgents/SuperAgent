@@ -61,19 +61,21 @@ export function PendingWakeBanner({
 
   return (
     <div
-      className="mx-4 mb-2 flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs text-muted-foreground"
+      className="mx-4 mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-3 py-2 text-xs text-muted-foreground"
       data-testid="pending-wake-banner"
     >
-      <MoonStar className="h-3.5 w-3.5 shrink-0" />
-      <span className="min-w-0 flex-1 truncate">
-        This session will auto-resume{' '}
-        <span className="font-medium text-foreground" title={format(wakeDate, 'PPpp')}>
-          {formatDistanceToNow(wakeDate, { addSuffix: true })}
+      <div className="flex min-w-0 grow basis-40 items-start gap-2">
+        <MoonStar className="mt-px h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 line-clamp-2">
+          This session will auto-resume{' '}
+          <span className="font-medium text-foreground" title={format(wakeDate, 'PPpp')}>
+            {formatDistanceToNow(wakeDate, { addSuffix: true })}
+          </span>
+          {note ? <> — &ldquo;{note}&rdquo;</> : null}
         </span>
-        {note ? <> — &ldquo;{note}&rdquo;</> : null}
-      </span>
+      </div>
       {!readOnly && (
-        <span className="flex shrink-0 items-center gap-1">
+        <span className="flex min-w-0 flex-wrap items-center gap-1">
           <Button
             variant="ghost"
             size="sm"

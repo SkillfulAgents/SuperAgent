@@ -604,6 +604,52 @@ test.describe('File Preview', () => {
   test.describe('drawer wider than the chat can spare', () => {
     // Wide enough that the drawer sits beside the chat, narrow enough that 800px of it leaves the chat ~100px.
     test.use({ viewport: { width: 1200, height: 760 } })
+    // The rewritten responses below can still be in flight as a test ends; let them go instead of failing it.
+    test.afterEach(({ page }) => page.unrouteAll({ behavior: 'ignoreErrors' }))
+
+    /** A new agent's delivered file, open in a drawer that leaves the chat 250px: past the reload, so the turn is not recent activity. */
+    async function openFileBesideNarrowChat(page: import('@playwright/test').Page, name: string, drawerWidth = 654, chatWidth = 250) {
+      await agentPage.createAgent(`${name} ${Date.now()}`)
+      seedWorkspaceFile(await getLatestAgentSlug(page), 'output/report.md', '# Report')
+      await sessionPage.sendMessage('deliver file')
+      await sessionPage.waitForResponse(15000)
+      await page.evaluate((width) => localStorage.setItem('tray_drawer_width', String(width)), drawerWidth)
+      await page.reload()
+      await getDeliveredFileRow(page, 'report.md').first().click()
+      await expect.poll(async () => Math.round((await page.getByTestId('session-thread-main').boundingBox())!.width)).toBe(chatWidth)
+    }
+
+    /**
+     * The mock never idles a session, schedules a wake, or reports a turn's length and tokens, so the rows these
+     * show come from rewritten responses: a long idle with a full context and a pending wake, and a 2m 14s turn.
+     */
+    async function fakeLongRealSession(page: import('@playwright/test').Page) {
+      await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+(\?.*)?$/, async (route) => {
+        if (route.request().method() !== 'GET') return route.continue()
+        const response = await route.fetch()
+        const session = await response.json()
+        session.lastActivityAt = new Date(Date.now() - 7 * 3600_000).toISOString()
+        session.lastUsage = { inputTokens: 150_000, outputTokens: 1_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 200_000 }
+        session.pendingWakeAt = new Date(Date.now() + 3 * 3600_000).toISOString()
+        session.pendingWakeTaskId = 'task-wake'
+        // A long note, so the banner's two-line limit is what holds when it resumes in view.
+        session.pendingWakeNote = 'Check whether the review has been approved and the release notes are ready to send'
+        await route.fulfill({ response, json: session })
+      })
+      await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+\/messages(\?.*)?$/, async (route) => {
+        if (route.request().method() !== 'GET') return route.continue()
+        const response = await route.fetch()
+        const body = await response.json()
+        // A delta with nothing new carries no page to rewrite.
+        if (!Array.isArray(body?.messages) || body.messages.length === 0) return route.fulfill({ response, json: body })
+        const start = new Date(body.messages[0].createdAt).getTime()
+        for (const message of body.messages.filter((m: { type?: unknown }) => m.type === 'assistant')) {
+          message.usage = { inputTokens: 360_000, outputTokens: 8_541, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }
+          message.createdAt = new Date(start + 134_000).toISOString()
+        }
+        await route.fulfill({ response, json: body })
+      })
+    }
 
     test('the drawer slides over the chat instead of squeezing it, and Download keeps only its icon', async ({ page }) => {
       await page.addInitScript(() => localStorage.setItem('tray_drawer_width', '800'))
@@ -641,6 +687,156 @@ test.describe('File Preview', () => {
       expect(await hit(chatBox.x + 8)).toBe('tray-drawer-scrim')
       expect(await hit((drawerBox.x + chatBox.x + chatBox.width) / 2)).toBe('tray-drawer')
       await expect(downloadLabel).toBeHidden()
+    })
+
+    test('the rows around the composer rearrange in the chat a drawer leaves, instead of squeezing their text', async ({ page }) => {
+      await fakeLongRealSession(page)
+
+      await openFileBesideNarrowChat(page, 'Rows')
+      await expect(page.getByTestId('stale-toast-card')).toBeVisible({ timeout: 15000 })
+
+      // The rows can still be settling into place, so measure until the layout holds.
+      await expect(async () => {
+        const rows = await page.evaluate(() => {
+          const box = (el: Element) => el.getBoundingClientRect()
+          const lines = (el: Element) => Math.round(box(el).height / parseFloat(getComputedStyle(el).lineHeight))
+          // Text leaves only: a wrapper's inherited line height is not its text's, so it misreads a wrap.
+          const leaves = (root: Element) => [...root.querySelectorAll('span')].filter((s) => !s.children.length && s.textContent!.trim().length > 1)
+          const notice = document.querySelector('[data-testid="stale-toast-card"]')!
+          const noticeText = notice.querySelector('p')!.parentElement!
+          const noticeButtons = [...notice.querySelectorAll('[data-testid="stale-toast-ignore"], [data-testid="stale-options-trigger"]')]
+          const banner = document.querySelector('[data-testid="pending-wake-banner"]')!
+          const deadline = banner.querySelector('[title]')!
+          const summary = document.querySelector('[data-testid="turn-summary"]')!
+          const footer = document.querySelector('kbd')!.closest('.isolate')!
+          return {
+            noticeText: Math.round(box(noticeText).width),
+            noticeButtonsPastCard: Math.max(...noticeButtons.map((b) => Math.round(box(b).right - box(notice).right))),
+            deadlineInsideBanner: box(deadline).right <= box(banner).right && box(deadline).bottom <= box(banner).bottom,
+            deadlineWidth: Math.round(box(deadline).width),
+            summaryPieceLines: leaves(summary).map(lines),
+            footerTextLines: leaves(footer).map(lines),
+            footerOverflow: footer.scrollWidth - footer.clientWidth,
+            wakeMessageLines: lines(deadline.parentElement!),
+            // The key hint, wrapped under Context Usage, starts at the same left edge.
+            hint: (() => {
+              const [context, hint] = [...footer.children].filter((c) => c.textContent!.trim()).map((c) => box(c))
+              return { wrapped: hint.top >= context.bottom, leftOffset: Math.round(Math.abs(hint.left - context.left)) }
+            })(),
+          }
+        })
+        // The notice keeps its text readable (10rem) and its buttons inside the card, rather than the reverse.
+        expect(rows.noticeText).toBeGreaterThanOrEqual(160)
+        expect(rows.noticeButtonsPastCard).toBeLessThanOrEqual(0)
+        // The banner keeps when it resumes, instead of truncating the message down to its icon.
+        expect(rows.deadlineInsideBanner).toBe(true)
+        expect(rows.deadlineWidth).toBeGreaterThan(0)
+        // The summary and the footer wrap between their pieces, never inside one.
+        expect(rows.summaryPieceLines).toEqual([1, 1, 1])
+        expect(rows.footerTextLines).toEqual([1, 1, 1])
+        expect(rows.footerOverflow).toBeLessThanOrEqual(0)
+        expect(rows.hint.wrapped).toBe(true)
+        expect(rows.hint.leftOffset).toBeLessThanOrEqual(1)
+        // A long note is cut at two lines instead of growing the banner.
+        expect(rows.wakeMessageLines).toBe(2)
+      }).toPass({ timeout: 10000 })
+    })
+
+    test('the notice keeps its buttons beside its text while the chat can spare them its readable width', async ({ page }) => {
+      await fakeLongRealSession(page)
+      // A 504px chat: wide enough for 10rem of text beside the buttons, too narrow for the whole sentence beside them.
+      await openFileBesideNarrowChat(page, 'Beside', 400, 504)
+      await expect(async () => {
+        const besideText = await page.getByTestId('stale-toast-card').evaluate((card) =>
+          card.lastElementChild!.getBoundingClientRect().top < card.firstElementChild!.getBoundingClientRect().bottom)
+        expect(besideText).toBe(true)
+      }).toPass({ timeout: 10000 })
+    })
+
+    // The mock cannot connect a server or an account, so their lists answer with one at the requested address.
+    const connectedServer = { id: 'mcp-connected', name: 'Linear Workspace Tools', url: 'http://localhost:9876/mcp', authType: 'none', status: 'active', errorMessage: null, tools: [] }
+    const connectedAccount = { id: 'acct-connected', toolkitSlug: 'github', displayName: 'work-github-account', status: 'active', createdAt: new Date().toISOString() }
+    const cards: Array<{ title: string; trigger: string; card: string; names: string[]; servers?: object[]; accounts?: object[]; reconnect?: boolean }> = [
+      { title: 'an MCP request with two connected servers to pick from', trigger: 'request mcp', card: 'remote-mcp-request', names: [connectedServer.name, 'Linear Personal', 'Not the right MCP?'], servers: [connectedServer, { ...connectedServer, id: 'mcp-connected-2', name: 'Linear Personal' }] },
+      { title: 'an account request with an account that needs reconnecting', trigger: 'ask account', card: 'connected-account-request', names: [connectedAccount.displayName], accounts: [{ ...connectedAccount, status: 'expired' }], reconnect: true },
+    ]
+    for (const { title, trigger, card, names, servers, accounts, reconnect } of cards) {
+      test(`${title} card keeps its buttons and names inside it in the chat a drawer leaves`, async ({ page }) => {
+        if (servers) {
+          await page.route(/\/api\/remote-mcps(\?.*)?$/, (route) =>
+            route.request().method() === 'GET' ? route.fulfill({ json: { servers } }) : route.continue())
+        }
+        if (accounts) {
+          await page.route(/\/api\/connected-accounts(\?.*)?$/, (route) =>
+            route.request().method() === 'GET' ? route.fulfill({ json: { accounts } }) : route.continue())
+        }
+        await openFileBesideNarrowChat(page, 'Card')
+        await sessionPage.sendMessage(trigger)
+        await expect(page.getByTestId(card)).toBeVisible({ timeout: 15000 })
+        if (reconnect) await expect(page.getByTestId(card).getByRole('button', { name: /reconnect/i }).first()).toBeVisible()
+        await expect(page.getByTestId(card).getByTestId('request-stop-session')).toBeVisible()
+
+        // The card can still be settling into place, so measure until the layout holds.
+        await expect(async () => {
+          const geometry = await page.getByTestId(card).evaluate((el, names) => {
+            // An action-row button must stay inside the row itself, not just the card: the footer's padding is the card's edge too.
+            const past = (b: Element) => {
+              const actions = b.closest('[data-request-item-actions]')
+              const row = actions?.getAttribute('data-request-item-actions') === 'footer' ? actions.firstElementChild : actions
+              const box = (row ?? el).getBoundingClientRect()
+              const r = b.getBoundingClientRect()
+              return r.width > 0 ? Math.round(Math.max(r.right - box.right, box.left - r.left)) : -Infinity
+            }
+            // Each named text's width, against what it needs on one line (a squeezed text wraps, so its own scrollWidth hides that).
+            const texts = names.map((name) => {
+              const node = [...el.querySelectorAll<HTMLElement>('*')].find((n) => !n.children.length && n.textContent?.trim() === name)
+              if (!node) return { name, width: 0, needs: 1, lines: 0 }
+              const { width, height } = node.getBoundingClientRect()
+              node.style.whiteSpace = 'nowrap'
+              const needs = node.scrollWidth
+              node.style.whiteSpace = ''
+              return { name, width: Math.round(width), needs, lines: Math.round(height / parseFloat(getComputedStyle(node).lineHeight)) }
+            })
+            // A checkbox stays on the line with the server or account it selects, not stranded above it.
+            const strandedCheckboxes = [...el.querySelectorAll('input[type="checkbox"]')].filter((box) => {
+              const name = box.closest('[role="button"]')?.querySelector('.truncate')
+              return name && box.getBoundingClientRect().bottom <= name.getBoundingClientRect().top
+            }).length
+            // A single card's close button stays on its title's line; only a stack's paging moves above the title.
+            const title = el.querySelector('[data-request-item-body]')!.firstElementChild!.firstElementChild!.firstElementChild!.getBoundingClientRect()
+            const close = el.querySelector('[data-testid="request-stop-session"]')!.getBoundingClientRect()
+            const closeBesideTitle = close.top < title.bottom && close.bottom > title.top
+            return { buttonsPastCard: Math.max(...[...el.querySelectorAll('button')].map(past)), texts, strandedCheckboxes, closeBesideTitle }
+          }, names)
+          expect(geometry.strandedCheckboxes).toBe(0)
+          expect(geometry.closeBesideTitle).toBe(true)
+          // Every button stays reachable inside the card, and each name stays readable on one line: all of it, or 48px of a long one.
+          expect(geometry.buttonsPastCard).toBeLessThanOrEqual(0)
+          for (const text of geometry.texts) {
+            expect(text.lines, text.name).toBe(1)
+            expect(text.width, text.name).toBeGreaterThanOrEqual(Math.min(48, text.needs))
+          }
+        }).toPass({ timeout: 10000 })
+      })
+    }
+
+    test('a stacked request card moves its paging above the title in the chat a drawer leaves', async ({ page }) => {
+      await openFileBesideNarrowChat(page, 'Stack')
+      await sessionPage.sendMessage('ask parallel')
+      const paging = page.locator('[data-testid="request-stack-pagination"]:visible').first()
+      await expect(paging).toBeVisible({ timeout: 15000 })
+
+      // The card can still be settling into place, so measure until the layout holds.
+      await expect(async () => {
+        const header = await paging.evaluate((el) => {
+          const row = el.closest('[data-request-item-body]')!.firstElementChild!.firstElementChild!
+          const title = row.firstElementChild!.getBoundingClientRect()
+          const controls = row.lastElementChild!.getBoundingClientRect()
+          return controls.bottom <= title.top
+        })
+        // The paging and close button take their own line above the title.
+        expect(header).toBe(true)
+      }).toPass({ timeout: 10000 })
     })
   })
 

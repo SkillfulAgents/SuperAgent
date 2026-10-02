@@ -30,7 +30,7 @@ export function McpServicePicker({
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
-      <div className="inline-flex items-center gap-1 self-start px-1 py-1 text-xs text-muted-foreground">
+      <div className="inline-flex flex-wrap items-center gap-1 self-start px-1 py-1 text-xs text-muted-foreground">
         <span>Not the right MCP?</span>
         <PopoverTrigger asChild>
           <button

@@ -738,18 +738,20 @@ export function RemoteMcpRequestItem({
             {setupGuide && (
               <McpSetupGuide guide={setupGuide} redirectUri={redirectUris?.preferred} />
             )}
-            <div className="flex items-center gap-3 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
-                <McpSourceIcon slug={connectCardSlug} />
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
+              <div className="flex min-w-0 grow basis-40 items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
+                  <McpSourceIcon slug={connectCardSlug} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-normal text-foreground">
+                    {newName.trim() || name || 'MCP Server'}
+                  </p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {targetUrl}
+                  </p>
+                </div>
               </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-normal text-foreground">
-                {newName.trim() || name || 'MCP Server'}
-              </p>
-              <p className="truncate text-xs text-muted-foreground">
-                {targetUrl}
-              </p>
-            </div>
             <LoginButton
               size="xs"
               onClick={handleRegisterNew}
@@ -795,13 +797,13 @@ export function RemoteMcpRequestItem({
           </div>
         )}
         {reauthMcpId && !waitingForOAuth ? (
-          <div className="mt-2 flex items-center gap-2">
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             <Input
               type="password"
               value={reauthToken}
               onChange={(e) => setReauthToken(e.target.value)}
               placeholder="New bearer token"
-              className="h-8 flex-1 text-sm"
+              className="h-8 min-w-0 grow basis-40 text-sm"
               autoFocus
               disabled={busy}
               onKeyDown={(e) => {
@@ -858,9 +860,9 @@ export function RemoteMcpRequestItem({
 
       {selectedServer ? (
         <>
-          <div className="flex items-end justify-between gap-3">
-            <div className="min-w-0 self-end pt-4">
-              {!waitingForOAuth ? (
+          <div className="flex flex-wrap items-end gap-x-3">
+            {!waitingForOAuth ? (
+              <div className="min-w-0 grow basis-40 self-end pt-4">
                 <McpServicePicker
                   open={isMcpPickerOpen}
                   onOpenChange={setIsMcpPickerOpen}
@@ -871,9 +873,9 @@ export function RemoteMcpRequestItem({
                   }}
                   disabled={busy}
                 />
-              ) : null}
-            </div>
-            <RequestItemActions inline>
+              </div>
+            ) : null}
+            <RequestItemActions inline className="ml-auto">
               {replacement ? (
                 <Button size="xs" variant="outline" onClick={replacement.onCancel} disabled={status === 'submitting'}>
                   Cancel
