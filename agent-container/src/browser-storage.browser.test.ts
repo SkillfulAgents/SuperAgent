@@ -48,8 +48,19 @@ beforeAll(async () => {
   cdp = await connectCdp(`ws://127.0.0.1:${debugPort}${browserPath}`)
 }, 30_000)
 
+/** Close tabs and wait until Chrome no longer lists them, so the next case never sees a closing tab. */
+async function closeTabs(targetIds: string[]): Promise<void> {
+  for (const targetId of targetIds) await cdp.send('Target.closeTarget', { targetId }).catch(() => {})
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const { targetInfos } = await cdp.send<{ targetInfos: Array<{ targetId: string }> }>('Target.getTargets')
+    if (!targetInfos.some((target) => targetIds.includes(target.targetId))) return
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  throw new Error('Closed tabs are still listed')
+}
+
 afterEach(async () => {
-  for (const targetId of openedTabs.splice(0)) await cdp.send('Target.closeTarget', { targetId }).catch(() => {})
+  await closeTabs(openedTabs.splice(0))
   // Storage calls need a page session: the launched browser keeps pages out of its default context.
   const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' })
   const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true })
@@ -57,7 +68,7 @@ afterEach(async () => {
     await cdp.send('Storage.clearDataForOrigin', { origin: originOf(`${host}.${SITE}`), storageTypes: 'all' }, sessionId)
   }
   await cdp.send('Network.clearBrowserCookies', {}, sessionId)
-  await cdp.send('Target.closeTarget', { targetId })
+  await closeTabs([targetId])
 })
 
 afterAll(async () => {
