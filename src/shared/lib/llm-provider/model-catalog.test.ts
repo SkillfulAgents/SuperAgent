@@ -373,6 +373,19 @@ describe('getProviderCatalog', () => {
       contextWindow: 1_048_576,
       pricing: { inputPerMtok: 0.15, outputPerMtok: 0.5, cacheReadPerMtok: 0.03 },
     })
+    expect(catalog.find((m) => m.id === 'glm-5.3')).toMatchObject({
+      family: 'glm',
+      icon: 'zai',
+      supportedEfforts: ['low', 'medium', 'high'],
+      supportsWebSearch: false,
+      supportsWebFetch: false,
+      supportsImageInput: false,
+      contextWindow: 1_048_576,
+      pricing: { inputPerMtok: 1.4, outputPerMtok: 4.4, cacheReadPerMtok: 0.26 },
+    })
+    expect(catalog.find((m) => m.id === 'glm-5.3')!.supportedSpeeds).toBeUndefined()
+    expect(catalog.find((m) => m.id === 'glm-5.3')!.isLatest).toBeFalsy()
+    expect(catalog.find((m) => m.id === 'glm-5.3')!.isDefault).toBeFalsy()
     // DeepSeek rides Fireworks' Anthropic-compatible wire; no fast router, so no speeds.
     expect(catalog.find((m) => m.id === 'deepseek-v4.1-flash')).toMatchObject({
       family: 'deepseek',
