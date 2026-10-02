@@ -1,14 +1,28 @@
 import { Stream } from '@anthropic-ai/sdk/core/streaming'
+import { createHash } from 'node:crypto'
 
 type Json = Record<string, unknown>
 
 /** Codex subscription serves Responses streams, with server-managed output limits. */
-export function normalizeCodexRequest(body: Json, fastMode = false): Json {
+export function normalizeCodexRequest(body: Json, fastMode = false, cacheId?: string): Json {
   const result: Json = { ...body, store: false, stream: true, instructions: body.instructions ?? '' }
+  if (cacheId) result.prompt_cache_key = cacheId
   delete result.max_output_tokens
   if (fastMode) result.service_tier = 'priority'
   else delete result.service_tier
   return result
+}
+
+/** Codex only reuses a warm prompt cache when a thread's turns carry a stable
+ * `session-id` header (Codex CLI also mirrors it into prompt_cache_key); without
+ * one, back-to-back turns mostly miss and re-bill the whole prompt. Subagents
+ * share the SDK session id but not the prompt, so each prompt gets its own id.
+ */
+export function codexCacheId(sessionId: string | undefined, instructions: unknown): string | undefined {
+  if (!sessionId) return undefined
+  const hex = createHash('sha256').update(JSON.stringify([sessionId, instructions ?? ''])).digest('hex')
+  // UUID-shaped, like the thread ids Codex CLI sends.
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
 }
 
 /** Non-streaming SDK helper requests still need a JSON reply (e.g. WebSearch).
@@ -28,14 +42,6 @@ export async function collectCodexResponse(response: Response, abort: AbortContr
     if (data.type === 'response.failed' || data.type === 'error') throw new CodexResponseError(data)
   }
   throw new Error('Codex stream ended without a completed response')
-}
-
-/** Codex also uses a FastAPI-style detail envelope for unsupported models. */
-export function normalizeCodexError(body: unknown): unknown {
-  if (body && typeof body === 'object' && 'detail' in body && typeof body.detail === 'string') {
-    return { error: { message: body.detail } }
-  }
-  return body
 }
 
 const record = (value: unknown): Json => value !== null && typeof value === 'object' ? value as Json : {}
