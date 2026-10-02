@@ -374,6 +374,7 @@ describe('getProviderCatalog', () => {
       pricing: { inputPerMtok: 0.15, outputPerMtok: 0.5, cacheReadPerMtok: 0.03 },
     })
     expect(catalog.find((m) => m.id === 'glm-5.3')).toMatchObject({
+      label: 'GLM-5.3 Standard',
       family: 'glm',
       icon: 'zai',
       supportedEfforts: ['low', 'medium', 'high'],

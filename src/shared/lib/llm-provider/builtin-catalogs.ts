@@ -790,7 +790,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   },
   {
     id: 'glm-5.3',
-    label: 'GLM-5.3',
+    label: 'GLM-5.3 Standard',
     blurb: 'Z.AI GLM, served via Platform',
     family: 'glm',
     icon: 'zai',
