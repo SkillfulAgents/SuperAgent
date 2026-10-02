@@ -506,6 +506,37 @@ describe('DashboardManager log stream lifecycle', () => {
       expect(spawns.map((s) => s.args)).toEqual([['run', 'serve.js']])
     })
 
+    it('boot start serves a fresh template dist without installing into an empty node_modules', async () => {
+      const slug = await scaffoldTemplateDashboard()
+      // A cloud VM wakes with an empty local node_modules stamped at epoch.
+      await fs.promises.utimes(path.join(testDir, slug, 'node_modules'), 0, 0)
+      const spawns = recordSpawns()
+
+      const info = await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'serve.js']])
+      expect(info.status).toBe('running')
+    })
+
+    it('a crash restart after a skipped install installs before serving again', async () => {
+      const slug = await scaffoldTemplateDashboard()
+      await fs.promises.utimes(path.join(testDir, slug, 'node_modules'), 0, 0)
+      const spawns = recordSpawns()
+      await manager.startDashboard(slug, { forceInstall: false })
+
+      procs[0].exit(1, null)
+
+      await vi.waitFor(
+        () =>
+          expect(spawns.map((s) => s.args)).toEqual([
+            ['run', 'serve.js'],
+            ['install', '--network-concurrency=8'],
+            ['run', 'serve.js'],
+          ]),
+        { timeout: 5000 },
+      )
+    })
+
     it('boot start rebuilds when a source file is newer than dist', async () => {
       const slug = await scaffoldTemplateDashboard({ distFresh: false })
       const spawns = recordSpawns()
