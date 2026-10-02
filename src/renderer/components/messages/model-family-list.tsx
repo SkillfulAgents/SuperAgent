@@ -9,7 +9,7 @@ import {
 } from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
-import { compareModelDisplayOrder } from '@shared/lib/llm-provider/model-display-order'
+import { compareModelDisplayOrder, compareModelTier, modelTierRank } from '@shared/lib/llm-provider/model-display-order'
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1)
@@ -78,38 +78,38 @@ function versionChipLabel(label: string, familyName: string): string {
   return label
 }
 
-/**
- * Base of a label's product line: the label minus a trailing variant word, when
- * what remains ends in a digit — "GPT-5.6 Sol" → "GPT-5.6", but "GPT-5.5" (no
- * variant word) and "Sonnet 4.6" ("Sonnet" doesn't end in a digit) stay whole.
- * Non-lineage models sharing a base collapse to one row with variant chips.
- */
-function lineBase(label: string): string {
-  const match = label.match(/^(.*\d)\s+\S+$/)
-  return match ? match[1] : label
+/** Known tier word ending a versioned label: "GPT-6.1 Sol" → Sol, chip "6.1"; "GPT-5.5" has none. */
+function labelTier(label: string): { tier: string; version: string } | undefined {
+  const match = label.match(/^\D*(\d\S*)\s+(\S+)$/)
+  if (!match || modelTierRank(match[2]) === undefined) return undefined
+  return { tier: match[2], version: match[1] }
 }
 
-/** Partition models into label-derived lines, newest generation first within a product. */
-function splitIntoLines(models: ModelDefinition[]): { base: string; models: ModelDefinition[] }[] {
-  const byBase = new Map<string, ModelDefinition[]>()
+/** Split non-lineage models into tier rows (strongest first) and untiered models, keeping version order. */
+function splitIntoTiers(models: ModelDefinition[]): {
+  tiers: { tier: string; models: ModelDefinition[] }[]
+  untiered: ModelDefinition[]
+} {
+  const byTier = new Map<string, ModelDefinition[]>()
+  const untiered: ModelDefinition[] = []
   for (const m of models) {
-    const base = lineBase(m.label)
-    if (!byBase.has(base)) byBase.set(base, [])
-    byBase.get(base)!.push(m)
+    const tier = labelTier(m.label)?.tier
+    if (!tier) {
+      untiered.push(m)
+      continue
+    }
+    if (!byTier.has(tier)) byTier.set(tier, [])
+    byTier.get(tier)!.push(m)
   }
-  return [...byBase.entries()]
-    .map(([base, lineModels]) => ({ base, models: lineModels }))
-    .sort((a, b) => compareModelDisplayOrder(a.models[0], b.models[0]))
+  const tiers = [...byTier.entries()]
+    .map(([tier, tierModels]) => ({ tier, models: tierModels }))
+    .sort((a, b) => compareModelTier(a.tier, b.tier))
+  return { tiers, untiered }
 }
 
 /** The entry a row picks: the declared latest, else the first (newest) listed. */
 function latestOf(models: ModelDefinition[]): ModelDefinition {
   return models.find((m) => m.isLatest) ?? models[0]
-}
-
-/** Row-suffix slug for a line base: "GPT-5.6" → "gpt-5.6". */
-function lineSlug(base: string): string {
-  return base.toLowerCase().replace(/\s+/g, '-')
 }
 
 /**
@@ -415,9 +415,9 @@ function LineRow({
  * (unless the selection is already on the tab), so a tab click IS a selection
  * — single-model vendors need no second click. Lineage families (Opus, Sonnet,
  * …) collapse to one row with per-version pin chips revealed on hover/selection,
- * and non-lineage models whose labels share a versioned base ("GPT-5.6
- * Sol/Terra/Luna") collapse the same way; remaining models render one row each.
- * Rows and version chips follow the curated generation and variant order.
+ * and non-lineage models sharing a known tier word ("GPT-6.1 Sol", "GPT-6 Sol")
+ * collapse the same way; remaining models render one row each. Rows list the
+ * strongest tier first; version chips and untiered rows list newest first.
  * When `offerLatest` is set,
  * rows carry an explicit "Latest" chip storing the bare alias (rides upgrades) —
  * lit when the alias is the stored selection, while a lit version chip means a
@@ -475,7 +475,7 @@ export function ModelFamilyList({
       versions: [...byFamily.get(family)!].sort(compareModelDisplayOrder),
       lineage: LINEAGE_FAMILIES.has(family),
     }))
-    groups.sort((a, b) => compareModelDisplayOrder(a.versions[0], b.versions[0]))
+    groups.sort((a, b) => compareModelTier(a.family, b.family))
     loose.sort(compareModelDisplayOrder)
     return { families: groups, standalone: loose }
   }, [catalog, activeVendor])
@@ -578,6 +578,7 @@ export function ModelFamilyList({
             />
           )
         }
+        const { tiers, untiered } = splitIntoTiers(group.versions)
         return (
           <div key={group.family} className="flex flex-col gap-0.5">
             {offerLatest && (
@@ -598,36 +599,29 @@ export function ModelFamilyList({
                 }}
               />
             )}
-            {splitIntoLines(group.versions).map((line) => {
-              if (line.models.length > 1) {
-                const lineLatest = latestOf(line.models)
-                return (
-                  <LineRow
-                    key={line.base}
-                    label={line.base}
-                    models={line.models}
-                    rowTestId={`model-family-${lineSlug(line.base)}`}
-                    // No bare alias exists for a sub-line, so both modes pin
-                    // the line's newest concrete id.
-                    onRowPick={() => onPick(lineLatest.id)}
-                    selected={!isLatestSelected && line.models.some((m) => m.id === resolved?.id)}
-                    activeId={!isLatestSelected ? resolved?.id : undefined}
-                    chipLabel={(m) => versionChipLabel(m.label, line.base)}
-                    onPickModel={onPick}
-                  />
-                )
-              }
-              const version = line.models[0]
-              return (
-                <Row
-                  key={version.id}
-                  testId={`model-pinned-${version.id}`}
-                  label={version.label}
-                  isSelected={!isLatestSelected && resolved?.id === version.id}
-                  onClick={() => onPick(version.id)}
-                />
-              )
-            })}
+            {tiers.map((line) => (
+              <LineRow
+                key={line.tier}
+                label={line.tier}
+                models={line.models}
+                rowTestId={`model-family-${group.family}-${line.tier.toLowerCase()}`}
+                // No bare alias exists for a tier, so both modes pin its newest concrete id.
+                onRowPick={() => onPick(line.models[0].id)}
+                selected={!isLatestSelected && line.models.some((m) => m.id === resolved?.id)}
+                activeId={!isLatestSelected ? resolved?.id : undefined}
+                chipLabel={(m) => labelTier(m.label)!.version}
+                onPickModel={onPick}
+              />
+            ))}
+            {untiered.map((version) => (
+              <Row
+                key={version.id}
+                testId={`model-pinned-${version.id}`}
+                label={version.label}
+                isSelected={!isLatestSelected && resolved?.id === version.id}
+                onClick={() => onPick(version.id)}
+              />
+            ))}
           </div>
         )
       })}

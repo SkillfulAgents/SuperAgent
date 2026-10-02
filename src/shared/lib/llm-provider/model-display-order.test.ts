@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { BEDROCK_CATALOG, CLAUDE_BARE_CATALOG, OPENROUTER_CATALOG, PLATFORM_CATALOG } from './builtin-catalogs'
-import { compareModelDisplayOrder, modelDisplayOrder } from './model-display-order'
+import { compareModelDisplayOrder, compareModelTier, modelDisplayOrder } from './model-display-order'
 import type { ModelDefinition } from './model-catalog-schema'
 
 const model = (id: string): ModelDefinition => ({ id, label: id, supportedEfforts: ['high'] })
@@ -44,5 +44,10 @@ describe('model display order', () => {
 
   it('keeps unknown custom models in stable catalog order after curated entries', () => {
     expect(ordered(['custom-2', 'gpt-6.1-sol', 'custom-1'])).toEqual(['gpt-6.1-sol', 'custom-2', 'custom-1'])
+  })
+
+  it('orders tiers strongest-first and keeps unknown tiers after them in input order', () => {
+    expect(['haiku', 'sonnet', 'fable', 'opus'].sort(compareModelTier)).toEqual(['fable', 'opus', 'sonnet', 'haiku'])
+    expect(['Luna', 'Mini', 'Sol', 'Astra', 'Terra', 'Nano'].sort(compareModelTier)).toEqual(['Astra', 'Sol', 'Terra', 'Luna', 'Mini', 'Nano'])
   })
 })

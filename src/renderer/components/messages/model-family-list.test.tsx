@@ -177,7 +177,7 @@ describe('ModelFamilyList', () => {
     expect(onPick).toHaveBeenLastCalledWith('claude-opus-5')
   })
 
-  it('orders family rows by generation then tier, independently of prices and defaults', () => {
+  it('orders Claude family rows by tier, even when a stronger tier has an older latest version', () => {
     const catalog: ModelDefinition[] = [
       { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', icon: 'anthropic', supportedEfforts: STD },
       { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', family: 'sonnet', icon: 'anthropic', supportedEfforts: ALL, pricing: { inputPerMtok: 2, outputPerMtok: 10 } },
@@ -188,9 +188,9 @@ describe('ModelFamilyList', () => {
     const onPick = vi.fn()
     const { container } = render(<ModelFamilyList catalog={catalog} value="opus" onPick={onPick} />)
     expect(testIds(container).filter((id) => /^model-family-[a-z]+$/.test(id))).toEqual([
+      'model-family-fable',
       'model-family-opus',
       'model-family-sonnet',
-      'model-family-fable',
       'model-family-haiku',
     ])
     expect(testIds(container).filter((id) => id.startsWith('model-pinned-claude-opus'))).toEqual([
@@ -214,26 +214,27 @@ describe('ModelFamilyList', () => {
     ])
   })
 
-  it.each([false, true])('orders generations newest-first even when newer is cheaper (offerLatest=%s)', (offerLatest) => {
+  it.each([false, true])('orders GPT tier rows strongest-first, then untiered versions newest-first (offerLatest=%s)', (offerLatest) => {
     const gpt: ModelDefinition[] = [
       { id: 'gpt-5.4', label: 'GPT-5.4', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 2.5, outputPerMtok: 15 } },
       { id: 'gpt-5.5', label: 'GPT-5.5', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 5, outputPerMtok: 30 } },
       { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 1, outputPerMtok: 6 } },
       { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 5, outputPerMtok: 30 } },
       { id: 'gpt-6-astra', label: 'GPT-6 Astra', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 10, outputPerMtok: 50 } },
-      { id: 'gpt-6-mini', label: 'GPT-6 Mini', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 0.5, outputPerMtok: 2 } },
       { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 2, outputPerMtok: 10 } },
     ]
     const { container } = render(<ModelFamilyList catalog={gpt} value="gpt-5.5" onPick={vi.fn()} offerLatest={offerLatest} />)
-    const rows = testIds(container).filter(
-      (id) => /^model-family-gpt-[\d.]+$/.test(id) || /^model-pinned-gpt-5\.[45]$/.test(id) || id === 'model-pinned-gpt-6.1-sol',
-    )
+    const rows = testIds(container).filter((id) => /^model-family-gpt-[a-z]+$/.test(id) || /^model-pinned-gpt-5\.[45]$/.test(id))
     expect(rows).toEqual([
-      'model-pinned-gpt-6.1-sol',
-      'model-family-gpt-6',
-      'model-family-gpt-5.6',
+      'model-family-gpt-astra',
+      'model-family-gpt-sol',
+      'model-family-gpt-luna',
       'model-pinned-gpt-5.5',
       'model-pinned-gpt-5.4',
+    ])
+    expect(testIds(container).filter((id) => /^model-pinned-gpt-[\d.]+-sol$/.test(id))).toEqual([
+      'model-pinned-gpt-6.1-sol',
+      'model-pinned-gpt-5.6-sol',
     ])
   })
 
@@ -252,7 +253,7 @@ describe('ModelFamilyList', () => {
     expect(screen.getByTestId('model-pinned-claude-sonnet-4-6')).toBeInTheDocument()
   })
 
-  it('collapses non-lineage models sharing a versioned label base (GPT-5.6 tiers) into one chip row', async () => {
+  it('collapses GPT models sharing a tier word into one row with version chips', async () => {
     const user = userEvent.setup()
     const onPick = vi.fn()
     const platformStyle: ModelDefinition[] = [
@@ -261,20 +262,20 @@ describe('ModelFamilyList', () => {
       { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', family: 'gpt', icon: 'openai', supportedEfforts: STD },
       { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', family: 'gpt', icon: 'openai', supportedEfforts: STD },
       { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD },
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', family: 'gpt', icon: 'openai', supportedEfforts: STD },
     ]
     render(<ModelFamilyList catalog={platformStyle} value="gpt-5.5" onPick={onPick} />)
-    // One row for the 5.6 line, chips per tier (newest-first), suffix-only labels.
-    const row = screen.getByTestId('model-family-gpt-5.6')
-    expect(row).toHaveTextContent('GPT-5.6')
-    expect(screen.getByTestId('model-pinned-gpt-5.6-sol')).toHaveTextContent('Sol')
-    expect(screen.getByTestId('model-pinned-gpt-5.6-terra')).toHaveTextContent('Terra')
-    expect(screen.getByTestId('model-pinned-gpt-5.6-luna')).toHaveTextContent('Luna')
-    // 5.5 and 5.4 stay single rows (their labels carry no variant word).
+    const sol = screen.getByTestId('model-family-gpt-sol')
+    expect(sol).toHaveTextContent('Sol')
+    expect(screen.getByTestId('model-family-gpt-terra')).toHaveTextContent('Terra')
+    expect(screen.getByTestId('model-pinned-gpt-6.1-sol')).toHaveTextContent('6.1')
+    expect(screen.getByTestId('model-pinned-gpt-5.6-sol')).toHaveTextContent('5.6')
+    // 5.5 and 5.4 stay single rows (their labels carry no tier word).
     expect(screen.getByTestId('model-pinned-gpt-5.5')).toHaveTextContent('GPT-5.5')
     expect(screen.getByTestId('model-pinned-gpt-5.4')).toHaveTextContent('GPT-5.4')
-    // Row click picks the line's latest tier; a chip pins a specific one.
-    await user.click(row)
-    expect(onPick).toHaveBeenLastCalledWith('gpt-5.6-sol')
+    // Row click picks the tier's newest version, not the family alias target; a chip pins one.
+    await user.click(sol)
+    expect(onPick).toHaveBeenLastCalledWith('gpt-6.1-sol')
     await user.click(screen.getByTestId('model-pinned-gpt-5.6-luna'))
     expect(onPick).toHaveBeenLastCalledWith('gpt-5.6-luna')
   })

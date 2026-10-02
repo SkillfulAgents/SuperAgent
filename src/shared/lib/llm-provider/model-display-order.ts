@@ -36,6 +36,22 @@ const DISPLAY_ORDER = new Map(
   ),
 )
 
+// Strongest tier first: Claude and Muse tiers are catalog families; OpenAI tiers are label variant words.
+const TIER_ORDER = ['fable', 'opus', 'sonnet', 'haiku', 'muse', 'muse-contributor', 'astra', 'sol', 'terra', 'luna']
+
+export function modelTierRank(tier: string): number | undefined {
+  const rank = TIER_ORDER.indexOf(tier.toLowerCase())
+  return rank < 0 ? undefined : rank
+}
+
+/** Known tiers strongest-first; unknown tiers after them, keeping their input order. */
+export function compareModelTier(a: string, b: string): number {
+  const ar = modelTierRank(a)
+  const br = modelTierRank(b)
+  if (ar === undefined || br === undefined) return Number(br !== undefined) - Number(ar !== undefined)
+  return ar - br
+}
+
 export function modelDisplayOrder(id: string) {
   const canonical = modelPricingCandidates(id, { vendorPrefixesOnly: true })
     .find((candidate) => DISPLAY_ORDER.has(candidate))
