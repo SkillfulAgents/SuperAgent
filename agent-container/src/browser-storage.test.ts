@@ -154,16 +154,19 @@ describe('restoreSiteStorage', () => {
     ])
   })
 
-  it('serves only the stub document on the helper tab and closes it', async () => {
+  it('serves only the stub document on helper tabs, bypassing service workers, and closes them', async () => {
     const { client, calls } = fakeCdp()
     await restoreSiteStorage(client, bundle)
+    const created = calls.filter((call) => call.method === 'Target.createTarget')
     const fetchCalls = calls.filter((call) => call.method.startsWith('Fetch.') && call.method !== 'Fetch.enable')
-    expect(fetchCalls).toEqual([
+    expect(fetchCalls).toEqual(created.flatMap(() => [
       expect.objectContaining({ method: 'Fetch.failRequest', params: expect.objectContaining({ requestId: 'favicon' }) }),
       expect.objectContaining({ method: 'Fetch.fulfillRequest', params: expect.objectContaining({ requestId: 'stub' }) }),
-    ])
-    expect(calls.find((call) => call.method === 'Target.createTarget')?.params).toMatchObject({ background: true })
-    expect(calls.at(-1)).toMatchObject({ method: 'Target.closeTarget', params: { targetId: 'stub-1' } })
+    ]))
+    expect(created.every((call) => call.params.background === true)).toBe(true)
+    expect(calls.filter((call) => call.method === 'Network.setBypassServiceWorker')).toHaveLength(created.length)
+    expect(calls.filter((call) => call.method === 'Target.closeTarget').map((call) => call.params.targetId))
+      .toEqual(created.map((_call, i) => `stub-${i + 1}`))
   })
 
   it('deletes IndexedDB databases on the stub tab\'s session before writing through it', async () => {
@@ -171,9 +174,10 @@ describe('restoreSiteStorage', () => {
     await restoreSiteStorage(client, bundle)
     const deletes = calls.filter((call) => call.method === 'IndexedDB.deleteDatabase')
     const write = calls.findIndex((call) => call.params.functionDeclaration === WRITE_ORIGIN_STORAGE_FUNCTION)
+    const writeSession = calls[write].sessionId
     expect(deletes).toEqual([
-      { method: 'IndexedDB.deleteDatabase', params: { securityOrigin: 'https://example.org', databaseName: 'auth' }, sessionId: 'session-stub-1' },
-      { method: 'IndexedDB.deleteDatabase', params: { securityOrigin: 'https://example.org', databaseName: 'prefs' }, sessionId: 'session-stub-1' },
+      { method: 'IndexedDB.deleteDatabase', params: { securityOrigin: 'https://example.org', databaseName: 'auth' }, sessionId: writeSession },
+      { method: 'IndexedDB.deleteDatabase', params: { securityOrigin: 'https://example.org', databaseName: 'prefs' }, sessionId: writeSession },
     ])
     expect(calls.lastIndexOf(deletes[1])).toBeLessThan(write)
   })
@@ -190,14 +194,18 @@ describe('restoreSiteStorage', () => {
   it('hides the stub tab from tab listings only while it is open', async () => {
     const { client } = fakeCdp()
     const send = client.send.bind(client)
+    let writeTarget = ''
     let hiddenDuringWrite = false
     client.send = async (method, params, sessionId) => {
-      if (params?.functionDeclaration === WRITE_ORIGIN_STORAGE_FUNCTION) hiddenDuringWrite = isStorageStubTarget('stub-1')
+      if (params?.functionDeclaration === WRITE_ORIGIN_STORAGE_FUNCTION) {
+        writeTarget = sessionId!.replace('session-', '')
+        hiddenDuringWrite = isStorageStubTarget(writeTarget)
+      }
       return send(method, params, sessionId)
     }
     await restoreSiteStorage(client, bundle)
     expect(hiddenDuringWrite).toBe(true)
-    expect(isStorageStubTarget('stub-1')).toBe(false)
+    expect(isStorageStubTarget(writeTarget)).toBe(false)
   })
 
   it('reports sessionStorage it could not restore because no tab of that origin is open', async () => {

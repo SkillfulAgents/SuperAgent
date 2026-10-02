@@ -147,6 +147,12 @@ jobs:
         run: npx tsc --noEmit
         working-directory: agent-container
 
+      # Browser storage tests drive a real Chromium. playwright-core's own CLI
+      # installs the build that the locked playwright-core version launches.
+      - name: Install Chromium headless shell
+        run: npx playwright-core install chromium --only-shell
+        working-directory: agent-container
+
       - name: Run container tests
         run: npm test
         working-directory: agent-container

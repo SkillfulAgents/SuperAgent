@@ -215,7 +215,8 @@ export function isStorageStubTarget(targetId: string): boolean {
 /**
  * Run `fn` on a background tab whose document is a blank page served for
  * `origin`. Fetch interception answers every request for the origin, so the
- * real site is never contacted.
+ * real site is never contacted, and service workers are bypassed so an
+ * installed one cannot serve the site's own page here instead.
  */
 async function withStubPage<T>(cdp: CdpClient, origin: string, fn: (sessionId: string) => Promise<T>): Promise<T> {
   const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank', background: true })
@@ -235,6 +236,9 @@ async function withStubPage<T>(cdp: CdpClient, origin: string, fn: (sessionId: s
           }
         : { requestId: params.requestId, errorReason: 'BlockedByClient' }, sessionId).catch(() => {})
     })
+    // The bypass only takes effect once the Network domain is enabled.
+    await cdp.send('Network.enable', {}, sessionId)
+    await cdp.send('Network.setBypassServiceWorker', { bypass: true }, sessionId)
     await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, sessionId)
     await cdp.send('Page.enable', {}, sessionId)
     const loaded = new Promise<void>((resolve) => {
@@ -261,16 +265,25 @@ async function listPages(cdp: CdpClient): Promise<Array<{ targetId: string; url:
   return targetInfos.filter((target) => target.type === 'page')
 }
 
-/** First open tab on `origin`; sessionStorage only exists per tab. */
-async function withOpenTab<T>(cdp: CdpClient, pages: Array<{ targetId: string; url: string }>, origin: string, fn: (sessionId: string) => Promise<T>): Promise<T | undefined> {
-  const page = pages.find((candidate) => originOf(candidate.url) === origin && !candidate.url.endsWith(STUB_PATH))
-  if (!page) return undefined
-  const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId: page.targetId, flatten: true })
-  try {
-    return await fn(sessionId)
-  } finally {
-    await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {})
+/**
+ * Run a sessionStorage page function in every open tab listed on `origin`;
+ * sessionStorage only exists per tab. The function receives the origin and
+ * returns null if the tab has since navigated elsewhere. Returns the results
+ * of tabs still on the origin.
+ */
+async function inOpenTabs<T>(cdp: CdpClient, pages: Array<{ targetId: string; url: string }>, origin: string, functionDeclaration: string, args: unknown[] = []): Promise<T[]> {
+  const results: T[] = []
+  for (const page of pages) {
+    if (originOf(page.url) !== origin || page.url.endsWith(STUB_PATH)) continue
+    const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId: page.targetId, flatten: true })
+    try {
+      const result = await callInPage<T | null>(cdp, sessionId, functionDeclaration, [origin, ...args])
+      if (result !== null) results.push(result)
+    } finally {
+      await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {})
+    }
   }
+  return results
 }
 
 async function siteCookies(cdp: CdpClient, site: string): Promise<StorageCookie[]> {
@@ -306,16 +319,18 @@ async function historyUrls(cdp: CdpClient, pages: Array<{ targetId: string; url:
   return urls
 }
 
+async function visitedUrls(cdp: CdpClient, pages: Array<{ targetId: string; url: string }>): Promise<string[]> {
+  return [...pages.map((page) => page.url), ...await historyUrls(cdp, pages)]
+}
+
 export async function captureSiteStorage(cdp: CdpClient, site: string, extraOrigins: string[] = []): Promise<SiteStorageBundle> {
   const cookies = await siteCookies(cdp, site)
   const pages = await listPages(cdp)
-  const visitedUrls = [...pages.map((page) => page.url), ...await historyUrls(cdp, pages)]
   const origins: OriginStorage[] = []
-  for (const origin of candidateOrigins(site, cookies, visitedUrls, extraOrigins)) {
+  for (const origin of candidateOrigins(site, cookies, await visitedUrls(cdp, pages), extraOrigins)) {
     const { oversizedDatabases, ...read } = await withStubPage(cdp, origin, (sessionId) =>
       callInPage<ReadOriginResult>(cdp, sessionId, READ_ORIGIN_STORAGE_FUNCTION))
-    const sessionStorage = await withOpenTab(cdp, pages, origin, (sessionId) =>
-      callInPage<Array<[string, string]>>(cdp, sessionId, READ_SESSION_STORAGE_FUNCTION))
+    const [sessionStorage] = await inOpenTabs<Array<[string, string]>>(cdp, pages, origin, READ_SESSION_STORAGE_FUNCTION)
     origins.push({
       origin,
       ...read,
@@ -326,18 +341,36 @@ export async function captureSiteStorage(cdp: CdpClient, site: string, extraOrig
   return siteStorageBundleSchema.parse({ version: 1, site, capturedAt: new Date().toISOString(), cookies, origins })
 }
 
+/** Empty localStorage, IndexedDB and open tabs' sessionStorage of `origins`. */
+async function clearOrigins(cdp: CdpClient, pages: Array<{ targetId: string; url: string }>, origins: string[]): Promise<void> {
+  if (origins.length === 0) return
+  // One stub tab's session reaches the agent's browser context, which remote providers keep out of the default one.
+  await withStubPage(cdp, origins[0], async (sessionId) => {
+    for (const origin of origins) {
+      await cdp.send('Storage.clearDataForOrigin', { origin, storageTypes: 'local_storage,indexeddb' }, sessionId)
+    }
+  })
+  for (const origin of origins) await inOpenTabs(cdp, pages, origin, WRITE_SESSION_STORAGE_FUNCTION, [[]])
+}
+
 /**
- * Make the browser's state for the bundle's site match the bundle: existing
- * cookies under the site are removed first (a stale anonymous device cookie
- * next to the restored one breaks some logins), then each origin's storage is
- * replaced. Does not reload any page.
+ * Make the browser's state for the bundle's site match the bundle. Every
+ * cookie under the site is replaced (a stale anonymous device cookie next to
+ * the restored one breaks some logins), and so is the web storage of every
+ * site origin the browser is known to hold: origins the bundle lacks are
+ * emptied, so no state of a previous login survives beside the new one.
  */
-export async function restoreSiteStorage(cdp: CdpClient, bundle: SiteStorageBundle): Promise<RestoreResult> {
+async function writeSiteStorage(cdp: CdpClient, bundle: SiteStorageBundle, extraOrigins: string[] = []): Promise<RestoreResult> {
   const existing = await siteCookies(cdp, bundle.site)
+  const pages = await listPages(cdp)
+  const incoming = new Set(bundle.origins.map((origin) => origin.origin))
+  const stale = candidateOrigins(bundle.site, existing, await visitedUrls(cdp, pages), extraOrigins)
+    .filter((origin) => !incoming.has(origin))
+
   if (existing.length > 0) await cdp.send('Storage.setCookies', { cookies: existing.map(expiredCookie) })
   if (bundle.cookies.length > 0) await cdp.send('Storage.setCookies', { cookies: bundle.cookies })
+  await clearOrigins(cdp, pages, stale)
 
-  const pages = await listPages(cdp)
   const origins: RestoreResult['origins'] = []
   const sessionStorageSkipped: string[] = []
   for (const origin of bundle.origins) {
@@ -356,13 +389,37 @@ export async function restoreSiteStorage(cdp: CdpClient, bundle: SiteStorageBund
         cdp, sessionId, WRITE_ORIGIN_STORAGE_FUNCTION, [{ localStorage: origin.localStorage, indexedDB: origin.indexedDB }])
     })
     origins.push({ origin: origin.origin, ...written })
-    if (origin.sessionStorage) {
-      const restored = await withOpenTab(cdp, pages, origin.origin, (sessionId) =>
-        callInPage<number>(cdp, sessionId, WRITE_SESSION_STORAGE_FUNCTION, [origin.sessionStorage]))
-      if (restored === undefined) sessionStorageSkipped.push(origin.origin)
-    }
+    // Tabs without saved entries are emptied too, so they keep nothing from the previous login.
+    const restored = await inOpenTabs<number>(cdp, pages, origin.origin, WRITE_SESSION_STORAGE_FUNCTION, [origin.sessionStorage ?? []])
+    if (origin.sessionStorage && restored.length === 0) sessionStorageSkipped.push(origin.origin)
   }
   return { cookies: bundle.cookies.length, origins, sessionStorageSkipped }
+}
+
+/**
+ * Restore `bundle` as one unit. The site's current state, including the
+ * bundle's origins even when they are empty now, is captured first; if the
+ * write fails it is put back, and if that fails too the site is cleared so
+ * the browser never keeps a mix of two logins. The thrown error says which.
+ */
+export async function restoreSiteStorage(cdp: CdpClient, bundle: SiteStorageBundle): Promise<RestoreResult> {
+  const backup = await captureSiteStorage(cdp, bundle.site, bundle.origins.map((origin) => origin.origin))
+  try {
+    return await writeSiteStorage(cdp, bundle)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'unknown error'
+    throw new Error(`${reason}; ${await recover(cdp, backup)}`)
+  }
+}
+
+async function recover(cdp: CdpClient, backup: SiteStorageBundle): Promise<string> {
+  const scope = backup.origins.map((origin) => origin.origin)
+  const succeeded = (write: Promise<unknown>) => write.then(() => true, () => false)
+  if (await succeeded(writeSiteStorage(cdp, backup, scope))) return 'the previous state was put back'
+  if (await succeeded(writeSiteStorage(cdp, { ...backup, cookies: [], origins: [] }, scope))) {
+    return 'the previous state could not be put back, so the site was cleared'
+  }
+  return 'the previous state could not be put back or cleared'
 }
 
 // ---------------------------------------------------------------------------
