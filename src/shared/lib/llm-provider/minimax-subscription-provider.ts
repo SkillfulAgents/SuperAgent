@@ -19,9 +19,10 @@ Videos: POST /v1/video_generation with {"model":"MiniMax-Hailuo-2.3","prompt":"O
 Save each result under /workspace/media/ with a unique filename and an extension matching its bytes (.mp3 for speech, .mp4 for video), print only the saved paths, and deliver them with the existing file-delivery tool. Reuse saved files instead of regenerating.`
 // The Messages API does not advertise effort tiers. One level satisfies the catalog.
 const MINIMAX_EFFORTS: EffortLevel[] = ['high']
-// M3's documented context is 1M (MiniMax's Claude Code guide sets the compact window there).
+// Both have a documented 1M context. M3.1 Flash Preview is Token Plan only and always thinks.
 const MINIMAX_MODELS: ModelDefinition[] = [
-  { id: 'MiniMax-M3', label: 'MiniMax M3', contextWindow: 1_000_000, supportsImageInput: true, isLatest: true, isDefault: true },
+  { id: 'MiniMax-M3.1-Flash-Preview', label: 'MiniMax M3.1 Flash Preview', contextWindow: 1_000_000, supportsImageInput: true, isLatest: true, isDefault: true },
+  { id: 'MiniMax-M3', label: 'MiniMax M3', contextWindow: 1_000_000, supportsImageInput: true },
 ].map(model => ({
   ...model, family: 'minimax', icon: 'minimax', blurb: 'Uses your MiniMax Token Plan', supportedEfforts: MINIMAX_EFFORTS, supportsWebSearch: false,
 }))
