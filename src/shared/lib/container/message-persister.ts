@@ -231,6 +231,14 @@ const interruptContainerResponseSchema = z.object({
   processKept: z.boolean().optional(),
 })
 
+// The CLI's result for a prompt a UserPromptSubmit hook blocked (exit 2 or
+// decision "block"), answering exactly one user message. A "continue: false"
+// stop writes the prompt and words its result differently.
+const hookBlockedPromptResultSchema = z.object({
+  result: z.string().startsWith('UserPromptSubmit operation blocked by hook'),
+  user_message_uuids: z.tuple([z.string()]),
+})
+
 // Frames that belong to the turn an interrupt just ended, as opposed to frames
 // about the runtime (results, system events, command lifecycle, capability
 // handshakes) that must land even after Stop. See handleMessage.
@@ -280,6 +288,7 @@ interface StreamingState {
   waitingBackground: boolean
   isRecovering: boolean // Mid-turn death claimed for resume; skip session_error until resume fails
   coalescedUserMessages?: CoalescedUserMessage[] // User texts sent while recovering; delivered with their uuids
+  recentDiscards?: string[] // Last discarded command uuids, sent to a client that connects later
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
   agentSlug: string // The agent that owns this session; half of its registry key
   sessionId: string // The bare id, for payloads and disk paths
@@ -427,6 +436,8 @@ const SECRET_BEARING_TOOL_NAMES = new Set([
 // (proxy caps at 2KB); cap harder here — this text lands in the agent's
 // context and 50 events × 2KB would crowd out the actual work.
 const INSPECT_BODY_PREVIEW_CHARS = 200
+
+const MAX_RECENT_DISCARDS = 20
 
 export function formatWebhookEventLine(event: WebhookEndpointEvent): string {
   const filterNote = event.filter
@@ -693,6 +704,7 @@ class MessagePersister {
       waitingBackground: prior?.waitingBackground ?? false,
       isRecovering: prior?.isRecovering ?? false,
       coalescedUserMessages: prior?.coalescedUserMessages,
+      recentDiscards: prior?.recentDiscards,
       isCompacting: false,
       agentSlug,
       lastContextWindow: 200_000,
@@ -1381,6 +1393,10 @@ class MessagePersister {
     return backgroundTaskList(state)
   }
 
+  getRecentDiscards(agentSlug: string, sessionId: string): string[] {
+    return this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))?.recentDiscards ?? []
+  }
+
   getActiveSubagents(agentSlug: string, sessionId: string): ActiveSubagentSnapshot[] {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state) return []
@@ -1519,6 +1535,15 @@ class MessagePersister {
     return true
   }
 
+  /** Tell clients these messages will never run, so each sender gets its text back. */
+  broadcastDiscarded(agentSlug: string, sessionId: string, uuids: string[]): void {
+    const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
+    if (state) state.recentDiscards = [...(state.recentDiscards ?? []), ...uuids].slice(-MAX_RECENT_DISCARDS)
+    for (const commandUuid of uuids) {
+      this.broadcastToSSE(agentSlug, sessionId, { type: 'command_lifecycle', commandUuid, state: 'discarded' })
+    }
+  }
+
   markRecovered(agentSlug: string, sessionIds: string[]): void {
     for (const sessionId of sessionIds) {
       const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
@@ -1543,6 +1568,7 @@ class MessagePersister {
           tags: { area: 'container', op: 'runtime.recovery.dropCoalesced' },
           extra: { sessionId, messageCount: dropped.length, messageLength },
         })
+        this.broadcastDiscarded(agentSlug, sessionId, dropped.map((message) => message.uuid))
       }
       state.coalescedUserMessages = undefined
       if (state.isActive && !state.isInterrupted) {
@@ -1658,6 +1684,7 @@ class MessagePersister {
       state.currentToolUse = null
       state.currentToolInput = ''
       state.isRecovering = false
+      this.broadcastDiscarded(agentSlug, sessionId, state.coalescedUserMessages?.map((message) => message.uuid) ?? [])
       state.coalescedUserMessages = undefined
       if (processKept) {
         // Foreground subagents died with the turn; background and resumed ones
@@ -2810,11 +2837,15 @@ class MessagePersister {
         // dropped (nothing downstream can act without a uuid).
         const lifecycle = parseCommandLifecycle(content)
         if (lifecycle) {
-          this.broadcastToSSE(agentSlug, sessionId, {
-            type: 'command_lifecycle',
-            commandUuid: lifecycle.commandUuid,
-            state: lifecycle.state,
-          })
+          if (lifecycle.state === 'discarded') {
+            this.broadcastDiscarded(agentSlug, sessionId, [lifecycle.commandUuid])
+          } else {
+            this.broadcastToSSE(agentSlug, sessionId, {
+              type: 'command_lifecycle',
+              commandUuid: lifecycle.commandUuid,
+              state: lifecycle.state,
+            })
+          }
         }
         break
       }
@@ -2892,6 +2923,10 @@ class MessagePersister {
           console.warn(
             `[MessagePersister] Session ${sessionId}: turn ended with no model turns (num_turns=0) — possible hook-blocked prompt`
           )
+          // A hook blocked the prompt: the message this result answers never
+          // reached the model and gets no message entry, and it never will.
+          const blocked = hookBlockedPromptResultSchema.safeParse(content)
+          if (blocked.success) this.broadcastDiscarded(agentSlug, sessionId, blocked.data.user_message_uuids)
         }
 
         // Extract and persist context usage from result event

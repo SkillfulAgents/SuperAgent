@@ -901,6 +901,33 @@ describe('MessagePersister', () => {
   // ============================================================================
 
   describe('informational system messages', () => {
+    // A UserPromptSubmit hook blocking a prompt: the prompt never reaches the
+    // model and gets no message entry. Result texts are the CLI's own.
+    const blockedText = 'UserPromptSubmit operation blocked by hook:\nno'
+    const lifecycle = (state: string) => (uuid: string) => ({ type: 'command_lifecycle', command_uuid: uuid, state })
+    const queued = lifecycle('queued')
+    const started = lifecycle('started')
+    const result = (numTurns: number, uuids: string[], extra = {}) => ({
+      type: 'result', subtype: 'success', is_error: false, num_turns: numTurns, result: blockedText, user_message_uuids: uuids, ...extra,
+    })
+    const discarded = () => sseEvents.filter(e => e.type === 'command_lifecycle' && e.state === 'discarded').map(e => e.commandUuid)
+
+    it.each([
+      ['a prompt hook blocked it before the model ran', [started('b1'), result(0, ['b1'])], ['b1']],
+      ['a late-joining host gets only the replayed result', [result(0, ['b1'], { replayed: true })], ['b1']],
+      ['a prompt queued mid-turn then ran alone and was blocked too', [started('a1'), queued('b1'), result(0, ['a1']), started('b1'), result(0, ['b1'])], ['a1', 'b1']],
+      ['the model ran and its reply starts with the hook text', [started('b1'), result(1, ['b1'])], []],
+      ['the turn had no model turns and no hook stopped it', [started('b1'), result(0, ['b1'], { result: '' })], []],
+      ['the zero-turn result is an error', [started('b1'), result(0, ['b1'], { is_error: true })], []],
+      ['the result names no messages (an older CLI)', [started('b1'), result(0, ['b1'], { user_message_uuids: undefined })], []],
+      ['the result answers a batch, whose other messages may have run', [started('b1'), result(0, ['b1', 'b2'])], []],
+      ['a "continue: false" hook stopped it, which writes the prompt', [started('b1'), result(0, ['b1'], { result: 'Operation stopped by hook: no' })], []],
+    ] as const)('when %s', (_case, frames, expected) => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      for (const frame of frames) mockClient._sendMessage(frame)
+      expect(discarded()).toEqual(expected)
+    })
+
     it('persists a warning banner to the transcript and broadcasts messages_updated', async () => {
       mockClient._sendMessage({
         type: 'system',
@@ -3197,6 +3224,27 @@ describe('MessagePersister', () => {
       } finally {
         vi.mocked(getSessionMetadata).mockResolvedValue(null)
       }
+    })
+  })
+
+  describe('messages held during recovery', () => {
+    const hold = (...uuids: string[]) => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+      for (const uuid of uuids) {
+        expect(messagePersister.coalesceIfRecovering(AGENT_SLUG, SESSION_ID, { uuid, text: 'held' })).toBe(true)
+      }
+    }
+
+    it.each([
+      ['recovery gives up', () => messagePersister.settleRecoveringSessions(AGENT_SLUG, [SESSION_ID])],
+      ['the user stops the session', () => messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID)],
+    ] as const)('reports a held message discarded when %s', async (_case, drop) => {
+      hold('held-1', 'held-2')
+      await drop()
+      const discarded = sseEvents.filter(e => e.type === 'command_lifecycle' && e.state === 'discarded').map(e => e.commandUuid)
+      expect(discarded).toEqual(['held-1', 'held-2'])
+      expect(messagePersister.takeCoalescedUserMessages(AGENT_SLUG, SESSION_ID)).toEqual([])
     })
   })
 
@@ -9153,6 +9201,21 @@ describe('MessagePersister', () => {
         { type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' },
         { type: 'command_lifecycle', commandUuid: 'u2', state: 'some_future_state' },
       ])
+    })
+
+    it('keeps the last 20 discards for a client that connects later, across a reattach', async () => {
+      expect(messagePersister.getRecentDiscards(AGENT_SLUG, SESSION_ID)).toEqual([])
+      for (let i = 0; i <= 18; i++) {
+        mockClient._sendMessage({ type: 'command_lifecycle', command_uuid: `d${i}`, state: 'discarded' })
+      }
+      messagePersister.broadcastDiscarded(AGENT_SLUG, SESSION_ID, ['d19', 'd20'])
+      // Stop cancels a message the agent already received: not a discard.
+      mockClient._sendMessage({ type: 'command_lifecycle', command_uuid: 'cancelled', state: 'cancelled' })
+      await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+
+      expect(messagePersister.getRecentDiscards(AGENT_SLUG, SESSION_ID)).toEqual(
+        Array.from({ length: 20 }, (_, i) => `d${i + 1}`),
+      )
     })
 
     it('ignores a malformed background_tasks_changed frame instead of clearing running tasks', () => {

@@ -246,6 +246,7 @@ function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActor
     slashCommands: (sessionId) => deps.messagePersister.getSlashCommands(slug, sessionId),
     setSlashCommands: (sessionId, commands) => deps.messagePersister.setSlashCommands(slug, sessionId, commands),
     backgroundTasks: (sessionId) => deps.messagePersister.getActiveBackgroundTasks(slug, sessionId),
+    recentDiscards: (sessionId) => deps.messagePersister.getRecentDiscards(slug, sessionId),
     activeSubagents: (sessionId) => deps.messagePersister.getActiveSubagents(slug, sessionId),
 
     subscribeStream: (sessionId, containerSessionId) =>
