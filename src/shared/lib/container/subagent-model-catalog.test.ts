@@ -49,8 +49,12 @@ describe('getSubagentModelCatalog', () => {
     const ids = (provider: 'platform' | 'codex-subscription') =>
       getSubagentModelCatalog(getEffectiveCatalog(provider)).map((model) => model.id)
 
-    expect(ids('platform')).toEqual(expect.arrayContaining(['gpt-5.6-sol', 'gpt-6.1-sol']))
-    expect(ids('codex-subscription')).toEqual(expect.arrayContaining(['gpt-5.6-sol', 'gpt-6.1-sol']))
+    expect(ids('platform')).toEqual(
+      expect.arrayContaining(['gpt-5.6-sol', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra']),
+    )
+    expect(ids('codex-subscription')).toEqual(
+      expect.arrayContaining(['gpt-5.6-sol', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra']),
+    )
     expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.6-sol')
   })
 
