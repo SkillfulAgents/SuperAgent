@@ -7,6 +7,7 @@ import {
   scheduledTasks,
   notifications,
   sessionUnreadMarks,
+  todos,
   connectedAccounts,
   userSettings,
   auditLog,
@@ -62,6 +63,8 @@ function factoryResetTables(): SQLiteTable[] { return [
   agents,
   notifications,
   sessionUnreadMarks,
+  // personal Todo board items (they point at agents and sessions)
+  todos,
   scheduledTasks,
   // Provider-owned child tables precede their installation parent.
   ...agentIntegrationRegistry.storageTables(),

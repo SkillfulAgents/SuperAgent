@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, Compass, MoonStar } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -54,6 +54,8 @@ import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings, useModelSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useExperiment } from '@renderer/hooks/use-experiment'
+import { useTodos } from '@renderer/hooks/use-todos'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
@@ -719,6 +721,32 @@ function NotificationsMenuButton() {
   )
 }
 
+/**
+ * The Todo board (the `todo-board` experiment). Like Notifications, it
+ * carries a dot when something wants you — here, an agent waiting on your
+ * input — so it is visible from anywhere.
+ */
+function TodoMenuButton() {
+  const { data: todos } = useTodos()
+  const needsInput = todos?.filter((t) => t.column === 'needs_input').length ?? 0
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+
+  return (
+    <SidebarMenuButton asChild data-testid="todo-button" isActive={pathname === '/todo'}>
+      <AppLink to="/todo">
+        <ListTodo className="h-4 w-4" />
+        <span>Todo</span>
+        {needsInput > 0 && (
+          <span
+            className="ml-auto h-1.5 w-1.5 rounded-full bg-orange-500"
+            aria-label={`${needsInput} waiting on your input`}
+          />
+        )}
+      </AppLink>
+    </SidebarMenuButton>
+  )
+}
+
 function UserMenu() {
   const { isAuthMode, user, signOut } = useUser()
   // Go through the same switch path as the sidebar's control rather than
@@ -880,6 +908,7 @@ export function AppSidebar() {
           ? null
           : discoverableAgents.length > 0
   const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
+  const todoBoardEnabled = useExperiment('todo-board')
   const exploreVisited = pathname === '/explore' || pathname.startsWith('/explore/')
   // Sticky across reloads, and read once at mount so the badge doesn't vanish
   // out from under the pointer mid-click.
@@ -1546,6 +1575,11 @@ export function AppSidebar() {
                 <SidebarMenuItem>
                   <NotificationsMenuButton />
                 </SidebarMenuItem>
+                {todoBoardEnabled && (
+                  <SidebarMenuItem>
+                    <TodoMenuButton />
+                  </SidebarMenuItem>
+                )}
                 {hasMarketplace && (
                   <SidebarMenuItem>
                     <SidebarMenuButton

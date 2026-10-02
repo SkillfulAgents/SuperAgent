@@ -200,6 +200,42 @@ html[data-keyboard-open] [data-composer-footer] {
   pointer-events: none;
 }
 
+/* Live status text on a working Todo card: a slow light sweep across muted
+   text, so "still going" reads without a spinner. */
+.todo-shimmer {
+  color: transparent;
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted-foreground)) 0%,
+    hsl(var(--muted-foreground)) 40%,
+    hsl(var(--foreground)) 50%,
+    hsl(var(--muted-foreground)) 60%,
+    hsl(var(--muted-foreground)) 100%
+  );
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: todo-shimmer 2.4s linear infinite;
+}
+
+@keyframes todo-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .todo-shimmer {
+    animation: none;
+    background: none;
+    color: hsl(var(--muted-foreground));
+  }
+}
+
+/* The Todo draft dialog wants its empty-state hint quieter than chat's. */
+.todo-draft-editor .markdown-composer-editor[data-empty="true"]::before {
+  color: hsl(var(--muted-foreground) / 0.6);
+}
+
 .markdown-composer-editor p,
 .markdown-composer-editor h1,
 .markdown-composer-editor h2,

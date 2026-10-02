@@ -89,6 +89,12 @@ vi.mock('@renderer/components/ui/app-link', () => ({
   }) => <a href="/agents/test-agent" className={className} data-testid={testId}>{children}</a>,
 }))
 
+// The Todo board's header chrome has its own tests (todo-session-chrome.test.tsx).
+vi.mock('@renderer/components/todo/todo-session-chrome', () => ({
+  TodoSessionBack: () => null,
+  TodoSessionControls: () => null,
+}))
+
 vi.mock('@renderer/components/agents/agent-context-menu', () => ({
   AgentContextMenu: ({ agent, children }: { agent: ApiAgent; children: ReactNode }) => (
     <span data-testid="agent-breadcrumb-context-menu" data-agent-slug={agent.slug}>{children}</span>
