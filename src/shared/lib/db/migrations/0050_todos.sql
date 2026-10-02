@@ -7,6 +7,8 @@ CREATE TABLE `todos` (
 	`session_id` text,
 	`status` text DEFAULT 'draft' NOT NULL,
 	`position` real NOT NULL,
+	`start_claim` text,
+	`start_claimed_at` integer,
 	`created_at` integer NOT NULL,
 	`updated_at` integer NOT NULL,
 	`started_at` integer,

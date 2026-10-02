@@ -7,11 +7,14 @@ let testDb: AppDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 import {
+  START_CLAIM_TTL_MS,
+  claimStart,
   createTodo,
   deleteTodo,
   getTodo,
   listTodos,
   moveTodo,
+  releaseStart,
   setTodoStatus,
   startTodo,
   unlinkAgentStatements,
@@ -32,9 +35,16 @@ afterEach(async () => {
   await handle.close()
 })
 
+/** Claims a draft for a start and returns the token. */
+async function claim(id: string, agentSlug = 'agent-a') {
+  const claimed = await claimStart(ME, id, agentSlug)
+  if (!claimed.ok) throw new Error('could not claim')
+  return claimed.claim
+}
+
 async function startedTodo(agentSlug = 'agent-a', sessionId = 'session-1') {
   const draft = await createTodo(ME, { title: 'Write the report', description: '', agentSlug })
-  const started = await startTodo(ME, draft.id, agentSlug, sessionId)
+  const started = await startTodo(ME, draft.id, agentSlug, sessionId, await claim(draft.id, agentSlug))
   if (!started.ok) throw new Error('could not start')
   return started.todo
 }
@@ -100,20 +110,52 @@ describe('starting', () => {
     expect(todo.startedAt).toBeInstanceOf(Date)
   })
 
-  it('refuses a session of an agent the draft is no longer assigned to', async () => {
+  it('claims and links only for the agent the draft is given to', async () => {
     const draft = await createTodo(ME, { title: 'Draft', description: '', agentSlug: 'agent-a' })
-    await updateDraft(ME, draft.id, { agentSlug: 'agent-b' })
-    expect(await startTodo(ME, draft.id, 'agent-a', 'session-1')).toEqual({ ok: false, reason: 'conflict' })
+    expect(await claimStart(ME, draft.id, 'agent-b')).toEqual({ ok: false, reason: 'conflict' })
+    const token = await claim(draft.id, 'agent-a')
+    expect(await startTodo(ME, draft.id, 'agent-b', 'session-1', token)).toEqual({ ok: false, reason: 'conflict' })
   })
 
-  it('happens once: a second start of the same draft is a conflict', async () => {
+  it('is claimed once: a second claim waits until the first is released', async () => {
     const draft = await createTodo(ME, { title: 'Draft', description: '', agentSlug: 'agent-a' })
-    const results = await Promise.all([
-      startTodo(ME, draft.id, 'agent-a', 'session-1'),
-      startTodo(ME, draft.id, 'agent-a', 'session-2'),
-    ])
-    expect(results.filter((r) => r.ok)).toHaveLength(1)
-    expect(results.filter((r) => !r.ok)).toEqual([{ ok: false, reason: 'conflict' }])
+    const claims = await Promise.all([claimStart(ME, draft.id, 'agent-a'), claimStart(ME, draft.id, 'agent-a')])
+    expect(claims.filter((c) => c.ok)).toHaveLength(1)
+    expect(claims.filter((c) => !c.ok)).toEqual([{ ok: false, reason: 'conflict' }])
+
+    const held = claims.find((c) => c.ok)!
+    if (!held.ok) throw new Error('unreachable')
+    await releaseStart(ME, draft.id, 'someone-elses-token')
+    expect((await claimStart(ME, draft.id, 'agent-a')).ok).toBe(false)
+    await releaseStart(ME, draft.id, held.claim)
+    expect((await claimStart(ME, draft.id, 'agent-a')).ok).toBe(true)
+  })
+
+  it('links only with the claim that holds it', async () => {
+    const draft = await createTodo(ME, { title: 'Draft', description: '', agentSlug: 'agent-a' })
+    const token = await claim(draft.id)
+    expect(await startTodo(ME, draft.id, 'agent-a', 'session-1', 'not-the-claim')).toEqual({ ok: false, reason: 'conflict' })
+    const started = await startTodo(ME, draft.id, 'agent-a', 'session-1', token)
+    expect(started.ok && started.todo).toMatchObject({ status: 'active', startClaim: null, startClaimedAt: null })
+  })
+
+  it('a claim lapses, so a tab that went away mid-start does not hold the draft forever', async () => {
+    const draft = await createTodo(ME, { title: 'Draft', description: '', agentSlug: 'agent-a' })
+    await claim(draft.id)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(Date.now() + START_CLAIM_TTL_MS + 1_000)
+      expect((await claimStart(ME, draft.id, 'agent-a')).ok).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('while claimed, the draft is not edited or archived out from under the start', async () => {
+    const draft = await createTodo(ME, { title: 'Draft', description: '', agentSlug: 'agent-a' })
+    await claim(draft.id)
+    expect(await updateDraft(ME, draft.id, { title: 'Changed' })).toEqual({ ok: false, reason: 'conflict' })
+    expect(await setTodoStatus(ME, draft.id, 'archived')).toEqual({ ok: false, reason: 'conflict' })
   })
 
   it('freezes the brief: a started item is no longer a draft to edit', async () => {
@@ -147,7 +189,7 @@ describe('status changes', () => {
     expect(await setTodoStatus(ME, draft.id, 'done')).toEqual({ ok: false, reason: 'conflict' })
     const back = await setTodoStatus(ME, draft.id, 'draft')
     expect(back.ok && back.todo).toMatchObject({ status: 'draft', agentSlug: 'agent-a' })
-    expect((await startTodo(ME, draft.id, 'agent-a', 'session-1')).ok).toBe(true)
+    expect((await startTodo(ME, draft.id, 'agent-a', 'session-1', await claim(draft.id))).ok).toBe(true)
   })
 
   it('archived work that was started unarchives to Done, never to Drafts', async () => {

@@ -69,7 +69,8 @@ async function createDraft(body: Record<string, unknown> = { title: 'Write the r
 async function startDraft(agentSlug = 'agent-a', sessionId = 'session-1') {
   const draft = await createDraft({ title: 'Write the report', agentSlug })
   state.sessions.set(`${agentSlug}/${sessionId}`, { isActive: true, isAwaitingInput: false })
-  const res = await call(`/${draft.id}/start`, 'POST', { sessionId })
+  const { claim } = await (await call(`/${draft.id}/claim`, 'POST', {})).json()
+  const res = await call(`/${draft.id}/start`, 'POST', { sessionId, claim })
   expect(res.status).toBe(200)
   return res.json()
 }
@@ -148,19 +149,49 @@ describe('starting', () => {
 
   it('needs an agent on the draft', async () => {
     const draft = await createDraft()
-    expect((await call(`/${draft.id}/start`, 'POST', { sessionId: 'session-1' })).status).toBe(409)
+    expect((await call(`/${draft.id}/claim`, 'POST', {})).status).toBe(409)
+  })
+
+  it('claims only for an agent the person can still see', async () => {
+    const draft = await createDraft({ title: 'x', agentSlug: 'agent-a' })
+    state.readable.get('alice')!.delete('agent-a')
+    expect((await call(`/${draft.id}/claim`, 'POST', {})).status).toBe(404)
+  })
+
+  it('lets one start claim a draft: a second tab is refused before it makes a session', async () => {
+    const draft = await createDraft({ title: 'x', agentSlug: 'agent-a' })
+    const claims = await Promise.all([call(`/${draft.id}/claim`, 'POST', {}), call(`/${draft.id}/claim`, 'POST', {})])
+    expect(claims.map((r) => r.status).sort()).toEqual([200, 409])
+    const listed = (await (await call('')).json()).todos[0]
+    expect(listed).toMatchObject({ id: draft.id, starting: true })
+  })
+
+  it('a released claim lets the draft be started again', async () => {
+    const draft = await createDraft({ title: 'x', agentSlug: 'agent-a' })
+    const { claim } = await (await call(`/${draft.id}/claim`, 'POST', {})).json()
+    expect((await call(`/${draft.id}/release`, 'POST', { claim })).status).toBe(204)
+    expect((await (await call('')).json()).todos[0].starting).toBe(false)
+    expect((await call(`/${draft.id}/claim`, 'POST', {})).status).toBe(200)
   })
 
   it('refuses a session the agent does not have', async () => {
     const draft = await createDraft({ title: 'x', agentSlug: 'agent-a' })
+    const { claim } = await (await call(`/${draft.id}/claim`, 'POST', {})).json()
     state.sessions.set('agent-b/session-1', { isActive: true, isAwaitingInput: false })
-    expect((await call(`/${draft.id}/start`, 'POST', { sessionId: 'session-1' })).status).toBe(404)
+    expect((await call(`/${draft.id}/start`, 'POST', { sessionId: 'session-1', claim })).status).toBe(404)
+  })
+
+  it('refuses a link without the claim', async () => {
+    const draft = await createDraft({ title: 'x', agentSlug: 'agent-a' })
+    await call(`/${draft.id}/claim`, 'POST', {})
+    state.sessions.set('agent-a/session-1', { isActive: true, isAwaitingInput: false })
+    expect((await call(`/${draft.id}/start`, 'POST', { sessionId: 'session-1', claim: 'guess' })).status).toBe(409)
+    expect((await call(`/${draft.id}/start`, 'POST', { sessionId: 'session-1' })).status).toBe(400)
   })
 
   it('refuses to start twice', async () => {
     const todo = await startDraft()
-    state.sessions.set('agent-a/session-2', { isActive: true, isAwaitingInput: false })
-    expect((await call(`/${todo.id}/start`, 'POST', { sessionId: 'session-2' })).status).toBe(409)
+    expect((await call(`/${todo.id}/claim`, 'POST', {})).status).toBe(409)
   })
 
   it('a started item is no longer editable as a draft', async () => {

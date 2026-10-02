@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b4fd5db3-32b1-4a6c-9c17-522505a6c66f",
+  "id": "b71a19f0-f83c-4319-8670-d9d5e4713328",
   "prevId": "a159db8c-3b67-4318-a520-408d6323ff89",
   "tables": {
     "agent_acl": {
@@ -3004,6 +3004,20 @@
           "type": "real",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "start_claim": {
+          "name": "start_claim",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "start_claimed_at": {
+          "name": "start_claimed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "created_at": {

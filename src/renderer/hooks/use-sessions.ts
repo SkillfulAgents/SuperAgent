@@ -10,6 +10,7 @@ import { applySessionActivityStatus, patchSessionInCaches } from '@renderer/lib/
 import type { ApiSession } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { SessionDashboardDispatch } from '@shared/lib/dashboard-dispatch-schema'
+import { TODOS_QUERY_KEY } from './todos-query-key'
 
 // Re-export for convenience
 export type { ApiSession }
@@ -167,6 +168,8 @@ export function useDeleteSession() {
       queryClient.invalidateQueries({
         queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
       })
+      // A Todo item started in it lets go of it on the server.
+      queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
     },
   })
 }

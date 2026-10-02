@@ -1,6 +1,6 @@
 import { useMutation, useMutationState, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
+import { handleMutationError } from '@renderer/lib/query-client'
 import type {
   CreateTodoInput,
   TodoStatusChange,
@@ -13,7 +13,9 @@ import { useCreateSession } from './use-sessions'
 
 export type { TodoView }
 
-export const TODOS_QUERY_KEY = ['todos'] as const
+import { TODOS_QUERY_KEY } from './todos-query-key'
+
+export { TODOS_QUERY_KEY }
 
 async function readError(res: Response, fallback: string): Promise<Error> {
   const body = await res.json().catch(() => null) as { error?: string } | null
@@ -30,8 +32,13 @@ async function send<T>(path: string, method: string, body: unknown, fallback: st
   return res.json() as Promise<T>
 }
 
-function showError(error: Error) {
-  toast.error(error.message || 'Something went wrong')
+/**
+ * After a failed write the board may be out of date (the item was started,
+ * archived or unlinked elsewhere), so it reloads rather than keep offering
+ * an action the server will refuse again.
+ */
+function refreshBoard(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
 }
 
 /** Replace one item in the cached board, or add it when it is new. */
@@ -47,7 +54,9 @@ function putTodo(queryClient: QueryClient, todo: TodoView) {
 /**
  * The person's Todo board. Each active item's column is live session state,
  * so the global notification handler invalidates this on every session
- * lifecycle event; nothing here polls.
+ * lifecycle event; nothing here polls. Deleting a session or an agent from
+ * this window refreshes it too, and coming back to the window catches up on
+ * changes made elsewhere (another tab, sessions deleted automatically).
  */
 export function useTodos() {
   const enabled = useExperiment('todo-board')
@@ -59,6 +68,7 @@ export function useTodos() {
       return ((await res.json()) as { todos: TodoView[] }).todos
     },
     enabled,
+    refetchOnWindowFocus: true,
   })
 }
 
@@ -67,6 +77,7 @@ export function useCreateTodo() {
   return useMutation({
     mutationFn: (input: CreateTodoInput) => send<TodoView>('/api/todos', 'POST', input, 'Failed to save the draft'),
     onSuccess: (todo) => putTodo(queryClient, todo),
+    onError: () => refreshBoard(queryClient),
   })
 }
 
@@ -78,6 +89,7 @@ export function useUpdateTodo() {
     mutationFn: ({ id, ...patch }: UpdateTodoInput & { id: string }) =>
       send<TodoView>(`/api/todos/${id}`, 'PATCH', patch, 'Failed to save the draft'),
     onSuccess: (todo) => putTodo(queryClient, todo),
+    onError: () => refreshBoard(queryClient),
   })
 }
 
@@ -87,8 +99,7 @@ export function useSetTodoStatus() {
     mutationFn: ({ id, status }: { id: string; status: TodoStatusChange }) =>
       send<TodoView>(`/api/todos/${id}/status`, 'POST', { status }, 'Failed to update the todo'),
     onSuccess: (todo) => putTodo(queryClient, todo),
-    // Here, not per call: the draft dialog archives as it closes.
-    onError: showError,
+    onError: () => refreshBoard(queryClient),
   })
 }
 
@@ -107,10 +118,7 @@ export function useMoveTodo() {
         current?.map((t) => (t.id === id ? { ...t, position } : t)))
     },
     onSuccess: (todo) => putTodo(queryClient, todo),
-    onError: (error) => {
-      showError(error)
-      void queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
-    },
+    onError: () => refreshBoard(queryClient),
   })
 }
 
@@ -125,59 +133,78 @@ export function useDeleteTodo() {
     onSuccess: (id) => {
       queryClient.setQueryData<TodoView[]>(TODOS_QUERY_KEY, (current) => current?.filter((t) => t.id !== id))
     },
-    // Here, not per call: the draft dialog deletes as it closes.
-    onError: showError,
+    onError: () => refreshBoard(queryClient),
   })
 }
 
 const START_TODO_MUTATION_KEY = ['start-todo'] as const
 
-/** Drafts whose start has begun creating a session, so a second start can't make another. */
-const claimedStarts = new Set<string>()
+/** Errors useCreateSession already toasted, so a failed start doesn't say it twice. */
+const reportedBySessionCreation = new WeakSet<Error>()
+
 
 /**
- * Ids of the drafts being started right now, from any component. Starting
- * can take a while (the agent's container may have to boot first), so the
- * board shows it.
+ * Ids of the drafts being started right now: by this tab (known at once)
+ * or by another (known from the board, which reports held start claims).
+ * Starting can take a while (the agent's container may have to boot
+ * first), so the board shows it.
  */
 export function useStartingTodoIds(): Set<string> {
   const ids = useMutationState({
     filters: { mutationKey: START_TODO_MUTATION_KEY, status: 'pending' },
     select: (mutation) => (mutation.state.variables as { id: string } | undefined)?.id,
   })
-  return new Set(ids.filter((id): id is string => !!id))
+  const { data: todos } = useTodos()
+  return new Set([
+    ...ids.filter((id): id is string => !!id),
+    ...(todos ?? []).filter((t) => t.starting).map((t) => t.id),
+  ])
 }
 
 /**
- * Hands a draft to its agent: a new session with the brief as its first
- * message, through the same endpoint the composer uses, then the link from
- * the item to that session. Resolves with the started item.
+ * Hands a draft to its agent: claims the draft on the server, creates a
+ * session with the brief as its first message through the same endpoint the
+ * composer uses, then links the item to that session. Resolves with the
+ * started item.
  *
- * Failures toast from here rather than from each `mutate` call: the draft
- * dialog closes as soon as it starts, and a call's own callbacks don't run
- * once its component is gone. The other mutations the dialog fires as it
- * closes do the same.
+ * The claim is what keeps a draft to one session: a second start, from this
+ * tab or another, is refused before it creates anything. The brief sent is
+ * the one the claim returns, which is what the item keeps.
+ *
+ * Failures toast through the app's global mutation handler, like every
+ * mutation here, except a failed session creation: that is its own
+ * mutation and has already said so.
  */
 export function useStartTodo() {
   const queryClient = useQueryClient()
   const createSession = useCreateSession()
   return useMutation({
     mutationKey: START_TODO_MUTATION_KEY,
-    mutationFn: async (todo: Pick<TodoView, 'id' | 'title' | 'description' | 'agentSlug'>) => {
+    mutationFn: async (todo: Pick<TodoView, 'id' | 'agentSlug'>) => {
       if (!todo.agentSlug) throw new Error('Pick an agent to start this')
-      // The server refuses a second link, but not a second session: stop a
-      // repeat start here before it hands the agent the same brief twice.
-      if (claimedStarts.has(todo.id)) throw new Error('This is already starting')
-      claimedStarts.add(todo.id)
+      const { claim, todo: claimed } = await send<{ claim: string; todo: TodoView }>(
+        `/api/todos/${todo.id}/claim`, 'POST', {}, 'Could not start the todo',
+      )
+      let sessionId: string
       try {
-        const session = await createSession.mutateAsync({ agentSlug: todo.agentSlug, message: todoPrompt(todo) })
-        return await send<TodoView>(`/api/todos/${todo.id}/start`, 'POST', { sessionId: session.id }, 'The session started, but the todo could not be linked to it')
-      } finally {
-        claimedStarts.delete(todo.id)
+        sessionId = (await createSession.mutateAsync({ agentSlug: claimed.agentSlug ?? todo.agentSlug, message: todoPrompt(claimed) })).id
+      } catch (error) {
+        if (error instanceof Error) reportedBySessionCreation.add(error)
+        // Nothing started: let the draft be started again.
+        void apiFetch(`/api/todos/${todo.id}/release`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ claim }),
+        }).catch(() => {})
+        throw error
       }
+      return send<TodoView>(`/api/todos/${todo.id}/start`, 'POST', { sessionId, claim }, 'The session started, but the todo could not be linked to it')
     },
+    meta: { skipGlobalErrorToast: true },
     onSuccess: (todo) => putTodo(queryClient, todo),
-    onError: showError,
+    onError: (error) => {
+      if (!reportedBySessionCreation.has(error)) handleMutationError(error)
+    },
     onSettled: () => queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY }),
   })
 }

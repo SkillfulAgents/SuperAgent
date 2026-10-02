@@ -540,12 +540,12 @@ export const migrationBundle: readonly MigrationMeta[] = [
   },
   {
     "sql": [
-      "CREATE TABLE `todos` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text NOT NULL,\n\t`title` text NOT NULL,\n\t`description` text DEFAULT '' NOT NULL,\n\t`agent_slug` text,\n\t`session_id` text,\n\t`status` text DEFAULT 'draft' NOT NULL,\n\t`position` real NOT NULL,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\t`started_at` integer,\n\t`completed_at` integer,\n\tCONSTRAINT \"todos_session_check\" CHECK(\"todos\".\"session_id\" is null or (\"todos\".\"agent_slug\" is not null and \"todos\".\"status\" <> 'draft'))\n);\n",
+      "CREATE TABLE `todos` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text NOT NULL,\n\t`title` text NOT NULL,\n\t`description` text DEFAULT '' NOT NULL,\n\t`agent_slug` text,\n\t`session_id` text,\n\t`status` text DEFAULT 'draft' NOT NULL,\n\t`position` real NOT NULL,\n\t`start_claim` text,\n\t`start_claimed_at` integer,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\t`started_at` integer,\n\t`completed_at` integer,\n\tCONSTRAINT \"todos_session_check\" CHECK(\"todos\".\"session_id\" is null or (\"todos\".\"agent_slug\" is not null and \"todos\".\"status\" <> 'draft'))\n);\n",
       "\nCREATE INDEX `todos_user_idx` ON `todos` (`user_id`);",
       "\nCREATE INDEX `todos_agent_session_idx` ON `todos` (`agent_slug`,`session_id`);"
     ],
     "bps": true,
-    "folderMillis": 1790975269489,
-    "hash": "79b0ced418a98adef325f8ed7e54769cea8e1a0e91a3e7b694bcd071a17e40d1"
+    "folderMillis": 1790976371108,
+    "hash": "774e659ffccb8ffb46e8353cda10d8671b515628c81918b66109e70915bcf607"
   }
 ]

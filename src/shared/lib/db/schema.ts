@@ -834,6 +834,12 @@ export const todos = sqliteTable('todos', {
   // change status land on top (the time, in ms); dragging puts one between
   // its new neighbours.
   position: real('position').notNull(),
+  // A start in progress: the tab that claimed it creates the session, then
+  // links it with this token. Only one claim holds at a time, so two tabs
+  // can't both start the agent. A claim older than START_CLAIM_TTL_MS has
+  // lapsed (its tab went away mid-start).
+  startClaim: text('start_claim'),
+  startClaimedAt: integer('start_claimed_at', { mode: 'timestamp_ms' }),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   startedAt: integer('started_at', { mode: 'timestamp_ms' }),

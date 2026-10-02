@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   createSession: vi.fn(),
   toastError: vi.fn(),
   moveOk: true,
+  claimHeld: false,
 }))
 
 vi.mock('sonner', () => ({ toast: { error: state.toastError } }))
@@ -26,14 +27,25 @@ vi.mock('@renderer/lib/api', () => ({
     if (path === '/api/todos/t1/position' && state.moveOk) {
       return new Response(JSON.stringify({ id: 't1', column: 'drafts', position: body.position }))
     }
+    // One claim at a time, as the server keeps it.
+    if (path === '/api/todos/t1/claim') {
+      if (state.claimHeld) return new Response(JSON.stringify({ error: 'This is already starting' }), { status: 409 })
+      state.claimHeld = true
+      return new Response(JSON.stringify({ claim: 'c1', todo: { id: 't1', title: 'Churn', description: 'Why did it spike?', agentSlug: 'analyst' } }))
+    }
+    if (path === '/api/todos/t1/release') {
+      state.claimHeld = false
+      return new Response(null, { status: 204 })
+    }
     if (path === '/api/todos/t1/start') {
+      state.claimHeld = false
       return new Response(JSON.stringify({ id: 't1', column: 'working', sessionId: body.sessionId }))
     }
     return new Response(JSON.stringify({ error: 'nope' }), { status: 409 })
   },
 }))
 
-import { TODOS_QUERY_KEY, useMoveTodo, useStartTodo, useStartingTodoIds, useTodos, type TodoView } from './use-todos'
+import { TODOS_QUERY_KEY, useMoveTodo, useSetTodoStatus, useStartTodo, useStartingTodoIds, useTodos, type TodoView } from './use-todos'
 
 function wrapper(client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -47,6 +59,7 @@ beforeEach(() => {
   state.createSession.mockReset()
   state.toastError.mockReset()
   state.moveOk = true
+  state.claimHeld = false
 })
 
 describe('useTodos', () => {
@@ -64,19 +77,20 @@ describe('useTodos', () => {
 })
 
 describe('useStartTodo', () => {
-  it('starts a session with the brief, then links it', async () => {
+  it('claims the draft, starts a session with the stored brief, then links it', async () => {
     state.createSession.mockResolvedValue({ id: 'session-9' })
     const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
-    const started = await result.current.mutateAsync({ id: 't1', title: 'Churn', description: 'Why did it spike?', agentSlug: 'analyst' })
+    const started = await result.current.mutateAsync({ id: 't1', agentSlug: 'analyst' })
 
+    expect(state.calls[0]).toMatchObject({ path: '/api/todos/t1/claim', method: 'POST' })
     expect(state.createSession).toHaveBeenCalledWith({ agentSlug: 'analyst', message: 'Churn\n\nWhy did it spike?' })
-    expect(state.calls).toContainEqual({ path: '/api/todos/t1/start', method: 'POST', body: { sessionId: 'session-9' } })
+    expect(state.calls).toContainEqual({ path: '/api/todos/t1/start', method: 'POST', body: { sessionId: 'session-9', claim: 'c1' } })
     expect(started).toMatchObject({ column: 'working', sessionId: 'session-9' })
   })
 
   it('needs an agent', async () => {
     const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
-    await expect(result.current.mutateAsync({ id: 't1', title: 'x', description: '', agentSlug: null }))
+    await expect(result.current.mutateAsync({ id: 't1', agentSlug: null }))
       .rejects.toThrow('Pick an agent to start this')
     expect(state.createSession).not.toHaveBeenCalled()
   })
@@ -86,7 +100,7 @@ describe('useStartTodo', () => {
     state.createSession.mockReturnValue(new Promise((resolve) => { resolveSession = resolve }))
     const { result } = renderHook(() => ({ start: useStartTodo(), starting: useStartingTodoIds() }), { wrapper: wrapper() })
 
-    void result.current.start.mutateAsync({ id: 't1', title: 'x', description: '', agentSlug: 'analyst' })
+    void result.current.start.mutateAsync({ id: 't1', agentSlug: 'analyst' })
     await waitFor(() => expect(result.current.starting.has('t1')).toBe(true))
     resolveSession({ id: 'session-1' })
     await waitFor(() => expect(result.current.starting.has('t1')).toBe(false))
@@ -96,7 +110,7 @@ describe('useStartTodo', () => {
     let resolveSession: (value: { id: string }) => void = () => {}
     state.createSession.mockReturnValue(new Promise((resolve) => { resolveSession = resolve }))
     const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
-    const brief = { id: 't1', title: 'x', description: '', agentSlug: 'analyst' }
+    const brief = { id: 't1', agentSlug: 'analyst' }
 
     const first = result.current.mutateAsync(brief)
     await expect(result.current.mutateAsync(brief)).rejects.toThrow('This is already starting')
@@ -105,15 +119,38 @@ describe('useStartTodo', () => {
     expect(state.createSession).toHaveBeenCalledTimes(1)
   })
 
-  it('still reports a failure after the component that started it is gone', async () => {
-    let rejectSession: (error: Error) => void = () => {}
-    state.createSession.mockReturnValue(new Promise((_, reject) => { rejectSession = reject }))
+  it('says when another start already holds the draft, even after its component is gone', async () => {
+    state.claimHeld = true
     const { result, unmount } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
-
-    result.current.mutate({ id: 't1', title: 'x', description: '', agentSlug: 'analyst' })
+    result.current.mutate({ id: 't1', agentSlug: 'analyst' })
     unmount()
-    rejectSession(new Error('The agent could not start'))
-    await waitFor(() => expect(state.toastError).toHaveBeenCalledWith('The agent could not start'))
+    await waitFor(() => expect(state.toastError).toHaveBeenCalledWith('This is already starting'))
+    expect(state.createSession).not.toHaveBeenCalled()
+  })
+
+  it('leaves a failed session creation to report itself, so it is said once', async () => {
+    state.createSession.mockRejectedValue(new Error('The agent could not start'))
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    await expect(result.current.mutateAsync({ id: 't1', agentSlug: 'analyst' })).rejects.toThrow()
+    expect(state.toastError).not.toHaveBeenCalled()
+  })
+
+  it('gives the claim back when the session could not be created', async () => {
+    state.createSession.mockRejectedValue(new Error('The agent could not start'))
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    await expect(result.current.mutateAsync({ id: 't1', agentSlug: 'analyst' })).rejects.toThrow('The agent could not start')
+    await waitFor(() => expect(state.calls).toContainEqual({ path: '/api/todos/t1/release', method: 'POST', body: { claim: 'c1' } }))
+    expect(state.claimHeld).toBe(false)
+  })
+})
+
+describe('useSetTodoStatus', () => {
+  it('reloads the board when a change fails: it may be out of date', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } })
+    qc.setQueryData(TODOS_QUERY_KEY, [{ id: 't1', column: 'has_updates' }])
+    const { result } = renderHook(() => useSetTodoStatus(), { wrapper: wrapper(qc) })
+    result.current.mutate({ id: 't1', status: 'done' })
+    await waitFor(() => expect(qc.getQueryState(TODOS_QUERY_KEY)?.isInvalidated).toBe(true))
   })
 })
 
@@ -131,13 +168,12 @@ describe('useMoveTodo', () => {
     expect(state.calls).toContainEqual({ path: '/api/todos/t1/position', method: 'POST', body: { position: 3 } })
   })
 
-  it('says so and reloads the board when the move fails', async () => {
+  it('reloads the board when the move fails', async () => {
     state.moveOk = false
     const qc = client()
     qc.setQueryData(TODOS_QUERY_KEY, board())
     const { result } = renderHook(() => useMoveTodo(), { wrapper: wrapper(qc) })
     result.current.mutate({ id: 't1', position: 3 })
-    await waitFor(() => expect(state.toastError).toHaveBeenCalledWith('nope'))
-    expect(qc.getQueryState(TODOS_QUERY_KEY)?.isInvalidated).toBe(true)
+    await waitFor(() => expect(qc.getQueryState(TODOS_QUERY_KEY)?.isInvalidated).toBe(true))
   })
 })

@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   navigate: vi.fn(),
   setStatus: vi.fn(),
   move: vi.fn(),
+  update: vi.fn(),
   start: vi.fn(),
   starting: new Set<string>(),
 }))
@@ -27,7 +28,7 @@ vi.mock('@renderer/hooks/use-todos', () => ({
   useSetTodoStatus: () => ({ mutate: state.setStatus }),
   useMoveTodo: () => ({ mutate: state.move }),
   useCreateTodo: () => ({ mutateAsync: vi.fn() }),
-  useUpdateTodo: () => ({ mutateAsync: vi.fn() }),
+  useUpdateTodo: () => ({ mutateAsync: state.update }),
   useDeleteTodo: () => ({ mutate: vi.fn() }),
 }))
 
@@ -42,6 +43,7 @@ function todo(partial: Partial<TodoView> & Pick<TodoView, 'id' | 'column'>): Tod
     sessionId: status === 'draft' ? null : `session-${partial.id}`,
     status,
     position: 0,
+    starting: false,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     startedAt: null,
@@ -56,6 +58,7 @@ beforeEach(() => {
   state.navigate.mockReset()
   state.setStatus.mockReset()
   state.move.mockReset()
+  state.update.mockReset()
   state.start.mockReset()
   state.starting = new Set()
 })
@@ -211,5 +214,23 @@ describe('TodoBoard', () => {
     fireEvent.click(screen.getByTestId('todo-draft-archive'))
     await waitFor(() => expect(state.setStatus).toHaveBeenCalledWith({ id: 'a', status: 'archived' }))
     expect(screen.queryByTestId('todo-draft-dialog')).not.toBeInTheDocument()
+  })
+
+  it('an edit undone while its save is in flight is saved too', async () => {
+    // B's save hangs until released; then the title goes back to A.
+    let landB: () => void = () => {}
+    state.update.mockImplementationOnce(() => new Promise<void>((resolve) => { landB = resolve }))
+    state.update.mockResolvedValue(undefined)
+    state.todos = [todo({ id: 'a', column: 'drafts', title: 'A' })]
+    renderWithProviders(<TodoBoard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open A' }))
+    const title = screen.getByTestId('todo-draft-title')
+
+    fireEvent.change(title, { target: { value: 'B' } })
+    await waitFor(() => expect(state.update).toHaveBeenCalledWith(expect.objectContaining({ title: 'B' })), { timeout: 2_000 })
+    fireEvent.change(title, { target: { value: 'A' } })
+    fireEvent.click(screen.getByTestId('todo-draft-close'))
+    landB()
+    await waitFor(() => expect(state.update).toHaveBeenLastCalledWith(expect.objectContaining({ title: 'A' })))
   })
 })

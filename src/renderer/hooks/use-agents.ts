@@ -4,6 +4,7 @@ import { useParams } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { updateAgentRuntimeCache } from '@renderer/lib/agent-cache'
+import { TODOS_QUERY_KEY } from './todos-query-key'
 
 // Re-export for convenience
 export type { ApiAgent }
@@ -141,6 +142,8 @@ export function useDeleteAgent() {
       queryClient.removeQueries({ queryKey: ['agents', slug] })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+      // Todo items given to it let go of it on the server.
+      queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
     },
   })
 }

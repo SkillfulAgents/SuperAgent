@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Archive, ChevronDown, Maximize2, Minimize2, Play, Plus, Trash2, X } from 'lucide-react'
-import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
 import { deriveTodoTitle, TODO_TITLE_MAX } from '@shared/lib/todos/todo-schema'
 import { Button } from '@renderer/components/ui/button'
@@ -31,9 +30,11 @@ interface DraftFields {
 
 const SAVE_DELAY_MS = 600
 
-function failed(error: unknown) {
-  toast.error(error instanceof Error ? error.message : 'Something went wrong')
-}
+/**
+ * A failed save or status change is a failed mutation, which the app's
+ * global mutation handler has already toasted; the dialog only stops there.
+ */
+function failed() {}
 
 const sameFields = (a: DraftFields, b: DraftFields) =>
   a.title === b.title && a.description === b.description && a.agentSlug === b.agentSlug
@@ -110,34 +111,38 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
   // What the server has, so a save only sends a change.
   const idRef = useRef<string | null>(initial?.id ?? null)
   const savedRef = useRef<DraftFields | null>(initial ? { ...fields } : null)
-  const creatingRef = useRef<Promise<string | null> | null>(null)
+  // Saves run one at a time, each comparing against what the one before it
+  // actually stored: a save that started while another was in flight would
+  // compare against stale state and could skip a change (typing B, then back
+  // to A before B's save lands, would leave B on the server).
+  const savingRef = useRef<Promise<unknown>>(Promise.resolve())
   const timerRef = useRef<number | null>(null)
 
   /** Brings the server up to date with the form. Resolves with the draft's id, or null when there is nothing to keep. */
-  const save = useCallback(async (): Promise<string | null> => {
+  const save = useCallback((): Promise<string | null> => {
     if (timerRef.current !== null) {
       window.clearTimeout(timerRef.current)
       timerRef.current = null
     }
-    if (creatingRef.current) await creatingRef.current
-    const current = fieldsRef.current
-    const id = idRef.current
-    if (!id) {
-      if (!current.title.trim() && !current.description.trim()) return null
-      creatingRef.current = createTodo
-        .mutateAsync({ title: current.title.trim(), description: current.description, agentSlug: current.agentSlug })
-        .then((todo) => {
-          idRef.current = todo.id
-          savedRef.current = current
-          return todo.id
-        })
-        .finally(() => { creatingRef.current = null })
-      return creatingRef.current
+    const saveNow = async (): Promise<string | null> => {
+      // Read the form when this save's turn comes, not when it was queued.
+      const current = fieldsRef.current
+      const id = idRef.current
+      if (!id) {
+        if (!current.title.trim() && !current.description.trim()) return null
+        const todo = await createTodo.mutateAsync({ title: current.title.trim(), description: current.description, agentSlug: current.agentSlug })
+        idRef.current = todo.id
+        savedRef.current = current
+        return todo.id
+      }
+      if (savedRef.current && sameFields(savedRef.current, current)) return id
+      await updateTodo.mutateAsync({ id, title: current.title.trim(), description: current.description, agentSlug: current.agentSlug })
+      savedRef.current = current
+      return id
     }
-    if (savedRef.current && sameFields(savedRef.current, current)) return id
-    await updateTodo.mutateAsync({ id, title: current.title.trim(), description: current.description, agentSlug: current.agentSlug })
-    savedRef.current = current
-    return id
+    const run = savingRef.current.then(saveNow, saveNow)
+    savingRef.current = run.catch(() => {})
+    return run
   // The mutateAsync functions are stable; the mutation objects are not.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createTodo.mutateAsync, updateTodo.mutateAsync])
@@ -176,10 +181,10 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
     try {
       const id = await save()
       if (!id) return
-      startTodo.mutate({ id, ...fieldsRef.current })
+      startTodo.mutate({ id, agentSlug: fieldsRef.current.agentSlug })
       onClose()
-    } catch (error) {
-      failed(error)
+    } catch {
+      failed()
     }
   }
   // ⌘↩ starts from either the title or the description.
@@ -206,8 +211,8 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
       const id = await save()
       if (id) setTodoStatus.mutate({ id, status: 'archived' })
       onClose()
-    } catch (error) {
-      failed(error)
+    } catch {
+      failed()
     }
   }
 

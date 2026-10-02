@@ -17,12 +17,15 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import type { TodoRow } from '@shared/lib/db/schema'
 import { agentExists } from '@shared/lib/services/agent-service'
 import {
+  claimStart,
   createTodo,
   deleteTodo,
   getTodo,
   listTodos,
   moveTodo,
+  releaseStart,
   setTodoStatus,
+  startClaimHeld,
   startTodo,
   updateDraft,
   type TodoWriteResult,
@@ -31,6 +34,7 @@ import { isExperimentEnabled } from '@shared/lib/services/user-settings-service'
 import {
   createTodoSchema,
   moveTodoSchema,
+  releaseStartSchema,
   startTodoSchema,
   todoAskFor,
   todoColumn,
@@ -69,6 +73,7 @@ function toView(row: TodoRow, readableAgents: ReadonlySet<string>): TodoView {
     status: row.status,
     column,
     position: row.position,
+    starting: row.status === 'draft' && startClaimHeld(row),
     // The same open requests that make the session await input (its own,
     // plus the agent-scoped ones that block every session of the agent).
     ask: column === 'needs_input' && actor && row.sessionId ? todoAskFor(actor.inputs.snapshot(row.sessionId)) : null,
@@ -130,7 +135,37 @@ todosRouter.patch('/:id', async (c) => {
   return respond(c, await updateDraft(getCurrentUserId(c), c.req.param('id'), patch))
 })
 
-// POST /api/todos/:id/start — link a draft to the session its agent was started in.
+// Starting is three steps, because the session is created through the
+// sessions endpoint like any other: claim the draft, create the session,
+// link it. The claim comes first so only one start can create a session.
+
+// POST /api/todos/:id/claim — reserve a draft for one start. 409 while another start holds it.
+todosRouter.post('/:id/claim', async (c) => {
+  const userId = getCurrentUserId(c)
+  const todo = await getTodo(userId, c.req.param('id'))
+  if (!todo) return c.json({ error: 'Todo not found' }, 404)
+  if (todo.status !== 'draft' || !todo.agentSlug) {
+    return c.json({ error: 'Only a draft with an agent can be started' }, 409)
+  }
+  if (!(await canAssign(c, todo.agentSlug))) return c.json({ error: 'Agent not found' }, 404)
+  const result = await claimStart(userId, todo.id, todo.agentSlug)
+  if (!result.ok) {
+    return result.reason === 'not_found'
+      ? c.json({ error: 'Todo not found' }, 404)
+      : c.json({ error: 'This is already starting' }, 409)
+  }
+  return c.json({ claim: result.claim, todo: await viewOf(c, result.todo) })
+})
+
+// POST /api/todos/:id/release — give up a claim whose start failed.
+todosRouter.post('/:id/release', async (c) => {
+  const input = await parseBody(c, releaseStartSchema)
+  if (!input) return c.json({ error: 'Invalid claim' }, 400)
+  await releaseStart(getCurrentUserId(c), c.req.param('id'), input.claim)
+  return c.body(null, 204)
+})
+
+// POST /api/todos/:id/start — link a claimed draft to the session its agent was started in.
 todosRouter.post('/:id/start', async (c) => {
   const input = await parseBody(c, startTodoSchema)
   if (!input) return c.json({ error: 'Invalid session' }, 400)
@@ -144,7 +179,7 @@ todosRouter.post('/:id/start', async (c) => {
   if (!readable.has(todo.agentSlug) || !(await agentRegistry.get(todo.agentSlug).sessions.isKnown(input.sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
-  return respond(c, await startTodo(userId, todo.id, todo.agentSlug, input.sessionId))
+  return respond(c, await startTodo(userId, todo.id, todo.agentSlug, input.sessionId, input.claim))
 })
 
 // POST /api/todos/:id/status — mark done, archive, unarchive, or put back on the board.

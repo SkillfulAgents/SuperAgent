@@ -54,8 +54,13 @@ export const updateTodoSchema = z
   .strict()
 export type UpdateTodoInput = z.infer<typeof updateTodoSchema>
 
-/** Links a draft to the session its agent was just started in. */
-export const startTodoSchema = z.object({ sessionId: z.string().trim().min(1).max(200) }).strict()
+const claimSchema = z.string().min(1).max(100)
+
+/** Links a draft to the session its agent was just started in, by the start that claimed it. */
+export const startTodoSchema = z.object({ sessionId: z.string().trim().min(1).max(200), claim: claimSchema }).strict()
+
+/** Gives up a start claim. */
+export const releaseStartSchema = z.object({ claim: claimSchema }).strict()
 
 /** The statuses a person can move an item to. Starting is its own endpoint. */
 export const todoStatusChangeSchema = z.object({ status: z.enum(['draft', 'active', 'done', 'archived']) }).strict()
@@ -161,6 +166,8 @@ export interface TodoView {
   column: TodoColumn
   /** Its place in its column, highest first. */
   position: number
+  /** A draft whose start is in progress, from this tab or another. */
+  starting: boolean
   /** For an item in Needs input: what it is waiting for, when known. */
   ask: TodoAsk | null
   createdAt: number
