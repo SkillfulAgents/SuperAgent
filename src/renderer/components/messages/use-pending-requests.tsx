@@ -5,7 +5,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useMessages } from '@renderer/hooks/use-messages'
 import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
-import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
+import { isTurnStartingPendingMessage, isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { askUserQuestionDef } from '@shared/lib/tool-definitions/ask-user-question'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
@@ -589,11 +589,11 @@ export function usePendingRequests({
   agentSlug,
   pendingUserMessages,
 }: UsePendingRequestsArgs): UsePendingRequestsResult {
-  // Only turn-starting sends mean the user "moved past" a request; queued
-  // (mid-turn) messages leave the agent blocked on it.
-  const hasPendingUserMessage = !!pendingUserMessages?.some((p) => !p.queued)
   const queryClient = useQueryClient()
   const { data: messages } = useMessages(sessionId, agentSlug)
+  // Only turn-starting sends mean the user "moved past" a request; queued
+  // (mid-turn) and stranded messages leave the agent blocked on it.
+  const hasPendingUserMessage = !!pendingUserMessages?.some((p) => isTurnStartingPendingMessage(p, messages ?? []))
   const {
     isActive,
     streamingToolUses,

@@ -3444,8 +3444,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
     // Mid-turn send — mirror the real CLI's steering behavior: no user entry
     // is written; after a pickup delay the message lands in the JSONL as a
-    // queued_command attachment with a CLI-generated source_uuid (the sender
-    // uuid is NOT preserved there), followed by assistant output whose stream
+    // queued_command attachment whose source_uuid is the sent uuid (the real
+    // CLI keeps it from SDK 0.3.197), followed by assistant output whose stream
     // message triggers the refetch that materializes the ghost. Until pickup
     // the injection is cancellable by uuid (cancel_async_message semantics).
     if (this.busySessions.has(sessionId)) {
@@ -3470,7 +3470,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
           attachment: {
             type: 'queued_command',
             prompt: [{ type: 'text', text: content }],
-            source_uuid: randomUUID(),
+            source_uuid: steeringUuid,
             commandMode: 'prompt',
           },
         })

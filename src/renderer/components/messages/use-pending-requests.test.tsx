@@ -774,6 +774,36 @@ describe('usePendingRequests', () => {
     expect(result.current.count).toBe(0)
   })
 
+  it('a stranded pending message does not hide a later turn\'s request', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createUserMessage({ id: 'u-before', content: { text: 'Earlier' } }),
+      createUserMessage({ id: 'u-next', content: { text: 'A later turn' } }),
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-later',
+            name: 'mcp__user-input__request_secret',
+            input: { secretName: 'LATER_KEY' },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() =>
+      usePendingRequests({
+        ...defaultArgs,
+        pendingUserMessages: [
+          { localId: 'pm-1', uuid: 'pm-1', text: 'never landed', sentAt: Date.now(), afterMessageId: 'u-before' },
+        ],
+      }),
+    )
+
+    expect(result.current.count).toBe(1)
+  })
+
   // ---- Dismissed-request set is cleared on active → idle transition ----
 
   it('clears dismissed-request set when session transitions active → idle', () => {

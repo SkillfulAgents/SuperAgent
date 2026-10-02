@@ -40,7 +40,7 @@ interface MessageInputProps {
   sessionId: string
   agentSlug: string
   /** Called right before the POST so the caller can show the optimistic copy. `queued` is true when the agent is mid-turn. */
-  onMessageSent?: (content: string, localId: string, queued: boolean) => void
+  onMessageSent?: (content: string, localId: string, queued: boolean, afterMessageId?: string) => void
   /** Called when the POST response arrives with the server-assigned message uuid. */
   onMessageUuidAssigned?: (localId: string, uuid: string, queued: boolean) => void
   /** Called when the POST fails, so the caller can drop the optimistic copy. */
@@ -154,7 +154,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       // (The server also strips them when it sees the session is active.)
       const queued = isActive && !isWaitingBackground
       const runtimeOptions = queued ? {} : composerOptions.toRuntimeOptions()
-      onMessageSent?.(content, localId, queued)
+      onMessageSent?.(content, localId, queued, messages?.at(-1)?.id)
       try {
         const result = await sendMessage.mutateAsync({
           sessionId,
@@ -168,16 +168,15 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         if (!result.queued) composerOptions.markSubmitted(runtimeOptions)
         // Reconcile against the server's authoritative decision: our local
         // `queued` guess is derived from SSE state that can be stale (reconnect,
-        // a peer's turn, background-task flag), and a mismatch otherwise strands
-        // the ghost — a server-queued message is re-id'd by the CLI, so it never
-        // matches our uuid and never materializes.
+        // a peer's turn, background-task flag), and a mismatch leaves the ghost
+        // with the wrong label and placement.
         onMessageUuidAssigned?.(localId, result.uuid, result.queued)
       } catch (error) {
         onMessageFailed?.(localId)
         throw error
       }
       track('message_sent', { origin: 'user', input_mode: inputMode })
-    }, [onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
+    }, [onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground, messages]),
     submitDisabled: sendMessage.isPending || isOffline || !isRuntimeReady,
     draftKey: `session:${sessionId}`,
   })
