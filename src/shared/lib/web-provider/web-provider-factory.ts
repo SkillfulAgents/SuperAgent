@@ -1,6 +1,7 @@
 import { getSettings } from '../config/settings'
 import type { BaseWebProvider } from './base-web-provider'
 import { ExaWebProvider } from './exa-web-provider'
+import { ParallelWebProvider } from './parallel-web-provider'
 import { PlatformWebProvider } from './platform-web-provider'
 import type { WebProviderId } from './types'
 
@@ -8,6 +9,7 @@ type WebVendorId = Exclude<WebProviderId, 'native'>
 
 const WEB_PROVIDERS: Record<WebVendorId, BaseWebProvider> = {
   exa: new ExaWebProvider(),
+  parallel: new ParallelWebProvider(),
   platform: new PlatformWebProvider(),
 }
 
