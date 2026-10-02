@@ -109,10 +109,11 @@ import { eq, and, inArray, isNotNull, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
-import {
-  saveLoginAfterBrowserInput,
-  type LoginSaveOutcome,
-} from '@shared/lib/browser/browser-login-save'
+import { saveLoginAfterBrowserInput, type LoginSaveOutcome } from '@shared/lib/browser/browser-login-save'
+import { browserTypeForSession } from '@shared/lib/browser/browser-storage-client'
+import { applyBrowserLogin, BrowserLoginNotFoundError } from '@shared/lib/browser/browser-login-apply'
+import { siteOf } from '@shared/lib/browser/site'
+import { listBrowserLogins } from '@shared/lib/services/browser-credential-service'
 import { normalizeMcpRequestLog, normalizeProxyRequestLog } from '@shared/lib/types/request-log'
 import { getProvider } from '@shared/lib/account-providers'
 // getAgentSkills is superseded by getAgentSkillsWithStatus from skillset-service
@@ -3990,6 +3991,11 @@ const browserCredentialAutofillBodySchema = z.object({
   credentialId: z.string().min(1),
 }).strict()
 
+const useSavedBrowserLoginBodySchema = browserCredentialAutofillBodySchema.extend({
+  // The caller saw that other members of this agent can use a login applied to it.
+  sharedAgentAcknowledged: z.boolean().optional(),
+}).strict()
+
 function capturedBrowserInputUrl(agentSlug: string, toolUseId: string, now = Date.now()): string | null {
   const request = agentRegistry.get(agentSlug).inputs.get(toolUseId)
   if (!request || request.kind !== 'browser_input') return null
@@ -4185,6 +4191,106 @@ agents.post(
     })
   } catch (error) {
     return credentialBrokerErrorResponse(c, error)
+  } finally {
+    if (claimedToolUseId) agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimedToolUseId)
+  }
+  },
+)
+
+/** Site of the page a sign-in request opened on; null when the request is not a sign-in or has no such page. */
+function loginRequestSite(agentSlug: string, toolUseId: string): string | null {
+  const request = agentRegistry.get(agentSlug).inputs.get(toolUseId)
+  if (request?.kind !== 'browser_input' || request.payload.login !== true) return null
+  return typeof request.payload.loginUrl === 'string' ? siteOf(request.payload.loginUrl) : null
+}
+
+// GET /api/agents/:id/sessions/:sessionId/saved-browser-logins - The user's saved logins for the page's site
+agents.get('/:id/sessions/:sessionId/saved-browser-logins', AgentUser(), async (c) => {
+  const toolUseId = c.req.query('toolUseId')
+  if (!toolUseId) return c.json({ error: 'toolUseId is required' }, 400)
+  const gated = gateOpenRequestAccess(c, toolUseId, 'browser_input')
+  if (gated) return gated
+
+  const agentSlug = getAgentId(c)
+  try {
+    const request = agentRegistry.get(agentSlug).inputs.get(toolUseId)
+    if (request?.kind !== 'browser_input' || request.payload.login !== true) return c.json({ logins: [] })
+    // The card can ask before the harness has recorded the opening page; record it now, still at the start.
+    if (typeof request.payload.loginUrl !== 'string') {
+      agentRegistry.get(agentSlug).inputs.enrich(toolUseId, 'browser_input', {
+        loginUrl: await readCredentialBrowserUrl(agentSlug, c.req.param('sessionId')),
+      })
+    }
+    const site = loginRequestSite(agentSlug, toolUseId)
+    if (!site) return c.json({ logins: [] })
+    const client = agentRegistry.get(agentSlug).container
+    const browserType = await browserTypeForSession(client, c.req.param('sessionId'))
+    const logins = await listBrowserLogins({ userId: getViewerUserId(c), site, browserType })
+    return c.json({ logins })
+  } catch (error) {
+    console.error('[saved-browser-logins] Lookup failed:', error instanceof Error ? error.message : error)
+    return c.json({ error: 'Could not load saved logins' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/use-saved-browser-login - Apply a saved login and complete the request
+agents.post(
+  '/:id/sessions/:sessionId/use-saved-browser-login',
+  AgentUser(),
+  zValidator('json', useSavedBrowserLoginBodySchema),
+  async (c) => {
+  let claimedToolUseId: string | null = null
+  try {
+    const body = c.req.valid('json')
+    const gated = gateRequestDecision(c, body.toolUseId, 'browser_input')
+    if (gated) return gated
+    const agentSlug = getAgentId(c)
+    if (!body.sharedAgentAcknowledged && isAuthMode() && await countMembersWithMinRole(agentSlug, 'viewer') > 1) {
+      return c.json({ error: 'Other members of this agent can use this login; confirm before applying it' }, 409)
+    }
+    const actor = agentRegistry.get(agentSlug)
+    if (!actor.inputs.claim(body.toolUseId)) {
+      return c.json({ error: 'This browser request is already being handled' }, 409)
+    }
+    claimedToolUseId = body.toolUseId
+
+    const sessionId = c.req.param('sessionId')
+    const site = loginRequestSite(agentSlug, body.toolUseId)
+    if (!site) return c.json({ error: 'Saved logins apply only to sign-in requests' }, 400)
+    let applied: { site: string; linked: boolean }
+    try {
+      applied = await applyBrowserLogin({
+        client: actor.container,
+        sessionId,
+        agentSlug,
+        userId: getViewerUserId(c),
+        credentialId: body.credentialId,
+        site,
+      })
+    } catch (error) {
+      if (error instanceof BrowserLoginNotFoundError) return c.json({ error: 'Saved login not found' }, 404)
+      console.error('[use-saved-browser-login] Apply failed:', error instanceof Error ? error.message : error)
+      return c.json({ error: 'Could not apply the saved login' }, 502)
+    }
+
+    const resolveResponse = await actor.container.fetch(
+      `/inputs/${encodeURIComponent(body.toolUseId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: 'saved_login_applied' }),
+      },
+    )
+    const requestSettled = resolveResponse.ok
+    if (requestSettled) {
+      actor.inputs.complete(sessionId, body.toolUseId, 'answered')
+    } else {
+      console.error('[use-saved-browser-login] Login applied but browser input could not be resolved')
+    }
+    return c.json({ success: true, linked: applied.linked, requestSettled })
+  } catch (error) {
+    console.error('[use-saved-browser-login] Failed:', error instanceof Error ? error.message : error)
+    return c.json({ error: 'Could not apply the saved login' }, 500)
   } finally {
     if (claimedToolUseId) agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimedToolUseId)
   }

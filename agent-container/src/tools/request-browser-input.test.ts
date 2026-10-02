@@ -97,4 +97,19 @@ describe('requestBrowserInputTool browser-lifecycle guard', () => {
     expect((await resultPromise).content[0].text).toContain('with purpose "login"')
     createPending.mockRestore()
   })
+
+  it('tells the agent the page was reloaded after a saved login is applied', async () => {
+    setBrowserState({ active: true, sessionId: 'sess-1', cdpUrl: 'ws://127.0.0.1:9222' })
+    const toolUseId = `guard-saved-login-${Date.now()}`
+    inputManager.setCurrentToolUseId(toolUseId)
+
+    const { requestBrowserInputTool } = await import('./request-browser-input')
+    const resultPromise = (requestBrowserInputTool as any).handler({ message: 'Sign in to GitHub to continue.', requirements: [], purpose: 'login' })
+
+    await vi.waitFor(() => expect(inputManager.hasPending(toolUseId)).toBe(true))
+    inputManager.resolve(toolUseId, 'saved_login_applied')
+
+    const result = await resultPromise
+    expect(result.content[0].text).toContain('the current page was reloaded')
+  })
 })

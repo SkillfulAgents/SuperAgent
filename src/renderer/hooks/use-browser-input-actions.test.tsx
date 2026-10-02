@@ -2,12 +2,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { DraftsProvider } from '@renderer/context/drafts-context'
-import { useBrowserInputActions } from './use-browser-input-actions'
+import { useBrowserInputActions, useOtherAgentMemberCount } from './use-browser-input-actions'
 
 const mockApiFetch = vi.fn()
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
+const mockUser = vi.hoisted(() => ({ isAuthMode: true }))
+vi.mock('@renderer/context/user-context', () => ({ useUser: () => mockUser }))
+const mockMembers = vi.hoisted(() => ({ data: undefined as unknown[] | undefined }))
+vi.mock('@renderer/hooks/use-agent-members', () => ({ useAgentMembers: () => mockMembers }))
 
 const ok = () => ({ ok: true, json: () => Promise.resolve({}) })
 const COMPLETE_URL = '/api/agents/a/sessions/s/complete-browser-input'
@@ -85,5 +89,25 @@ describe('useBrowserInputActions', () => {
     expect(result.current.status).toBe('pending')
     expect(result.current.error).toMatch(/decline boom/)
     expect(onResolved).not.toHaveBeenCalled()
+  })
+})
+
+describe('useOtherAgentMemberCount', () => {
+  it('is unknown (null) while the member list is loading or failed, not zero', () => {
+    mockUser.isAuthMode = true
+    mockMembers.data = undefined
+    expect(renderHook(() => useOtherAgentMemberCount('a', true)).result.current).toBeNull()
+  })
+
+  it('counts the other members once the list is known', () => {
+    mockUser.isAuthMode = true
+    mockMembers.data = [{}, {}, {}]
+    expect(renderHook(() => useOtherAgentMemberCount('a', true)).result.current).toBe(2)
+  })
+
+  it('is zero outside auth mode', () => {
+    mockUser.isAuthMode = false
+    mockMembers.data = undefined
+    expect(renderHook(() => useOtherAgentMemberCount('a', true)).result.current).toBe(0)
   })
 })

@@ -6,10 +6,12 @@ import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 import { RequestError } from './request-error'
 import { DeclineButton } from './decline-button'
-import { useBrowserInputActions, useCanSaveBrowserLogin } from '@renderer/hooks/use-browser-input-actions'
+import { useBrowserInputActions, useCanSaveBrowserLogin, useOtherAgentMemberCount } from '@renderer/hooks/use-browser-input-actions'
+import { useSavedLogins } from '@renderer/hooks/use-saved-logins'
 import { linkify } from '@renderer/lib/linkify'
 import { cn } from '@shared/lib/utils/cn'
 import { BrowserCredentialPicker } from './browser-credential-picker'
+import { SavedLoginPicker } from './saved-login-picker'
 
 interface BrowserInputRequestItemProps {
   toolUseId: string
@@ -39,8 +41,19 @@ export function BrowserInputRequestItem({
     onResolved: onComplete,
   })
 
-  const [saveLogin, setSaveLogin] = useState(true)
+  // Sign-in cards with saved logins offer only those until the user picks another account.
+  const savedLogins = useSavedLogins(agentSlug, sessionId, toolUseId, login && !readOnly)
+  const [otherAccount, setOtherAccount] = useState(false)
+  const hasSavedLogins = (savedLogins.logins?.length ?? 0) > 0
+  // While the lookup runs (null) the manual controls stay hidden so the card does not flicker.
+  const showManualSignIn = !login || otherAccount || savedLogins.logins?.length === 0
+  // Saving over an existing login is opt-in, so a failed sign-in cannot replace a working one.
+  const [saveChoice, setSaveChoice] = useState<boolean | null>(null)
+  const saveLogin = saveChoice ?? !hasSavedLogins
   const canSaveLogin = useCanSaveBrowserLogin(agentSlug, login && !readOnly)
+  const otherMembers = useOtherAgentMemberCount(agentSlug, login && !readOnly)
+  // The saved login is in the browser but the request is still open; Done completes it without applying again.
+  const completeAfterApply = savedLogins.applied && !savedLogins.settled
 
   // `requirements` is typed string[] but originates from model tool input, so a
   // malformed value (e.g. a bare string) can reach here. Normalize to an array
@@ -53,7 +66,9 @@ export function BrowserInputRequestItem({
     <>
     <RequestItemShell
       title={message}
-      subtitle="Click 'Done' when you have completed the suggested steps."
+      subtitle={login && hasSavedLogins && !otherAccount
+        ? 'Use your saved login, or log in with another account.'
+        : "Click 'Done' when you have completed the suggested steps."}
       theme="blue"
       sessionId={sessionId}
       agentSlug={agentSlug}
@@ -80,7 +95,7 @@ export function BrowserInputRequestItem({
       data-testid={isCompleted ? 'browser-input-request-completed' : 'browser-input-request'}
       data-status={isCompleted ? status : undefined}
     >
-      {safeRequirements.length > 0 && (
+      {showManualSignIn && safeRequirements.length > 0 && (
         <div className="pt-4">
           <div className="rounded-md border border-border bg-white p-3 dark:bg-background">
             <ul className="space-y-1.5">
@@ -95,7 +110,11 @@ export function BrowserInputRequestItem({
         </div>
       )}
 
-      {!readOnly && !isCompleted && (
+      {login && !otherAccount && !readOnly && !isCompleted && (
+        <SavedLoginPicker savedLogins={savedLogins} disabled={status === 'submitting'} otherMembers={otherMembers} />
+      )}
+
+      {showManualSignIn && !readOnly && !isCompleted && (
         <BrowserCredentialPicker
           agentSlug={agentSlug}
           sessionId={sessionId}
@@ -104,22 +123,35 @@ export function BrowserInputRequestItem({
         />
       )}
 
-      {login && canSaveLogin && !readOnly && !isCompleted && (
+      {login && canSaveLogin && showManualSignIn && !readOnly && !isCompleted && (
         <div className="flex items-center gap-2 pt-3">
           <Checkbox
             id={`browser-input-save-login-${toolUseId}`}
             checked={saveLogin}
-            onCheckedChange={(checked) => setSaveLogin(checked === true)}
+            onCheckedChange={(checked) => setSaveChoice(checked === true)}
             disabled={status === 'submitting'}
             data-testid="browser-input-save-login"
           />
           <label htmlFor={`browser-input-save-login-${toolUseId}`} className="text-sm text-muted-foreground">
-            Save login to my vault
+            {hasSavedLogins ? `Replace my saved login for ${savedLogins.logins?.[0].site}` : 'Save login to my vault'}
           </label>
         </div>
       )}
 
       <RequestItemActions>
+        {login && hasSavedLogins && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={() => setOtherAccount(!otherAccount)}
+            disabled={status === 'submitting'}
+            data-testid="browser-input-other-account"
+          >
+            {otherAccount ? 'Use saved login' : 'Log in with another account'}
+          </Button>
+        )}
+
         <DeclineButton
           onDecline={(reason) => decline(toolUseId, reason)}
           disabled={status === 'submitting'}
@@ -130,16 +162,18 @@ export function BrowserInputRequestItem({
           data-testid="browser-input-decline-btn"
         />
 
-        <Button
-          onClick={() => complete(toolUseId, { saveLogin: login && canSaveLogin && saveLogin })}
-          loading={submittingAction === 'completing'}
-          disabled={status === 'submitting'}
-          size="xs"
-          className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
-          data-testid="browser-input-complete-btn"
-        >
-          Done
-        </Button>
+        {(showManualSignIn || completeAfterApply) && (
+          <Button
+            onClick={() => complete(toolUseId, { saveLogin: !completeAfterApply && login && canSaveLogin && saveLogin })}
+            loading={submittingAction === 'completing'}
+            disabled={status === 'submitting'}
+            size="xs"
+            className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
+            data-testid="browser-input-complete-btn"
+          >
+            Done
+          </Button>
+        )}
       </RequestItemActions>
     </RequestItemShell>
     {isCompleted && error && <RequestError message={error} />}
