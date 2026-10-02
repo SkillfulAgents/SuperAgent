@@ -222,6 +222,31 @@ describe('embedded provider proxy', () => {
     expect(seen).toEqual(['account-a', 'account-b'])
   })
 
+  it('pins each Codex session prompt to one cache id', async () => {
+    const seen: Array<{ header: unknown; key: unknown }> = []
+    const base = await upstream((body, req, res) => {
+      seen.push({ header: req.headers['session-id'], key: body.prompt_cache_key })
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'r', status: 'completed',
+        output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }], usage: { input_tokens: 3, output_tokens: 1 } } })}\n\n`)
+    })
+    const handle = await proxy(base, 'responses', { config: { adapter: 'codex', baseUrl: base, format: 'responses', headers: {},
+      credential: { accessToken: 'key', accountId: 'account', generation: 1 } } })
+    const session = { headers: { 'X-Claude-Code-Session-Id': 'session-a' } }
+    await client(handle).messages.create({ ...prompt, system: 'main' }, session)
+    await client(handle).messages.create({ ...prompt, system: 'main', messages: [...prompt.messages, { role: 'assistant', content: 'OK' }, { role: 'user', content: 'Again' }] }, session)
+    await client(handle).messages.create({ ...prompt, system: 'subagent' }, session)
+    await client(handle).messages.create({ ...prompt, system: 'main', metadata: { user_id: JSON.stringify({ session_id: 'session-a' }) } })
+    await client(handle).messages.create({ ...prompt, system: 'main' })
+    const [first, again, subagent, fromMetadata, anonymous] = seen
+    expect(first.header).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    expect(first.key).toBe(first.header)
+    expect(again).toEqual(first)
+    expect(subagent.header).not.toBe(first.header)
+    expect(fromMetadata).toEqual(first)
+    expect(anonymous).toEqual({ header: undefined, key: undefined })
+  })
+
   it.each([
     [false, 'priority'], [true, 'priority'], [false, 'fast'], [true, 'fast'], [false, 'default'], [true, 'default'],
   ] as const)('switches Codex Normal/Fast and preserves the served tier (stream=%s, tier=%s)', async (stream, servedTier) => {

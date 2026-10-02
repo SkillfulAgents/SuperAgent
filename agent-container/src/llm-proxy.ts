@@ -1,5 +1,5 @@
 import { CredentialRefreshError } from './credential-refresh-error'
-import { normalizeCodexRequest, collectCodexResponse, normalizeCodexError, CodexResponseError } from './llm-proxy-codex'
+import { normalizeCodexRequest, codexCacheId, collectCodexResponse, normalizeCodexError, CodexResponseError } from './llm-proxy-codex'
 import { normalizeGrokResponses } from './llm-proxy-grok'
 import { isKimiPlanLimit } from './llm-proxy-kimi'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -88,6 +88,8 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
       }
       const validated = requestSchema.safeParse(parsed)
       if (!validated.success) { sendError(res, 400, 'Invalid Messages request'); return }
+      // Read before translation: the wire codecs drop Messages metadata.
+      const sessionId = requestSessionId(req, validated.data)
       let body: Json = expandDeferredTools(validated.data)
       // Also upgrade already-issued Grok runtime descriptors that still say
       // Messages: that endpoint loses call boundaries in parallel tool streams.
@@ -119,11 +121,13 @@ export async function startLlmProxy(options: LlmProxyOptions): Promise<LlmProxyH
             }) : body
         upstreamBody = options.adapter?.upstreamRequest?.(upstreamBody) ?? upstreamBody
         if (config.adapter === 'grok') upstreamBody = normalizeGrokResponses(upstreamBody)
-        if (config.adapter === 'codex') upstreamBody = normalizeCodexRequest(upstreamBody, req.headers['x-superagent-speed'] === 'fast')
+        const codexCache = config.adapter === 'codex' ? codexCacheId(sessionId, upstreamBody.instructions) : undefined
+        if (config.adapter === 'codex') upstreamBody = normalizeCodexRequest(upstreamBody, req.headers['x-superagent-speed'] === 'fast', codexCache)
         return fetch(`${config.baseUrl.replace(/\/$/, '')}${path}`, {
           method: 'POST', redirect: 'error', signal: abort.signal,
           headers: { 'content-type': 'application/json', ...(format === 'messages' ? { 'anthropic-version': '2023-06-01' } : {}),
             ...config.headers, ...(config.adapter === 'codex' && credential.accountId ? { 'ChatGPT-Account-ID': credential.accountId } : {}),
+            ...(codexCache ? { 'session-id': codexCache } : {}),
             ...(config.credentialHeader ? { [config.credentialHeader]: credential.accessToken } : {}),
             authorization: `Bearer ${credential.accessToken}` },
           body: JSON.stringify(upstreamBody),
@@ -196,6 +200,18 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
   res.end(JSON.stringify(body))
 }
+/** The SDK names its session in a header and again in metadata.user_id (a JSON string). */
+function requestSessionId(req: IncomingMessage, body: Json): string | undefined {
+  const header = req.headers['x-claude-code-session-id']
+  if (typeof header === 'string' && header) return header
+  const userId = (body.metadata as Json | undefined)?.user_id
+  if (typeof userId !== 'string') return undefined
+  try {
+    const sessionId = (JSON.parse(userId) as Json).session_id
+    return typeof sessionId === 'string' && sessionId ? sessionId : undefined
+  } catch { return undefined }
+}
+
 function sendError(res: ServerResponse, status: number, message: string): void {
   const type = status === 401 ? 'authentication_error' : status === 404 ? 'not_found_error' : status === 413 ? 'request_too_large' : status === 400 ? 'invalid_request_error' : 'api_error'
   sendJson(res, status, { type: 'error', error: { type, message } })
