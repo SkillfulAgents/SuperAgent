@@ -10,7 +10,7 @@ vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), captu
 
 import { loadSettings, updateSettings } from '@shared/lib/config/settings'
 import { getActiveWebProvider, resolveEffectiveWebVendor } from '@shared/lib/web-provider'
-import { webSearchTool } from '../../../agent-container/src/tools/web/web-search'
+import { handleWebSearch } from '../../../agent-container/src/tools/web/web-search-handler'
 import webSearch from './web-search'
 
 let scratch: string
@@ -46,7 +46,7 @@ it('loads a saved keyless choice and returns the canonical agent tool answer thr
         ] }) }] }
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result }), { headers: { 'Content-Type': 'application/json' } })
   }))
-  const answer = await webSearchTool.handler({ query: 'native keyless search', numResults: 2, includeDomains: undefined, excludeDomains: undefined, startPublishedDate: undefined, endPublishedDate: undefined }, {})
+  const answer = await handleWebSearch({ query: 'native keyless search', numResults: 2, includeDomains: undefined, excludeDomains: undefined, startPublishedDate: undefined, endPublishedDate: undefined })
   expect(answer.isError).not.toBe(true)
   const text = answer.content.filter((item) => item.type === 'text').map((item) => item.text).join('\n')
   expect(text).toContain('Links: [{"title":"Native search guide","url":"https://example.com/guide"')
