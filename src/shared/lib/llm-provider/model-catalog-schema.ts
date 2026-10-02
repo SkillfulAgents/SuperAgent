@@ -49,6 +49,8 @@ export const modelDefinitionSchema = z.object({
   family: z.string().optional(),
   /** This id is what the bare `family` alias resolves to (newest in the family). */
   isLatest: z.boolean().optional(),
+  /** Also expose as a subagent model when it is not the family's `isLatest`. */
+  subagent: z.boolean().optional(),
   /** Concrete model selected when switching to this model vendor in the picker. */
   isDefault: z.boolean().optional(),
   // Omit/undefined ⇒ supported (Claude). false ⇒ OpenRouter non-Claude, etc.

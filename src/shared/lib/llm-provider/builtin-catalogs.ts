@@ -667,11 +667,12 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
-    // Not isLatest: the bare `gpt` alias stays on GPT-5.6 Sol.
+    // Not isLatest: the bare `gpt` alias stays on GPT-5.6 Sol; `subagent` still exposes it to subagents.
     id: 'gpt-6.1-sol',
     label: 'GPT-6.1 Sol',
     blurb: 'OpenAI coding tier, served via Platform',
     family: 'gpt',
+    subagent: true,
     icon: 'openai',
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,

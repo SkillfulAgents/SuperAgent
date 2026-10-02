@@ -6,7 +6,7 @@ vi.mock('../config/settings', () => ({
   getModelCatalogSettings: () => settingsMock().modelCatalog ?? {},
 }))
 
-import { getEffectiveCatalog } from '../llm-provider'
+import { getEffectiveCatalog, resolveModelForProvider } from '../llm-provider'
 import {
   getSubagentModelCatalog,
   MAX_SUBAGENT_MODELS,
@@ -42,6 +42,16 @@ describe('getSubagentModelCatalog', () => {
     expect(catalog.some((model) => model.id === 'claude-opus-4-8')).toBe(false)
     expect(catalog.some((model) => model.id === 'claude-opus-5')).toBe(false)
     expect(catalog.some((model) => model.id === 'claude-opus-5-5')).toBe(true)
+  })
+
+  it('exposes subagent-flagged models without moving the family alias', () => {
+    settingsMock.mockReturnValue({ llmProvider: 'platform' })
+    const ids = (provider: 'platform' | 'codex-subscription') =>
+      getSubagentModelCatalog(getEffectiveCatalog(provider)).map((model) => model.id)
+
+    expect(ids('platform')).toEqual(expect.arrayContaining(['gpt-5.6-sol', 'gpt-6.1-sol']))
+    expect(ids('codex-subscription')).toEqual(expect.arrayContaining(['gpt-5.6-sol', 'gpt-6.1-sol']))
+    expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.6-sol')
   })
 
   it('does not pass disabled catalog entries to the container', () => {

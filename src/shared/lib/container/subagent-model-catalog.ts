@@ -31,7 +31,7 @@ export const subagentModelCatalogSchema = z
 export type SubagentModelDefinition = z.infer<typeof subagentModelDefinitionSchema>
 
 export function getSubagentModelCatalog(catalog: readonly ModelDefinition[]): SubagentModelDefinition[] {
-  const latestModels = catalog.filter((model) => model.isLatest === true)
+  const latestModels = catalog.filter((model) => model.isLatest === true || model.subagent === true)
   if (latestModels.length > MAX_SUBAGENT_MODELS) {
     console.warn(
       `[SubagentModels] Catalog exposes ${latestModels.length} latest models; only the first ${MAX_SUBAGENT_MODELS} are available to subagents.`,
