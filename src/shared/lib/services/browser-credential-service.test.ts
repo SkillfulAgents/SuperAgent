@@ -1,17 +1,16 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import { eq } from 'drizzle-orm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as schema from '../db/schema'
+import type { AppDatabase } from '../db'
+import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { SiteStorageBundle } from '../../../../agent-container/src/browser-storage-bundle'
 import { decryptBrowserBundle } from '../browser/browser-vault-crypto'
 
-let testDb: ReturnType<typeof drizzle>
-let testSqlite: InstanceType<typeof Database>
+let testDb: AppDatabase
+let handle: TestDatabase
 
 vi.mock('../db', () => ({
   get db() {
@@ -31,40 +30,36 @@ function bundleFor(site: string, theme: string): SiteStorageBundle {
   }
 }
 
-function insertUser(id: string): void {
-  testSqlite.prepare(
-    'INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, 0, 0, 0)',
-  ).run(id, id, `${id}@example.com`)
+async function insertUser(id: string): Promise<void> {
+  await testDb.insert(schema.user).values({ id, name: id, email: `${id}@example.com` })
 }
 
 function credentials() {
   return testDb.select().from(schema.browserCredentials).all()
 }
 
-function mapping(agentSlug: string, site: string) {
-  return testDb.select().from(schema.agentBrowserCredentials)
+async function mapping(agentSlug: string, site: string) {
+  const rows = await testDb.select().from(schema.agentBrowserCredentials)
     .where(eq(schema.agentBrowserCredentials.agentSlug, agentSlug))
     .all()
-    .find((row) => row.site === site)
+  return rows.find((row) => row.site === site)
 }
 
 describe('saveBrowserLogin', () => {
   let dataDir: string
   const previousDataDir = process.env.SUPERAGENT_DATA_DIR
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-credential-service-'))
     process.env.SUPERAGENT_DATA_DIR = dataDir
-    testSqlite = new Database(':memory:')
-    testSqlite.pragma('foreign_keys = ON')
-    testDb = drizzle(testSqlite, { schema })
-    migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
-    insertUser('alice')
-    insertUser('bob')
+    handle = await createTestDatabase()
+    testDb = handle.db
+    await insertUser('alice')
+    await insertUser('bob')
   })
 
-  afterEach(() => {
-    testSqlite.close()
+  afterEach(async () => {
+    await handle.close()
     if (previousDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
     else process.env.SUPERAGENT_DATA_DIR = previousDataDir
     fs.rmSync(dataDir, { recursive: true, force: true })
@@ -75,12 +70,12 @@ describe('saveBrowserLogin', () => {
       userId: 'alice', agentSlug: 'agent-a', browserType: 'container', bundle: bundleFor('example.com', 'dark'),
     })
 
-    expect(result).toMatchObject({ status: 'created', version: 1 })
-    const [row] = credentials()
+    expect(result).toMatchObject({ status: 'created' })
+    const [row] = await credentials()
     expect(row).toMatchObject({ userId: 'alice', name: 'example.com', site: 'example.com', browserType: 'container', version: 1 })
     expect(row.bundle).not.toContain('dark')
     expect(decryptBrowserBundle(row.bundle, row)).toEqual(bundleFor('example.com', 'dark'))
-    expect(mapping('agent-a', 'example.com')).toMatchObject({ credentialId: row.id, appliedVersion: 1 })
+    expect(await mapping('agent-a', 'example.com')).toMatchObject({ credentialId: row.id, appliedVersion: 1 })
   })
 
   it('overwrites the user\'s login for the site from any agent and bumps its version', async () => {
@@ -91,13 +86,13 @@ describe('saveBrowserLogin', () => {
       userId: 'alice', agentSlug: 'agent-b', browserType: 'container', bundle: bundleFor('example.com', 'light'),
     })
 
-    expect(second).toEqual({ status: 'updated', credentialId: first.credentialId, version: 2 })
-    const [row] = credentials()
-    expect(credentials()).toHaveLength(1)
+    expect(second).toEqual({ status: 'updated', credentialId: first.credentialId })
+    const [row, ...others] = await credentials()
+    expect(others).toHaveLength(0)
     expect(row.version).toBe(2)
     expect(decryptBrowserBundle(row.bundle, row)).toEqual(bundleFor('example.com', 'light'))
-    expect(mapping('agent-a', 'example.com')).toMatchObject({ credentialId: first.credentialId, appliedVersion: 1 })
-    expect(mapping('agent-b', 'example.com')).toMatchObject({ credentialId: first.credentialId, appliedVersion: 2 })
+    expect(await mapping('agent-a', 'example.com')).toMatchObject({ credentialId: first.credentialId, appliedVersion: 1 })
+    expect(await mapping('agent-b', 'example.com')).toMatchObject({ credentialId: first.credentialId, appliedVersion: 2 })
   })
 
   it('never overwrites another user\'s login on a shared agent', async () => {
@@ -110,10 +105,10 @@ describe('saveBrowserLogin', () => {
 
     expect(bob.status).toBe('created')
     expect(bob.credentialId).not.toBe(alice.credentialId)
-    const aliceRow = credentials().find((row) => row.id === alice.credentialId)!
+    const aliceRow = (await credentials()).find((row) => row.id === alice.credentialId)!
     expect(aliceRow.version).toBe(1)
     expect(decryptBrowserBundle(aliceRow.bundle, aliceRow)).toEqual(bundleFor('example.com', 'dark'))
-    expect(mapping('agent-a', 'example.com')).toMatchObject({ credentialId: bob.credentialId })
+    expect(await mapping('agent-a', 'example.com')).toMatchObject({ credentialId: bob.credentialId })
   })
 
   it('creates a new credential when the browser type differs', async () => {
@@ -126,7 +121,7 @@ describe('saveBrowserLogin', () => {
 
     expect(chrome.status).toBe('created')
     expect(chrome.credentialId).not.toBe(container.credentialId)
-    expect(credentials()).toHaveLength(2)
+    expect(await credentials()).toHaveLength(2)
   })
 
   it('keeps one login per owner, site and browser type when two saves race', async () => {
@@ -136,6 +131,23 @@ describe('saveBrowserLogin', () => {
     ])
 
     expect(results.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected'])
-    expect(credentials()).toHaveLength(1)
+    expect(await credentials()).toHaveLength(1)
+  })
+
+  it('gives concurrent updates of one login distinct versions and maps each agent to the version it wrote', async () => {
+    await saveBrowserLogin({ userId: null, agentSlug: 'agent-a', browserType: 'container', bundle: bundleFor('example.com', 'initial') })
+
+    await Promise.all([
+      saveBrowserLogin({ userId: null, agentSlug: 'agent-a', browserType: 'container', bundle: bundleFor('example.com', 'dark') }),
+      saveBrowserLogin({ userId: null, agentSlug: 'agent-b', browserType: 'container', bundle: bundleFor('example.com', 'light') }),
+    ])
+
+    const [row] = await credentials()
+    expect(row.version).toBe(3)
+    // The bundle written last is the stored one; only its agent is at the latest version, so the other one gets synced to it.
+    const latestTheme = decryptBrowserBundle(row.bundle, row).origins[0].localStorage[0][1]
+    const [latestAgent, olderAgent] = latestTheme === 'dark' ? ['agent-a', 'agent-b'] : ['agent-b', 'agent-a']
+    expect(await mapping(latestAgent, 'example.com')).toMatchObject({ appliedVersion: 3 })
+    expect(await mapping(olderAgent, 'example.com')).toMatchObject({ appliedVersion: 2 })
   })
 })
