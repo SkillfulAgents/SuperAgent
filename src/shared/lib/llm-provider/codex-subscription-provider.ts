@@ -20,7 +20,7 @@ const CODEX_IMAGE_PROMPT = `Codex image generation is available in this session 
 // Subscription speed choices exclude the API-only Flex tier.
 const CODEX_SPEEDS: SpeedLevel[] = ['normal', 'fast']
 // Subscription model availability/context differs from the public API catalog.
-const CODEX_MODELS = new Set(['gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra'])
+const CODEX_MODELS = new Set(['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra'])
 
 export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
   readonly id = 'codex-subscription' as const

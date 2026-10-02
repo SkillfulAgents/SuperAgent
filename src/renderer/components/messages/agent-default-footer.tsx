@@ -78,9 +78,9 @@ export function AgentDefaultFooter({ agentSlug, state, agentHomeLink = true }: A
 
   if (!canAdminAgent(agentSlug)) {
     // Members still learn the default exists and what it is.
-    const defaultIsAlias = defaultModel !== undefined && state.catalog.some((m) => m.family === defaultModel)
+    const defaultIsAlias = !!resolvedDefault?.isLatest && !!resolvedDefault.family && defaultModel !== resolvedDefault.id
     const defaultLabel = defaultIsAlias
-      ? familyDisplayName(defaultModel)
+      ? familyDisplayName(resolvedDefault.family!)
       : resolvedDefault?.label ?? defaultModel
     if (!defaultLabel) return null
     const speedSuffix =

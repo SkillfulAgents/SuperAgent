@@ -30,7 +30,7 @@ describe('getProviderCatalog', () => {
 
     expect(platform.defaultModelOptions.map((option) => option.model)).toEqual([
       'opus',
-      'gpt',
+      'gpt-sol',
       'grok',
     ])
     expect(platform.defaultModels.agent).toBe('grok')
@@ -58,7 +58,7 @@ describe('getProviderCatalog', () => {
     ])
     expect(defaultsByIcon('platform')).toEqual([
       ['anthropic', 'claude-opus-5-5'],
-      ['openai', 'gpt-5.6-sol'],
+      ['openai', 'gpt-6.1-sol'],
       ['xai', 'grok-4.7'],
       ['kimi', 'kimi-k3'],
       ['meta', 'muse-spark-1.3'],
@@ -130,8 +130,6 @@ describe('getProviderCatalog', () => {
   })
 
   it.each([
-    ['gpt-5.4', ['low', 'medium', 'high', 'xhigh']],
-    ['gpt-5.5', ['low', 'medium', 'high', 'xhigh']],
     ['gpt-5.6-luna', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-5.6-terra', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-5.6-sol', ['low', 'medium', 'high', 'xhigh', 'max']],
@@ -256,45 +254,36 @@ describe('getProviderCatalog', () => {
 
   it('exposes the Platform GPT built-ins under BARE ids the proxy routes', () => {
     const catalog = getProviderCatalog('platform')
-    const gpt = catalog.find((m) => m.id === 'gpt-5.5')!
     // gpt rides the OpenAI Responses wire, which maps native web_search.
-    expect(gpt).toMatchObject({
-      family: 'gpt',
-      icon: 'openai',
-      supportsWebSearch: true,
-      supportsWebFetch: false,
-      pricing: { inputPerMtok: 5, outputPerMtok: 30 },
-    })
-    expect(gpt.isLatest).toBeFalsy()
-    // The 5.6 tiers: Sol is the flagship the bare `gpt` alias tracks.
+    expect(catalog.some((m) => m.id === 'gpt-5.4' || m.id === 'gpt-5.5')).toBe(false)
     expect(catalog.find((m) => m.id === 'gpt-5.6-luna')).toMatchObject({
-      family: 'gpt',
+      family: 'gpt-luna',
+      icon: 'openai',
       supportsWebSearch: true,
       supportsWebFetch: false,
       pricing: { inputPerMtok: 1, outputPerMtok: 6 },
     })
     expect(catalog.find((m) => m.id === 'gpt-5.6-terra')).toMatchObject({
-      family: 'gpt',
+      family: 'gpt-terra',
       supportsWebSearch: true,
       supportsWebFetch: false,
       pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
     })
     expect(catalog.find((m) => m.id === 'gpt-5.6-sol')).toMatchObject({
-      family: 'gpt',
-      isLatest: true,
+      family: 'gpt-sol',
       supportsWebSearch: true,
       supportsWebFetch: false,
       pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     })
     expect(catalog.find((m) => m.id === 'gpt-6-luna')).toMatchObject({
-      family: 'gpt',
+      family: 'gpt-luna',
       supportsWebSearch: true,
       supportsWebFetch: false,
       pricing: { inputPerMtok: 0.1, outputPerMtok: 0.5 },
       contextWindow: 1_050_000,
     })
     expect(catalog.find((m) => m.id === 'gpt-6-sol')).toMatchObject({
-      family: 'gpt',
+      family: 'gpt-sol',
       supportsWebSearch: true,
       supportsWebFetch: false,
       pricing: { inputPerMtok: 2, outputPerMtok: 10 },
@@ -302,26 +291,27 @@ describe('getProviderCatalog', () => {
     })
     // 6.1 Sol matches 6 Sol's $2/$10, with cache reads at 5% instead of 10%.
     expect(catalog.find((m) => m.id === 'gpt-6.1-sol')).toMatchObject({
-      family: 'gpt',
+      family: 'gpt-sol',
       supportsWebSearch: true,
       supportsWebFetch: false,
       pricing: { inputPerMtok: 2, outputPerMtok: 10, cacheReadPerMtok: 0.1 },
       contextWindow: 1_050_000,
     })
-    // Astra is selectable but not the family default: the bare `gpt` alias stays on Sol.
     expect(catalog.find((m) => m.id === 'gpt-6-astra')).toMatchObject({
-      family: 'gpt',
+      family: 'gpt-astra',
       supportsWebSearch: true,
       supportsWebFetch: false,
       pricing: { inputPerMtok: 10, outputPerMtok: 50 },
       contextWindow: 1_050_000,
     })
-    expect(catalog.find((m) => m.id === 'gpt-6-astra')!.isLatest).toBeFalsy()
-    expect(catalog.find((m) => m.id === 'gpt-6-sol')!.isLatest).toBeFalsy()
-    expect(catalog.find((m) => m.id === 'gpt-6.1-sol')!.isLatest).toBeFalsy()
-    expect(catalog.find((m) => m.id === 'gpt-6-luna')!.isLatest).toBeFalsy()
-    const gptLatest = catalog.filter((m) => m.family === 'gpt' && m.isLatest)
-    expect(gptLatest.map((m) => m.id)).toEqual(['gpt-5.6-sol'])
+    // Each OpenAI tier is its own family, so each bare alias rides its own tier.
+    const gptLatest = catalog.filter((m) => m.family?.startsWith('gpt-') && m.isLatest)
+    expect(gptLatest.map((m) => [m.family, m.id])).toEqual([
+      ['gpt-luna', 'gpt-6-luna'],
+      ['gpt-terra', 'gpt-5.6-terra'],
+      ['gpt-sol', 'gpt-6.1-sol'],
+      ['gpt-astra', 'gpt-6-astra'],
+    ])
     // Grok rides the same Responses wire (xai-responses upstream); bare id only.
     expect(catalog.find((m) => m.id === 'grok-4.7')).toMatchObject({
       family: 'grok',
@@ -615,8 +605,6 @@ describe('getEffectiveCatalog', () => {
 
 describe('getModelContextWindow', () => {
   it('returns the catalog window for Platform GPT models', () => {
-    expect(getModelContextWindow('gpt-5.5', 'platform')).toBe(1_050_000)
-    expect(getModelContextWindow('gpt-5.4', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-5.6-sol', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-6-sol', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-6.1-sol', 'platform')).toBe(1_050_000)
@@ -649,8 +637,8 @@ describe('getModelContextWindowMap', () => {
     expect(map['grok-4.7']).toBe(500_000)
     expect(map['grok-4.6']).toBe(500_000)
     expect(map['grok-4.5']).toBe(500_000)
-    expect(map['gpt-5.5']).toBe(1_050_000)
-    expect(map['gpt-5.4']).toBe(1_050_000)
+    expect(map['gpt-5.6-sol']).toBe(1_050_000)
+    expect(map['gpt-6-sol']).toBe(1_050_000)
   })
 
   it('omits Claude models (no catalog window; the SDK supplies theirs)', () => {
@@ -662,7 +650,7 @@ describe('getModelContextWindowMap', () => {
 describe('getModelPromptHints', () => {
   it('returns GPT-specific tool guidance for Platform and OpenRouter GPT models', () => {
     for (const [providerId, modelId] of [
-      ['platform', 'gpt-5.5'],
+      ['platform', 'gpt-5.6-sol'],
       ['openrouter', 'openai/gpt-5.5'],
     ] as const) {
       const hints = getModelPromptHints(modelId, providerId)
@@ -765,7 +753,9 @@ describe('resolveModelForProvider', () => {
     expect(resolveModelForProvider('deepseek-v4.1-flash', 'platform', 'agent')).toBe(
       'deepseek-v4.1-flash',
     )
-    expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.6-sol')
+    expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-6.1-sol')
+    expect(resolveModelForProvider('gpt-sol', 'platform', 'agent')).toBe('gpt-6.1-sol')
+    // Removed from the catalog, but a stored pin still passes through to the proxy.
     expect(resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
     expect(resolveModelForProvider('gpt-5.6-luna', 'platform', 'agent')).toBe('gpt-5.6-luna')
     expect(resolveModelForProvider('grok', 'platform', 'agent')).toBe('grok-4.7')

@@ -5,6 +5,7 @@ import { useModelSettings } from '@renderer/hooks/use-settings'
 import { ComposerOptionsPopover } from './composer-options-popover'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
+import { isFamilyAlias } from '@shared/lib/llm-provider/model-catalog-schema'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
 /**
@@ -74,7 +75,7 @@ export function findCatalogModel(
   if (!selection) return undefined
   return (
     catalog.find((m) => m.id === selection) ??
-    catalog.find((m) => m.family === selection && m.isLatest)
+    catalog.find((m) => m.isLatest && isFamilyAlias(m, selection))
   )
 }
 

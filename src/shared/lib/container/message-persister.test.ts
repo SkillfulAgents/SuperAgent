@@ -3622,7 +3622,7 @@ describe('MessagePersister', () => {
       mockClient._sendMessage({
         type: 'result',
         subtype: 'success',
-        modelUsage: { 'gpt-5.5': { inputTokens: 100, outputTokens: 10 } },
+        modelUsage: { 'gpt-5.6-sol': { inputTokens: 100, outputTokens: 10 } },
       })
 
       const usageEvents = sseEvents.filter((e) => e.type === 'context_usage')
@@ -3638,7 +3638,7 @@ describe('MessagePersister', () => {
       mockClient._sendMessage({
         type: 'result',
         subtype: 'success',
-        modelUsage: { 'gpt-5.5': { contextWindow: 200_000 } },
+        modelUsage: { 'gpt-5.6-sol': { contextWindow: 200_000 } },
       })
 
       const usageEvents = sseEvents.filter((e) => e.type === 'context_usage')

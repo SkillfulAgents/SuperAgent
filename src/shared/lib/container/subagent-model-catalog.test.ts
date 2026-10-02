@@ -6,7 +6,7 @@ vi.mock('../config/settings', () => ({
   getModelCatalogSettings: () => settingsMock().modelCatalog ?? {},
 }))
 
-import { getEffectiveCatalog } from '../llm-provider'
+import { getEffectiveCatalog, resolveModelForProvider } from '../llm-provider'
 import {
   getSubagentModelCatalog,
   MAX_SUBAGENT_MODELS,
@@ -42,6 +42,27 @@ describe('getSubagentModelCatalog', () => {
     expect(catalog.some((model) => model.id === 'claude-opus-4-8')).toBe(false)
     expect(catalog.some((model) => model.id === 'claude-opus-5')).toBe(false)
     expect(catalog.some((model) => model.id === 'claude-opus-5-5')).toBe(true)
+  })
+
+  it('exposes the latest model of each GPT tier family as a subagent', () => {
+    settingsMock.mockReturnValue({ llmProvider: 'platform' })
+    const gptIds = (provider: 'platform' | 'codex-subscription') =>
+      getSubagentModelCatalog(getEffectiveCatalog(provider))
+        .map((model) => model.id)
+        .filter((id) => id.startsWith('gpt-'))
+
+    const latestPerTier = ['gpt-6-luna', 'gpt-5.6-terra', 'gpt-6.1-sol', 'gpt-6-astra']
+    expect(gptIds('platform').sort()).toEqual([...latestPerTier].sort())
+    expect(gptIds('codex-subscription').sort()).toEqual([...latestPerTier].sort())
+    expect(resolveModelForProvider('gpt-sol', 'platform', 'agent')).toBe('gpt-6.1-sol')
+    expect(resolveModelForProvider('gpt-astra', 'platform', 'agent')).toBe('gpt-6-astra')
+  })
+
+  it('keeps a stored bare gpt selection on the Sol family', () => {
+    settingsMock.mockReturnValue({ llmProvider: 'platform' })
+
+    expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-6.1-sol')
+    expect(resolveModelForProvider('gpt', 'codex-subscription', 'agent')).toBe('gpt-6.1-sol')
   })
 
   it('does not pass disabled catalog entries to the container', () => {
