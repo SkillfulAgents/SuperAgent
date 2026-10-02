@@ -9,6 +9,7 @@ import {
 } from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
+import { isFamilyAlias } from '@shared/lib/llm-provider/model-catalog-schema'
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1)
@@ -220,7 +221,7 @@ export function findCatalogModel(
   if (!selection) return undefined
   return (
     catalog.find((m) => m.id === selection) ??
-    catalog.find((m) => m.isLatest && (m.family === selection || m.familyAliases?.includes(selection)))
+    catalog.find((m) => m.isLatest && isFamilyAlias(m, selection))
   )
 }
 

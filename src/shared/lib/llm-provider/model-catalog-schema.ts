@@ -93,6 +93,11 @@ export const modelDefinitionSchema = z.object({
 
 export type ModelDefinition = z.infer<typeof modelDefinitionSchema>
 
+/** True when a bare name selects this model's family: its `family` or one of its `familyAliases`. */
+export function isFamilyAlias(model: ModelDefinition, name: string): boolean {
+  return model.family === name || (model.familyAliases?.includes(name) ?? false)
+}
+
 /**
  * Normalized provider-discovery result. Providers may source this from their
  * own catalogs, but by the time it reaches the renderer it is already shaped

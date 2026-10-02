@@ -2,6 +2,7 @@ import { withGlobalModelPricing } from './global-pricing'
 import { normalizeCatalog, mergeCatalog } from './catalog-merge'
 import type { LlmProviderId, ModelPurpose } from './base-llm-provider'
 import {
+  isFamilyAlias,
   type ModelDefinition,
 } from './model-catalog-schema'
 import { getLlmProvider } from './index'
@@ -99,7 +100,7 @@ export function resolveModelForProvider(
   // exact concrete id (pin/passthrough), else bare family alias → its isLatest id
   const resolveExactOrAlias = (s: string): string | undefined => {
     if (catalog.some(model => model.id === s)) return s
-    return catalog.find(model => model.isLatest && (model.family === s || model.familyAliases?.includes(s)))?.id
+    return catalog.find(model => model.isLatest && isFamilyAlias(model, s))?.id
   }
 
   // 1 & 2.
