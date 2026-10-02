@@ -6,6 +6,7 @@ import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 import { userSettings } from '@shared/lib/db/schema'
 import { getSettings } from '@shared/lib/config/settings'
 import { ttsSpeedSchema } from '@shared/lib/voice/tts-preferences'
+import { experimentEnabled, isKnownExperiment, type ExperimentId } from '@shared/lib/experiments'
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,31 @@ const lenientStringRecord = z
   })
   .optional()
   .catch(undefined)
+
+/** Read-tolerant boolean map: a non-boolean value is dropped alone, same
+ * reasoning as `lenientArray`. */
+const lenientBooleanRecord = z
+  .record(z.string(), z.unknown())
+  .transform((record) => {
+    const out: Record<string, boolean> = {}
+    for (const [key, value] of Object.entries(record)) {
+      if (typeof value === 'boolean') out[key] = value
+    }
+    return out
+  })
+  .optional()
+  .catch(undefined)
+
+/**
+ * A write to the experiment switches names only experiments that exist. The
+ * stored map is lenient instead: it keeps a switch for an experiment that has
+ * since been retired, and readers ignore it (see `experimentEnabled`).
+ */
+export const experimentSettingsWriteSchema = z.object({
+  experiments: z
+    .record(z.string().refine(isKnownExperiment, 'Unknown experiment'), z.boolean())
+    .optional(),
+})
 
 /**
  * Strict shapes for the folder fields on the write path. The stored schema is
@@ -182,6 +208,10 @@ export const userSettingsSchema = z.object({
   defaultMcpPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   keepAwakeEnabled: z.boolean().default(false),
   voice: userVoiceSettingsSchema,
+  // Experiment id → on/off, from Settings → Experiments (registry in
+  // @shared/lib/experiments). Absent id = off. A write merges into the map
+  // rather than replacing it, so toggling one never resets another.
+  experiments: lenientBooleanRecord,
   onboardingProgress: z.object({
     path: z.enum(['manual', 'platform']),
     stepId: z.string(),
@@ -303,6 +333,9 @@ function mergeSettings(current: UserSettingsData, partial: UserSettingsWrite): U
       ? { ...current.notifications, ...partial.notifications }
       : current.notifications,
     voice: partial.voice ? mergeVoice(current.voice, partial.voice) : current.voice,
+    experiments: partial.experiments
+      ? { ...current.experiments, ...partial.experiments }
+      : current.experiments,
   })
 }
 
@@ -354,6 +387,14 @@ async function compareAndSetUserSettings(
     if (changesOf(result) > 0) return validated
   }
   throw new Error('User settings changed concurrently; try again')
+}
+
+/**
+ * Whether `userId` has turned experiment `id` on. For server-side gates; the
+ * renderer reads the same switch through `useExperiment`.
+ */
+export async function isExperimentEnabled(userId: string, id: ExperimentId): Promise<boolean> {
+  return experimentEnabled((await getUserSettings(userId)).experiments, id)
 }
 
 /**
