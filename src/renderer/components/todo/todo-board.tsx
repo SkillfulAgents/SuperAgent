@@ -450,7 +450,9 @@ export function TodoBoard() {
     <div className="flex h-full min-h-0 flex-col" data-testid="todo-board" aria-busy={isPending || undefined}>
       <div className="min-h-0 flex-1 overflow-x-auto p-6">
         <DndContext sensors={sensors} collisionDetection={sameColumnOnly} modifiers={[restrictToVerticalAxis]} onDragEnd={onDragEnd}>
-          <div className="flex h-full min-w-[960px] gap-3">
+          {/* The minimum fits the default window (1280 wide, sidebar at its
+              288px minimum) with no horizontal scroll; narrower, it scrolls. */}
+          <div className="flex h-full min-w-[896px] gap-3">
             {LANES.map((lane) => (
               <Column
                 key={lane.id}

@@ -1,13 +1,5 @@
-import { useMemo, type ReactNode } from 'react'
+import { useMemo } from 'react'
 import { format, formatDistanceToNowStrict, isToday } from 'date-fns'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from '@renderer/components/ui/dropdown-menu'
 import { useAgents } from '@renderer/hooks/use-agents'
 
 export interface TodoAgent {
@@ -22,36 +14,6 @@ export function useTodoAgents(): { agents: TodoAgent[]; bySlug: Map<string, Todo
     const agents = (data ?? []).map((a) => ({ slug: a.slug, name: a.name }))
     return { agents, bySlug: new Map(agents.map((a) => [a.slug, a])) }
   }, [data])
-}
-
-/** Pick the agent a draft goes to. */
-export function AgentPicker({ agents, selected, onPick, trigger }: {
-  agents: TodoAgent[]
-  selected: string | null
-  onPick: (agent: TodoAgent) => void
-  trigger: ReactNode
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="max-h-80 w-56 overflow-y-auto">
-        {agents.length === 0 && <DropdownMenuItem disabled>No agents yet</DropdownMenuItem>}
-        <DropdownMenuRadioGroup
-          value={selected ?? ''}
-          onValueChange={(slug) => {
-            const agent = agents.find((a) => a.slug === slug)
-            if (agent) onPick(agent)
-          }}
-        >
-          {agents.map((agent) => (
-            <DropdownMenuRadioItem key={agent.slug} value={agent.slug} data-testid={`todo-agent-option-${agent.slug}`}>
-              <span className="truncate">{agent.name}</span>
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
 }
 
 /** Linear-style compact age for a card's metadata row: "now", "8m", "3h", "2d", then a date. */
