@@ -83,7 +83,7 @@ import { isHiddenAutomatedSession, isAgentIntegrationSession } from '@shared/lib
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
-import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
+import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
 import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capability-policy-schema'
 import { getLlmProvider, getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
@@ -299,6 +299,8 @@ interface StreamingState {
   // Set synchronously on promote so an in-flight subscribe-time metadata read
   // cannot enable stream release again.
   promotedToInteractive?: boolean
+  // When the stream last delivered a frame, or the session was last marked active.
+  lastFrameAt?: number
   // True when the most recent result was a clean success (not error-shaped,
   // not an interrupt, not a resume-exit). Consumed by finalizeIdle: a success
   // result alone is NOT terminal — queued messages or background work can keep
@@ -427,6 +429,7 @@ const SECRET_BEARING_TOOL_NAMES = new Set([
 // (proxy caps at 2KB); cap harder here — this text lands in the agent's
 // context and 50 events × 2KB would crowd out the actual work.
 const INSPECT_BODY_PREVIEW_CHARS = 200
+const SETTLEMENT_PROBE_TIMEOUT_MS = 5_000
 
 export function formatWebhookEventLine(event: WebhookEndpointEvent): string {
   const filterNote = event.filter
@@ -738,6 +741,7 @@ class MessagePersister {
       releaseStreamWhenIdle: prior?.releaseStreamWhenIdle ?? false,
       retainStateOnStreamRelease: prior?.retainStateOnStreamRelease ?? false,
       promotedToInteractive: prior?.promotedToInteractive ?? false,
+      lastFrameAt: Date.now(),
     })
 
     this.resolveStreamReleasePolicy(ctx)
@@ -1408,6 +1412,49 @@ class MessagePersister {
       }))
   }
 
+  // A stream can stop delivering without a close; resubscribing replays the settled turn's result and idle.
+  async reattachStalledSessions(agentSlug: string, quietMs: number, now: number = Date.now()): Promise<string[]> {
+    const reattached: string[] = []
+    for (const [key, state] of this.streamingStates) {
+      if (state.agentSlug !== agentSlug) continue
+      if (!state.isActive || state.isInterrupted || state.waitingBackground || state.isAwaitingInput || state.isRecovering) continue
+      if (!this.subscriptions.has(key) || this.subscribingNow.has(key)) continue
+      // A send the container hasn't received yet would find the previous turn settled.
+      if (this.pendingSessionSends.has(key)) continue
+      if (now - (state.lastFrameAt ?? now) < quietMs) continue
+      const client = this.containerClients.get(key)
+      if (!client) continue
+      const { sessionId } = state
+      try {
+        // Settlement, not isRunning: the SDK loop stays alive between turns. An older image answers 404.
+        // The health check awaits every agent in turn, so one unresponsive container must not stall it.
+        const response = await client.fetch(`/sessions/${encodeURIComponent(sessionId)}/settlement`, {
+          signal: AbortSignal.timeout(SETTLEMENT_PROBE_TIMEOUT_MS),
+        })
+        if (!response.ok) continue
+        const { settled } = await response.json() as { settled?: boolean }
+        if (settled !== true) continue
+        const current = this.streamingStates.get(key)
+        if (current !== state || !state.isActive || (state.lastFrameAt ?? now) > now - quietMs) continue
+        console.warn(`[MessagePersister] Session ${sessionId} is settled in the container but its stream went silent; resubscribing`)
+        // Recovery hides the stuck state, so report it before resubscribing.
+        captureException(new Error('Session stream went silent after its turn settled'), {
+          tags: {
+            component: 'container',
+            operation: 'stalled-stream-reattach',
+            containerRunner: getSettings().container?.containerRunner ?? 'unknown',
+          },
+          extra: { agentId: agentSlug, sessionId, silentMs: now - (state.lastFrameAt ?? now) },
+        })
+        await this.subscribeToSession(agentSlug, sessionId, client, sessionId)
+        reattached.push(sessionId)
+      } catch (error) {
+        console.error(`[MessagePersister] Stalled-session check failed for ${sessionId}:`, error)
+      }
+    }
+    return reattached
+  }
+
   // Check if a session has an active subscription
   isSubscribed(agentSlug: string, sessionId: string): boolean {
     return this.subscriptions.has(sessionKeyOf(agentSlug, sessionId))
@@ -1844,6 +1891,7 @@ class MessagePersister {
     const wasActive = state.isActive
     state.activityGeneration = (state.activityGeneration ?? 0) + 1
     state.isActive = true
+    state.lastFrameAt = Date.now()
     // Message-scoped: true for a queued message just as much as a new turn.
     state.isInterrupted = false // Reset interrupted flag on new message
     state.waitingBackground = false
@@ -2244,6 +2292,7 @@ class MessagePersister {
     void this.capture?.recordInput(sessionId, message)
     const state = this.streamingStates.get(ctx.key)
     if (!state) return
+    state.lastFrameAt = Date.now()
 
     // After an interrupt, the aborted turn's own content (stream events,
     // assistant/user frames still in the pipe) is stale and skipped — the
