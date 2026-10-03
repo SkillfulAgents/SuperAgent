@@ -24,9 +24,9 @@ type TestStatus = 'idle' | 'starting' | 'testing'
 
 interface TestSession {
   stream: MediaStream
-  context: AudioContext
-  source: MediaStreamAudioSourceNode
-  frame: number
+  context?: AudioContext
+  source?: MediaStreamAudioSourceNode
+  frame?: number
 }
 
 function microphoneError(error: unknown): string {
@@ -68,9 +68,9 @@ export function MicrophoneSettings() {
   const releaseTest = useCallback(() => {
     const session = sessionRef.current
     if (!session) return
-    cancelAnimationFrame(session.frame)
-    session.source.disconnect()
-    void session.context.close()
+    if (session.frame !== undefined) cancelAnimationFrame(session.frame)
+    session.source?.disconnect()
+    if (session.context) void session.context.close()
     session.stream.getTracks().forEach((track) => track.stop())
     sessionRef.current = null
   }, [])
@@ -116,15 +116,17 @@ export function MicrophoneSettings() {
         return
       }
 
+      sessionRef.current = { stream }
       context = new AudioContext()
+      sessionRef.current.context = context
       if (context.state === 'suspended') await context.resume()
       if (testRunRef.current !== run) {
-        void context.close()
-        stream.getTracks().forEach((track) => track.stop())
+        releaseTest()
         return
       }
 
       source = context.createMediaStreamSource(stream)
+      sessionRef.current.source = source
       const analyser = context.createAnalyser()
       analyser.fftSize = 256
       source.connect(analyser)
@@ -143,15 +145,19 @@ export function MicrophoneSettings() {
       }
 
       const frame = requestAnimationFrame(updateLevel)
-      sessionRef.current = { stream, context, source, frame }
+      sessionRef.current.frame = frame
       const activeDeviceId = stream.getAudioTracks()[0]?.getSettings().deviceId
       setUsingFallback(!!selectedDeviceId && !!activeDeviceId && activeDeviceId !== selectedDeviceId)
       setStatus('testing')
       await refreshDevices()
     } catch (caught) {
-      source?.disconnect()
-      if (context) void context.close()
-      stream?.getTracks().forEach((track) => track.stop())
+      if (sessionRef.current?.stream === stream) {
+        releaseTest()
+      } else {
+        source?.disconnect()
+        if (context) void context.close()
+        stream?.getTracks().forEach((track) => track.stop())
+      }
       if (testRunRef.current !== run) return
       setStatus('idle')
       setError(microphoneError(caught))

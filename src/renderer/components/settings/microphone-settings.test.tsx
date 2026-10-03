@@ -109,6 +109,27 @@ describe('MicrophoneSettings', () => {
     expect(audioContext).not.toHaveBeenCalled()
   })
 
+  it('releases the microphone while AudioContext resume is pending', async () => {
+    const stop = vi.fn()
+    const stream = { getTracks: () => [{ stop }] } as unknown as MediaStream
+    getUserMedia.mockResolvedValue(stream)
+    let resolveResume!: () => void
+    const resume = vi.fn(() => new Promise<void>((resolve) => { resolveResume = resolve }))
+    const close = vi.fn(async () => {})
+    vi.stubGlobal('AudioContext', function FakeAudioContext() {
+      return { state: 'suspended', resume, close }
+    })
+    const view = renderWithProviders(<MicrophoneSettings />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Test microphone' }))
+    await waitFor(() => expect(resume).toHaveBeenCalled())
+    view.unmount()
+
+    expect(stop).toHaveBeenCalled()
+    expect(close).toHaveBeenCalled()
+    resolveResume()
+  })
+
   it('explains when microphone access is unavailable', () => {
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: undefined })
     renderWithProviders(<MicrophoneSettings />)
