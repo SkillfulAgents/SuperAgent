@@ -1,5 +1,82 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { startAudioCapture } from './audio-capture'
+import { acquireMicStream, startAudioCapture } from './audio-capture'
+import { setPreferredMicrophoneDeviceId } from './microphone-device'
+
+describe('acquireMicStream', () => {
+  const stream = {} as MediaStream
+  const getUserMedia = vi.fn(async (_constraints: MediaStreamConstraints) => stream)
+  let preferred: string | null
+
+  beforeEach(() => {
+    preferred = null
+    getUserMedia.mockReset()
+    getUserMedia.mockResolvedValue(stream)
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => preferred),
+      setItem: vi.fn((_key: string, value: string) => { preferred = value }),
+      removeItem: vi.fn(() => { preferred = null }),
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('uses the system default when no microphone is saved', async () => {
+    await acquireMicStream()
+
+    expect(getUserMedia).toHaveBeenCalledWith({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    })
+  })
+
+  it('requests the saved microphone exactly', async () => {
+    setPreferredMicrophoneDeviceId('studio-mic')
+
+    await acquireMicStream()
+
+    expect(getUserMedia).toHaveBeenCalledWith({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        deviceId: { exact: 'studio-mic' },
+      },
+    })
+  })
+
+  it.each(['NotFoundError', 'OverconstrainedError'])('falls back to the system default after %s', async (name) => {
+    setPreferredMicrophoneDeviceId('missing-mic')
+    getUserMedia
+      .mockRejectedValueOnce(Object.assign(new Error('gone'), { name }))
+      .mockResolvedValueOnce(stream)
+
+    await expect(acquireMicStream()).resolves.toBe(stream)
+
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    expect(getUserMedia.mock.calls[1][0]).toEqual({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    })
+  })
+
+  it('does not retry a denied permission', async () => {
+    setPreferredMicrophoneDeviceId('studio-mic')
+    const denied = Object.assign(new Error('denied'), { name: 'NotAllowedError' })
+    getUserMedia.mockRejectedValueOnce(denied)
+
+    await expect(acquireMicStream()).rejects.toBe(denied)
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+  })
+})
 
 describe('startAudioCapture', () => {
   class FakeNode {

@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
+import { mockSpeech } from '../helpers/speech'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -647,6 +648,58 @@ test.describe('Settings validation errors', () => {
 
     // Remove the route intercept so subsequent tests work
     await page.unroute('**/api/settings')
+  })
+})
+
+test.describe('Microphone settings', () => {
+  test('uses the saved input for testing, voice mode, and dictation after reload', async ({ page, request }, testInfo) => {
+    test.setTimeout(90_000)
+    await ensureSetupCompleted(request)
+    const createRes = await request.post('/api/agents', {
+      data: { name: uniqueAgentName(testInfo, 'Microphone Preference') },
+    })
+    expect(createRes.ok()).toBe(true)
+    const agent = await createRes.json() as { slug: string; displaySlug: string }
+
+    try {
+      const speech = await mockSpeech(page)
+      const appPage = new AppPage(page)
+      await appPage.goto()
+      await appPage.waitForAgentsLoaded()
+      await openSettings(page)
+      await goToTab(page, 'voice')
+
+      await pickSelectOption(page, 'microphone-device', 'Studio Mic')
+      expect(await page.evaluate(() => localStorage.getItem('voice.microphoneDeviceId'))).toBe('studio-mic')
+
+      await page.getByRole('button', { name: 'Test microphone' }).click()
+      await expect(page.getByRole('button', { name: 'Stop test' })).toBeVisible()
+      await expect(page.getByRole('progressbar', { name: 'Microphone input level' })).toBeVisible()
+      await expect.poll(() => speech.micDeviceId()).toBe('studio-mic')
+      await page.getByRole('button', { name: 'Stop test' }).click()
+
+      await page.reload()
+      await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+      await expect(page.locator('#microphone-device')).toContainText('Studio Mic')
+
+      await page.goto(`/agents/${agent.displaySlug}`)
+      await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+      await page.getByTestId('voice-mode-button').click()
+      await expect(page.getByTestId('voice-mode-composer')).toBeVisible()
+      await expect.poll(() => speech.listen() !== null, { timeout: 15_000 }).toBe(true)
+      await expect.poll(() => speech.micDeviceId()).toBe('studio-mic')
+      await page.getByTestId('voice-mode-exit').click()
+      await expect(page.getByTestId('message-input')).toBeVisible()
+      await expect.poll(() => speech.listen()).toBeNull()
+
+      await page.evaluate(() => Reflect.set(window, 'lastMicDeviceId', null))
+      await page.getByTestId('voice-input-button').click()
+      await expect(page.getByRole('button', { name: 'Stop recording' })).toBeVisible()
+      await expect.poll(() => speech.micDeviceId()).toBe('studio-mic')
+      await page.getByRole('button', { name: 'Stop recording' }).click()
+    } finally {
+      await deleteAgent(request, agent.slug)
+    }
   })
 })
 
