@@ -21,6 +21,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => ({ data: [{ slug: 'analyst', name: 'Analyst' }, { slug: 'ops', name: 'Ops' }] }),
 }))
+vi.mock('@renderer/hooks/use-user-settings', () => ({ useUserSettings: () => ({ data: undefined }) }))
 vi.mock('@renderer/hooks/use-todos', () => ({
   useTodos: () => ({ data: state.todos, isPending: false, error: null }),
   useStartingTodoIds: () => state.starting,
@@ -253,9 +254,20 @@ describe('TodoBoard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open Task a' }))
     const trigger = screen.getByTestId('todo-assign-agent')
     expect(trigger).toHaveTextContent('Analyst')
-    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
-    expect(screen.getByRole('menuitemradio', { name: 'Analyst' })).toHaveAttribute('aria-checked', 'true')
-    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Ops' }))
+    fireEvent.click(trigger)
+    expect(screen.getByRole('option', { name: 'Analyst' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(screen.getByRole('option', { name: 'Ops' }))
     expect(screen.getByTestId('todo-assign-agent')).toHaveTextContent('Ops')
+  })
+
+  it('saves a draft and closes with Save draft', async () => {
+    state.update.mockResolvedValue(undefined)
+    state.todos = [todo({ id: 'a', column: 'drafts', title: 'A' })]
+    renderWithProviders(<TodoBoard />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open A' }))
+    fireEvent.change(screen.getByTestId('todo-draft-title'), { target: { value: 'A, sharper' } })
+    fireEvent.click(screen.getByTestId('todo-draft-save'))
+    await waitFor(() => expect(state.update).toHaveBeenCalledWith(expect.objectContaining({ id: 'a', title: 'A, sharper' })))
+    await waitFor(() => expect(screen.queryByTestId('todo-draft-dialog')).not.toBeInTheDocument())
   })
 })

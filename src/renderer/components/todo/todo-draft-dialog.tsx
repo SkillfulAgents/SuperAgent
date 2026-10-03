@@ -17,7 +17,8 @@ import {
   type TodoView,
 } from '@renderer/hooks/use-todos'
 import { MOD, ShortcutTooltip } from './todo-shortcuts'
-import { AgentPicker, useTodoAgents } from './todo-shared'
+import { AgentDropdown } from '@renderer/components/agents/agent-dropdown'
+import { useTodoAgents } from './todo-shared'
 
 /** Which draft the dialog shows: a new one (not saved until there is something in it) or a saved one. */
 export type TodoDraftTarget = { kind: 'new' } | { kind: 'existing'; todo: TodoView }
@@ -90,7 +91,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
   onToggleExpand: () => void
   onClose: () => void
 }) {
-  const { agents, bySlug } = useTodoAgents()
+  const { bySlug } = useTodoAgents()
   const createTodo = useCreateTodo()
   const updateTodo = useUpdateTodo()
   const deleteTodo = useDeleteTodo()
@@ -169,15 +170,20 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
   })
 
   const agent = fields.agentSlug ? bySlug.get(fields.agentSlug) : undefined
-  const canStart = !!agent && !alreadyStarting && !!(fields.title.trim() || fields.description.trim())
+  const written = !!(fields.title.trim() || fields.description.trim())
+  const canStart = !!agent && !alreadyStarting && written
 
-  const start = async () => {
-    if (!canStart) return
-    // Finish any dictation first so its tail lands in the brief that starts.
+  /** Ends any dictation, so its tail lands in what is saved or started. */
+  const finishDictation = async () => {
     if (voiceInput.isRecording || voiceInput.isConnecting) {
       const text = await voiceInput.stopRecording()
       if (text) change({ description: text })
     }
+  }
+
+  const start = async () => {
+    if (!canStart) return
+    await finishDictation()
     try {
       const id = await save()
       if (!id) return
@@ -203,6 +209,17 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
     savedRef.current = fieldsRef.current
     if (id) deleteTodo.mutate(id)
     onClose()
+  }
+
+  // Edits save as they are typed; this saves now and closes.
+  const saveAndClose = async () => {
+    await finishDictation()
+    try {
+      await save()
+      onClose()
+    } catch {
+      failed()
+    }
   }
 
   // Saves what was typed, then archives: the draft can come back from Archived.
@@ -309,10 +326,10 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
 
       {/* Footer: the agent on the left; dictate and start on the right. */}
       <div className="flex items-center justify-between gap-2 px-4 py-3">
-        <AgentPicker
-          agents={agents}
-          selected={fields.agentSlug}
-          onPick={(picked) => change({ agentSlug: picked.slug })}
+        <AgentDropdown
+          value={fields.agentSlug}
+          onValueChange={(slug) => change({ agentSlug: slug })}
+          testId="todo-agent"
           trigger={
             agent ? (
               <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" data-testid="todo-assign-agent">
@@ -329,6 +346,16 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose }: {
         />
         <div className="flex items-center gap-1.5">
           <VoiceInputButton voiceInput={voiceInput} message={fields.description} />
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8"
+            onClick={() => void saveAndClose()}
+            disabled={!written || alreadyStarting}
+            data-testid="todo-draft-save"
+          >
+            Save draft
+          </Button>
           <ShortcutTooltip label={agent ? 'Start' : 'Pick an agent to start'} keys={agent ? [MOD, 'Enter'] : undefined}>
             {/* A span keeps the tooltip working while the button is disabled. */}
             <span>
