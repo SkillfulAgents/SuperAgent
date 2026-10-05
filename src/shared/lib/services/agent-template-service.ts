@@ -15,7 +15,6 @@ import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
 import { Readable } from 'stream'
-import pLimit from 'p-limit'
 import archiver from 'archiver'
 import {
   openZipFromBuffer,
@@ -87,12 +86,18 @@ const ONBOARDING_SKILL_READ_LIMIT = MAX_TEMPLATE_PROMPT_SIZE + 16 * 1024
 /** Canonical prompt handoff file, plus a lowercase compatibility spelling. */
 const TEMPLATE_PROMPT_FILE_NAMES = ['PROMPT.md', 'prompt.md'] as const
 
-/** Files/dirs excluded from templates (matched by name at any level) */
-const TEMPLATE_EXCLUDE = new Set([
-  '.env',
+/** Rebuildable caches, excluded from every export and publish (matched by name at any level) */
+const CACHE_EXCLUDE = [
   '.DS_Store',
   'node_modules',
   '__pycache__',
+  '.bun-cache',
+]
+
+/** Files/dirs excluded from templates (matched by name at any level) */
+const TEMPLATE_EXCLUDE = new Set([
+  ...CACHE_EXCLUDE,
+  '.env',
   'session-metadata.json',
   '.superagent-sessions.json',
   '.skillset-agent-metadata.json',
@@ -107,9 +112,7 @@ const TEMPLATE_EXCLUDE_EXTENSIONS = new Set([
 
 /** Dirs/files excluded from full exports (matched by name at any level) */
 const FULL_EXPORT_EXCLUDE = new Set([
-  '.DS_Store',
-  'node_modules',
-  '__pycache__',
+  ...CACHE_EXCLUDE,
   '.browser-profile',
 ])
 
@@ -228,12 +231,42 @@ interface TemplateTree {
   list(dir: string): Promise<Array<Pick<FileEntry, 'name' | 'kind'>>>
   /** A whole file, or null when it cannot be read. */
   read(relativePath: string): Promise<Uint8Array | null>
+  /** A file's size in bytes, or null when it cannot be read. */
+  size(relativePath: string): Promise<number | null>
+}
+
+export class WorkspaceTooLargeError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'WorkspaceTooLargeError'
+  }
+}
+
+/**
+ * The import limits, applied to what an export or publish would read. Called
+ * once per file during the walk, so an oversized workspace is refused before
+ * any content is read.
+ */
+function createWalkBudget(): (size: number) => void {
+  let count = 0
+  let bytes = 0
+  return (size) => {
+    count += 1
+    bytes += size
+    if (count > MAX_FILE_COUNT) {
+      throw new WorkspaceTooLargeError(`Agent has too many files (max ${MAX_FILE_COUNT})`)
+    }
+    if (bytes > MAX_UNCOMPRESSED_SIZE) {
+      throw new WorkspaceTooLargeError(`Agent is too large (exceeds ${MAX_UNCOMPRESSED_SIZE / 1024 / 1024}MB)`)
+    }
+  }
 }
 
 function workspaceTree(files: FileOps): TemplateTree {
   return {
     list: (dir) => files.list(dir),
     read: (relativePath) => files.getDoc(relativePath),
+    size: async (relativePath) => (await files.stat(relativePath))?.size ?? null,
   }
 }
 
@@ -250,6 +283,13 @@ function hostTree(rootDir: string): TemplateTree {
     async read(relativePath) {
       try {
         return new Uint8Array(await fs.promises.readFile(path.join(rootDir, relativePath)))
+      } catch {
+        return null
+      }
+    },
+    async size(relativePath) {
+      try {
+        return (await fs.promises.stat(path.join(rootDir, relativePath))).size
       } catch {
         return null
       }
@@ -271,9 +311,12 @@ function joinTreePath(dir: string, name: string): string {
  * - Everything else under `.claude/` is excluded (debug, todos, projects, state files)
  * - `.browser-profile/`, `uploads/` are excluded entirely
  * - `.DS_Store`, `.env`, session files are excluded at any level
+ *
+ * Throws WorkspaceTooLargeError once the included files exceed the import limits.
  */
 async function walkTemplateFiles(tree: TemplateTree): Promise<string[]> {
   const files: string[] = []
+  const charge = createWalkBudget()
 
   async function walk(dir: string, depth: number): Promise<void> {
     const entries = await tree.list(dir)
@@ -298,6 +341,7 @@ async function walkTemplateFiles(tree: TemplateTree): Promise<string[]> {
         await walk(relativePath, depth + 1)
       } else {
         if (!TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(entry.name))) {
+          charge((await tree.size(relativePath)) ?? 0)
           files.push(relativePath)
         }
       }
@@ -328,16 +372,14 @@ async function walkTemplateFiles(tree: TemplateTree): Promise<string[]> {
   return files
 }
 
-// Visitor walk over the workspace. No path list in RAM. The actor never lists
-// a symbolic link, so a broken or escaping link cannot reach the archive.
-async function walkFullExportFiles(
-  files: FileOps,
-  onFile: (workspacePath: string) => Promise<void>,
-  signal?: AbortSignal,
-): Promise<void> {
-  async function walk(dir: string): Promise<void> {
-    if (signal?.aborted) return
+// Runs before the zip stream starts, so an oversized workspace fails the
+// request instead of a download already under way. The actor never lists a
+// symbolic link, so a broken or escaping link cannot reach the archive.
+async function walkFullExportFiles(files: FileOps): Promise<string[]> {
+  const paths: string[] = []
+  const charge = createWalkBudget()
 
+  async function walk(dir: string): Promise<void> {
     let entries: FileEntry[]
     try {
       entries = await files.list(dir)
@@ -346,18 +388,19 @@ async function walkFullExportFiles(
     }
 
     for (const entry of entries) {
-      if (signal?.aborted) return
       if (FULL_EXPORT_EXCLUDE.has(entry.name)) continue
 
       if (entry.kind === 'directory') {
         await walk(entry.path)
       } else {
-        await onFile(entry.path)
+        charge((await files.stat(entry.path))?.size ?? 0)
+        paths.push(entry.path)
       }
     }
   }
 
   await walk('')
+  return paths
 }
 
 // ============================================================================
@@ -592,12 +635,13 @@ export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): 
 
     const { files } = agentRegistry.get(agentSlug)
     const rootFiles = (await files.list('')).map((entry) => entry.path)
-    return createWorkspaceZipStream(
-      files,
-      (add) => walkFullExportFiles(files, (workspacePath) => add(workspacePath, templatePathOf(workspacePath, rootFiles)), signal),
-      signal,
-      1, // large workspaces — level 9 pegs 0.5 vCPU hosts
-    )
+    const exportFiles = await walkFullExportFiles(files)
+    return createWorkspaceZipStream(files, async (add) => {
+      for (const workspacePath of exportFiles) {
+        if (signal?.aborted) return
+        await add(workspacePath, templatePathOf(workspacePath, rootFiles))
+      }
+    }, signal, 1) // large workspaces — level 9 pegs 0.5 vCPU hosts
   })
 }
 
@@ -1157,29 +1201,25 @@ export async function computeWorkspaceTemplateHash(files: FileOps): Promise<stri
   return computeTemplateHash(workspaceTree(files))
 }
 
+const TEMPLATE_HASH_BATCH = 8
+
 async function computeTemplateHash(tree: TemplateTree): Promise<string> {
   const files = await walkTemplateFiles(tree)
   // Hash names are a persisted compatibility format, independent of export names.
   const nameOf = new Map(files.map((file) => [file, templateHashPathOf(file, files)]))
   files.sort((a, b) => (nameOf.get(a)! < nameOf.get(b)! ? -1 : nameOf.get(a)! > nameOf.get(b)! ? 1 : 0))
 
-  const limit = pLimit(8)
-  const contents = new Map<string, string>()
-  await Promise.all(files.map((relativePath) => limit(async () => {
-    try {
-      const bytes = await tree.read(relativePath)
-      if (bytes !== null) contents.set(relativePath, bytesToUtf8(bytes))
-    } catch {
-      // Skip unreadable files
-    }
-  })))
-
+  // Read a few files at a time and hash them in order, so only one batch is in memory.
   const hash = crypto.createHash('sha256')
-  for (const relativePath of files) {
-    const content = contents.get(relativePath)
-    if (content === undefined) continue
-    hash.update(nameOf.get(relativePath)!)
-    hash.update(content)
+  for (let start = 0; start < files.length; start += TEMPLATE_HASH_BATCH) {
+    const batch = files.slice(start, start + TEMPLATE_HASH_BATCH)
+    const contents = await Promise.all(batch.map((relativePath) => tree.read(relativePath).catch(() => null)))
+    batch.forEach((relativePath, i) => {
+      const bytes = contents[i]
+      if (bytes === null) return
+      hash.update(nameOf.get(relativePath)!)
+      hash.update(bytesToUtf8(bytes))
+    })
   }
 
   return hash.digest('hex')

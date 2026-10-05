@@ -82,6 +82,7 @@ import {
   exportAgentTemplate as exportAgentTemplateStream,
   exportAgentFull as exportAgentFullStream,
   ExportInProgressError,
+  WorkspaceTooLargeError,
   isHostExportBusy,
   resetHostExportLockForTests,
   importAgentFromTemplate,
@@ -962,7 +963,33 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
     }
   })
 
+  // ---------- Size limits ----------
+
+  it('refuses both exports past 500MB before reading, and releases the lock', async () => {
+    const workspaceDir = createWorkspace('test-agent', { 'AGENTS.md': MINIMAL_INSTRUCTIONS, 'data/big.bin': '' })
+    // Sparse: stat reports 501MB without writing it.
+    fs.truncateSync(path.join(workspaceDir, 'data', 'big.bin'), 501 * 1024 * 1024)
+
+    await expect(exportAgentTemplateStream('test-agent')).rejects.toBeInstanceOf(WorkspaceTooLargeError)
+    expect(isHostExportBusy()).toBe(false)
+    await expect(exportAgentFullStream('test-agent')).rejects.toBeInstanceOf(WorkspaceTooLargeError)
+    expect(isHostExportBusy()).toBe(false)
+  })
+
   // ---------- Exclusion by name ----------
+
+  it('excludes .bun-cache from both exports', async () => {
+    createWorkspace('test-agent', {
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
+      'skills/tool.ts': 'export {}',
+      '.bun-cache/install/pkg.tgz': 'cached',
+    })
+    for (const buf of [await exportAgentTemplate('test-agent'), await exportAgentFull('test-agent')]) {
+      const entries = await getZipEntries(buf)
+      expect(entries).toContain('skills/tool.ts')
+      expect(entries.some((e) => e.includes('.bun-cache'))).toBe(false)
+    }
+  })
 
   it('excludes node_modules at any depth', async () => {
     createWorkspace('test-agent', {
@@ -1265,6 +1292,24 @@ describe('computeAgentTemplateHash', () => {
     fs.writeFileSync(path.join(templateDir, 'BOOTSTRAP.md'), 'setup')
     fs.writeFileSync(path.join(workspaceDir, 'BOOTSTRAP.md'), 'setup')
     expect(await computeAgentTemplateHash(workspaceDir)).toBe(await computeAgentTemplateHash(templateDir))
+  })
+
+  it('hashes each file name and content in sorted order, across read batches', async () => {
+    const files: Record<string, string> = {}
+    for (let i = 0; i < 20; i++) files[`skills/tool-${String(i).padStart(2, '0')}.py`] = `print(${i})`
+    const dir = createDir(files)
+    const expected = crypto.createHash('sha256')
+    for (const name of Object.keys(files).sort()) {
+      expected.update(name)
+      expected.update(files[name])
+    }
+    expect(await computeAgentTemplateHash(dir)).toBe(expected.digest('hex'))
+  })
+
+  it('refuses a template past 500MB', async () => {
+    const dir = createDir({ 'AGENTS.md': MINIMAL_INSTRUCTIONS, 'skills/data.bin': '' })
+    fs.truncateSync(path.join(dir, 'skills', 'data.bin'), 501 * 1024 * 1024)
+    await expect(computeAgentTemplateHash(dir)).rejects.toBeInstanceOf(WorkspaceTooLargeError)
   })
 
   it('returns a 64-character hex string (SHA-256)', async () => {
@@ -2865,6 +2910,23 @@ describe('publishAgentToSkillset instruction files', () => {
     expect(request.files.some(file => file.path === 'templates/nested/agent/AGENTS.md')).toBe(true)
     expect(JSON.parse(request.files.find(file => file.path === 'index.json')!.content).agents[0].path)
       .toBe('templates/nested/agent/AGENTS.md')
+  })
+
+  it('refuses to publish a template past 500MB before calling the provider', async () => {
+    const { getSkillsetProvider } = await import('@shared/lib/skillset-provider')
+    const { readIndexJson } = await import('./skillset-service')
+    const publish = vi.spyOn(getSkillsetProvider('github'), 'publishUpdate').mockResolvedValue({ successMessage: 'Created' })
+    vi.mocked(readIndexJson).mockResolvedValue({ skillset_name: 'test', description: '', version: '1', skills: [], agents: [] })
+    const workspace = path.join(testDir, 'agents', 'publish-agent', 'workspace')
+    fs.mkdirSync(path.join(workspace, 'skills'), { recursive: true })
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
+    fs.writeFileSync(path.join(workspace, 'skills', 'data.bin'), '')
+    fs.truncateSync(path.join(workspace, 'skills', 'data.bin'), 501 * 1024 * 1024)
+
+    await expect(publishAgentToSkillset('publish-agent', {
+      id: 'test', url: 'https://github.com/example/templates', name: 'Test', description: '', addedAt: '2026-01-01', provider: 'github',
+    }, { title: 'Publish', body: 'Publish' })).rejects.toBeInstanceOf(WorkspaceTooLargeError)
+    expect(publish).not.toHaveBeenCalled()
   })
 
   it.each(['AGENTS.md', 'CLAUDE.md', 'both'])('publishes %s with the version applied to the active instructions', async (source) => {

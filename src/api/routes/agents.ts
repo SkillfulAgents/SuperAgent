@@ -5621,6 +5621,9 @@ function exportRouteError(c: Context, error: unknown, fallback: string) {
   if (error instanceof Error && error.name === 'ExportInProgressError') {
     return c.json({ error: error.message }, 409)
   }
+  if (error instanceof Error && error.name === 'WorkspaceTooLargeError') {
+    return c.json({ error: error.message }, 413)
+  }
   const message = error instanceof Error ? error.message : fallback
   console.error(fallback, error)
   return c.json({ error: message }, 500)
