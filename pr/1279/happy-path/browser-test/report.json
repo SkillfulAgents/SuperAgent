@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Tested the QA agent's ability to open a browser, navigate to https://example.com, retrieve the page title, and report back the result.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully, showing the Gamut agent interface with sidebar containing two agents.",
+    "Found and clicked the \"QA-20261005-185728-7vzm\" agent in the sidebar — Agent page opened successfully with message input field visible.",
+    "Clicked on the message input field — Input field became active and ready for text entry.",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message appeared in the input field.",
+    "Clicked the Send message button — Message was sent successfully, agent transitioned to \"working\" status, and a new session was created with title \"Browser Navigation and Page Title Retrieval\".",
+    "Waited up to 3 minutes for agent response — Agent completed processing in 11 seconds (well within the 3-minute timeout).",
+    "Verified the response contains \"Example Domain\" and took screenshot — Response received: \"The page title is \"Example Domain\". The page at https://example.com loaded normally, and I closed the browser afterwards.\""
+  ],
+  "bugs": [],
+  "durationMs": 82291,
+  "sessionId": "3261d250-0f9d-4278-838d-192438903a07",
+  "cost": {
+    "inputTokens": 548,
+    "outputTokens": 12801,
+    "cacheCreationTokens": 92851,
+    "cacheReadTokens": 1737153,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.354332
+  }
+}
