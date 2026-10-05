@@ -94,6 +94,9 @@ describe('the experiment gate', () => {
     state.experimentOn.delete('alice')
     expect((await call('')).status).toBe(404)
     expect((await call('', 'POST', { title: 'x' })).status).toBe(404)
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    expect((await call('/sessions', 'POST', { title: 'x', agentSlug: 'agent-a', sessionId: 'session-1' })).status).toBe(404)
+    expect((await call('/some-id/title', 'POST', { title: 'x' })).status).toBe(404)
   })
 })
 
