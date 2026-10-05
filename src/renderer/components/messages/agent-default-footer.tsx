@@ -47,6 +47,7 @@ export function AgentDefaultFooter({ agentSlug, state, agentHomeLink = true }: A
   const defaultModel = prefs?.defaultModel ?? settings?.models?.agentModel
   const defaultEffort = (prefs?.defaultEffort ?? settings?.models?.agentEffort ?? 'medium') as EffortLevel
   const defaultSpeed = (prefs?.defaultSpeed ?? 'normal') as SpeedLevel
+  const defaultLlmProviderId = prefs?.defaultLlmProviderId ?? settings?.defaultSelection?.llmProviderId
 
   // Compare through catalog resolution: the composer stores concrete ids while
   // defaults are usually bare family aliases, so a raw string compare would
@@ -54,7 +55,12 @@ export function AgentDefaultFooter({ agentSlug, state, agentHomeLink = true }: A
   const resolvedCurrent = findCatalogModel(state.model, state.catalog)
   const resolvedDefault = findCatalogModel(defaultModel, state.catalog)
   const modelDiffers = (resolvedCurrent?.id ?? state.model) !== (resolvedDefault?.id ?? defaultModel)
-  const differs = modelDiffers || state.effort !== defaultEffort || state.speed !== defaultSpeed
+  // The same model id on two accounts is two different runs, so the account is
+  // part of the comparison. Both sides must be known: the composer's connections
+  // load after its model, so an unknown side would flash the promote on open.
+  const accountDiffers =
+    !!state.llmProviderId && !!defaultLlmProviderId && state.llmProviderId !== defaultLlmProviderId
+  const differs = modelDiffers || accountDiffers || state.effort !== defaultEffort || state.speed !== defaultSpeed
 
   // Wait for both default sources — a footer computed off a half-loaded
   // default would flash the wrong state.
@@ -67,6 +73,8 @@ export function AgentDefaultFooter({ agentSlug, state, agentHomeLink = true }: A
         // the pick is that family's latest (rides upgrades), the concrete id
         // only for a genuinely pinned older version.
         defaultModel: resolvedCurrent?.isLatest ? resolvedCurrent.family : state.model,
+        // Write the pair, as the agent-home card does.
+        defaultLlmProviderId: state.llmProviderId,
         defaultEffort: state.effort,
         // 'normal' is the built-in default, not an override — store null so it
         // never counts as a custom default (same rule as the home card).
