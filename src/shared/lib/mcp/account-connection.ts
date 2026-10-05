@@ -52,6 +52,7 @@ class AccountMcpConnection implements McpConnection {
         accountId: this.row.id, reviewType: 'mcp', toolkit: this.row.name, method: call.method,
         targetPath: call.requestPath, matchedScopes: policy.matchedScopes,
         scopeDescriptions: policy.scopeDescriptions,
+        callerSessionId: call.callerSessionId,
       }, call.signal)
       return decision === 'deny'
         ? { ok: false, reason: 'denied' }
@@ -85,10 +86,10 @@ class AccountMcpConnection implements McpConnection {
     this.row = { ...this.row, status: 'auth_required' }
   }
 
-  async recoverAuthorization(signal: AbortSignal): Promise<McpRecoveryResult> {
+  async recoverAuthorization(signal: AbortSignal, callerSessionId?: string): Promise<McpRecoveryResult> {
     try {
       await agentRegistry.get(this.agentSlug).inputs.mcpReauth.request({
-        mcpId: this.row.id, mcpName: this.row.name, authType: this.row.authType,
+        mcpId: this.row.id, mcpName: this.row.name, authType: this.row.authType, callerSessionId,
       }, signal)
     } catch (error) {
       const replacementMcpId = getReplacementMcpId(error)

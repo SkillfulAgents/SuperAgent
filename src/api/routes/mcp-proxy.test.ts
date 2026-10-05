@@ -2259,4 +2259,82 @@ describe('mcp-proxy route', () => {
       expect(await res.text()).toContain('<html>')
     })
   })
+
+  // =========================================================================
+  // Caller session header
+  // =========================================================================
+  describe('caller session header', () => {
+    const toolCall = (headers: Record<string, string>) => makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'search' } }),
+    })
+
+    it('names the calling session when a tool call parks for re-authentication', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      const stale = buildMcp({ status: 'auth_required', accessToken: 'stale-token' })
+      setupDbMocks(stale)
+      mockLimit
+        .mockResolvedValueOnce([{ mcp: stale }])
+        .mockResolvedValueOnce([{ mcp: buildMcp({ status: 'active', accessToken: 'fresh-token' }) }])
+      mockFetch.mockResolvedValueOnce(new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }))
+
+      const res = await toolCall({ 'X-Superagent-Session-Id': 'session-a' })
+
+      expect(res.status).toBe(200)
+      expect(mockRequestMcpReauth).toHaveBeenCalledWith(
+        expect.objectContaining({ agentSlug: 'my-agent', mcpId: 'mcp-1', callerSessionId: 'session-a' }),
+        expect.any(AbortSignal),
+      )
+    })
+
+    it('names the calling session when a tool call needs review', async () => {
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'review',
+        matchedScopes: ['search'],
+        scopeDescriptions: {},
+        resolvedFrom: 'scope_policy',
+      })
+      mockRequestReview.mockResolvedValue('allow')
+
+      const res = await toolCall({ 'X-Superagent-Session-Id': 'session-a' })
+
+      expect(res.status).toBe(200)
+      expect(mockRequestReview).toHaveBeenCalledWith(
+        expect.objectContaining({ reviewType: 'mcp', callerSessionId: 'session-a' }),
+        expect.anything(),
+      )
+    })
+
+    it('does not forward the header to the upstream server', async () => {
+      setupSuccessPath()
+
+      const res = await toolCall({ 'X-Superagent-Session-Id': 'session-a' })
+
+      expect(res.status).toBe(200)
+      expect(mockFetch).toHaveBeenCalled()
+      for (const [, init] of mockFetch.mock.calls) {
+        expect((init.headers as Headers).get('X-Superagent-Session-Id')).toBeNull()
+      }
+    })
+
+    it('names no session when the header is absent', async () => {
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'review',
+        matchedScopes: ['search'],
+        scopeDescriptions: {},
+        resolvedFrom: 'scope_policy',
+      })
+      mockRequestReview.mockResolvedValue('allow')
+
+      await toolCall({})
+
+      expect(mockRequestReview.mock.calls[0][0].callerSessionId).toBeUndefined()
+    })
+  })
 })

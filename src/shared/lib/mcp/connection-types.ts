@@ -14,6 +14,8 @@ export interface McpInvocation {
   toolName: string | null
   isProtocolMethod: boolean
   signal: AbortSignal
+  /** The session the call came from, when the request named one. */
+  callerSessionId?: string
 }
 
 export type McpAccessResult =
@@ -40,7 +42,7 @@ export interface McpConnection {
    * handshake or recovery; ordinary requests obtain credentials once. */
   authorization(): Promise<McpAuthorization>
   markAuthRequired(message: string): Promise<void>
-  recoverAuthorization(signal: AbortSignal): Promise<McpRecoveryResult>
+  recoverAuthorization(signal: AbortSignal, callerSessionId?: string): Promise<McpRecoveryResult>
   /** Only upstream outcomes reach this hook, never local rejection/cancellation. */
   reportHealth(available: boolean): Promise<void>
 }

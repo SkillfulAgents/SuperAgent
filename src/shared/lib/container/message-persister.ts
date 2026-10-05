@@ -545,10 +545,10 @@ class MessagePersister {
     if (!agentSlug) return
 
     if (request.kind === 'proxy_review' || request.kind === 'x_agent_review') {
-      // Reviews are agent-scoped — attribute the notification to the first
-      // active session, the same heuristic the awaiting projection applies.
-      // No active session (a dashboard-triggered review) → no notification;
-      // the dashboard panel is the surface for those.
+      // A review scoped to the session whose call it holds notifies that
+      // session; an agent-scoped one is attributed to the first active
+      // session. No active session (a dashboard-triggered review) → no
+      // notification; the dashboard panel is the surface for those.
       const sessionId = request.scope.sessionId ?? this.getActiveSessionIdsForAgent(agentSlug)[0]
       if (!sessionId) return
       const payload = request.payload as { displayText?: unknown }
@@ -571,8 +571,8 @@ class MessagePersister {
     // Agent-scoped reviews and re-auth requests have no session id and no safe
     // actionable OS-notification flow; their in-app cards are the prompt.
     if (!sessionId) return
-    // Defensive type boundary if a future caller violates the agent-scoped
-    // re-auth invariant; these kinds are not accepted notification categories.
+    // Re-auth cards scoped to the calling session are not notification
+    // categories either; the in-app card is the prompt.
     if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return
     const waitingFor =
       request.kind === 'capability_review'

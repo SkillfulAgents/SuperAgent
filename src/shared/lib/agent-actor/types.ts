@@ -66,7 +66,7 @@ import type {
   UserInputRequestOutcome,
 } from '@shared/lib/user-input/request-schema'
 import type { SettledUserInputRequest } from '@shared/lib/user-input/agent-input-requests'
-import type { ReviewDetails } from '@shared/lib/proxy/review-manager'
+import type { ReviewDetails, ReviewRequest } from '@shared/lib/proxy/review-manager'
 import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
@@ -521,7 +521,7 @@ export interface ReviewOps {
   /** `AgentReviews.resolveMatchingXAgent` */
   resolveMatchingXAgent(operation: 'list' | 'read' | 'invoke' | 'create', decision: 'allow' | 'deny'): void
   /** `AgentReviews.request` — the review is this agent's. */
-  request(details: Omit<ReviewDetails, 'agentSlug'>, signal?: AbortSignal): Promise<'allow' | 'deny'>
+  request(details: ReviewRequest, signal?: AbortSignal): Promise<'allow' | 'deny'>
   /** `AgentReviews.requestXAgent` with this agent as the caller. */
   requestXAgent(
     targetAgentSlug: string,

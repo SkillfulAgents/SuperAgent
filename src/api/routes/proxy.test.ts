@@ -1891,3 +1891,109 @@ describe.skip('proxy fallback to Composio proxy execute (moved to composio-accou
     }
   })
 })
+
+describe('proxy session URL', () => {
+  let app: ReturnType<typeof createApp>
+  const SESSION_URL = '/api/proxy/my-agent/s/session-a/acc-123/gmail.googleapis.com/gmail/v1/messages'
+  const auth = { headers: { Authorization: 'Bearer synth_valid' } }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockInsertValues.mockResolvedValue(undefined)
+    mockGetConnection.mockResolvedValue({ id: 'mock-conn', status: 'ACTIVE' })
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.modify'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'allow',
+      matchedScopes: ['gmail.modify'],
+      scopeDescriptions: {},
+      resolvedFrom: 'global_default',
+    })
+    mockRequestReauth.mockResolvedValue(undefined)
+    mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+  })
+
+  // One account row per lookup: the first is the mapping check, the next the
+  // re-read after re-authentication.
+  function mapAccount(...statuses: Array<'active' | 'expired'>) {
+    mockValidateProxyToken.mockResolvedValue('my-agent')
+    mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+    mockInnerJoin.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockReset()
+    for (const status of statuses) {
+      mockLimit.mockResolvedValueOnce([{ account: {
+        id: 'acc-123',
+        toolkitSlug: 'gmail',
+        providerConnectionId: 'comp-123',
+        providerName: 'composio',
+        status,
+      } }])
+    }
+    mockIsHostAllowed.mockReturnValue(true)
+  }
+
+  function makeRequest(path: string, options?: RequestInit): Promise<Response> {
+    return app.request(`http://localhost${path}`, options)
+  }
+
+  it('forwards to the target that follows the session segment', async () => {
+    mapAccount('active')
+
+    const res = await makeRequest(SESSION_URL, auth)
+
+    expect(res.status).toBe(200)
+    expect(mockMakeApiCall).toHaveBeenCalledWith(expect.objectContaining({
+      targetUrl: 'https://gmail.googleapis.com/gmail/v1/messages',
+    }))
+  })
+
+  it('names the calling session when the call waits for re-authentication', async () => {
+    mapAccount('expired', 'active')
+
+    const res = await makeRequest(SESSION_URL, auth)
+
+    expect(res.status).toBe(200)
+    expect(mockRequestReauth).toHaveBeenCalledWith(
+      expect.objectContaining({ agentSlug: 'my-agent', accountId: 'acc-123', callerSessionId: 'session-a' }),
+      expect.any(AbortSignal),
+    )
+  })
+
+  it('names the calling session when the call needs review', async () => {
+    mapAccount('active')
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['gmail.modify'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockRequestReview.mockResolvedValue('allow')
+
+    const res = await makeRequest(SESSION_URL, auth)
+
+    expect(res.status).toBe(200)
+    expect(mockRequestReview).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewType: 'api', accountId: 'acc-123', callerSessionId: 'session-a' }),
+      expect.anything(),
+    )
+  })
+
+  it('names no session on the plain proxy URL', async () => {
+    mapAccount('expired', 'active')
+
+    const res = await makeRequest('/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages', auth)
+
+    expect(res.status).toBe(200)
+    expect(mockRequestReauth.mock.calls[0][0].callerSessionId).toBeUndefined()
+  })
+
+  it('still requires the agent token', async () => {
+    mockValidateProxyToken.mockResolvedValue('other-agent')
+
+    const res = await makeRequest(SESSION_URL, { headers: { Authorization: 'Bearer synth_other' } })
+
+    expect(res.status).toBe(403)
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+  })
+})

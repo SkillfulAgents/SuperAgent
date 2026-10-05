@@ -118,6 +118,7 @@ export class LocalAgentActor implements AgentActor {
         transitions: deps.userInputRequestManager,
         // A test double of the persister may not carry the projection; the real one does.
         syncAwaiting: () => deps.messagePersister.syncAgentSessionsAwaiting?.(slug),
+        isSessionActive: (sessionId) => deps.messagePersister.isSessionActive(slug, sessionId),
       })
     this.files = this.store.files
     this.memories = createMemoryOps(this.files)

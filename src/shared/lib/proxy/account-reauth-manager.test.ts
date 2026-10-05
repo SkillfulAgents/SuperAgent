@@ -30,14 +30,19 @@ const DETAILS = {
 describe('AccountReauthManager', () => {
   let manager: AccountReauthManager
   let agents: InMemoryAgentStateDirectory
+  const runningSessions = new Set<string>()
 
   beforeEach(() => {
     vi.useFakeTimers()
     mockSyncAgentSessionsAwaiting.mockReset()
+    runningSessions.clear()
     // The waits live on the agents' actors; the manager under test routes to
     // them. Build the actors' stores in memory, attached the way the registry
     // attaches the real handles.
-    agents = attachInMemoryAgentState({ syncAwaiting: (slug) => mockSyncAgentSessionsAwaiting(slug) })
+    agents = attachInMemoryAgentState({
+      syncAwaiting: (slug) => mockSyncAgentSessionsAwaiting(slug),
+      isSessionActive: (_slug, sessionId) => runningSessions.has(sessionId),
+    })
     manager = new AccountReauthManager()
     manager.attachAgents(agents.pick((state) => state.accountReauth))
     userInputRequestManager.reset()
@@ -181,5 +186,72 @@ describe('AccountReauthManager', () => {
 
   it('reports an unknown request id as not dismissed', () => {
     expect(manager.dismiss('no-such-request', 'agent-1')).toBe(false)
+  })
+
+  describe('when the call names its session', () => {
+    const cards = () => userInputRequestManager.getOpenRequestsForStore('review')
+    const cardFor = (sessionId: string) => cards().find((r) => r.scope.sessionId === sessionId)!
+
+    beforeEach(() => {
+      runningSessions.add('session-a')
+      runningSessions.add('session-b')
+    })
+
+    it('scopes the card to that session while it runs', async () => {
+      const promise = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-a' })
+
+      expect(cards()).toHaveLength(1)
+      expect(cards()[0].scope).toEqual({ agentSlug: 'agent-1', sessionId: 'session-a' })
+      expect(userInputRequestManager.isSessionAwaiting('agent-1', 'session-a')).toBe(true)
+      expect(userInputRequestManager.isSessionAwaiting('agent-1', 'session-b')).toBe(false)
+
+      manager.completeAccount('account-1')
+      await expect(promise).resolves.toBeUndefined()
+    })
+
+    it('falls back to an agent-wide card when that session is not running', async () => {
+      const promise = manager.requestReauth({ ...DETAILS, callerSessionId: 'ended-session' })
+
+      expect(cards()[0].scope).toEqual({ agentSlug: 'agent-1' })
+      expect(userInputRequestManager.isSessionAwaiting('agent-1', 'session-b')).toBe(true)
+
+      manager.completeAccount('account-1')
+      await expect(promise).resolves.toBeUndefined()
+    })
+
+    it('gives each session one card and resumes every parked call on reconnect', async () => {
+      const first = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-a' })
+      const again = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-a' })
+      const other = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-b' })
+
+      expect(cards().map((r) => r.scope.sessionId).sort()).toEqual(['session-a', 'session-b'])
+
+      expect(manager.completeAccount('account-1')).toBe(3)
+      await expect(Promise.all([first, again, other])).resolves.toEqual([undefined, undefined, undefined])
+      expect(cards()).toHaveLength(0)
+    })
+
+    it("dismissing one session's card leaves the other session waiting", async () => {
+      const first = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-a' }).catch((error: unknown) => error)
+      const other = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-b' })
+
+      expect(manager.dismiss(cardFor('session-a').id, 'agent-1')).toBe(true)
+
+      expect(isReauthDismissed(await first)).toBe(true)
+      expect(userInputRequestManager.isSessionAwaiting('agent-1', 'session-a')).toBe(false)
+      expect(userInputRequestManager.isSessionAwaiting('agent-1', 'session-b')).toBe(true)
+      manager.completeAccount('account-1')
+      await expect(other).resolves.toBeUndefined()
+    })
+
+    it("a replacement releases the agent's calls in every session", async () => {
+      const first = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-a' }).catch(getReplacementAccountId)
+      const other = manager.requestReauth({ ...DETAILS, callerSessionId: 'session-b' }).catch(getReplacementAccountId)
+
+      expect(manager.replaceAccount(cardFor('session-a').id, 'agent-1', 'replacement')).toBe(true)
+
+      expect(await Promise.all([first, other])).toEqual(['replacement', 'replacement'])
+      expect(cards()).toHaveLength(0)
+    })
   })
 })

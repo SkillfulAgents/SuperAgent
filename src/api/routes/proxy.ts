@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
@@ -51,11 +51,16 @@ async function writeProxyAuditEntry(entry: ProxyAuditEntry & { durationMs?: numb
 
 const proxy = new Hono()
 
-proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
+interface ProxyTarget {
+  agentSlug: string
+  accountId: string
+  rest: string
+  /** The session the call came from, when its URL named one. */
+  callerSessionId?: string
+}
+
+async function handleProxyRequest(c: Context, { agentSlug, accountId, rest, callerSessionId }: ProxyTarget) {
   const startTime = Date.now()
-  const agentSlug = c.req.param('agentSlug')
-  const accountId = c.req.param('accountId')
-  const rest = c.req.param('rest') || ''
 
   // Stamp elapsed time (request entry → now) onto every audit entry. Every exit
   // path logs through this, so the API Logs Duration column is always populated.
@@ -162,6 +167,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         accountId,
         toolkit: account!.toolkitSlug,
         accountStatus: status,
+        callerSessionId,
       }, c.req.raw.signal)
     } catch (error) {
       const replacementAccountId = getReplacementAccountId(error)
@@ -286,6 +292,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         matchedScopes: policyResult.matchedScopes,
         scopeDescriptions: policyResult.scopeDescriptions,
         endpointDescription: policyResult.endpointDescription,
+        callerSessionId,
       }, c.req.raw.signal)
       if (decision === 'deny') {
         await logAuditEntry({
@@ -448,6 +455,24 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     ...(response.status >= 400 ? { errorMessage: `Upstream returned ${response.status}` } : {}),
   })
   return response
-})
+}
+
+// A container that knows which session made a call puts it in the path, so a
+// card the call raises (re-auth, API review) shows in that session only. The
+// session is not an auth input: the token and account checks are the same.
+// Registered before the route below, which would also match it with `s` read
+// as the account id.
+proxy.all('/:agentSlug/s/:sessionId/:accountId/:rest{.+}', (c) => handleProxyRequest(c, {
+  agentSlug: c.req.param('agentSlug'),
+  accountId: c.req.param('accountId'),
+  rest: c.req.param('rest'),
+  callerSessionId: c.req.param('sessionId'),
+}))
+
+proxy.all('/:agentSlug/:accountId/:rest{.+}', (c) => handleProxyRequest(c, {
+  agentSlug: c.req.param('agentSlug'),
+  accountId: c.req.param('accountId'),
+  rest: c.req.param('rest'),
+}))
 
 export default proxy
