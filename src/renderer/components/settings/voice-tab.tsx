@@ -1,6 +1,5 @@
 import { VOICE_PROVIDER_OPTIONS, PROVIDER_CONFIG, isApiKeyProvider, getConversationNotice, type ApiKeyProvider } from '@renderer/lib/voice/registry/catalog'
 import { useState, useCallback } from 'react'
-import { cn } from '@shared/lib/utils/cn'
 import {
   Select,
   SelectContent,
@@ -25,6 +24,7 @@ import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { ApiKeyStatus, VoiceProvider } from '@shared/lib/config/settings'
 import { TTS_SPEEDS, resolveHoldSound, resolveTtsSpeed, type TtsVoiceInfo } from '@shared/lib/voice/tts-preferences'
+import { MicrophoneSettings } from './microphone-settings'
 
 function SttApiKeyInput({ provider, disabled }: { provider: ApiKeyProvider; disabled: boolean }) {
   const { data: settings } = useSettings()
@@ -436,8 +436,12 @@ export function VoiceTab() {
 
   return (
     <div className="space-y-6">
+      <MicrophoneSettings />
+
       {ttsAvailable && (
-        <PersonalVoiceSection heading={isAuthMode ? 'Your Voice' : 'Text-to-Speech'} offerWorkspaceDefault={isAuthMode} />
+        <div className="pt-4 border-t">
+          <PersonalVoiceSection heading={isAuthMode ? 'Your Voice' : 'Text-to-Speech'} offerWorkspaceDefault={isAuthMode} />
+        </div>
       )}
 
       {conversationNotice && (
@@ -453,7 +457,7 @@ export function VoiceTab() {
 
       {showAdminFeatures && (
         <>
-          <div className={cn('space-y-4', ttsAvailable && 'pt-4 border-t')}>
+          <div className="space-y-4 pt-4 border-t">
             <h3 className="text-sm font-medium">Voice Provider</h3>
             <div className="space-y-2">
               <Label htmlFor="stt-provider">Provider</Label>

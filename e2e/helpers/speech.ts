@@ -21,6 +21,8 @@ export interface SpeechMocks {
   hearOnClose: (transcript: string) => void
   /** Whether the last microphone the page opened is still capturing. */
   micLive: () => Promise<boolean>
+  /** Device id requested for the last microphone capture, or null for system default. */
+  micDeviceId: () => Promise<string | null>
 }
 
 export async function mockSpeech(page: Page, { supportsTts = true } = {}): Promise<SpeechMocks> {
@@ -47,14 +49,28 @@ export async function mockSpeech(page: Page, { supportsTts = true } = {}): Promi
     }),
   )
 
-  // A silent microphone: real capture wiring, no device prompt.
+  // Silent microphones: real capture wiring, no device prompt.
   await page.addInitScript(() => {
     const mediaDevices = navigator.mediaDevices ?? ({} as MediaDevices)
     Object.defineProperty(navigator, 'mediaDevices', { value: mediaDevices, configurable: true })
-    mediaDevices.getUserMedia = async () => {
+    mediaDevices.enumerateDevices = async () => [
+      { kind: 'audioinput', deviceId: 'built-in-mic', groupId: 'built-in', label: 'Built-in Microphone', toJSON: () => ({}) },
+      { kind: 'audioinput', deviceId: 'studio-mic', groupId: 'studio', label: 'Studio Mic', toJSON: () => ({}) },
+    ]
+    mediaDevices.getUserMedia = async (constraints) => {
+      const audio = typeof constraints?.audio === 'object' ? constraints.audio : undefined
+      const requestedDeviceId = typeof audio?.deviceId === 'object' && 'exact' in audio.deviceId
+        ? String(audio.deviceId.exact)
+        : null
       const ctx = new AudioContext()
       const destination = ctx.createMediaStreamDestination()
+      const track = destination.stream.getAudioTracks()[0]
+      if (track) {
+        const getSettings = track.getSettings.bind(track)
+        track.getSettings = () => ({ ...getSettings(), deviceId: requestedDeviceId ?? 'built-in-mic' })
+      }
       Reflect.set(window, 'lastMicStream', destination.stream)
+      Reflect.set(window, 'lastMicDeviceId', requestedDeviceId)
       return destination.stream
     }
   })
@@ -112,6 +128,10 @@ export async function mockSpeech(page: Page, { supportsTts = true } = {}): Promi
     micLive: () => page.evaluate(() => {
       const stream: unknown = Reflect.get(window, 'lastMicStream')
       return stream instanceof MediaStream && stream.getTracks().some((track) => track.readyState === 'live')
+    }),
+    micDeviceId: () => page.evaluate(() => {
+      const deviceId: unknown = Reflect.get(window, 'lastMicDeviceId')
+      return typeof deviceId === 'string' ? deviceId : null
     }),
   }
 }
