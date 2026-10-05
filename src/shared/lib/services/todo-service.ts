@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { and, desc, eq, inArray, isNotNull, isNull, lt, notExists, or } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull, isNull, lt, ne, notExists, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { todos, type TodoRow } from '@shared/lib/db/schema'
@@ -127,6 +127,21 @@ export async function updateDraft(userId: string, id: string, patch: UpdateTodoI
       updatedAt: now,
     })
     .where(and(eq(todos.id, id), eq(todos.userId, userId), eq(todos.status, 'draft'), unclaimed(now)))
+    .run()
+  return changesOf(result) > 0 ? reread(userId, id) : failure(userId, id)
+}
+
+/**
+ * Renames started work: the card's title, nothing else. A draft is edited
+ * through updateDraft instead, since its title is part of the brief it will
+ * send. Leaves `updatedAt` alone: Done and Archived show it as when that
+ * happened.
+ */
+export async function renameTodo(userId: string, id: string, title: string): Promise<TodoWriteResult> {
+  const result = await db
+    .update(todos)
+    .set({ title })
+    .where(and(eq(todos.id, id), eq(todos.userId, userId), ne(todos.status, 'draft')))
     .run()
   return changesOf(result) > 0 ? reread(userId, id) : failure(userId, id)
 }

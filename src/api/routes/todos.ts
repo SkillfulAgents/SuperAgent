@@ -26,6 +26,7 @@ import {
   listTodos,
   moveTodo,
   releaseStart,
+  renameTodo,
   setTodoStatus,
   startClaimHeld,
   startTodo,
@@ -38,6 +39,7 @@ import {
   createTodoSchema,
   moveTodoSchema,
   releaseStartSchema,
+  renameTodoSchema,
   startTodoSchema,
   todoAskFor,
   todoColumn,
@@ -205,6 +207,13 @@ todosRouter.post('/:id/status', async (c) => {
   const input = await parseBody(c, todoStatusChangeSchema)
   if (!input) return c.json({ error: 'Invalid status' }, 400)
   return respond(c, await setTodoStatus(getCurrentUserId(c), c.req.param('id'), input.status))
+})
+
+// POST /api/todos/:id/title — rename started work. Drafts are edited with PATCH.
+todosRouter.post('/:id/title', async (c) => {
+  const input = await parseBody(c, renameTodoSchema)
+  if (!input) return c.json({ error: 'Invalid title' }, 400)
+  return respond(c, await renameTodo(getCurrentUserId(c), c.req.param('id'), input.title))
 })
 
 // POST /api/todos/:id/position — reorder within its column.

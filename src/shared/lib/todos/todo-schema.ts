@@ -64,6 +64,9 @@ export const addSessionTodoSchema = z
   .strict()
 export type AddSessionTodoInput = z.infer<typeof addSessionTodoSchema>
 
+/** Renames started work. Its brief stays what the agent was sent; only the card's title changes. */
+export const renameTodoSchema = z.object({ title: titleSchema.pipe(z.string().min(1)) }).strict()
+
 const claimSchema = z.string().min(1).max(100)
 
 /** Links a draft to the session its agent was just started in, by the start that claimed it. */

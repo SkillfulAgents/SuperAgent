@@ -200,6 +200,29 @@ describe('starting', () => {
   })
 })
 
+describe('renaming started work', () => {
+  it('renames an item in any column after it started, and nothing else changes', async () => {
+    const todo = await startDraft()
+    const res = await call(`/${todo.id}/title`, 'POST', { title: 'Weekly sales summary' })
+    expect(res.status).toBe(200)
+    const renamed = await res.json()
+    expect(renamed).toMatchObject({ title: 'Weekly sales summary', description: todo.description, status: 'active', position: todo.position })
+    await call(`/${todo.id}/status`, 'POST', { status: 'done' })
+    expect((await call(`/${todo.id}/title`, 'POST', { title: 'Sales summary, done' })).status).toBe(200)
+  })
+
+  it('leaves drafts to their dialog', async () => {
+    const draft = await createDraft()
+    expect((await call(`/${draft.id}/title`, 'POST', { title: 'Renamed' })).status).toBe(409)
+  })
+
+  it('refuses an empty title and someone else\'s item', async () => {
+    const todo = await startDraft()
+    expect((await call(`/${todo.id}/title`, 'POST', { title: '  ' })).status).toBe(400)
+    expect((await call(`/${todo.id}/title`, 'POST', { title: 'Mine now' }, 'bob')).status).toBe(404)
+  })
+})
+
 describe('adding a session that already exists', () => {
   it('puts an idle session on the board as an item with updates', async () => {
     state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })

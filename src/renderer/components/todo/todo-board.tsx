@@ -18,6 +18,7 @@ import { byBoardOrder, positionAfterDrop, type TodoColumn } from '@shared/lib/to
 import { Button } from '@renderer/components/ui/button'
 import { useMoveTodo, useStartingTodoIds, useTodos, type TodoView } from '@renderer/hooks/use-todos'
 import { TodoBoardCard } from './todo-board-card'
+import { TodoCardMenu } from './todo-card-menu'
 import { TodoDraftDialog, type TodoDraftTarget } from './todo-draft-dialog'
 import { archiveDraftAction, cardActionFor, useTodoActionRunners } from './todo-card-action'
 import { ShortcutTooltip, ShortcutsDialog, usePlainKeys } from './todo-shortcuts'
@@ -415,15 +416,17 @@ export function TodoBoard() {
     <SortableContext items={list.map((todo) => todo.id)} strategy={verticalListSortingStrategy}>
       {list.map((todo) => (
         <SortableCard key={todo.id} todo={todo}>
-          <TodoBoardCard
-            todo={todo}
-            agent={todo.agentSlug ? bySlug.get(todo.agentSlug) : undefined}
-            action={cardActionFor(todo, runners, open)}
-            starting={starting.has(todo.id)}
-            onOpen={open}
-            selected={todo.id === selectedId}
-            onHover={(t) => setSelectedId(t.id)}
-          />
+          <TodoCardMenu todo={todo}>
+            <TodoBoardCard
+              todo={todo}
+              agent={todo.agentSlug ? bySlug.get(todo.agentSlug) : undefined}
+              action={cardActionFor(todo, runners, open)}
+              starting={starting.has(todo.id)}
+              onOpen={open}
+              selected={todo.id === selectedId}
+              onHover={(t) => setSelectedId(t.id)}
+            />
+          </TodoCardMenu>
         </SortableCard>
       ))}
     </SortableContext>

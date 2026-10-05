@@ -104,6 +104,16 @@ export function useUpdateTodo() {
   })
 }
 
+export function useRenameTodo() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string }) =>
+      send<TodoView>(`/api/todos/${id}/title`, 'POST', { title }, 'Failed to rename the todo'),
+    onSuccess: (todo) => putTodo(queryClient, todo),
+    onError: () => refreshBoard(queryClient),
+  })
+}
+
 export function useSetTodoStatus() {
   const queryClient = useQueryClient()
   return useMutation({
