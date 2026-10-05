@@ -107,6 +107,7 @@ vi.mock('fs', () => {
     closeSync: () => undefined,
     renameSync: () => undefined,
     statSync: () => ({ size: 0, mtimeMs: 0 }),
+    lstatSync: () => ({ size: 0, mtimeMs: 0, isSymbolicLink: () => false }),
     accessSync: () => undefined,
     readdirSync: () => [],
     readlinkSync: () => '',

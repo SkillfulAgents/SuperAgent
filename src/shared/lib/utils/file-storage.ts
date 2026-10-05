@@ -856,8 +856,10 @@ async function writeFileAtomicWith(
   let existing: { mode: number; uid: number; gid: number } | undefined
   if (!options?.forceMode) {
     try {
-      const st = await fs.promises.stat(filePath)
-      existing = { mode: st.mode & 0o777, uid: st.uid, gid: st.gid }
+      // The rename replaces a link rather than writing through it, so a link is a create:
+      // its target lends no mode or owner, and a target that cannot be reached fails nothing.
+      const st = await fs.promises.lstat(filePath)
+      if (!st.isSymbolicLink()) existing = { mode: st.mode & 0o777, uid: st.uid, gid: st.gid }
     } catch (err) {
       // Only a confirmed-absent target is a create. Anything else (ESTALE from a
       // cross-client NFS rename, EIO) must fail the write — treating it as a
@@ -916,8 +918,8 @@ export function writeFileAtomicSync(
   let existing: { mode: number; uid: number; gid: number } | undefined
   if (!options?.forceMode) {
     try {
-      const st = fs.statSync(filePath)
-      existing = { mode: st.mode & 0o777, uid: st.uid, gid: st.gid }
+      const st = fs.lstatSync(filePath)
+      if (!st.isSymbolicLink()) existing = { mode: st.mode & 0o777, uid: st.uid, gid: st.gid }
     } catch (err) {
       // See writeFileAtomic: ENOENT-only, everything else fails the write.
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err

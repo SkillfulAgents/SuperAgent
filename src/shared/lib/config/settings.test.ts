@@ -85,10 +85,10 @@ const originalEnv = { ...process.env }
 beforeEach(() => {
   vi.clearAllMocks()
   clearSettingsCache()
-  // The auto-mocked fs.statSync returns undefined, which writeFileAtomicSync's
+  // The auto-mocked fs.lstatSync returns undefined, which writeFileAtomicSync's
   // ENOENT-scoped existingMode probe would rethrow as a TypeError. Simulate the
   // "target absent → create with mode" path the save tests assume.
-  mockedFs.statSync.mockImplementation(() => {
+  mockedFs.lstatSync.mockImplementation(() => {
     throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })
   })
   // Reset env vars that could interfere
