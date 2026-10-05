@@ -1,0 +1,26 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the QA-20261005-221617-8hpb agent can successfully open a browser, navigate to https://example.com, retrieve the page title, and respond with the correct page title \"Example Domain\".",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\"",
+    "Found and clicked on \"QA-20261005-221617-8hpb\" agent in the sidebar — Page navigated to agent URL (http://localhost:47891/agents/qa-20261005-221617-8hpb-35siraquhq)",
+    "Located the message input field (ProseMirror editor) — Input field was visible and ready for text entry",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field — Message text was entered successfully",
+    "Clicked the Send message button (submit button) — Message was cleared from input field and sent successfully",
+    "Waited for agent response (up to 3 minutes) — Agent responded with \"The page title is \\\"Example Domain\\\". The page loaded normally, and I've closed the browser.\"",
+    "Verified response contains \"Example Domain\" — Confirmed the agent response includes the exact text \"Example Domain\"",
+    "Took screenshot of the response — Screenshot captured showing the agent's complete response with page title information"
+  ],
+  "bugs": [],
+  "durationMs": 193640,
+  "sessionId": "d7cc346c-06d4-4b1e-9753-c2319cdecb49",
+  "cost": {
+    "inputTokens": 608,
+    "outputTokens": 21304,
+    "cacheCreationTokens": 115587,
+    "cacheReadTokens": 1595330,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.411145
+  }
+}
