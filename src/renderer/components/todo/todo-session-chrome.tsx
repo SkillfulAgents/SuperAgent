@@ -29,12 +29,13 @@ export function todoQueue(todos: readonly TodoView[]): TodoView[] {
 export function useSessionTodo(agentSlug: string, sessionId: string | null): {
   todo: TodoView | undefined
   todos: TodoView[]
+  enabled: boolean
 } {
   const enabled = useExperiment('todo-board')
   const { data } = useTodos()
   const todos = enabled ? data ?? [] : []
   const todo = sessionId ? todos.find((t) => t.agentSlug === agentSlug && t.sessionId === sessionId) : undefined
-  return { todo, todos }
+  return { todo, todos, enabled }
 }
 
 function useOpenTodo() {

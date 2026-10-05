@@ -138,6 +138,10 @@ vi.mock('@renderer/components/ui/dialog', () => ({
 
 const mockSetMarkedUnread = vi.fn().mockResolvedValue({ success: true })
 
+vi.mock('@renderer/components/todo/todo-add-session-item', () => ({
+  AddSessionToTodoItem: () => null,
+}))
+
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useDeleteSession: () => ({ mutateAsync: vi.fn() }),
   useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),

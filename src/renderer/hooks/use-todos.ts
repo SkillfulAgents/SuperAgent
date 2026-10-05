@@ -2,6 +2,7 @@ import { useMutation, useMutationState, useQuery, useQueryClient, type QueryClie
 import { apiFetch } from '@renderer/lib/api'
 import { handleMutationError } from '@renderer/lib/query-client'
 import type {
+  AddSessionTodoInput,
   CreateTodoInput,
   TodoStatusChange,
   TodoView,
@@ -76,6 +77,16 @@ export function useCreateTodo() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (input: CreateTodoInput) => send<TodoView>('/api/todos', 'POST', input, 'Failed to save the draft'),
+    onSuccess: (todo) => putTodo(queryClient, todo),
+    onError: () => refreshBoard(queryClient),
+  })
+}
+
+/** Puts a session that already exists on the board; resolves with its item (the existing one if it was already there). */
+export function useAddSessionTodo() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: AddSessionTodoInput) => send<TodoView>('/api/todos/sessions', 'POST', input, 'Failed to add to Todo'),
     onSuccess: (todo) => putTodo(queryClient, todo),
     onError: () => refreshBoard(queryClient),
   })

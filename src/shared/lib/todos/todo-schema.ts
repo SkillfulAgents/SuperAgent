@@ -54,6 +54,16 @@ export const updateTodoSchema = z
   .strict()
 export type UpdateTodoInput = z.infer<typeof updateTodoSchema>
 
+/** Puts a session that already exists on the board, titled by the person (the session's name by default). */
+export const addSessionTodoSchema = z
+  .object({
+    title: titleSchema.pipe(z.string().min(1)),
+    agentSlug: agentSlugSchema,
+    sessionId: z.string().trim().min(1).max(200),
+  })
+  .strict()
+export type AddSessionTodoInput = z.infer<typeof addSessionTodoSchema>
+
 const claimSchema = z.string().min(1).max(100)
 
 /** Links a draft to the session its agent was just started in, by the start that claimed it. */

@@ -200,6 +200,57 @@ describe('starting', () => {
   })
 })
 
+describe('adding a session that already exists', () => {
+  it('puts an idle session on the board as an item with updates', async () => {
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    const res = await call('/sessions', 'POST', { title: 'Quarterly report', agentSlug: 'agent-a', sessionId: 'session-1' })
+    expect(res.status).toBe(201)
+    expect(await res.json()).toMatchObject({ title: 'Quarterly report', status: 'active', column: 'has_updates', sessionId: 'session-1' })
+  })
+
+  it('puts a working session in Working', async () => {
+    state.sessions.set('agent-a/session-1', { isActive: true, isAwaitingInput: false })
+    const res = await call('/sessions', 'POST', { title: 'Quarterly report', agentSlug: 'agent-a', sessionId: 'session-1' })
+    expect(res.status).toBe(201)
+    expect((await res.json()).column).toBe('working')
+  })
+
+  it('adds a session once: adding it again returns the item already on the board', async () => {
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    const body = { title: 'Quarterly report', agentSlug: 'agent-a', sessionId: 'session-1' }
+    const [first, second] = await Promise.all([call('/sessions', 'POST', body), call('/sessions', 'POST', body)])
+    expect([first.status, second.status].sort()).toEqual([200, 201])
+    expect((await first.json()).id).toBe((await second.json()).id)
+    expect((await (await call('')).json()).todos).toHaveLength(1)
+  })
+
+  it('returns a started item already on the board, in whatever column it is', async () => {
+    const started = await startDraft()
+    await call(`/${started.id}/status`, 'POST', { status: 'done' })
+    const res = await call('/sessions', 'POST', { title: 'Another title', agentSlug: 'agent-a', sessionId: 'session-1' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ id: started.id, title: 'Write the report', status: 'done' })
+  })
+
+  it('lets two people each put the same session on their own board', async () => {
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    const body = { title: 'Quarterly report', agentSlug: 'agent-a', sessionId: 'session-1' }
+    expect((await call('/sessions', 'POST', body, 'alice')).status).toBe(201)
+    expect((await call('/sessions', 'POST', body, 'bob')).status).toBe(201)
+  })
+
+  it('refuses a session the agent does not have, or of an agent the person cannot see', async () => {
+    expect((await call('/sessions', 'POST', { title: 'Report', agentSlug: 'agent-a', sessionId: 'missing' })).status).toBe(404)
+    state.sessions.set('agent-b/session-1', { isActive: false, isAwaitingInput: false })
+    expect((await call('/sessions', 'POST', { title: 'Report', agentSlug: 'agent-b', sessionId: 'session-1' }, 'bob')).status).toBe(404)
+  })
+
+  it('needs a title', async () => {
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    expect((await call('/sessions', 'POST', { title: '  ', agentSlug: 'agent-a', sessionId: 'session-1' })).status).toBe(400)
+  })
+})
+
 describe('board columns', () => {
   it('follow the session live', async () => {
     const todo = await startDraft()

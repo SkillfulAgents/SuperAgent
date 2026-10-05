@@ -1,10 +1,11 @@
 import { randomUUID } from 'crypto'
-import { and, desc, eq, inArray, isNotNull, isNull, lt, or } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull, isNull, lt, notExists, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { batch, changesOf } from '@shared/lib/db/batch'
+import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { todos, type TodoRow } from '@shared/lib/db/schema'
 import {
   TODO_TRANSITIONS,
+  type AddSessionTodoInput,
   type CreateTodoInput,
   type TodoStatusChange,
   type UpdateTodoInput,
@@ -66,6 +67,39 @@ export async function createTodo(userId: string, input: CreateTodoInput): Promis
   }
   await db.insert(todos).values(row).run()
   return row
+}
+
+/**
+ * Puts a session that already exists on the board as an active item. A
+ * session is on a person's board at most once: if it already is, in any
+ * column, that item comes back unchanged. The check and the insert are one
+ * statement, so two clicks cannot add it twice. The caller has checked that
+ * the session exists on `agentSlug`.
+ */
+export async function addSessionTodo(userId: string, input: AddSessionTodoInput): Promise<{ todo: TodoRow; created: boolean } | null> {
+  const now = new Date()
+  const row: TodoRow = {
+    id: randomUUID(),
+    userId,
+    title: input.title,
+    description: '',
+    agentSlug: input.agentSlug,
+    sessionId: input.sessionId,
+    status: 'active',
+    position: now.getTime(),
+    startClaim: null,
+    startClaimedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    startedAt: now,
+    completedAt: null,
+  }
+  const onBoard = and(eq(todos.userId, userId), eq(todos.agentSlug, input.agentSlug), eq(todos.sessionId, input.sessionId))
+  const result = await insertWhere(todos, row, notExists(db.select({ id: todos.id }).from(todos).where(onBoard))).run()
+  if (changesOf(result) > 0) return { todo: row, created: true }
+  // Taken off the board again in between: nothing to return.
+  const existing = await db.select().from(todos).where(onBoard).get()
+  return existing ? { todo: existing, created: false } : null
 }
 
 /** A zero-change conditional write: missing, or there in a state the write does not allow. */
