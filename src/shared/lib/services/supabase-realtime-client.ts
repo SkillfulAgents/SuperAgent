@@ -41,12 +41,13 @@ export class SupabaseRealtimeClient {
   private heartbeatInterval: NodeJS.Timeout | null = null
   private reconnectTimeout: NodeJS.Timeout | null = null
   private reconnectAttempts = 0
-  private maxReconnectAttempts = 10
   private onEvent: RealtimeCallback | null = null
   private onDisconnect: (() => void) | null = null
   private onConnect: (() => void) | null = null
   private config: RealtimeConfig | null = null
   private isConnected = false
+  private isJoined = false
+  private joinRef: string | null = null
   private isStopped = false
   private ref = 0
 
@@ -55,7 +56,11 @@ export class SupabaseRealtimeClient {
   }
 
   /**
-   * `onConnect` runs on every open, including the client's own reconnects:
+   * Resolves once Supabase accepts the channel join and rejects if it refuses
+   * it; a refused join stops the client, since retrying with the same JWT
+   * would be refused again.
+   *
+   * `onConnect` runs on every accepted join, including the client's own reconnects:
    * INSERTs made while the socket was down were never announced, so a caller
    * that treats notifications as wake-ups should catch up there.
    */
@@ -99,14 +104,12 @@ export class SupabaseRealtimeClient {
         this.ws?.close()
       }, 10000)
 
-      // A socket that errors out fires close without ever opening; the
+      // A socket that errors out fires close without ever joining; the
       // promise must settle then (not wait out the 10s timeout, which close
       // cancels) or callers awaiting connect() hang forever.
-      let opened = false
+      let settled = false
 
       this.ws.onopen = () => {
-        opened = true
-        clearTimeout(timeout)
         this.isConnected = true
         this.reconnectAttempts = 0
         console.log('[SupabaseRealtime] Connected')
@@ -115,6 +118,7 @@ export class SupabaseRealtimeClient {
         console.log(
           `[SupabaseRealtime] Joining channel realtime:public:${table} jwt=${describeRealtimeJwt(jwt)}`,
         )
+        this.joinRef = this.nextRef()
         this.sendMessage({
           topic: `realtime:public:${table}`,
           event: 'phx_join',
@@ -131,7 +135,7 @@ export class SupabaseRealtimeClient {
             },
             access_token: jwt,
           },
-          ref: this.nextRef(),
+          ref: this.joinRef,
         })
 
         // Start heartbeat
@@ -143,9 +147,6 @@ export class SupabaseRealtimeClient {
             ref: this.nextRef(),
           })
         }, 30000)
-
-        this.onConnect?.()
-        resolve()
       }
 
       this.ws.onmessage = (event) => {
@@ -155,6 +156,39 @@ export class SupabaseRealtimeClient {
             event?: string
             payload?: unknown
             ref?: string
+          }
+
+          if (msg.event === 'phx_reply' && msg.ref !== undefined && msg.ref === this.joinRef) {
+            const reply = msg.payload as { status?: string; response?: unknown } | undefined
+            clearTimeout(timeout)
+            settled = true
+            if (reply?.status === 'ok') {
+              this.isJoined = true
+              console.log(`[SupabaseRealtime] Joined channel realtime:public:${table}`)
+              this.onConnect?.()
+              resolve()
+            } else {
+              const reason = describeReplyError(reply?.response)
+              console.error(`[SupabaseRealtime] Channel join rejected: ${reason}`)
+              this.disconnect()
+              reject(new Error(`Realtime channel join rejected: ${reason}`))
+            }
+            return
+          }
+
+          if (msg.topic === `realtime:public:${table}` && (msg.event === 'phx_error' || msg.event === 'phx_close')) {
+            this.isJoined = false
+            console.warn(`[SupabaseRealtime] Channel ${msg.event}`)
+            return
+          }
+
+          if (msg.event === 'system') {
+            const system = msg.payload as { status?: string; message?: string } | undefined
+            if (system?.status === 'error') {
+              this.isJoined = false
+              console.error(`[SupabaseRealtime] System error: ${system.message ?? 'unknown'}`)
+            }
+            return
           }
 
           // Handle postgres_changes INSERT events
@@ -181,6 +215,7 @@ export class SupabaseRealtimeClient {
       this.ws.onclose = () => {
         clearTimeout(timeout)
         this.isConnected = false
+        this.isJoined = false
         this.stopHeartbeat()
         console.log('[SupabaseRealtime] Disconnected')
 
@@ -190,8 +225,9 @@ export class SupabaseRealtimeClient {
 
         this.onDisconnect?.()
 
-        if (!opened) {
-          reject(new Error('WebSocket closed before connection established'))
+        if (!settled) {
+          settled = true
+          reject(new Error('WebSocket closed before the channel was joined'))
         }
       }
     })
@@ -211,10 +247,7 @@ export class SupabaseRealtimeClient {
   }
 
   private scheduleReconnect(): void {
-    if (this.isStopped || this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.log('[SupabaseRealtime] Max reconnect attempts reached')
-      return
-    }
+    if (this.isStopped) return
 
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000)
     this.reconnectAttempts++
@@ -244,11 +277,13 @@ export class SupabaseRealtimeClient {
     }
 
     this.isConnected = false
+    this.isJoined = false
     console.log('[SupabaseRealtime] Stopped')
   }
 
+  /** True only while the channel is joined, not merely while the socket is open. */
   isActive(): boolean {
-    return this.isConnected && !this.isStopped
+    return this.isJoined && !this.isStopped
   }
 
   /**
@@ -274,6 +309,13 @@ export class SupabaseRealtimeClient {
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' && value.length > 0 ? value : 'none'
+}
+
+function describeReplyError(response: unknown): string {
+  if (response && typeof response === 'object' && 'reason' in response) {
+    return String((response as { reason: unknown }).reason)
+  }
+  return response === undefined ? 'unknown' : JSON.stringify(response)
 }
 
 function describeRealtimeJwt(jwt: string): string {
