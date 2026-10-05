@@ -1933,7 +1933,7 @@ describe('proxy session URL', () => {
     mockIsHostAllowed.mockReturnValue(true)
   }
 
-  function makeRequest(path: string, options?: RequestInit): Promise<Response> {
+  async function makeRequest(path: string, options?: RequestInit): Promise<Response> {
     return app.request(`http://localhost${path}`, options)
   }
 
