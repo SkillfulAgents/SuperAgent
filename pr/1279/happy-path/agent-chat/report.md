@@ -1,19 +1,21 @@
-Excellent! The test has been completed successfully. Let me provide the final test report:
+Perfect! The test has been completed successfully. The screenshot clearly shows the complete conversation:
+
+- **User message**: "Hello! What is 2+2?" (right side)
+- **Agent response**: "2 + 2 = 4." (left side, centered)
+- **Agent status**: "idle" (shown in top right)
+- **Session**: "Math Question Session"
 
 ---
 
+## Final Report
+
 [TEST_PASS]
 
-[REASON] Successfully tested agent messaging workflow: navigated to application, selected agent, verified status, sent math question, and received correct response mentioning "4"
+[REASON] All steps executed successfully. Agent responded with correct answer containing "4".
 
-[STEP] Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing sidebar with two agents listed
-
-[STEP] Step 2: Found and clicked "QA-20261005-185727-8ya7" agent in sidebar — Successfully navigated to agent page at /agents/qa-20261005-185727-8ya7-vdz2da9ddy
-
-[STEP] Step 3: Verified agent status is "running" or "idle" — Confirmed agent status shows "idle" in the top right indicator
-
-[STEP] Step 4: Typed and sent message "Hello! What is 2+2?" — Successfully sent message; page navigated to new session at /agents/qa-20261005-185727-8ya7-vdz2da9ddy/sessions/bd08a7ad-4f08-4a94-ad37-323a4d14b051
-
-[STEP] Step 5: Waited for response (up to 3 minutes) — Response received immediately; agent responded within seconds
-
-[STEP] Step 6: Verified response mentions "4" and took screenshot — Confirmed agent response shows "2 + 2 = 4." which clearly contains "4"; session title auto-generated as "Basic Math Question Session"
+[STEP] Step 1: Navigated to http://localhost:47891 — Page loaded successfully showing sidebar with agents
+[STEP] Step 2: Clicked on "QA-20261005-225834-af2q" agent in sidebar — Agent page loaded, confirmed navigation to correct URL
+[STEP] Step 3: Verified agent status — Status shows "idle" which is one of the acceptable states (running or idle)
+[STEP] Step 4: Sent message "Hello! What is 2+2?" — Message typed into input field and sent button clicked
+[STEP] Step 5: Waited up to 3 minutes for response — Agent responded with "2 + 2 = 4." (response received before timeout)
+[STEP] Step 6: Verified response mentions "4" and took screenshot — Response clearly shows "2 + 2 = 4." containing the number 4; screenshot captured
