@@ -2,12 +2,14 @@ import { ListTodo } from 'lucide-react'
 import { toast } from 'sonner'
 import { TODO_TITLE_MAX } from '@shared/lib/todos/todo-schema'
 import { ContextMenuItem } from '@renderer/components/ui/context-menu'
-import { useAddSessionTodo } from '@renderer/hooks/use-todos'
-import { useSessionTodo } from './todo-session-chrome'
+import { useExperiment } from '@renderer/hooks/use-experiment'
+import { useAddSessionTodo, useTodos } from '@renderer/hooks/use-todos'
 
 /** The session menu's "Add to Todo", for a session not on the board yet. Hidden without the experiment. */
 export function AddSessionToTodoItem({ agentSlug, sessionId, sessionName }: { agentSlug: string; sessionId: string; sessionName: string }) {
-  const { todo, enabled } = useSessionTodo(agentSlug, sessionId)
+  const enabled = useExperiment('todo-board')
+  const { data: todos } = useTodos()
+  const todo = todos?.find((t) => t.agentSlug === agentSlug && t.sessionId === sessionId)
   const addSessionTodo = useAddSessionTodo()
   if (!enabled || todo) return null
 

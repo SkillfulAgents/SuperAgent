@@ -138,6 +138,23 @@ describe('TodoBoard', () => {
     expect(state.navigate).not.toHaveBeenCalled()
   })
 
+  it.each(['has_updates', 'needs_input'] as const)('keeps an unsaved rename when working moves to %s', async (column) => {
+    state.todos = [todo({ id: 'b', column: 'working', title: 'Quarterly report' })]
+    const { rerender } = renderWithProviders(<TodoBoard />)
+    fireEvent.contextMenu(screen.getByText('Quarterly report'))
+    fireEvent.click(await screen.findByTestId('todo-rename-item'))
+    fireEvent.change(await screen.findByTestId('todo-rename-input'), { target: { value: 'Weekly sales summary' } })
+
+    state.todos = state.todos.map((item) => ({ ...item, column }))
+    rerender(<TodoBoard />)
+    expect(screen.getByTestId('todo-card')).toHaveAttribute('data-column', column)
+    expect(screen.getByTestId('todo-rename-input')).toHaveValue('Weekly sales summary')
+    fireEvent.click(screen.getByTestId('todo-rename-submit'))
+    await waitFor(() => expect(state.rename).toHaveBeenCalledWith({ id: 'b', title: 'Weekly sales summary' }))
+    await waitFor(() => expect(screen.queryByTestId('todo-rename-input')).not.toBeInTheDocument())
+    expect(state.navigate).not.toHaveBeenCalled()
+  })
+
   it('opens a draft in the draft dialog', () => {
     state.todos = [todo({ id: 'a', column: 'drafts', description: 'The brief' })]
     renderWithProviders(<TodoBoard />)
