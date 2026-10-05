@@ -112,7 +112,7 @@ describe.skipIf(!ENABLED)('Stop while only a background subagent is live (real C
           'The subagent\'s prompt must be exactly: "Run `sleep 12` with the Bash tool, then reply with just the word ok." ' +
           'Do not wait for the subagent. As soon as it is launched reply with just the word "launched" and end your turn. ' +
           'When you are later notified that it finished, reply with just the word "finished".',
-        metadata: { isAutomated: true },
+        metadata: { noninteractive: true },
         model: MODEL,
       });
       const id = session.id;
@@ -180,7 +180,7 @@ describe.skipIf(!ENABLED)('Stop while only a background subagent is live (real C
           'Use the Bash tool with run_in_background set to true to run exactly this command: `sleep 10 && echo BG_DONE`. ' +
           'Do not wait for it. As soon as it is launched reply with just the word "started" and end your turn. ' +
           'When you are later notified that it finished, reply with just the word "finished".',
-        metadata: { isAutomated: true },
+        metadata: { noninteractive: true },
         model: MODEL,
       });
       const id = session.id;

@@ -283,10 +283,10 @@ describe('createAgentRegistry', () => {
 
     it('messages.send goes to this agent\'s client', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
-      await actor.messages.send('s1', 'hi', 'u1', { isAutomated: true })
+      await actor.messages.send('s1', 'hi', 'u1', { noninteractive: true })
       expect(fake.containerHost.runtime).toHaveBeenCalledWith('a')
       expect(fake.runtimes.get('a')?.getClient).toHaveBeenCalledTimes(1)
-      expect(fake.client.sendMessage).toHaveBeenCalledWith('s1', 'hi', 'u1', { isAutomated: true })
+      expect(fake.client.sendMessage).toHaveBeenCalledWith('s1', 'hi', 'u1', { noninteractive: true })
     })
 
     it('sessions.broadcastUpdate and syncAwaiting reach the persister scoped to this agent', () => {

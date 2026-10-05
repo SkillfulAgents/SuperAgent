@@ -138,7 +138,7 @@ describe('account reauthentication replacement', () => {
     expect(interrupt).toHaveBeenCalledWith('running-session', { scope: 'turn' })
     expect(send).toHaveBeenCalledWith('running-session',
       expect.stringContaining('[SYSTEM] Connection to "Slack" was replaced.'),
-      expect.any(String), { shouldQuery: true })
+      expect.any(String), { shouldQuery: true, noninteractive: true })
     expect(send.mock.calls[0][1]).toContain('ID: mine.')
   })
 

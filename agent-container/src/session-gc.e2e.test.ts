@@ -146,7 +146,7 @@ describe.skipIf(!ENABLED)('session GC end-to-end (real CLI subprocesses)', () =>
       const session = await manager.createSession({
         initialMessage:
           'Remember this codeword: kumquat-42. Reply with exactly: OK',
-        metadata: { isAutomated: true },
+        metadata: { noninteractive: true },
         model: MODEL,
       });
       const id = session.id;

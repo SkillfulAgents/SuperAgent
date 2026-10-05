@@ -920,9 +920,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             // a message accepted just before a transport error never references deleted bytes.
             promptDeliveryStarted = true
             if (messageUuid) {
-              await targetActor.messages.send(existingSessionId, deliveredPrompt, messageUuid, { isAutomated: true })
+              await targetActor.messages.send(existingSessionId, deliveredPrompt, messageUuid, { noninteractive: true })
             } else {
-              await targetActor.messages.send(existingSessionId, deliveredPrompt, undefined, { isAutomated: true })
+              await targetActor.messages.send(existingSessionId, deliveredPrompt, undefined, { noninteractive: true })
             }
           } catch (sendError) {
             if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
@@ -1045,7 +1045,10 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         maxBudgetUsd: agentLimits.maxBudgetUsd,
         customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
         maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-        metadata: { isAutomated: true },
+        // Interactive on the container side: the calling agent reads the
+        // result, so no notify_user tool and no unattended guidance. Hidden
+        // from the sidebar via invokedByAgentSlug (registered below).
+        metadata: { noninteractive: false },
       })
       let created: Awaited<typeof createPromise> | typeof DEADLINE
       try {

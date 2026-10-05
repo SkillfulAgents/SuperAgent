@@ -109,8 +109,15 @@ export interface SessionMetadata {
   // Chat integration fields - present when session was created from an external chat
   isChatIntegrationSession?: boolean
   chatIntegrationId?: string
-  // Set when an automated session is promoted to interactive (e.g. agent asked a user question).
-  // The original automation flags above are preserved for provenance.
+  // True while nobody is watching: set by cron / trigger / widget repair at
+  // creation, cleared for good when the agent requests input, calls
+  // notify_user, or a human messages the session. Drives the notify_user tool,
+  // the unattended prompt section, and hidden-list membership. The source
+  // flags above stay for attribution only.
+  noninteractive?: boolean
+  // Legacy promotion marker. Still written for x-agent / chat-integration
+  // sessions (hidden by their own flags, not by `noninteractive`) and read for
+  // rows that predate `noninteractive`.
   promotedToInteractive?: boolean
   // Last scheduled wake delivered to this session. Duplicate-fire guard: the
   // scheduler skips re-sending a wake whose task id + execution slot match.

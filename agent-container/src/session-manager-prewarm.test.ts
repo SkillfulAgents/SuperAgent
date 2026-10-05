@@ -317,6 +317,18 @@ describe('SessionManager pre-warm pool', () => {
 
   // Without a hint (cron, chat, cross-agent) the session's own shape is still
   // the best available guess.
+  it('a noninteractive session spawns cold and leaves the interactive warm process parked', async () => {
+    await manager.createSession(baseRequest)
+    const warmed = MockClaudeProcess.spawned.at(-1)!
+
+    const cron = await manager.createSession({ ...baseRequest, metadata: { noninteractive: true } })
+    expect(cron.id).not.toBe(warmed.sessionId)
+    expect(warmed.disposeCalls).toBe(0)
+
+    const human = await manager.createSession(baseRequest)
+    expect(human.id).toBe(warmed.sessionId)
+  })
+
   it('falls back to this session shape when the host sends no default', async () => {
     await manager.createSession({ ...baseRequest, model: 'claude-sonnet-5' })
     const warmed = MockClaudeProcess.spawned.at(-1)!

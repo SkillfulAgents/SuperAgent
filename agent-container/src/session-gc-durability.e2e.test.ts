@@ -158,7 +158,7 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
 
       const session = await manager.createSession({
         initialMessage: 'Remember: codeword one is papaya-7. Reply with exactly: OK',
-        metadata: { isAutomated: true },
+        metadata: { noninteractive: true },
         model: MODEL,
       });
       const id = session.id;
@@ -219,7 +219,7 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
 
       const session = await manager.createSession({
         initialMessage: 'Reply with exactly: ready',
-        metadata: { isAutomated: true },
+        metadata: { noninteractive: true },
         model: MODEL,
       });
       const id = session.id;
@@ -278,7 +278,7 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
 
       const session = await manager.createSession({
         initialMessage: 'Reply with exactly: alpha-one',
-        metadata: { isAutomated: true },
+        metadata: { noninteractive: true },
         model: MODEL,
       });
       const id = session.id;
@@ -316,7 +316,7 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
       const session = await manager.createSession({
         initialMessage:
           'Use the Bash tool with run_in_background: true to run exactly: sleep 15 && echo SLEEP-DONE. Do not wait for it. After starting it, reply with exactly: started',
-        metadata: { isAutomated: true },
+        metadata: { noninteractive: true },
         model: MODEL,
       });
       const id = session.id;

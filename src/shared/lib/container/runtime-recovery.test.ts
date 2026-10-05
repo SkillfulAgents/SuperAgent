@@ -122,7 +122,7 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(deps.sendMessage).toHaveBeenCalledTimes(1)
     expect(deps.sendMessage.mock.calls[0][0]).toBe('sess-1')
     expect(deps.sendMessage.mock.calls[0][1]).toBe(TEST_RESUME_PROMPT)
-    expect(deps.sendMessage.mock.calls[0][3]).toEqual({ shouldQuery: true })
+    expect(deps.sendMessage.mock.calls[0][3]).toEqual({ shouldQuery: true, noninteractive: true })
     expect(deps.markRecovered).toHaveBeenCalledWith(['sess-1'])
     expect(deps.settleRecoveringSessions).not.toHaveBeenCalled()
     expect(deps.syncAgentStatus).not.toHaveBeenCalled()
@@ -154,7 +154,7 @@ describe('recoverFromUnexpectedDeath', () => {
       'sess-1',
       TEST_RESUME_PROMPT,
       expect.any(String),
-      { shouldQuery: true },
+      { shouldQuery: true, noninteractive: true },
     )
     expect(deps.observeUnexpectedDeath).toHaveBeenCalledWith({
       lastFatalResult: 'oom_sigkill',
