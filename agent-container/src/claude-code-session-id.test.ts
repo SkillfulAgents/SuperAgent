@@ -8,7 +8,7 @@
  * (passed to the SDK as `sessionId`) rather than one the CLI mints at init —
  * the env is fixed when query() is created, before init reports anything.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 type MockQueryCall = { options: Record<string, unknown> }
 const calls: MockQueryCall[] = []
@@ -83,7 +83,7 @@ vi.mock('./input-manager', () => ({
   HUMAN_INPUT_TTL_MS: 24 * 60 * 60 * 1000,
 }))
 
-import { ClaudeCodeProcess } from './claude-code'
+import { ClaudeCodeProcess, sessionProxyBaseUrl } from './claude-code'
 
 describe('ClaudeCodeProcess session id exposure', () => {
   beforeEach(() => {
@@ -131,6 +131,71 @@ describe('ClaudeCodeProcess session id exposure', () => {
     await process.start()
 
     expect((calls[0].options.env as Record<string, string>).GAMUT_SESSION_ID).toBe('real-id')
+  })
+})
+
+describe('ClaudeCodeProcess caller session on proxied calls', () => {
+  const saved = { base: process.env.PROXY_BASE_URL, token: process.env.PROXY_TOKEN, mcps: process.env.REMOTE_MCPS }
+
+  beforeEach(() => {
+    calls.length = 0
+    process.env.PROXY_BASE_URL = 'http://host.test/api/proxy/test-agent'
+    process.env.PROXY_TOKEN = 'agent-token'
+    process.env.REMOTE_MCPS = JSON.stringify([{
+      id: 'mcp-calendar',
+      name: 'Team Calendar',
+      proxyUrl: 'http://host.test/api/mcp-proxy/test-agent/mcp-calendar',
+      tools: [{ name: 'list_events' }],
+    }])
+  })
+
+  afterEach(() => {
+    for (const [key, value] of [['PROXY_BASE_URL', saved.base], ['PROXY_TOKEN', saved.token], ['REMOTE_MCPS', saved.mcps]] as const) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
+
+  it('gives the session its own proxy address, even against a custom env var', async () => {
+    const claude = new ClaudeCodeProcess({
+      sessionId: 'session-a',
+      workingDirectory: '/tmp',
+      customEnvVars: { PROXY_BASE_URL: 'http://elsewhere.test' },
+    })
+    await claude.start()
+
+    expect((calls[0].options.env as Record<string, string>).PROXY_BASE_URL)
+      .toBe('http://host.test/api/proxy/test-agent/s/session-a')
+  })
+
+  it('uses the resumed session id, the one the host knows', async () => {
+    const claude = new ClaudeCodeProcess({
+      sessionId: 'host-id',
+      claudeSessionId: 'resumed-id',
+      workingDirectory: '/tmp',
+    })
+    await claude.start()
+
+    expect((calls[0].options.env as Record<string, string>).PROXY_BASE_URL)
+      .toBe('http://host.test/api/proxy/test-agent/s/resumed-id')
+  })
+
+  it('names the session on remote MCP calls next to the agent token', async () => {
+    const claude = new ClaudeCodeProcess({ sessionId: 'session-a', workingDirectory: '/tmp' })
+    await claude.start()
+
+    const servers = calls[0].options.mcpServers as Record<string, { headers?: Record<string, string> }>
+    const calendar = Object.values(servers).find((server) => server.headers)
+    expect(calendar?.headers).toEqual({
+      Authorization: 'Bearer agent-token',
+      'x-superagent-session-id': 'session-a',
+    })
+  })
+})
+
+describe('sessionProxyBaseUrl', () => {
+  it('appends the session segment once, encoded', () => {
+    expect(sessionProxyBaseUrl('http://host.test/api/proxy/agent/', 'a b')).toBe('http://host.test/api/proxy/agent/s/a%20b')
   })
 })
 
