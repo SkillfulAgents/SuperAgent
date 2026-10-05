@@ -52,6 +52,9 @@ const RUNNING_STATUS_TTL_MS = parseInt(
   10
 ) * 1000
 
+// Long silent tool calls only cost one GET per health check.
+const STALLED_STREAM_QUIET_MS = 60_000
+
 /** Cached container status */
 interface CachedContainerStatus {
   status: 'running' | 'stopped'
@@ -438,6 +441,8 @@ export class ContainerRuntime {
     // Don't spawn CLI commands into an overloaded VM while it is being stopped
     if (this.stopping) return
     if (!this.client) return
+
+    await messagePersister.reattachStalledSessions(this.slug, STALLED_STREAM_QUIET_MS)
 
     const stats = await this.client.getStats()
     if (!stats) return
