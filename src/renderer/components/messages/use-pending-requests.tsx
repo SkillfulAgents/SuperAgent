@@ -364,6 +364,12 @@ export function reviewFromEnvelope(
   }
 }
 
+const PARKED_CALL_KINDS: ReadonlySet<PendingUserInputRequest['kind']> = new Set([
+  'proxy_review',
+  'account_reauth_required',
+  'mcp_reauth_required',
+])
+
 // Project unified registry envelopes onto the same per-kind shapes the legacy
 // SSE events carried, so the descriptor builder (and every card) is untouched
 // by the wire migration. Envelope payloads are lenient by design (the server
@@ -614,9 +620,11 @@ export function usePendingRequests({
     // approval deliberately survives the idle boundary server-side for
     // reconnect replay. Rendering it on an idle session would gate the
     // composer behind a dead card. Agent-scoped reviews render regardless:
-    // they outlive any one turn.
+    // they outlive any one turn. So do review and re-auth cards scoped to this
+    // session: they hold a parked proxy call, which a background script can
+    // keep waiting after the turn ends.
     return projectUnifiedRequests(
-      isActive ? requests : requests.filter((r) => r.scope.sessionId === undefined),
+      isActive ? requests : requests.filter((r) => r.scope.sessionId === undefined || PARKED_CALL_KINDS.has(r.kind)),
     )
   }, [unifiedRequestsData, isActive])
   const pendingProxyReviews = unified.reviews
