@@ -36,11 +36,11 @@ export function VolumeControl({ mediaRef }: { mediaRef: RefObject<HTMLMediaEleme
   }
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex min-w-0 items-center gap-1">
       <button
         type="button"
         onClick={toggleMute}
-        className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-black/[0.06] hover:text-foreground dark:hover:bg-white/[0.1]"
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-black/[0.06] hover:text-foreground dark:hover:bg-white/[0.1]"
         title={silent ? 'Unmute' : 'Mute'}
         aria-label={silent ? 'Unmute' : 'Mute'}
         data-testid="media-mute"
@@ -55,7 +55,7 @@ export function VolumeControl({ mediaRef }: { mediaRef: RefObject<HTMLMediaEleme
         value={muted ? 0 : volume}
         onChange={e => changeVolume(Number(e.target.value))}
         aria-label="Volume"
-        className="w-16 accent-primary cursor-pointer"
+        className="w-16 min-w-0 accent-primary cursor-pointer"
         data-testid="media-volume"
       />
     </div>

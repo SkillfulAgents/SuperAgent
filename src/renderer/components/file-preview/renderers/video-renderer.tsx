@@ -261,7 +261,7 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
           >
             {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 translate-x-px" />}
           </button>
-          <span className="text-xs text-muted-foreground tabular-nums">
+          <span className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
             {formatMediaTime(currentTime)} / {formatMediaTime(duration)}
           </span>
           <PlaybackSpeedSelect rate={rate} onChange={setRate} />
@@ -271,7 +271,7 @@ export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true
               type="button"
               onClick={() => beginComment(null)}
               disabled={pending != null}
-              className="ml-auto flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border border-border bg-background hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-default"
+              className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap px-2.5 py-1 text-xs rounded-md border border-border bg-background hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-default"
               data-testid="video-add-comment"
             >
               <MessageSquarePlus className="h-3.5 w-3.5" />
