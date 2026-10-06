@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that agent successfully opens a browser, navigates to https://example.com, and returns the page title \"Example Domain\" in the response.",
+  "reason": "QA test verified that the agent successfully opens a browser, navigates to https://example.com, and returns the page title containing \"Example Domain\"",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Successfully loaded Gamut home page with agent list in sidebar.",
-    "Step 2: Found and clicked the \"QA-20261006-204256-35q5\" agent in the sidebar — Successfully opened agent chat interface with message input field ready.",
-    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" and sent it — Message successfully submitted to agent, session created with title \"Browser Navigation and Page Title Check\".",
-    "Step 4: Waited for agent response (up to 3 minutes) — Agent completed processing in 8 seconds with 3 tool calls and 149,121 tokens consumed.",
-    "Step 5: Verified response mentions \"Example Domain\" and took screenshot — Response clearly states: \"The page title is \"Example Domain\". The page at https://example.com loaded normally, and I've closed the browser.\" Screenshot confirms successful completion (step5-response-verification.png)."
+    "Step 1: Navigated to http://localhost:47891 - Page loaded successfully with title \"Gamut\", displayed the agent sidebar with \"QA-20261006-205532-w0j6\" agent listed as Idle",
+    "Step 2: Clicked on \"QA-20261006-205532-w0j6\" agent in the sidebar - Successfully navigated to the agent page at http://localhost:47891/agents/qa-20261006-205532-w0j6-wfy82s67l8",
+    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was typed and submitted successfully, creating a new session at /sessions/5f115635-8038-4686-a13f-b61ef141f9b7",
+    "Step 4: Waited up to 3 minutes for response - Agent responded within the time limit, executing browser navigation tools and retrieving the page content",
+    "Step 5: Verified response mentions \"Example Domain\" and took screenshot - Response successfully contains \"Example Domain\" text (verified: hasExampleDomain=true), also contains \"https://example.com\" URL, and screenshot captured showing the agent's response with browser agent actions completed"
   ],
   "bugs": [],
-  "durationMs": 93420,
-  "sessionId": "a71ec24a-6ab6-4470-bb43-7b660bc20334",
+  "durationMs": 168714,
+  "sessionId": "d063e8c1-948c-4c0f-a453-85914ce9e811",
   "cost": {
-    "inputTokens": 350,
-    "outputTokens": 10652,
-    "cacheCreationTokens": 68507,
-    "cacheReadTokens": 933452,
+    "inputTokens": 578,
+    "outputTokens": 18369,
+    "cacheCreationTokens": 54181,
+    "cacheReadTokens": 1473536,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.232589
+    "totalCostUsd": 0.307503
   }
 }
