@@ -3,7 +3,7 @@ import type { SavedLogins } from '@renderer/hooks/use-saved-logins'
 
 /** Shown before applying a saved login to an agent other members can use. */
 export function sharedLoginNotice(otherMembers: number, site: string): string {
-  return `${otherMembers} other ${otherMembers === 1 ? 'member' : 'members'} can use this agent. It will stay signed in to ${site} with your account, and to any other site you signed in to on the way, such as Google.`
+  return `${otherMembers} other ${otherMembers === 1 ? 'member' : 'members'} can use this agent. It will stay signed in to ${site} with your account. The saved login may also include other sites you signed in to along the way.`
 }
 
 interface SavedLoginPickerProps {
