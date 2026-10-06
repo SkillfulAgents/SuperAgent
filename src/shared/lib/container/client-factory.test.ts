@@ -573,6 +573,39 @@ describe('pullImage stall watchdog', () => {
     expect(proc.kill).toHaveBeenCalled()
   })
 
+  it('aborting kills a wsl2 pull inside the distro and rejects without reporting an error', async () => {
+    const controller = new AbortController()
+    const promise = pullImage('wsl2', 'ghcr.io/acme/agent:abort-1', undefined, controller.signal)
+    const assertion = expect(promise).rejects.toThrow('Image pull aborted')
+
+    controller.abort()
+    await assertion
+    proc.emit('close', null)
+
+    expect(mockKillWSL2PullProcesses).toHaveBeenCalledOnce()
+    expect(proc.kill).toHaveBeenCalled()
+    expect(mockCaptureException).not.toHaveBeenCalled()
+  })
+
+  it('an abort after the pull finished kills nothing', async () => {
+    const controller = new AbortController()
+    const promise = pullImage('wsl2', 'ghcr.io/acme/agent:abort-3', undefined, controller.signal)
+    proc.emit('close', 0)
+    await expect(promise).resolves.toBeUndefined()
+
+    controller.abort()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mockKillWSL2PullProcesses).not.toHaveBeenCalled()
+  })
+
+  it('an already-aborted signal never starts the pull', async () => {
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(pullImage('docker', 'ghcr.io/acme/agent:abort-2', undefined, controller.signal)).rejects.toThrow('Image pull aborted')
+    expect(mockSpawnWithPath).not.toHaveBeenCalled()
+  })
+
   it('still rejects with the exit-code error when a wsl2 pull fails before the timeout', async () => {
     const promise = pullImage('wsl2', 'ghcr.io/acme/agent:stall-5')
     const assertion = expect(promise).rejects.toThrow('Image pull failed with exit code 1')

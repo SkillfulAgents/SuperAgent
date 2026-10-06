@@ -465,7 +465,8 @@ const inflightPulls = new Map<string, Promise<void>>()
 export function pullImage(
   runner: ContainerRunner,
   image: string,
-  onProgress?: (progress: ImagePullProgress) => void
+  onProgress?: (progress: ImagePullProgress) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   const key = `${runner}:${image}`
   const existing = inflightPulls.get(key)
@@ -473,7 +474,7 @@ export function pullImage(
     addErrorBreadcrumb({ category: 'container', message: 'Awaiting already in-flight pull of the same image', data: { image, runner } })
     return existing
   }
-  const pull = doPullImage(runner, image, onProgress)
+  const pull = doPullImage(runner, image, onProgress, signal)
     .then(() => verifyPulledImage(runner, image, onProgress))
     .finally(() => inflightPulls.delete(key))
   inflightPulls.set(key, pull)
@@ -587,7 +588,7 @@ export function checkImageIntegrity(runner: ContainerRunner, image: string): Pro
 }
 
 /** Best-effort image removal; a failure here just leaves the next pull to overwrite. */
-function removeImage(runner: ContainerRunner, image: string): Promise<void> {
+export function removeImage(runner: ContainerRunner, image: string): Promise<void> {
   return new Promise((resolve) => {
     const cli = getCliCommand(runner)
     // Apple's CLI has no rmi; see AppleContainerClient.removeCorruptImage.
@@ -654,12 +655,25 @@ async function verifyPulledImage(
   throw error
 }
 
+/** Rejection reason when a pull is cancelled through its AbortSignal. */
+class ImagePullAbortedError extends Error {
+  constructor(image: string) {
+    super(`Image pull aborted: ${image}`)
+    this.name = 'ImagePullAbortedError'
+  }
+}
+
 function doPullImage(
   runner: ContainerRunner,
   image: string,
-  onProgress?: (progress: ImagePullProgress) => void
+  onProgress?: (progress: ImagePullProgress) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new ImagePullAbortedError(image))
+      return
+    }
     const cli = getCliCommand(runner)
     // Apple's container CLI uses `container image pull`, not `container pull`
     const args = runner === 'apple-container'
@@ -691,6 +705,32 @@ function doPullImage(
     const stallTimeoutMs = runnerEntry?.pullStallTimeoutMs
     let stallTimer: ReturnType<typeof setTimeout> | undefined
     let stallError: Error | undefined
+
+    // Kill the runner-side pull first: for wsl2 the real nerdctl runs inside
+    // the distro and survives proc.kill() of the host-side wrapper, keeping
+    // containerd's ingest lock held — a retry would wedge behind it. The
+    // cleanup itself is time-capped: if the runtime is unresponsive, the
+    // pull must still settle so the retry loop isn't stuck forever.
+    const killPull = async () => {
+      let killTimer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          Promise.resolve(runnerEntry?.killStalledPull?.()),
+          new Promise<never>((_, rejectTimeout) => {
+            killTimer = setTimeout(
+              () => rejectTimeout(new Error(`killStalledPull timed out after ${KILL_STALLED_PULL_TIMEOUT_MS}ms`)),
+              KILL_STALLED_PULL_TIMEOUT_MS
+            )
+          }),
+        ])
+      } catch (err) {
+        console.warn(`[pullImage] killStalledPull failed for ${runner}:`, err)
+      } finally {
+        clearTimeout(killTimer)
+        proc.kill()
+      }
+    }
+
     const onStall = async () => {
       // sentryCaptured: canonical event for the failure, like the exit-code
       // path below — callers up the stack must not re-capture it.
@@ -708,29 +748,8 @@ function doPullImage(
           totalLayers: allLayers.size,
         },
       })
-      // Kill the runner-side pull first: for wsl2 the real nerdctl runs inside
-      // the distro and survives proc.kill() of the host-side wrapper, keeping
-      // containerd's ingest lock held — a retry would wedge behind it. The
-      // cleanup itself is time-capped: if the runtime is unresponsive, the
-      // pull must still settle so the retry loop isn't stuck forever.
-      let killTimer: ReturnType<typeof setTimeout> | undefined
-      try {
-        await Promise.race([
-          Promise.resolve(runnerEntry?.killStalledPull?.()),
-          new Promise<never>((_, rejectTimeout) => {
-            killTimer = setTimeout(
-              () => rejectTimeout(new Error(`killStalledPull timed out after ${KILL_STALLED_PULL_TIMEOUT_MS}ms`)),
-              KILL_STALLED_PULL_TIMEOUT_MS
-            )
-          }),
-        ])
-      } catch (err) {
-        console.warn(`[pullImage] killStalledPull failed for ${runner}:`, err)
-      } finally {
-        clearTimeout(killTimer)
-        proc.kill()
-        reject(stallError)
-      }
+      await killPull()
+      reject(stallError)
     }
     const armStallTimer = () => {
       if (!stallTimeoutMs) return
@@ -739,8 +758,19 @@ function doPullImage(
     }
     armStallTimer()
 
+    let abortError: Error | undefined
+    const onAbort = async () => {
+      if (stallError || abortError) return
+      abortError = new ImagePullAbortedError(image)
+      clearTimeout(stallTimer)
+      await killPull()
+      reject(abortError)
+    }
+    const abortListener = () => { void onAbort() }
+    signal?.addEventListener('abort', abortListener, { once: true })
+
     const handleData = (data: Buffer) => {
-      if (stallError) return
+      if (stallError || abortError) return
       armStallTimer()
       const text = stripAnsi(data.toString())
       const lines = text.split('\n')
@@ -793,6 +823,9 @@ function doPullImage(
 
     proc.on('close', (code) => {
       clearTimeout(stallTimer)
+      // An abort after the pull exited must not pkill some other pull.
+      signal?.removeEventListener('abort', abortListener)
+      if (abortError) return
       if (stallError) {
         // The watchdog already rejected and reported; this exit is just the
         // kill landing.

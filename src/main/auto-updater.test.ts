@@ -57,8 +57,23 @@ Object.defineProperty(mockAutoUpdater, 'channel', {
   },
 })
 
+class MockCancellationToken {
+  cancelled = false
+  cancel() { this.cancelled = true }
+}
+
 vi.mock('electron-updater', () => ({
   autoUpdater: mockAutoUpdater,
+  CancellationToken: MockCancellationToken,
+}))
+
+const mockContainerHost = {
+  prefetchUpdateImage: vi.fn(async (_version: string) => true),
+  cancelUpdateImagePrefetch: vi.fn(async () => {}),
+}
+
+vi.mock('@shared/lib/agent-actor', () => ({
+  containerHost: mockContainerHost,
 }))
 
 // ---------------------------------------------------------------------------
@@ -998,5 +1013,129 @@ describe('prerelease setting transitions', () => {
     expect(mockAutoUpdater.channel).toBe('latest')
     expect(getStatus()).toMatchObject({ state: 'available', version: '0.4.1' })
     expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Pre-install: with the setting on, a completed check that finds an update
+// downloads the app and pre-pulls its agent image in the background.
+// "Restart to update" waits for both; failures roll back to 'available'.
+// ---------------------------------------------------------------------------
+
+function deferred<T>() {
+  let resolve!: (v: T) => void
+  let reject!: (e: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
+const flush = () => new Promise((r) => setTimeout(r, 0))
+
+describe('pre-install updates', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    mockAutoUpdater.allowPrerelease = false
+    mockAutoUpdater.allowDowngrade = false
+    _mockChannel = undefined
+    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getUserSettings).mockReturnValue({ autoCheckUpdates: true, preinstallUpdates: true } as any)
+    mockContainerHost.prefetchUpdateImage.mockReset().mockResolvedValue(true)
+    mockContainerHost.cancelUpdateImagePrefetch.mockReset().mockResolvedValue(undefined)
+    await boot()
+    setupReleases({ currentVersion: '0.2.5', latestRC: null, latestStable: '0.2.11' })
+  })
+
+  it('downloads the app and pre-pulls the image; ready only after both settle', async () => {
+    const appDownload = deferred<void>()
+    const image = deferred<boolean>()
+    mockAutoUpdater.downloadUpdate.mockReturnValue(appDownload.promise)
+    mockContainerHost.prefetchUpdateImage.mockReturnValue(image.promise)
+
+    await handlers['check-for-updates']()
+    await flush()
+
+    expect(mockAutoUpdater.downloadUpdate).toHaveBeenCalledWith(expect.any(MockCancellationToken))
+    expect(mockContainerHost.prefetchUpdateImage).toHaveBeenCalledWith('0.2.11')
+
+    // The app finishes first; its own update-downloaded event must not offer the restart yet.
+    events['update-downloaded']?.({ version: '0.2.11' })
+    appDownload.resolve()
+    await flush()
+    expect(getStatus().state).not.toBe('downloaded')
+
+    image.resolve(true)
+    await flush()
+    expect(getStatus()).toMatchObject({ state: 'downloaded', version: '0.2.11' })
+  })
+
+  it('a failed image pull still offers the downloaded app update', async () => {
+    mockAutoUpdater.downloadUpdate.mockResolvedValue(undefined)
+    mockContainerHost.prefetchUpdateImage.mockResolvedValue(false)
+
+    await handlers['check-for-updates']()
+    await flush()
+
+    expect(getStatus()).toMatchObject({ state: 'downloaded', version: '0.2.11' })
+  })
+
+  it('a failed app download rolls back the image and goes back to available', async () => {
+    mockAutoUpdater.downloadUpdate.mockRejectedValue(new Error('network down'))
+
+    await handlers['check-for-updates']()
+    await flush()
+
+    expect(mockContainerHost.cancelUpdateImagePrefetch).toHaveBeenCalledTimes(1)
+    expect(getStatus()).toMatchObject({ state: 'available', version: '0.2.11' })
+  })
+
+  it('cancelling mid-way cancels the download, removes the image, and goes back to available', async () => {
+    const appDownload = deferred<void>()
+    mockAutoUpdater.downloadUpdate.mockReturnValue(appDownload.promise)
+
+    await handlers['check-for-updates']()
+    await flush()
+    const token = mockAutoUpdater.downloadUpdate.mock.calls[0][0] as MockCancellationToken
+
+    await handlers['cancel-update-preinstall']()
+    appDownload.reject(new Error('cancelled'))
+    await flush()
+
+    expect(token.cancelled).toBe(true)
+    expect(mockContainerHost.cancelUpdateImagePrefetch).toHaveBeenCalled()
+    expect(getStatus()).toMatchObject({ state: 'available', version: '0.2.11' })
+  })
+
+  it('a later check for the same version restores the finished state instead of starting again', async () => {
+    mockAutoUpdater.downloadUpdate.mockResolvedValue(undefined)
+
+    await handlers['check-for-updates']()
+    await flush()
+    await handlers['check-for-updates']()
+    await flush()
+
+    expect(mockAutoUpdater.downloadUpdate).toHaveBeenCalledTimes(1)
+    expect(mockContainerHost.prefetchUpdateImage).toHaveBeenCalledTimes(1)
+    expect(getStatus()).toMatchObject({ state: 'downloaded', version: '0.2.11' })
+  })
+
+  it('does nothing with the setting off', async () => {
+    vi.mocked(getUserSettings).mockReturnValue({ autoCheckUpdates: true, preinstallUpdates: false } as any)
+
+    await handlers['check-for-updates']()
+    await flush()
+
+    expect(mockAutoUpdater.downloadUpdate).not.toHaveBeenCalled()
+    expect(mockContainerHost.prefetchUpdateImage).not.toHaveBeenCalled()
+    expect(getStatus()).toMatchObject({ state: 'available', version: '0.2.11' })
+  })
+
+  it('does nothing when automatic checks are off', async () => {
+    vi.mocked(getUserSettings).mockReturnValue({ autoCheckUpdates: false, preinstallUpdates: true } as any)
+
+    await handlers['check-for-updates']()
+    await flush()
+
+    expect(mockAutoUpdater.downloadUpdate).not.toHaveBeenCalled()
+    expect(mockContainerHost.prefetchUpdateImage).not.toHaveBeenCalled()
   })
 })

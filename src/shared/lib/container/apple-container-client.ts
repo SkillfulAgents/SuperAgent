@@ -406,14 +406,14 @@ export class AppleContainerClient extends BaseContainerClient {
    * variant's config and history (about 22 KB an image) and overflows exec's
    * 1 MiB stdout buffer near 47 images, the backlog this exists to clear.
    */
-  static async removeOldImages(cliCommand: string, registry: string, currentTag: string): Promise<void> {
+  static async removeOldImages(cliCommand: string, registry: string, keepTags: string[]): Promise<void> {
     try {
       const { stdout } = await execWithPath(`${cliCommand} image list --quiet`)
-      const currentImage = `${registry}:${currentTag}`
+      const keep = new Set(keepTags.map((tag) => `${registry}:${tag}`))
       const imagesToRemove = stdout
         .split('\n')
         .map((l) => l.trim())
-        .filter((l) => l && l !== currentImage && l.startsWith(registry + ':'))
+        .filter((l) => l && !keep.has(l) && l.startsWith(registry + ':'))
 
       if (imagesToRemove.length === 0) return
 

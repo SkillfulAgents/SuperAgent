@@ -4,6 +4,7 @@ import os from 'os'
 import path from 'path'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { containerHost } from '@shared/lib/agent-actor'
 
 export interface UpdateStatus {
   state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -27,6 +28,13 @@ let runningCheck: Promise<void> | null = null
 // manual check joins an in-flight silent check, this flips on so errors show.
 let runIsUserVisible = false
 
+// The update being pre-installed in the background: the app download plus a
+// pre-pull of its agent image. In memory only, so nothing outlives the process.
+type Preinstall = { version: string; token: { cancel(): void }; progress: number; appDownloaded: boolean; finished: boolean }
+let preinstall: Preinstall | null = null
+// Serializes starts, so checks finishing back to back can't start the same pre-install twice.
+let preinstallStart: Promise<void> = Promise.resolve()
+
 // Run an automatic check ~30s after init (let the app settle first), then every 4h.
 const INITIAL_CHECK_DELAY_MS = 30_000
 const RECURRING_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
@@ -47,6 +55,11 @@ async function getAutoUpdater() {
 function semverGt(a: string, b: string): boolean {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   return require('semver').gt(a, b)
+}
+
+function semverValid(v: string): boolean {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('semver').valid(v) !== null
 }
 
 /**
@@ -142,8 +155,82 @@ async function runUpdateCheck({ silent }: { silent: boolean }): Promise<void> {
       if (watchdog) clearTimeout(watchdog)
       runningCheck = null
     }
+    // After the whole check: a prerelease check fires update-available once per channel it reads.
+    maybeStartPreinstall()
   })()
   return runningCheck
+}
+
+/**
+ * When pre-install is on, download the available update and pre-pull its
+ * agent image in the background. "Restart to update" appears once both
+ * settle. A failed image pull rolls itself back and the update is still
+ * offered (the image is then pulled after the restart, as without
+ * pre-install); a failed app download rolls back both.
+ */
+function maybeStartPreinstall(): void {
+  preinstallStart = preinstallStart.then(startPreinstallIfWanted).catch((err) => {
+    captureException(err, { tags: { component: 'auto-updater', operation: 'preinstall' }, level: 'warning' })
+  })
+}
+
+async function startPreinstallIfWanted(): Promise<void> {
+  if (currentStatus.state !== 'available' || !currentStatus.version) return
+  const version = currentStatus.version
+  const settings = await getUserSettings('local')
+  if (settings.autoCheckUpdates === false || !settings.preinstallUpdates) return
+  if (preinstall?.version === version) {
+    // A later check repainted 'available' over this pre-install; put its state back.
+    setStatus(preinstall.finished
+      ? { state: 'downloaded', version }
+      : { state: 'downloading', version, progress: preinstall.progress })
+    return
+  }
+  if (!semverValid(version) || !semverGt(version, app.getVersion())) return
+
+  // A newer version replaces the one being pre-installed.
+  await cancelPreinstall({ restoreStatus: false })
+  const { CancellationToken } = await import('electron-updater')
+  const entry: Preinstall = { version, token: new CancellationToken(), progress: 0, appDownloaded: false, finished: false }
+  preinstall = entry
+  void runPreinstall(entry)
+}
+
+async function runPreinstall(entry: Preinstall): Promise<void> {
+  const { version } = entry
+  addErrorBreadcrumb({ category: 'auto-updater', message: 'Pre-install started', data: { version } })
+  const imageReady = containerHost.prefetchUpdateImage(version)
+  try {
+    const autoUpdater = await getAutoUpdater()
+    await autoUpdater.downloadUpdate(entry.token)
+    entry.appDownloaded = true
+  } catch {
+    // electron-updater already removed its partial download (and reported real errors).
+    if (preinstall === entry) {
+      preinstall = null
+      await containerHost.cancelUpdateImagePrefetch()
+      setStatus({ state: 'available', version })
+    }
+    return
+  }
+  const imageOk = await imageReady
+  if (preinstall !== entry) return
+  entry.finished = true
+  addErrorBreadcrumb({ category: 'auto-updater', message: 'Pre-install finished', data: { version, imageOk } })
+  setStatus({ state: 'downloaded', version })
+}
+
+/** Cancel the background pre-install and remove what it pulled. A finished app download is kept. */
+async function cancelPreinstall({ restoreStatus }: { restoreStatus: boolean }): Promise<void> {
+  const entry = preinstall
+  if (!entry) return
+  preinstall = null
+  entry.token.cancel()
+  await containerHost.cancelUpdateImagePrefetch()
+  if (!restoreStatus) return
+  setStatus(entry.appDownloaded
+    ? { state: 'downloaded', version: entry.version }
+    : { state: 'available', version: entry.version })
 }
 
 async function runUpdateCheckBody() {
@@ -325,6 +412,10 @@ export function registerUpdateHandlers() {
     }
   })
 
+  ipcMain.handle('cancel-update-preinstall', async () => {
+    await cancelPreinstall({ restoreStatus: true })
+  })
+
   ipcMain.handle('install-update', async () => {
     if (!updaterReady) return
     const autoUpdater = await getAutoUpdater()
@@ -387,10 +478,13 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
     })
 
     autoUpdater.on('download-progress', (progress: any) => {
+      if (preinstall) preinstall.progress = progress.percent
       setStatus({ state: 'downloading', progress: progress.percent })
     })
 
     autoUpdater.on('update-downloaded', (info: any) => {
+      // A pre-install reports 'downloaded' itself, once its image pull has settled too.
+      if (preinstall?.version === info.version) return
       setStatus({ state: 'downloaded', version: info.version })
     })
 

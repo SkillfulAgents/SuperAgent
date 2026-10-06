@@ -150,6 +150,7 @@ export const userSettingsSchema = z.object({
   showMenuBarIcon: z.boolean().default(true),
   allowPrereleaseUpdates: z.boolean().default(false),
   autoCheckUpdates: z.boolean().default(true),
+  preinstallUpdates: z.boolean().default(false),
   timezone: z.string().optional(),
   agentOrder: z.array(z.string()).optional(),
   // Left-nav folders. A per-user projection over the shared agent list, like

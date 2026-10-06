@@ -163,7 +163,7 @@ describe('AppleContainerClient recovery hooks', () => {
       if (cmd.endsWith(`:0.5.24'`)) throw new Error('image in use')
       return { stdout: cmd === 'container image list --quiet' ? listed : '', stderr: '' }
     })
-    await AppleContainerClient.removeOldImages('container', 'ghcr.io/skillfulagents/superagent-agent-container-base', '0.5.26')
+    await AppleContainerClient.removeOldImages('container', 'ghcr.io/skillfulagents/superagent-agent-container-base', ['0.5.26'])
     expect(calls).toEqual([
       'container image list --quiet',
       `container image delete 'ghcr.io/skillfulagents/superagent-agent-container-base:0.5.24'`,

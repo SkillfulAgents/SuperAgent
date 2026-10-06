@@ -25,9 +25,11 @@ import {
   getContainerClientClass,
   getCliCommand,
   getAvailableDiskSpace,
+  removeImage,
   MIN_IMAGE_DISK_SPACE_BYTES,
   type ContainerRunner,
 } from './client-factory'
+import { AGENT_IMAGE_REGISTRY } from '@shared/lib/config/version'
 import { ensureLimaReady } from './lima-container-client'
 import type { ImagePullProgress, RuntimeReadiness } from './types'
 import { messagePersister } from './message-persister'
@@ -68,6 +70,13 @@ export class ContainerHost {
 
   /** Optional callback invoked before a container is stopped (e.g. to close host browser) */
   onBeforeContainerStop: ((agentId: string) => Promise<void>) | null = null
+
+  /** Background pull of the agent image for an app update that isn't installed yet. */
+  private updateImagePrefetch: {
+    image: string
+    controller: AbortController
+    result: Promise<boolean>
+  } | null = null
 
   /** Unified runtime readiness state */
   private _readiness: RuntimeReadiness = process.env.E2E_MOCK === 'true'
@@ -614,6 +623,8 @@ export class ContainerHost {
         message: 'Ready',
         pullProgress: null,
       })
+      // A pre-pulled update image skips the pull below, so old tags are removed here too.
+      if (!canBuildImage() && image.startsWith(AGENT_IMAGE_REGISTRY + ':')) this.removeOldImages(effectiveRunner, image)
       return
     }
 
@@ -697,16 +708,7 @@ export class ContainerHost {
           pullProgress: null,
         })
 
-        // Clean up old images after a successful pull (fire-and-forget)
-        const lastColon = image.lastIndexOf(':')
-        if (lastColon > 0 && !shouldBuild) {
-          const registry = image.substring(0, lastColon)
-          const currentTag = image.substring(lastColon + 1)
-          const ClientClass = getContainerClientClass(effectiveRunner)
-          ClientClass.removeOldImages(getCliCommand(effectiveRunner), registry, currentTag).catch((error: unknown) => {
-            console.warn('[ContainerHost] Image cleanup failed:', error)
-          })
-        }
+        if (!shouldBuild) this.removeOldImages(effectiveRunner, image)
         return
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error)
@@ -751,6 +753,93 @@ export class ContainerHost {
         })
         return
       }
+    }
+  }
+
+  /** Fire-and-forget removal of every tag of the image's registry except the current one and a pre-pulled update. */
+  private removeOldImages(runner: ContainerRunner, image: string): void {
+    const lastColon = image.lastIndexOf(':')
+    if (lastColon <= 0) return
+    const registry = image.substring(0, lastColon)
+    const keepTags = [image.substring(lastColon + 1)]
+    const pending = this.updateImagePrefetch?.image
+    if (pending?.startsWith(registry + ':')) keepTags.push(pending.substring(registry.length + 1))
+    getContainerClientClass(runner).removeOldImages(getCliCommand(runner), registry, keepTags).catch((error: unknown) => {
+      console.warn('[ContainerHost] Image cleanup failed:', error)
+    })
+  }
+
+  /**
+   * Pull the agent image of an app update in the background, without touching
+   * readiness. All or nothing: resolves true only for a complete, verified
+   * image; any other outcome (skipped, failed, cancelled) leaves no tag behind.
+   */
+  prefetchUpdateImage(version: string): Promise<boolean> {
+    if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/.test(version)) return Promise.resolve(false)
+    const image = `${AGENT_IMAGE_REGISTRY}:${version}`
+    if (this.updateImagePrefetch?.image === image) return this.updateImagePrefetch.result
+
+    const previous = this.cancelUpdateImagePrefetch()
+    const controller = new AbortController()
+    const result = previous.then(() => this.runUpdateImagePrefetch(image, controller.signal))
+    const entry = { image, controller, result }
+    this.updateImagePrefetch = entry
+    void result.then((ok) => {
+      if (!ok && this.updateImagePrefetch === entry) this.updateImagePrefetch = null
+    })
+    return result
+  }
+
+  /** Stop any background update-image pull and remove what it pulled. */
+  async cancelUpdateImagePrefetch(): Promise<void> {
+    const entry = this.updateImagePrefetch
+    if (!entry) return
+    this.updateImagePrefetch = null
+    entry.controller.abort()
+    if (await entry.result) {
+      await removeImage(getSettings().container.containerRunner as ContainerRunner, entry.image)
+    }
+  }
+
+  /** Stop an in-flight update-image pull (it removes itself); a finished one is kept for the restart. */
+  abortUpdateImagePrefetch(): void {
+    this.updateImagePrefetch?.controller.abort()
+  }
+
+  private async runUpdateImagePrefetch(image: string, signal: AbortSignal): Promise<boolean> {
+    const settings = getSettings()
+    const runner = settings.container.containerRunner as ContainerRunner
+    // Custom images, runners without a local image store, and a runtime that
+    // isn't ready yet (stopped, or still pulling its own image) are skipped.
+    if (
+      signal.aborted ||
+      !settings.container.agentImage.startsWith(AGENT_IMAGE_REGISTRY + ':') ||
+      !getContainerClientClass(runner).requiresLocalImage ||
+      this._readiness.status !== 'READY'
+    ) {
+      return false
+    }
+    if (await checkImageExists(runner, image)) return !signal.aborted
+    try {
+      if ((await getAvailableDiskSpace()) < MIN_IMAGE_DISK_SPACE_BYTES) return false
+    } catch {
+      return false
+    }
+
+    addErrorBreadcrumb({ category: 'container', message: 'Update image prefetch started', data: { image, runner } })
+    try {
+      await pullImage(runner, image, undefined, signal)
+      if (signal.aborted) throw new Error('Update image prefetch cancelled')
+      addErrorBreadcrumb({ category: 'container', message: 'Update image prefetch completed', data: { image, runner } })
+      return true
+    } catch (error) {
+      addErrorBreadcrumb({
+        category: 'container',
+        message: 'Update image prefetch failed or cancelled; removing it',
+        data: { image, runner, error: error instanceof Error ? error.message : String(error) },
+      })
+      await removeImage(runner, image)
+      return false
     }
   }
 }
