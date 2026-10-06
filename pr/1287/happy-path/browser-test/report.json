@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Agent successfully opened browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the expected response within the timeout.",
+  "steps": [
+    "Step 1 - Navigate to http://localhost:47891 — Successfully loaded the Gamut application home page showing the agent list.",
+    "Step 2 - Click on \"QA-20261006-005143-wysx\" agent in sidebar — Successfully navigated to the agent's chat interface with session page.",
+    "Step 3 - Type and send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was typed in the input field and sent successfully. Agent transitioned to \"working\" status.",
+    "Step 4 - Wait up to 3 minutes for response — Agent completed processing in approximately 5 seconds. Tool calls executed: ToolSearch (to find available tools), Open Browser (to navigate to https://example.com), and Close Browser (to clean up). Used 149,397 tokens and 3 tool calls.",
+    "Step 5 - Verify response mentions \"Example Domain\" — Agent response clearly states: \"The page title is \"Example Domain\". The page at https://example.com loaded normally, and I've closed the browser.\" The response explicitly mentions \"Example Domain\" as expected."
+  ],
+  "bugs": [],
+  "durationMs": 80668,
+  "sessionId": "46d54700-1b28-4f2d-85d3-59a77af79d3a",
+  "cost": {
+    "inputTokens": 470,
+    "outputTokens": 14244,
+    "cacheCreationTokens": 90343,
+    "cacheReadTokens": 1475578,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.332177
+  }
+}
