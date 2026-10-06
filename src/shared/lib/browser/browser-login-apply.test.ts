@@ -146,21 +146,22 @@ describe('applyBrowserLogin', () => {
 describe('clearSiteInAgentBrowser', () => {
   it('clears the site and all stored origins in an open browser', async () => {
     const client = fakeClient([])
-    await expect(clearSiteInAgentBrowser(client, 'example.com', ['https://auth.example.com'])).resolves.toBe(true)
+    const cookies = [{ name: 'sid', domain: 'idp.example.net', path: '/' }]
+    await expect(clearSiteInAgentBrowser(client, { site: 'example.com', origins: ['https://auth.example.com'], cookies })).resolves.toBe(true)
     expect(calledActions(client)).toEqual(['status', 'clear'])
     expect(JSON.parse((client.fetch.mock.calls[1][1] as RequestInit).body as string)).toEqual({
-      sessionId: 'sess-1', site: 'example.com', origins: ['https://auth.example.com'],
+      sessionId: 'sess-1', site: 'example.com', origins: ['https://auth.example.com'], cookies,
     })
   })
 
   it('reports an incomplete clear when an open tab of the site could not be cleared', async () => {
     const client = fakeClient([], undefined, [], { skipped: ['https://example.com'] })
-    await expect(clearSiteInAgentBrowser(client, 'example.com', ['https://auth.example.com'])).resolves.toBe(false)
+    await expect(clearSiteInAgentBrowser(client, { site: 'example.com', origins: ['https://auth.example.com'], cookies: [] })).resolves.toBe(false)
   })
 
   it('does nothing when the browser is closed', async () => {
     const client = fakeClient([], { active: false, sessionId: null, location: null })
-    await expect(clearSiteInAgentBrowser(client, 'example.com', [])).resolves.toBe(false)
+    await expect(clearSiteInAgentBrowser(client, { site: 'example.com', origins: [], cookies: [] })).resolves.toBe(false)
     expect(calledActions(client)).toEqual(['status'])
   })
 })

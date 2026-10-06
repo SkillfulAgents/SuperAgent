@@ -15,6 +15,7 @@ import {
   listManagedBrowserLogins,
   renameBrowserLogin,
   unmapBrowserLogin,
+  type BrowserLoginClearScope,
 } from '@shared/lib/services/browser-credential-service'
 import { Authenticated } from '../middleware/auth'
 
@@ -24,10 +25,11 @@ browserLogins.use('*', Authenticated())
 const renameBodySchema = z.object({ name: z.string().trim().min(1).max(200) }).strict()
 
 /** Sign the agent's open browser out of `site`; false when it could not be cleared. Call under the agent's lock. */
-async function clearSiteForAgent(agentSlug: string, site: string, origins: string[]): Promise<boolean> {
+async function clearSiteForAgent(agentSlug: string, scope: BrowserLoginClearScope): Promise<boolean> {
+  const { site } = scope
   const container = agentRegistry.get(agentSlug).container
   const cleared = container.status().status === 'running' &&
-    await clearSiteInAgentBrowser(container, site, origins).catch((error: unknown) => {
+    await clearSiteInAgentBrowser(container, scope).catch((error: unknown) => {
       console.error(`[browser-logins] Could not clear ${site} for ${agentSlug}:`, error instanceof Error ? error.message : error)
       return false
     })
@@ -58,7 +60,7 @@ browserLogins.delete('/:id', async (c) => {
   for (const agentSlug of new Set([...deleted.agentSlugs, ...agentsHoldingBrowserLogin(id)])) {
     const cleared = await withAgentBrowserLock(agentSlug, async () =>
       !browserHoldsLogin(agentSlug, deleted.site, id, deleted.agentSlugs.includes(agentSlug)) ||
-      clearSiteForAgent(agentSlug, deleted.site, deleted.origins))
+      clearSiteForAgent(agentSlug, deleted))
     if (!cleared) notCleared.push(agentSlug)
   }
   return c.json({ success: true, notCleared })
@@ -71,7 +73,7 @@ browserLogins.delete('/:id/agents/:agentSlug', async (c) => {
   const result = await withAgentBrowserLock(agentSlug, async () => {
     const login = await unmapBrowserLogin(getViewerUserId(c), c.req.param('id'), agentSlug)
     if (!login) return null
-    return { cleared: await clearSiteForAgent(agentSlug, login.site, login.origins) }
+    return { cleared: await clearSiteForAgent(agentSlug, login) }
   })
   if (!result) return c.json({ error: 'Saved login not found' }, 404)
   return c.json({ success: true, notCleared: result.cleared ? [] : [agentSlug] })

@@ -9,7 +9,7 @@ import {
   type BrowserCredential,
 } from '@shared/lib/db/schema'
 import { decryptBrowserBundle, encryptBrowserBundle } from '@shared/lib/browser/browser-vault-crypto'
-import type { SiteStorageBundle } from '../../../../agent-container/src/browser-storage-bundle'
+import type { SiteStorageBundle, StorageCookieKey } from '../../../../agent-container/src/browser-storage-bundle'
 
 function ownedBy(userId: string | null) {
   return userId === null ? undefined : eq(browserCredentials.userId, userId)
@@ -156,13 +156,26 @@ export async function markAgentBrowserLoginSynced(input: {
   return changesOf(result) > 0
 }
 
-/** Origins to clear when signing agents out; a bundle that no longer decrypts must not block deletion. */
-function storedOrigins(credential: BrowserCredential): string[] {
+/** What to clear when signing agents out of a saved login. */
+export interface BrowserLoginClearScope {
+  site: string
+  origins: string[]
+  /** The login's cookies, including those on other sites; keys only. */
+  cookies: StorageCookieKey[]
+}
+
+/** A bundle that no longer decrypts must not block deletion; the site itself is still cleared. */
+function clearScopeOf(credential: BrowserCredential): BrowserLoginClearScope {
   try {
-    return decryptBrowserBundle(credential.bundle, credential).origins.map((entry) => entry.origin)
+    const bundle = decryptBrowserBundle(credential.bundle, credential)
+    return {
+      site: credential.site,
+      origins: bundle.origins.map((entry) => entry.origin),
+      cookies: bundle.cookies.map(({ name, domain, path, partitionKey }) => ({ name, domain, path, partitionKey })),
+    }
   } catch (error) {
     console.error('[browser-vault] Could not decrypt saved login:', error instanceof Error ? error.message : 'unknown error')
-    return []
+    return { site: credential.site, origins: [], cookies: [] }
   }
 }
 
@@ -225,10 +238,10 @@ export async function renameBrowserLogin(userId: string | null, id: string, name
 export async function deleteBrowserLogin(
   userId: string | null,
   id: string,
-): Promise<{ site: string; origins: string[]; agentSlugs: string[] } | null> {
+): Promise<BrowserLoginClearScope & { agentSlugs: string[] } | null> {
   const credential = await getOwnedBrowserLogin(userId, id)
   if (!credential) return null
-  const origins = storedOrigins(credential)
+  const scope = clearScopeOf(credential)
   const mapped = await db
     .select({ agentSlug: agentBrowserCredentials.agentSlug })
     .from(agentBrowserCredentials)
@@ -236,21 +249,21 @@ export async function deleteBrowserLogin(
     .all()
   const result = await db.delete(browserCredentials).where(and(eq(browserCredentials.id, id), ownedBy(userId))).run()
   if (changesOf(result) === 0) return null
-  return { site: credential.site, origins, agentSlugs: mapped.map((row) => row.agentSlug) }
+  return { ...scope, agentSlugs: mapped.map((row) => row.agentSlug) }
 }
 
-/** Stop an agent using an owned credential. Returns the site and stored origins for clearing its browser. */
+/** Stop an agent using an owned credential. Returns what to clear in its browser. */
 export async function unmapBrowserLogin(
   userId: string | null, id: string, agentSlug: string,
-): Promise<{ site: string; origins: string[] } | null> {
+): Promise<BrowserLoginClearScope | null> {
   const credential = await getOwnedBrowserLogin(userId, id)
   if (!credential) return null
-  const origins = storedOrigins(credential)
+  const scope = clearScopeOf(credential)
   const result = await db
     .delete(agentBrowserCredentials)
     .where(and(eq(agentBrowserCredentials.agentSlug, agentSlug), eq(agentBrowserCredentials.credentialId, id)))
     .run()
-  return changesOf(result) > 0 ? { site: credential.site, origins } : null
+  return changesOf(result) > 0 ? scope : null
 }
 
 /** Credentials mapped to the agent whose latest version is not yet in its browser. */

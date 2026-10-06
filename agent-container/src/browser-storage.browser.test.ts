@@ -8,6 +8,7 @@ import {
   applyPendingSessionStorage,
   captureSiteStorage,
   clearPendingSessionStorage,
+  clearSiteStorage,
   connectCdp,
   restoreSiteStorage,
   runBrowserStorage,
@@ -398,6 +399,20 @@ describe('replacement and rollback scope', () => {
     const { cookies } = await cdp.send<{ cookies: Array<{ name: string; value: string; domain: string }> }>('Storage.getCookies')
     expect(cookies.filter((cookie) => cookie.domain === 'idp.localhost').map((cookie) => [cookie.name, cookie.value]))
       .toEqual([['sid', 'idp-a']])
+  })
+})
+
+describe('clearing a saved login', () => {
+  it('clears the login\'s cookies on other sites and leaves unrelated ones', async () => {
+    const cookie = (name: string, value: string, domain: string) => ({ name, value, domain, path: '/', httpOnly: false, secure: false })
+    await cdp.send('Storage.setCookies', {
+      cookies: [cookie('auth', 'account-a', `app.${SITE}`), cookie('sid', 'idp-a', 'idp.localhost'), cookie('prefs', 'dark', 'idp.localhost')],
+    })
+
+    await clearSiteStorage(cdp, SITE, [], [{ name: 'sid', domain: 'idp.localhost', path: '/' }])
+
+    const { cookies } = await cdp.send<{ cookies: Array<{ name: string; domain: string }> }>('Storage.getCookies')
+    expect(cookies.map((entry) => `${entry.domain} ${entry.name}`)).toEqual(['idp.localhost prefs'])
   })
 })
 

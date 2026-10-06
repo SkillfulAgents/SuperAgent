@@ -4,6 +4,7 @@ import {
   listOutdatedAgentBrowserLogins,
   mapAgentToBrowserLogin,
   markAgentBrowserLoginSynced,
+  type BrowserLoginClearScope,
 } from '@shared/lib/services/browser-credential-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { decryptBrowserBundle } from './browser-vault-crypto'
@@ -120,14 +121,14 @@ async function applyUnlocked(input: ApplyBrowserLoginInput): Promise<{ site: str
 
 const browserStatusSchema = z.object({ active: z.boolean(), sessionId: z.string().nullable() })
 
-/** Clear a site's cookies and web storage in an open browser. */
-export async function clearSiteInAgentBrowser(client: ContainerFetch, site: string, origins: string[]): Promise<boolean> {
+/** Clear a saved login's cookies and web storage in an open browser. */
+export async function clearSiteInAgentBrowser(client: ContainerFetch, { site, origins, cookies }: BrowserLoginClearScope): Promise<boolean> {
   const response = await client.fetch('/browser/status')
   if (!response.ok) return false
   const status = browserStatusSchema.parse(await response.json())
   if (!status.active || !status.sessionId) return false
   const result = z.object({ skipped: z.array(z.string()) }).parse(
-    await storageRequest(client, 'clear', { sessionId: status.sessionId, site, origins }),
+    await storageRequest(client, 'clear', { sessionId: status.sessionId, site, origins, cookies }),
   )
   return result.skipped.length === 0
 }

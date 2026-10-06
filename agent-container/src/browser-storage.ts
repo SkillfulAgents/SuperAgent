@@ -8,12 +8,14 @@ import {
   WRITE_SESSION_STORAGE_FUNCTION,
 } from './browser-storage-script'
 import {
+  cookieKeySchema,
   originSchema,
   siteSchema,
   siteStorageBundleSchema,
   type OriginStorage,
   type SiteStorageBundle,
   type StorageCookie,
+  type StorageCookieKey,
 } from './browser-storage-bundle'
 
 const CDP_TIMEOUT_MS = 15_000
@@ -107,7 +109,7 @@ export function toStorageCookie(cookie: CdpCookie): StorageCookie {
 }
 
 /** What identifies a cookie in the browser's jar; setting a cookie with the same key replaces it. */
-function cookieKey(cookie: Pick<StorageCookie, 'name' | 'domain' | 'path' | 'partitionKey'>): string {
+function cookieKey(cookie: StorageCookieKey): string {
   return JSON.stringify([cookie.domain, cookie.path, cookie.name, cookie.partitionKey?.topLevelSite ?? null, cookie.partitionKey?.hasCrossSiteAncestor ?? null])
 }
 
@@ -580,9 +582,14 @@ async function recover(cdp: CdpClient, rollback: Rollback): Promise<string> {
   return 'the previous state could not be put back or cleared'
 }
 
-export async function clearSiteStorage(cdp: CdpClient, site: string, storedOrigins: string[]): Promise<{ skipped: string[] }> {
+/**
+ * Sign the browser out of a saved login: the site's cookies and web storage,
+ * plus the login's cookies on other sites (e.g. an identity provider's).
+ */
+export async function clearSiteStorage(cdp: CdpClient, site: string, storedOrigins: string[], storedCookies: StorageCookieKey[] = []): Promise<{ skipped: string[] }> {
   forgetPendingSessionStorage(site)
-  const existing = await siteCookies(cdp, site)
+  const storedKeys = new Set(storedCookies.map(cookieKey))
+  const existing = (await allCookies(cdp)).filter((cookie) => hostBelongsToSite(cookie.domain, site) || storedKeys.has(cookieKey(cookie)))
   const pages = await listPages(cdp)
   const candidates = candidateOrigins(site, existing, await visitedUrls(cdp, pages), storedOrigins)
   if (existing.length > 0) await cdp.send('Storage.setCookies', { cookies: existing.map(expiredCookie) })
@@ -622,6 +629,7 @@ const restoreRequestSchema = z.object({
 
 const clearRequestSchema = siteRequestSchema.extend({
   origins: z.array(originSchema).max(100),
+  cookies: z.array(cookieKeySchema).max(5000),
 }).refine(({ site, origins }) => origins.every((origin) => hostBelongsToSite(new URL(origin).hostname, site)))
 
 export type BrowserStorageAction = 'baseline' | 'capture' | 'restore' | 'clear'
@@ -662,7 +670,7 @@ export async function runBrowserStorage(
   if (action === 'clear') {
     const parsed = clearRequestSchema.safeParse(rawBody)
     if (!parsed.success) return invalid
-    return run(parsed.data.sessionId, (cdp) => clearSiteStorage(cdp, parsed.data.site, parsed.data.origins))
+    return run(parsed.data.sessionId, (cdp) => clearSiteStorage(cdp, parsed.data.site, parsed.data.origins, parsed.data.cookies))
   }
   const parsed = siteRequestSchema.safeParse(rawBody)
   if (!parsed.success) return invalid
