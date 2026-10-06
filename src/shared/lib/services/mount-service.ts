@@ -5,11 +5,11 @@ import {
   readJsonFileStrict,
   writeJsonFileAtomic,
   withFileLock,
-  CorruptFileError,
 } from '@shared/lib/utils/file-storage'
 import { containerHost } from '@shared/lib/agent-actor'
 import { captureException } from '@shared/lib/error-reporting'
-import type { StoredVolume, VolumeSummary, VolumeSummaryWithHealth } from '@shared/lib/types/mount'
+import type { ContainerVolume, NotMountedReason, NotMountedVolume, StoredVolume, VolumeSummary, VolumeSummaryWithHealth } from '@shared/lib/types/mount'
+import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { instantiateVolume, prepareVolume } from '@shared/lib/volumes/volume-factory'
 import type { BaseMountableVolume } from '@shared/lib/volumes/base-mountable-volume'
 import { mountsFileSchema, rowIdentitySchema, storedVolumeRowSchema } from './mount-schema'
@@ -48,7 +48,7 @@ function rowIdentity(row: unknown): { id: string; name: string } | undefined {
  * Read the agent's mounts for READ-ONLY consumers (the mounts UI, health checks,
  * and CONTAINER START). Tolerant: an absent file is `[]`, and a corrupt/unreadable
  * file degrades to `[]` (logged + captured) rather than throwing — a bad
- * mounts.json must not brick `getMountsWithHealth` (which runs on every container
+ * mounts.json must not brick `listVolumes` (which runs on every container
  * start) or 500 the mounts route. This never writes, so degrading to `[]` is safe;
  * writes go through addMount/removeMount, which use the strict read and abort on
  * corruption instead of overwriting.
@@ -60,12 +60,9 @@ export async function getMounts(slug: string): Promise<StoredVolume[]> {
     if (skipped > 0) console.warn(`mounts.json for agent ${slug} has ${skipped} row(s) this version cannot read; leaving them out and keeping them in the file`)
     return volumes
   } catch (error) {
-    if (error instanceof CorruptFileError) {
-      console.error(`Corrupt mounts.json for agent ${slug}; treating as no mounts (NOT overwriting)`, error)
-      captureException(error, { tags: { area: 'mounts', op: 'read' }, extra: { agentSlug: slug } })
-      return []
-    }
-    throw error
+    console.error(`Unreadable mounts.json for agent ${slug}; treating as no mounts (NOT overwriting)`, error)
+    captureException(error, { tags: { area: 'mounts', op: 'read' }, extra: { agentSlug: slug } })
+    return []
   }
 }
 
@@ -117,13 +114,31 @@ export async function resolveVolume(slug: string, volumeId: string): Promise<Bas
   return row ? instantiateVolume(row) : null
 }
 
-// A volume is ok when it can be built and its root is a folder now.
-async function isMountable(volume: BaseMountableVolume<unknown> | null): Promise<boolean> {
-  if (!volume) return false
+async function rootProblem(volume: BaseMountableVolume<unknown>): Promise<NotMountedReason | null> {
   try {
-    return (await volume.stat('')).kind === 'directory'
-  } catch {
-    return false
+    return (await volume.stat('')).kind === 'directory' ? null : 'not found'
+  } catch (error) {
+    if (error instanceof WorkspaceFileError && error.code === 'not-found') return 'not found'
+    if (error instanceof WorkspaceFileError && error.code === 'not-accessible') return 'not accessible'
+    return 'unreadable'
+  }
+}
+
+// The card and the container start both read this, so they agree.
+async function judgeVolumes(slug: string): Promise<{ row: StoredVolume; volume: BaseMountableVolume<unknown> | null; reason: NotMountedReason | null }[]> {
+  return Promise.all((await getMounts(slug)).map(async (row) => {
+    const volume = instantiateVolume(row)
+    // The image drops the whole SUPERAGENT_VOLUMES list over an empty name.
+    const reason = row.name === '' ? 'invalid name' : volume ? await rootProblem(volume) : 'unreadable'
+    return { row, volume, reason }
+  }))
+}
+
+export async function listVolumes(slug: string): Promise<{ volumes: ContainerVolume[]; notMounted: NotMountedVolume[] }> {
+  const judged = await judgeVolumes(slug)
+  return {
+    volumes: judged.flatMap(({ row, reason }) => (reason === null ? [{ volumeId: row.id, name: row.name }] : [])),
+    notMounted: judged.flatMap(({ row, reason }) => (reason === null ? [] : [{ name: row.name, reason }])),
   }
 }
 
@@ -132,14 +147,8 @@ export function volumeSummary(row: StoredVolume, volume = instantiateVolume(row)
 }
 
 export async function getMountsWithHealth(slug: string): Promise<VolumeSummaryWithHealth[]> {
-  const mounts = await getMounts(slug)
-  return Promise.all(
-    mounts.map(async (m) => {
-      const volume = instantiateVolume(m)
-      return {
-        ...volumeSummary(m, volume),
-        health: (await isMountable(volume)) ? ('ok' as const) : ('missing' as const),
-      }
-    })
-  )
+  return (await judgeVolumes(slug)).map(({ row, volume, reason }) => ({
+    ...volumeSummary(row, volume),
+    health: reason === null ? ('ok' as const) : ('missing' as const),
+  }))
 }

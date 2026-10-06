@@ -45,7 +45,7 @@ describe('mounts.json reads — tolerant display, fail-closed writes', () => {
   })
 
   it('corrupt file → getMounts degrades to [] (tolerant) and does NOT overwrite', async () => {
-    // getMounts feeds read-only display + getMountsWithHealth (container start);
+    // getMounts feeds read-only display + listVolumes (container start);
     // a corrupt file must NOT throw (which used to brick the whole agent) — it
     // degrades to [] while leaving the bytes intact for recovery.
     const { getMounts } = await importService()
@@ -54,6 +54,21 @@ describe('mounts.json reads — tolerant display, fail-closed writes', () => {
     fs.writeFileSync(mountsPath('agent'), corrupt)
     expect(await getMounts('agent')).toEqual([])
     expect(fs.readFileSync(mountsPath('agent'), 'utf-8')).toBe(corrupt) // not clobbered
+  })
+
+  // Root ignores mode bits, so this needs an ordinary user.
+  it.skipIf(process.getuid?.() === 0)('an unreadable file → [] (a start survives) and does NOT overwrite', async () => {
+    const { listVolumes } = await importService()
+    makeAgentDir('agent')
+    const rows = JSON.stringify([{ id: 'v1', name: 'notes', type: 'local', config: { path: '/x' } }])
+    fs.writeFileSync(mountsPath('agent'), rows)
+    fs.chmodSync(mountsPath('agent'), 0)
+    try {
+      await expect(listVolumes('agent')).resolves.toEqual({ volumes: [], notMounted: [] })
+    } finally {
+      fs.chmodSync(mountsPath('agent'), 0o644)
+    }
+    expect(fs.readFileSync(mountsPath('agent'), 'utf-8')).toBe(rows)
   })
 
   it('getMountsWithHealth on a corrupt file → [] (does NOT throw → container start survives)', async () => {
