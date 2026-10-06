@@ -138,7 +138,7 @@ describe('browser tray save login', () => {
     renderTray()
 
     expect(screen.getByTestId('browser-tray-shared-notice')).toHaveTextContent(
-      '2 other members can use this agent. It will stay signed in to supabase.com with your account.',
+      '2 other members can use this agent. It will stay signed in to supabase.com with your account, and to any other site you signed in to on the way, such as Google.',
     )
   })
 
