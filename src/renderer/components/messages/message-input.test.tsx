@@ -137,9 +137,17 @@ const mockSettings = {
     ],
   },
 }
+let mockWarmStartEnabled = false
 vi.mock('@renderer/hooks/use-settings', () => ({
   useSettings: () => mockSettings,
   useModelSettings: () => mockSettings,
+  useWarmStartOnTypeEnabled: () => mockWarmStartEnabled,
+}))
+
+const mockStartAgent = vi.fn()
+vi.mock('@renderer/hooks/use-agents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/hooks/use-agents')>()),
+  useStartAgent: () => ({ mutate: mockStartAgent }),
 }))
 
 describe('MessageInput', () => {
@@ -152,6 +160,7 @@ describe('MessageInput', () => {
     mockMessages.length = 0
     mockSendMessage.isPending = false
     mockIsOnline = true
+    mockWarmStartEnabled = false
     mockRuntimeStatus.data.runtimeReadiness.status = 'READY'
     mockRuntimeStatus.isPending = false
     mockCreateSecret.isPending = false
@@ -416,6 +425,25 @@ describe('MessageInput', () => {
       await waitFor(() =>
         expect(mockSendMessage.mutate).toHaveBeenLastCalledWith(expect.objectContaining({ content: VOICE_MODE_EXITED_MESSAGE }), expect.anything()),
       )
+    })
+  })
+
+  describe('warm start on type', () => {
+    it('starts the agent container once on the first typed edit', async () => {
+      mockWarmStartEnabled = true
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(mockStartAgent).not.toHaveBeenCalled()
+
+      await userEvent.type(screen.getByTestId('message-input'), 'Hi')
+
+      await waitFor(() => expect(mockStartAgent).toHaveBeenCalledTimes(1))
+      expect(mockStartAgent).toHaveBeenCalledWith({ slug: 'agent-1', source: 'warm-start' }, expect.anything())
+    })
+
+    it('does not start the container when the setting is off', async () => {
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.type(screen.getByTestId('message-input'), 'Hi')
+      expect(mockStartAgent).not.toHaveBeenCalled()
     })
   })
 

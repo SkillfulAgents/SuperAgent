@@ -32,6 +32,8 @@ import { ChatComposerBox, FLOATING_COMPOSER_CLASS } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
 import { AgentDefaultFooter } from './agent-default-footer'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
+import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
+import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ComposerSnapshot } from '@renderer/lib/new-session-carryover'
@@ -180,6 +182,13 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     }, [onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
     submitDisabled: sendMessage.isPending || isOffline || !isRuntimeReady,
     draftKey: `session:${sessionId}`,
+  })
+
+  const warmStartEnabled = useWarmStartOnTypeEnabled()
+  useWarmStartOnType({
+    agentSlug,
+    message: composer.message,
+    enabled: warmStartEnabled && !isViewOnly,
   })
 
   const snapshotRef = useRef<ComposerSnapshot>({
