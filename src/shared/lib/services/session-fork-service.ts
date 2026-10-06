@@ -61,9 +61,6 @@ export async function forkSession(
   opts: ForkSessionOpts = {},
 ): Promise<ForkedSession> {
   const actor = agentRegistry.get(slug)
-  if (actor.sessions.isActive(sourceId)) {
-    throw new ForkSessionError(409, 'Session is currently running')
-  }
 
   const [known, metadataMap] = await Promise.all([
     actor.sessions.isKnown(sourceId),
@@ -87,7 +84,7 @@ export async function forkSession(
     forked = await actor.sessions.fork(sourceId)
   } catch (error) {
     if (error instanceof ContainerConflictError) {
-      throw new ForkSessionError(409, error.message)
+      throw new ForkSessionError(409, 'Session is currently running. Wait for it to finish, or restart the agent to pull the latest image.')
     }
     if (error instanceof ContainerNotFoundError) {
       throw new ForkSessionError(404, error.message)

@@ -2010,6 +2010,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   static scenarios = new Map<string, MockScenario>([
     // Slow response window for message-queueing tests (send mid-turn → queued)
     ['work slowly', new SlowWorkScenario()],
+    // Wide enough to fork a running turn before it finishes, even on a slow runner
+    ['work very slowly', new SlowWorkScenario(12000)],
     // Long compaction window: queue a message while the session is compacting
     ['compact slowly', new SlowCompactionScenario(10000)],
     // Onboarding sessions start on a cold agent, so their transcript lands

@@ -234,14 +234,10 @@ describe('forkSession', () => {
     )
   })
 
-  it('throws 409 without reading or booting when the source is mid-turn', async () => {
+  it('forks a source that is mid-turn', async () => {
     isSessionActive.mockReturnValue(true)
-    await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({
-      name: 'ForkSessionError',
-      status: 409,
-    })
-    expect(readSessionMetadata).not.toHaveBeenCalled()
-    expect(ensureRunning).not.toHaveBeenCalled()
+    await forkSession('test-agent', 'src-1')
+    expect(forkInContainer).toHaveBeenCalled()
   })
 
   it('throws 404 without booting when the source is unknown', async () => {
@@ -256,7 +252,10 @@ describe('forkSession', () => {
 
   it('maps a container conflict and a gone session', async () => {
     forkInContainer.mockRejectedValueOnce(new ContainerConflictError('busy'))
-    await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({ status: 409 })
+    await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({
+      status: 409,
+      message: 'Session is currently running. Wait for it to finish, or restart the agent to pull the latest image.',
+    })
 
     forkInContainer.mockRejectedValueOnce(new ContainerNotFoundError('Session not found'))
     await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({ status: 404 })

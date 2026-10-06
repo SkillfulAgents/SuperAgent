@@ -242,8 +242,6 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
       activity={{
         isActive: !!session.isActive,
         isAwaitingInput: !!session.isAwaitingInput,
-        // The list has no stream handle; a session mid-stream is also isActive.
-        isStreaming: false,
       }}
     >
       {row}

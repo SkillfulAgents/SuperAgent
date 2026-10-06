@@ -244,10 +244,10 @@ vi.mock('@renderer/components/sessions/session-context-menu', () => ({
     activity,
   }: {
     children: React.ReactNode
-    activity: { isActive: boolean; isAwaitingInput: boolean; isStreaming: boolean }
+    activity: { isActive: boolean; isAwaitingInput: boolean }
   }) => (
     isValidElement(children)
-      ? cloneElement(children as ReactElement, { 'data-is-active': String(activity.isActive || activity.isStreaming) } as any)
+      ? cloneElement(children as ReactElement, { 'data-is-active': String(activity.isActive) } as any)
       : <>{children}</>
   ),
 }))

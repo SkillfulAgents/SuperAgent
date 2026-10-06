@@ -9284,13 +9284,6 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
     expect(mockEnsureRunning).not.toHaveBeenCalled()
   })
 
-  it('409s while the source is active', async () => {
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
-    const res = await fork()
-    expect(res.status).toBe(409)
-    expect(mockForkSession).not.toHaveBeenCalled()
-  })
-
   it('maps a container conflict to 409', async () => {
     mockForkSession.mockRejectedValue(new ContainerConflictError('busy'))
     const res = await fork()
