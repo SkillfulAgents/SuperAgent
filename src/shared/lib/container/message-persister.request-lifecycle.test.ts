@@ -524,6 +524,13 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(userInputRequestManager.getOpenRequest('tool-captcha')?.payload.browserContext).toBeDefined()
     })
     expect(userInputRequestManager.getOpenRequest('tool-captcha')?.payload).not.toHaveProperty('loginUrl')
+    await vi.waitFor(() => {
+      expect(mockClient.fetch).toHaveBeenCalledWith('/browser/storage/baseline', expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ sessionId: SESSION_ID, site: 'example.com' }),
+      }))
+    })
+    expect(vi.mocked(mockClient.fetch).mock.calls.filter(([path]) => path === '/browser/storage/baseline')).toHaveLength(1)
   })
 
   // ==========================================================================

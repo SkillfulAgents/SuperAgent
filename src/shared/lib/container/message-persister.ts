@@ -10,6 +10,7 @@ import type { RequestFileInput } from '@shared/lib/tool-definitions/request-file
 import type { RequestConnectedAccountInput } from '@shared/lib/tool-definitions/request-connected-account'
 import type { RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request-remote-mcp'
 import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/request-browser-input'
+import { siteOf } from '@shared/lib/browser/site'
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { userInputRequestManager, type UserInputRequestTransition } from '@shared/lib/user-input/request-manager'
@@ -5768,6 +5769,17 @@ ${continuation}`
             browserContext: { url: context.url, capturedAt: Date.now() },
             ...(login ? { loginUrl: context.url } : {}),
           }, agentSlug)
+          // Fingerprint cookies before the user signs in, so saving the login can
+          // keep other sites' cookies the sign-in changed (e.g. an identity provider's).
+          const site = login ? siteOf(context.url) : null
+          if (site) {
+            const baseline = await client.fetch('/browser/storage/baseline', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sessionId, site }),
+            })
+            if (!baseline?.ok) throw new Error(`Sign-in baseline failed with ${baseline?.status}`)
+          }
         }).catch((error: unknown) => {
           console.warn(
             '[MessagePersister] Failed to capture browser input context:',

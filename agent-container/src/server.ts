@@ -2743,7 +2743,7 @@ async function getBrowserWsUrl(): Promise<string> {
 
 // Host-only browser storage endpoints. Captures and restores carry live
 // session credentials, so they refuse to run without host authentication.
-for (const action of ['capture', 'restore', 'clear'] as const) {
+for (const action of ['baseline', 'capture', 'restore', 'clear'] as const) {
   app.post(`/browser/storage/${action}`, async (c) => {
     if (!hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503);
     c.header('Cache-Control', 'no-store');
