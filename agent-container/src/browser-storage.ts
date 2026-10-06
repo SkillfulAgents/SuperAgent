@@ -399,6 +399,10 @@ export async function captureSiteStorage(cdp: CdpClient, site: string, extraOrig
 // keeps its entries here until the agent's browser shows that origin.
 const pendingSessionStorage = new Map<string, Array<[string, string]>>()
 
+function pendingSessionStorageOf(site: string): Array<[string, Array<[string, string]>]> {
+  return [...pendingSessionStorage].filter(([origin]) => hostBelongsToSite(new URL(origin).hostname, site))
+}
+
 function forgetPendingSessionStorage(site: string): void {
   for (const origin of pendingSessionStorage.keys()) {
     if (hostBelongsToSite(new URL(origin).hostname, site)) pendingSessionStorage.delete(origin)
@@ -507,6 +511,8 @@ interface Rollback {
   backup: SiteStorageBundle
   /** Each open tab's own sessionStorage; the bundle keeps only one tab's per origin. */
   tabs: Array<{ targetId: string; origin: string; entries: Array<[string, string]> }>
+  /** sessionStorage of the previous login still waiting for a tab of its origin. */
+  pending: Array<[string, Array<[string, string]>]>
   /** The bundle's cookies outside the site, and the cookies they replace. */
   crossSiteCookies: StorageCookie[]
   replacedCookies: StorageCookie[]
@@ -521,6 +527,7 @@ interface Rollback {
  */
 export async function restoreSiteStorage(cdp: CdpClient, bundle: SiteStorageBundle): Promise<RestoreResult> {
   const backup = await captureSiteStorage(cdp, bundle.site, bundle.origins.map((origin) => origin.origin))
+  const pending = pendingSessionStorageOf(bundle.site)
   const scope = new Set(backup.origins.map((origin) => origin.origin))
   const tabs: Rollback['tabs'] = []
   for (const page of await listPages(cdp)) {
@@ -538,7 +545,7 @@ export async function restoreSiteStorage(cdp: CdpClient, bundle: SiteStorageBund
     return await writeSiteStorage(cdp, bundle)
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'unknown error'
-    throw new Error(`${reason}; ${await recover(cdp, { backup, tabs, crossSiteCookies, replacedCookies })}`)
+    throw new Error(`${reason}; ${await recover(cdp, { backup, tabs, pending, crossSiteCookies, replacedCookies })}`)
   }
 }
 
@@ -548,7 +555,7 @@ function isLossy(backup: SiteStorageBundle): boolean {
 }
 
 async function recover(cdp: CdpClient, rollback: Rollback): Promise<string> {
-  const { backup, tabs, crossSiteCookies, replacedCookies } = rollback
+  const { backup, tabs, pending, crossSiteCookies, replacedCookies } = rollback
   const scope = backup.origins.map((origin) => origin.origin)
   const putBackCrossSiteCookies = async () => {
     if (crossSiteCookies.length > 0) await cdp.send('Storage.setCookies', { cookies: crossSiteCookies.map(expiredCookie) })
@@ -560,6 +567,7 @@ async function recover(cdp: CdpClient, rollback: Rollback): Promise<string> {
     await writeSiteStorage(cdp, backup, scope)
     for (const tab of tabs) await inTab(cdp, tab.targetId, tab.origin, WRITE_SESSION_STORAGE_FUNCTION, [tab.entries])
     await putBackCrossSiteCookies()
+    for (const [origin, entries] of pending) pendingSessionStorage.set(origin, entries)
   })) return 'the previous state was put back'
   if (await succeeded(async () => {
     await writeSiteStorage(cdp, { ...backup, cookies: [], origins: [] }, scope)

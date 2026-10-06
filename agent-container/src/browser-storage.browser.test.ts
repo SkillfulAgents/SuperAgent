@@ -281,6 +281,21 @@ describe('pending sessionStorage', () => {
     expect(await applyPendingSessionStorage(navigatesFirst)).toEqual([])
     expect(await evaluate(tab, `sessionStorage.getItem('token')`)).toBeNull()
   })
+
+  it('keeps the previous login\'s pending entries when a later restore rolls back', async () => {
+    await restoreSiteStorage(cdp, pendingBundle())
+    const incoming = bundleFor([
+      localToken(`fresh.${SITE}`, 'account-c'),
+      { ...localToken(`app.${SITE}`, 'account-c'), sessionStorage: [['token', 'account-c']] },
+    ])
+
+    await expect(restoreSiteStorage(failingWrites(2, 2), incoming)).rejects.toThrow('injected write failure; the previous state was put back')
+
+    const tab = await openTab(`app.${SITE}`)
+    expect(await applyPendingSessionStorage(cdp)).toEqual([originOf(`app.${SITE}`)])
+    await waitForLoad(tab, `${originOf(`app.${SITE}`)}/app`)
+    expect(await evaluate(tab, `sessionStorage.getItem('token')`)).toBe('secret')
+  })
 })
 
 describe('replacement and rollback scope', () => {
