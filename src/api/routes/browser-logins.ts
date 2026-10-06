@@ -3,7 +3,13 @@ import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getViewerUserId } from '@shared/lib/auth/ownership'
-import { clearSiteInAgentBrowser, withAgentBrowserLock } from '@shared/lib/browser/browser-login-apply'
+import {
+  agentsHoldingBrowserLogin,
+  browserHoldsLogin,
+  clearSiteInAgentBrowser,
+  forgetInstalledBrowserLogin,
+  withAgentBrowserLock,
+} from '@shared/lib/browser/browser-login-apply'
 import {
   deleteBrowserLogin,
   listManagedBrowserLogins,
@@ -20,11 +26,13 @@ const renameBodySchema = z.object({ name: z.string().trim().min(1).max(200) }).s
 /** Sign the agent's open browser out of `site`; false when it could not be cleared. Call under the agent's lock. */
 async function clearSiteForAgent(agentSlug: string, site: string, origins: string[]): Promise<boolean> {
   const container = agentRegistry.get(agentSlug).container
-  return container.status().status === 'running' &&
+  const cleared = container.status().status === 'running' &&
     await clearSiteInAgentBrowser(container, site, origins).catch((error: unknown) => {
       console.error(`[browser-logins] Could not clear ${site} for ${agentSlug}:`, error instanceof Error ? error.message : error)
       return false
     })
+  if (cleared) forgetInstalledBrowserLogin(agentSlug, site)
+  return cleared
 }
 
 // GET /api/browser-logins - The caller's saved browser logins (metadata only)
@@ -40,12 +48,17 @@ browserLogins.patch('/:id', zValidator('json', renameBodySchema), async (c) => {
 
 // DELETE /api/browser-logins/:id - Delete and sign the agents using it out of the site
 browserLogins.delete('/:id', async (c) => {
-  const deleted = await deleteBrowserLogin(getViewerUserId(c), c.req.param('id'))
+  const id = c.req.param('id')
+  const deleted = await deleteBrowserLogin(getViewerUserId(c), id)
   if (!deleted) return c.json({ error: 'Saved login not found' }, 404)
-  // The mappings are gone, so a sync queued after this clear finds nothing to restore; one in flight finishes first.
+  // The mappings are gone, so a sync queued after this clear finds nothing to restore. Work already queued on an
+  // agent (a sync, or an apply of this login or of a replacement) finishes first; the clear then runs only if the
+  // agent's browser still holds this login.
   const notCleared: string[] = []
-  for (const agentSlug of deleted.agentSlugs) {
-    const cleared = await withAgentBrowserLock(agentSlug, () => clearSiteForAgent(agentSlug, deleted.site, deleted.origins))
+  for (const agentSlug of new Set([...deleted.agentSlugs, ...agentsHoldingBrowserLogin(id)])) {
+    const cleared = await withAgentBrowserLock(agentSlug, async () =>
+      !browserHoldsLogin(agentSlug, deleted.site, id, deleted.agentSlugs.includes(agentSlug)) ||
+      clearSiteForAgent(agentSlug, deleted.site, deleted.origins))
     if (!cleared) notCleared.push(agentSlug)
   }
   return c.json({ success: true, notCleared })

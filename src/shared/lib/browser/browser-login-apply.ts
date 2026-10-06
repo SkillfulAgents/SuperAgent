@@ -28,6 +28,35 @@ export function withAgentBrowserLock<T>(agentSlug: string, work: () => Promise<T
   return run
 }
 
+// Which saved login each agent's browser last received for a site, and applies
+// still running, so deleting a login clears exactly the browsers holding it.
+const installedLogins = new Map<string, string>()
+const appliesInFlight = new Set<{ agentSlug: string; credentialId: string }>()
+const installedKey = (agentSlug: string, site: string) => `${agentSlug}\0${site}`
+
+/** Agents whose browser may hold `credentialId` without a mapping: applies still running, or written without linking. */
+export function agentsHoldingBrowserLogin(credentialId: string): string[] {
+  const agents = new Set([...appliesInFlight].filter((apply) => apply.credentialId === credentialId).map((apply) => apply.agentSlug))
+  for (const [key, installed] of installedLogins) {
+    if (installed === credentialId) agents.add(key.split('\0')[0])
+  }
+  return [...agents]
+}
+
+/**
+ * Whether the agent's browser still holds `credentialId` for `site`. Call
+ * under the agent's lock. Without a record since this process started, the
+ * agent's mapping at deletion time (`wasMapped`) is the best answer.
+ */
+export function browserHoldsLogin(agentSlug: string, site: string, credentialId: string, wasMapped: boolean): boolean {
+  const installed = installedLogins.get(installedKey(agentSlug, site))
+  return installed === undefined ? wasMapped : installed === credentialId
+}
+
+export function forgetInstalledBrowserLogin(agentSlug: string, site: string): void {
+  installedLogins.delete(installedKey(agentSlug, site))
+}
+
 function logError(message: string, error: unknown): void {
   console.error(`[browser-vault] ${message}:`, error instanceof Error ? error.message : 'unknown error')
 }
@@ -49,7 +78,10 @@ async function reloadPage(client: ContainerFetch, sessionId: string): Promise<vo
  * has the login but the mapping could not be stored.
  */
 export function applyBrowserLogin(input: ApplyBrowserLoginInput): Promise<{ site: string; linked: boolean }> {
-  return withAgentBrowserLock(input.agentSlug, () => applyUnlocked(input))
+  // Registered before the credential is read, so a deletion that lands meanwhile sees this agent.
+  const apply = { agentSlug: input.agentSlug, credentialId: input.credentialId }
+  appliesInFlight.add(apply)
+  return withAgentBrowserLock(input.agentSlug, () => applyUnlocked(input)).finally(() => appliesInFlight.delete(apply))
 }
 
 interface ApplyBrowserLoginInput {
@@ -70,6 +102,7 @@ async function applyUnlocked(input: ApplyBrowserLoginInput): Promise<{ site: str
   const bundle = decryptBrowserBundle(credential.bundle, credential)
 
   await storageRequest(input.client, 'restore', { sessionId: input.sessionId, bundle })
+  installedLogins.set(installedKey(input.agentSlug, site), credential.id)
 
   // Restore changes storage only; the open page still renders the signed-out state until reloaded.
   await reloadPage(input.client, input.sessionId).catch((error: unknown) => {
@@ -127,6 +160,7 @@ async function runSync(client: ContainerFetch, agentSlug: string, sessionId: str
       const bundle = decryptBrowserBundle(credential.bundle, credential)
       // Restore rolls a failed write back in the container, so a failure leaves the previous login, not a mix.
       await storageRequest(client, 'restore', { sessionId, bundle })
+      installedLogins.set(installedKey(agentSlug, credential.site), credential.id)
       applied++
       // Updates the mapping only if it still exists; a sync never re-creates one.
       await markAgentBrowserLoginSynced({ agentSlug, credentialId: credential.id, site: credential.site, version: credential.version })
