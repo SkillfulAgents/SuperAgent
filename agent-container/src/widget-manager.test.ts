@@ -342,6 +342,23 @@ describe('widgetManager', () => {
     expect(spawned.filter((c) => c[1] === 'run')).toHaveLength(2)
   })
 
+  it('installs into an empty node_modules older than package.json before the script runs', async () => {
+    const dir = seedArtifact('woken', { script: 'bun run widget.ts', html: '<p/>', dependencies: { dayjs: '^1' } })
+    // A cloud VM wakes with an empty local node_modules stamped at epoch.
+    fs.mkdirSync(path.join(dir, 'node_modules'))
+    fs.utimesSync(path.join(dir, 'node_modules'), 0, 0)
+    const spawned: string[][] = []
+    spawnHolder.impl = (command, args) => {
+      spawned.push([command, ...args])
+      if (args[0] === 'install') {
+        return fakeProcess(0, { onSpawn: () => fs.utimesSync(path.join(dir, 'node_modules'), new Date(), new Date()) })
+      }
+      return scriptWriting(dir, '<p>x</p>', { validUntil: null })()
+    }
+    await widgetManager.refreshWidget('woken')
+    expect(spawned.map((c) => c[1])).toEqual(['install', 'run'])
+  })
+
   it('a scriptless widget never expires', async () => {
     seedArtifact('static', { html: '<p>static</p>' })
     spawnHolder.impl = () => {

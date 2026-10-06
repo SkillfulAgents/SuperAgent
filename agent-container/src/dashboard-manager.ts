@@ -120,6 +120,18 @@ export function newestMtimeMs(
   return newest
 }
 
+// Cloud VMs wake with an empty node_modules stamped older than package.json,
+// so this reads as stale there even though the directory exists.
+export function nodeModulesUpToDate(dir: string): boolean {
+  try {
+    const nmStat = fs.statSync(path.join(dir, 'node_modules'))
+    const pkgStat = fs.statSync(path.join(dir, 'package.json'))
+    return nmStat.isDirectory() && nmStat.mtimeMs >= pkgStat.mtimeMs
+  } catch {
+    return false
+  }
+}
+
 export function validateSlug(slug: string): void {
   if (!SLUG_REGEX.test(slug)) {
     throw new Error(`Invalid dashboard slug: "${slug}". Must be lowercase alphanumeric with hyphens, not starting/ending with hyphen.`)
@@ -474,17 +486,9 @@ class DashboardManager {
     onInstallStart: () => void,
   ): Promise<void> {
     if (!force) {
-      const nodeModules = path.join(dir, 'node_modules')
-      const pkgJson = path.join(dir, 'package.json')
-      try {
-        const nmStat = fs.statSync(nodeModules)
-        const pkgStat = fs.statSync(pkgJson)
-        if (nmStat.isDirectory() && nmStat.mtimeMs >= pkgStat.mtimeMs) {
-          logStream?.write('[DashboardManager] node_modules up-to-date, skipping bun install\n')
-          return
-        }
-      } catch {
-        // node_modules doesn't exist or stat failed — need install
+      if (nodeModulesUpToDate(dir)) {
+        logStream?.write('[DashboardManager] node_modules up-to-date, skipping bun install\n')
+        return
       }
       // Boot-path install with a lockfile present: try --frozen-lockfile first
       // so the install is resolution-free and deterministic. If the lockfile

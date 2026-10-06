@@ -2,7 +2,7 @@ import { spawn } from 'child_process'
 import { createHash } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
-import { ARTIFACTS_DIR, validateSlug, truncateOversizedLog, BUN_INSTALL_NETWORK_CONCURRENCY } from './dashboard-manager'
+import { ARTIFACTS_DIR, validateSlug, truncateOversizedLog, BUN_INSTALL_NETWORK_CONCURRENCY, nodeModulesUpToDate } from './dashboard-manager'
 import { readArtifactShapeSync, type ArtifactShape } from './artifact-kind'
 import { notifyWidgetSnapshotReady } from './host-events'
 import { rasterizeWidget } from './widget-rasterizer'
@@ -211,8 +211,9 @@ class WidgetManager {
         stashed = await stashHtml(htmlPath, stashPath)
         // The script may import the artifact's own dependencies (a dashboard's
         // data helpers); a widget-only artifact that declares deps has never
-        // had them installed by a dashboard start.
-        if (manifest.hasDependencies && !fs.existsSync(path.join(dir, 'node_modules'))) {
+        // had them installed by a dashboard start, and a dashboard woken with a
+        // fresh dist/ serves without installing.
+        if (manifest.hasDependencies && !nodeModulesUpToDate(dir)) {
           const install = await this.runProcess(dir, slug, ['bun', 'install', `--network-concurrency=${BUN_INSTALL_NETWORK_CONCURRENCY}`], 120, log)
           if (!install.ok) error = `bun install failed before the refresh script: ${install.error}`
         }
