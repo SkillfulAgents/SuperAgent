@@ -228,9 +228,10 @@ describe('buildSlackSystemPrompt', () => {
     }
   })
 
-  it('includes conversational framing (concise replies and normal capabilities)', async () => {
+  it('includes conversational framing (concise replies, no Mermaid, normal capabilities)', async () => {
     const prompt = buildSlackSystemPrompt({ chatId: 'D0AAA111', userName: 'Iddo Gino' })
     expect(prompt).toContain('Keep responses concise and conversational')
+    expect(prompt).toContain('Mermaid diagrams do not render here')
     expect(prompt).toContain(NORMAL_CAPABILITIES)
   })
 })
