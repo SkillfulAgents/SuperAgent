@@ -25,6 +25,7 @@ import { computerUseTools } from './tools/computer-use';
 import { fileHooks, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
 import { promptDate } from './prompt-date';
+import { mountedVolumePaths } from './volume-mounts';
 import { prepareResumeDiagnostics } from './resume-diagnostics';
 
 /**
@@ -388,7 +389,11 @@ export function buildSystemPromptVars(
   const remoteMcps = remoteMcpViews();
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
-  const mountPaths = parseMountPaths(process.env.SUPERAGENT_MOUNTS);
+  const mountPaths = [
+    // TODO: delete SUPERAGENT_MOUNTS, with parseMountPaths and its tests, once every mount moves to SUPERAGENT_VOLUMES.
+    ...parseMountPaths(process.env.SUPERAGENT_MOUNTS),
+    ...mountedVolumePaths(),
+  ];
   const today = promptDate();
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
