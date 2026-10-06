@@ -1096,13 +1096,52 @@ describe('pre-install updates', () => {
     await flush()
     const token = mockAutoUpdater.downloadUpdate.mock.calls[0][0] as MockCancellationToken
 
-    await handlers['cancel-update-preinstall']()
+    const cancelled = handlers['cancel-update-preinstall']()
     appDownload.reject(new Error('cancelled'))
-    await flush()
+    await cancelled
 
     expect(token.cancelled).toBe(true)
     expect(mockContainerHost.cancelUpdateImagePrefetch).toHaveBeenCalled()
     expect(getStatus()).toMatchObject({ state: 'available', version: '0.2.11' })
+  })
+
+  it('offers the restart once the app is downloaded even if the image pull never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      mockAutoUpdater.downloadUpdate.mockResolvedValue(undefined)
+      mockContainerHost.prefetchUpdateImage.mockReturnValue(new Promise(() => {}))
+
+      const check = handlers['check-for-updates']()
+      await vi.advanceTimersByTimeAsync(0)
+      await check
+      await vi.advanceTimersByTimeAsync(0)
+      expect(getStatus().state).not.toBe('downloaded')
+
+      await vi.advanceTimersByTimeAsync(15 * 60 * 1000)
+      expect(getStatus()).toMatchObject({ state: 'downloaded', version: '0.2.11' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a newer version waits for the cancelled download to settle before downloading', async () => {
+    const first = deferred<void>()
+    mockAutoUpdater.downloadUpdate.mockReturnValueOnce(first.promise).mockResolvedValue(undefined)
+
+    await handlers['check-for-updates']()
+    await flush()
+    setupReleases({ currentVersion: '0.2.5', latestRC: null, latestStable: '0.2.12' })
+    await handlers['check-for-updates']()
+    await flush()
+
+    const firstToken = mockAutoUpdater.downloadUpdate.mock.calls[0][0] as MockCancellationToken
+    expect(firstToken.cancelled).toBe(true)
+    expect(mockAutoUpdater.downloadUpdate).toHaveBeenCalledTimes(1)
+
+    first.reject(new Error('cancelled'))
+    await flush()
+    expect(mockAutoUpdater.downloadUpdate).toHaveBeenCalledTimes(2)
+    expect(getStatus()).toMatchObject({ state: 'downloaded', version: '0.2.12' })
   })
 
   it('a later check for the same version restores the finished state instead of starting again', async () => {

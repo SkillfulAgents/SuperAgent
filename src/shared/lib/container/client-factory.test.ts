@@ -503,7 +503,7 @@ describe('pullImage stall watchdog', () => {
     await vi.advanceTimersByTimeAsync(PULL_STALL_TIMEOUT_MS + 1)
     await assertion
 
-    expect(mockKillWSL2PullProcesses).toHaveBeenCalledOnce()
+    expect(mockKillWSL2PullProcesses).toHaveBeenCalledExactlyOnceWith('ghcr.io/acme/agent:stall-1')
     expect(proc.kill).toHaveBeenCalled()
     expect(mockCaptureException).toHaveBeenCalledOnce()
     expect(mockCaptureException.mock.calls[0][1]).toMatchObject({

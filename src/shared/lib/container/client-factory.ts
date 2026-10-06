@@ -81,15 +81,15 @@ const ALL_RUNNERS: {
    * Kill pull processes that outlive the host-side CLI process (e.g. nerdctl
    * inside the WSL2 distro survives its wsl.exe parent and keeps holding
    * containerd's ingest lock, wedging every later pull of that image).
-   * Invoked by the stall watchdog before killing the local process.
+   * Invoked by the stall watchdog and on abort before killing the local process.
    */
-  killStalledPull?: () => Promise<void>
+  killStalledPull?: (image: string) => Promise<void>
 }[] = [
   { name: 'apple-container', cliCommand: 'container', isEligible: () => AppleContainerClient.isEligible(), isAvailable: () => AppleContainerClient.isAvailable(), isRunning: () => AppleContainerClient.isRunning(), shutdownRuntime: () => stopAppleContainerRuntime() },
   { name: 'docker', cliCommand: 'docker', isEligible: () => DockerContainerClient.isEligible(), isAvailable: () => DockerContainerClient.isAvailable(), isRunning: () => DockerContainerClient.isRunning() },
   { name: 'podman', cliCommand: 'podman', isEligible: () => PodmanContainerClient.isEligible(), isAvailable: () => PodmanContainerClient.isAvailable(), isRunning: () => PodmanContainerClient.isRunning() },
   { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), reconcileRuntimeState: () => LimaContainerClient.reconcileRuntimeState(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm() },
-  { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro(), pullStallTimeoutMs: PULL_STALL_TIMEOUT_MS, killStalledPull: () => killWSL2PullProcesses() },
+  { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro(), pullStallTimeoutMs: PULL_STALL_TIMEOUT_MS, killStalledPull: (image) => killWSL2PullProcesses(image) },
   { name: 'kubernetes', cliCommand: 'kubernetes', isEligible: () => PlatformK8sRuntimeClient.isEligible(), isAvailable: () => PlatformK8sRuntimeClient.isAvailable(), isRunning: () => PlatformK8sRuntimeClient.isRunning() },
   { name: 'lambda-microvm', cliCommand: 'lambda-microvm', isEligible: () => LambdaMicroVmRuntimeClient.isEligible(), isAvailable: () => LambdaMicroVmRuntimeClient.isAvailable(), isRunning: () => LambdaMicroVmRuntimeClient.isRunning() },
 ]
@@ -715,7 +715,7 @@ function doPullImage(
       let killTimer: ReturnType<typeof setTimeout> | undefined
       try {
         await Promise.race([
-          Promise.resolve(runnerEntry?.killStalledPull?.()),
+          Promise.resolve(runnerEntry?.killStalledPull?.(image)),
           new Promise<never>((_, rejectTimeout) => {
             killTimer = setTimeout(
               () => rejectTimeout(new Error(`killStalledPull timed out after ${KILL_STALLED_PULL_TIMEOUT_MS}ms`)),

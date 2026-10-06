@@ -5,6 +5,7 @@ import path from 'path'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { containerHost } from '@shared/lib/agent-actor'
+import type { CancellationToken } from 'electron-updater'
 
 export interface UpdateStatus {
   state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -30,7 +31,14 @@ let runIsUserVisible = false
 
 // The update being pre-installed in the background: the app download plus a
 // pre-pull of its agent image. In memory only, so nothing outlives the process.
-type Preinstall = { version: string; token: { cancel(): void }; progress: number; appDownloaded: boolean; finished: boolean }
+type Preinstall = {
+  version: string
+  token: CancellationToken
+  download: Promise<unknown> | null
+  progress: number
+  appDownloaded: boolean
+  finished: boolean
+}
 let preinstall: Preinstall | null = null
 // Serializes starts, so checks finishing back to back can't start the same pre-install twice.
 let preinstallStart: Promise<void> = Promise.resolve()
@@ -38,6 +46,10 @@ let preinstallStart: Promise<void> = Promise.resolve()
 // Run an automatic check ~30s after init (let the app settle first), then every 4h.
 const INITIAL_CHECK_DELAY_MS = 30_000
 const RECURRING_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
+
+// Most runners have no pull stall watchdog, so a wedged image pull must not hold
+// back a downloaded update forever. Past this, the image keeps pulling in the background.
+const PREINSTALL_IMAGE_WAIT_MS = 15 * 60 * 1000
 
 // Hard ceiling on a single check. electron-updater can hang silently — no
 // 'error' event, no resolution — on flaky networks (e.g. a check fired right
@@ -164,7 +176,7 @@ async function runUpdateCheck({ silent }: { silent: boolean }): Promise<void> {
 /**
  * When pre-install is on, download the available update and pre-pull its
  * agent image in the background. "Restart to update" appears once both
- * settle. A failed image pull rolls itself back and the update is still
+ * settle, or PREINSTALL_IMAGE_WAIT_MS after the app download. A failed image pull rolls itself back and the update is still
  * offered (the image is then pulled after the restart, as without
  * pre-install); a failed app download rolls back both.
  */
@@ -191,7 +203,7 @@ async function startPreinstallIfWanted(): Promise<void> {
   // A newer version replaces the one being pre-installed.
   await cancelPreinstall({ restoreStatus: false })
   const { CancellationToken } = await import('electron-updater')
-  const entry: Preinstall = { version, token: new CancellationToken(), progress: 0, appDownloaded: false, finished: false }
+  const entry: Preinstall = { version, token: new CancellationToken(), download: null, progress: 0, appDownloaded: false, finished: false }
   preinstall = entry
   void runPreinstall(entry)
 }
@@ -202,7 +214,9 @@ async function runPreinstall(entry: Preinstall): Promise<void> {
   const imageReady = containerHost.prefetchUpdateImage(version)
   try {
     const autoUpdater = await getAutoUpdater()
-    await autoUpdater.downloadUpdate(entry.token)
+    if (preinstall !== entry) return
+    entry.download = autoUpdater.downloadUpdate(entry.token)
+    await entry.download
     entry.appDownloaded = true
   } catch {
     // electron-updater already removed its partial download (and reported real errors).
@@ -213,10 +227,15 @@ async function runPreinstall(entry: Preinstall): Promise<void> {
     }
     return
   }
-  const imageOk = await imageReady
+  let waitTimer: NodeJS.Timeout | undefined
+  const image = await Promise.race([
+    imageReady.then((ok) => (ok ? 'ready' : 'failed')),
+    new Promise<string>((resolve) => { waitTimer = setTimeout(() => resolve('still pulling'), PREINSTALL_IMAGE_WAIT_MS) }),
+  ])
+  clearTimeout(waitTimer)
   if (preinstall !== entry) return
   entry.finished = true
-  addErrorBreadcrumb({ category: 'auto-updater', message: 'Pre-install finished', data: { version, imageOk } })
+  addErrorBreadcrumb({ category: 'auto-updater', message: 'Pre-install finished', data: { version, image } })
   setStatus({ state: 'downloaded', version })
 }
 
@@ -226,7 +245,9 @@ async function cancelPreinstall({ restoreStatus }: { restoreStatus: boolean }): 
   if (!entry) return
   preinstall = null
   entry.token.cancel()
-  await containerHost.cancelUpdateImagePrefetch()
+  // electron-updater hands a new downloadUpdate() the in-flight promise, so the
+  // cancelled download must settle before a newer version's download starts.
+  await Promise.all([entry.download?.catch(() => {}), containerHost.cancelUpdateImagePrefetch()])
   if (!restoreStatus) return
   setStatus(entry.appDownloaded
     ? { state: 'downloaded', version: entry.version }

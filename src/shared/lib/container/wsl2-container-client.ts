@@ -312,15 +312,18 @@ function execWSL(args: string): Promise<{ stdout: string; stderr: string }> {
 }
 
 /**
- * Kill any nerdctl pull processes running inside the distro. A pull spawned
+ * Kill the nerdctl pulls of one image running inside the distro. A pull spawned
  * through the wrapper outlives its host-side wsl.exe parent, and a wedged one
  * keeps holding containerd's ingest lock, so every subsequent pull hangs
- * silently behind it. The pull stall watchdog calls this before retrying.
- * The [p] regex trick stops pkill from matching its own command line.
+ * silently behind it. Only that image's pulls are matched, so a concurrent pull
+ * of another image survives. The [p] regex trick stops pkill from matching its
+ * own command line.
  */
-export async function killWSL2PullProcesses(): Promise<void> {
+export async function killWSL2PullProcesses(image: string): Promise<void> {
+  if (!/^[A-Za-z0-9._/:@-]+$/.test(image)) throw new Error(`Refusing to pkill pulls of an invalid image reference: ${image}`)
+  const pattern = `nerdctl [p]ull ${image.replace(/\./g, '[.]')}$`
   try {
-    await execWSL('pkill -f "nerdctl [p]ull"')
+    await execWSL(`pkill -f "${pattern}"`)
   } catch (err) {
     // pkill exits 1 when no process matched — nothing to kill is fine. Any
     // other failure (WSL not responding, pkill missing, permissions) must

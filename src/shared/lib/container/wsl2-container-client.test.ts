@@ -1130,14 +1130,19 @@ describe('killWSL2PullProcesses', () => {
     vi.clearAllMocks()
   })
 
-  it('pkills nerdctl pull processes inside the distro', async () => {
+  it('pkills only the pulls of the given image inside the distro', async () => {
     vi.mocked(execWithPath).mockResolvedValue({ stdout: '', stderr: '' })
 
-    await killWSL2PullProcesses()
+    await killWSL2PullProcesses('ghcr.io/example/agent:0.5.1')
 
     expect(execWithPath).toHaveBeenCalledWith(
-      `wsl -d ${WSL2_DISTRO_NAME} -- pkill -f "nerdctl [p]ull"`
+      `wsl -d ${WSL2_DISTRO_NAME} -- pkill -f "nerdctl [p]ull ghcr[.]io/example/agent:0[.]5[.]1$"`
     )
+  })
+
+  it('refuses an image reference that is not safe to put in a shell command', async () => {
+    await expect(killWSL2PullProcesses('agent:1"; reboot; "')).rejects.toThrow('invalid image reference')
+    expect(execWithPath).not.toHaveBeenCalled()
   })
 
   it('resolves quietly when no pull process matched (pkill exit 1)', async () => {
@@ -1145,7 +1150,7 @@ describe('killWSL2PullProcesses', () => {
       Object.assign(new Error('Command failed: pkill -f "nerdctl [p]ull"'), { code: 1 })
     )
 
-    await expect(killWSL2PullProcesses()).resolves.toBeUndefined()
+    await expect(killWSL2PullProcesses('agent:1')).resolves.toBeUndefined()
   })
 
   it('rethrows failures other than pkill no-match (e.g. WSL not responding)', async () => {
@@ -1153,7 +1158,7 @@ describe('killWSL2PullProcesses', () => {
       Object.assign(new Error('The Windows Subsystem for Linux instance has terminated.'), { code: 4294967295 })
     )
 
-    await expect(killWSL2PullProcesses()).rejects.toThrow('has terminated')
+    await expect(killWSL2PullProcesses('agent:1')).rejects.toThrow('has terminated')
   })
 
   it('rethrows spawn failures without a numeric exit code', async () => {
@@ -1161,6 +1166,6 @@ describe('killWSL2PullProcesses', () => {
       Object.assign(new Error('spawn wsl ENOENT'), { code: 'ENOENT' })
     )
 
-    await expect(killWSL2PullProcesses()).rejects.toThrow('ENOENT')
+    await expect(killWSL2PullProcesses('agent:1')).rejects.toThrow('ENOENT')
   })
 })
