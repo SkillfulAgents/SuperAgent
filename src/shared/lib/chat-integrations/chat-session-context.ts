@@ -24,7 +24,6 @@ const ATTRIBUTION =
 
 const CONVERSATIONAL_FRAMING = [
   'Keep responses concise and conversational; this is a chat, not a document.',
-  'Mermaid diagrams do not render here, so do not send ```mermaid blocks.',
   'Use tools, skills, and capabilities as you normally would.',
 ] as const
 
