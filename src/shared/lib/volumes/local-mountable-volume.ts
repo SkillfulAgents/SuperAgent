@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { LocalFileOps, errnoCode, fromFsError } from '@shared/lib/agent-actor/local-file-ops'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
-import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './volumes'
+import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
 
 /**
  * An entry as a listing reports it, never following a link: a link shows as an

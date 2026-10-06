@@ -17,11 +17,11 @@ vi.mock('@shared/lib/services/mount-service', async (importOriginal) => {
 })
 
 import { addMount } from '@shared/lib/services/mount-service'
-import type { BaseMountableVolume, VolumeFile } from '@shared/lib/volumes/volumes'
+import type { BaseMountableVolume, VolumeFile } from '@shared/lib/volumes/base-mountable-volume'
 import volumes from './volumes'
 
 function volumeReading(file: VolumeFile): BaseMountableVolume<unknown> {
-  return { id: 'stand-in', name: 'stand-in', type: 'stand-in', config: null, mountPath: '/mounts/stand-in', hostPath: null, list: vi.fn(), stat: vi.fn(), read: vi.fn(async () => file), write: vi.fn(), delete: vi.fn(), mkdir: vi.fn(), move: vi.fn() }
+  return { id: 'stand-in', name: 'stand-in', type: 'local', config: null, mountPath: '/mounts/stand-in', hostPath: null, list: vi.fn(), stat: vi.fn(), read: vi.fn(async () => file), write: vi.fn(), delete: vi.fn(), mkdir: vi.fn(), move: vi.fn() }
 }
 
 function request(url: string, init: RequestInit & { headers?: Record<string, string> } = {}) {
@@ -59,7 +59,7 @@ describe('/api/volumes', () => {
     expect((await request(`${volumeId}/`, { method: 'PROPFIND', headers: { Depth: '0' } })).status).toBe(403)
   })
 
-  it('403s a row of the agent that this app cannot build', async () => {
+  it('403s a row of the agent of a type this version does not know', async () => {
     const file = path.join(tmpDir, 'agents', 'agent-a', 'mounts.json')
     fs.writeFileSync(file, JSON.stringify([...JSON.parse(fs.readFileSync(file, 'utf-8')), { id: 'drive', name: 'drive', type: 'not-a-type', config: {} }]))
     expect((await request('drive/', { method: 'PROPFIND', headers: { Depth: '0' } })).status).toBe(403)

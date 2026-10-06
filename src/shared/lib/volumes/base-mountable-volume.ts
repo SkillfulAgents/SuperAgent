@@ -1,4 +1,5 @@
 import type { ByteRange, FileKind } from '@shared/lib/agent-actor/types'
+import type { VolumeType } from '@shared/lib/types/mount'
 
 /** One entry of a volume, with what a WebDAV listing reports. `name` is '' for the volume root. */
 export interface VolumeEntry {
@@ -33,7 +34,7 @@ export function mountPathOf(name: string): string {
  * made, removed, moved or replaced: a subclass refuses those with `invalid-path`.
  */
 export abstract class BaseMountableVolume<C> {
-  abstract readonly type: string
+  abstract readonly type: VolumeType
 
   constructor(readonly id: string, readonly name: string, readonly config: C) {}
 

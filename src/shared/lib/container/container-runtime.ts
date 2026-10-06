@@ -34,7 +34,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { captureException } from '@shared/lib/error-reporting'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
-import { mountPathOf } from '@shared/lib/volumes/volumes'
+import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { mergeCustomEnvVars } from './reserved-env-vars'

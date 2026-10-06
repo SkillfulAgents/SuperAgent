@@ -1,5 +1,5 @@
 import { WorkspaceFileError, normalizeWorkspacePath } from '@shared/lib/agent-actor/workspace-path'
-import type { VolumeEntry } from './volumes'
+import type { VolumeEntry } from './base-mountable-volume'
 
 /**
  * WebDAV as rclone's client speaks it: request paths and headers to volume

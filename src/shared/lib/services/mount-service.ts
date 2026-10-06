@@ -10,9 +10,9 @@ import {
 import { containerHost } from '@shared/lib/agent-actor'
 import { captureException } from '@shared/lib/error-reporting'
 import type { StoredVolume, VolumeSummary, VolumeSummaryWithHealth } from '@shared/lib/types/mount'
-import { instantiateVolume, prepareVolume } from '@shared/lib/volumes/volume-types'
-import type { BaseMountableVolume } from '@shared/lib/volumes/volumes'
-import { storedVolumesSchema } from './mount-schema'
+import { instantiateVolume, prepareVolume } from '@shared/lib/volumes/volume-factory'
+import type { BaseMountableVolume } from '@shared/lib/volumes/base-mountable-volume'
+import { mountsFileSchema, rowIdentitySchema, storedVolumeRowSchema } from './mount-schema'
 
 // The agent's volumes are host-only state, so the file sits at the agent's host
 // path (from the container host, not the actor).
@@ -26,9 +26,22 @@ function getMountsFilePath(slug: string): string {
  * aborts instead of clobbering the file with just the new/remaining mount (the
  * previous catch-all swallowed bad reads, so the next write dropped every prior
  * mount). Do NOT use this on read-only display paths — use {@link getMounts}.
+ * A row this version cannot read, such as one of a type from a newer version,
+ * is left out of `volumes` and kept in `rows`, so a write puts it back as it was.
  */
-function readMountsStrict(slug: string): Promise<StoredVolume[]> {
-  return readJsonFileStrict(getMountsFilePath(slug), storedVolumesSchema, [])
+async function readMountsStrict(slug: string): Promise<{ rows: unknown[]; volumes: StoredVolume[] }> {
+  const rows = await readJsonFileStrict(getMountsFilePath(slug), mountsFileSchema, [])
+  return { rows, volumes: rows.flatMap((row) => storedVolumeRowSchema.safeParse(row).data ?? []) }
+}
+
+// A row this version reads is written in the current shape, and any other row as it was.
+function rowToWrite(row: unknown): unknown {
+  return storedVolumeRowSchema.safeParse(row).data ?? row
+}
+
+// A row's id and name, read or not: an unread row still holds its name and can still be removed.
+function rowIdentity(row: unknown): { id: string; name: string } | undefined {
+  return storedVolumeRowSchema.safeParse(row).data ?? rowIdentitySchema.safeParse(row).data
 }
 
 /**
@@ -42,7 +55,10 @@ function readMountsStrict(slug: string): Promise<StoredVolume[]> {
  */
 export async function getMounts(slug: string): Promise<StoredVolume[]> {
   try {
-    return await readMountsStrict(slug)
+    const { rows, volumes } = await readMountsStrict(slug)
+    const skipped = rows.length - volumes.length
+    if (skipped > 0) console.warn(`mounts.json for agent ${slug} has ${skipped} row(s) this version cannot read; leaving them out and keeping them in the file`)
+    return volumes
   } catch (error) {
     if (error instanceof CorruptFileError) {
       console.error(`Corrupt mounts.json for agent ${slug}; treating as no mounts (NOT overwriting)`, error)
@@ -53,12 +69,12 @@ export async function getMounts(slug: string): Promise<StoredVolume[]> {
   }
 }
 
-async function writeMounts(slug: string, mounts: StoredVolume[]): Promise<void> {
+async function writeMounts(slug: string, rows: unknown[]): Promise<void> {
   const filePath = getMountsFilePath(slug)
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
   // Atomic temp-file + rename: an interrupted write can never truncate
   // mounts.json into the half-state the old reader would have swallowed.
-  await writeJsonFileAtomic(filePath, storedVolumesSchema.parse(mounts))
+  await writeJsonFileAtomic(filePath, rows.map(rowToWrite))
 }
 
 export async function addMount(slug: string, type: string, config: unknown): Promise<StoredVolume> {
@@ -67,29 +83,28 @@ export async function addMount(slug: string, type: string, config: unknown): Pro
   // The read-modify-write must not interleave with a concurrent add/remove for
   // the same agent (the old sync code got this for free by never yielding).
   return withFileLock(getMountsFilePath(slug), async () => {
-    const mounts = await readMountsStrict(slug)
+    const { rows } = await readMountsStrict(slug)
 
     // Pick the volume name, append -2, -3, etc. on collision
+    const taken = new Set(rows.map((row) => rowIdentity(row)?.name))
     let name = prepared.name
     let suffix = 2
-    while (mounts.some((m) => m.name === name)) {
+    while (taken.has(name)) {
       name = `${prepared.name}-${suffix}`
       suffix++
     }
 
-    const mount: StoredVolume = { id: crypto.randomUUID(), name, type, config: prepared.config }
+    const mount: StoredVolume = { id: crypto.randomUUID(), name, type: prepared.type, config: prepared.config }
 
-    mounts.push(mount)
-    await writeMounts(slug, mounts)
+    await writeMounts(slug, [...rows, mount])
     return mount
   })
 }
 
 export function removeMount(slug: string, mountId: string): Promise<void> {
   return withFileLock(getMountsFilePath(slug), async () => {
-    const mounts = await readMountsStrict(slug)
-    const filtered = mounts.filter((m) => m.id !== mountId)
-    await writeMounts(slug, filtered)
+    const { rows } = await readMountsStrict(slug)
+    await writeMounts(slug, rows.filter((row) => rowIdentity(row)?.id !== mountId))
   })
 }
 
