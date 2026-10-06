@@ -351,6 +351,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('install-update')
   },
 
+  cancelUpdatePreinstall: (): Promise<void> => {
+    return ipcRenderer.invoke('cancel-update-preinstall')
+  },
+
   getUpdateStatus: (): Promise<any> => {
     return ipcRenderer.invoke('get-update-status')
   },
@@ -543,6 +547,7 @@ declare global {
       checkForUpdates: () => Promise<void>
       downloadUpdate: () => Promise<void>
       installUpdate: () => Promise<void>
+      cancelUpdatePreinstall: () => Promise<void>
       getUpdateStatus: () => Promise<any>
       onUpdateStatus: (callback: (status: any) => void) => () => void
       removeUpdateStatus: () => void

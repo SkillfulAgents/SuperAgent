@@ -300,6 +300,7 @@ export async function shutdownServices() {
   platformService.stop()
   containerHost.stopStatusSync()
   containerHost.stopHealthMonitor()
+  containerHost.abortUpdateImagePrefetch()
   await containerHost.stopAll()
   await shutdownActiveRunner()
   await shutdownAC()

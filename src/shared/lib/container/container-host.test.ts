@@ -15,6 +15,8 @@ const mockIsHealthy = vi.fn()
 const mockClearRunnerAvailabilityCache = vi.fn()
 
 const mockBuildVolumeFlag = vi.fn((hostPath: string, containerPath: string) => `"${hostPath}:${containerPath}"`)
+const mockRemoveOldImages = vi.fn().mockResolvedValue(undefined)
+const mockRemoveImage = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
@@ -31,7 +33,9 @@ vi.mock('./client-factory', () => ({
     getHostApiBaseUrl: () => `http://${mockGetContainerHostUrl()}:${mockGetAppPort()}`,
     buildVolumeFlag: (...args: unknown[]) => mockBuildVolumeFlag(...args as [string, string]),
   }),
-  getContainerClientClass: () => ({ requiresLocalImage: true }),
+  getContainerClientClass: () => ({ requiresLocalImage: true, removeOldImages: mockRemoveOldImages }),
+  getCliCommand: () => 'docker',
+  removeImage: (...args: unknown[]) => mockRemoveImage(...args),
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
   checkImageExists: vi.fn().mockResolvedValue(true),
   pullImage: vi.fn(),
@@ -114,6 +118,7 @@ vi.mock('drizzle-orm', () => ({
 }))
 
 const mockSettingsState = {
+  agentImage: 'test-image',
   containerRunner: 'docker' as string,
   chromeProfileId: undefined as string | undefined,
   hostBrowserProvider: undefined as string | undefined,
@@ -121,7 +126,7 @@ const mockSettingsState = {
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({
-    container: { agentImage: 'test-image', containerRunner: mockSettingsState.containerRunner },
+    container: { agentImage: mockSettingsState.agentImage, containerRunner: mockSettingsState.containerRunner },
     app: {
       chromeProfileId: mockSettingsState.chromeProfileId,
       hostBrowserProvider: mockSettingsState.hostBrowserProvider,
@@ -1669,5 +1674,98 @@ describe('ContainerHost stale agents', () => {
     containerHost.runtime('a').updateCachedStatus('stopped', null)
     containerHost.dropRuntime('b')
     expect(stale()).toEqual([false, false, true])
+  })
+})
+
+// Pre-pulling the agent image of an app update: all or nothing. Either a
+// complete image that cleanup keeps, or no tag left behind.
+describe('ContainerHost update image prefetch', () => {
+  const REGISTRY = 'ghcr.io/skillfulagents/superagent-agent-container-base'
+
+  async function readyOn(version: string) {
+    mockSettingsState.agentImage = `${REGISTRY}:${version}`
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(true)
+    await containerHost.ensureImageReady()
+    expect(containerHost.getReadiness().status).toBe('READY')
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    delete process.env.E2E_MOCK
+    mockSettingsState.containerRunner = 'docker'
+    mockStatfs.mockResolvedValue({ bavail: 100 * 1024 * 1024 * 1024 / 4096, bsize: 4096 })
+    await containerHost.cancelUpdateImagePrefetch()
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    mockSettingsState.agentImage = 'test-image'
+  })
+
+  it('removes old tags when the current image already exists, not only after a pull', async () => {
+    await readyOn('0.5.2')
+    expect(mockRemoveOldImages).toHaveBeenCalledWith('docker', REGISTRY, ['0.5.2'])
+  })
+
+  it('pulls the update image in the background without touching readiness, and cleanup keeps it', async () => {
+    await readyOn('0.5.2')
+    vi.mocked(pullImage).mockResolvedValue(undefined)
+
+    expect(await containerHost.prefetchUpdateImage('0.5.3')).toBe(true)
+
+    expect(pullImage).toHaveBeenCalledWith('docker', `${REGISTRY}:0.5.3`, undefined, expect.any(AbortSignal))
+    expect(containerHost.getReadiness().status).toBe('READY')
+    mockRemoveOldImages.mockClear()
+    vi.mocked(checkImageExists).mockResolvedValue(true)
+    await containerHost.ensureImageReady()
+    expect(mockRemoveOldImages).toHaveBeenCalledWith('docker', REGISTRY, ['0.5.2', '0.5.3'])
+  })
+
+  it('a failed pull removes the half-pulled tag', async () => {
+    await readyOn('0.5.2')
+    vi.mocked(pullImage).mockRejectedValue(new Error('Image pull failed with exit code 1'))
+
+    expect(await containerHost.prefetchUpdateImage('0.5.3')).toBe(false)
+
+    expect(mockRemoveImage).toHaveBeenCalledWith('docker', `${REGISTRY}:0.5.3`)
+  })
+
+  it('cancelling aborts the pull and leaves no tag behind', async () => {
+    await readyOn('0.5.2')
+    vi.mocked(pullImage).mockImplementation((_runner, image, _onProgress, signal) =>
+      new Promise((_resolve, reject) => {
+        signal!.addEventListener('abort', () => reject(new Error(`Image pull aborted: ${image}`)))
+      }))
+
+    const result = containerHost.prefetchUpdateImage('0.5.3')
+    await vi.waitFor(() => expect(pullImage).toHaveBeenCalled())
+    await containerHost.cancelUpdateImagePrefetch()
+
+    expect(await result).toBe(false)
+    expect(mockRemoveImage).toHaveBeenCalledWith('docker', `${REGISTRY}:0.5.3`)
+  })
+
+  it('cancelling after a finished pull removes the pulled image', async () => {
+    await readyOn('0.5.2')
+    vi.mocked(pullImage).mockResolvedValue(undefined)
+    expect(await containerHost.prefetchUpdateImage('0.5.3')).toBe(true)
+
+    await containerHost.cancelUpdateImagePrefetch()
+
+    expect(mockRemoveImage).toHaveBeenCalledWith('docker', `${REGISTRY}:0.5.3`)
+  })
+
+  it('skips custom images, malformed versions, and a runtime that is not ready', async () => {
+    await readyOn('0.5.2')
+    expect(await containerHost.prefetchUpdateImage('0.5.3; rm -rf /')).toBe(false)
+
+    mockSettingsState.agentImage = 'my-registry/agent:custom'
+    expect(await containerHost.prefetchUpdateImage('0.5.3')).toBe(false)
+
+    expect(pullImage).not.toHaveBeenCalled()
   })
 })

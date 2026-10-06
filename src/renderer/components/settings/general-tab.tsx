@@ -545,6 +545,23 @@ function UpdatesCard() {
             checked={userSettings?.autoCheckUpdates !== false}
             onCheckedChange={(checked: boolean) => {
               updateUserSettings.mutate({ autoCheckUpdates: checked })
+              if (!checked) window.electronAPI?.cancelUpdatePreinstall()
+            }}
+          />
+        }
+      />
+      <SettingRow
+        name="Download updates in the background"
+        subtitle="Download new versions and their agent image ahead of time, so restarting to update is quick"
+        htmlFor="preinstall-updates"
+        right={
+          <Switch
+            id="preinstall-updates"
+            checked={userSettings?.autoCheckUpdates !== false && !!userSettings?.preinstallUpdates}
+            disabled={userSettings?.autoCheckUpdates === false}
+            onCheckedChange={(checked: boolean) => {
+              updateUserSettings.mutate({ preinstallUpdates: checked })
+              if (!checked) window.electronAPI?.cancelUpdatePreinstall()
             }}
           />
         }

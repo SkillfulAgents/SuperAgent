@@ -1782,21 +1782,21 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
-   * Remove old images for a given registry, keeping only the specified current tag.
+   * Remove old images for a given registry, keeping only the given tags.
    * Each image is removed individually so in-use images don't block others.
    * Best-effort: never throws.
    * Subclasses can override for runtimes with different CLI syntax.
    */
-  static async removeOldImages(cliCommand: string, registry: string, currentTag: string): Promise<void> {
+  static async removeOldImages(cliCommand: string, registry: string, keepTags: string[]): Promise<void> {
     try {
       const { stdout } = await execWithPath(
         `${cliCommand} images --format "{{.Repository}}:{{.Tag}}"`
       )
-      const currentImage = `${registry}:${currentTag}`
+      const keep = new Set(keepTags.map((tag) => `${registry}:${tag}`))
       const imagesToRemove = stdout
         .split('\n')
         .map((l) => l.trim())
-        .filter((l) => l && l !== currentImage && l.startsWith(registry + ':'))
+        .filter((l) => l && !keep.has(l) && l.startsWith(registry + ':'))
 
       if (imagesToRemove.length === 0) return
 
