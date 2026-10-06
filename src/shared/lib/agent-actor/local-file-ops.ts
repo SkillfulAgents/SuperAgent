@@ -237,10 +237,11 @@ export class LocalFileOps implements FileOps {
   }
 
   /** Canonical destination parents are checked before creating each child. */
-  private async confinedDestination(workspacePath: string, existingParent = false): Promise<{ rel: string; abs: string; root: string }> {
+  private async confinedDestination(workspacePath: string, existingParent = false, exactRoot = false): Promise<{ rel: string; abs: string; root: string }> {
     const { rel, root } = this.absolute(workspacePath)
     if (!rel) throw new WorkspaceFileError('invalid-path')
     const canonicalRoot = await fs.promises.realpath(root).catch(fromFsError)
+    if (exactRoot && canonicalRoot !== root) throw new WorkspaceFileError('not-found')
     let parent = canonicalRoot
     for (const segment of path.posix.dirname(rel).split('/').filter((part) => part !== '.')) {
       const candidate = path.join(parent, segment)
@@ -446,7 +447,7 @@ export class LocalFileOps implements FileOps {
   ): Promise<{ size: number }> {
     let target: { rel: string; abs: string; root?: string }
     try {
-      target = options?.confined ? await this.confinedDestination(workspacePath, options.existingParent) : this.forWrite(workspacePath)
+      target = options?.confined ? await this.confinedDestination(workspacePath, options.existingParent, options.exactRoot) : this.forWrite(workspacePath)
     } catch (error) {
       // The caller may already hold the source open; a refused destination
       // must not leave it dangling.
@@ -469,6 +470,8 @@ export class LocalFileOps implements FileOps {
         ...atomicWriteOptions(options),
         fsync: options?.flush === true,
         overwrite: options?.overwrite,
+        lock: options?.lock,
+        beforePublish: options?.beforePublish,
         validate: async (handle, temporaryPath) => {
           options?.signal?.throwIfAborted()
           if (target.root) {

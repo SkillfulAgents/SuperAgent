@@ -758,7 +758,7 @@ function renameWithRetrySync(from: string, to: string, attempts = 10): void {
  *   3. rename temp → target (atomic on the same filesystem)
  *   4. fsync the parent directory (the rename itself is durable)
  *
- * On ANY error the temp file is removed and the existing target is left exactly
+ * On failure the temp file is removed while its name still holds this write's file, and the existing target is left exactly
  * as it was — a failed/interrupted write never replaces a good file.
  *
  * The parent directory must already exist (callers ensure this), matching the
@@ -786,6 +786,14 @@ export interface AtomicWriteOptions {
    * dominant cost.
    */
   fsync?: boolean
+  /**
+   * A caller's lock, held around the final publish (`beforePublish`, the check that the
+   * temp file is still this write's, the claim, then the rename) and around a failed
+   * write's cleanup, but not while the content is written.
+   */
+  lock?: (fn: () => Promise<void>) => Promise<void>
+  /** Called under `lock` just before `filePath` is published; throwing refuses the publish. */
+  beforePublish?: (filePath: string) => Promise<void>
 }
 
 /**
@@ -868,10 +876,13 @@ async function writeFileAtomicWith(
     }
   }
   let claimed = false
+  let staged: fs.Stats | undefined
+  const locked = options?.lock ?? ((fn: () => Promise<void>) => fn())
   try {
     // 'wx' = O_EXCL: never reuse a stray temp file. Unique name makes this safe.
     const handle = await fs.promises.open(tmpPath, 'wx', options?.mode ?? 0o666)
     try {
+      staged = await handle.stat()
       await options?.validate?.(handle, tmpPath)
       await writeContent(handle)
       // Best-effort: object-storage / perms-less mounts (e.g. an S3 FUSE driver)
@@ -888,17 +899,31 @@ async function writeFileAtomicWith(
     } finally {
       await handle.close()
     }
-    if (options?.overwrite === false) {
-      // Claim the name with an exclusive create (EEXIST when taken), then the
-      // rename replaces that empty claim. This needs no hard link, which S3
-      // Files refuses. A writer that writes the name between claim and rename
-      // is replaced.
-      await fs.promises.writeFile(filePath, '', { flag: 'wx' })
-      claimed = true
-    }
-    await renameWithRetry(tmpPath, filePath)
+    await locked(async () => {
+      await options?.beforePublish?.(filePath)
+      // The temp file sits beside the target, so something else may have replaced it, a link
+      // included: publish only the file this write made, never what took its name.
+      const current = await fs.promises.lstat(tmpPath)
+      if (!current.isFile() || current.ino !== staged?.ino || current.dev !== staged.dev) {
+        throw Object.assign(new Error(`The staged file for ${filePath} was replaced before it was published`), { code: 'ENOENT' })
+      }
+      if (options?.overwrite === false) {
+        // Claim the name with an exclusive create (EEXIST when taken), then the
+        // rename replaces that empty claim. This needs no hard link, which S3
+        // Files refuses. A writer that writes the name between claim and rename
+        // is replaced.
+        await fs.promises.writeFile(filePath, '', { flag: 'wx' })
+        claimed = true
+      }
+      await renameWithRetry(tmpPath, filePath)
+    })
   } catch (err) {
-    await fs.promises.rm(tmpPath, { force: true }).catch(() => {})
+    // Remove the temp file only while it is still the one this write made, under the caller's lock so
+    // nothing can take its name between the check and the removal: whatever was moved onto it stays.
+    await locked(async () => {
+      const left = await fs.promises.lstat(tmpPath).catch(() => null)
+      if (left && staged && left.ino === staged.ino && left.dev === staged.dev) await fs.promises.rm(tmpPath, { force: true })
+    }).catch(() => {})
     // Remove the claim only while it is still empty.
     const claim = claimed ? await fs.promises.lstat(filePath).catch(() => null) : null
     if (claim?.size === 0) await fs.promises.rm(filePath, { force: true }).catch(() => {})

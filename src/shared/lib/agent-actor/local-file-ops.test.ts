@@ -70,6 +70,88 @@ describe('LocalFileOps — links and host files', () => {
     expect(fs.existsSync(path.join(root, 'gone'))).toBe(false)
   })
 
+  it('publishes under the lock after the content is written, and cleans up a refused write under it too', async () => {
+    const body = () => new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('x')); controller.close() } })
+    let held = false
+    const lock = async (fn: () => Promise<void>) => { held = true; try { await fn() } finally { held = false } }
+    const seen: string[] = []
+    await files.write('a.txt', body(), {
+      confined: true,
+      lock,
+      beforePublish: async (destination) => {
+        expect(held).toBe(true)
+        expect(fs.existsSync(destination)).toBe(false)
+        seen.push(destination)
+      },
+    })
+    expect(seen).toEqual([path.join(await fs.promises.realpath(root), 'a.txt')])
+    expect(fs.readFileSync(path.join(root, 'a.txt'), 'utf8')).toBe('x')
+
+    // The cleanup's identity check and its removal both run under the lock.
+    const rm = fs.promises.rm
+    const lstat = fs.promises.lstat
+    const removedHeld: boolean[] = []
+    const checkedHeld: boolean[] = []
+    const rmSpy = vi.spyOn(fs.promises, 'rm').mockImplementation(async (...args: Parameters<typeof rm>) => {
+      removedHeld.push(held)
+      return rm(...args)
+    })
+    const lstatSpy = vi.spyOn(fs.promises, 'lstat').mockImplementation(((...args: Parameters<typeof lstat>) => {
+      if (String(args[0]).endsWith('.tmp')) checkedHeld.push(held)
+      return lstat(...args)
+    }) as typeof lstat)
+    try {
+      await expect(files.write('b.txt', body(), { confined: true, lock, beforePublish: async () => { throw new Error('refused') } })).rejects.toThrow('refused')
+    } finally {
+      rmSpy.mockRestore()
+      lstatSpy.mockRestore()
+    }
+    expect(removedHeld).toEqual([true])
+    expect(checkedHeld.length).toBeGreaterThan(0)
+    expect(checkedHeld.every(Boolean)).toBe(true)
+    expect(fs.readdirSync(root).sort()).toEqual(['a.txt'])
+  })
+
+  it('never publishes a link that took the staged file\'s name, and keeps the file it would replace', async () => {
+    await fs.promises.writeFile(path.join(root, 'a.txt'), 'old')
+    const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('new')); controller.close() } })
+    const write = files.write('a.txt', body, {
+      confined: true,
+      beforePublish: async () => {
+        const staged = fs.readdirSync(root).find((name) => name.endsWith('.tmp'))
+        if (!staged) throw new Error('expected a staged file')
+        fs.rmSync(path.join(root, staged))
+        fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(root, staged))
+      },
+    })
+    expect(await codeOf(write)).toBe('not-found')
+    expect(fs.readFileSync(path.join(root, 'a.txt'), 'utf8')).toBe('old')
+  })
+
+  it('never removes a file moved onto the staged name when the write fails', async () => {
+    await fs.promises.writeFile(path.join(root, 'a.txt'), 'old')
+    const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('new')); controller.close() } })
+    let staged = ''
+    const write = files.write('a.txt', body, {
+      confined: true,
+      beforePublish: async () => {
+        staged = fs.readdirSync(root).find((name) => name.endsWith('.tmp')) ?? ''
+        fs.renameSync(path.join(root, 'a.txt'), path.join(root, staged))
+      },
+    })
+    expect(await codeOf(write)).toBe('not-found')
+    expect(fs.readFileSync(path.join(root, staged), 'utf8')).toBe('old')
+  })
+
+  it('a confined write with exactRoot refuses a root that resolves somewhere else', async () => {
+    const alias = path.join(parent, 'alias')
+    await fs.promises.symlink(outside, alias)
+    const viaAlias = new LocalFileOps(() => alias)
+    const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('x')); controller.close() } })
+    expect(await codeOf(viaAlias.write('x.txt', body, { confined: true, exactRoot: true }))).toBe('not-found')
+    expect(fs.readdirSync(outside)).toEqual(['secret.txt'])
+  })
+
   it('resolve reports where a link leads inside the workspace', async () => {
     await fs.promises.mkdir(path.join(root, 'real'))
     await fs.promises.writeFile(path.join(root, 'real', 'x.txt'), 'x')

@@ -20,6 +20,31 @@ async function text(stream: ReadableStream<Uint8Array>): Promise<string> {
   return new Response(stream).text()
 }
 
+// Holds a move inside the gate: its rename to `to` waits until released.
+function holdRename(to: string): { release: () => void; restore: () => void } {
+  const rename = fs.promises.rename
+  let release: () => void = () => {}
+  const held = new Promise<void>((resolve) => { release = resolve })
+  const spy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, dest) => {
+    if (String(dest) === to) await held
+    return rename(from, dest)
+  })
+  return { release, restore: () => spy.mockRestore() }
+}
+
+function stalledBody(): { body: ReadableStream<Uint8Array>; finish: () => void } {
+  let finish: () => void = () => {}
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('x'))
+      finish = () => controller.close()
+    },
+  })
+  return { body, finish: () => finish() }
+}
+
+const tick = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
 describe('LocalMountableVolume', () => {
   let parent: string
   let folder: string
@@ -218,30 +243,6 @@ describe('LocalMountableVolume', () => {
   })
 
   // A move is the only operation that can put a link where a checked folder was.
-  it('runs a move only once the operations already running on the folder finish, and later operations after it', async () => {
-    await fs.promises.writeFile(path.join(folder, 'a.txt'), 'a')
-    let finish: () => void = () => {}
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode('x'))
-        finish = () => controller.close()
-      },
-    })
-    const writing = volume.write('b.txt', body)
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    const order: string[] = []
-    const moving = volume.move('a.txt', 'c.txt').then(() => { order.push('move') })
-    // An operation issued after a pending move waits for it, so it sees the folder after the move.
-    const listing = volume.list('').then((entries) => { order.push('list'); return entries.map((e) => e.name).sort() })
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(order).toEqual([])
-    finish()
-    await writing
-    await moving
-    expect(await listing).toEqual(['b.txt', 'c.txt'])
-    expect(order).toEqual(['move', 'list'])
-  })
-
   it.runIf(process.platform === 'darwin')('flags iCloud and CloudStorage prefixes, not regular folders', () => {
     expect(isCloudStoragePath(path.join(os.homedir(), 'Library', 'CloudStorage', 'Dropbox', 'x'))).toBe(true)
     expect(isCloudStoragePath(path.join(os.homedir(), 'Library', 'Mobile Documents', 'x'))).toBe(true)
@@ -263,51 +264,207 @@ describe('LocalMountableVolume', () => {
     }
   })
 
-  it('answers a stat of the root without waiting behind a move, in its own volume or an enclosing one', async () => {
+  it('holds every later operation in the volume while a move lands', async () => {
     await fs.promises.writeFile(path.join(folder, 'a.txt'), 'a')
-    let finish: () => void = () => {}
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode('x'))
-        finish = () => controller.close()
-      },
-    })
-    await fs.promises.mkdir(path.join(folder, 'sub'))
-    const inner = new LocalMountableVolume('inner', 'sub', { path: path.join(folder, 'sub') })
-    const writing = volume.write('b.txt', body)
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    const moving = volume.move('a.txt', 'c.txt')
-    expect((await volume.stat('')).kind).toBe('directory')
-    expect((await inner.stat('')).kind).toBe('directory')
-    finish()
-    await writing
-    await moving
+    const hold = holdRename(path.join(folder, 'c.txt'))
+    try {
+      const order: string[] = []
+      const moving = volume.move('a.txt', 'c.txt').then(() => { order.push('move') })
+      await tick(20)
+      const listing = volume.list('').then((entries) => { order.push('list'); return entries.map((e) => e.name) })
+      await tick(50)
+      expect(order).toEqual([])
+      hold.release()
+      await moving
+      expect(await listing).toEqual(['c.txt'])
+      expect(order).toEqual(['move', 'list'])
+    } finally {
+      hold.restore()
+    }
   })
 
-  it('runs a move only once the operations running in a volume inside its folder finish, and that volume\'s later operations after it', async () => {
+  it('answers a stat of the root while a move lands, in its own volume or an enclosing one', async () => {
     await fs.promises.mkdir(path.join(folder, 'sub'))
     await fs.promises.writeFile(path.join(folder, 'a.txt'), 'a')
     const inner = new LocalMountableVolume('inner', 'sub', { path: path.join(folder, 'sub') })
-    let finish: () => void = () => {}
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode('x'))
-        finish = () => controller.close()
-      },
-    })
-    const writing = inner.write('b.txt', body)
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    const order: string[] = []
-    const moving = volume.move('a.txt', 'c.txt').then(() => { order.push('move') })
-    const listing = inner.list('').then(() => { order.push('list') })
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(order).toEqual([])
+    const hold = holdRename(path.join(folder, 'c.txt'))
+    try {
+      const moving = volume.move('a.txt', 'c.txt')
+      await tick(20)
+      expect((await volume.stat('')).kind).toBe('directory')
+      expect((await inner.stat('')).kind).toBe('directory')
+      hold.release()
+      await moving
+    } finally {
+      hold.restore()
+    }
+  })
+
+  it("holds a nested volume's later operations while a move in the enclosing volume lands", async () => {
+    await fs.promises.mkdir(path.join(folder, 'sub'))
+    await fs.promises.writeFile(path.join(folder, 'a.txt'), 'a')
+    const inner = new LocalMountableVolume('inner', 'sub', { path: path.join(folder, 'sub') })
+    const hold = holdRename(path.join(folder, 'c.txt'))
+    try {
+      const order: string[] = []
+      const moving = volume.move('a.txt', 'c.txt').then(() => { order.push('move') })
+      await tick(20)
+      const listing = inner.list('').then(() => { order.push('list') })
+      await tick(50)
+      expect(order).toEqual([])
+      hold.release()
+      await moving
+      await listing
+      expect(order).toEqual(['move', 'list'])
+    } finally {
+      hold.restore()
+    }
+  })
+
+  it('lets a move and a read through while an upload streams, and publishes the upload after', async () => {
+    await fs.promises.writeFile(path.join(folder, 'a.txt'), 'a')
+    const { body, finish } = stalledBody()
+    const writing = volume.write('b.txt', body)
+    await tick(20)
+    await volume.move('a.txt', 'c.txt')
+    expect((await volume.list('')).map((e) => e.name)).toContain('c.txt')
+    expect(fs.existsSync(path.join(folder, 'b.txt'))).toBe(false)
     finish()
     await writing
-    await moving
-    await listing
-    expect(order).toEqual(['move', 'list'])
-    expect(fs.existsSync(path.join(folder, 'c.txt'))).toBe(true)
+    expect(fs.readFileSync(path.join(folder, 'b.txt'), 'utf8')).toBe('x')
+  })
+
+  it('publishes an upload that finishes while a move lands only once the move is done', async () => {
+    await fs.promises.writeFile(path.join(folder, 'a.txt'), 'a')
+    const { body, finish } = stalledBody()
+    const writing = volume.write('b.txt', body)
+    await tick(20)
+    const hold = holdRename(path.join(folder, 'c.txt'))
+    try {
+      const moving = volume.move('a.txt', 'c.txt')
+      await tick(20)
+      finish()
+      await tick(50)
+      expect(fs.existsSync(path.join(folder, 'b.txt'))).toBe(false)
+      hold.release()
+      await moving
+      await writing
+      expect(fs.readFileSync(path.join(folder, 'b.txt'), 'utf8')).toBe('x')
+    } finally {
+      hold.restore()
+    }
+  })
+
+  it('runs a move only once an operation already running in the volume finishes', async () => {
+    await fs.promises.writeFile(path.join(folder, 'a.txt'), 'a')
+    const readdir = fs.promises.readdir
+    let release: () => void = () => {}
+    const held = new Promise<void>((resolve) => { release = resolve })
+    const spy = vi.spyOn(fs.promises, 'readdir').mockImplementation(async (...args: Parameters<typeof readdir>) => {
+      await held
+      return readdir(...args)
+    })
+    try {
+      const listing = volume.list('').then((entries) => entries.map((e) => e.name))
+      await tick(20)
+      const moving = volume.move('a.txt', 'c.txt')
+      await tick(50)
+      expect(fs.existsSync(path.join(folder, 'a.txt'))).toBe(true)
+      release()
+      expect(await listing).toEqual(['a.txt'])
+      await moving
+      expect(fs.existsSync(path.join(folder, 'c.txt'))).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('publishes an upload only once an operation already running in the volume finishes', async () => {
+    const readdir = fs.promises.readdir
+    let release: () => void = () => {}
+    const held = new Promise<void>((resolve) => { release = resolve })
+    const spy = vi.spyOn(fs.promises, 'readdir').mockImplementation(async (...args: Parameters<typeof readdir>) => {
+      await held
+      return readdir(...args)
+    })
+    try {
+      const listing = volume.list('')
+      await tick(20)
+      const writing = volume.write('b.txt', new Blob(['x']).stream())
+      await tick(50)
+      expect(fs.existsSync(path.join(folder, 'b.txt'))).toBe(false)
+      release()
+      await listing
+      await writing
+      expect(fs.readFileSync(path.join(folder, 'b.txt'), 'utf8')).toBe('x')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('refuses to publish an upload whose staged file was swapped for a link, and keeps the old file', async () => {
+    await fs.promises.writeFile(path.join(folder, 'b.txt'), 'old')
+    await fs.promises.symlink(path.join(outside, 'secret.txt'), path.join(folder, 'evil'))
+    const { body, finish } = stalledBody()
+    const writing = volume.write('b.txt', body)
+    await tick(20)
+    const staged = fs.readdirSync(folder).find((name) => name.endsWith('.tmp'))
+    if (!staged) throw new Error('expected a staged file')
+    await volume.move('evil', staged)
+    finish()
+    expect(['not-found', 'outside-workspace']).toContain(await codeOf(writing))
+    expect(fs.readFileSync(path.join(folder, 'b.txt'), 'utf8')).toBe('old')
+    expect(fs.readFileSync(path.join(outside, 'secret.txt'), 'utf8')).toBe('secret')
+  })
+
+  it('refuses to publish an upload staged through a link that was put back before it finished', async () => {
+    await fs.promises.mkdir(path.join(folder, 'd'))
+    await fs.promises.mkdir(path.join(folder, 'real'))
+    const write = LocalFileOps.prototype.write
+    const spy = vi.spyOn(LocalFileOps.prototype, 'write').mockImplementation(async function (this: LocalFileOps, target, content, options) {
+      await fs.promises.rename(path.join(folder, 'd'), path.join(folder, 'd-old'))
+      await fs.promises.symlink(path.join(folder, 'real'), path.join(folder, 'd'))
+      const beforePublish = options?.beforePublish
+      return write.call(this, target, content, {
+        ...options,
+        beforePublish: beforePublish && (async (destination) => {
+          await fs.promises.unlink(path.join(folder, 'd'))
+          await fs.promises.rename(path.join(folder, 'd-old'), path.join(folder, 'd'))
+          return beforePublish(destination)
+        }),
+      })
+    })
+    try {
+      expect(await codeOf(volume.write('d/x.txt', new Blob(['x']).stream()))).toBe('not-accessible')
+      expect(fs.readdirSync(path.join(folder, 'real'))).toEqual([])
+      expect(fs.readdirSync(path.join(folder, 'd'))).toEqual([])
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('stages nothing outside when its folder is swapped for a link before the upload starts', async () => {
+    const write = LocalFileOps.prototype.write
+    let stagedOutside: string[] = []
+    const spy = vi.spyOn(LocalFileOps.prototype, 'write').mockImplementation(async function (this: LocalFileOps, target, content, options) {
+      await fs.promises.rename(folder, `${folder}-moved`)
+      await fs.promises.symlink(outside, folder)
+      const beforePublish = options?.beforePublish
+      return write.call(this, target, content, {
+        ...options,
+        beforePublish: beforePublish && (async (destination) => {
+          stagedOutside = fs.readdirSync(outside).filter((name) => name.endsWith('.tmp'))
+          return beforePublish(destination)
+        }),
+      })
+    })
+    try {
+      expect(await codeOf(volume.write('x.txt', new Blob(['x']).stream()))).toBe('not-found')
+      expect(stagedOutside).toEqual([])
+      expect(fs.readdirSync(outside)).toEqual(['secret.txt'])
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('refuses a move into a link that leads out of the folder', async () => {
