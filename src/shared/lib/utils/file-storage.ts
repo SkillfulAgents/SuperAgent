@@ -758,7 +758,7 @@ function renameWithRetrySync(from: string, to: string, attempts = 10): void {
  *   3. rename temp → target (atomic on the same filesystem)
  *   4. fsync the parent directory (the rename itself is durable)
  *
- * On ANY error the temp file is removed (with `lock`, only while its name still holds this write's file) and the existing target is left exactly
+ * On ANY error the temp file is removed and the existing target is left exactly
  * as it was — a failed/interrupted write never replaces a good file.
  *
  * The parent directory must already exist (callers ensure this), matching the
@@ -789,7 +789,8 @@ export interface AtomicWriteOptions {
   /**
    * A caller's lock, held around the final publish (`beforePublish`, the check that the
    * temp file is still this write's, the claim, then the rename) and around a failed
-   * write's cleanup, but not while the content is written.
+   * write's cleanup, which then removes the temp file only while it is still this
+   * write's. Not held while the content is written. Passing it turns those checks on.
    */
   lock?: (fn: () => Promise<void>) => Promise<void>
   /** Called under `lock` just before `filePath` is published; throwing refuses the publish. */
