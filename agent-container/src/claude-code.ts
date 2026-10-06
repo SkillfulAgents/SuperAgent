@@ -390,6 +390,7 @@ export function buildSystemPromptVars(
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
   const mountPaths = [
+    // TODO: delete SUPERAGENT_MOUNTS, with parseMountPaths and its tests, once every mount moves to SUPERAGENT_VOLUMES.
     ...parseMountPaths(process.env.SUPERAGENT_MOUNTS),
     ...mountedVolumePaths(),
   ];
