@@ -8,7 +8,9 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
-import { Textarea } from '@renderer/components/ui/textarea'
+import { CodeEditor } from '@renderer/components/ui/code-editor'
+import { MarkdownEditor } from '@renderer/components/ui/markdown-editor'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
 import { useUser } from '@renderer/context/user-context'
 import { useUpdateAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 
@@ -43,7 +45,7 @@ export function SystemPromptDialog({ agent, open, onOpenChange }: SystemPromptDi
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl" data-testid="system-prompt-dialog">
+      <DialogContent className="sm:max-w-3xl" data-testid="system-prompt-dialog">
         <DialogHeader>
           <DialogTitle>System Prompt</DialogTitle>
           <DialogDescription>
@@ -51,13 +53,29 @@ export function SystemPromptDialog({ agent, open, onOpenChange }: SystemPromptDi
           </DialogDescription>
         </DialogHeader>
         <div className="relative">
-          <Textarea
-            value={instructions}
-            onChange={(e) => setInstructions(e.target.value)}
-            placeholder="Enter custom instructions for this agent..."
-            className="min-h-[300px] font-mono text-sm"
-            disabled={locked}
-          />
+          <Tabs defaultValue="preview">
+            <TabsList>
+              <TabsTrigger value="preview" data-testid="system-prompt-tab-preview">Preview</TabsTrigger>
+              <TabsTrigger value="source" data-testid="system-prompt-tab-source">Source</TabsTrigger>
+            </TabsList>
+            <TabsContent value="preview">
+              <MarkdownEditor
+                value={instructions}
+                onChange={setInstructions}
+                readOnly={locked}
+                className="h-[400px] overflow-y-auto rounded-md border px-4 py-2"
+              />
+            </TabsContent>
+            <TabsContent value="source">
+              <CodeEditor
+                value={instructions}
+                onChange={setInstructions}
+                language="markdown"
+                readOnly={locked}
+                className="h-[400px] overflow-hidden rounded-md border"
+              />
+            </TabsContent>
+          </Tabs>
           {locked && (
             <div
               className="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-background/80 backdrop-blur-sm"
